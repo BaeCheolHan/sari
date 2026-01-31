@@ -1,0 +1,36 @@
+name: Release Deckard
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Verify Version Match
+        run: |
+          TAG_VERSION=${GITHUB_REF#refs/tags/v}
+          # Extract version from mcp/server.py (SERVER_VERSION = "X.Y.Z")
+          FILE_VERSION=$(grep 'SERVER_VERSION =' mcp/server.py | cut -d'"' -f2)
+          
+          echo "Tag Version: $TAG_VERSION"
+          echo "File Version: $FILE_VERSION"
+          
+          if [ "$TAG_VERSION" != "$FILE_VERSION" ]; then
+            echo "::error::Version mismatch! Tag is $TAG_VERSION but mcp/server.py says $FILE_VERSION"
+            exit 1
+          fi
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          generate_release_notes: true
+          draft: false
+          prerelease: false
