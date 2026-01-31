@@ -7,7 +7,7 @@
 ## v2.5.0 변경사항 (DB 격리 + Pagination)
 
 ### DB 격리 (Critical)
-- **전역 DB 사용 중단**: `~/.cache/local-search/` 대신 각 워크스페이스 내부 `.codex/tools/local-search/data/index.db` 사용.
+- **전역 DB 사용 중단**: `~/.cache/deckard/` 대신 각 워크스페이스 내부 `.codex/tools/deckard/data/index.db` 사용.
 - 워크스페이스 간 데이터 오염 및 충돌 원천 차단.
 
 ### `search` 도구 개선 (Pagination)
@@ -83,7 +83,7 @@
 
 ## v2.3.0 변경사항
 
-- 경로 구조 변경: `tools/local-search/` → `.codex/tools/deckard/`
+- 경로 구조 변경: `tools/deckard/` → `.codex/tools/deckard/`
 - 모든 경로 참조 v2.3.0 구조에 맞게 업데이트
 
 ## v2.2.1 변경사항
@@ -93,10 +93,10 @@
 
 ## v2.2.0 변경사항
 
-**MCP 통합**: codex-cli가 local-search를 MCP 서버로 자동 관리합니다.
+**MCP 통합**: codex-cli가 deckard를 MCP 서버로 자동 관리합니다.
 
 ### MCP 모드 (권장)
-- `.codex/config.toml`의 `[mcp_servers.local-search]` 설정
+- `.codex/config.toml`의 `[mcp_servers.deckard]` 설정
 - codex 실행 시 자동 시작
 - 별도 서버 관리 불필요
 
@@ -105,10 +105,10 @@ MCP 연결 실패 시 HTTP 서버를 수동으로 시작할 수 있습니다:
 ```bash
 # 1. HTTP 서버 시작 (백그라운드)
 cd ~/Documents/repositories  # workspace root
-python3 .codex/tools/local-search/app/main.py &
+python3 .codex/tools/deckard/app/main.py &
 
 # 2. 상태 확인 (권장 - 포트 자동 감지)
-python3 .codex/tools/local-search/scripts/query.py status
+python3 .codex/tools/deckard/scripts/query.py status
 
 # 3. 직접 curl (config.json의 server_port 기준, 기본값 47777)
 curl http://127.0.0.1:47777/status
@@ -130,7 +130,7 @@ curl http://127.0.0.1:47777/status
 
 각 워크스페이스는 독립적인 DB를 사용합니다:
 ```
-{workspace}/.codex/tools/local-search/data/index.db
+{workspace}/.codex/tools/deckard/data/index.db
 ```
 
 여러 워크스페이스에서 동시에 CLI를 실행해도 DB 충돌이 발생하지 않습니다.
@@ -163,7 +163,7 @@ curl http://127.0.0.1:47777/status
 ## 디렉토리 구조
 
 ```
-.codex/tools/local-search/
+.codex/tools/deckard/
 ├── app/                # 코어 모듈
 │   ├── config.py       # 설정 로더
 │   ├── db.py           # SQLite/FTS5 DB (v2.3.1 확장)
@@ -184,14 +184,14 @@ curl http://127.0.0.1:47777/status
 ```json
 {
   "workspace_root": "~/Documents/repositories",
-  "db_path": "~/.cache/local-search/index.sqlite3",
+  "db_path": "~/.cache/deckard/index.sqlite3",
   "server_port": 47777,
   "include_ext": [".py", ".js", ".ts", ...],
   "exclude_dirs": [".git", "node_modules", ...]
 }
 ```
 
-> v2.3.3+: 기본 캐시 경로는 `~/.cache/local-search/`이며, 레거시 `~/.cache/codex-local-search/`는 자동 마이그레이션됨.
+> v2.3.3+: 기본 캐시 경로는 `~/.cache/deckard/`이며, 레거시 `~/.cache/codex-deckard/`는 자동 마이그레이션됨.
 
 ## MCP 도구
 
@@ -206,9 +206,9 @@ curl http://127.0.0.1:47777/status
 
 ```bash
 # 단위 테스트
-python3 .codex/tools/local-search/mcp/test_server.py
+python3 .codex/tools/deckard/mcp/test_server.py
 
 # MCP 프로토콜 테스트
 echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | \
-    python3 .codex/tools/local-search/mcp/server.py
+    python3 .codex/tools/deckard/mcp/server.py
 ```

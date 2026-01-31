@@ -117,7 +117,7 @@ def serve_forever(host: str, port: int, db: LocalSearchDB, indexer: Indexer) -> 
         except socket.error as e:
             # EADDRINUSE or similar
             if attempt < max_retries - 1:
-                print(f"[local-search] Port {actual_port} in use, trying {actual_port + 1}...", file=sys.stderr)
+                print(f"[deckard] Port {actual_port} in use, trying {actual_port + 1}...", file=sys.stderr)
                 actual_port += 1
             else:
                 raise RuntimeError(f"Could not bind to any port ({port}-{actual_port}): {e}")
@@ -126,7 +126,7 @@ def serve_forever(host: str, port: int, db: LocalSearchDB, indexer: Indexer) -> 
         raise RuntimeError("Failed to create HTTP server")
     
     if actual_port != port:
-        print(f"[local-search] Started on fallback port {actual_port} (original: {port})", file=sys.stderr)
+        print(f"[deckard] Started on fallback port {actual_port} (original: {port})", file=sys.stderr)
 
     th = threading.Thread(target=httpd.serve_forever, daemon=True)
     th.start()

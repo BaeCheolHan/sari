@@ -5,7 +5,7 @@
   "scan_interval_seconds": 180,
   "snippet_max_lines": 5,
   "max_file_bytes": 800000,
-  "db_path": "~/.cache/local-search/index.sqlite3",
+  "db_path": "~/.cache/deckard/index.sqlite3",
   "include_ext": [
     ".py",
     ".js",

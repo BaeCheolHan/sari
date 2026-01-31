@@ -3,9 +3,9 @@
 Unit tests for Local Search MCP Server
 
 Usage:
-  python3 -m pytest .codex/tools/local-search/mcp/test_server.py -v
+  python3 -m pytest .codex/tools/deckard/mcp/test_server.py -v
   # or
-  python3 .codex/tools/local-search/mcp/test_server.py
+  python3 .codex/tools/deckard/mcp/test_server.py
 """
 import json
 import os
@@ -30,7 +30,7 @@ def test_initialize():
         result = server.handle_initialize({})
         
         assert result["protocolVersion"] == "2025-11-25"
-        assert result["serverInfo"]["name"] == "local-search"
+        assert result["serverInfo"]["name"] == "deckard"
         assert result["serverInfo"]["version"] == "2.5.0"
         assert "tools" in result["capabilities"]
 

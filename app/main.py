@@ -21,7 +21,7 @@ except ImportError:  # script mode
 
 
 def _repo_root() -> str:
-    # file is .codex/tools/local-search/app/main.py
+    # file is .codex/tools/deckard/app/main.py
     return str(Path(__file__).resolve().parents[3])
 
 
@@ -77,24 +77,24 @@ def main() -> int:
 
     if (not is_loopback) and (not allow_non_loopback):
         raise SystemExit(
-            f"local-search refused to start: server_host must be loopback only (127.0.0.1/localhost/::1). got={host}. "
+            f"deckard refused to start: server_host must be loopback only (127.0.0.1/localhost/::1). got={host}. "
             "Set LOCAL_SEARCH_ALLOW_NON_LOOPBACK=1 to override (NOT recommended)."
         )
 
     # v2.4.1: Workspace-local DB path enforcement (multi-workspace support)
     # DB is ALWAYS stored within the workspace to prevent conflicts
-    workspace_db_path = Path(workspace_root) / ".codex" / "tools" / "local-search" / "data" / "index.db"
+    workspace_db_path = Path(workspace_root) / ".codex" / "tools" / "deckard" / "data" / "index.db"
     workspace_db_path.parent.mkdir(parents=True, exist_ok=True)
     
     # Debug override (only if explicitly set and not empty)
     debug_db_path = os.environ.get("LOCAL_SEARCH_DB_PATH", "").strip()
     if debug_db_path:
-        print(f"[local-search] Using debug DB path override: {debug_db_path}")
+        print(f"[deckard] Using debug DB path override: {debug_db_path}")
         db_path = os.path.expanduser(debug_db_path)
     else:
         db_path = str(workspace_db_path)
     
-    print(f"[local-search] DB path: {db_path}")
+    print(f"[deckard] DB path: {db_path}")
 
     db = LocalSearchDB(db_path)
     indexer = Indexer(cfg, db)
@@ -104,7 +104,7 @@ def main() -> int:
     httpd, actual_port = serve_forever(host, cfg.server_port, db, indexer)
 
     # Write server.json with actual binding info (single source of truth for port tracking)
-    data_dir = Path(workspace_root) / ".codex" / "tools" / "local-search" / "data"
+    data_dir = Path(workspace_root) / ".codex" / "tools" / "deckard" / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
     server_json = data_dir / "server.json"
     server_info = {
@@ -117,7 +117,7 @@ def main() -> int:
     server_json.write_text(json.dumps(server_info, indent=2), encoding="utf-8")
     
     if actual_port != cfg.server_port:
-        print(f"[local-search] server.json updated with fallback port {actual_port}")
+        print(f"[deckard] server.json updated with fallback port {actual_port}")
 
     stop_evt = threading.Event()
 

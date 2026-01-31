@@ -15,7 +15,7 @@ def _repo_root() -> Path:
 def _load_server_info() -> Optional[Dict]:
     """Load server.json if exists (single source of truth for actual port)."""
     root = _repo_root()
-    server_json = root / "tools" / "local-search" / "data" / "server.json"
+    server_json = root / "tools" / "deckard" / "data" / "server.json"
     if server_json.exists():
         try:
             with open(server_json, "r", encoding="utf-8") as f:
@@ -29,7 +29,7 @@ def _load_cfg() -> Dict:
     root = _repo_root()
     cfg_path = os.environ.get(
         "LOCAL_SEARCH_CONFIG",
-        str(root / "tools" / "local-search" / "config" / "config.json"),
+        str(root / "tools" / "deckard" / "config" / "config.json"),
     )
     with open(cfg_path, "r", encoding="utf-8") as f:
         return json.load(f)
@@ -60,7 +60,7 @@ def _enforce_loopback(host: str) -> None:
         return
     if not _is_loopback(host):
         raise RuntimeError(
-            f"local-search loopback-only: server_host must be 127.0.0.1/localhost/::1 (got={host}). "
+            f"deckard loopback-only: server_host must be 127.0.0.1/localhost/::1 (got={host}). "
             "Set LOCAL_SEARCH_ALLOW_NON_LOOPBACK=1 to override (NOT recommended)."
         )
 
