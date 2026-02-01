@@ -21,8 +21,8 @@ except ImportError:  # script mode
 
 
 def _repo_root() -> str:
-    # file is .codex/tools/deckard/app/main.py
-    return str(Path(__file__).resolve().parents[3])
+    # Fallback to current working directory if not running from a nested structure
+    return str(Path.cwd())
 
 
 def _detect_workspace_root() -> str:
@@ -32,7 +32,7 @@ def _detect_workspace_root() -> str:
     1. LOCAL_SEARCH_WORKSPACE_ROOT env var
     2. Search for .codex-root from cwd upward
     3. Search for .codex-root from script location upward
-    4. Fallback to _repo_root()
+    4. Fallback to cwd (via _repo_root)
     """
     # 1. Environment variable
     env_root = os.environ.get("LOCAL_SEARCH_WORKSPACE_ROOT")
@@ -63,7 +63,30 @@ def main() -> int:
     os.environ["LOCAL_SEARCH_WORKSPACE_ROOT"] = workspace_root
     
     cfg_path = resolve_config_path(workspace_root)
-    cfg = Config.load(cfg_path)
+    
+    # Graceful config loading (Global Install Support)
+    if os.path.exists(cfg_path):
+        cfg = Config.load(cfg_path)
+    else:
+        # Use safe defaults if config.json is missing (Global Install Mode)
+        print(f"[deckard] Config not found in workspace ({cfg_path}), using defaults.")
+        # Try to find default config in package if possible, or use hardcoded defaults
+        # For simplicity in this script mode, we use sensible defaults
+        cfg = Config(
+            workspace_root=workspace_root,
+            server_host="127.0.0.1",
+            server_port=47777,
+            scan_interval_seconds=180,
+            snippet_max_lines=5,
+            max_file_bytes=800000,
+            db_path=str(Path(workspace_root) / ".codex" / "tools" / "deckard" / "data" / "index.db"),
+            include_ext=[".py", ".js", ".ts", ".java", ".kt", ".go", ".rs", ".md", ".json", ".yaml", ".yml", ".sh"],
+            include_files=["pom.xml", "package.json", "Dockerfile", "Makefile", "build.gradle", "settings.gradle"],
+            exclude_dirs=[".git", "node_modules", "__pycache__", ".venv", "venv", "target", "build", "dist", "coverage", "vendor"],
+            exclude_globs=["*.min.js", "*.min.css", "*.map", "*.lock", "package-lock.json", "yarn.lock", "pnpm-lock.yaml"],
+            redact_enabled=True,
+            commit_batch_size=500,
+        )
 
     # Security hardening: loopback-only by default.
     # Allow opt-in override only when explicitly requested.

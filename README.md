@@ -1,122 +1,119 @@
-# Local Search (v1.1.0)
+# 🧙‍♂️ Horadric Deckard
 
-> 오프라인 코드 인덱싱 및 검색 도구
+> **"Stay awhile and listen..."** — to your codebase.
 
-**Requirements**: Python 3.9+
+**Horadric Deckard**는 LLM(Large Language Models)을 위해 설계된 **초고속 오프라인 코드 검색 엔진**입니다.
+Model Context Protocol (MCP)를 완벽하게 지원하여, Claude Desktop, Cursor, Gemini 등의 AI 에이전트에게 **전체 코드베이스에 대한 문맥(Context)**을 즉시 제공합니다.
 
-## v1.1.0 변경사항 (Multi-Workspace Daemon)
+## 🌟 Why Deckard?
 
-### Multi-Workspace Daemon 도입 (Critical)
-다중 클라이언트 접속을 지원하는 데몬 아키텍처가 도입되었습니다.
-- **Daemon**: 백그라운드에서 하나의 인스턴스로 실행 (기본 포트: 47779).
-- **Proxy**: 각 CLI는 프록시를 통해 데몬에 접속.
-- **공유 인덱싱**: 동일 워크스페이스에 여러 CLI가 접속해도 인덱서/DB를 공유하여 리소스를 절약하고 락 충돌을 방지합니다.
+LLM은 코드를 이해하는 능력은 뛰어나지만, 수만 라인의 프로젝트 전체를 한 번에 볼 수는 없습니다.
+Deckard는 이 문제를 해결합니다:
 
-데몬은 필요 시 자동으로 시작되며, 각 워크스페이스는 독립적인 DB를 유지합니다:
-```
-{workspace}/.codex/tools/deckard/data/index.db
-```
-
-### v1.1.0 주요 개선
-- **동시성 해결**: 여러 CLI(Codex, Gemini) 동시 실행 시 부트스트랩 락/DB 충돌 해결.
-- **리소스 최적화**: 중복 인덱싱 방지 및 메모리 절약.
-- **자동 복구**: 데몬 프로세스 자동 관리.
+- **⚡ 초고속 인덱싱**: SQLite + FTS5 기반의 강력한 로컬 검색으로 수천 개의 파일을 순식간에 인덱싱합니다.
+- **🧠 스마트 컨텍스트**: 단순 키워드 검색을 넘어, 코드 구조(함수, 클래스)와 연관성을 고려하여 가장 관련성 높은 코드를 LLM에게 전달합니다.
+- **🔒 완벽한 보안**: 모든 데이터는 **로컬(Local)**에만 저장됩니다. 코드가 외부 서버로 전송되지 않습니다.
+- **🔌 MCP Native**: 차세대 표준인 **Model Context Protocol**을 지원하여, 도구 하나로 모든 AI 에이전트와 연동됩니다.
+- **👻 Daemon Mode**: 백그라운드에서 실행되며 파일 변경사항을 실시간으로 감지하고 인덱스를 최신 상태로 유지합니다.
 
 ---
 
-## 이전 변경사항 (History)
+## 🚀 시작하기 (Getting Started)
 
-### v0.0.9 (DB 격리 + Pagination)
-- **DB 격리**: 워크스페이스별 독립 DB 사용.
-- **Pagination**: `search` 도구에 `offset`, `limit` 지원.
-- **New Tools**: `list_files`, `repo_candidates` 개선.
+터미널에 아래 명령어 한 줄만 입력하세요. 다운로드부터 설정까지 자동으로 완료됩니다.
 
-### v0.0.5 (검색 기능 강화)
-- **Options**: `file_types`, `path_pattern`, `exclude_patterns`, `recency_boost`, `use_regex`.
-- **Snippet**: 매칭 라인 하이라이트 및 메타데이터 포함.
+```bash
+curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/horadric-deckard/main/install.py | python3
+```
+
+> **수동 설치**: [릴리즈 페이지](https://github.com/BaeCheolHan/horadric-deckard/releases)에서 코드를 다운로드한 뒤 `python3 install.py`를 실행하셔도 됩니다.
+> 또는 아래처럼 파일로 받아 실행할 수 있습니다.
+>
+> ```bash
+> curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/horadric-deckard/main/install.py -o install.py
+> python3 install.py
+> ```
 
 ---
 
-## MCP 통합
+## 🎮 사용법 (Usage)
 
-Codex/Gemini CLI는 Deckard를 MCP 서버로 자동 관리합니다.
+### Claude Desktop
+설정 파일(`claude_desktop_config.json` 등)에 아래 내용을 추가합니다.
+경로의 `YOUR_USERNAME`을 실제 사용자명으로 변경해주세요.
 
-### MCP 모드 (권장)
-- `.codex/config.toml`의 `[mcp_servers.deckard]` 설정
-- codex 실행 시 자동 시작 (Daemon/Proxy 아키텍처)
-- 별도 서버 관리 불필요
-
-### 폴백: HTTP 서버 수동 시작
-MCP 연결 실패 시 HTTP 서버를 수동으로 시작할 수 있습니다:
-```bash
-# 1. HTTP 서버 시작 (백그라운드)
-cd {workspace_root}
-python3 .codex/tools/deckard/app/main.py &
-
-# 2. 상태 확인
-python3 .codex/tools/deckard/scripts/query.py status
+```json
+{
+  "mcpServers": {
+    "deckard": {
+      "command": "/Users/YOUR_USERNAME/.local/share/horadric-deckard/bootstrap.sh",
+      "args": [],
+      "env": {}
+    }
+  }
+}
 ```
 
-> **참고**: HTTP 서버(`app/main.py`)와 MCP 데몬은 별개입니다.
-> MCP 데몬은 다중 워크스페이스를 지원하며 프록시를 통해 연결됩니다.
+### Cursor (AI Editor)
+1. `Cmd + Shift + J` (또는 설정) > **MCP** 패널 이동
+2. **Add New MCP Server** 클릭
+    - **Name**: `deckard`
+    - **Type**: `stdio`
+    - **Command**: `/Users/YOUR_USERNAME/.local/share/horadric-deckard/bootstrap.sh` (절대 경로 입력)
 
-## 환경변수
+### Codex / Gemini CLI
+프로젝트 루트의 `.codex/config.toml` (또는 `.gemini/config.toml`)에 아래 내용을 추가하세요.
 
-| 변수 | 기본값 | 설명 |
-|------|--------|------|
-| `DECKARD_DAEMON_PORT` | 47779 | 데몬 리슨 포트 |
-| `DECKARD_DAEMON_HOST` | 127.0.0.1 | 데몬 리슨 호스트 |
-| `LOCAL_SEARCH_INIT_TIMEOUT` | 5 | MCP 초기화 시 인덱싱 대기 시간 (초) |
-| `LOCAL_SEARCH_WORKSPACE_ROOT` | - | 워크스페이스 루트 경로 (자동 감지됨) |
-| `LOCAL_SEARCH_DB_PATH` | - | **(디버그 전용)** DB 경로 오버라이드 |
-
-## 인덱싱 정책
-
-### 기본 제외 디렉토리
-- `.codex`: 룰셋/도구 코드
-- `.git`, `node_modules`, `__pycache__`: 런타임/버전관리
-- `.venv`, `target`, `build`, `dist`: 빌드 산출물
-
-### 기본 제외 파일
-- `.env`, `*.pem`, `*.key`, `*credentials*`: 민감 정보
-
-## 디렉토리 구조
-
-```
-.codex/tools/deckard/
-├── app/                # 코어 모듈
-│   ├── config.py       # 설정 로더
-│   ├── db.py           # SQLite/FTS5 DB
-│   ├── indexer.py      # 파일 인덱서
-│   └── main.py         # HTTP 서버 진입점
-├── mcp/                # MCP 서버 (Daemon/Proxy)
-│   ├── daemon.py       # 멀티 워크스페이스 데몬
-│   ├── proxy.py        # STDIO 프록시 (진입점)
-│   ├── registry.py     # 인스턴스 관리
-│   ├── session.py      # 클라이언트 세션
-│   └── server.py       # MCP 서버 로직
-├── config/
-│   └── config.json     # 설정 파일
-└── scripts/
-    └── query.py        # CLI 클라이언트
+```toml
+[mcp_servers.deckard]
+command = "/Users/YOUR_USERNAME/.local/share/horadric-deckard/bootstrap.sh"
+# args = []  # 필요한 경우 추가
 ```
 
-## MCP 도구
+> **Tip**: Codex Forge 환경에서는 `.codex/tools/deckard` 경로에 이 저장소를 클론해두면 설정 없이 자동으로 인식됩니다.
 
-| 도구 | 설명 |
-|------|------|
-| search | 키워드/정규식으로 파일/코드 검색 (Pagination 지원) |
-| status | 인덱스 상태 확인 |
-| repo_candidates | 관련 repo 후보 찾기 |
-| list_files | 인덱싱된 파일 목록 조회 (디버깅용) |
-
-## 테스트
+### 기타 MCP 지원 CLI
+대부분의 MCP 지원 CLI는 환경변수나 설정 파일(`~/.config/...`)을 통해 MCP 서버를 등록할 수 있습니다.
+일반적으로 아래와 같은 커맨드 라인 인수를 지원합니다:
 
 ```bash
-# 단위 테스트
-python3 .codex/tools/deckard/mcp/test_daemon.py
-
-# MCP 프로토콜 테스트 (Proxy 경유)
-echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":"file:///tmp/test"}}' | \
-    python3 .codex/tools/deckard/mcp/proxy.py
+# 실행 시 MCP 서버 지정
+claude-code --mcp-server="deckard:/Users/YOUR_USERNAME/.local/share/horadric-deckard/bootstrap.sh"
 ```
+
+---
+
+### 🔥 활용 예시
+이제 AI에게 이렇게 물어보세요:
+> "이 프로젝트에서 `User` 클래스가 정의된 파일을 찾아서 인증 로직을 설명해줘."
+
+Deckard가 백그라운드에서 프로젝트를 스캔하고 정확한 파일을 찾아 전달합니다.
+
+### CLI 도구
+
+터미널에서 직접 데몬을 제어할 수도 있습니다.
+
+```bash
+# 데몬 상태 확인
+~/.local/share/horadric-deckard/bootstrap.sh status
+
+# 직접 검색 (디버깅용)
+python3 -m mcp.cli search "AuthService"
+```
+
+---
+
+## 🏗 기술 스택 (Under the Hood)
+
+- **Language**: Python 3.9+ (Zero Dependency - 표준 라이브러리만 사용)
+- **Database**: SQLite (WAL Mode) + FTS5 (Full Text Search)
+- **Protocol**: Model Context Protocol (MCP) over Stdio/TCP
+- **Architecture**:
+    - **Daemon**: 중앙 인덱싱 서버 (Multi-workspace 지원)
+    - **Proxy**: 클라이언트와 데몬 간의 경량 연결 통로
+
+---
+
+## 📜 라이선스 (License)
+
+이 프로젝트는 [MIT License](LICENSE)를 따릅니다. 누구나 자유롭게 사용하고 기여할 수 있습니다.

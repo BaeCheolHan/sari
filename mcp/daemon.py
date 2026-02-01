@@ -4,15 +4,25 @@ import signal
 import logging
 from .session import Session
 
+from pathlib import Path
+
 # Configure logging
+log_dir = Path.home() / ".local" / "share" / "deckard"
+log_dir.mkdir(parents=True, exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(log_dir / "daemon.log"),
+        logging.StreamHandler()
+    ]
 )
 logger = logging.getLogger("mcp-daemon")
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 47779
+PID_FILE = Path.home() / ".local" / "share" / "deckard" / "daemon.pid"
 
 class DeckardDaemon:
     def __init__(self):
@@ -20,7 +30,28 @@ class DeckardDaemon:
         self.port = int(os.environ.get("DECKARD_DAEMON_PORT", DEFAULT_PORT))
         self.server = None
 
+    def _write_pid(self):
+        """Write current PID to file."""
+        try:
+            pid = os.getpid()
+            PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+            PID_FILE.write_text(str(pid))
+            logger.info(f"Wrote PID {pid} to {PID_FILE}")
+        except Exception as e:
+            logger.error(f"Failed to write PID file: {e}")
+
+    def _remove_pid(self):
+        """Remove PID file."""
+        try:
+            if PID_FILE.exists():
+                PID_FILE.unlink()
+                logger.info("Removed PID file")
+        except Exception as e:
+            logger.error(f"Failed to remove PID file: {e}")
+
     async def start(self):
+        self._write_pid()
+        
         self.server = await asyncio.start_server(
             self.handle_client, self.host, self.port
         )
@@ -43,6 +74,12 @@ class DeckardDaemon:
     def shutdown(self):
         if self.server:
             self.server.close()
+            
+        # Shutdown all workspaces to stop indexers and close DBs
+        from .registry import Registry
+        Registry.get_instance().shutdown_all()
+        
+        self._remove_pid()
 
 async def main():
     daemon = DeckardDaemon()

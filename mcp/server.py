@@ -20,8 +20,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
-from datetime import datetime
+from typing import Any, Dict, Optional
 
 # Add parent directories to path for imports
 SCRIPT_DIR = Path(__file__).parent
@@ -93,7 +92,8 @@ class LocalSearchMCPServer:
                         commit_batch_size=500,
                     )
                 
-                debug_db_path = os.environ.get("LOCAL_SEARCH_DB_PATH", "").strip()
+                # DECKARD_* preferred, LOCAL_SEARCH_* for backward compatibility
+                debug_db_path = (os.environ.get("DECKARD_DB_PATH") or os.environ.get("LOCAL_SEARCH_DB_PATH") or "").strip()
                 if debug_db_path:
                     self.logger.log_info(f"Using debug DB path override: {debug_db_path}")
                     db_path = Path(os.path.expanduser(debug_db_path))
@@ -109,7 +109,7 @@ class LocalSearchMCPServer:
                 self._indexer_thread = threading.Thread(target=self.indexer.run_forever, daemon=True)
                 self._indexer_thread.start()
                 
-                init_timeout = float(os.environ.get("LOCAL_SEARCH_INIT_TIMEOUT", "5"))
+                init_timeout = float(os.environ.get("DECKARD_INIT_TIMEOUT") or os.environ.get("LOCAL_SEARCH_INIT_TIMEOUT") or "5")
                 if init_timeout > 0:
                     wait_iterations = int(init_timeout * 10)
                     for _ in range(wait_iterations):
@@ -132,11 +132,12 @@ class LocalSearchMCPServer:
             else:
                 new_workspace = root_uri
             
-            # If workspace changed, reset initialization
-            if new_workspace != self.workspace_root:
-                self.workspace_root = new_workspace
-                self._initialized = False  # Force re-initialization with new workspace
-                self.logger.log_info(f"Workspace set from rootUri: {self.workspace_root}")
+            # Thread-safe workspace change
+            with self._init_lock:
+                if new_workspace != self.workspace_root:
+                    self.workspace_root = new_workspace
+                    self._initialized = False  # Force re-initialization with new workspace
+                    self.logger.log_info(f"Workspace set from rootUri: {self.workspace_root}")
         
         return {
             "protocolVersion": self.PROTOCOL_VERSION,

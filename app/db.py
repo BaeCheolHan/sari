@@ -204,6 +204,12 @@ class LocalSearchDB:
             self._write.commit()
         return len(paths_list)
 
+    def get_all_file_paths(self) -> set[str]:
+        """Get all indexed file paths for deletion detection."""
+        with self._read_lock:
+            rows = self._read.execute("SELECT path FROM files").fetchall()
+        return {r["path"] for r in rows}
+
     def get_file_meta(self, path: str) -> Optional[tuple[int, int]]:
         with self._read_lock:
             row = self._read.execute("SELECT mtime, size FROM files WHERE path=?", (path,)).fetchone()
@@ -690,10 +696,8 @@ class LocalSearchDB:
                 file_type=self._get_file_extension(path),
             ))
         
-        # Sort by score (stable: score DESC, mtime DESC, path ASC)
-        hits.sort(key=lambda h: h.path)
-        hits.sort(key=lambda h: h.mtime, reverse=True)
-        hits.sort(key=lambda h: h.score, reverse=True)
+        # Single sort with tuple key (O(n log n) instead of O(3*n log n))
+        hits.sort(key=lambda h: (-h.score, -h.mtime, h.path))
         
         meta["total"] = len(hits) # For regex, total is what we found in the scan
         meta["total_mode"] = "approx" # Regex is always approx in this impl
@@ -790,10 +794,8 @@ class LocalSearchDB:
                 hit_reason=", ".join(reasons) if reasons else "Content match"
             ))
         
-        # Sort by score (stable: score DESC, mtime DESC, path ASC)
-        hits.sort(key=lambda h: h.path)
-        hits.sort(key=lambda h: h.mtime, reverse=True)
-        hits.sort(key=lambda h: h.score, reverse=True)
+        # Single sort with tuple key (O(n log n) instead of O(3*n log n))
+        hits.sort(key=lambda h: (-h.score, -h.mtime, h.path))
         return hits
 
     def search(

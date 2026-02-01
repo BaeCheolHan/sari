@@ -16,9 +16,9 @@ except ImportError:
     from config import Config  # type: ignore
     from db import LocalSearchDB  # type: ignore
 
-# Add logging support
-if False: # Type checking only
-    from .telemetry import TelemetryLogger
+# === Constants ===
+CORE_FILE_BOOST = 10**9  # Priority boost for core metadata files
+AI_SAFETY_NET_SECONDS = 3.0  # Force re-index if modified within this window
 
 
 
@@ -125,7 +125,7 @@ class Indexer:
             score = st.st_mtime # Base: mtime
             # Priority Boost: Core metadata files
             if any(p in rel_lower for p in ["agents.md", "gemini.md", "service.json", "repo.yaml"]):
-                score += 10**9 # Future boost
+                score += CORE_FILE_BOOST
             return score
 
         file_entries.sort(key=sort_key, reverse=True)
@@ -135,11 +135,13 @@ class Indexer:
         indexed = 0
         batch: List[Tuple[str, str, int, int, str]] = []
         batch_size = max(50, int(getattr(self.cfg, "commit_batch_size", 500)))
+        scanned_paths: set[str] = set()
 
         for file_path, st in file_entries:
             scanned += 1
             try:
                 rel = str(file_path.relative_to(root))
+                scanned_paths.add(rel)
                 # Repo = 1depth subdirectory; root-level files use a dedicated repo name
                 if os.sep not in rel:
                     repo = self._root_repo_name
@@ -155,8 +157,8 @@ class Indexer:
                     prev_mtime, prev_size = prev
                     # Meta match?
                     if int(st.st_mtime) == int(prev_mtime) and int(st.st_size) == int(prev_size):
-                        # AI Safety Net: If modified within last 3 seconds, force re-index
-                        if now - st.st_mtime > 3.0:
+                        # AI Safety Net: If modified within safety window, force re-index
+                        if now - st.st_mtime > AI_SAFETY_NET_SECONDS:
                             is_changed = False
                 
                 if not is_changed:
@@ -192,9 +194,23 @@ class Indexer:
                 self.db.upsert_files(batch)
                 indexed += len(batch)
             except Exception as e:
-                self.status.errors += 1
                 if self.logger:
                     self.logger.log_error(f"Error flushing batch: {e}")
+
+        # 4. Handle Deletions (v2.5.2)
+        try:
+            # We must use the same "root" relative paths as stored in DB
+            all_indexed = self.db.get_all_file_paths()
+            deleted = all_indexed - scanned_paths
+            
+            if deleted:
+                count = self.db.delete_files(deleted)
+                if self.logger:
+                    self.logger.log_info(f"Removed {count} deleted files from index")
+        except Exception as e:
+            if self.logger:
+                self.logger.log_error(f"Error checking for deleted files: {e}")
+
 
         self.db.clear_stats_cache()
         self.status.last_scan_ts = time.time()
@@ -234,8 +250,10 @@ class Indexer:
             if tags or domain or description:
                 tag_str = ",".join(tags) if isinstance(tags, list) else str(tags)
                 self.db.upsert_repo_meta(repo, tags=tag_str, domain=domain, description=description)
-        except Exception:
-            pass
+        except Exception as e:
+            # Log parsing errors at debug level for troubleshooting
+            if self.logger:
+                self.logger.log_info(f"Failed to parse meta file {file_path.name}: {e}")
 
     def _iter_files(self, root: Path) -> Iterable[Path]:
         include_ext = set((self.cfg.include_ext or []))

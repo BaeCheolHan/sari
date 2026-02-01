@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """
-List files tool for Local Search MCP Server.
+List files tool for Deckard MCP Server.
 """
 import json
 import time
 from typing import Any, Dict
-from db import LocalSearchDB
-from telemetry import TelemetryLogger
+
+try:
+    from ..app.db import LocalSearchDB
+    from ..app.telemetry import TelemetryLogger
+except ImportError:
+    from db import LocalSearchDB
+    from telemetry import TelemetryLogger
 
 
 def execute_list_files(args: Dict[str, Any], db: LocalSearchDB, logger: TelemetryLogger) -> Dict[str, Any]:

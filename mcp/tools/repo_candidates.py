@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 """
-Repo candidates tool for Local Search MCP Server.
+Repo candidates tool for Deckard MCP Server.
 """
 import json
 from typing import Any, Dict
-from db import LocalSearchDB
-from telemetry import TelemetryLogger
+
+try:
+    from ..app.db import LocalSearchDB
+    from ..app.telemetry import TelemetryLogger
+except ImportError:
+    from db import LocalSearchDB
+    from telemetry import TelemetryLogger
 
 
 def execute_repo_candidates(args: Dict[str, Any], db: LocalSearchDB, logger: TelemetryLogger = None) -> Dict[str, Any]:

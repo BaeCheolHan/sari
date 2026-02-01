@@ -31,7 +31,8 @@ class Config:
 
         # Portability: allow runtime overrides for workspace root.
         # This helps when the packaged config is used in different locations.
-        env_workspace_root = os.environ.get("LOCAL_SEARCH_WORKSPACE_ROOT")
+        # DECKARD_* preferred, LOCAL_SEARCH_* for backward compatibility
+        env_workspace_root = os.environ.get("DECKARD_WORKSPACE_ROOT") or os.environ.get("LOCAL_SEARCH_WORKSPACE_ROOT")
         if workspace_root_override:
             raw = dict(raw)
             raw["workspace_root"] = workspace_root_override
@@ -39,7 +40,7 @@ class Config:
             raw = dict(raw)
             raw["workspace_root"] = env_workspace_root
         # Support port override for automatic port selection on conflict
-        port_override = os.environ.get("LOCAL_SEARCH_PORT_OVERRIDE")
+        port_override = os.environ.get("DECKARD_PORT") or os.environ.get("LOCAL_SEARCH_PORT_OVERRIDE")
         if port_override:
             server_port = int(port_override)
         else:
@@ -76,8 +77,8 @@ class Config:
 
 
 def resolve_config_path(repo_root: str) -> str:
-    """Resolve config path. Override with env LOCAL_SEARCH_CONFIG."""
-    override = os.environ.get("LOCAL_SEARCH_CONFIG")
+    """Resolve config path. Override with env DECKARD_CONFIG or LOCAL_SEARCH_CONFIG."""
+    override = os.environ.get("DECKARD_CONFIG") or os.environ.get("LOCAL_SEARCH_CONFIG")
     if override:
         return override
     return str(Path(repo_root) / ".codex" / "tools" / "deckard" / "config" / "config.json")

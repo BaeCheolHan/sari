@@ -1,13 +1,21 @@
 #!/usr/bin/env python3
 """
-Status tool for Local Search MCP Server.
+Status tool for Deckard MCP Server.
 """
 import json
 from typing import Any, Dict, Optional
-from db import LocalSearchDB
-from indexer import Indexer
-from config import Config
-from telemetry import TelemetryLogger
+
+# Use relative imports within mcp package, with fallback for direct execution
+try:
+    from ..app.db import LocalSearchDB
+    from ..app.indexer import Indexer
+    from ..app.config import Config
+    from ..app.telemetry import TelemetryLogger
+except ImportError:
+    from db import LocalSearchDB
+    from indexer import Indexer
+    from config import Config
+    from telemetry import TelemetryLogger
 
 
 def execute_status(args: Dict[str, Any], indexer: Optional[Indexer], db: Optional[LocalSearchDB], cfg: Optional[Config], workspace_root: str, server_version: str, logger: Optional[TelemetryLogger] = None) -> Dict[str, Any]:

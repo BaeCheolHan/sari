@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
 """
-Search tool for Local Search MCP Server.
+Search tool for Deckard MCP Server.
 """
 import json
 import time
 from typing import Any, Dict, List
-from db import LocalSearchDB, SearchOptions
-from telemetry import TelemetryLogger
+
+# Use relative imports within mcp package, with fallback for direct execution
+try:
+    from ..app.db import LocalSearchDB, SearchOptions
+    from ..app.telemetry import TelemetryLogger
+except ImportError:
+    # Fallback for when run via sys.path manipulation in server.py
+    from db import LocalSearchDB, SearchOptions
+    from telemetry import TelemetryLogger
 
 
 def execute_search(args: Dict[str, Any], db: LocalSearchDB, logger: TelemetryLogger) -> Dict[str, Any]:

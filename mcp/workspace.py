@@ -34,8 +34,8 @@ class WorkspaceManager:
                 return root_uri[7:]
             return root_uri
         
-        # 2. Check environment variable
-        workspace_root = os.environ.get("LOCAL_SEARCH_WORKSPACE_ROOT")
+        # 2. Check environment variable (DECKARD_* preferred, LOCAL_SEARCH_* for backward compat)
+        workspace_root = os.environ.get("DECKARD_WORKSPACE_ROOT") or os.environ.get("LOCAL_SEARCH_WORKSPACE_ROOT")
         if workspace_root:
             if workspace_root.strip() == "${cwd}":
                 return str(Path.cwd())
