@@ -9,5 +9,17 @@ ROOT_DIR="$DIR"
 # Add repo root to PYTHONPATH
 export PYTHONPATH="$ROOT_DIR:$PYTHONPATH"
 
+# Inject Version from Git
+if [ -d "$ROOT_DIR/.git" ] && command -v git >/dev/null 2>&1; then
+    VERSION=$(git -C "$ROOT_DIR" describe --tags --abbrev=0 2>/dev/null)
+    # If standard tag format (v1.2.3), strip 'v' if preferred, or keep it. 
+    # server.py expects string. Let's keep it as is (v1.1.0) or strip? 
+    # Most python libs use 1.1.0. 
+    if [ -n "$VERSION" ]; then
+        # Strip leading 'v'
+        export DECKARD_VERSION="${VERSION#v}"
+    fi
+fi
+
 # Run CLI in proxy mode
 exec python3 -m mcp.cli proxy
