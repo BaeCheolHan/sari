@@ -21,5 +21,9 @@ if [ -d "$ROOT_DIR/.git" ] && command -v git >/dev/null 2>&1; then
     fi
 fi
 
-# Run CLI in proxy mode
-exec python3 -m mcp.cli proxy
+# Run CLI (default to proxy mode if no args)
+if [ $# -eq 0 ]; then
+    exec python3 -m mcp.cli proxy
+else
+    exec python3 -m mcp.cli "$@"
+fi
