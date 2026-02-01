@@ -14,6 +14,7 @@ from pathlib import Path
 
 REPO_URL = "https://github.com/BaeCheolHan/horadric-deckard.git"
 INSTALL_DIR = Path.home() / ".local" / "share" / "horadric-deckard"
+REPO_ROOT = Path(__file__).resolve().parent
 CLAUDE_CONFIG_DIR = Path.home() / "Library" / "Application Support" / "Claude"
 CLAUDE_CONFIG_FILE = CLAUDE_CONFIG_DIR / "claude_desktop_config.json"
 
@@ -89,6 +90,85 @@ def _inspect_codex_config():
             break
     return cmd_line
 
+def _resolve_workspace_root():
+    # Prefer explicit envs
+    for key in ("DECKARD_WORKSPACE_ROOT", "LOCAL_SEARCH_WORKSPACE_ROOT"):
+        val = os.environ.get(key, "").strip()
+        if val:
+            if val == "${cwd}":
+                return str(Path.cwd())
+            p = Path(os.path.expanduser(val))
+            if p.exists():
+                return str(p.resolve())
+    # Search for .codex-root from cwd upward
+    cwd = Path.cwd()
+    for parent in [cwd] + list(cwd.parents):
+        if (parent / ".codex-root").exists():
+            return str(parent)
+    return str(cwd)
+
+
+def _upsert_deckard_block(cfg_path: Path, command_path: str, workspace_root: str):
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    if cfg_path.exists():
+        lines = cfg_path.read_text(encoding="utf-8").splitlines()
+    else:
+        lines = []
+
+    new_lines = []
+    in_deckard = False
+    for line in lines:
+        if line.strip() == "[mcp_servers.deckard]":
+            in_deckard = True
+            continue
+        if in_deckard and line.startswith("[") and line.strip() != "[mcp_servers.deckard]":
+            in_deckard = False
+            new_lines.append(line)
+            continue
+        if not in_deckard:
+            new_lines.append(line)
+
+    deckard_block = [
+        "[mcp_servers.deckard]",
+        f"command = \"{command_path}\"",
+        f"args = [\"--workspace-root\", \"{workspace_root}\"]",
+        f"env = {{ DECKARD_WORKSPACE_ROOT = \"{workspace_root}\" }}",
+        "startup_timeout_sec = 60",
+    ]
+
+    insert_at = 0
+    for i, line in enumerate(new_lines):
+        if line.startswith("model_reasoning_effort"):
+            insert_at = i + 1
+            break
+    new_lines = new_lines[:insert_at] + deckard_block + new_lines[insert_at:]
+    cfg_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+
+
+def _sync_codex_config(command_path: str, workspace_root: str):
+    project_cfg = Path(workspace_root) / ".codex" / "config.toml"
+    _upsert_deckard_block(project_cfg, command_path, workspace_root)
+    # Remove deckard block from global config to avoid mixed commands
+    global_cfg = Path.home() / ".codex" / "config.toml"
+    if global_cfg.exists():
+        lines = global_cfg.read_text(encoding="utf-8").splitlines()
+        new_lines = []
+        in_deckard = False
+        for line in lines:
+            if line.strip() == "[mcp_servers.deckard]":
+                in_deckard = True
+                continue
+            if in_deckard and line.startswith("[") and line.strip() != "[mcp_servers.deckard]":
+                in_deckard = False
+                new_lines.append(line)
+                continue
+            if not in_deckard:
+                new_lines.append(line)
+        # Backup once
+        backup = global_cfg.with_suffix(".toml.bak")
+        if not backup.exists():
+            backup.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        global_cfg.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 def main():
     print_step("Starting Deckard installation...")
 
@@ -117,6 +197,15 @@ def main():
     os.chmod(bootstrap_script, 0o755)
     print_success("Repository set up successfully.")
 
+    # Write VERSION file before removing .git (for update checks)
+    try:
+        version = subprocess.check_output(["git", "-C", str(INSTALL_DIR), "describe", "--tags", "--abbrev=0"], text=True).strip()
+        if version.startswith("v"):
+            version = version[1:]
+        (INSTALL_DIR / "VERSION").write_text(version + "\n", encoding="utf-8")
+    except Exception:
+        pass
+
     # Remove .git to avoid macOS provenance/permission issues
     git_dir = INSTALL_DIR / ".git"
     if git_dir.exists():
@@ -142,10 +231,15 @@ def main():
         _terminate_pids(pids)
 
     # Inspect codex config to avoid mixed command paths
+    # Sync Codex config to install path
+    workspace_root = _resolve_workspace_root()
+    _sync_codex_config(str(REPO_ROOT / "bootstrap.sh"), workspace_root)
+
     cmd_line = _inspect_codex_config()
     if cmd_line:
         print_step(f"Detected deckard command in ~/.codex/config.toml: {cmd_line}")
-        if str(bootstrap_script) not in cmd_line:
+        allowed = {str(bootstrap_script), str(REPO_ROOT / "bootstrap.sh")}
+        if not any(a in cmd_line for a in allowed):
             print_error("WARNING: Mixed deckard command detected (repo vs install). This can cause protocol mismatch.")
             print("  Recommendation: set command to the install path shown below:")
             print(f"  Command: {bootstrap_script}")

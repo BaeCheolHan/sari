@@ -5,6 +5,38 @@
 # Resolve script directory
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 ROOT_DIR="$DIR"
+INSTALL_DIR="$HOME/.local/share/horadric-deckard"
+
+# Self-install/update: if running from repo (not install dir), bootstrap install dir first
+if [ "${DECKARD_BOOTSTRAP_DONE:-}" != "1" ] && [ "$ROOT_DIR" != "$INSTALL_DIR" ]; then
+    # Determine repo version (if available)
+    REPO_VERSION=""
+    if [ -d "$ROOT_DIR/.git" ] && command -v git >/dev/null 2>&1; then
+        REPO_VERSION=$(git -C "$ROOT_DIR" describe --tags --abbrev=0 2>/dev/null)
+        REPO_VERSION=${REPO_VERSION#v}
+    fi
+
+    INST_VERSION=""
+    if [ -f "$INSTALL_DIR/VERSION" ]; then
+        INST_VERSION=$(cat "$INSTALL_DIR/VERSION" 2>/dev/null | tr -d '\n')
+    fi
+
+    NEED_INSTALL=0
+    if [ ! -x "$INSTALL_DIR/bootstrap.sh" ]; then
+        NEED_INSTALL=1
+    elif [ -n "$REPO_VERSION" ] && [ "$REPO_VERSION" != "$INST_VERSION" ]; then
+        NEED_INSTALL=1
+    fi
+
+    if [ "$NEED_INSTALL" = "1" ] && [ -f "$ROOT_DIR/install.py" ]; then
+        echo "[deckard] bootstrap: installing to $INSTALL_DIR" >&2
+        DECKARD_BOOTSTRAP_DONE=1 python3 "$ROOT_DIR/install.py" >/dev/null 2>&1 || true
+    fi
+
+    if [ -x "$INSTALL_DIR/bootstrap.sh" ]; then
+        exec "$INSTALL_DIR/bootstrap.sh" "$@"
+    fi
+fi
 
 # Add repo root to PYTHONPATH
 export PYTHONPATH="$ROOT_DIR:$PYTHONPATH"
