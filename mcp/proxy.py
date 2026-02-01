@@ -15,7 +15,7 @@ REPO_ROOT = SCRIPT_DIR.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from .telemetry import TelemetryLogger
+from mcp.telemetry import TelemetryLogger
 from app.workspace import WorkspaceManager
 
 # Configure logging to stderr so it doesn't interfere with MCP STDIO

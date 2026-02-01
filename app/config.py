@@ -78,6 +78,8 @@ class Config:
                 expanded = _expanduser(raw_db_path)
                 if os.path.isabs(expanded):
                     db_path = expanded
+                else:
+                    logger.warning(f"Ignoring relative db_path in config '{raw_db_path}'. Absolute path required.")
         
         if not db_path:
             db_path = os.path.join(workspace_root, ".codex", "tools", "deckard", "data", "index.db")

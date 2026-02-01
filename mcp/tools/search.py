@@ -39,16 +39,25 @@ def execute_search(args: Dict[str, Any], db: LocalSearchDB, logger: TelemetryLog
         doc_exts = ["md", "txt", "pdf", "docx", "rst", "pdf"]
         file_types.extend([e for e in doc_exts if e not in file_types])
     
-    # v2.5.4: Robust integer parsing
+    # v2.5.4: Robust integer parsing & Strict Policy Enforcement
     try:
-        limit = min(int(args.get("limit", 10)), 50)
+        # Policy: Default limit 8, Max limit 20
+        raw_limit = int(args.get("limit", 8))
+        limit = min(raw_limit, 20)
     except (ValueError, TypeError):
-        limit = 10
+        limit = 8
         
     try:
         offset = max(int(args.get("offset", 0)), 0)
     except (ValueError, TypeError):
         offset = 0
+
+    try:
+        # Policy: Max 20 lines
+        raw_lines = int(args.get("context_lines", 5))
+        snippet_lines = min(raw_lines, 20)
+    except (ValueError, TypeError):
+        snippet_lines = 5
 
     # Determine total_mode based on scale (v2.5.1)
     total_mode = "exact"
@@ -69,7 +78,7 @@ def execute_search(args: Dict[str, Any], db: LocalSearchDB, logger: TelemetryLog
         repo=repo,
         limit=limit,
         offset=offset,
-        snippet_lines=int(args.get("context_lines", 5)),
+        snippet_lines=snippet_lines,
         file_types=file_types,
         path_pattern=args.get("path_pattern"),
         exclude_patterns=args.get("exclude_patterns", []),
