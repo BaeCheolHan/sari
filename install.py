@@ -52,6 +52,15 @@ def main():
     os.chmod(bootstrap_script, 0o755)
     print_success("Repository set up successfully.")
 
+    # Stop running daemon to ensure update application
+    print_step("Stopping any running Deckard daemon...")
+    try:
+        subprocess.run([str(bootstrap_script), "daemon", "stop"], 
+                       stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                       timeout=5)
+    except Exception:
+        pass
+
     # 3. Configure Claude Desktop
     if CLAUDE_CONFIG_DIR.exists():
         print_step("Found Claude Desktop configuration.")
