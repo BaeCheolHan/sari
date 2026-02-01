@@ -81,4 +81,9 @@ def resolve_config_path(repo_root: str) -> str:
     override = os.environ.get("DECKARD_CONFIG") or os.environ.get("LOCAL_SEARCH_CONFIG")
     if override:
         return override
-    return str(Path(repo_root) / ".codex" / "tools" / "deckard" / "config" / "config.json")
+    workspace_cfg = Path(repo_root) / ".codex" / "tools" / "deckard" / "config" / "config.json"
+    if workspace_cfg.exists():
+        return str(workspace_cfg)
+    # Fallback to packaged config (install dir)
+    package_root = Path(__file__).resolve().parents[1]
+    return str(package_root / "config" / "config.json")

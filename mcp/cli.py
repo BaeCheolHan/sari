@@ -49,14 +49,24 @@ def _load_server_info(workspace_root: str) -> Optional[dict]:
         return None
 
 
+def _package_config_path() -> Path:
+    return Path(__file__).parent.parent / "config" / "config.json"
+
+
 def _load_http_config(workspace_root: str) -> Optional[dict]:
     cfg_path = Path(workspace_root) / ".codex" / "tools" / "deckard" / "config" / "config.json"
-    if not cfg_path.exists():
-        return None
-    try:
-        return json.loads(cfg_path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
+    if cfg_path.exists():
+        try:
+            return json.loads(cfg_path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+    fallback = _package_config_path()
+    if fallback.exists():
+        try:
+            return json.loads(fallback.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+    return None
 
 
 def _is_loopback(host: str) -> bool:
@@ -270,6 +280,34 @@ def cmd_search(args):
     return 0
 
 
+def cmd_init(args):
+    """Initialize workspace with Deckard config and marker."""
+    workspace_root = Path(args.workspace).expanduser().resolve() if args.workspace else Path(WorkspaceManager.detect_workspace()).resolve()
+    codex_root = workspace_root / ".codex-root"
+    cfg_path = workspace_root / ".codex" / "tools" / "deckard" / "config" / "config.json"
+    data_dir = workspace_root / ".codex" / "tools" / "deckard" / "data"
+
+    if not args.no_marker and not codex_root.exists():
+        codex_root.touch()
+
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    if cfg_path.exists() and not args.force:
+        print(f"Config already exists: {cfg_path}")
+    else:
+        base_cfg_path = _package_config_path()
+        if not base_cfg_path.exists():
+            raise RuntimeError(f"Packaged config not found: {base_cfg_path}")
+        base_cfg = json.loads(base_cfg_path.read_text(encoding="utf-8"))
+        base_cfg["workspace_root"] = str(workspace_root)
+        cfg_path.write_text(json.dumps(base_cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"Wrote config: {cfg_path}")
+
+    print(f"Workspace root: {workspace_root}")
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="deckard",
@@ -310,6 +348,13 @@ def main():
     search_parser.add_argument("--repo", default="", help="Limit search to repo")
     search_parser.add_argument("--limit", type=int, default=10, help="Max results (default: 10)")
     search_parser.set_defaults(func=cmd_search)
+
+    # init subcommand
+    init_parser = subparsers.add_parser("init", help="Initialize workspace config")
+    init_parser.add_argument("--workspace", default="", help="Workspace root (default: auto-detect)")
+    init_parser.add_argument("--force", action="store_true", help="Overwrite existing config")
+    init_parser.add_argument("--no-marker", action="store_true", help="Do not create .codex-root marker")
+    init_parser.set_defaults(func=cmd_init)
     
     args = parser.parse_args()
     

@@ -72,6 +72,21 @@ command = "/Users/YOUR_USERNAME/.local/share/horadric-deckard/bootstrap.sh"
 # args = []  # 필요한 경우 추가
 ```
 
+### 초기화 (권장)
+워크스페이스에 `.codex-root`와 Deckard 설정을 생성합니다.
+
+```bash
+/Users/YOUR_USERNAME/.local/share/horadric-deckard/bootstrap.sh init
+```
+
+이미 설정이 있다면 덮어쓰지 않습니다. 덮어쓰려면:
+
+```bash
+/Users/YOUR_USERNAME/.local/share/horadric-deckard/bootstrap.sh init --force
+```
+
+> 기본 동작: 워크스페이스 설정이 없으면 설치 디렉토리의 기본 config를 사용합니다.
+
 설정 후 아래 명령으로 등록 여부를 확인할 수 있습니다:
 
 ```bash
