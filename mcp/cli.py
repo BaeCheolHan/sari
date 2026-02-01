@@ -19,10 +19,17 @@ import time
 import urllib.parse
 import urllib.request
 import ipaddress
+import sys
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Any, Tuple
 
-from .workspace import WorkspaceManager
+# Add project root to sys.path for absolute imports
+SCRIPT_DIR = Path(__file__).parent
+REPO_ROOT = SCRIPT_DIR.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from app.workspace import WorkspaceManager
 
 
 DEFAULT_HOST = "127.0.0.1"
@@ -90,7 +97,7 @@ def _enforce_loopback(host: str) -> None:
 
 
 def _get_http_host_port() -> tuple[str, int]:
-    workspace_root = WorkspaceManager.detect_workspace()
+    workspace_root = WorkspaceManager.resolve_workspace_root()
     server_info = _load_server_info(workspace_root)
     if server_info:
         return str(server_info.get("host", DEFAULT_HTTP_HOST)), int(server_info.get("port", DEFAULT_HTTP_PORT))
@@ -282,7 +289,7 @@ def cmd_search(args):
 
 def cmd_init(args):
     """Initialize workspace with Deckard config and marker."""
-    workspace_root = Path(args.workspace).expanduser().resolve() if args.workspace else Path(WorkspaceManager.detect_workspace()).resolve()
+    workspace_root = Path(args.workspace).expanduser().resolve() if args.workspace else Path(WorkspaceManager.resolve_workspace_root()).resolve()
     codex_root = workspace_root / ".codex-root"
     cfg_path = workspace_root / ".codex" / "tools" / "deckard" / "config" / "config.json"
     data_dir = workspace_root / ".codex" / "tools" / "deckard" / "data"

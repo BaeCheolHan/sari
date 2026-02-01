@@ -22,23 +22,23 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-# Add parent directories to path for imports
+# Add project root to sys.path for absolute imports
 SCRIPT_DIR = Path(__file__).parent
-APP_DIR = SCRIPT_DIR.parent / "app"
-sys.path.insert(0, str(APP_DIR))
-sys.path.insert(0, str(SCRIPT_DIR))
+REPO_ROOT = SCRIPT_DIR.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
-from config import Config
-from db import LocalSearchDB, SearchOptions
-from indexer import Indexer
+from app.config import Config
+from app.db import LocalSearchDB, SearchOptions
+from app.indexer import Indexer
+from app.workspace import WorkspaceManager
+from mcp.telemetry import TelemetryLogger
 
-# Import new modules
-from workspace import WorkspaceManager
-from telemetry import TelemetryLogger
-import tools.search
-import tools.status
-import tools.repo_candidates
-import tools.list_files
+# Import tools using absolute paths
+import mcp.tools.search as search_tool
+import mcp.tools.status as status_tool
+import mcp.tools.repo_candidates as repo_candidates_tool
+import mcp.tools.list_files as list_files_tool
 
 
 class LocalSearchMCPServer:
@@ -92,14 +92,7 @@ class LocalSearchMCPServer:
                         commit_batch_size=500,
                     )
                 
-                # DECKARD_* preferred, LOCAL_SEARCH_* for backward compatibility
-                debug_db_path = (os.environ.get("DECKARD_DB_PATH") or os.environ.get("LOCAL_SEARCH_DB_PATH") or "").strip()
-                if debug_db_path:
-                    self.logger.log_info(f"Using debug DB path override: {debug_db_path}")
-                    db_path = Path(os.path.expanduser(debug_db_path))
-                else:
-                    db_path = WorkspaceManager.get_local_db_path(self.workspace_root)
-                
+                db_path = Path(self.cfg.db_path)
                 db_path.parent.mkdir(parents=True, exist_ok=True)
                 self.db = LocalSearchDB(str(db_path))
                 self.logger.log_info(f"DB path: {db_path}")
@@ -132,20 +125,16 @@ class LocalSearchMCPServer:
             )
         except Exception as e:
             self.logger.log_error(f"Initialize params log failed: {e}")
-        # Parse rootUri from client (LSP/MCP standard)
-        root_uri = params.get("rootUri") or params.get("rootPath")
-        if root_uri:
-            if root_uri.startswith("file://"):
-                new_workspace = root_uri[7:]  # Remove file:// prefix
-            else:
-                new_workspace = root_uri
-            
-            # Thread-safe workspace change
-            with self._init_lock:
-                if new_workspace != self.workspace_root:
-                    self.workspace_root = new_workspace
-                    self._initialized = False  # Force re-initialization with new workspace
-                    self.logger.log_info(f"Workspace set from rootUri: {self.workspace_root}")
+        
+        # Parse rootUri from client or detect fallback
+        new_workspace = WorkspaceManager.resolve_workspace_root(params.get("rootUri") or params.get("rootPath"))
+        
+        # Thread-safe workspace change
+        with self._init_lock:
+            if new_workspace != self.workspace_root:
+                self.workspace_root = new_workspace
+                self._initialized = False  # Force re-initialization with new workspace
+                self.logger.log_info(f"Workspace set to: {self.workspace_root}")
         
         return {
             "protocolVersion": self.PROTOCOL_VERSION,
@@ -328,16 +317,16 @@ class LocalSearchMCPServer:
     
     def _tool_search(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Execute enhanced search tool (v2.5.0)."""
-        return tools.search.execute_search(args, self.db, self.logger)
+        return search_tool.execute_search(args, self.db, self.logger)
     
     def _tool_status(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        return tools.status.execute_status(args, self.indexer, self.db, self.cfg, self.workspace_root, self.SERVER_VERSION)
+        return status_tool.execute_status(args, self.indexer, self.db, self.cfg, self.workspace_root, self.SERVER_VERSION)
     
     def _tool_repo_candidates(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        return tools.repo_candidates.execute_repo_candidates(args, self.db)
+        return repo_candidates_tool.execute_repo_candidates(args, self.db)
     
     def _tool_list_files(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        return tools.list_files.execute_list_files(args, self.db, self.logger)
+        return list_files_tool.execute_list_files(args, self.db, self.logger)
     
     def handle_request(self, request: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         method = request.get("method")
@@ -436,7 +425,7 @@ class LocalSearchMCPServer:
 
 def main() -> None:
     # Use WorkspaceManager for workspace detection
-    workspace_root = WorkspaceManager.detect_workspace()
+    workspace_root = WorkspaceManager.resolve_workspace_root()
     
     server = LocalSearchMCPServer(workspace_root)
     server.run()

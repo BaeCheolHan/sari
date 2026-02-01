@@ -18,6 +18,7 @@ class Handler(BaseHTTPRequestHandler):
     indexer: Indexer
     server_host: str = "127.0.0.1"
     server_port: int = 47777
+    server_version: str = "dev"
 
     def _json(self, obj, status=200):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
@@ -46,6 +47,7 @@ class Handler(BaseHTTPRequestHandler):
                     "ok": True,
                     "host": self.server_host,
                     "port": self.server_port,
+                    "version": self.server_version,
                     "index_ready": bool(st.index_ready),
                     "last_scan_ts": st.last_scan_ts,
                     "scanned_files": st.scanned_files,
@@ -87,7 +89,7 @@ class Handler(BaseHTTPRequestHandler):
         return self._json({"ok": False, "error": "not found"}, status=404)
 
 
-def serve_forever(host: str, port: int, db: LocalSearchDB, indexer: Indexer) -> tuple:
+def serve_forever(host: str, port: int, db: LocalSearchDB, indexer: Indexer, version: str = "dev") -> tuple:
     """Start HTTP server with automatic port fallback on conflict (v2.3.2).
     
     Returns:
@@ -103,6 +105,7 @@ def serve_forever(host: str, port: int, db: LocalSearchDB, indexer: Indexer) -> 
     BoundHandler.db = db  # type: ignore
     BoundHandler.indexer = indexer  # type: ignore
     BoundHandler.server_host = host  # type: ignore
+    BoundHandler.server_version = version  # type: ignore
 
     # v2.3.2: Try up to 10 ports on EADDRINUSE
     max_retries = 10

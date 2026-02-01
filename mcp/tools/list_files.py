@@ -5,8 +5,17 @@ List files tool for Local Search MCP Server.
 import json
 import time
 from typing import Any, Dict
-from db import LocalSearchDB
-from telemetry import TelemetryLogger
+
+try:
+    from app.db import LocalSearchDB
+    from mcp.telemetry import TelemetryLogger
+except ImportError:
+    # Fallback for direct script execution
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+    from app.db import LocalSearchDB
+    from mcp.telemetry import TelemetryLogger
 
 
 def execute_list_files(args: Dict[str, Any], db: LocalSearchDB, logger: TelemetryLogger) -> Dict[str, Any]:

@@ -5,8 +5,17 @@ Search tool for Local Search MCP Server.
 import json
 import time
 from typing import Any, Dict, List
-from db import LocalSearchDB, SearchOptions
-from telemetry import TelemetryLogger
+
+try:
+    from app.db import LocalSearchDB, SearchOptions
+    from mcp.telemetry import TelemetryLogger
+except ImportError:
+    # Fallback for direct script execution
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+    from app.db import LocalSearchDB, SearchOptions
+    from mcp.telemetry import TelemetryLogger
 
 
 def execute_search(args: Dict[str, Any], db: LocalSearchDB, logger: TelemetryLogger) -> Dict[str, Any]:
@@ -30,8 +39,16 @@ def execute_search(args: Dict[str, Any], db: LocalSearchDB, logger: TelemetryLog
         doc_exts = ["md", "txt", "pdf", "docx", "rst", "pdf"]
         file_types.extend([e for e in doc_exts if e not in file_types])
     
-    limit = min(int(args.get("limit", 10)), 50)
-    offset = max(int(args.get("offset", 0)), 0)
+    # v2.5.4: Robust integer parsing
+    try:
+        limit = min(int(args.get("limit", 10)), 50)
+    except (ValueError, TypeError):
+        limit = 10
+        
+    try:
+        offset = max(int(args.get("offset", 0)), 0)
+    except (ValueError, TypeError):
+        offset = 0
 
     # Determine total_mode based on scale (v2.5.1)
     total_mode = "exact"
@@ -102,20 +119,34 @@ def execute_search(args: Dict[str, Any], db: LocalSearchDB, logger: TelemetryLog
     scope = f"repo:{opts.repo}" if opts.repo else "workspace"
     
     # Total/HasMore Logic (v2.5.1 Accuracy)
-    total = db_meta.get("total", len(results))
+    total_from_db = db_meta.get("total", 0)
     total_mode = db_meta.get("total_mode", "exact")
+    
+    if total_mode == "approx" and total_from_db == -1:
+        # We don't know the exact total, so we estimate based on results
+        if len(results) >= limit:
+            total = offset + limit + 1 # At least one more
+            has_more = True
+        else:
+            total = offset + len(results)
+            has_more = False
+    else:
+        total = total_from_db
+        has_more = total > (offset + limit)
     
     # Even if SQL total is exact, exclude_patterns might reduce it further
     is_exact_total = (total_mode == "exact")
     if opts.exclude_patterns and total > 0:
          is_exact_total = False
     
-    has_more = total > (offset + limit)
-    
     warnings = []
     if has_more:
         next_offset = offset + limit
         warnings.append(f"More results available. Use offset={next_offset} to see next page.")
+    
+    if total_mode == "approx":
+        warnings.append("Total count is approximate to improve performance.")
+
     if not opts.repo and total > 50:
         warnings.append("Many results found. Consider specifying 'repo' to filter.")
     

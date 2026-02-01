@@ -6,11 +6,15 @@ import json
 from typing import Any, Dict
 
 try:
-    from ..app.db import LocalSearchDB
-    from ..telemetry import TelemetryLogger
+    from app.db import LocalSearchDB
+    from mcp.telemetry import TelemetryLogger
 except ImportError:
-    from db import LocalSearchDB
-    from telemetry import TelemetryLogger
+    # Fallback for direct script execution
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+    from app.db import LocalSearchDB
+    from mcp.telemetry import TelemetryLogger
 
 
 def execute_repo_candidates(args: Dict[str, Any], db: LocalSearchDB, logger: TelemetryLogger = None) -> Dict[str, Any]:

@@ -32,35 +32,33 @@ class IndexStatus:
 
 
 _REDACT_PATTERNS = [
-    # key=value / key: value (line-based assignments)
+    # key=value / key: value (assignments)
     re.compile(
-        r"(?im)^(\s*(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|client[_-]?secret|private[_-]?key|refresh[_-]?token|id[_-]?token|session[_-]?token|aws[_-]?secret[_-]?access[_-]?key)\s*[:=]\s*)(.+?)\s*$"
+        r"(?i)(\b(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|client[_-]?secret|private[_-]?key|refresh[_-]?token|id[_-]?token|session[_-]?token|aws[_-]?secret[_-]?access[_-]?key)\s*[:=]\s*)([\"']?)(.+?)\2(?=[,\s]|$)"
     ),
-    # common spring property style: xxx.password=...
+    # JSON style: "password": "..."
     re.compile(
-        r"(?im)^(\s*[\w\.-]*(?:password|secret|token|api[_-]?key|client[_-]?secret|private[_-]?key|aws[_-]?secret[_-]?access[_-]?key)[\w\.-]*\s*=\s*)(.+?)\s*$"
-    ),
-    # JSON style: "password": "..." (or token/apiKey/...)
-    re.compile(
-        r"(?im)^(\s*\"(?:password|secret|token|api[_-]?key|client[_-]?secret|private[_-]?key|refresh[_-]?token|id[_-]?token|session[_-]?token|aws[_-]?secret[_-]?access[_-]?key)\"\s*:\s*)\"(.*?)\"(\s*,?\s*)$"
+        r"(?i)(\"(?:password|secret|token|api[_-]?key|client[_-]?secret|private[_-]?key|refresh[_-]?token|id[_-]?token|session[_-]?token|aws[_-]?secret[_-]?access[_-]?key)\"\s*:\s*)(\")(.*?)(\")"
     ),
     # Authorization header: Authorization: Bearer <token>
     re.compile(r"(?im)^(\s*authorization\s*:\s*bearer\s+)(.+?)\s*$"),
-    # Inline Bearer token patterns (defensive; keep narrow)
-    re.compile(r"(?i)(bearer\s+)[A-Za-z0-9\-\._~\+/]+=*"),
 ]
 
 
 def _redact(text: str) -> str:
-    # Keep this conservative: only redact obvious assignments.
-    for pat in _REDACT_PATTERNS:
-        # JSON pattern has 3 groups: prefix, value, suffix.
-        if pat.groups == 3:
-            text = pat.sub(lambda m: f"{m.group(1)}\"***\"{m.group(3)}", text)
-            continue
-        # Most patterns: group(1)=prefix, group(2)=value
-        if pat.groups >= 1:
-            text = pat.sub(lambda m: f"{m.group(1)}***", text)
+    # Use a more robust approach for multiple matches
+    # Masking group index depends on the pattern
+    
+    # 1. Assignments and JSON style
+    for pat in _REDACT_PATTERNS[:2]:
+        text = pat.sub(r"\1\2***\2", text)
+    
+    # 2. Authorization header (Line based)
+    text = _REDACT_PATTERNS[2].sub(r"\1***", text)
+    
+    # 3. Inline Bearer (Catch-all)
+    text = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9\-\._~\+/]+=*", r"\1***", text)
+    
     return text
 
 
@@ -108,6 +106,18 @@ class Indexer:
         file_entries = []
         for file_path in self._iter_files(root):
             try:
+                # v2.5.4: Security - Skip symlinks pointing outside the workspace
+                if file_path.is_symlink():
+                    try:
+                        resolved = file_path.resolve()
+                        if not resolved.is_relative_to(root):
+                            if self.logger:
+                                self.logger.log_info(f"Skipping external symlink: {file_path}")
+                            continue
+                    except (OSError, RuntimeError, ValueError):
+                        # ValueError can be raised by is_relative_to if paths are on different drives
+                        continue
+
                 st = file_path.stat()
                 if st.st_size > self.cfg.max_file_bytes:
                     continue
@@ -133,15 +143,15 @@ class Indexer:
         # 3. Process files with Smart Delta Scan & AI Safety Net
         scanned = 0
         indexed = 0
-        batch: List[Tuple[str, str, int, int, str]] = []
+        batch: List[Tuple[str, str, int, int, str, int]] = []
+        unchanged_batch: List[str] = []
         batch_size = max(50, int(getattr(self.cfg, "commit_batch_size", 500)))
-        scanned_paths: set[str] = set()
+        scan_ts = int(time.time())
 
         for file_path, st in file_entries:
             scanned += 1
             try:
                 rel = str(file_path.relative_to(root))
-                scanned_paths.add(rel)
                 # Repo = 1depth subdirectory; root-level files use a dedicated repo name
                 if os.sep not in rel:
                     repo = self._root_repo_name
@@ -162,11 +172,19 @@ class Indexer:
                             is_changed = False
                 
                 if not is_changed:
+                    unchanged_batch.append(rel)
+                    if len(unchanged_batch) >= batch_size:
+                        self.db.update_last_seen(unchanged_batch, scan_ts)
+                        unchanged_batch.clear()
                     continue
 
                 try:
                     text = file_path.read_text(encoding="utf-8", errors="ignore")
-                except Exception:
+                except Exception as e:
+                    # v2.5.3: If read fails but file exists, still mark as seen to prevent immediate deletion
+                    unchanged_batch.append(rel)
+                    if self.logger:
+                        self.logger.log_info(f"Read failed for {file_path}, deferring deletion: {e}")
                     continue
 
                 if getattr(self.cfg, "redact_enabled", True):
@@ -177,7 +195,7 @@ class Indexer:
                 if fn in ("service.json", "repo.yaml", "package.json"):
                     self._process_meta_file(file_path, repo)
 
-                batch.append((rel, repo, int(st.st_mtime), int(st.st_size), text))
+                batch.append((rel, repo, int(st.st_mtime), int(st.st_size), text, scan_ts))
 
                 if len(batch) >= batch_size:
                     self.db.upsert_files(batch)
@@ -196,17 +214,19 @@ class Indexer:
             except Exception as e:
                 if self.logger:
                     self.logger.log_error(f"Error flushing batch: {e}")
-
-        # 4. Handle Deletions (v2.5.2)
-        try:
-            # We must use the same "root" relative paths as stored in DB
-            all_indexed = self.db.get_all_file_paths()
-            deleted = all_indexed - scanned_paths
-            
-            if deleted:
-                count = self.db.delete_files(deleted)
+        
+        if unchanged_batch:
+            try:
+                self.db.update_last_seen(unchanged_batch, scan_ts)
+            except Exception as e:
                 if self.logger:
-                    self.logger.log_info(f"Removed {count} deleted files from index")
+                    self.logger.log_error(f"Error updating unchanged files: {e}")
+
+        # 4. Handle Deletions (v2.5.3: Optimized with last_seen)
+        try:
+            count = self.db.delete_unseen_files(scan_ts)
+            if count > 0 and self.logger:
+                self.logger.log_info(f"Removed {count} deleted files from index")
         except Exception as e:
             if self.logger:
                 self.logger.log_error(f"Error checking for deleted files: {e}")

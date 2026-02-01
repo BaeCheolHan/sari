@@ -1,7 +1,17 @@
 import json
+import logging
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+
+try:
+    from .workspace import WorkspaceManager  # type: ignore
+except ImportError:
+    from workspace import WorkspaceManager  # type: ignore
+
+logger = logging.getLogger(__name__)
 
 
 def _expanduser(p: str) -> str:
@@ -47,17 +57,30 @@ class Config:
             server_port = int(raw.get("server_port", 47777))
 
         # v2.5.0: Force workspace-local DB path to prevent cross-repo pollution.
-        # We no longer support ~/.cache/deckard/ defaults.
         workspace_root = _expanduser(raw["workspace_root"])
-        default_db_path = os.path.join(workspace_root, ".codex", "tools", "deckard", "data", "index.db")
-
-        # Allow override from config.json ONLY if it is an absolute path (debugging),
-        # otherwise fallback to workspace-local.
-        raw_db_path = raw.get("db_path", "")
-        if raw_db_path and os.path.isabs(_expanduser(raw_db_path)):
-            db_path = _expanduser(raw_db_path)
-        else:
-            db_path = default_db_path
+        
+        # v2.5.3: Unified DB path resolution
+        # Priority: ENV DECKARD_DB_PATH -> ENV LOCAL_SEARCH_DB_PATH -> config.json (if abs) -> workspace-local
+        # SECURITY: Refuse relative paths for DB_PATH to prevent unintended file creation.
+        env_db_path = (os.environ.get("DECKARD_DB_PATH") or os.environ.get("LOCAL_SEARCH_DB_PATH") or "").strip()
+        
+        db_path = ""
+        if env_db_path:
+            expanded = _expanduser(env_db_path)
+            if os.path.isabs(expanded):
+                db_path = expanded
+            else:
+                logger.warning(f"Ignoring relative DB_PATH '{env_db_path}'. Absolute path required.")
+        
+        if not db_path:
+            raw_db_path = raw.get("db_path", "")
+            if raw_db_path:
+                expanded = _expanduser(raw_db_path)
+                if os.path.isabs(expanded):
+                    db_path = expanded
+        
+        if not db_path:
+            db_path = os.path.join(workspace_root, ".codex", "tools", "deckard", "data", "index.db")
 
         return Config(
             workspace_root=workspace_root,
@@ -77,13 +100,5 @@ class Config:
 
 
 def resolve_config_path(repo_root: str) -> str:
-    """Resolve config path. Override with env DECKARD_CONFIG or LOCAL_SEARCH_CONFIG."""
-    override = os.environ.get("DECKARD_CONFIG") or os.environ.get("LOCAL_SEARCH_CONFIG")
-    if override:
-        return override
-    workspace_cfg = Path(repo_root) / ".codex" / "tools" / "deckard" / "config" / "config.json"
-    if workspace_cfg.exists():
-        return str(workspace_cfg)
-    # Fallback to packaged config (install dir)
-    package_root = Path(__file__).resolve().parents[1]
-    return str(package_root / "config" / "config.json")
+    """Resolve config path using unified WorkspaceManager logic."""
+    return WorkspaceManager.resolve_config_path(repo_root)

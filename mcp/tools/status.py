@@ -4,10 +4,21 @@ Status tool for Local Search MCP Server.
 """
 import json
 from typing import Any, Dict, Optional
-from db import LocalSearchDB
-from indexer import Indexer
-from config import Config
-from telemetry import TelemetryLogger
+
+try:
+    from app.db import LocalSearchDB
+    from app.indexer import Indexer
+    from app.config import Config
+    from mcp.telemetry import TelemetryLogger
+except ImportError:
+    # Fallback for direct script execution
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+    from app.db import LocalSearchDB
+    from app.indexer import Indexer
+    from app.config import Config
+    from mcp.telemetry import TelemetryLogger
 
 
 def execute_status(args: Dict[str, Any], indexer: Optional[Indexer], db: Optional[LocalSearchDB], cfg: Optional[Config], workspace_root: str, server_version: str, logger: Optional[TelemetryLogger] = None) -> Dict[str, Any]:

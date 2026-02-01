@@ -13,11 +13,13 @@ try:
     from .db import LocalSearchDB  # type: ignore
     from .http_server import serve_forever  # type: ignore
     from .indexer import Indexer  # type: ignore
+    from .workspace import WorkspaceManager  # type: ignore
 except ImportError:  # script mode
     from config import Config, resolve_config_path  # type: ignore
     from db import LocalSearchDB  # type: ignore
     from http_server import serve_forever  # type: ignore
     from indexer import Indexer  # type: ignore
+    from workspace import WorkspaceManager  # type: ignore
 
 
 def _repo_root() -> str:
@@ -25,39 +27,9 @@ def _repo_root() -> str:
     return str(Path.cwd())
 
 
-def _detect_workspace_root() -> str:
-    """Auto-detect workspace root (v2.3.2).
-    
-    Priority:
-    1. LOCAL_SEARCH_WORKSPACE_ROOT env var
-    2. Search for .codex-root from cwd upward
-    3. Search for .codex-root from script location upward
-    4. Fallback to cwd (via _repo_root)
-    """
-    # 1. Environment variable
-    env_root = os.environ.get("LOCAL_SEARCH_WORKSPACE_ROOT")
-    if env_root and Path(env_root).exists():
-        return str(Path(env_root).resolve())
-    
-    # 2. Search from cwd
-    cwd = Path.cwd()
-    for parent in [cwd] + list(cwd.parents):
-        if (parent / ".codex-root").exists():
-            return str(parent)
-    
-    # 3. Search from script location
-    script_dir = Path(__file__).resolve().parent
-    for parent in list(script_dir.parents):
-        if (parent / ".codex-root").exists():
-            return str(parent)
-    
-    # 4. Fallback
-    return _repo_root()
-
-
 def main() -> int:
     # v2.3.2: Auto-detect workspace root for HTTP fallback
-    workspace_root = _detect_workspace_root()
+    workspace_root = WorkspaceManager.resolve_workspace_root()
     
     # Set env var so Config can pick it up
     os.environ["LOCAL_SEARCH_WORKSPACE_ROOT"] = workspace_root
@@ -105,17 +77,9 @@ def main() -> int:
         )
 
     # v2.4.1: Workspace-local DB path enforcement (multi-workspace support)
-    # DB is ALWAYS stored within the workspace to prevent conflicts
-    workspace_db_path = Path(workspace_root) / ".codex" / "tools" / "deckard" / "data" / "index.db"
-    workspace_db_path.parent.mkdir(parents=True, exist_ok=True)
-    
-    # Debug override (only if explicitly set and not empty)
-    debug_db_path = os.environ.get("LOCAL_SEARCH_DB_PATH", "").strip()
-    if debug_db_path:
-        print(f"[deckard] Using debug DB path override: {debug_db_path}")
-        db_path = os.path.expanduser(debug_db_path)
-    else:
-        db_path = str(workspace_db_path)
+    # DB path is now determined by Config.load
+    db_path = cfg.db_path
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     
     print(f"[deckard] DB path: {db_path}")
 
@@ -124,7 +88,8 @@ def main() -> int:
 
     # Start HTTP immediately so health checks don't block on initial indexing.
     # v2.3.3: serve_forever returns (httpd, actual_port) for fallback tracking
-    httpd, actual_port = serve_forever(host, cfg.server_port, db, indexer)
+    version = os.environ.get("DECKARD_VERSION", "dev")
+    httpd, actual_port = serve_forever(host, cfg.server_port, db, indexer, version=version)
 
     # Write server.json with actual binding info (single source of truth for port tracking)
     data_dir = Path(workspace_root) / ".codex" / "tools" / "deckard" / "data"

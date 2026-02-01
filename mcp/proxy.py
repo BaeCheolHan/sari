@@ -6,9 +6,17 @@ import time
 import subprocess
 import logging
 import fcntl
+import sys
 from pathlib import Path
+
+# Add project root to sys.path for absolute imports
+SCRIPT_DIR = Path(__file__).parent
+REPO_ROOT = SCRIPT_DIR.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from .telemetry import TelemetryLogger
-from .workspace import WorkspaceManager
+from app.workspace import WorkspaceManager
 
 # Configure logging to stderr so it doesn't interfere with MCP STDIO
 logging.basicConfig(
@@ -110,12 +118,30 @@ def forward_socket_to_stdout(sock, mode_holder):
     try:
         f = sock.makefile("rb")
         while True:
-            line = f.readline()
-            if not line:
+            # Read Headers
+            headers = {}
+            while True:
+                line = f.readline()
+                if not line:
+                    break
+                line_str = line.decode("utf-8").strip()
+                if not line_str:
+                    break
+                if ":" in line_str:
+                    k, v = line_str.split(":", 1)
+                    headers[k.strip().lower()] = v.strip()
+            
+            if not headers and not line:
                 break
-            body = line.rstrip(b"\r\n")
-            if not body:
+            
+            content_length = int(headers.get("content-length", 0))
+            if content_length <= 0:
                 continue
+                
+            body = f.read(content_length)
+            if not body:
+                break
+                
             mode = mode_holder.get("mode") or _MODE_FRAMED
             if mode == _MODE_JSONL:
                 sys.stdout.buffer.write(body + b"\n")
@@ -184,7 +210,9 @@ def forward_stdin_to_socket(sock, mode_holder):
             msg, mode = res
             if mode_holder.get("mode") is None:
                 mode_holder["mode"] = mode
-            sock.sendall(msg + b"\n")
+            
+            header = f"Content-Length: {len(msg)}\r\n\r\n".encode("ascii")
+            sock.sendall(header + msg)
     except Exception as e:
         _log_error(f"Error forwarding stdin to socket: {e}")
         sock.close()

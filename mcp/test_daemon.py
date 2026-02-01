@@ -28,13 +28,27 @@ def send_rpc(sock, method, params=None, msg_id=1):
         "id": msg_id,
         "params": params or {}
     }
-    msg = json.dumps(req) + "\n"
-    sock.sendall(msg.encode('utf-8'))
+    body = json.dumps(req).encode('utf-8')
+    header = f"Content-Length: {len(body)}\r\n\r\n".encode('ascii')
+    sock.sendall(header + body)
     
     # Read response
-    # Simple readline for testing
-    f = sock.makefile('r')
-    return json.loads(f.readline())
+    f = sock.makefile('rb')
+    # Read headers
+    headers = {}
+    while True:
+        line = f.readline()
+        if not line or line == b"\r\n":
+            break
+        line_str = line.decode('utf-8').strip()
+        if ":" in line_str:
+            k, v = line_str.split(":", 1)
+            headers[k.strip().lower()] = v.strip()
+    
+    content_length = int(headers.get("content-length", 0))
+    if content_length > 0:
+        return json.loads(f.read(content_length).decode('utf-8'))
+    return None
 
 def test_daemon():
     print("Starting daemon...")

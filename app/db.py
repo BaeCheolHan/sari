@@ -119,7 +119,8 @@ class LocalSearchDB:
                   repo TEXT NOT NULL,
                   mtime INTEGER NOT NULL,
                   size INTEGER NOT NULL,
-                  content TEXT NOT NULL
+                  content TEXT NOT NULL,
+                  last_seen INTEGER DEFAULT 0
                 );
                 """
             )
@@ -139,6 +140,16 @@ class LocalSearchDB:
             # Index for efficient filtering
             cur.execute("CREATE INDEX IF NOT EXISTS idx_files_repo ON files(repo);")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_files_mtime ON files(mtime DESC);")
+            
+            # v2.5.3: Migration for existing users
+            try:
+                cur.execute("ALTER TABLE files ADD COLUMN last_seen INTEGER DEFAULT 0")
+                self._write.commit()
+            except sqlite3.OperationalError:
+                # Column already exists or table doesn't exist yet
+                pass
+
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_files_last_seen ON files(last_seen);")
             
             if self._fts_enabled:
                 cur.execute(
@@ -171,7 +182,7 @@ class LocalSearchDB:
                 )
             self._write.commit()
 
-    def upsert_files(self, rows: Iterable[tuple[str, str, int, int, str]]) -> int:
+    def upsert_files(self, rows: Iterable[tuple[str, str, int, int, str, int]]) -> int:
         rows_list = list(rows)
         if not rows_list:
             return 0
@@ -180,18 +191,43 @@ class LocalSearchDB:
             cur.execute("BEGIN")
             cur.executemany(
                 """
-                INSERT INTO files(path, repo, mtime, size, content)
-                VALUES(?,?,?,?,?)
+                INSERT INTO files(path, repo, mtime, size, content, last_seen)
+                VALUES(?,?,?,?,?,?)
                 ON CONFLICT(path) DO UPDATE SET
                   repo=excluded.repo,
                   mtime=excluded.mtime,
                   size=excluded.size,
-                  content=excluded.content;
+                  content=excluded.content,
+                  last_seen=excluded.last_seen;
                 """,
                 rows_list,
             )
             self._write.commit()
         return len(rows_list)
+
+    def update_last_seen(self, paths: Iterable[str], timestamp: int) -> int:
+        """Update last_seen timestamp for existing files (v2.5.3)."""
+        paths_list = list(paths)
+        if not paths_list:
+            return 0
+        with self._lock:
+            cur = self._write.cursor()
+            cur.execute("BEGIN")
+            cur.executemany(
+                "UPDATE files SET last_seen=? WHERE path=?",
+                [(timestamp, p) for p in paths_list]
+            )
+            self._write.commit()
+        return len(paths_list)
+
+    def delete_unseen_files(self, timestamp_limit: int) -> int:
+        """Delete files that were not seen in the latest scan (v2.5.3)."""
+        with self._lock:
+            cur = self._write.cursor()
+            cur.execute("DELETE FROM files WHERE last_seen < ?", (timestamp_limit,))
+            count = cur.rowcount
+            self._write.commit()
+            return count
 
     def delete_files(self, paths: Iterable[str]) -> int:
         paths_list = list(paths)
@@ -298,13 +334,31 @@ class LocalSearchDB:
         where_clauses = []
         params: list[Any] = []
         
+        # 1. Repo filter
         if repo:
             where_clauses.append("f.repo = ?")
             params.append(repo)
         
+        # 2. Hidden files filter
         if not include_hidden:
             where_clauses.append("f.path NOT LIKE '%/.%'")
             where_clauses.append("f.path NOT LIKE '.%'")
+            
+        # 3. File types filter
+        if file_types:
+            type_clauses = []
+            for ft in file_types:
+                ext = ft.lower().lstrip(".")
+                type_clauses.append("f.path LIKE ?")
+                params.append(f"%.{ext}")
+            if type_clauses:
+                where_clauses.append("(" + " OR ".join(type_clauses) + ")")
+                
+        # 4. Path pattern filter
+        if path_pattern:
+            sql_pattern = self._glob_to_like(path_pattern)
+            where_clauses.append("f.path LIKE ?")
+            params.append(sql_pattern)
         
         where = " AND ".join(where_clauses) if where_clauses else "1=1"
         
@@ -318,29 +372,25 @@ class LocalSearchDB:
             ORDER BY f.repo, f.path
             LIMIT ? OFFSET ?;
         """
-        params.extend([limit, offset])
+        
+        # Data query params
+        data_params = params + [limit, offset]
         
         with self._read_lock:
-            rows = self._read.execute(sql, params).fetchall()
+            rows = self._read.execute(sql, data_params).fetchall()
         
         files: list[dict[str, Any]] = []
         for r in rows:
-            path = r["path"]
-            if file_types and not self._matches_file_types(path, file_types):
-                continue
-            if path_pattern and not self._matches_path_pattern(path, path_pattern):
-                continue
-            
             files.append({
                 "repo": r["repo"],
-                "path": path,
+                "path": r["path"],
                 "mtime": int(r["mtime"]),
                 "size": int(r["size"]),
-                "file_type": self._get_file_extension(path),
+                "file_type": self._get_file_extension(r["path"]),
             })
         
+        # Count query params (no limit/offset)
         count_sql = f"SELECT COUNT(1) AS c FROM files f WHERE {where}"
-        count_params = params[:-2]
         
         repo_sql = """
             SELECT repo, COUNT(1) AS file_count
@@ -349,7 +399,8 @@ class LocalSearchDB:
             ORDER BY file_count DESC;
         """
         with self._read_lock:
-            total = self._read.execute(count_sql, count_params).fetchone()["c"]
+            count_res = self._read.execute(count_sql, params).fetchone()
+            total = count_res["c"] if count_res else 0
             repo_rows = self._read.execute(repo_sql).fetchall()
             
         repos = [{"repo": r["repo"], "file_count": r["file_count"]} for r in repo_rows]
@@ -371,10 +422,17 @@ class LocalSearchDB:
         """Convert glob-style pattern to SQL LIKE pattern for 1st-pass filtering."""
         if not pattern:
             return "%"
+        
+        # v2.5.4: Better glob-to-like conversion
         res = pattern.replace("**", "%").replace("*", "%").replace("?", "_")
-        # Ensure it matches anywhere if not anchored
-        if not (res.startswith("/") or res.startswith("%")):
-            res = "%" + res
+        
+        if not ("%" in res or "_" in res):
+            res = f"%{res}%" # Contains if no wildcards
+        
+        # Ensure it starts/ends correctly for directory patterns
+        if pattern.endswith("/**"):
+            res = res.rstrip("%") + "%"
+            
         while "%%" in res:
             res = res.replace("%%", "%")
         return res
@@ -415,7 +473,16 @@ class LocalSearchDB:
     def _matches_path_pattern(self, path: str, pattern: Optional[str]) -> bool:
         if not pattern:
             return True
-        return fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(path, f"**/{pattern}")
+        # v2.5.4: Enhanced glob matching
+        # 1. Simple prefix match for directory patterns like 'src/' or 'src/**'
+        clean_pat = pattern.replace("**", "").rstrip("/")
+        if path.startswith(clean_pat + "/"):
+            return True
+        
+        # 2. Standard fnmatch for basic globs
+        return (fnmatch.fnmatch(path, pattern) or 
+                fnmatch.fnmatch(path, f"**/{pattern}") or 
+                fnmatch.fnmatch(path, f"{pattern}*"))
     
     def _matches_exclude_patterns(self, path: str, patterns: list[str]) -> bool:
         if not patterns:
@@ -448,12 +515,19 @@ class LocalSearchDB:
             boost = 1.1
         else:
             boost = 1.0
-        return base_score * boost
+        
+        # v2.5.4: Ensure boost works even if base_score is 0 (bias added)
+        return (base_score + 0.1) * boost
 
     def _extract_terms(self, q: str) -> list[str]:
-        raw = [t.strip().strip('"\'') for t in (q or "").split()]
+        # v2.5.4: Use regex to extract quoted phrases or space-separated words
+        import re
+        raw = re.findall(r'"([^"]*)"|\'([^\']*)\'|(\S+)', q or "")
         out: list[str] = []
-        for t in raw:
+        for group in raw:
+            # group is a tuple of (double_quoted, single_quoted, bare_word)
+            t = group[0] or group[1] or group[2]
+            t = t.strip()
             if not t or t in {"AND", "OR", "NOT"}:
                 continue
             if ":" in t and len(t.split(":", 1)[0]) <= 10:
@@ -516,13 +590,18 @@ class LocalSearchDB:
         if opts.use_regex:
             return self._search_regex(opts, terms, meta)
         
+        # v2.5.4: Detect if query contains non-ASCII characters or is too short
+        # FTS5 default tokenizer often fails with CJK characters or short terms.
+        has_unicode = any(ord(c) > 127 for c in q)
+        is_too_short = len(q) < 3
+        
         # FTS mode (default)
-        if self._fts_enabled:
+        if self._fts_enabled and not has_unicode and not is_too_short:
             result = self._search_fts(opts, terms, meta)
             if result is not None:
                 return result
         
-        # LIKE fallback
+        # LIKE fallback (used for non-ASCII, short queries or when FTS fails)
         return self._search_like(opts, terms, meta)
 
     def _search_fts(self, opts: SearchOptions, terms: list[str], 
@@ -537,13 +616,18 @@ class LocalSearchDB:
         where = " AND ".join(where_clauses)
         
         # Total count
-        try:
-            count_sql = f"SELECT COUNT(*) as c FROM files_fts JOIN files f ON f.rowid = files_fts.rowid WHERE {where}"
-            with self._read_lock:
-                count_row = self._read.execute(count_sql, params).fetchone()
-            total_hits = int(count_row["c"]) if count_row else 0
-        except sqlite3.OperationalError:
-            return None # FTS failed
+        total_hits = 0
+        if opts.total_mode == "exact":
+            try:
+                count_sql = f"SELECT COUNT(*) as c FROM files_fts JOIN files f ON f.rowid = files_fts.rowid WHERE {where}"
+                with self._read_lock:
+                    count_row = self._read.execute(count_sql, params).fetchone()
+                total_hits = int(count_row["c"]) if count_row else 0
+            except sqlite3.OperationalError:
+                return None # FTS failed
+        else:
+            # Approx mode: we'll set total = len(hits) or some high number if hits > limit
+            total_hits = -1 
             
         meta["total"] = total_hits
         meta["total_mode"] = opts.total_mode
@@ -583,17 +667,15 @@ class LocalSearchDB:
         meta["fallback_used"] = True
         
         like_q = opts.query.replace("^", "^^").replace("%", "^%").replace("_", "^_")
-        where_clauses = ["f.content LIKE ? ESCAPE '^'"]
-        params: list[Any] = [f"%{like_q}%"]
+        # v2.5.4: Search in content, path, and repo for better fallback coverage
+        where_clauses = ["(f.content LIKE ? ESCAPE '^' OR f.path LIKE ? ESCAPE '^' OR f.repo LIKE ? ESCAPE '^')"]
+        params: list[Any] = [f"%{like_q}%", f"%{like_q}%", f"%{like_q}%"]
         
         filter_clauses, filter_params = self._build_filter_clauses(opts)
         where_clauses.extend(filter_clauses)
         params.extend(filter_params)
         
         where = " AND ".join(where_clauses)
-        
-        # Total count
-        count_sql = f"SELECT COUNT(*) as c FROM files f WHERE {where}"
         
         fetch_limit = (opts.offset + opts.limit) * 2
         if fetch_limit < 100: fetch_limit = 100
@@ -613,10 +695,15 @@ class LocalSearchDB:
         params.append(int(fetch_limit))
 
         with self._read_lock:
-            count_row = self._read.execute(count_sql, params[:-1]).fetchone()
+            if opts.total_mode == "exact":
+                count_sql = f"SELECT COUNT(*) as c FROM files f WHERE {where}"
+                count_row = self._read.execute(count_sql, params[:-1]).fetchone()
+                meta["total"] = int(count_row["c"]) if count_row else 0
+            else:
+                meta["total"] = -1
+            
             rows = self._read.execute(sql, params).fetchall()
 
-        meta["total"] = int(count_row["c"]) if count_row else 0
         meta["total_mode"] = opts.total_mode
         
         hits = self._process_rows(rows, opts, terms)
@@ -713,7 +800,8 @@ class LocalSearchDB:
         all_meta = self.get_all_repo_meta()
         query_terms = [t.lower() for t in terms]
         query_raw_lower = opts.query.lower()
-        symbol_pattern = re.compile(r"^\s*(class|def|function|struct|pub\s+fn|async\s+def|interface|type)\s+", re.MULTILINE)
+        # v2.5.4: Handle line number prefixes in snippets
+        symbol_pattern = re.compile(r"^(?:\s*|→?\s*L\d+:\s*)(class|def|function|struct|pub\s+fn|async\s+def|interface|type)\s+", re.MULTILINE)
 
         for r in rows:
             path = r["path"]
@@ -776,9 +864,16 @@ class LocalSearchDB:
                 score = self._calculate_recency_score(mtime, score)
             
             match_count = self._count_matches(content, opts.query, False, opts.case_sensitive)
+            
+            # v2.5.4: Strictly enforce case sensitivity if requested
+            if opts.case_sensitive and match_count == 0:
+                continue
+
             snippet = self._snippet_around(content, terms, opts.snippet_lines, highlight=True)
             
-            if symbol_pattern.search(snippet):
+            # v2.5.4: Strip highlights for reliable symbol detection
+            clean_snippet = snippet.replace(">>>", "").replace("<<<", "")
+            if symbol_pattern.search(clean_snippet):
                 score += 10.0
                 reasons.append("Symbol definition")
 

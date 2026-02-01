@@ -3,7 +3,7 @@ import logging
 import asyncio
 from typing import Dict, Any, Optional
 from .registry import Registry, SharedState
-from .workspace import WorkspaceManager
+from app.workspace import WorkspaceManager
 
 logger = logging.getLogger(__name__)
 
@@ -23,36 +23,103 @@ class Session:
     async def handle_connection(self):
         try:
             while self.running:
-                data = await self.reader.readline()
-                if not data:
+                # Read Headers
+                headers = {}
+                line_count = 0
+                while True:
+                    line = await self.reader.readline()
+                    if not line:
+                        self.running = False
+                        break
+                    
+                    line_str = line.decode("utf-8").strip()
+                    line_count += 1
+                    
+                    if not line_str:
+                        break
+                    
+                    # Protocol Check: First line must be Content-Length
+                    if line_count == 1:
+                        if line_str.startswith("{"):
+                            logger.error("Received JSONL instead of HTTP-style framed message")
+                            await self.send_error(None, -32700, "JSONL not supported. Use Content-Length framing.")
+                            self.running = False
+                            break
+                        
+                        if not line_str.lower().startswith("content-length:"):
+                            logger.error(f"First header must be Content-Length, got: {line_str!r}")
+                            await self.send_error(None, -32700, "Invalid protocol framing: Content-Length header required first")
+                            self.running = False
+                            break
+
+                    if ":" in line_str:
+                        k, v = line_str.split(":", 1)
+                        headers[k.strip().lower()] = v.strip()
+                    else:
+                        # Malformed header or missing Content-Length
+                        logger.error(f"Malformed header line: {line_str!r}")
+                        await self.send_error(None, -32700, "Invalid protocol framing")
+                        self.running = False
+                        break
+
+                if not self.running:
                     break
-                
-                message = data.decode('utf-8').strip()
-                if not message:
-                    continue
-                
+
                 try:
-                    request = json.loads(message)
+                    content_length = int(headers.get("content-length", 0))
+                except (ValueError, TypeError):
+                    logger.error(f"Invalid Content-Length value: {headers.get('content-length')!r}")
+                    await self.send_error(None, -32700, "Invalid Content-Length value")
+                    self.running = False
+                    break
+
+                if content_length <= 0:
+                    logger.error("Received message without Content-Length (JSONL is not supported)")
+                    await self.send_error(None, -32700, "Content-Length header required (JSONL is not supported)")
+                    # Since protocol framing is broken, we must terminate
+                    self.running = False
+                    break
+
+                body = await self.reader.readexactly(content_length)
+                if not body:
+                    break
+
+                try:
+                    request_str = body.decode("utf-8")
+                    request = json.loads(request_str)
                     await self.process_request(request)
                 except json.JSONDecodeError:
-                    logger.error(f"Invalid JSON received: {message}")
-                    await self.send_error(None, -32700, "Parse error")
-                except Exception as e:
-                    logger.error(f"Error processing request: {e}", exc_info=True)
-                    # Try to get ID if possible
+                    logger.error(f"Invalid JSON received: {body[:100]!r}")
+                    # Try to extract ID manually for better correlation if possible
                     msg_id = None
                     try:
-                        msg_id = json.loads(message).get("id")
-                    except:
+                         # Simple regex for "id": 123 or "id": "abc"
+                         import re
+                         match = re.search(r'"id"\s*:\s*("(?:\\"|[^"])*"|\d+|null)', request_str)
+                         if match:
+                             msg_id = json.loads(match.group(1))
+                    except Exception:
+                        pass
+                    await self.send_error(msg_id, -32700, "Parse error")
+                except Exception as e:
+                    logger.error(f"Error processing request: {e}", exc_info=True)
+                    # We might have parsed the ID already if it's not a Parse error
+                    msg_id = None
+                    try:
+                        msg_id = json.loads(body.decode("utf-8")).get("id")
+                    except Exception:
                         pass
                     await self.send_error(msg_id, -32603, str(e))
 
-        except ConnectionResetError:
-            logger.info("Connection reset by client")
+        except (asyncio.IncompleteReadError, ConnectionResetError):
+            logger.info("Connection closed by client")
         finally:
             self.cleanup()
             self.writer.close()
-            await self.writer.wait_closed()
+            try:
+                await self.writer.wait_closed()
+            except Exception:
+                pass
 
     async def process_request(self, request: Dict[str, Any]):
         method = request.get("method")
@@ -101,7 +168,7 @@ class Session:
         root_uri = params.get("rootUri") or params.get("rootPath")
         if not root_uri:
             # Fallback for clients that omit rootUri/rootPath
-            root_uri = WorkspaceManager.detect_workspace()
+            root_uri = WorkspaceManager.resolve_workspace_root()
 
         # Handle file:// prefix
         if root_uri.startswith("file://"):
@@ -136,8 +203,9 @@ class Session:
             await self.send_error(msg_id, -32000, str(e))
 
     async def send_json(self, data: Dict[str, Any]):
-        message = json.dumps(data) + "\n"
-        self.writer.write(message.encode('utf-8'))
+        body = json.dumps(data).encode("utf-8")
+        header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
+        self.writer.write(header + body)
         await self.writer.drain()
 
     async def send_error(self, msg_id: Any, code: int, message: str):
