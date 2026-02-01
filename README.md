@@ -21,6 +21,7 @@ Deckard는 이 문제를 해결합니다:
 ## 🚀 시작하기 (Getting Started)
 
 터미널에 아래 명령어 한 줄만 입력하세요. 다운로드부터 설정까지 자동으로 완료됩니다.
+기본 설치 경로는 `~/.local/share/horadric-deckard` 입니다.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/horadric-deckard/main/install.py | python3
@@ -62,7 +63,8 @@ curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/horadric-deckard/main/i
     - **Command**: `/Users/YOUR_USERNAME/.local/share/horadric-deckard/bootstrap.sh` (절대 경로 입력)
 
 ### Codex / Gemini CLI
-프로젝트 루트의 `.codex/config.toml` (또는 `.gemini/config.toml`)에 아래 내용을 추가하세요.
+`~/.codex/config.toml` 또는 프로젝트 루트의 `.codex/config.toml`
+(또는 `.gemini/config.toml`)에 아래 내용을 추가하세요.
 
 ```toml
 [mcp_servers.deckard]
@@ -70,7 +72,11 @@ command = "/Users/YOUR_USERNAME/.local/share/horadric-deckard/bootstrap.sh"
 # args = []  # 필요한 경우 추가
 ```
 
-> **Tip**: Codex Forge 환경에서는 `.codex/tools/deckard` 경로에 이 저장소를 클론해두면 설정 없이 자동으로 인식됩니다.
+설정 후 아래 명령으로 등록 여부를 확인할 수 있습니다:
+
+```bash
+codex mcp list
+```
 
 ### 기타 MCP 지원 CLI
 대부분의 MCP 지원 CLI는 환경변수나 설정 파일(`~/.config/...`)을 통해 MCP 서버를 등록할 수 있습니다.
@@ -94,14 +100,17 @@ Deckard가 백그라운드에서 프로젝트를 스캔하고 정확한 파일�
 터미널에서 직접 데몬을 제어할 수도 있습니다.
 
 ```bash
-# 데몬 상태 확인
-~/.local/share/horadric-deckard/bootstrap.sh daemon status
-
 # 데몬 백그라운드 실행
 ~/.local/share/horadric-deckard/bootstrap.sh daemon start -d
 
+# 데몬 상태 확인
+~/.local/share/horadric-deckard/bootstrap.sh daemon status
+
 # 데몬 중지
 ~/.local/share/horadric-deckard/bootstrap.sh daemon stop
+
+# HTTP 검색 (디버깅용)
+~/.local/share/horadric-deckard/bootstrap.sh search "AuthService" --limit 10
 ```
 
 ---
