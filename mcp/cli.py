@@ -398,9 +398,11 @@ def cmd_init(args):
 
     if not cfg_path.exists() or args.force:
         # Default config content
+        from app.config import Config
         default_cfg = {
             "workspace_root": str(workspace_root),
             "exclude_dirs": ["node_modules", ".git", "venv", "__pycache__"],
+            "db_path": Config.get_defaults(str(workspace_root))["db_path"],
         }
         with open(cfg_path, "w") as f:
             json.dump(default_cfg, f, indent=2)

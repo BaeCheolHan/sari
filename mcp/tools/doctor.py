@@ -13,6 +13,7 @@ from typing import Any, Dict, List
 
 try:
     from app.db import LocalSearchDB
+    from app.config import Config
     from app.workspace import WorkspaceManager
     from mcp.cli import get_daemon_address, is_daemon_running, read_pid
 except ImportError:
@@ -20,6 +21,7 @@ except ImportError:
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).parent.parent.parent))
     from app.db import LocalSearchDB
+    from app.config import Config
     from app.workspace import WorkspaceManager
     from mcp.cli import get_daemon_address, is_daemon_running, read_pid
 
@@ -30,7 +32,9 @@ def _result(name: str, passed: bool, error: str = "") -> dict[str, Any]:
 
 def _check_db(ws_root: str) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
-    db_path = WorkspaceManager.get_local_db_path(ws_root)
+    cfg_path = WorkspaceManager.resolve_config_path(ws_root)
+    cfg = Config.load(cfg_path, workspace_root_override=ws_root)
+    db_path = Path(cfg.db_path)
     if not db_path.exists():
         results.append(_result("DB Existence", False, f"DB not found at {db_path}"))
         return results
