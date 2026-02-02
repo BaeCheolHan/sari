@@ -655,15 +655,36 @@ class Indexer:
                 batch_syms.extend(res["symbols"]); batch_rels.extend(res["relations"])
                 
                 if len(batch_files) >= 50:
-                    self.db.upsert_files(batch_files); self.db.upsert_symbols(batch_syms); self.db.upsert_relations(batch_rels)
-                    self.status.indexed_files += len(batch_files)
+                    try:
+                        self.db.upsert_files(batch_files)
+                        self.db.upsert_symbols(batch_syms)
+                        self.db.upsert_relations(batch_rels)
+                        self.status.indexed_files += len(batch_files)
+                    except Exception as e:
+                        if self.logger:
+                            self.logger.log_error(f"Failed to flush batch to DB: {e}")
+                        self.status.errors += 1
                     batch_files, batch_syms, batch_rels = [], [], []
 
         if batch_files:
-            self.db.upsert_files(batch_files); self.db.upsert_symbols(batch_syms); self.db.upsert_relations(batch_rels)
-            self.status.indexed_files += len(batch_files)
-        if unchanged: self.db.update_last_seen(unchanged, scan_ts)
-        self.db.delete_unseen_files(scan_ts)
+            try:
+                self.db.upsert_files(batch_files)
+                self.db.upsert_symbols(batch_syms)
+                self.db.upsert_relations(batch_rels)
+                self.status.indexed_files += len(batch_files)
+            except Exception as e:
+                if self.logger:
+                    self.logger.log_error(f"Failed to flush final batch to DB: {e}")
+                self.status.errors += 1
+        if unchanged:
+            try:
+                self.db.update_last_seen(unchanged, scan_ts)
+            except Exception as e:
+                self.status.errors += 1
+        try:
+            self.db.delete_unseen_files(scan_ts)
+        except Exception as e:
+            self.status.errors += 1
 
     def _process_watcher_event(self, path: str):
         try:

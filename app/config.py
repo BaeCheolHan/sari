@@ -45,7 +45,7 @@ class Config:
             "scan_interval_seconds": 180,
             "snippet_max_lines": 5,
             "max_file_bytes": 1000000, # Increased to 1MB
-            "db_path": os.path.join(workspace_root, ".codex", "tools", "deckard", "data", "index.db"),
+            "db_path": os.path.expanduser("~/Library/Application Support/Deckard/index.db"),
             "include_ext": [".py", ".js", ".ts", ".java", ".kt", ".go", ".rs", ".md", ".json", ".yaml", ".yml", ".sh"],
             "include_files": ["pom.xml", "package.json", "Dockerfile", "Makefile", "build.gradle", "settings.gradle"],
             "exclude_dirs": [".git", "node_modules", "__pycache__", ".venv", "venv", "target", "build", "dist", "coverage", "vendor"],
