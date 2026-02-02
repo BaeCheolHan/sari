@@ -16,11 +16,12 @@ from mcp.tools.index_file import execute_index_file
 class TestRound3(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.db_path = os.path.join(os.getcwd(), "tests/test_v2_9.db")
+        repo_root = Path(__file__).resolve().parent.parent
+        cls.db_path = str(repo_root / "tests" / "test_v2_9.db")
         if os.path.exists(cls.db_path): os.remove(cls.db_path)
         cls.db = LocalSearchDB(cls.db_path)
         cls.cfg = Config(
-            workspace_root=os.getcwd(),
+            workspace_root=str(repo_root),
             server_host="127.0.0.1",
             server_port=47777,
             scan_interval_seconds=180,
@@ -38,10 +39,11 @@ class TestRound3(unittest.TestCase):
 
     def test_3_1_api_search_integration(self):
         # Index a sample controller
-        path = "tests/SampleController.java"
-        content = Path(path).read_text()
+        repo_root = Path(__file__).resolve().parent.parent
+        path = repo_root / "tests" / "SampleController.java"
+        content = path.read_text()
         from app.indexer import _extract_symbols
-        symbols = _extract_symbols(path, content)
+        symbols = _extract_symbols(str(path), content)
         self.db.upsert_symbols(symbols)
         
         # Test search
@@ -51,7 +53,8 @@ class TestRound3(unittest.TestCase):
 
     def test_3_2_index_file_integration(self):
         # Create a new file
-        new_file = Path(os.path.abspath("horadric-deckard/tests/NewController.java"))
+        repo_root = Path(__file__).resolve().parent.parent
+        new_file = repo_root / "tests" / "NewController.java"
         new_file.write_text("@RestController\n@RequestMapping(\"/new\")\npublic class New {}")
         
         # Run index_file tool
@@ -60,7 +63,7 @@ class TestRound3(unittest.TestCase):
         
         # Verify in DB
         # Note: Indexer._process_watcher_event uses relative path
-        rel_path = str(new_file.relative_to(os.path.abspath(os.getcwd())))
+        rel_path = str(new_file.relative_to(repo_root))
         meta = self.db.get_file_meta(rel_path)
         self.assertIsNotNone(meta)
 

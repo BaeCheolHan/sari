@@ -346,8 +346,11 @@ def do_install(args):
         print_step(f"Cloning latest Deckard from {source_url} to {INSTALL_DIR}...")
         try:
             subprocess.run(["git", "clone", source_url, str(INSTALL_DIR)], check=True, capture_output=CONFIG["quiet"])
-        except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            print_error(f"Failed to clone git repo. Make sure 'git' is installed and in your PATH. Error: {e}")
+            source_path = Path(source_url)
+            if source_path.exists():
+                shutil.copytree(source_path, INSTALL_DIR, dirs_exist_ok=True, ignore=shutil.ignore_patterns(".git"))
+        except (subprocess.CalledProcessError, FileNotFoundError, OSError) as e:
+            print_error(f"Failed to clone/copy repo. Make sure 'git' is installed and in your PATH. Error: {e}")
             sys.exit(1)
 
         # Setup bootstrap script and permissions
@@ -395,6 +398,7 @@ def do_install(args):
     
     # Configure workspace-local CLI files
     _upsert_mcp_config(Path(workspace_root) / ".codex" / "config.toml", mcp_command, workspace_root)
+    _upsert_mcp_config(Path(workspace_root) / ".gemini" / "config.toml", mcp_command, workspace_root)
     _upsert_gemini_settings(Path(workspace_root) / ".gemini" / "settings.json", mcp_command, workspace_root)
     
     # Clean up legacy global configs, just in case

@@ -49,7 +49,7 @@ public class MyService {
  */
 def hello(): pass
 """
-        symbols, relations = _extract_symbols("hello.py", content)
+        symbols, _ = _extract_symbols("hello.py", content)
         self.assertEqual(symbols[0][8], "Hello\nWorld")
 
 if __name__ == "__main__":

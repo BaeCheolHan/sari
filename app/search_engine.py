@@ -59,7 +59,7 @@ class SearchEngine:
         # v2.7.0: Allow unicode in FTS, but fallback if non-ASCII character present
         # as FTS tokenizers often skip emojis and special symbols.
         has_unicode = any(ord(c) > 127 for c in q)
-        is_too_short = len(q) < 2 
+        is_too_short = len(q) < 3
         
         use_fts = self.db.fts_enabled and not is_too_short and not has_unicode
         fts_success = False
@@ -67,7 +67,7 @@ class SearchEngine:
         
         if use_fts:
             try:
-                res = self._search_fts(opts, terms, meta, no_slice=True)
+                res = self.db._search_fts(opts, terms, meta, no_slice=True)
                 if res:
                     fts_hits, fts_meta = res
                     meta.update(fts_meta)
@@ -77,9 +77,16 @@ class SearchEngine:
         
         if not fts_success:
             # Fallback to LIKE
-            res, like_meta = self._search_like(opts, terms, meta, no_slice=True)
+            res, like_meta = self.db._search_like(opts, terms, meta, no_slice=True)
             fts_hits = res
             meta.update(like_meta)
+            meta["fallback_used"] = True 
+        elif not fts_hits and terms:
+            # v2.7.5: Force fallback if FTS results are suspiciously empty for non-trivial query
+            res, like_meta = self.db._search_like(opts, terms, meta, no_slice=True)
+            fts_hits = res
+            meta.update(like_meta)
+            meta["fallback_used"] = True
 
         # 3. Merge Strategies
         merged_map: Dict[str, SearchHit] = {}

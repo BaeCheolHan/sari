@@ -12,12 +12,9 @@ def execute_index_file(args: Dict[str, Any], indexer: Any) -> Dict[str, Any]:
     try:
         # Trigger watcher event logic which handles upsert/delete
         indexer._process_watcher_event(path)
-        # If queue is enabled, we might need to flush it
-        if indexer.queue:
-             # Process any pending items in queue for this workspace
-             # (In a real daemon, the ingestion loop would pick it up, 
-             # but for 'immediate' feedback we want to ensure it's done)
-             pass
+        # If queue is enabled, we might need to flush it (optional)
+        if hasattr(indexer, "queue") and indexer.queue:
+            pass
              
         return {
             "success": True,

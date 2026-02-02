@@ -668,6 +668,15 @@ class LocalSearchDB:
     def search_v2(self, opts: SearchOptions) -> Tuple[List[SearchHit], Dict[str, Any]]:
         return self.engine.search_v2(opts)
 
+    # Compatibility shims for legacy tests (v2.7.x)
+    def _search_like(self, opts: SearchOptions, terms: List[str],
+                     meta: Dict[str, Any], no_slice: bool = False) -> Tuple[List[SearchHit], Dict[str, Any]]:
+        return self.engine._search_like(opts, terms, meta, no_slice=no_slice)
+
+    def _search_fts(self, opts: SearchOptions, terms: List[str],
+                    meta: Dict[str, Any], no_slice: bool = False) -> Optional[Tuple[List[SearchHit], Dict[str, Any]]]:
+        return self.engine._search_fts(opts, terms, meta, no_slice=no_slice)
+
     def search(
         self,
         q: str,

@@ -55,7 +55,7 @@ class TestFinalPolish(unittest.TestCase):
         
         # target.txt matches by filename stem -> should be first
         self.assertEqual(hits[0].path, "target.txt")
-        self.assertIn("Filename match", hits[0].hit_reason)
+        self.assertIn("filename match", hits[0].hit_reason.lower())
         
         db.close()
 

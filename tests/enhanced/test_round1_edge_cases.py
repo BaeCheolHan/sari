@@ -73,17 +73,20 @@ class TestRound1EdgeCases:
         code_py = "def broken_functio" 
         symbols = _extract_symbols("broken.py", code_py)
         # Should return what it can parse (maybe nothing) but NOT CRASH
-        assert isinstance(symbols, list)
+        symbols_list = symbols.symbols if hasattr(symbols, "symbols") else symbols
+        assert isinstance(symbols_list, list)
         
         # Python indentation error
         code_indent = "def foo():\nreturn 1" 
         symbols = _extract_symbols("indent_err.py", code_indent)
-        assert isinstance(symbols, list)
+        symbols_list = symbols.symbols if hasattr(symbols, "symbols") else symbols
+        assert isinstance(symbols_list, list)
 
         # Python indentation error
         code_indent = "def foo():\nreturn 1" 
         symbols = _extract_symbols("indent_err.py", code_indent)
-        assert isinstance(symbols, list)
+        symbols_list = symbols.symbols if hasattr(symbols, "symbols") else symbols
+        assert isinstance(symbols_list, list)
         if symbols:
              # _extract_symbols returns tuples: (path, name, kind, line, end_line, content, parent_name)
              assert symbols[0][1] == "foo"

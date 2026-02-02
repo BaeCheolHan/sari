@@ -10,12 +10,14 @@ from datetime import datetime
 # Support both `python3 app/main.py` (script mode) and package mode.
 try:
     from .config import Config, resolve_config_path  # type: ignore
+    from . import config as config_mod  # type: ignore
     from .db import LocalSearchDB  # type: ignore
     from .http_server import serve_forever  # type: ignore
     from .indexer import Indexer  # type: ignore
     from .workspace import WorkspaceManager  # type: ignore
 except ImportError:  # script mode
     from config import Config, resolve_config_path  # type: ignore
+    import config as config_mod  # type: ignore
     from db import LocalSearchDB  # type: ignore
     from http_server import serve_forever  # type: ignore
     from indexer import Indexer  # type: ignore
@@ -40,9 +42,10 @@ def main() -> int:
     if os.path.exists(cfg_path):
         cfg = Config.load(cfg_path)
     else:
-        # Use safe defaults if config.json is missing (v2.7.0: defaults centralized in Config.load)
+        # Use safe defaults if config.json is missing.
         print(f"[deckard] Config not found in workspace ({cfg_path}), using defaults.")
-        cfg = Config.load(None, workspace_root_override=workspace_root)
+        defaults = config_mod.Config.get_defaults(workspace_root)
+        cfg = Config(**defaults)
 
 
     # Security hardening: loopback-only by default.

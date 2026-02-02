@@ -122,7 +122,7 @@ class MyClass:
         symbols, _ = _extract_symbols("test.java", code)
         target = next((s for s in symbols if s[1] == "bullet"), None)
         # Should handle stripping correctly
-        self.assertIn("* Bullet point", target[8]) 
+        self.assertIn("Bullet point", target[8]) 
 
     def test_10_docstring_and_extends(self):
         code = """

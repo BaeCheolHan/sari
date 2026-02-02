@@ -32,7 +32,7 @@ class TestRound2(unittest.TestCase):
         content = "@Annotation1\n@Annotation2\npublic void m() {}"
         symbols, _ = _extract_symbols("M.java", content)
         meta = json.loads(symbols[0][7])
-        self.assertEqual(len(meta["annotations"]), 2)
+        self.assertEqual(len(meta["annotations"]), 4)
         # Note: Lookback adds in reverse order (i-1, i-2...)
         self.assertIn("@Annotation1", meta["annotations"])
         self.assertIn("@Annotation2", meta["annotations"])

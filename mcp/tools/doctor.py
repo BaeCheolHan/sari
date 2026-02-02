@@ -109,6 +109,20 @@ def _check_daemon() -> dict[str, Any]:
     return _result("Deckard Daemon", False, "Not running")
 
 
+def _check_search_first_usage(usage: Dict[str, Any], mode: str) -> dict[str, Any]:
+    violations = int(usage.get("read_without_search", 0))
+    searches = int(usage.get("search", 0))
+    symbol_searches = int(usage.get("search_symbols", 0))
+    if violations == 0:
+        return _result("Search-First Usage", True, "")
+    policy = mode if mode in {"off", "warn", "enforce"} else "unknown"
+    error = (
+        f"Search-first policy {policy}: {violations} read call(s) without prior search "
+        f"(search={searches}, search_symbols={symbol_searches})."
+    )
+    return _result("Search-First Usage", False, error)
+
+
 def execute_doctor(args: Dict[str, Any]) -> Dict[str, Any]:
     ws_root = WorkspaceManager.resolve_workspace_root()
 
@@ -145,6 +159,11 @@ def execute_doctor(args: Dict[str, Any]) -> Dict[str, Any]:
 
     if include_disk:
         results.append(_check_disk_space(ws_root, min_disk_gb))
+
+    usage = args.get("search_usage")
+    if isinstance(usage, dict):
+        mode = str(args.get("search_first_mode", "unknown"))
+        results.append(_check_search_first_usage(usage, mode))
 
     output = {
         "workspace_root": ws_root,

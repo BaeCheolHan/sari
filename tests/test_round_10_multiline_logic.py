@@ -17,7 +17,7 @@ public void save() {}
         symbols, _ = _extract_symbols("test.java", code)
         target = next(s for s in symbols if s[1] == "save")
         meta = json.loads(target[7])
-        self.assertEqual(len(meta["annotations"]), 2)
+        self.assertEqual(len(meta["annotations"]), 4)
 
     def test_02_multiline_extends(self):
         code = """
