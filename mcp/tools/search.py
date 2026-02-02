@@ -113,6 +113,13 @@ def execute_search(args: Dict[str, Any], db: LocalSearchDB, logger: TelemetryLog
             result["file_type"] = hit.file_type
         if hit.context_symbol:
             result["context_symbol"] = hit.context_symbol
+        if hasattr(hit, 'docstring') and hit.docstring:
+            # Show only first 3 lines of docstring to save tokens
+            doc_lines = hit.docstring.splitlines()
+            summary = "\n".join(doc_lines[:3])
+            if len(doc_lines) > 3:
+                summary += "\n..."
+            result["docstring"] = summary
         results.append(result)
     
     # Result Grouping
@@ -227,6 +234,9 @@ def execute_search(args: Dict[str, Any], db: LocalSearchDB, logger: TelemetryLog
     
     logger.log_telemetry(f"tool=search query='{opts.query}' results={len(results)} snippet_chars={snippet_chars} latency={latency_ms}ms")
 
-    return {
+    # Merge output into return for backward compatibility with integration tests
+    res = {
         "content": [{"type": "text", "text": json.dumps(output, indent=2, ensure_ascii=False)}],
     }
+    res.update(output)
+    return res

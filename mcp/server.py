@@ -42,6 +42,12 @@ import mcp.tools.list_files as list_files_tool
 import mcp.tools.read_file as read_file_tool
 import mcp.tools.search_symbols as search_symbols_tool
 import mcp.tools.read_symbol as read_symbol_tool
+import mcp.tools.doctor as doctor_tool
+import mcp.tools.search_api_endpoints as search_api_endpoints_tool
+import mcp.tools.index_file as index_file_tool
+import mcp.tools.get_callers as get_callers_tool
+import mcp.tools.get_implementations as get_implementations_tool
+import mcp.tools.deckard_guide as deckard_guide_tool
 
 
 class LocalSearchMCPServer:
@@ -73,9 +79,57 @@ class LocalSearchMCPServer:
         self._indexer_thread: Optional[threading.Thread] = None
         self._initialized = False
         self._init_lock = threading.Lock()
+        self._search_first_mode = self._resolve_search_first_policy()
+        self._search_usage = {
+            "search": 0,
+            "search_symbols": 0,
+            "last_search_ts": None,
+            "last_search_symbols_ts": None,
+            "read_without_search": 0,
+        }
         
         # Initialize telemetry logger
         self.logger = TelemetryLogger(WorkspaceManager.get_global_log_dir())
+
+    @staticmethod
+    def _resolve_search_first_policy() -> str:
+        raw_mode = (os.environ.get("DECKARD_SEARCH_FIRST_MODE") or "").strip().lower()
+        if raw_mode in {"off", "warn", "enforce"}:
+            return raw_mode
+        raw_enforce = (os.environ.get("DECKARD_ENFORCE_SEARCH_FIRST") or "").strip().lower()
+        if raw_enforce:
+            return "off" if raw_enforce in {"0", "false", "no", "off"} else "enforce"
+        return "warn"
+
+    def _mark_search(self, kind: str) -> None:
+        now = time.time()
+        if kind == "search":
+            self._search_usage["search"] += 1
+            self._search_usage["last_search_ts"] = now
+        elif kind == "search_symbols":
+            self._search_usage["search_symbols"] += 1
+            self._search_usage["last_search_symbols_ts"] = now
+
+    def _has_search_context(self) -> bool:
+        return (self._search_usage.get("search", 0) > 0 or
+                self._search_usage.get("search_symbols", 0) > 0)
+
+    def _search_first_error(self) -> Dict[str, Any]:
+        self._search_usage["read_without_search"] += 1
+        return {
+            "content": [{
+                "type": "text",
+                "text": "Error: search-first policy active. Call search/search_symbols before read_file/read_symbol.",
+            }],
+            "isError": True,
+        }
+
+    def _search_first_warning(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        self._search_usage["read_without_search"] += 1
+        warnings = list(result.get("warnings", []))
+        warnings.append("Search-first policy (advisory): call search/search_symbols before read_file/read_symbol.")
+        result["warnings"] = warnings
+        return result
     
     def _ensure_initialized(self) -> None:
         """Lazy initialization of database and indexer."""
@@ -89,26 +143,17 @@ class LocalSearchMCPServer:
 
             try:
                 config_path = Path(self.workspace_root) / ".codex" / "tools" / "deckard" / "config" / "config.json"
-                if config_path.exists():
-                    self.cfg = Config.load(str(config_path), workspace_root_override=self.workspace_root)
-                else:
-                    self.cfg = Config(
-                        workspace_root=self.workspace_root,
-                        server_host="127.0.0.1",
-                        server_port=47777,
-                        scan_interval_seconds=180,
-                        snippet_max_lines=5,
-                        max_file_bytes=800000,
-                        db_path=str(WorkspaceManager.get_local_db_path(self.workspace_root)),
-                        include_ext=[".py", ".js", ".ts", ".java", ".kt", ".go", ".rs", ".md", ".json", ".yaml", ".yml", ".sh"],
-                        include_files=["pom.xml", "package.json", "Dockerfile", "Makefile", "build.gradle", "settings.gradle"],
-                        exclude_dirs=[".git", "node_modules", "__pycache__", ".venv", "venv", "target", "build", "dist", "coverage", "vendor"],
-                        exclude_globs=["*.min.js", "*.min.css", "*.map", "*.lock", "package-lock.json", "yarn.lock", "pnpm-lock.yaml"],
-                        redact_enabled=True,
-                        commit_batch_size=500,
-                    )
+                if not config_path.exists():
+                     # Fallback to older legacy path if it exists
+                     alt_path = Path(self.workspace_root) / ".codex" / "tools" / "deckard" / "config" / "config.json"
+                     if alt_path.exists(): config_path = alt_path
+                     else: config_path = None
+                
+                # Config.load handles defaults if config_path is None or doesn't exist
+                self.cfg = Config.load(str(config_path) if config_path else None, workspace_root_override=self.workspace_root)
                 
                 db_path = Path(self.cfg.db_path)
+
                 db_path.parent.mkdir(parents=True, exist_ok=True)
                 self.db = LocalSearchDB(str(db_path))
                 self.logger.log_info(f"DB path: {db_path}")
@@ -171,8 +216,13 @@ class LocalSearchMCPServer:
         return {
             "tools": [
                 {
+                    "name": "deckard_guide",
+                    "description": "Usage guide. Call this if unsure; it enforces search-first workflow.",
+                    "inputSchema": {"type": "object", "properties": {}},
+                },
+                {
                     "name": "search",
-                    "description": "Enhanced search for code/files with pagination. Use BEFORE file exploration to save tokens.",
+                    "description": "SEARCH FIRST. Use before opening files to locate relevant paths/symbols.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -257,7 +307,7 @@ class LocalSearchMCPServer:
                 },
                 {
                     "name": "repo_candidates",
-                    "description": "Find candidate repositories for a query.",
+                    "description": "Suggest top repos for a query. Use before search if repo is unknown.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -276,7 +326,7 @@ class LocalSearchMCPServer:
                 },
                 {
                     "name": "list_files",
-                    "description": "List indexed files for debugging.",
+                    "description": "List indexed files with filters. Use after search if results are broad.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -313,7 +363,7 @@ class LocalSearchMCPServer:
                 },
                 {
                     "name": "read_file",
-                    "description": "Read file content from the index.",
+                    "description": "Read full file content by path. Use only after search narrows candidates (policy may warn/reject by mode).",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -327,7 +377,7 @@ class LocalSearchMCPServer:
                 },
                 {
                     "name": "search_symbols",
-                    "description": "Search for code symbols (classes, functions, etc.).",
+                    "description": "Search for symbols by name. Prefer this to scanning files.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -346,7 +396,7 @@ class LocalSearchMCPServer:
                 },
                 {
                     "name": "read_symbol",
-                    "description": "Read specific symbol definition (function/class) to save tokens.",
+                    "description": "Read symbol definition block by name/path. Use after search_symbols (policy may warn/reject by mode).",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -362,6 +412,80 @@ class LocalSearchMCPServer:
                         "required": ["path", "name"],
                     },
                 },
+                {
+                    "name": "doctor",
+                    "description": "Run health checks and return structured diagnostics.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "include_network": {"type": "boolean", "default": True},
+                            "include_port": {"type": "boolean", "default": True},
+                            "include_db": {"type": "boolean", "default": True},
+                            "include_disk": {"type": "boolean", "default": True},
+                            "include_daemon": {"type": "boolean", "default": True},
+                            "include_venv": {"type": "boolean", "default": True},
+                            "include_marker": {"type": "boolean", "default": True},
+                            "port": {"type": "integer", "default": 47800},
+                            "min_disk_gb": {"type": "number", "default": 1.0},
+                        },
+                    },
+                },
+                {
+                    "name": "search_api_endpoints",
+                    "description": "Search API endpoints by path pattern (search-first for APIs).",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "URL path pattern to search for (e.g., '/api/v1/users')",
+                            }
+                        },
+                        "required": ["path"],
+                    },
+                },
+                {
+                    "name": "index_file",
+                    "description": "Force immediate re-indexing for a file path. Use when content seems stale.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "Absolute or relative path to the file to re-index",
+                            }
+                        },
+                        "required": ["path"],
+                    },
+                },
+                {
+                    "name": "get_callers",
+                    "description": "Find callers of a symbol (use after search_symbols).",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Name of the symbol to find callers for",
+                            }
+                        },
+                        "required": ["name"],
+                    },
+                },
+                {
+                    "name": "get_implementations",
+                    "description": "Find implementations of a symbol (use after search_symbols).",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Name of the symbol (interface/class) to find implementations for",
+                            }
+                        },
+                        "required": ["name"],
+                    },
+                },
             ],
         }
     
@@ -371,7 +495,9 @@ class LocalSearchMCPServer:
         tool_name = params.get("name")
         args = params.get("arguments", {})
         
-        if tool_name == "search":
+        if tool_name == "deckard_guide":
+            return deckard_guide_tool.execute_deckard_guide(args)
+        elif tool_name == "search":
             return self._tool_search(args)
         elif tool_name == "status":
             return self._tool_status(args)
@@ -385,12 +511,25 @@ class LocalSearchMCPServer:
             return self._tool_search_symbols(args)
         elif tool_name == "read_symbol":
             return self._tool_read_symbol(args)
+        elif tool_name == "doctor":
+            return self._tool_doctor(args)
+        elif tool_name == "search_api_endpoints":
+            return search_api_endpoints_tool.execute_search_api_endpoints(args, self.db)
+        elif tool_name == "index_file":
+            return index_file_tool.execute_index_file(args, self.indexer)
+        elif tool_name == "get_callers":
+            return get_callers_tool.execute_get_callers(args, self.db)
+        elif tool_name == "get_implementations":
+            return get_implementations_tool.execute_get_implementations(args, self.db)
         else:
             raise ValueError(f"Unknown tool: {tool_name}")
     
     def _tool_search(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Execute enhanced search tool (v2.5.0)."""
-        return search_tool.execute_search(args, self.db, self.logger)
+        result = search_tool.execute_search(args, self.db, self.logger)
+        if not result.get("isError"):
+            self._mark_search("search")
+        return result
     
     def _tool_status(self, args: Dict[str, Any]) -> Dict[str, Any]:
         return status_tool.execute_status(args, self.indexer, self.db, self.cfg, self.workspace_root, self.SERVER_VERSION)
@@ -402,13 +541,32 @@ class LocalSearchMCPServer:
         return list_files_tool.execute_list_files(args, self.db, self.logger)
 
     def _tool_read_file(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        if self._search_first_mode != "off" and not self._has_search_context():
+            if self._search_first_mode == "enforce":
+                return self._search_first_error()
+            result = read_file_tool.execute_read_file(args, self.db)
+            return self._search_first_warning(result)
         return read_file_tool.execute_read_file(args, self.db)
 
     def _tool_search_symbols(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        return search_symbols_tool.execute_search_symbols(args, self.db)
+        result = search_symbols_tool.execute_search_symbols(args, self.db)
+        if not result.get("isError"):
+            self._mark_search("search_symbols")
+        return result
         
     def _tool_read_symbol(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        if self._search_first_mode != "off" and not self._has_search_context():
+            if self._search_first_mode == "enforce":
+                return self._search_first_error()
+            result = read_symbol_tool.execute_read_symbol(args, self.db, self.logger)
+            return self._search_first_warning(result)
         return read_symbol_tool.execute_read_symbol(args, self.db, self.logger)
+
+    def _tool_doctor(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        payload = dict(args)
+        payload["search_usage"] = dict(self._search_usage)
+        payload["search_first_mode"] = self._search_first_mode
+        return doctor_tool.execute_doctor(payload)
     
     def handle_request(self, request: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         method = request.get("method")
@@ -472,10 +630,51 @@ class LocalSearchMCPServer:
             
     def run(self) -> None:
         self.logger.log_info(f"Starting MCP server (workspace: {self.workspace_root})")
+        use_text_io = not hasattr(sys.stdin, "buffer") or not hasattr(sys.stdout, "buffer")
+
         def _read_mcp_message(stdin):
             line = stdin.readline()
             if not line:
                 return None, None
+            if use_text_io:
+                while line in ("\n", "\r\n"):
+                    line = stdin.readline()
+                    if not line:
+                        return None, None
+
+                if line.lstrip().startswith(("{", "[")):
+                    return line.rstrip("\r\n"), "jsonl"
+
+                headers = [line]
+                while True:
+                    h = stdin.readline()
+                    if not h:
+                        return None, None
+                    if h in ("\n", "\r\n"):
+                        break
+                    headers.append(h)
+
+                content_length = None
+                for h in headers:
+                    parts = h.split(":", 1)
+                    if len(parts) != 2:
+                        continue
+                    key = parts[0].strip().lower()
+                    if key == "content-length":
+                        try:
+                            content_length = int(parts[1].strip())
+                        except ValueError:
+                            pass
+                        break
+
+                if content_length is None or content_length <= 0:
+                    return None, None
+
+                body = stdin.read(content_length)
+                if not body:
+                    return None, None
+                return body, "framed"
+
             while line in (b"\n", b"\r\n"):
                 line = stdin.readline()
                 if not line:
@@ -517,23 +716,36 @@ class LocalSearchMCPServer:
         def _write_response(resp, mode):
             if resp is None:
                 return
-            payload = json.dumps(resp).encode("utf-8")
-            if mode == "jsonl":
-                sys.stdout.buffer.write(payload + b"\n")
-                sys.stdout.buffer.flush()
+            if use_text_io:
+                payload = json.dumps(resp)
+                if mode == "jsonl":
+                    sys.stdout.write(payload + "\n")
+                    sys.stdout.flush()
+                else:
+                    header = f"Content-Length: {len(payload)}\r\n\r\n"
+                    sys.stdout.write(header + payload)
+                    sys.stdout.flush()
             else:
-                header = f"Content-Length: {len(payload)}\r\n\r\n".encode("ascii")
-                sys.stdout.buffer.write(header + payload)
-                sys.stdout.buffer.flush()
+                payload = json.dumps(resp).encode("utf-8")
+                if mode == "jsonl":
+                    sys.stdout.buffer.write(payload + b"\n")
+                    sys.stdout.buffer.flush()
+                else:
+                    header = f"Content-Length: {len(payload)}\r\n\r\n".encode("ascii")
+                    sys.stdout.buffer.write(header + payload)
+                    sys.stdout.buffer.flush()
 
         try:
-            stdin = sys.stdin.buffer
+            stdin = sys.stdin if use_text_io else sys.stdin.buffer
             while True:
                 body, mode = _read_mcp_message(stdin)
                 if body is None:
                     break
                 try:
-                    request = json.loads(body.decode("utf-8"))
+                    if use_text_io:
+                        request = json.loads(body)
+                    else:
+                        request = json.loads(body.decode("utf-8"))
                     response = self.handle_request(request)
                     _write_response(response, mode)
                 except json.JSONDecodeError as e:

@@ -9,30 +9,51 @@ from typing import Dict, List, Optional, Tuple
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[3]
+    """Robust repo root detection (v2.7.0)."""
+    curr = Path(__file__).resolve().parent
+    for parent in [curr] + list(curr.parents):
+        if (parent / ".codex-root").exists():
+            return parent
+    # Fallback to REPO_ROOT (parent of scripts/)
+    return curr.parent
 
 
 def _load_server_info() -> Optional[Dict]:
     """Load server.json if exists (single source of truth for actual port)."""
     root = _repo_root()
-    server_json = root / "tools" / "deckard" / "data" / "server.json"
-    if server_json.exists():
-        try:
-            with open(server_json, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
+    # Check both potential locations
+    paths = [
+        root / ".codex" / "tools" / "deckard" / "data" / "server.json",
+        root / "tools" / "deckard" / "data" / "server.json"
+    ]
+    for server_json in paths:
+        if server_json.exists():
+            try:
+                with open(server_json, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
     return None
 
 
 def _load_cfg() -> Dict:
     root = _repo_root()
-    cfg_path = os.environ.get(
-        "LOCAL_SEARCH_CONFIG",
-        str(root / "tools" / "deckard" / "config" / "config.json"),
-    )
-    with open(cfg_path, "r", encoding="utf-8") as f:
-        return json.load(f)
+    paths = [
+        root / ".codex" / "tools" / "deckard" / "config" / "config.json",
+        root / "tools" / "deckard" / "config" / "config.json"
+    ]
+    
+    env_cfg = os.environ.get("LOCAL_SEARCH_CONFIG")
+    if env_cfg:
+        with open(env_cfg, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    for cfg_path in paths:
+        if cfg_path.exists():
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+    
+    return {}
 
 
 def _get_host_port() -> Tuple[str, int]:

@@ -50,39 +50,50 @@ PY
 fi
 
 # Self-install/update: if running from repo (not install dir), bootstrap install dir first
-if [ "${DECKARD_BOOTSTRAP_DONE:-}" != "1" ] && [ "$ROOT_DIR" != "$INSTALL_DIR" ]; then
-    # Determine repo version (if available)
-    REPO_VERSION=""
-    if [ -d "$ROOT_DIR/.git" ] && command -v git >/dev/null 2>&1; then
-        REPO_VERSION=$(git -C "$ROOT_DIR" describe --tags --abbrev=0 2>/dev/null)
-        REPO_VERSION=${REPO_VERSION#v}
-    fi
-
-    INST_VERSION=""
-    if [ -f "$INSTALL_DIR/VERSION" ]; then
-        INST_VERSION=$(cat "$INSTALL_DIR/VERSION" 2>/dev/null | tr -d '\n')
-    fi
-
-    NEED_INSTALL=0
-    if [ ! -x "$INSTALL_DIR/bootstrap.sh" ]; then
-        NEED_INSTALL=1
-    elif [ -n "$REPO_VERSION" ] && [ "$REPO_VERSION" != "$INST_VERSION" ]; then
-        NEED_INSTALL=1
-    fi
-
-    if [ "$NEED_INSTALL" = "1" ] && [ -f "$ROOT_DIR/install.py" ]; then
-        echo "[deckard] bootstrap: installing to $INSTALL_DIR" >&2
-        # Redirect stdout to stderr to protect MCP protocol, but show errors
-        DECKARD_BOOTSTRAP_DONE=1 python3 "$ROOT_DIR/install.py" --no-interactive 1>&2
-        if [ $? -ne 0 ]; then
-             echo "[deckard] bootstrap: installation failed. Check install.log." >&2
-             # Don't swallow error, exit
-             exit 1
+if [ "${DECKARD_BOOTSTRAP_DONE:-}" != "1" ] && [ "$ROOT_DIR" != "$INSTALL_DIR" ] && [ "${DECKARD_SKIP_INSTALL:-}" != "1" ]; then
+    # Skip if --skip-install is present in args
+    SKIP=0
+    for arg in "$@"; do
+        if [ "$arg" = "--skip-install" ]; then
+            SKIP=1
+            break
         fi
-    fi
+    done
 
-    if [ -x "$INSTALL_DIR/bootstrap.sh" ]; then
-        exec "$INSTALL_DIR/bootstrap.sh" "$@"
+    if [ "$SKIP" = "0" ]; then
+        # Determine repo version (if available)
+        REPO_VERSION=""
+        if [ -d "$ROOT_DIR/.git" ] && command -v git >/dev/null 2>&1; then
+            REPO_VERSION=$(git -C "$ROOT_DIR" describe --tags --abbrev=0 2>/dev/null)
+            REPO_VERSION=${REPO_VERSION#v}
+        fi
+
+        INST_VERSION=""
+        if [ -f "$INSTALL_DIR/VERSION" ]; then
+            INST_VERSION=$(cat "$INSTALL_DIR/VERSION" 2>/dev/null | tr -d '\n')
+        fi
+
+        NEED_INSTALL=0
+        if [ ! -x "$INSTALL_DIR/bootstrap.sh" ]; then
+            NEED_INSTALL=1
+        elif [ -n "$REPO_VERSION" ] && [ "$REPO_VERSION" != "$INST_VERSION" ]; then
+            NEED_INSTALL=1
+        fi
+
+        if [ "$NEED_INSTALL" = "1" ] && [ -f "$ROOT_DIR/install.py" ]; then
+            echo "[deckard] bootstrap: installing to $INSTALL_DIR" >&2
+            # Redirect stdout to stderr to protect MCP protocol, but show errors
+            DECKARD_BOOTSTRAP_DONE=1 python3 "$ROOT_DIR/install.py" --no-interactive 1>&2
+            if [ $? -ne 0 ]; then
+                echo "[deckard] bootstrap: installation failed. Check install.log." >&2
+                # Don't swallow error, exit
+                exit 1
+            fi
+        fi
+
+        if [ -x "$INSTALL_DIR/bootstrap.sh" ]; then
+            exec "$INSTALL_DIR/bootstrap.sh" "$@"
+        fi
     fi
 fi
 
@@ -120,6 +131,10 @@ if [ $# -gt 0 ]; then
                 ;;
             --workspace-root=*)
                 export DECKARD_WORKSPACE_ROOT="${1#*=}"
+                shift
+                ;;
+            --skip-install)
+                export DECKARD_SKIP_INSTALL=1
                 shift
                 ;;
             *)

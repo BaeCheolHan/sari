@@ -186,6 +186,7 @@ def test_full_cli_mcp_cycle_codex_and_gemini(test_env):
     # Our workspace is the CWD for the commands.
     
     # We need to ensure we run uninstall in the same CWD as install
+    env = os.environ.copy()
     subprocess.run([sys.executable, str(PROJECT_ROOT / "install.py"), "--uninstall", "-y"], cwd=str(workspace), env=env, check=True)
 
     def block_gone(p):

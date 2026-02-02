@@ -31,19 +31,18 @@ class DebouncedEventHandler(FileSystemEventHandler):
         # We care about Created, Modified, Moved, Deleted
         # watchdog event types: 'created', 'deleted', 'modified', 'moved'
         
-        path = event.src_path
-        if event.event_type == 'moved':
-             # For moved, we might want to process dest_path too
-             # But let's just trigger for src_path handling (deletion/change)
-             pass
+        paths = [event.src_path]
+        if event.event_type == 'moved' and hasattr(event, 'dest_path'):
+            paths.append(event.dest_path)
         
-        with self._lock:
-            if path in self._timers:
-                self._timers[path].cancel()
-            
-            t = Timer(self.debounce_seconds, self._trigger, args=[path])
-            self._timers[path] = t
-            t.start()
+        for p in paths:
+            with self._lock:
+                if p in self._timers:
+                    self._timers[p].cancel()
+                
+                t = Timer(self.debounce_seconds, self._trigger, args=[p])
+                self._timers[p] = t
+                t.start()
 
     def _trigger(self, path: str):
         with self._lock:

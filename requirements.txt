@@ -1,1 +1,3 @@
-watchdog>=3.0.0
+watchdog>=2.0.0
+# Core dependencies are minimal to ensure stability and low footprint.
+# Uses Python standard library (sqlite3, http.server, etc.) whenever possible.

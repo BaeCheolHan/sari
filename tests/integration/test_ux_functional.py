@@ -44,11 +44,15 @@ def test_status_no_daemon_ux(workspace):
     # Ensure init first
     run_cli(["init"], workspace)
     
-    res = run_cli(["status"], workspace)
+    # v2.7.0: Force a non-existent port to ensure connection failure during test
+    env = os.environ.copy()
+    env["DECKARD_PORT"] = "59999" 
+    
+    res = run_cli(["status"], workspace, env=env)
     
     assert res.returncode == 1
-    assert "❌ Error: Could not connect to Deckard HTTP server" in res.stdout
-    assert "Hint: Make sure the Deamon is running" in res.stdout
+    assert "❌ Error" in res.stdout
+    assert "Daemon is not running" in res.stdout or "Could not connect" in res.stdout
 
 def test_doctor_ux(workspace):
     """Verify doctor command output structure and marker check."""

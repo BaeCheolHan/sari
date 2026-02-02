@@ -29,6 +29,18 @@ class TestFullSystemE2E:
         4. User searches 'HelloUser'.
         5. User stops Daemon.
         """
+        import socket
+        # Skip if sandbox disallows binding the test port.
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            probe.bind(("127.0.0.1", 47800))
+        except PermissionError:
+            pytest.skip("Port binding not permitted in this environment")
+        finally:
+            try:
+                probe.close()
+            except Exception:
+                pass
         # 1. Setup Files
         src_file = workspace / "hello.py"
         src_file.write_text("class HelloUser:\n    pass\n")
