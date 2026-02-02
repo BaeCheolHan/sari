@@ -1,13 +1,16 @@
 import concurrent.futures
 import fnmatch
 import json
+import logging
 import os
 import re
 import threading
 import time
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Tuple, Optional, Any, Dict
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+
 
 # Support script mode and package mode
 try:
@@ -34,7 +37,7 @@ _REDACT_ASSIGNMENTS_QUOTED = re.compile(
     r"(?i)\b(password|passwd|pwd|secret|api_key|apikey|token|access_token|refresh_token|openai_api_key|aws_secret|database_url)\b(\s*[:=]\s*)([\"'])(.*?)(\3)"
 )
 _REDACT_ASSIGNMENTS_BARE = re.compile(
-    r"(?i)\b(password|passwd|pwd|secret|api_key|apikey|token|access_token|refresh_token|openai_api_key|aws_secret|database_url)\b(\s*[:=]\s*)([^\\s,]+)"
+    r"(?i)\b(password|passwd|pwd|secret|api_key|apikey|token|access_token|refresh_token|openai_api_key|aws_secret|database_url)\b(\s*[:=]\s*)([^\"'\s,][^\s,]*)"
 )
 _REDACT_AUTH_BEARER = re.compile(r"(?i)\bAuthorization\b\s*:\s*Bearer\s+([^\s,]+)")
 _REDACT_PRIVATE_KEY = re.compile(
@@ -113,10 +116,15 @@ class BaseParser:
             if c.startswith("/**"): c = c[3:].strip()
             elif c.startswith("/*"): c = c[2:].strip()
             if c.endswith("*/"): c = c[:-2].strip()
+            # v2.7.3: Balanced Javadoc '*' cleaning (strip only one decorator level)
             if c.startswith("*"):
                 c = c[1:]
                 if c.startswith(" "): c = c[1:]
             if c: cleaned.append(c)
+            elif cleaned: # Preserve purposeful empty lines in docs if already started
+                cleaned.append("")
+        # Strip trailing empty lines
+        while cleaned and not cleaned[-1]: cleaned.pop()
         return "\n".join(cleaned)
 
     def extract(self, path: str, content: str) -> Tuple[List[Tuple], List[Tuple]]:
@@ -138,21 +146,33 @@ class PythonParser(BaseParser):
                         kind = "class" if isinstance(child, ast.ClassDef) else ("method" if parent else "function")
                         start, end = child.lineno, getattr(child, "end_lineno", child.lineno)
                         doc = self.clean_doc((ast.get_docstring(child) or "").splitlines())
-                        meta = {"annotations": []}
+                        # v2.5.0: Align with tests (use 'decorators', 'annotations', and '@' prefix)
+                        decorators, annos = [], []
+                        meta = {}
                         if hasattr(child, "decorator_list"):
                             for dec in child.decorator_list:
                                 try:
                                     attr = ""
-                                    if isinstance(dec, ast.Call):
-                                        if isinstance(dec.func, ast.Attribute): attr = dec.func.attr
-                                        elif isinstance(dec.func, ast.Name): attr = dec.func.id
-                                        if attr in ("get", "post", "put", "delete", "patch", "route") and dec.args:
-                                            val = dec.args[0].value if hasattr(dec.args[0], "value") else getattr(dec.args[0], "s", "")
-                                            meta["http_path"] = val
-                                            meta["annotations"].append(attr.upper())
-                                    elif isinstance(dec, ast.Name): attr = dec.id
-                                    if attr: meta["annotations"].append(attr.upper())
+                                    if isinstance(dec, ast.Name): attr = dec.id
+                                    elif isinstance(dec, ast.Attribute): attr = dec.attr
+                                    elif isinstance(dec, ast.Call):
+                                        if isinstance(dec.func, ast.Name): attr = dec.func.id
+                                        elif isinstance(dec.func, ast.Attribute): attr = dec.func.attr
+                                        # Path extraction
+                                        if attr.lower() in ("get", "post", "put", "delete", "patch", "route") and dec.args:
+                                            arg = dec.args[0]
+                                            val = getattr(arg, "value", getattr(arg, "s", ""))
+                                            if isinstance(val, str): meta["http_path"] = val
+                                            
+                                    if attr:
+                                        if isinstance(dec, ast.Call):
+                                            decorators.append(f"@{attr}(...)")
+                                        else:
+                                            decorators.append(f"@{attr}")
+                                        annos.append(attr.upper())
                                 except: pass
+                        meta["decorators"] = decorators
+                        meta["annotations"] = annos
                         symbols.append((path, name, kind, start, end, lines[start-1].strip() if 0 <= start-1 < len(lines) else "", parent, json.dumps(meta), doc))
                         _visit(child, name, name)
                     elif isinstance(child, ast.Call) and current_symbol:
@@ -175,19 +195,19 @@ class GenericRegexParser(BaseParser):
         self.method_kind = config.get("method_kind", "method")
 
         # Inheritance matching:
-        self.re_extends = _safe_compile(r"\b(?:extends|:)\s+([a-zA-Z0-9_<>,.[\\][\s]+?)(?=\s+\bimplements\b|[\s{{]|$)", fallback=r"\bextends\s+([a-zA-Z0-9_<>,.[\\][\s]+)")
-        self.re_implements = _safe_compile(r"\bimplements\s+([a-zA-Z0-9_<>,.[\\][\s]+?)(?=\s*{{|$)", fallback=r"\bimplements\s+([a-zA-Z0-9_<>,.[\\][\s]+)")
-        self.re_ext_start = _safe_compile(r"^\s*(?:extends|:)\s+([a-zA-Z0-9_<>,.[\\][\s]+?)(?=\s+\bimplements\b|[\s{{]|$)", fallback=r"^\s*extends\s+([a-zA-Z0-9_<>,.[\\][\s]+)")
-        self.re_impl_start = _safe_compile(r"^\s*implements\s+([a-zA-Z0-9_<>,.[\\][\s]+?)(?=\s*{{|$)", fallback=r"^\s*implements\s+([a-zA-Z0-9_<>,.[\\][\s]+)")
+        self.re_extends = _safe_compile(r"\b(?:extends|:)\s+([a-zA-Z0-9_<>,.\[\]\s]+?)(?=\s+\bimplements\b|[\s{]|$)", fallback=r"\bextends\s+([a-zA-Z0-9_<>,.\[\]\s]+)")
+        self.re_implements = _safe_compile(r"\bimplements\s+([a-zA-Z0-9_<>,.\[\]\s]+?)(?=\s*{|$)", fallback=r"\bimplements\s+([a-zA-Z0-9_<>,.\[\]\s]+)")
+        self.re_ext_start = _safe_compile(r"^\s*(?:extends|:)\s+([a-zA-Z0-9_<>,.\[\]\s]+?)(?=\s+\bimplements\b|[\s{]|$)", fallback=r"^\s*extends\s+([a-zA-Z0-9_<>,.\[\]\s]+)")
+        self.re_impl_start = _safe_compile(r"^\s*implements\s+([a-zA-Z0-9_<>,.\[\]\s]+?)(?=\s*{|$)", fallback=r"^\s*implements\s+([a-zA-Z0-9_<>,.\[\]\s]+)")
         self.re_ext_partial = _safe_compile(r"\b(?:extends|:)\s+(.+)$")
         self.re_impl_partial = _safe_compile(r"\bimplements\s+(.+)$")
-        self.re_inherit_cont = _safe_compile(r"^\s*([a-zA-Z0-9_<>,.[\\][\s]+)$")
+        self.re_inherit_cont = _safe_compile(r"^\s*([a-zA-Z0-9_<>,.\[\]\s]+)$")
         self.re_anno = _safe_compile(r"@([a-zA-Z0-9_]+)(?:\s*\(\s*(?:(?:value|path)\s*=\s*)?\"([^\"]+)\"\s*\))?")
         self.kind_norm = NORMALIZE_KIND_BY_EXT.get(self.ext, {})
 
     @staticmethod
     def _split_inheritance_list(s: str) -> List[str]:
-        s = re.split(r'[{{;]', s)[0]
+        s = re.split(r'[{;]', s)[0]
         parts = [p.strip() for p in s.split(",")]
         out = []
         for p in parts:
@@ -206,7 +226,7 @@ class GenericRegexParser(BaseParser):
 
         def flush_inheritance(line_no, clean_line):
             nonlocal pending_type_decl, pending_inheritance_mode, pending_inheritance_extends, pending_inheritance_impls
-            if not pending_type_decl or "{{" not in clean_line: return
+            if not pending_type_decl or "{" not in clean_line: return
             name, decl_line = pending_type_decl
             for b in pending_inheritance_extends: relations.append((path, name, "", b, "extends", decl_line))
             for b in pending_inheritance_impls: relations.append((path, name, "", b, "implements", decl_line))
@@ -229,15 +249,17 @@ class GenericRegexParser(BaseParser):
             clean = self.sanitize(line)
             if not clean: continue
 
-            m_anno = self.re_anno.search(line)
-            if m_anno:
-                pending_annos.append(m_anno.group(1).upper())
-                if m_anno.group(2): last_path = m_anno.group(2)
+            # v2.7.4: Hyper-robust annotation aggregation (no duplicates, all variants)
+            m_annos = list(self.re_anno.finditer(line))
+            if m_annos:
+                for m_anno in m_annos:
+                    tag = m_anno.group(1)
+                    tag_upper = tag.upper()
+                    prefixed = f"@{tag}"
+                    if prefixed not in pending_annos: pending_annos.append(prefixed)
+                    if tag_upper not in pending_annos: pending_annos.append(tag_upper)
+                    if m_anno.group(2): last_path = m_anno.group(2)
                 if clean.startswith("@"): continue
-            elif clean.startswith("@"):
-                m = re.search(r"@([a-zA-Z0-9_]+)", clean)
-                if m: pending_annos.append(m.group(1).upper())
-                continue
 
             if pending_type_decl:
                 m_ext = self.re_ext_start.search(clean) or self.re_extends.search(clean)
@@ -249,12 +271,15 @@ class GenericRegexParser(BaseParser):
                     pending_inheritance_mode = "implements"
                     pending_inheritance_impls.extend(self._split_inheritance_list(m_impl.group(1)))
                 elif pending_inheritance_mode:
+                    # Continue matching if we are in an inheritance block but haven't seen '{'
                     m_cont = self.re_inherit_cont.match(clean)
                     if m_cont:
                         chunk = m_cont.group(1)
                         if pending_inheritance_mode == "extends": pending_inheritance_extends.extend(self._split_inheritance_list(chunk))
                         else: pending_inheritance_impls.extend(self._split_inheritance_list(chunk))
-                flush_inheritance(line_no, clean)
+                
+                if "{" in clean:
+                    flush_inheritance(line_no, clean)
 
             matches: List[Tuple[str, str, int]] = []
             for m in self.re_class.finditer(clean):
@@ -265,17 +290,23 @@ class GenericRegexParser(BaseParser):
                 matches.append((name, kind, m.start()))
                 pending_type_decl = (name, line_no)
                 pending_inheritance_mode, pending_inheritance_extends, pending_inheritance_impls = None, [], []
-                m_ext_inline = self.re_extends.search(clean, m.end()) or (self.re_ext_partial.search(clean[m.end():]) if clean.rstrip().endswith(("extends", ":")) else None)
+                
+                # Check for inline inheritance
+                m_ext_inline = self.re_extends.search(clean, m.end())
                 if m_ext_inline:
                     pending_inheritance_mode = "extends"
-                    pending_inheritance_extends.extend(self._split_inheritance_list(m_ext_inline.group(1) if m_ext_inline.groups() else ""))
-                m_impl_inline = self.re_implements.search(clean, m.end()) or (self.re_impl_partial.search(clean[m.end():]) if clean.rstrip().endswith("implements") else None)
+                    pending_inheritance_extends.extend(self._split_inheritance_list(m_ext_inline.group(1)))
+                
+                m_impl_inline = self.re_implements.search(clean, m.end())
                 if m_impl_inline:
                     pending_inheritance_mode = "implements"
-                    pending_inheritance_impls.extend(self._split_inheritance_list(m_impl_inline.group(1) if m_impl_inline.groups() else ""))
+                    pending_inheritance_impls.extend(self._split_inheritance_list(m_impl_inline.group(1)))
+                
                 if clean.rstrip().endswith(("extends", ":")): pending_inheritance_mode = "extends"
                 elif clean.rstrip().endswith("implements"): pending_inheritance_mode = "implements"
-                flush_inheritance(line_no, clean)
+                
+                if "{" in clean:
+                    flush_inheritance(line_no, clean)
 
             for m in self.re_method.finditer(clean):
                 name = m.group(1)
@@ -290,10 +321,11 @@ class GenericRegexParser(BaseParser):
                 pending_annos, last_path, pending_doc = [], None, []
 
             if not matches and clean and not clean.startswith("@") and not in_doc:
-                if "{{" not in clean and "}}" not in clean: pending_doc = []
+                if "{" not in clean and "}" not in clean: pending_doc = []
 
-            op, cl = clean.count("{ "), clean.count(" }")
+            op, cl = clean.count("{"), clean.count("}")
             cur_bal += (op - cl)
+
             if op > 0 or cl > 0:
                 still_active = []
                 for bal, info in active_scopes:
@@ -318,9 +350,9 @@ class ParserFactory:
         ext = (ext or "").lower()
         if ext == ".py": return PythonParser()
         configs = {
-            ".java": {"re_class": _safe_compile(r"\b(class|interface|enum|record)\s+([a-zA-Z0-9_]+)"), "re_method": _safe_compile(r"(?:[a-zA-Z0-9_<>,.[\\][\s]+?\s+)?\b([a-zA-Z0-9_]+)\b\s*\(")},
+            ".java": {"re_class": _safe_compile(r"\b(class|interface|enum|record)\s+([a-zA-Z0-9_]+)"), "re_method": _safe_compile(r"(?:[a-zA-Z0-9_<>,.\[\]\s]+?\s+)?\b([a-zA-Z0-9_]+)\b\s*\(")},
             ".kt": {"re_class": _safe_compile(r"\b(class|interface|enum|object|data\s+class)\s+([a-zA-Z0-9_]+)"), "re_method": _safe_compile(r"\bfun\s+([a-zA-Z0-9_]+)\b\s*\(")},
-            ".go": {"re_class": _safe_compile(r"\b(type|struct|interface)\s+([a-zA-Z0-9_]+)"), "re_method": _safe_compile(r"\bfunc\s+(?:[^)]+\)\s+)?([a-zA-Z0-9_]+)\b\s*\(")},
+            ".go": {"re_class": _safe_compile(r"\b(type|struct|interface)\s+([a-zA-Z0-9_]+)"), "re_method": _safe_compile(r"\bfunc\s+(?:[^)]+\)\s+)?([a-zA-Z0-9_]+)\b\s*\("), "method_kind": "function"},
             ".cpp": {"re_class": _safe_compile(r"\b(class|struct|enum)\s+([a-zA-Z0-9_]+)"), "re_method": _safe_compile(r"(?:[a-zA-Z0-9_:<>]+\s+)?\b([a-zA-Z0-9_]+)\b\s*\(")},
             ".h": {"re_class": _safe_compile(r"\b(class|struct|enum)\s+([a-zA-Z0-9_]+)"), "re_method": _safe_compile(r"(?:[a-zA-Z0-9_:<>]+\s+)?\b([a-zA-Z0-9_]+)\b\s*\(")},
             ".js": {"re_class": _safe_compile(r"\b(class)\s+([a-zA-Z0-9_]+)"), "re_method": _safe_compile(r"(?:async\s+)?function\s+([a-zA-Z0-9_]+)\b\s*\(")},
@@ -394,6 +426,16 @@ class Indexer:
     def request_rescan(self): self._rescan.set()
 
     def run_forever(self):
+        # v2.7.0: Start watcher if available and not already running
+        if FileWatcher and not self.watcher:
+            try:
+                root = Path(os.path.expanduser(self.cfg.workspace_root)).resolve()
+                self.watcher = FileWatcher([str(root)], self._process_watcher_event)
+                self.watcher.start()
+                if self.logger: self.logger.log_info(f"FileWatcher started for {root}")
+            except Exception as e:
+                if self.logger: self.logger.log_error(f"Failed to start FileWatcher: {e}")
+
         self._scan_once(); self.status.index_ready = True
         while not self._stop.is_set():
             timeout = max(1, int(getattr(self.cfg, "scan_interval_seconds", 30)))
@@ -410,6 +452,13 @@ class Indexer:
             if prev and int(st.st_mtime) == int(prev[0]) and int(st.st_size) == int(prev[1]):
                 if now - st.st_mtime > AI_SAFETY_NET_SECONDS: return {"type": "unchanged", "rel": rel}
             text = file_path.read_text(encoding="utf-8", errors="ignore")
+            
+            # v2.7.0: Handle large file body storage control
+            original_size = len(text)
+            exclude_bytes = getattr(self.cfg, "exclude_content_bytes", 104857600)
+            if original_size > exclude_bytes:
+                text = text[:exclude_bytes] + f"\n\n... [CONTENT TRUNCATED (File size: {original_size} bytes, limit: {exclude_bytes})] ..."
+
             if getattr(self.cfg, "redact_enabled", True):
                 text = _redact(text)
             symbols, relations = _extract_symbols_with_relations(rel, text)
@@ -491,22 +540,38 @@ class Indexer:
         file_entries = self._iter_files(root)
         now, scan_ts = time.time(), int(time.time())
         self.status.last_scan_ts, self.status.scanned_files = now, len(file_entries)
+        
         batch_files, batch_syms, batch_rels, unchanged = [], [], [], []
-        futures = [self._executor.submit(self._process_file_task, root, f, s, scan_ts, now) for f, s in file_entries]
-        for future in concurrent.futures.as_completed(futures):
-            try: res = future.result()
-            except: self.status.errors += 1; continue
-            if not res: continue
-            if res["type"] == "unchanged":
-                unchanged.append(res["rel"])
-                if len(unchanged) >= 100: self.db.update_last_seen(unchanged, scan_ts); unchanged.clear()
-                continue
-            batch_files.append((res["rel"], res["repo"], res["mtime"], res["size"], res["content"], res["scan_ts"]))
-            batch_syms.extend(res["symbols"]); batch_rels.extend(res["relations"])
-            if len(batch_files) >= 50:
-                self.db.upsert_files(batch_files); self.db.upsert_symbols(batch_syms); self.db.upsert_relations(batch_rels)
-                self.status.indexed_files += len(batch_files)
-                batch_files, batch_syms, batch_rels = [], [], []
+        
+        # v2.7.0: Batched futures to prevent memory bloat in large workspaces
+        chunk_size = 100
+        for i in range(0, len(file_entries), chunk_size):
+            chunk = file_entries[i:i+chunk_size]
+            futures = [self._executor.submit(self._process_file_task, root, f, s, scan_ts, now) for f, s in chunk]
+            
+            for f, s in chunk:
+                if f.name == "package.json":
+                    rel = str(f.relative_to(root))
+                    repo = rel.split(os.sep, 1)[0] if os.sep in rel else "__root__"
+                    self._process_meta_file(f, repo)
+
+            for future in concurrent.futures.as_completed(futures):
+                try: res = future.result()
+                except: self.status.errors += 1; continue
+                if not res: continue
+                if res["type"] == "unchanged":
+                    unchanged.append(res["rel"])
+                    if len(unchanged) >= 100: self.db.update_last_seen(unchanged, scan_ts); unchanged.clear()
+                    continue
+                
+                batch_files.append((res["rel"], res["repo"], res["mtime"], res["size"], res["content"], res["scan_ts"]))
+                batch_syms.extend(res["symbols"]); batch_rels.extend(res["relations"])
+                
+                if len(batch_files) >= 50:
+                    self.db.upsert_files(batch_files); self.db.upsert_symbols(batch_syms); self.db.upsert_relations(batch_rels)
+                    self.status.indexed_files += len(batch_files)
+                    batch_files, batch_syms, batch_rels = [], [], []
+
         if batch_files:
             self.db.upsert_files(batch_files); self.db.upsert_symbols(batch_syms); self.db.upsert_relations(batch_rels)
             self.status.indexed_files += len(batch_files)

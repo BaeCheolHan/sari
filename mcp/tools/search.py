@@ -234,6 +234,9 @@ def execute_search(args: Dict[str, Any], db: LocalSearchDB, logger: TelemetryLog
     
     logger.log_telemetry(f"tool=search query='{opts.query}' results={len(results)} snippet_chars={snippet_chars} latency={latency_ms}ms")
 
-    return {
+    # Merge output into return for backward compatibility with integration tests
+    res = {
         "content": [{"type": "text", "text": json.dumps(output, indent=2, ensure_ascii=False)}],
     }
+    res.update(output)
+    return res

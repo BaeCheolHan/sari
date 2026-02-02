@@ -94,26 +94,17 @@ class LocalSearchMCPServer:
 
             try:
                 config_path = Path(self.workspace_root) / ".codex" / "tools" / "deckard" / "config" / "config.json"
-                if config_path.exists():
-                    self.cfg = Config.load(str(config_path), workspace_root_override=self.workspace_root)
-                else:
-                    self.cfg = Config(
-                        workspace_root=self.workspace_root,
-                        server_host="127.0.0.1",
-                        server_port=47777,
-                        scan_interval_seconds=180,
-                        snippet_max_lines=5,
-                        max_file_bytes=800000,
-                        db_path=str(WorkspaceManager.get_local_db_path(self.workspace_root)),
-                        include_ext=[".py", ".js", ".ts", ".java", ".kt", ".go", ".rs", ".md", ".json", ".yaml", ".yml", ".sh"],
-                        include_files=["pom.xml", "package.json", "Dockerfile", "Makefile", "build.gradle", "settings.gradle"],
-                        exclude_dirs=[".git", "node_modules", "__pycache__", ".venv", "venv", "target", "build", "dist", "coverage", "vendor"],
-                        exclude_globs=["*.min.js", "*.min.css", "*.map", "*.lock", "package-lock.json", "yarn.lock", "pnpm-lock.yaml"],
-                        redact_enabled=True,
-                        commit_batch_size=500,
-                    )
+                if not config_path.exists():
+                     # Fallback to older legacy path if it exists
+                     alt_path = Path(self.workspace_root) / ".codex" / "tools" / "deckard" / "config" / "config.json"
+                     if alt_path.exists(): config_path = alt_path
+                     else: config_path = None
+                
+                # Config.load handles defaults if config_path is None or doesn't exist
+                self.cfg = Config.load(str(config_path) if config_path else None, workspace_root_override=self.workspace_root)
                 
                 db_path = Path(self.cfg.db_path)
+
                 db_path.parent.mkdir(parents=True, exist_ok=True)
                 self.db = LocalSearchDB(str(db_path))
                 self.logger.log_info(f"DB path: {db_path}")

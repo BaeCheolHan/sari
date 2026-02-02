@@ -16,7 +16,7 @@ from mcp.tools.index_file import execute_index_file
 class TestRound3(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.db_path = os.path.abspath("horadric-deckard/tests/test_v2_9.db")
+        cls.db_path = os.path.join(os.getcwd(), "tests/test_v2_9.db")
         if os.path.exists(cls.db_path): os.remove(cls.db_path)
         cls.db = LocalSearchDB(cls.db_path)
         cls.cfg = Config(
@@ -38,7 +38,7 @@ class TestRound3(unittest.TestCase):
 
     def test_3_1_api_search_integration(self):
         # Index a sample controller
-        path = "horadric-deckard/tests/SampleController.java"
+        path = "tests/SampleController.java"
         content = Path(path).read_text()
         from app.indexer import _extract_symbols
         symbols = _extract_symbols(path, content)

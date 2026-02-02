@@ -1,12 +1,16 @@
 import json
 import sqlite3
 from typing import Any, Dict, List
+try:
+    from ._util import mcp_json
+except ImportError:
+    from _util import mcp_json
 
 def execute_search_api_endpoints(args: Dict[str, Any], db: Any) -> Dict[str, Any]:
     """Search for API endpoints by URL path pattern."""
     path_query = args.get("path", "").strip()
     if not path_query:
-        return {"results": [], "error": "Path query is required"}
+        return mcp_json({"results": [], "error": "Path query is required"})
 
     # Search in symbols where metadata contains the path
     # SQLite JSON support is limited in older versions, so we use LIKE on metadata TEXT
@@ -39,8 +43,8 @@ def execute_search_api_endpoints(args: Dict[str, Any], db: Any) -> Dict[str, Any
         except:
             continue
 
-    return {
+    return mcp_json({
         "query": path_query,
         "results": results,
         "count": len(results)
-    }
+    })

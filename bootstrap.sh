@@ -50,8 +50,18 @@ PY
 fi
 
 # Self-install/update: if running from repo (not install dir), bootstrap install dir first
-if [ "${DECKARD_BOOTSTRAP_DONE:-}" != "1" ] && [ "$ROOT_DIR" != "$INSTALL_DIR" ]; then
-    # Determine repo version (if available)
+if [ "${DECKARD_BOOTSTRAP_DONE:-}" != "1" ] && [ "$ROOT_DIR" != "$INSTALL_DIR" ] && [ "${DECKARD_SKIP_INSTALL:-}" != "1" ]; then
+    # Skip if --skip-install is present in args
+    SKIP=0
+    for arg in "$@"; do
+        if [ "$arg" = "--skip-install" ]; then
+            SKIP=1
+            break
+        fi
+    done
+
+    if [ "$SKIP" = "0" ]; then
+        # Determine repo version (if available)
     REPO_VERSION=""
     if [ -d "$ROOT_DIR/.git" ] && command -v git >/dev/null 2>&1; then
         REPO_VERSION=$(git -C "$ROOT_DIR" describe --tags --abbrev=0 2>/dev/null)
@@ -120,6 +130,10 @@ if [ $# -gt 0 ]; then
                 ;;
             --workspace-root=*)
                 export DECKARD_WORKSPACE_ROOT="${1#*=}"
+                shift
+                ;;
+            --skip-install)
+                export DECKARD_SKIP_INSTALL=1
                 shift
                 ;;
             *)

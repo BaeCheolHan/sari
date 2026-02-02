@@ -33,11 +33,35 @@ class Config:
     exclude_globs: list[str]
     redact_enabled: bool
     commit_batch_size: int
+    exclude_content_bytes: int = 104857600 # v2.7.0 (Default: 100MB)
+
+    @staticmethod
+    def get_defaults(workspace_root: str) -> dict:
+        """Central source for default configuration values (v2.7.0)."""
+        return {
+            "workspace_root": workspace_root,
+            "server_host": "127.0.0.1",
+            "server_port": 47777,
+            "scan_interval_seconds": 180,
+            "snippet_max_lines": 5,
+            "max_file_bytes": 1000000, # Increased to 1MB
+            "db_path": os.path.join(workspace_root, ".codex", "tools", "deckard", "data", "index.db"),
+            "include_ext": [".py", ".js", ".ts", ".java", ".kt", ".go", ".rs", ".md", ".json", ".yaml", ".yml", ".sh"],
+            "include_files": ["pom.xml", "package.json", "Dockerfile", "Makefile", "build.gradle", "settings.gradle"],
+            "exclude_dirs": [".git", "node_modules", "__pycache__", ".venv", "venv", "target", "build", "dist", "coverage", "vendor"],
+            "exclude_globs": ["*.min.js", "*.min.css", "*.map", "*.lock", "package-lock.json", "yarn.lock", "pnpm-lock.yaml"],
+            "redact_enabled": True,
+            "commit_batch_size": 500,
+            "exclude_content_bytes": 104857600, # 100MB default for full content storage
+        }
 
     @staticmethod
     def load(path: str, workspace_root_override: str = None) -> "Config":
-        with open(path, "r", encoding="utf-8") as f:
-            raw = json.load(f)
+        raw = {}
+        if path and os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+        
         # Backward compatibility: legacy "indexing" schema
         legacy_indexing = raw.get("indexing", {}) if isinstance(raw, dict) else {}
         if "include_ext" not in raw and "include_extensions" in legacy_indexing:
@@ -51,28 +75,17 @@ class Config:
                 raw["exclude_globs"] = [p for p in legacy_excludes if any(c in p for c in ["*", "?"])]
 
         # Portability: allow runtime overrides for workspace root.
-        # This helps when the packaged config is used in different locations.
-        # DECKARD_* preferred, LOCAL_SEARCH_* for backward compatibility
         env_workspace_root = os.environ.get("DECKARD_WORKSPACE_ROOT") or os.environ.get("LOCAL_SEARCH_WORKSPACE_ROOT")
-        if workspace_root_override:
-            raw = dict(raw)
-            raw["workspace_root"] = workspace_root_override
-        elif env_workspace_root:
-            raw = dict(raw)
-            raw["workspace_root"] = env_workspace_root
-        # Support port override for automatic port selection on conflict
-        port_override = os.environ.get("DECKARD_PORT") or os.environ.get("LOCAL_SEARCH_PORT_OVERRIDE")
-        if port_override:
-            server_port = int(port_override)
-        else:
-            server_port = int(raw.get("server_port", 47777))
-
-        # v2.5.0: Force workspace-local DB path to prevent cross-repo pollution.
-        workspace_root = _expanduser(raw["workspace_root"])
+        workspace_root = workspace_root_override or env_workspace_root or raw.get("workspace_root") or os.getcwd()
+        workspace_root = _expanduser(workspace_root)
         
-        # v2.5.3: Unified DB path resolution
-        # Priority: ENV DECKARD_DB_PATH -> ENV LOCAL_SEARCH_DB_PATH -> config.json (if abs) -> workspace-local
-        # SECURITY: Refuse relative paths for DB_PATH to prevent unintended file creation.
+        defaults = Config.get_defaults(workspace_root)
+
+        # Support port override
+        port_override = os.environ.get("DECKARD_PORT") or os.environ.get("LOCAL_SEARCH_PORT_OVERRIDE")
+        server_port = int(port_override) if port_override else int(raw.get("server_port", defaults["server_port"]))
+
+        # Unified DB path resolution
         env_db_path = (os.environ.get("DECKARD_DB_PATH") or os.environ.get("LOCAL_SEARCH_DB_PATH") or "").strip()
         
         db_path = ""
@@ -93,23 +106,25 @@ class Config:
                     logger.warning(f"Ignoring relative db_path in config '{raw_db_path}'. Absolute path required.")
         
         if not db_path:
-            db_path = os.path.join(workspace_root, ".codex", "tools", "deckard", "data", "index.db")
+            db_path = defaults["db_path"]
 
         return Config(
             workspace_root=workspace_root,
-            server_host=raw.get("server_host", "127.0.0.1"),
+            server_host=raw.get("server_host", defaults["server_host"]),
             server_port=server_port,
-            scan_interval_seconds=int(raw.get("scan_interval_seconds", 180)),
-            snippet_max_lines=int(raw.get("snippet_max_lines", 5)),
-            max_file_bytes=int(raw.get("max_file_bytes", 800000)),
+            scan_interval_seconds=int(raw.get("scan_interval_seconds", defaults["scan_interval_seconds"])),
+            snippet_max_lines=int(raw.get("snippet_max_lines", defaults["snippet_max_lines"])),
+            max_file_bytes=int(raw.get("max_file_bytes", defaults["max_file_bytes"])),
             db_path=_expanduser(db_path),
-            include_ext=list(raw.get("include_ext", [])),
-            include_files=list(raw.get("include_files", [])),
-            exclude_dirs=list(raw.get("exclude_dirs", [])),
-            exclude_globs=list(raw.get("exclude_globs", [])),
-            redact_enabled=bool(raw.get("redact_enabled", True)),
-            commit_batch_size=int(raw.get("commit_batch_size", 500)),
+            include_ext=list(raw.get("include_ext", defaults["include_ext"])),
+            include_files=list(raw.get("include_files", defaults["include_files"])),
+            exclude_dirs=list(raw.get("exclude_dirs", defaults["exclude_dirs"])),
+            exclude_globs=list(raw.get("exclude_globs", defaults["exclude_globs"])),
+            redact_enabled=bool(raw.get("redact_enabled", defaults["redact_enabled"])),
+            commit_batch_size=int(raw.get("commit_batch_size", defaults["commit_batch_size"])),
+            exclude_content_bytes=int(raw.get("exclude_content_bytes", defaults["exclude_content_bytes"])),
         )
+
 
 
 def resolve_config_path(repo_root: str) -> str:

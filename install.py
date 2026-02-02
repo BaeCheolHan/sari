@@ -331,7 +331,7 @@ def do_install(args):
             _terminate_pids(pids)
 
         # Remove previous installation if it exists
-        if INSTALL_DIR.exists(follow_symlinks=False):
+        if INSTALL_DIR.exists() or INSTALL_DIR.is_symlink():
             print_step(f"Removing existing installation at {INSTALL_DIR}...")
             try:
                 if INSTALL_DIR.is_symlink():
@@ -340,7 +340,7 @@ def do_install(args):
                     shutil.rmtree(INSTALL_DIR)
             except Exception as e:
                 print_error(f"Failed to remove existing directory: {e}")
-                sys.exit(1)        
+                sys.exit(1)
         # Clone the repository
         source_url = os.environ.get("DECKARD_INSTALL_SOURCE", REPO_URL)
         print_step(f"Cloning latest Deckard from {source_url} to {INSTALL_DIR}...")

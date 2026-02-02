@@ -18,7 +18,7 @@ def my_func():
     \"\"\"My Docstring\"\"\"
     pass
 """
-        symbols = _extract_symbols("test.py", content)
+        symbols, _ = _extract_symbols("test.py", content)
         meta = json.loads(symbols[0][7])
         self.assertIn("@decorator1", meta["decorators"])
         self.assertIn("@decorator2(...)", meta["decorators"])
@@ -30,7 +30,7 @@ public class UserServiceImpl implements UserService {
     public void save() {}
 }
 """
-        symbols = _extract_symbols("UserServiceImpl.java", content)
+        symbols, _ = _extract_symbols("UserServiceImpl.java", content)
         # Check if annotations are captured
         meta = json.loads(symbols[0][7])
         self.assertIn("@Service", meta["annotations"])
@@ -40,7 +40,7 @@ public class UserServiceImpl implements UserService {
 @RequestMapping({"/api/v1", "/api/v2"})
 public class ApiController {}
 """
-        symbols = _extract_symbols("ApiController.java", content)
+        symbols, _ = _extract_symbols("ApiController.java", content)
         # Note: Current implementation might only catch first one or raw string. 
         # This test identifies if we need to improve regex.
         meta = json.loads(symbols[0][7])
@@ -52,7 +52,7 @@ async def async_task():
     \"\"\"Async Doc\"\"\"
     return 1
 """
-        symbols = _extract_symbols("async.py", content)
+        symbols, _ = _extract_symbols("async.py", content)
         self.assertEqual(symbols[0][8].strip(), "Async Doc")
 
     def test_1_10_parent_name(self):
@@ -61,7 +61,7 @@ class MyClass:
     def my_method(self):
         pass
 """
-        symbols = _extract_symbols("parent.py", content)
+        symbols, _ = _extract_symbols("parent.py", content)
         # Index 0 is MyClass, Index 1 is my_method
         method = next(s for s in symbols if s[1] == "my_method")
         self.assertEqual(method[6], "MyClass")

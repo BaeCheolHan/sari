@@ -1,10 +1,15 @@
+import json
 from typing import Any, Dict, List
+try:
+    from ._util import mcp_json
+except ImportError:
+    from _util import mcp_json
 
 def execute_get_callers(args: Dict[str, Any], db: Any) -> Dict[str, Any]:
     """Find symbols that call a specific symbol."""
     target_symbol = args.get("name", "").strip()
     if not target_symbol:
-        return {"results": [], "error": "Symbol name is required"}
+        return mcp_json({"results": [], "error": "Symbol name is required"})
 
     # Search in symbol_relations table
     sql = """
@@ -27,8 +32,8 @@ def execute_get_callers(args: Dict[str, Any], db: Any) -> Dict[str, Any]:
             "rel_type": r["rel_type"]
         })
 
-    return {
+    return mcp_json({
         "target": target_symbol,
         "results": results,
         "count": len(results)
-    }
+    })

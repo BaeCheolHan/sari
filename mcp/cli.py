@@ -99,7 +99,13 @@ def _enforce_loopback(host: str) -> None:
 
 
 def _get_http_host_port() -> tuple[str, int]:
-    """Get active HTTP server address from Registry or Config."""
+    """Get active HTTP server address with Environment priority (v2.7.0)."""
+    # 0. Environment Override (Highest Priority for testing/isolation)
+    env_host = os.environ.get("DECKARD_HOST") or os.environ.get("DECKARD_DAEMON_HOST")
+    env_port = os.environ.get("DECKARD_PORT") or os.environ.get("DECKARD_DAEMON_PORT")
+    if env_host or env_port:
+        return str(env_host or DEFAULT_HTTP_HOST), int(env_port or DEFAULT_HTTP_PORT)
+
     workspace_root = WorkspaceManager.resolve_workspace_root()
     
     # 1. Try Global Registry
@@ -347,6 +353,12 @@ def cmd_auto(args):
 def cmd_status(args):
     """Query HTTP status endpoint."""
     try:
+        host, port = _get_http_host_port()
+        # Fast check if port is even open
+        if not is_daemon_running(host, port):
+             print(f"❌ Error: Daemon is not running on {host}:{port}")
+             return 1
+             
         data = _request_http("/status", {})
         print(json.dumps(data, ensure_ascii=False, indent=2))
         return 0
@@ -354,7 +366,6 @@ def cmd_status(args):
         print(f"❌ Error: Could not connect to Deckard HTTP server.")
         print(f"   Details: {e}")
         print(f"   Hint: Make sure the Deamon is running for this workspace.")
-        print(f"   Try: bootstrap.sh daemon status")
         return 1
 
 
