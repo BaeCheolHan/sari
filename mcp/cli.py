@@ -199,7 +199,7 @@ def cmd_daemon_start(args):
         
         try:
             # Import and run directly
-            from .daemon import main as daemon_main
+            from mcp.daemon import main as daemon_main
             import asyncio
             asyncio.run(daemon_main())
         except KeyboardInterrupt:
@@ -291,7 +291,7 @@ def cmd_daemon_status(args):
 
 def cmd_proxy(args):
     """Run in proxy mode (for MCP stdio)."""
-    from .proxy import main as proxy_main
+    from mcp.proxy import main as proxy_main
     proxy_main()
 
 

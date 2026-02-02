@@ -421,6 +421,15 @@ class LocalSearchDB:
             rows = self._read.execute("SELECT * FROM repo_meta").fetchall()
         return {row["repo_name"]: dict(row) for row in rows}
 
+    def delete_file(self, path: str) -> None:
+        """Delete a file and its symbols by path (v2.7.2)."""
+        with self._lock:
+            cur = self._write.cursor()
+            cur.execute("BEGIN")
+            cur.execute("DELETE FROM symbols WHERE path = ?", (path,))
+            cur.execute("DELETE FROM files WHERE path = ?", (path,))
+            self._write.commit()
+
     def list_files(
         self,
         repo: Optional[str] = None,
@@ -648,34 +657,67 @@ class LocalSearchDB:
         if not lines:
             return ""
 
-        lower = content.lower()
-        pos = -1
-        matched_term = ""
-        for t in terms:
-            p = lower.find(t.lower())
-            if p != -1:
-                pos = p
-                matched_term = t
-                break
+        lower_lines = [l.lower() for l in lines]
+        lower_terms = [t.lower() for t in terms if t.strip()]
+        
+        if not lower_terms:
+            return "\n".join(f"L{i+1}: {ln}" for i, ln in enumerate(lines[:max_lines]))
 
-        if pos == -1:
-            slice_lines = lines[:max_lines]
-            return "\n".join(f"L{i+1}: {ln}" for i, ln in enumerate(slice_lines))
+        # Score per line
+        # +1 per match, +5 if definition (def/class) AND match
+        line_scores = [0] * len(lines)
+        def_pattern = re.compile(r"\b(class|def|function|struct|interface|type)\s+", re.IGNORECASE)
+        
+        has_any_match = False
+        for i, line_lower in enumerate(lower_lines):
+            score = 0
+            for t in lower_terms:
+                if t in line_lower:
+                    score += 1
+            
+            if score > 0:
+                has_any_match = True
+                if def_pattern.search(line_lower):
+                    score += 5
+            
+            line_scores[i] = score
 
-        line_idx = lower[:pos].count("\n")
-        half = max_lines // 2
-        start = max(0, line_idx - half)
-        end = min(len(lines), start + max_lines)
-        start = max(0, end - max_lines)
-
+        if not has_any_match:
+             return "\n".join(f"L{i+1}: {ln}" for i, ln in enumerate(lines[:max_lines]))
+             
+        # Find best window (Sliding Window)
+        window_size = min(len(lines), max_lines)
+        current_score = sum(line_scores[:window_size])
+        best_window_score = current_score
+        best_start = 0
+        
+        for i in range(1, len(lines) - window_size + 1):
+            current_score = current_score - line_scores[i-1] + line_scores[i + window_size - 1]
+            if current_score > best_window_score:
+                best_window_score = current_score
+                best_start = i
+                
+        # Extract window
+        start_idx = best_start
+        end_idx = start_idx + window_size
+        
         out_lines = []
-        for i in range(start, end):
+        highlight_patterns = [re.compile(re.escape(t), re.IGNORECASE) for t in terms if t.strip()]
+        
+        for i in range(start_idx, end_idx):
             line = lines[i]
-            if highlight and matched_term:
-                pattern = re.compile(re.escape(matched_term), re.IGNORECASE)
-                line = pattern.sub(f">>>{matched_term}<<<", line)
-            prefix = "→" if i == line_idx else " "
-            out_lines.append(f"{prefix}L{i+1}: {line}")
+            if highlight:
+                for pat in highlight_patterns:
+                    # Use backreference to preserve case
+                    line = pat.sub(r">>>\g<0><<<", line)
+            
+            prefix = " " 
+            if line_scores[i] > 0:
+                 # Mark matching lines lightly if needed, or just use standard formatting
+                 pass
+            
+            out_lines.append(f"L{i+1}: {line}")
+            
         return "\n".join(out_lines)
 
     # ========== Main Search Methods ========== 
@@ -806,7 +848,7 @@ class LocalSearchDB:
                 # If we have a symbol match, it overrides the score and snippet preference
                 # But we want to keep the highest score.
                 # Since we gave symbol hit 1000.0, it will likely win.
-                existing.score += 500.0 # Boost existing FTS hit
+                existing.score += 1200.0 # Boost existing FTS hit to surpass symbol-only (1000)
                 existing.hit_reason = f"{sh.hit_reason}, {existing.hit_reason}"
                 # If the symbol snippet is better (direct definition), usage might be better context?
                 # User objective: "Definition Ranking". So Definition > Usage.
@@ -823,8 +865,12 @@ class LocalSearchDB:
         final_hits.sort(key=lambda h: (-h.score, -h.mtime, h.path))
         
         # Pagination
-        start = opts.offset
-        end = opts.offset + opts.limit
+        try:
+            start = int(opts.offset)
+            end = start + int(opts.limit)
+        except (ValueError, TypeError):
+            start = 0
+            end = 20
         
         # Adjust Total Count
         if opts.total_mode == "approx":
@@ -939,21 +985,49 @@ class LocalSearchDB:
         meta["total"] = total_hits
         meta["total_mode"] = opts.total_mode
 
-        # Fetch buffer 
-        fetch_limit = (opts.offset + opts.limit) * 2
-        if fetch_limit < 100: fetch_limit = 100
+        # Fetch buffer (Top-50 for reranking)
+        fetch_limit = 50 
+        
+        # Google-Style Stage 1: SQL Partial Scoring
+        # We calculate Priors here within SQL to avoid fetching junk.
+        
+        # Priors (Higher is better)
+        # Path Prior: src/app/core -> +0.6
+        # Matches "src/..." or ".../src/..."
+        path_prior_sql = """
+        CASE 
+            WHEN f.path LIKE 'src/%' OR f.path LIKE '%/src/%' OR f.path LIKE 'app/%' OR f.path LIKE '%/app/%' OR f.path LIKE 'core/%' OR f.path LIKE '%/core/%' THEN 0.6
+            WHEN f.path LIKE 'config/%' OR f.path LIKE '%/config/%' OR f.path LIKE 'domain/%' OR f.path LIKE '%/domain/%' OR f.path LIKE 'service/%' OR f.path LIKE '%/service/%' THEN 0.4
+            WHEN f.path LIKE 'test/%' OR f.path LIKE '%/test/%' OR f.path LIKE 'tests/%' OR f.path LIKE '%/tests/%' OR f.path LIKE 'example/%' OR f.path LIKE '%/example/%' OR f.path LIKE 'dist/%' OR f.path LIKE '%/dist/%' OR f.path LIKE 'build/%' OR f.path LIKE '%/build/%' THEN -0.7
+            ELSE 0.0
+        END
+        """
+        
+        # Filetype Prior: Code -> +0.3
+        filetype_prior_sql = """
+        CASE
+            WHEN f.path LIKE '%.py' OR f.path LIKE '%.ts' OR f.path LIKE '%.go' OR f.path LIKE '%.java' OR f.path LIKE '%.kt' THEN 0.3
+            WHEN f.path LIKE '%.yaml' OR f.path LIKE '%.yml' OR f.path LIKE '%.json' THEN 0.15
+            WHEN f.path LIKE '%.lock' OR f.path LIKE '%.min.js' OR f.path LIKE '%.map' THEN -0.8
+            ELSE 0.0
+        END
+        """
+
+        # We combine them. We normalize score so higher is better.
+        # FTS5 bm25() is lower = better. We effectively want: (Priors - bm25)
+        # We start with -1.0 * bm25() as the base "relevance" (so it becomes higher is better).
         
         sql = f"""
             SELECT f.repo AS repo,
                    f.path AS path,
                    f.mtime AS mtime,
                    f.size AS size,
-                   bm25(files_fts) AS score,
+                   ( -1.0 * bm25(files_fts) + {path_prior_sql} + {filetype_prior_sql} ) AS score,
                    f.content AS content
             FROM files_fts
             JOIN files f ON f.rowid = files_fts.rowid
             WHERE {where}
-            ORDER BY {"f.mtime DESC, score" if opts.recency_boost else "score"}, f.path ASC
+            ORDER BY score DESC
             LIMIT ?;
         """
         params.append(int(fetch_limit))
@@ -961,12 +1035,14 @@ class LocalSearchDB:
         with self._read_lock:
             rows = self._read.execute(sql, params).fetchall()
         
-        hits = self._process_rows(rows, opts, terms)
+        # Stage 2: Python Reranking
+        hits = self._process_rows(rows, opts, terms, is_rerank=True)
         meta["total_scanned"] = len(rows)
         
         if no_slice:
             return hits, meta
 
+        # Slice to user limit (default 8)
         start = opts.offset
         end = opts.offset + opts.limit
         return hits[start:end], meta
@@ -1052,17 +1128,22 @@ class LocalSearchDB:
         return hits[start:end], meta
 
     def _process_rows(self, rows: list, opts: SearchOptions, 
-                      terms: list[str]) -> list[SearchHit]:
+                      terms: list[str], is_rerank: bool = False) -> list[SearchHit]:
         hits: list[SearchHit] = []
         
         all_meta = self.get_all_repo_meta()
         query_terms = [t.lower() for t in terms]
         query_raw_lower = opts.query.lower()
-        # v2.5.4: Handle line number prefixes in snippets
-        symbol_pattern = re.compile(r"^(?:\s*|→?\s*L\d+:\s*)(class|def|function|struct|pub\s+fn|async\s+def|interface|type)\s+", re.MULTILINE)
         
-        # v2.6.0: Pre-check for exact symbol match boosting
-        is_exact_symbol = self._is_exact_symbol(opts.query)
+        # Regex for Definition Boost
+        # Matches: class X, def X, function X, interface X, etc.
+        # We look for the QUERY TERM being defined.
+        def_patterns = []
+        for term in query_terms:
+            if len(term) < 3: continue 
+            # Pattern: (class|def|...) \s+ term
+            p = re.compile(rf"(class|def|function|struct|pub\s+fn|async\s+def|interface|type)\s+{re.escape(term)}\b", re.IGNORECASE)
+            def_patterns.append(p)
 
         for r in rows:
             path = r["path"]
@@ -1078,8 +1159,12 @@ class LocalSearchDB:
             if self._matches_exclude_patterns(path, opts.exclude_patterns):
                 continue
             
-            base_score = float(r["score"]) if r["score"] is not None else 0.0
-            score = -base_score if base_score < 0 else base_score
+            # Start with SQL score (already includes Priors if is_rerank=True)
+            score = float(r["score"]) if r["score"] is not None else 0.0
+            
+            # If NOT coming from the new FTS logic (e.g. LIKE fallback), score might be 0.0
+            # Normalize baseline if needed
+            
             reasons = []
             
             path_lower = path.lower()
@@ -1087,23 +1172,45 @@ class LocalSearchDB:
             filename = path_parts[-1]
             file_stem = Path(filename).stem
 
-            if file_stem == query_raw_lower:
-                score += 50.0
+            # 1. Filename Exact Match Boost
+            if filename == query_raw_lower or f".{query_raw_lower}." in filename:
+                score += 2.0
                 reasons.append("Exact filename match")
             elif path_lower.endswith(query_raw_lower):
-                score += 40.0
+                score += 1.5
                 reasons.append("Path suffix match")
-            
-            if query_raw_lower in filename:
-                score += 20.0
+            elif query_raw_lower in filename:
+                score += 1.0
                 reasons.append("Filename match")
             
-            for part in path_parts[:-1]:
-                if part == query_raw_lower:
-                    score += 15.0
-                    reasons.append(f"Dir match ({part})")
+            # 2. Definition Boost (Intent)
+            # Scan content for "def query_term"
+            is_definition = False
+            for pat in def_patterns:
+                if pat.search(content):
+                    score += 1.5
+                    is_definition = True
+                    reasons.append("Definition found")
                     break
             
+            # 3. Proximity Boost
+            if len(query_terms) > 1:
+                content_lower = content.lower()
+                term_indices = []
+                all_found = True
+                for t in query_terms:
+                    idx = content_lower.find(t)
+                    if idx == -1:
+                        all_found = False
+                        break
+                    term_indices.append(idx)
+                
+                if all_found:
+                    span = max(term_indices) - min(term_indices)
+                    if span < 100: # Terms are close
+                        score += 0.5
+                        reasons.append("Proximity boost")
+
             meta_obj = all_meta.get(repo_name)
             if meta_obj:
                 if meta_obj["priority"] > 0:
@@ -1113,75 +1220,49 @@ class LocalSearchDB:
                 domain = meta_obj["domain"].lower()
                 for term in query_terms:
                     if term in tags or term == domain:
-                        score += 5.0
+                        score += 0.5
                         reasons.append(f"Tag match ({term})")
                         break
             
             if any(p in path_lower for p in [".codex/", "agents.md", "gemini.md", "readme.md"]):
-                score += 2.0
+                score += 0.2
                 reasons.append("Core file")
             
             if opts.recency_boost:
                 score = self._calculate_recency_score(mtime, score)
             
+            # v2.5.4: Strictly enforce case sensitivity
             match_count = self._count_matches(content, opts.query, False, opts.case_sensitive)
-            
-            # v2.5.4: Strictly enforce case sensitivity if requested
             if opts.case_sensitive and match_count == 0:
                 continue
 
+            # Snippet Generation
             snippet = self._snippet_around(content, terms, opts.snippet_lines, highlight=True)
             
-            # v2.6.0: Enclosing symbol context
+            # 5. Enclosing Context 
             context_symbol = ""
-            # Try to infer line number from snippet... crude but separate read is expensive?
-            # actually we can infer from snippet "L{i}: " prefix
             first_line_match = re.search(r"L(\d+):", snippet)
             if first_line_match:
                 start_line = int(first_line_match.group(1))
-                # Heuristic: the hit is somewhere in the snippet lines. 
-                # Let's say the hit is near the middle or start. 
-                # Find enclosing symbol for the start of the snippet.
                 ctx = self._get_enclosing_symbol(path, start_line)
                 if ctx:
                     context_symbol = ctx
-                    # Small boost for having context
-                    score += 5.0
-                    
-            if is_exact_symbol:
-                # If query is "User" and we found a file that HAS Symbol "User", check if it's THIS file?
-                # Actually _is_exact_symbol just checks global existence.
-                # Let's check if this file contains that symbol.
-                # Optimization: do it in batch or just lazy?
-                # For now, if we found a "Symbol definition" in snippet (regex below) and it matches query?
-                pass
-
-            # Improved Symbol logic
-            clean_snippet = snippet.replace(">>>", "").replace("<<<", "")
-            if symbol_pattern.search(clean_snippet):
-                score += 10.0
-                reasons.append("Symbol definition")
-                
-                # Check if it defines the EXACT query symbol
-                # e.g. "class User" vs query "User"
-                if re.search(rf"\b(class|def|function|struct|interface)\s+{re.escape(query_raw_lower)}\b", clean_snippet.lower()):
-                     score += 100.0 # Massive boost for defining the TERM we asked for
-                     reasons.append("Exact Symbol Definition")
-
+                    score += 0.2 # Small context bonus
+            
             hits.append(SearchHit(
                 repo=repo_name,
                 path=path,
-                score=round(score, 3),
+                score=round(score, 3), # Round for clean display
                 snippet=snippet,
                 mtime=mtime,
                 size=size,
-                match_count=match_count,
+                match_count=0, 
                 file_type=self._get_file_extension(path),
                 hit_reason=", ".join(reasons) if reasons else "Content match",
                 context_symbol=context_symbol
             ))
         
-        # Single sort with tuple key (O(n log n) instead of O(3*n log n))
+        # Sort by Score (Desc)
         hits.sort(key=lambda h: (-h.score, -h.mtime, h.path))
         return hits
 
