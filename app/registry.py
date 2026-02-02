@@ -2,12 +2,15 @@ import json
 import os
 import sys
 import time
-import fcntl
 import socket
 from pathlib import Path
 from typing import Dict, Optional, Any
 
-# Local Standard Path
+# Cross-platform file locking
+IS_WINDOWS = os.name == 'nt'
+if not IS_WINDOWS:
+    import fcntl
+
 # Local Standard Path
 if os.environ.get("DECKARD_REGISTRY_FILE"):
     REGISTRY_FILE = Path(os.environ["DECKARD_REGISTRY_FILE"]).resolve()
@@ -36,24 +39,28 @@ class ServerRegistry:
         """Load registry with lock."""
         try:
             with open(REGISTRY_FILE, "r+") as f:
-                fcntl.flock(f, fcntl.LOCK_SH)
+                if not IS_WINDOWS:
+                    fcntl.flock(f, fcntl.LOCK_SH)
                 try:
                     return json.load(f)
                 except json.JSONDecodeError:
                     return {"version": "1.0", "instances": {}}
                 finally:
-                    fcntl.flock(f, fcntl.LOCK_UN)
+                    if not IS_WINDOWS:
+                        fcntl.flock(f, fcntl.LOCK_UN)
         except FileNotFoundError:
             return {"version": "1.0", "instances": {}}
 
     def _save(self, data: Dict[str, Any]):
         """Save registry with lock."""
         with open(REGISTRY_FILE, "w") as f:
-            fcntl.flock(f, fcntl.LOCK_EX)
+            if not IS_WINDOWS:
+                fcntl.flock(f, fcntl.LOCK_EX)
             try:
                 json.dump(data, f, indent=2)
             finally:
-                fcntl.flock(f, fcntl.LOCK_UN)
+                if not IS_WINDOWS:
+                    fcntl.flock(f, fcntl.LOCK_UN)
 
     def register(self, workspace_root: str, port: int, pid: int) -> None:
         """Register a running daemon."""
@@ -65,7 +72,8 @@ class ServerRegistry:
         # Ideally open "r+" with LOCK_EX, read, seek 0, write, truncate.
         
         with open(REGISTRY_FILE, "r+") as f:
-            fcntl.flock(f, fcntl.LOCK_EX)
+            if not IS_WINDOWS:
+                fcntl.flock(f, fcntl.LOCK_EX)
             try:
                 try:
                     data = json.load(f)
@@ -85,14 +93,16 @@ class ServerRegistry:
                 json.dump(data, f, indent=2)
                 f.truncate()
             finally:
-                fcntl.flock(f, fcntl.LOCK_UN)
+                if not IS_WINDOWS:
+                    fcntl.flock(f, fcntl.LOCK_UN)
 
     def unregister(self, workspace_root: str) -> None:
         """Remove a daemon (on shutdown)."""
         workspace_root = str(Path(workspace_root).resolve())
         
         with open(REGISTRY_FILE, "r+") as f:
-            fcntl.flock(f, fcntl.LOCK_EX)
+            if not IS_WINDOWS:
+                fcntl.flock(f, fcntl.LOCK_EX)
             try:
                 try:
                     data = json.load(f)
@@ -108,7 +118,8 @@ class ServerRegistry:
                     json.dump(data, f, indent=2)
                     f.truncate()
             finally:
-                fcntl.flock(f, fcntl.LOCK_UN)
+                if not IS_WINDOWS:
+                    fcntl.flock(f, fcntl.LOCK_UN)
 
     def get_instance(self, workspace_root: str) -> Optional[Dict[str, Any]]:
         """Get info for a workspace daemon. Checks liveness."""

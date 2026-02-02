@@ -39,11 +39,11 @@ def strip_deckard(cfg: Path):
     cfg.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 
 home = Path.home()
-global_cfg = home / ".codex" / "config.toml"
-strip_deckard(global_cfg)
+strip_deckard(home / ".codex" / "config.toml")
+strip_deckard(home / ".gemini" / "config.toml")
 cwd = Path.cwd()
-proj_cfg = cwd / ".codex" / "config.toml"
-strip_deckard(proj_cfg)
+strip_deckard(cwd / ".codex" / "config.toml")
+strip_deckard(cwd / ".gemini" / "config.toml")
 PY
     echo "[deckard] uninstall: done" >&2
     exit 0
