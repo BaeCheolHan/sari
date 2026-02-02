@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import signal
 import time
+import socket
 from pathlib import Path
 
 IS_WINDOWS = os.name == 'nt'
@@ -112,6 +113,33 @@ def print_next_steps(version):
     bootstrap_path = INSTALL_DIR / ("bootstrap.bat" if IS_WINDOWS else "bootstrap.sh")
     print(f"3. Run Doctor if issues: {C_YELLOW}{sys.executable} {INSTALL_DIR}/doctor.py{C_RESET}")
     print("="*50 + "\n")
+
+def _daemon_address():
+    host = os.environ.get("DECKARD_DAEMON_HOST", "127.0.0.1")
+    port = int(os.environ.get("DECKARD_DAEMON_PORT", "47779"))
+    return host, port
+
+def _is_daemon_running() -> bool:
+    host, port = _daemon_address()
+    try:
+        with socket.create_connection((host, port), timeout=0.3):
+            return True
+    except Exception:
+        return False
+
+def _start_daemon(bootstrap_script: Path, env: dict) -> None:
+    try:
+        subprocess.run([str(bootstrap_script), "daemon", "start", "-d"], env=env, check=False, capture_output=CONFIG["quiet"])
+    except Exception as e:
+        print_warn(f"Failed to start daemon automatically: {e}")
+
+def _wait_for_daemon(timeout_s: float = 3.0, interval_s: float = 0.2) -> bool:
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        if _is_daemon_running():
+            return True
+        time.sleep(interval_s)
+    return False
 
 def confirm(question, default=True):
     """Ask a yes/no question via input()."""
@@ -422,6 +450,14 @@ def do_install(args):
 
     # Final health check only if we installed/updated something
     if perform_global_install:
+        if not _is_daemon_running():
+            print_step("Starting Deckard daemon...")
+            start_env = os.environ.copy()
+            start_env["DECKARD_WORKSPACE_ROOT"] = workspace_root
+            _start_daemon(bootstrap_script, start_env)
+            if not _wait_for_daemon():
+                print_warn("Daemon is still starting. Doctor may report 'Not running'.")
+
         print_step("Running post-install health check (Doctor)...")
         doctor_script = INSTALL_DIR / "doctor.py"
         if doctor_script.exists():

@@ -326,7 +326,7 @@ class LocalSearchMCPServer:
                 },
                 {
                     "name": "list_files",
-                    "description": "List indexed files with filters. Use after search if results are broad.",
+                    "description": "List indexed files with filters. If repo is omitted, returns repo summary only.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -346,6 +346,11 @@ class LocalSearchMCPServer:
                             "include_hidden": {
                                 "type": "boolean",
                                 "description": "Include hidden directories (default: false)",
+                                "default": False,
+                            },
+                            "summary": {
+                                "type": "boolean",
+                                "description": "Return repo summary only (default: true when repo not specified)",
                                 "default": False,
                             },
                             "limit": {

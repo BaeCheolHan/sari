@@ -199,7 +199,7 @@ Codex, Gemini, Claude, Cursor… 이 녀석들은 성격도 다르고 사는 곳
 
 ```bash
 # macOS/Linux
-~/.local/share/horadric-deckard/bootstrap.sh init
+$HOME/.local/share/horadric-deckard/bootstrap.sh init
 
 # Windows
 %LOCALAPPDATA%\horadric-deckard\bootstrap.bat init
@@ -215,6 +215,68 @@ Codex, Gemini, Claude, Cursor… 이 녀석들은 성격도 다르고 사는 곳
 > "이 프로젝트의 **데이터베이스 구조**를 설명해주게나. 사서 선생님이 아는 대로 말이야."
 
 그럼 AI가 데커드 선생님에게 달려가 장부를 확인하고, 아주 정확한 답변을 여러분께 알려줄 거예요! (가끔 답변 끝에 "Stay awhile and listen"이라고 붙여도 놀라지 마세요.) ✨
+
+---
+
+## 📊 Deckard MCP vs Standard Tools (실측 기반 분석)
+아래 수치는 **2026-02-02 기준, 실제 워크스페이스(636 files)**에서 실측한 바이트 크기입니다.  
+분석에 사용된 저장소 이름/코드 내용은 **공개하지 않았습니다**. (구조·통계만 공개)  
+토큰 추정은 `1,000 bytes ≈ 280 tokens` 기준으로 계산했습니다. (모델별 오버헤드는 제외)
+
+### 측정 방법 요약
+- Deckard MCP: `status(details)`, `list_files`, `search_symbols` 응답의 **바이트 크기 측정**
+- Standard Tools: `ls -R`, `rg --files`, `rg "class.*Application"` 출력의 **바이트 크기 측정**
+- 동일 워크스페이스/동일 시점/동일 필터로 비교
+
+### 1) 구조 탐색 (파일 트리 파악)
+| 도구 | 측정 항목 | 바이트 | 추정 토큰 |
+| --- | --- | ---:| ---:|
+| Deckard | `status(details)` | 1,649 | ~462 |
+| Deckard | `list_files` (limit=2000, returned=500) | 115,397 | ~32,311 |
+| Standard | `ls -R` | 66,146 | ~18,521 |
+| Standard | `rg --files` | 73,196 | ~20,495 |
+
+**해석:**  
+- `status(details)`는 구조 파악용 요약으로 **출력량이 가장 작습니다.**  
+- `list_files`는 JSON 메타데이터 때문에 **전체 호출 시 출력량이 커질 수 있습니다.**
+- 따라서 **요약 → repo 좁히기 → 상세** 순으로 사용하는 것이 토큰 효율이 높습니다.
+
+### 2) 엔트리포인트 식별 (Application 클래스 탐색)
+| 도구 | 측정 항목 | 바이트 | 결과 수 |
+| --- | --- | ---:| ---:|
+| Deckard | `search_symbols Application` | 1,008 | 4 |
+| Standard | `rg "class.*Application"` | 667 | 4 |
+
+**해석:**  
+- 출력량은 유사하지만, Deckard는 **심볼 타입/경로/라인을 구조화**해 반환합니다.  
+- 후속 단계(`read_symbol`)로 이어질 때 **추가 탐색 비용이 줄어듭니다.**
+
+### 3) 결론 (실측 기반)
+Deckard는 **“요약 → 좁히기 → 심볼 읽기”** 워크플로우에서 가장 효율적입니다.  
+반대로 `list_files`를 전체에 무심코 호출하면 토큰 비용이 커질 수 있으니,  
+**repo 지정 또는 요약 모드**를 반드시 사용하세요.
+
+---
+
+## ⚡ 성능과 비용 최적화 가이드
+Deckard는 인덱싱 + FTS 기반 검색 구조라서 **“어떤 단계에서 쓰느냐”**에 따라 체감 성능이 크게 달라집니다.
+
+### 1) 구조 파악: 요약 모드가 기본
+- **권장:** `status(details)` → `repo_candidates` → `list_files(repo=...)`
+- `list_files`는 **repo 미지정 시 요약 모드**로 동작합니다.  
+  큰 워크스페이스에서 **전체 파일 목록을 한 번에 덤프하면 비용/토큰 폭주**가 발생합니다.
+
+### 2) 검색 속도: FTS가 켜져 있는지 확인
+- `status(details)`에서 `fts_enabled: true`인지 먼저 확인하세요.  
+- `fts_enabled: false`면 검색이 LIKE 폴백으로 전환되어 **느려지고 정확도도 떨어집니다.**
+
+### 3) 엔트리포인트 탐색은 심볼 기반이 유리
+- `search_symbols` → `read_symbol` 조합은 **필요한 코드 블록만 읽어** 토큰 비용을 줄입니다.
+- `read_file`은 “정말 전체 파일이 필요할 때만” 사용하세요.
+
+### 4) 큰 레포일수록 필터링이 핵심
+- `repo`, `file_types`, `path_pattern`을 적극 사용하세요.
+- 예) `list_files { repo: "horadric-deckard", file_types: ["py"] }`
 
 ---
 
