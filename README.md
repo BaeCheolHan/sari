@@ -34,27 +34,23 @@
 ## 🚀 성역 소환 주문 (설치 방법 - Installation)
 
 터미널(Terminal)을 열고 아래 마법 주문을 딱 한 줄만 복사해서 붙여넣고 엔터(Enter)를 누르세요!  
-실패하면 **차원문(네트워크)** 상태가 개판이거나 악마의 방해가 있는 것이니 확인해보세요.
+이 명령어는 **최초 설치**뿐만 아니라, **새로운 워크스페이스 연동**에도 똑같이 사용됩니다.
 
 ```bash
 # macOS / Linux (유닉스의 축복을 받은 자들)
-curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/horadric-deckard/main/install.py | python3
+curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/horadric-deckard/main/install.py | python3 - -y
 
 # Windows (파워쉘의 마법사들)
-irm https://raw.githubusercontent.com/BaeCheolHan/horadric-deckard/main/install.py | python
+irm https://raw.githubusercontent.com/BaeCheolHan/horadric-deckard/main/install.py | python - -y
 ```
 
-### 📖 호라드림의 계시 (TL;DR)
-```text
-마법 주문(install.py) 영창
-  ├─ 성역의 거처 마련: ~/.local/share/horadric-deckard (윈도우는 창문 달린 감옥 %LOCALAPPDATA%)
-  ├─ 쌍둥이 축복 부여: <workspace>/.codex/config.toml & .gemini/config.toml 에 장부 등록
-  └─ 질서 정비: 홈 디렉토리의 낡은 장부들은 불태워버림 (Global config 정리)
+### 📖 호라드림의 설치 계시 (How it works)
+데커드 선생님의 설치 마법은 아주 영리하게 동작합니다:
 
-첫 번째 소환
-  ├─ 1‑Step 모드: "무지한 자여, 내가 대신 설치해주겠네." (자동 설치/업데이트)
-  └─ 데몬 강림 → 인덱싱 → MCP 차원문 연결 완료!
-```
+1.  **최초 소환:** 데커드가 없는 컴퓨터에서 실행하면, `~/.local/share/horadric-deckard`에 전역 설치를 진행하고 현재 워크스페이스를 연동합니다.
+2.  **워크스페이스 추가:** 이미 데커드가 설치된 컴퓨터라면, **불필요한 재설치 없이** 현재 폴더에 필요한 설정 파일(`.codex/config.toml` 등)만 번개처럼 빠르게 생성합니다.
+3.  **자동화 우호적:** `-y` 옵션을 통해 파이프라인 설치 시 발생할 수 있는 입력 오류(EOFError)를 원천 차단합니다.
+
 
 ### 설치하면 어떤 마법이 일어나나요?
 1.  **지혜 전수**: 데커드 선생님이 일할 때 필요한 최소한의 도구(Python 엔진 등)를 자동으로 준비합니다.
@@ -116,17 +112,21 @@ irm https://raw.githubusercontent.com/BaeCheolHan/horadric-deckard/main/install.
 
 ---
 
-## 🔁 성역의 변화와 기록 (업데이트 및 보안)
+## 🔁 성역의 유지보수 (Update & Recovery)
 
-### 🔁 업데이트 시나리오: "세상은 변하지만 기록은 영원하리"
-- **1‑Step 모드 (신의 한 수)**: 레포 tag와 설치본 `VERSION`이 다르면 자동으로 성스러운 의식을 치러 업데이트합니다. (가만히 있어도 강해집니다.)
-- **설치본 고정 모드 (고지식한 학자)**: `install.py`를 다시 실행해야만 업데이트됩니다. (변화를 거부하는 보수적인 사서 모드입니다.)
+### 🔁 강제 업데이트 및 복구
+만약 설치 폴더가 손상되었거나, 최신 버전으로 강제 재설치가 필요하다면 `--update` 플래그를 사용하세요.
 
-### ✅ 수석 기록관의 최종 점검 (체크리스트)
-- [ ] `command` 경로가 실제 존재하는가? (투명 벽에 부딪히지 마시게나.)
-- [ ] `args`와 `env`가 같은 워크스페이스를 가르는가? (동쪽으로 가라면서 서쪽을 가리키면 곤란하네.)
-- [ ] `--workspace-root` 경로가 실제 폴더인가? (허상에 인덱싱을 할 순 없지.)
-- [ ] 데몬 상태 확인: `~/.local/share/horadric-deckard/bootstrap.sh daemon status` (선생님이 졸고 계신지 확인해보게.)
+```bash
+# 설치가 꼬였거나 업데이트가 필요할 때
+curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/horadric-deckard/main/install.py | python3 - --update -y
+```
+
+### ✅ 수석 기록관의 최종 점검 (Checklist)
+설치 후 모든 것이 정상인지 확인하려면 **닥터(Doctor)**를 소환하세요:
+```bash
+python3 ~/.local/share/horadric-deckard/doctor.py
+```
 
 ### 🧹 도서관 대청소 및 보안 (Caution!)
 - **장부의 소멸**: 삭제 시 공들여 만든 기록(DB)도 함께 가루가 됩니다 → 재설치 후 **재인덱싱이라는 전설급 노가다**가 필요합니다.
