@@ -1,4 +1,0 @@
-app
-deckard
-mcp
-sari
