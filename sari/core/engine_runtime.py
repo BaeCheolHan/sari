@@ -37,8 +37,8 @@ def _default_engine_package() -> str:
     if ver:
         parts = ver.split(".")
         if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
-            return f"sari-search~={parts[0]}.{parts[1]}"
-    return "sari-search"
+            return f"sari~={parts[0]}.{parts[1]}"
+    return "sari"
 
 
 ENGINE_PACKAGE = _default_engine_package()
