@@ -1,8 +1,8 @@
 import socket
 import shutil
 
-from mcp.tools import doctor as doctor_tool
-from app.db import LocalSearchDB
+from sari.mcp.tools import doctor as doctor_tool
+from sari.core.db import LocalSearchDB
 
 
 def test_check_port_ok():

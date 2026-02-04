@@ -2,9 +2,9 @@ import json
 import http.client
 from types import SimpleNamespace
 
-from app.http_server import serve_forever
-from app.models import SearchHit, SearchOptions
-from app.engine_runtime import EngineMeta
+from sari.core.http_server import serve_forever
+from sari.core.models import SearchHit, SearchOptions
+from sari.core.engine_runtime import EngineMeta
 import socket
 
 

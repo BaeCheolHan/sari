@@ -2,13 +2,13 @@ import json
 import os
 from pathlib import Path
 
-from app.config import Config
-from app.db import LocalSearchDB
-from app.indexer import Indexer
-from app.workspace import WorkspaceManager
-from app.models import SearchHit
-from mcp.tools.search import execute_search
-from mcp.tools.status import execute_status
+from sari.core.config import Config
+from sari.core.db import LocalSearchDB
+from sari.core.indexer import Indexer
+from sari.core.workspace import WorkspaceManager
+from sari.core.models import SearchHit
+from sari.mcp.tools.search import execute_search
+from sari.mcp.tools.status import execute_status
 
 
 class DummyLogger:

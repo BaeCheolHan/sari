@@ -20,14 +20,14 @@ REPO_ROOT = SCRIPT_DIR.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from app.db import LocalSearchDB
-from app.workspace import WorkspaceManager
-from app.registry import ServerRegistry
+from sari.core.db import LocalSearchDB
+from sari.core.workspace import WorkspaceManager
+from sari.core.registry import ServerRegistry
 try:
-    from mcp.cli import get_daemon_address
+    from sari.mcp.cli import get_daemon_address
 except ImportError:
     sys.path.insert(0, str(REPO_ROOT))
-    from mcp.cli import get_daemon_address
+    from sari.mcp.cli import get_daemon_address
 
 RED = "\033[31m"
 GREEN = "\033[32m"
@@ -121,7 +121,7 @@ def check_disk_space(min_gb: float = 1.0):
 
 def check_daemon():
     """Check if Sari Daemon is running."""
-    from mcp.cli import get_daemon_address, is_daemon_running, read_pid
+    from sari.mcp.cli import get_daemon_address, is_daemon_running, read_pid
     host, port = get_daemon_address()
     running = is_daemon_running(host, port)
     if running:

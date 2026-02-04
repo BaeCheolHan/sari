@@ -1,13 +1,13 @@
 import os
 
-from app.engine_registry import default_engine_name, get_registry, get_default_engine
-from app.engine_runtime import EmbeddedEngine
-from app.search_engine import SqliteSearchEngineAdapter
+from sari.core.engine_registry import default_engine_name, get_registry, get_default_engine
+from sari.core.engine_runtime import EmbeddedEngine
+from sari.core.search_engine import SqliteSearchEngineAdapter
 
 
 def test_default_engine_name(monkeypatch):
     monkeypatch.delenv("DECKARD_ENGINE_MODE", raising=False)
-    assert default_engine_name() == "sqlite"
+    assert default_engine_name() == "embedded"
     monkeypatch.setenv("DECKARD_ENGINE_MODE", "embedded")
     assert default_engine_name() == "embedded"
 

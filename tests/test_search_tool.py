@@ -1,6 +1,6 @@
-from app.models import SearchHit
-from app.engine_runtime import EngineMeta
-from mcp.tools.search import execute_search
+from sari.core.models import SearchHit
+from sari.core.engine_runtime import EngineMeta
+from sari.mcp.tools.search import execute_search
 
 
 class DummyDB:

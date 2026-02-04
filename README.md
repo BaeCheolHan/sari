@@ -35,11 +35,20 @@
 
 > **중요:** `deckard` 모듈/엔트리포인트는 **호환용으로만 유지**됩니다.  
 > 앞으로는 **Sari 이름을 사용**해 주세요. (향후 버전에서 제거 예정)
+>
+> **개발자 참고:** 내부 모듈은 `sari.core`, `sari.mcp` 네임스페이스로 제공됩니다.  
+> 충돌 방지를 위해 `app`, `mcp` 같은 최상위 패키지는 배포본에 포함되지 않습니다.
 
 설치 방식은 두 가지입니다.
 
 1) **설정만 추가하면 자동 설치 (권장)**  
 2) **직접 설치 (오프라인/제한 환경용)**
+
+**설치 안정성 기준 (KPI)**
+1. 오프라인/로컬 소스/다른 workspace 재현 성공률: 3/3
+
+**자동 설치 조건 요약**
+- `DECKARD_ENGINE_MODE=embedded` + `DECKARD_ENGINE_AUTO_INSTALL=1` + 네트워크/pip 가능
 
 ### ✅ 1) 설정만 추가하면 자동 설치 (권장)
 MCP 설정 파일에 아래 블록을 **직접 추가**하면, 실행 시 Sari가 자동 설치됩니다.
@@ -50,6 +59,243 @@ command = "bash"
 args = ["-lc", "curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python3 - -y; exec ~/.local/share/sari/bootstrap.sh --transport stdio"]
 env = { DECKARD_WORKSPACE_ROOT = "/path/to/workspace", DECKARD_RESPONSE_COMPACT = "1" }
 startup_timeout_sec = 60
+```
+
+---
+
+## 🧩 설정/설치 상세 가이드 (초보자용 / 고급자용)
+
+### ✅ 초보자용 (권장 경로)
+
+#### 1) 설치 방식 선택 가이드
+**A. 설정만 추가(권장)**  
+MCP 설정에 `bootstrap.sh` 실행 블록을 추가하면, 실행 시 자동 설치됩니다.
+
+**B. 오프라인/고정 설치**  
+네트워크가 불가한 환경이면 **이미 설치된 `bootstrap.sh` 경로**를 직접 지정하세요.
+
+**롤백(SQLite) 경고**  
+SQLite 모드로 롤백한 경우 **FTS 재빌드가 필요**할 수 있으며, 완료 전까지 검색 품질이 제한될 수 있습니다.
+
+---
+
+#### 2) MCP 설정 파일 위치 (앱별)
+**Codex / Gemini**  
+`<workspace>/.codex/config.toml`
+
+**Claude Desktop**  
+`claude_desktop_config.json`
+
+**Cursor**  
+앱 Settings > MCP 메뉴
+
+---
+
+#### 3) MCP 설정 템플릿 (TOML)
+```toml
+[mcp_servers.sari]
+command = "bash"
+args = ["-lc", "curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python3 - -y; exec ~/.local/share/sari/bootstrap.sh --transport stdio"]
+env = {
+  DECKARD_WORKSPACE_ROOT = "/path/to/workspace",
+  DECKARD_RESPONSE_COMPACT = "1",
+  DECKARD_ENGINE_MODE = "embedded",
+  DECKARD_ENGINE_TOKENIZER = "auto",
+  DECKARD_ENGINE_AUTO_INSTALL = "1"
+}
+startup_timeout_sec = 60
+```
+
+---
+
+#### 4) MCP 설정 템플릿 (JSON)
+```json
+{
+  "mcpServers": {
+    "sari": {
+      "command": "bash",
+      "args": [
+        "-lc",
+        "curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python3 - -y; exec ~/.local/share/sari/bootstrap.sh --transport stdio"
+      ],
+      "env": {
+        "DECKARD_WORKSPACE_ROOT": "/path/to/workspace",
+        "DECKARD_RESPONSE_COMPACT": "1",
+        "DECKARD_ENGINE_MODE": "embedded",
+        "DECKARD_ENGINE_TOKENIZER": "auto",
+        "DECKARD_ENGINE_AUTO_INSTALL": "1"
+      },
+      "startup_timeout_sec": 60
+    }
+  }
+}
+```
+
+---
+
+#### 5) env 옵션 설명 (핵심)
+`DECKARD_WORKSPACE_ROOT`  
+워크스페이스 루트. 가장 중요한 옵션.
+
+`DECKARD_ENGINE_MODE`  
+엔진 모드 선택. `embedded|sqlite` (기본: `embedded`)
+
+`DECKARD_RESPONSE_COMPACT`  
+PACK1 응답 압축(기본 `1`).
+
+`DECKARD_ENGINE_TOKENIZER`  
+`auto|cjk|latin` 선택.
+
+`DECKARD_ENGINE_AUTO_INSTALL`  
+`1`이면 첫 검색/재빌드 시 엔진 자동 설치.
+
+`DECKARD_READ_MAX_BYTES`  
+`read_file` 응답 최대 바이트 수 제한 (기본: 1,048,576 bytes). 큰 파일 OOM 방지용.
+`DECKARD_READ_POOL_MAX`  
+read 전용 커넥션 풀 상한 (기본: 32). 초과 시 기본 read 커넥션을 공유.
+
+---
+
+#### 6) bootstrap.sh 단독 실행 (CLI)
+```bash
+DECKARD_WORKSPACE_ROOT=/path/to/workspace \
+DECKARD_ENGINE_MODE=embedded \
+DECKARD_ENGINE_TOKENIZER=cjk \
+DECKARD_ENGINE_AUTO_INSTALL=1 \
+~/.local/share/sari/bootstrap.sh --transport stdio
+```
+
+---
+
+#### 7) 오프라인/고정 설치 경로
+**macOS/Linux**  
+`~/.local/share/sari/bootstrap.sh`
+
+**Windows**  
+`%LOCALAPPDATA%\\sari\\bootstrap.bat`
+
+---
+
+#### 8) 가장 흔한 실수
+**workspace-root 미지정**  
+홈 디렉토리 전체가 인덱싱될 수 있습니다. 반드시 지정하세요.
+
+**args/env 불일치**  
+env가 우선 적용되므로 둘을 동일하게 맞추세요.
+
+**설치본/레포 경로 혼용**  
+하나의 경로만 사용하세요.
+
+---
+
+### 🛠 고급자용 (커스터마이징)
+
+#### 1) 엔진/토크나이저 강제 설정
+```bash
+export DECKARD_ENGINE_TOKENIZER=latin
+export DECKARD_ENGINE_AUTO_INSTALL=0
+export DECKARD_ENGINE_MODE=embedded
+```
+
+#### 2) 응답 포맷 디버깅
+```bash
+export DECKARD_FORMAT=json
+export DECKARD_RESPONSE_COMPACT=0
+```
+
+#### 3) 루트/포트/DB 경로 고정
+```bash
+export DECKARD_WORKSPACE_ROOT=/path/to/workspace
+export DECKARD_HTTP_API_PORT=7331
+export DECKARD_DB_PATH=/absolute/path/to/index.db
+```
+
+#### 4) 멀티 루트 (고급)
+```bash
+export DECKARD_ROOTS_JSON='["/path/a","/path/b"]'
+```
+
+#### 5) 실행 예시 (단일 커맨드)
+```bash
+DECKARD_WORKSPACE_ROOT=/path/to/workspace \
+DECKARD_ENGINE_MODE=embedded \
+DECKARD_ENGINE_TOKENIZER=cjk \
+DECKARD_ENGINE_AUTO_INSTALL=1 \
+DECKARD_FORMAT=pack \
+~/.local/share/sari/bootstrap.sh --transport stdio
+```
+
+#### 6) 번들 크기 줄이기 (옵션)
+엔진 토크나이저 사전은 OS별 wheel이 함께 포함됩니다.  
+배포 크기를 줄이려면 현재 OS에 맞는 번들만 남기세요.
+
+```bash
+./scripts/prune_tokenizer_bundles.sh
+```
+
+Windows:
+```bat
+scripts\prune_tokenizer_bundles.bat
+```
+
+### 🔧 Engine/Tokenizer 옵션 (env로 주입)
+`bootstrap.sh`로 한방 설치해도 **env는 그대로 적용**됩니다.  
+MCP 설정의 `env`에 아래 옵션을 추가하세요.
+
+**모드 차이 (Embedded vs SQLite)**
+- `embedded`  
+  - Tantivy 기반 엔진 사용 (검색 품질/성능 우선)  
+  - 별도 엔진 설치 필요 (자동 설치 가능)  
+  - CJK 형태소 분석은 **번들된 lindera(ipadic) 사전**을 사용 (외부 다운로드 없음)
+  - 인덱스는 `~/.local/share/sari/index/<roots_hash>`에 관리
+- `sqlite`  
+  - SQLite FTS/LIKE 기반 (호환/롤백용)  
+  - 엔진 설치 없이 동작  
+  - 대용량/고속 검색 성능은 제한적
+
+**자동 설치 동작 조건**
+- `DECKARD_ENGINE_MODE=embedded`
+- `DECKARD_ENGINE_AUTO_INSTALL=1`
+- 네트워크 가능 + `pip` 설치 가능
+
+**자동 설치 비활성/실패 시**
+- 오프라인 환경이거나 `DECKARD_ENGINE_AUTO_INSTALL=0`인 경우 자동 설치가 동작하지 않습니다.
+- 수동 설치 명령: `sari --cmd engine install`
+
+**오류 메시지/복구 안내 (고정)**
+- 자동 설치 실패: `ERR_ENGINE_NOT_INSTALLED` → `sari --cmd engine install`
+- 엔진 준비 안 됨: `ERR_ENGINE_UNAVAILABLE` → `sari --cmd engine rebuild`
+
+**주요 옵션**
+- `DECKARD_ENGINE_MODE=embedded|sqlite`  
+  - 기본: `embedded`
+  - `embedded`: Tantivy 기반 엔진
+  - `sqlite`: SQLite 검색 엔진(호환/롤백용)
+- `DECKARD_ENGINE_TOKENIZER=auto|cjk|latin`  
+  - 기본: `auto`
+  - `cjk`: CJK 토크나이저 강제
+  - `latin`: latin 토크나이저 강제
+- `DECKARD_ENGINE_AUTO_INSTALL=1|0`  
+  - `1`: 첫 검색/재빌드 시 자동 설치
+  - `0`: 자동 설치 비활성 (오프라인/제한 환경)
+- `DECKARD_LINDERA_DICT_PATH=/path/to/dictionary`  
+  - 형태소 사전 경로 강제 지정 (필요 시)
+- `DECKARD_READ_MAX_BYTES=0|N`  
+  - `read_file` 응답 크기 제한. `0`이면 제한 없음.  
+  - 기본: `1048576` (약 1MB)
+- `DECKARD_READ_POOL_MAX=0|N`  
+  - read 전용 커넥션 풀 상한. `0`이면 제한 없음.  
+  - 기본: `32`
+
+**예시**
+```toml
+env = {
+  DECKARD_WORKSPACE_ROOT = "/path/to/workspace",
+  DECKARD_RESPONSE_COMPACT = "1",
+  DECKARD_ENGINE_MODE = "embedded",
+  DECKARD_ENGINE_TOKENIZER = "cjk",
+  DECKARD_ENGINE_AUTO_INSTALL = "1"
+}
 ```
 
 ### 🧰 2) 직접 설치 (오프라인/제한 환경용)
@@ -285,6 +531,7 @@ Sari는 인덱싱 + FTS 기반 검색 구조라서 **“어떤 단계에서 쓰�
 - **권장:** `status(details)` → `repo_candidates` → `list_files(repo=...)`
 - `list_files`는 **repo 미지정 시 요약 모드**로 동작합니다.  
   큰 워크스페이스에서 **전체 파일 목록을 한 번에 덤프하면 비용/토큰 폭주**가 발생합니다.
+ - HTTP 요청은 **스레드별 read 전용 커넥션**을 사용해 병렬 처리 효율을 높입니다.
 
 ### 2) 검색 속도: FTS가 켜져 있는지 확인
 - `status(details)`에서 `fts_enabled: true`인지 먼저 확인하세요.  
@@ -368,6 +615,24 @@ startup_timeout_sec = 60
 **args와 env가 서로 다르면?**
 - `DECKARD_WORKSPACE_ROOT`(환경 변수)가 왕의 권위를 가집니다.  
   하지만 두 값이 다르면 선생님이 "어디로 가라는 건가!" 하고 지팡이를 휘두르실 테니, **항상 동일하게 맞추는 걸 추천**하네.
+
+### 💡 Cursor/CLI에서 옵션 넣는 방법
+Cursor/Claude/Gemini/Codex 같은 MCP 클라이언트는 **env 블록으로 옵션 주입**이 가능합니다.  
+CLI만 쓰는 경우엔 다음 중 하나를 사용하세요.
+
+**A) 쉘에서 직접 env 지정**
+```bash
+DECKARD_ENGINE_TOKENIZER=cjk DECKARD_ENGINE_AUTO_INSTALL=1 \
+  ~/.local/share/sari/bootstrap.sh --transport stdio
+```
+
+**B) 래퍼 스크립트**
+```bash
+#!/usr/bin/env bash
+export DECKARD_ENGINE_TOKENIZER=cjk
+export DECKARD_ENGINE_AUTO_INSTALL=1
+exec ~/.local/share/sari/bootstrap.sh --transport stdio
+```
 
 **`--workspace-root`를 생략하면 어떤 재앙이?**
 - 실행 위치를 기준으로 워크스페이스를 멋대로 추정합니다.  
@@ -470,6 +735,21 @@ m:fts_enabled=true
 
 ---
 
+## 🩺 MCP status/doctor 경고 안내
+아래 상태는 **MCP `status`/`doctor`에서 경고로 노출**됩니다.
+
+**1) tokenizer 등록 실패**  
+`engine tokenizers not registered; using default tokenizer`
+
+**2) 플랫폼용 번들 누락**  
+`tokenizer bundle not found for <platform_tag>`
+
+해결:
+- `app/engine_tokenizer_data/`에 해당 OS용 wheel 포함
+- 필요 시 `scripts/prune_tokenizer_bundles.sh`로 정리
+
+---
+
 ## 🏗️ 개발자를 위한 제원 (Tech Specs)
 
 - **언어**: Python 3.9+ (표준 라이브러리만 사용하는 제로 디펜던시!)
@@ -481,9 +761,23 @@ m:fts_enabled=true
 
 ---
 
+## 🔐 DB 단일 Writer 정책 (중요)
+
+Sari는 SQLite의 단일 writer 원칙을 **강제**합니다.
+
+- **쓰기 작업은 DBWriter 전용 스레드에서만 수행**됩니다.
+- 내부에서 별도 writer 커넥션을 생성하지 않습니다.
+- 직접 DB 쓰기를 호출하면 `DB write attempted outside single-writer thread` 오류가 발생할 수 있습니다.
+
+즉, DB 쓰기는 **항상 인덱서 파이프라인을 통해서만** 수행되도록 설계되었습니다.  
+외부 확장/스크립트에서 DB를 직접 쓰는 것은 지원하지 않습니다.
+
+---
+
 ## 📜 라이선스 (License)
 
-이 프로젝트는 [MIT License](LICENSE)를 따르고 있어요. 누구나 자유롭게 사용하고, 고치고, 공유할 수 있답니다! 😄
+이 프로젝트는 [Apache License 2.0](LICENSE)을 따르고 있어요. 누구나 자유롭게 사용하고, 고치고, 공유할 수 있습니다.  
+배포 시 `NOTICE` 파일의 고지사항도 함께 포함해야 합니다.
 
 ---
 

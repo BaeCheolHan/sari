@@ -3,16 +3,16 @@ import sqlite3
 import threading
 import pytest
 
-from mcp.tools import deckard_guide as sari_guide
-from mcp.tools import repo_candidates as repo_candidates_tool
-from mcp.tools import search_symbols as search_symbols_tool
-from mcp.tools import search_api_endpoints as search_api_endpoints_tool
-from mcp.tools import get_callers as get_callers_tool
-from mcp.tools import get_implementations as get_impl_tool
-from mcp.tools import rescan as rescan_tool
-from mcp.tools import scan_once as scan_once_tool
-from mcp.tools import index_file as index_file_tool
-from mcp.tools.registry import build_default_registry
+from sari.mcp.tools import deckard_guide as sari_guide
+from sari.mcp.tools import repo_candidates as repo_candidates_tool
+from sari.mcp.tools import search_symbols as search_symbols_tool
+from sari.mcp.tools import search_api_endpoints as search_api_endpoints_tool
+from sari.mcp.tools import get_callers as get_callers_tool
+from sari.mcp.tools import get_implementations as get_impl_tool
+from sari.mcp.tools import rescan as rescan_tool
+from sari.mcp.tools import scan_once as scan_once_tool
+from sari.mcp.tools import index_file as index_file_tool
+from sari.mcp.tools.registry import build_default_registry
 
 
 class DummyRepoDB:

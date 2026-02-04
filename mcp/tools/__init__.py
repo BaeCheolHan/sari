@@ -1,14 +1,37 @@
 """
-MCP Tools for Local Search.
-"""
-from .search import execute_search
-from .status import execute_status
-from .repo_candidates import execute_repo_candidates
-from .list_files import execute_list_files
+Compatibility wrapper for legacy imports.
 
-__all__ = [
-    "execute_search",
-    "execute_status", 
-    "execute_repo_candidates",
-    "execute_list_files",
+NOTE: This package is intentionally excluded from distribution to avoid
+top-level name collisions. Use `sari.mcp.tools` instead.
+"""
+from __future__ import annotations
+
+import importlib
+import sys
+
+_SUBMODULES = [
+    "_util",
+    "deckard_guide",
+    "doctor",
+    "get_callers",
+    "get_implementations",
+    "index_file",
+    "list_files",
+    "read_file",
+    "read_symbol",
+    "registry",
+    "repo_candidates",
+    "rescan",
+    "scan_once",
+    "search",
+    "search_api_endpoints",
+    "search_symbols",
+    "status",
 ]
+
+for _name in _SUBMODULES:
+    _mod = importlib.import_module(f"sari.mcp.tools.{_name}")
+    sys.modules[f"mcp.tools.{_name}"] = _mod
+    globals()[_name] = _mod
+
+__all__ = list(_SUBMODULES)

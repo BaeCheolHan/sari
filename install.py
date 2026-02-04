@@ -10,6 +10,7 @@ import os
 import sys
 import json
 import shutil
+from typing import Optional
 import subprocess
 import signal
 import time
@@ -398,17 +399,43 @@ def do_install(args):
             except Exception as e:
                 print_error(f"Failed to remove existing directory: {e}")
                 sys.exit(1)
-        # Clone the repository
+        # Clone the repository (with local/offline fallback)
         source_url = os.environ.get("DECKARD_INSTALL_SOURCE", REPO_URL)
         print_step(f"Cloning latest Sari from {source_url} to {INSTALL_DIR}...")
-        try:
-            subprocess.run(["git", "clone", source_url, str(INSTALL_DIR)], check=True, capture_output=CONFIG["quiet"])
-            source_path = Path(source_url)
-            if source_path.exists():
+
+        def _source_path_from_url(url: str) -> Optional[Path]:
+            u = (url or "").strip()
+            if not u:
+                return None
+            if u.startswith("file://"):
+                u = u[7:]
+            p = Path(os.path.expanduser(u))
+            return p if p.exists() else None
+
+        source_path = _source_path_from_url(source_url)
+        if source_path is not None:
+            try:
                 shutil.copytree(source_path, INSTALL_DIR, dirs_exist_ok=True, ignore=shutil.ignore_patterns(".git"))
-        except (subprocess.CalledProcessError, FileNotFoundError, OSError) as e:
-            print_error(f"Failed to clone/copy repo. Make sure 'git' is installed and in your PATH. Error: {e}")
-            sys.exit(1)
+            except Exception as e:
+                print_error(f"Failed to copy local source {source_path}: {e}")
+                sys.exit(1)
+        else:
+            try:
+                subprocess.run(["git", "clone", source_url, str(INSTALL_DIR)], check=True, capture_output=CONFIG["quiet"])
+            except (subprocess.CalledProcessError, FileNotFoundError, OSError) as e:
+                # Fallback: if running from a local repo, copy it directly
+                fallback = REPO_ROOT if REPO_ROOT.exists() else None
+                bootstrap_name = "bootstrap.bat" if IS_WINDOWS else "bootstrap.sh"
+                if fallback and (fallback / bootstrap_name).exists():
+                    print_warn("Git clone failed; falling back to local source copy.")
+                    try:
+                        shutil.copytree(fallback, INSTALL_DIR, dirs_exist_ok=True, ignore=shutil.ignore_patterns(".git"))
+                    except Exception as e2:
+                        print_error(f"Failed to copy fallback source {fallback}: {e2}")
+                        sys.exit(1)
+                else:
+                    print_error(f"Failed to clone/copy repo. Make sure 'git' is installed and in your PATH. Error: {e}")
+                    sys.exit(1)
 
         # Setup bootstrap script and permissions
         bootstrap_name = "bootstrap.bat" if IS_WINDOWS else "bootstrap.sh"

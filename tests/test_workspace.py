@@ -2,7 +2,7 @@ import json
 import os
 from pathlib import Path
 
-from app.workspace import WorkspaceManager
+from sari.core.workspace import WorkspaceManager
 
 
 def test_resolve_workspace_roots_priority(tmp_path, monkeypatch):

@@ -5,8 +5,8 @@ from pathlib import Path
 import sys
 import types
 
-from app import engine_runtime
-from app.engine_runtime import EmbeddedEngine, EngineError
+from sari.core import engine_runtime
+from sari.core.engine_runtime import EmbeddedEngine, EngineError
 
 
 class DummyCfg:
@@ -155,6 +155,65 @@ def test_path_pattern_and_exclude_match():
     assert engine_runtime._exclude_pattern_match("src/app.py", ["app.py"]) is True
 
 
+def test_cjk_space_helpers():
+    assert engine_runtime._cjk_space("hello") == "hello"
+    assert engine_runtime._cjk_space("한글") == "한 글"
+    assert engine_runtime._cjk_space("hello한글world") == "hello 한 글 world"
+
+
+def test_resolve_body_tokenizer_env(monkeypatch, tmp_path):
+    eng = engine_runtime.EmbeddedEngine(DummyDB(), DummyCfg(), [str(tmp_path)])
+    monkeypatch.setenv("DECKARD_ENGINE_TOKENIZER", "latin")
+    assert eng._resolve_body_tokenizer() == "tokenizer_latin"
+    monkeypatch.setenv("DECKARD_ENGINE_TOKENIZER", "cjk")
+    assert eng._resolve_body_tokenizer() == "tokenizer_cjk"
+    monkeypatch.setenv("DECKARD_ENGINE_TOKENIZER", "auto")
+    assert eng._resolve_body_tokenizer() == "tokenizer_cjk"
+
+
+def test_register_tokenizers_best_effort(tmp_path):
+    class FakeIndex:
+        def __init__(self):
+            self.registered = []
+
+        def register_tokenizer(self, name, _analyzer):
+            self.registered.append(name)
+
+    class FakeTokenizer:
+        @staticmethod
+        def regex(_pattern):
+            return ("regex", _pattern)
+
+    class FakeFilter:
+        @staticmethod
+        def lowercase():
+            return ("lowercase",)
+
+    class FakeTextAnalyzerBuilder:
+        def __init__(self, _tok):
+            self._tok = _tok
+            self._filters = []
+
+        def filter(self, f):
+            self._filters.append(f)
+            return self
+
+        def build(self):
+            return {"tok": self._tok, "filters": self._filters}
+
+    class FakeTantivy:
+        Tokenizer = FakeTokenizer
+        Filter = FakeFilter
+        TextAnalyzerBuilder = FakeTextAnalyzerBuilder
+
+    eng = engine_runtime.EmbeddedEngine(DummyDB(), DummyCfg(), [str(tmp_path)])
+    eng._tantivy = FakeTantivy
+    idx = FakeIndex()
+    eng._register_tokenizers(idx)
+    assert "tokenizer_latin" in idx.registered
+    assert "tokenizer_cjk" in idx.registered
+
+
 def test_engine_limits_clamp(monkeypatch, tmp_path):
     monkeypatch.setenv("DECKARD_ENGINE_MEM_MB", "128")
     monkeypatch.setenv("DECKARD_ENGINE_INDEX_MEM_MB", "512")
@@ -162,7 +221,7 @@ def test_engine_limits_clamp(monkeypatch, tmp_path):
     eng = EmbeddedEngine(DummyDB(), DummyCfg(), [str(tmp_path)])
     mem_mb, index_mem_mb, threads = eng._engine_limits()
     assert mem_mb == 128
-    assert index_mem_mb == 128
+    assert index_mem_mb == 64
     assert threads >= 1
 
 

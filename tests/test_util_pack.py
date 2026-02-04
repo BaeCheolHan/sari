@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 
-from mcp.tools._util import (
+from sari.mcp.tools._util import (
     pack_header,
     pack_line,
     pack_error,
@@ -66,7 +66,7 @@ def test_mcp_response_error_pack(monkeypatch):
 
 
 def test_resolve_root_ids_empty(monkeypatch):
-    import mcp.tools._util as util
+    import sari.mcp.tools._util as util
     monkeypatch.setattr(util, "WorkspaceManager", None)
     assert util.resolve_root_ids([]) == []
 

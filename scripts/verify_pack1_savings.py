@@ -9,10 +9,10 @@ from pathlib import Path
 project_root = str(Path(__file__).parent.parent)
 sys.path.insert(0, project_root)
 
-from app.db import LocalSearchDB
-from mcp.tools.list_files import execute_list_files
-from mcp.tools.search import execute_search
-from mcp.telemetry import TelemetryLogger
+from sari.core.db import LocalSearchDB
+from sari.mcp.tools.list_files import execute_list_files
+from sari.mcp.tools.search import execute_search
+from sari.mcp.telemetry import TelemetryLogger
 
 class MockLogger:
     def log_telemetry(self, msg):

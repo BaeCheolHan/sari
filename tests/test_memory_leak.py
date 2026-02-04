@@ -1,11 +1,11 @@
 import gc
 import tracemalloc
 
-from app.engine_runtime import EmbeddedEngine
-from app.engine_runtime import EngineError
-from app import engine_runtime
-from app.models import SearchHit, SearchOptions
-from mcp.tools.search import execute_search
+from sari.core.engine_runtime import EmbeddedEngine
+from sari.core.engine_runtime import EngineError
+from sari.core import engine_runtime
+from sari.core.models import SearchHit, SearchOptions
+from sari.mcp.tools.search import execute_search
 
 
 class DummyDB:

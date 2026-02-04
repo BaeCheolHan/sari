@@ -1,3 +1,4 @@
-from .version import __version__
-
-__all__ = ["main", "__version__"]
+"""
+Compatibility wrapper for legacy `deckard` imports.
+"""
+from sari.version import __version__

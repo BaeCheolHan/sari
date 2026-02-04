@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from mcp.tools.read_file import execute_read_file
-from mcp.tools.read_symbol import execute_read_symbol
+from sari.mcp.tools.read_file import execute_read_file
+from sari.mcp.tools.read_symbol import execute_read_symbol
 
 
 class DummyDB:
