@@ -106,9 +106,21 @@ python3 -m sari --transport stdio
 
 ## ⚙️ 설정 레퍼런스 (Configuration)
 
-`env` 섹션에 환경 변수를 추가하여 동작을 제어할 수 있습니다.
+설정값은 성격에 따라 **설치 시점(Installation)**과 **실행 시점(Runtime)**으로 나뉩니다.
 
-### 1. 코어 및 시스템 (Core & System)
+### A. 설치 및 부트스트랩 (Installation & Bootstrapping)
+설치 스크립트(`install.py`, `bootstrap.sh`)가 실행될 때 적용되는 설정입니다.
+
+| 변수명 | 설명 | 기본값 |
+|--------|------|--------|
+| `XDG_DATA_HOME` | 설치 경로를 변경합니다. 설정 시 `$XDG_DATA_HOME/sari`에 설치됩니다. | `~/.local/share` |
+| `DECKARD_SKIP_INSTALL` | `1`로 설정 시 시작할 때 `pip install` 자동 업데이트를 건너뜁니다. 개발 환경이나 오프라인에서 유용합니다. | `0` |
+| `DECKARD_NO_INTERACTIVE` | `1`로 설정 시 설치 스크립트의 대화형 질문을 끄고 기본값(Yes)으로 진행합니다. | `0` |
+
+### B. 시스템 및 런타임 (System & Runtime)
+MCP 서버가 실행되는 동안 동작을 제어하는 설정입니다. `env` 섹션에 추가하세요.
+
+#### 1. 코어 설정 (Core)
 기본적인 동작을 위한 필수 설정입니다.
 
 | 변수명 | 설명 | 기본값 |
@@ -120,7 +132,7 @@ python3 -m sari --transport stdio
 | `DECKARD_RESPONSE_COMPACT` | 응답 JSON을 압축하여 LLM 토큰을 절약합니다. 디버깅 때는 `0`으로 끄세요. | `1` (켜짐) |
 | `DECKARD_FORMAT` | CLI 도구 출력 형식. `pack`(텍스트) 또는 `json`. | `pack` |
 
-### 2. 검색 엔진 (Search Engine)
+#### 2. 검색 엔진 (Search Engine)
 검색 품질과 백엔드 동작을 튜닝합니다.
 
 | 변수명 | 설명 | 기본값 |
@@ -131,7 +143,7 @@ python3 -m sari --transport stdio
 | `DECKARD_ENGINE_SUGGEST_FILES`| 상태 체크 시 Tantivy 엔진 업그레이드를 제안하는 파일 수 임계값. | `10000` |
 | `DECKARD_LINDERA_DICT_PATH` | CJK 토큰화를 위한 커스텀 Lindera 사전 경로 (고급). | - |
 
-### 3. 인덱싱 및 성능 (Indexing & Performance)
+#### 3. 인덱싱 및 성능 (Indexing & Performance)
 리소스 사용량과 동시성을 제어합니다.
 
 | 변수명 | 설명 | 기본값 |
@@ -145,7 +157,7 @@ python3 -m sari --transport stdio
 | `DECKARD_FOLLOW_SYMLINKS` | 파일 스캔 시 심볼릭 링크를 따라갑니다. **주의:** 순환 링크가 있으면 무한 루프 위험이 있습니다. | `0` (꺼짐) |
 | `DECKARD_READ_MAX_BYTES` | `read_file` 도구가 반환하는 최대 바이트 수. 컨텍스트 초과 방지. | `1MB` |
 
-### 4. 네트워크 및 보안 (Network & Security)
+#### 4. 네트워크 및 보안 (Network & Security)
 데몬 연결 설정입니다.
 
 | 변수명 | 설명 | 기본값 |
@@ -155,16 +167,7 @@ python3 -m sari --transport stdio
 | `DECKARD_HTTP_API_PORT` | HTTP API 서버 포트 (선택 사항). | `47777` |
 | `DECKARD_ALLOW_NON_LOOPBACK` | 로컬호스트가 아닌 IP 접속 허용. **보안 위험:** 신뢰할 수 있는 네트워크에서만 켜세요. | `0` (꺼짐) |
 
-### 5. 설치 및 부트스트랩 (Installation & Bootstrapping)
-설치 및 시작 과정에 영향을 주는 설정입니다.
-
-| 변수명 | 설명 | 기본값 |
-|--------|------|--------|
-| `XDG_DATA_HOME` | 설치 경로를 변경합니다. 설정 시 `$XDG_DATA_HOME/sari`에 설치됩니다. | `~/.local/share` |
-| `DECKARD_SKIP_INSTALL` | `1`로 설정 시 시작할 때 `pip install` 자동 업데이트를 건너뜁니다. 개발 환경이나 오프라인에서 유용합니다. | `0` |
-| `DECKARD_NO_INTERACTIVE` | `1`로 설정 시 설치 스크립트의 대화형 질문을 끄고 기본값(Yes)으로 진행합니다. | `0` |
-
-### 6. 고급 / 디버그 (Advanced / Debug)
+#### 5. 고급 / 디버그 (Advanced / Debug)
 개발자용 디버깅 옵션입니다.
 
 | 변수명 | 설명 | 기본값 |
@@ -190,6 +193,7 @@ sari doctor --auto-fix
 ```
 
 ### 제거 (Uninstall)
+Sari, 인덱스 데이터, 설정을 모두 제거합니다:
 Sari와 모든 인덱싱 데이터를 삭제하려면:
 
 ```bash
@@ -198,4 +202,10 @@ curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | 
 
 # Windows
 irm https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python - --uninstall
+```
+
+워크스페이스 로컬 캐시까지 제거하려면 워크스페이스 루트를 함께 넘겨주세요:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python3 - --uninstall --workspace-root /path/to/project
 ```

@@ -83,19 +83,21 @@ python3 -m sari --transport stdio
 
 ## ⚙️ Configuration Reference
 
-### How to Configure
-You can customize Sari's behavior by setting environment variables.
-- **MCP Config**: Add them to the `env` dictionary in your `config.json` or `config.toml`.
-- **CLI**: Prefix the command, e.g., `DECKARD_ENGINE_MODE=sqlite sari status`.
+Variables are categorized into **Installation-time** and **Runtime** settings.
 
-```json
-"env": {
-  "DECKARD_WORKSPACE_ROOT": "/path/to/project",
-  "DECKARD_ENGINE_TOKENIZER": "cjk"
-}
-```
+### A. Installation & Bootstrapping
+Settings affecting the installation scripts (`install.py`, `bootstrap.sh`).
 
-### 1. Core & System
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `XDG_DATA_HOME` | Custom data directory for installation. Sari installs to `$XDG_DATA_HOME/sari`. | `~/.local/share` |
+| `DECKARD_SKIP_INSTALL` | Set `1` to skip automatic pip install/upgrade on startup. Useful for development or offline usage. | `0` |
+| `DECKARD_NO_INTERACTIVE`| Set `1` to disable interactive prompts during installation (assumes 'yes'). | `0` |
+
+### B. System & Runtime
+Settings controlling the MCP server loop and behaviors. Add these to your `env` config.
+
+#### 1. Core & System
 Essential settings for basic operation.
 
 | Variable | Description | Default |
@@ -107,7 +109,7 @@ Essential settings for basic operation.
 | `DECKARD_RESPONSE_COMPACT` | Minify JSON responses (`pack` format) to save LLM tokens. Set `0` for pretty-print debugging. | `1` (Enabled) |
 | `DECKARD_FORMAT` | Output format for CLI tools. `pack` (text-based) or `json`. | `pack` |
 
-### 2. Search Engine
+#### 2. Search Engine
 Settings to tune search quality and backend behavior.
 
 | Variable | Description | Default |
@@ -118,7 +120,7 @@ Settings to tune search quality and backend behavior.
 | `DECKARD_ENGINE_SUGGEST_FILES`| File count threshold to suggest upgrading to Tantivy engine in status checks. | `10000` |
 | `DECKARD_LINDERA_DICT_PATH` | Path to custom Lindera dictionary for CJK tokenization (Advanced). | - |
 
-### 3. Indexing & Performance
+#### 3. Indexing & Performance
 Fine-tune resource usage and concurrency.
 
 | Variable | Description | Default |
@@ -132,7 +134,7 @@ Fine-tune resource usage and concurrency.
 | `DECKARD_FOLLOW_SYMLINKS` | Follow symbolic links during file scanning. **Caution:** May cause infinite loops if circular links exist. | `0` (Disabled) |
 | `DECKARD_READ_MAX_BYTES` | Max bytes returned by `read_file` tool. Prevents context overflow. | `1MB` |
 
-### 4. Network & Security
+#### 4. Network & Security
 Connectivity settings for the daemon.
 
 | Variable | Description | Default |
@@ -142,16 +144,7 @@ Connectivity settings for the daemon.
 | `DECKARD_HTTP_API_PORT` | Port for the HTTP API server (optional). | `47777` |
 | `DECKARD_ALLOW_NON_LOOPBACK` | Allow connections from non-localhost IPs. **Security Risk:** Only enable in trusted networks. | `0` (Disabled) |
 
-### 6. Installation & Bootstrapping
-Settings affecting the installation and startup process.
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `XDG_DATA_HOME` | Custom data directory for installation. Sari installs to `$XDG_DATA_HOME/sari`. | `~/.local/share` |
-| `DECKARD_SKIP_INSTALL` | Set `1` to skip automatic pip install/upgrade on startup. Useful for development or offline usage. | `0` |
-| `DECKARD_NO_INTERACTIVE`| Set `1` to disable interactive prompts during installation (assumes 'yes'). | `0` |
-
-### 5. Advanced / Debug
+#### 5. Advanced / Debug
 Developer options for debugging and plugin extension.
 
 | Variable | Description | Default |
@@ -207,7 +200,7 @@ sari doctor --auto-fix
 ```
 
 ### Uninstall
-To remove Sari and all indexed data:
+To remove Sari, indexed data, and configs:
 
 ```bash
 # macOS/Linux
@@ -215,6 +208,12 @@ curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | 
 
 # Windows
 irm https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python - --uninstall
+```
+
+To also remove workspace-local caches (if used), pass the workspace root:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python3 - --uninstall --workspace-root /path/to/project
 ```
 
 ---
