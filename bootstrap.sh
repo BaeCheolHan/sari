@@ -53,6 +53,7 @@ fi
 
 # Optional: accept workspace root via args and map to env for MCP.
 # Usage: bootstrap.sh --workspace-root /path [other args...]
+transport=""
 if [ $# -gt 0 ]; then
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -74,6 +75,15 @@ if [ $# -gt 0 ]; then
                 export SARI_SKIP_INSTALL=1
                 shift
                 ;;
+            --transport)
+                shift
+                transport="$1"
+                shift
+                ;;
+            --transport=*)
+                transport="${1#*=}"
+                shift
+                ;;
             *)
                 break
                 ;;
@@ -84,9 +94,11 @@ fi
 # Announce version to stderr (visible in host logs/console)
 echo "[Sari] Starting (v${SARI_VERSION:-dev})..." >&2
 
-# Run Sari
-if [ $# -eq 0 ]; then
-    exec python3 -m sari
+# Run Sari (default to auto mode for MCP)
+if [ "$transport" = "http" ]; then
+    exec python3 -m sari --transport http "$@"
+elif [ $# -eq 0 ] || [ "$transport" = "stdio" ]; then
+    exec python3 -m sari auto
 else
     exec python3 -m sari "$@"
 fi

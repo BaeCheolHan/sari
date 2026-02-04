@@ -29,7 +29,7 @@ command = "bash"
 args = [
   "-lc",
   # 설치 스크립트를 다운로드하고 실행한 뒤, 부트스트랩으로 서버를 시작합니다.
-  "curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python3 - -y; exec ~/.local/share/sari/bootstrap.sh --transport stdio"
+  "curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python3 - -y; exec ~/.local/share/sari/bootstrap.sh auto"
 ]
 env = { SARI_WORKSPACE_ROOT = "/path/to/your/project", SARI_RESPONSE_COMPACT = "1" }
 ```
@@ -53,7 +53,7 @@ Cursor와 Claude Desktop은 JSON 형식의 설정을 사용합니다.
       "command": "bash",
       "args": [
         "-lc",
-        "export PATH=$PATH:/usr/local/bin:/opt/homebrew/bin:$HOME/.local/bin && (curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python3 - -y || true) && exec ~/.local/share/sari/bootstrap.sh --transport stdio"
+        "export PATH=$PATH:/usr/local/bin:/opt/homebrew/bin:$HOME/.local/bin && (curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python3 - -y || true) && exec ~/.local/share/sari/bootstrap.sh auto"
       ],
       "env": {
         "SARI_WORKSPACE_ROOT": "/Users/username/projects/my-app",
@@ -75,7 +75,7 @@ Cursor와 Claude Desktop은 JSON 형식의 설정을 사용합니다.
         "-NoProfile",
         "-ExecutionPolicy", "Bypass",
         "-Command",
-        "irm https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python - -y; & $env:LOCALAPPDATA\\sari\\bootstrap.bat --transport stdio"
+        "irm https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python - -y; & $env:LOCALAPPDATA\\sari\\bootstrap.bat auto"
       ],
       "env": {
         "SARI_WORKSPACE_ROOT": "C:\\Projects\\MyApp",
@@ -101,7 +101,7 @@ Gemini CLI는 `settings.json`의 MCP 서버 설정을 읽습니다. Gemini 설�
       "command": "bash",
       "args": [
         "-lc",
-        "export PATH=$PATH:/usr/local/bin:/opt/homebrew/bin:$HOME/.local/bin && (curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python3 - -y || true) && exec ~/.local/share/sari/bootstrap.sh --transport stdio"
+        "export PATH=$PATH:/usr/local/bin:/opt/homebrew/bin:$HOME/.local/bin && (curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python3 - -y || true) && exec ~/.local/share/sari/bootstrap.sh auto"
       ],
       "env": {
         "SARI_WORKSPACE_ROOT": "/path/to/your/project",
@@ -125,7 +125,7 @@ Python 환경에서 직접 패키지를 관리하고 싶다면 `pip`로 설치�
 pip install sari
 
 # MCP 서버 실행 (Stdio 모드)
-python3 -m sari --transport stdio
+python3 -m sari auto
 ```
 
 ---

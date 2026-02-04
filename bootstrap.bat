@@ -85,12 +85,19 @@ if /I "%SARI_VERSION%"=="None" set "SARI_VERSION="
 
 set "RUN_MOD=sari"
 
-:: Argument loop for --workspace-root
+:: Argument loop for --workspace-root / --transport
 set "ARGS="
+set "TRANSPORT="
 :argparse
 if "%~1"=="" goto run
 if "%~1"=="--workspace-root" (
     set "SARI_WORKSPACE_ROOT=%~2"
+    shift
+    shift
+    goto argparse
+)
+if "%~1"=="--transport" (
+    set "TRANSPORT=%~2"
     shift
     shift
     goto argparse
@@ -100,10 +107,12 @@ shift
 goto argparse
 
 :run
-if "%ARGS%"=="" (
-    "%PY%" -m %RUN_MOD%
+if /I "%TRANSPORT%"=="http" (
+    "%PY%" -m %RUN_MOD% --transport http %ARGS%
+) else if "%ARGS%"=="" (
+    "%PY%" -m %RUN_MOD% auto
 ) else (
-    "%PY%" -m %RUN_MOD% --cmd %ARGS%
+    "%PY%" -m %RUN_MOD% %ARGS%
 )
 
 endlocal

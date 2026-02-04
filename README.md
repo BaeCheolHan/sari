@@ -30,7 +30,7 @@ Add the following configuration to your MCP client (Cursor, Claude Desktop, etc.
       "command": "bash",
       "args": [
         "-lc",
-        "export PATH=$PATH:/usr/local/bin:/opt/homebrew/bin:$HOME/.local/bin && (curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python3 - -y || true) && exec ~/.local/share/sari/bootstrap.sh --transport stdio"
+        "export PATH=$PATH:/usr/local/bin:/opt/homebrew/bin:$HOME/.local/bin && (curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python3 - -y || true) && exec ~/.local/share/sari/bootstrap.sh auto"
       ],
       "env": {
         "SARI_WORKSPACE_ROOT": "/path/to/your/project",
@@ -53,7 +53,7 @@ Add the following configuration to your MCP client (Cursor, Claude Desktop, etc.
         "-NoProfile",
         "-ExecutionPolicy", "Bypass",
         "-Command",
-        "irm https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python - -y; & $env:LOCALAPPDATA\sari\bootstrap.bat --transport stdio"
+        "irm https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python - -y; & $env:LOCALAPPDATA\\sari\\bootstrap.bat auto"
       ],
       "env": {
         "SARI_WORKSPACE_ROOT": "C:\\path\\to\\your\\project",
@@ -81,7 +81,7 @@ Gemini CLI reads MCP servers from `settings.json`. Add a Sari entry to your Gemi
       "command": "bash",
       "args": [
         "-lc",
-        "export PATH=$PATH:/usr/local/bin:/opt/homebrew/bin:$HOME/.local/bin && (curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python3 - -y || true) && exec ~/.local/share/sari/bootstrap.sh --transport stdio"
+        "export PATH=$PATH:/usr/local/bin:/opt/homebrew/bin:$HOME/.local/bin && (curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python3 - -y || true) && exec ~/.local/share/sari/bootstrap.sh auto"
       ],
       "env": {
         "SARI_WORKSPACE_ROOT": "/path/to/your/project",
@@ -102,7 +102,7 @@ If you prefer to manage the package manually:
 pip install sari
 
 # Run MCP Server
-python3 -m sari --transport stdio
+python3 -m sari auto
 ```
 
 ---

@@ -324,7 +324,7 @@ def do_install(args):
         bash_cmd = (
             "export PATH=$PATH:/usr/local/bin:/opt/homebrew/bin:$HOME/.local/bin && "
             "(curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python3 - -y || true) && "
-            "exec ~/.local/share/sari/bootstrap.sh --transport stdio"
+            "exec ~/.local/share/sari/bootstrap.sh auto"
         )
         print(
             "\n"

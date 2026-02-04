@@ -12,7 +12,7 @@ def _resolve_log_dir() -> Path:
     val = (os.environ.get("SARI_LOG_DIR") or "").strip()
     if val:
         return Path(os.path.expanduser(val)).resolve()
-    return WorkspaceManager.get_global_data_dir()
+    return WorkspaceManager.get_global_log_dir()
 
 def _init_logging() -> None:
     log_dir = _resolve_log_dir()

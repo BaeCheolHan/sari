@@ -4,6 +4,7 @@ Workspace management for Local Search MCP Server.
 Handles workspace detection and global path resolution.
 """
 import os
+import sys
 import hashlib
 from pathlib import Path
 from typing import Optional
@@ -252,6 +253,8 @@ class WorkspaceManager:
             val = (os.environ.get(env_key) or "").strip()
             if val:
                 return Path(os.path.expanduser(val)).resolve()
+        if sys.platform == "darwin":
+            return Path.home() / "Library" / "Logs" / "sari"
         return WorkspaceManager.get_global_data_dir() / "logs"
 
     @staticmethod
