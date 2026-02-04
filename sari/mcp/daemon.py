@@ -7,6 +7,7 @@ from .session import Session
 
 from pathlib import Path
 from sari.core.workspace import WorkspaceManager
+from sari.core.registry import ServerRegistry
 
 def _resolve_log_dir() -> Path:
     val = (os.environ.get("SARI_LOG_DIR") or "").strip()
@@ -48,6 +49,7 @@ class SariDaemon:
         self.port = int(os.environ.get("SARI_DAEMON_PORT", DEFAULT_PORT))
         self.server = None
         self._pinned_workspace_root = None
+        self._registry = ServerRegistry()
 
     def _write_pid(self):
         """Write current PID to file."""
@@ -67,6 +69,26 @@ class SariDaemon:
                 logger.info("Removed PID file")
         except Exception as e:
             logger.error(f"Failed to remove PID file: {e}")
+
+    def _register_daemon(self):
+        try:
+            workspace_root = (os.environ.get("SARI_WORKSPACE_ROOT") or "").strip()
+            if not workspace_root:
+                workspace_root = WorkspaceManager.resolve_workspace_root()
+            self._registry.register(workspace_root, self.port, os.getpid())
+            logger.info(f"Registered daemon for {workspace_root} on port {self.port}")
+        except Exception as e:
+            logger.error(f"Failed to register daemon: {e}")
+
+    def _unregister_daemon(self):
+        try:
+            workspace_root = (os.environ.get("SARI_WORKSPACE_ROOT") or "").strip()
+            if not workspace_root:
+                workspace_root = WorkspaceManager.resolve_workspace_root()
+            self._registry.unregister(workspace_root)
+            logger.info(f"Unregistered daemon for {workspace_root}")
+        except Exception as e:
+            logger.error(f"Failed to unregister daemon: {e}")
 
     def _autostart_workspace(self) -> None:
         val = (os.environ.get("SARI_DAEMON_AUTOSTART") or "").strip().lower()
@@ -99,6 +121,7 @@ class SariDaemon:
             )
 
         self._write_pid()
+        self._register_daemon()
         self._autostart_workspace()
 
         self.server = await asyncio.start_server(
@@ -128,6 +151,7 @@ class SariDaemon:
         from .registry import Registry
         Registry.get_instance().shutdown_all()
 
+        self._unregister_daemon()
         self._remove_pid()
 
 async def main():

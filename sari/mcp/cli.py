@@ -54,11 +54,24 @@ DEFAULT_HTTP_PORT = 47777
 
 
 def get_daemon_address():
-    """Get daemon host and port from environment or defaults."""
-    # PRIORITY: SARI_ Only
+    """Get daemon host and port from environment, registry, or defaults."""
     host = os.environ.get("SARI_DAEMON_HOST", DEFAULT_HOST)
-    port = int(os.environ.get("SARI_DAEMON_PORT", DEFAULT_PORT))
-    return host, port
+    env_port = os.environ.get("SARI_DAEMON_PORT")
+    if env_port:
+        try:
+            return host, int(env_port)
+        except ValueError:
+            pass
+
+    try:
+        workspace_root = os.environ.get("SARI_WORKSPACE_ROOT") or WorkspaceManager.resolve_workspace_root()
+        inst = ServerRegistry().get_instance(str(workspace_root))
+        if inst and inst.get("port"):
+            return host, int(inst.get("port"))
+    except Exception:
+        pass
+
+    return host, DEFAULT_PORT
 
 
 def _package_config_path() -> Path:
@@ -143,33 +156,7 @@ def _get_http_host_port(host_override: Optional[str] = None, port_override: Opti
             host = None
             port = None
 
-    # 2. Registry (global server.json)
-    if port is None:
-        try:
-            inst = ServerRegistry().get_instance(str(workspace_root))
-            if inst:
-                port = int(inst.get("port")) if inst.get("port") else None
-        except Exception:
-            pass
-
-    # 2.1 Registry fallback: try cwd/parents or single active instance
-    if port is None:
-        instances = _load_registry_instances()
-        cwd = Path.cwd().resolve()
-        matched = None
-        for p in [cwd] + list(cwd.parents):
-            matched = instances.get(str(p))
-            if matched:
-                break
-        if not matched and len(instances) == 1:
-            matched = list(instances.values())[0]
-        if matched:
-            try:
-                port = int(matched.get("port")) if matched.get("port") else None
-            except Exception:
-                pass
-
-    # 3. Fallback to Config
+    # 2. Fallback to Config
     cfg = _load_http_config(str(workspace_root)) or {}
     if not host:
         host = str(cfg.get("http_api_host", cfg.get("server_host", DEFAULT_HTTP_HOST)))

@@ -197,13 +197,6 @@ def serve_forever(host: str, port: int, db: LocalSearchDB, indexer: Indexer, ver
     actual_port = httpd.server_address[1]
     BoundHandler.server_port = actual_port  # type: ignore
 
-    # Register in server.json
-    if has_registry and workspace_root:
-        try:
-            registry.register(workspace_root, actual_port, os.getpid())
-        except Exception as e:
-            print(f"[sari] Registry update failed: {e}", file=sys.stderr)
-
     if actual_port != port:
         print(f"[sari] HTTP API started on port {actual_port} (requested: {port})", file=sys.stderr)
 

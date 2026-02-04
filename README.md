@@ -228,9 +228,9 @@ sari status
 ```
 
 `sari status` will automatically use the actual HTTP port recorded in
-`.codex/tools/sari/data/server.json` (workspace-local) or
-`~/.local/share/sari/server.json` (global registry) if the default port is unavailable.
-If multiple instances exist, it prefers the current working directory (or its parents).
+`.codex/tools/sari/data/server.json` (workspace-local). The daemon port is
+discovered via the global registry at `~/.local/share/sari/server.json`, so
+clients can reconnect without manual port changes.
 
 #### If Daemon Port Is Busy
 If you see a message like "Daemon already running" but things still don't work,
