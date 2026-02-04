@@ -289,6 +289,9 @@ pkill -f "sari.mcp.daemon"
 sari daemon start -d
 ```
 
+The bootstrap script now starts a new daemon on a free port automatically
+to allow zero-downtime updates.
+
 ### Uninstall
 To remove Sari, indexed data, and default configs:
 
