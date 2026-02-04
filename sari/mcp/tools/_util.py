@@ -242,3 +242,24 @@ def resolve_db_path(input_path: str, roots: List[str]) -> Optional[str]:
         except Exception:
             continue
     return None
+
+
+def resolve_fs_path(db_path: str, roots: List[str]) -> Optional[str]:
+    """
+    Resolve db-path (root-xxxx/rel) to filesystem path using roots.
+    Returns absolute path if in scope, else None.
+    """
+    if not db_path or not db_path.startswith("root-") or "/" not in db_path:
+        return None
+    if not WorkspaceManager:
+        return None
+    root_id, rel = db_path.split("/", 1)
+    for r in roots:
+        try:
+            rid = WorkspaceManager.root_id(r)
+        except Exception:
+            continue
+        if rid != root_id:
+            continue
+        return str(Path(r).expanduser().resolve() / rel)
+    return None

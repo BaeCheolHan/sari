@@ -35,13 +35,26 @@ class SearchEngine:
         if opts.total_mode != "approx":
              symbol_hits_data = self.db.search_symbols(q, repo=opts.repo, limit=50, root_ids=list(opts.root_ids or []))
 
-        # Convert symbol hits to SearchHit objects
+        # Convert symbol hits to SearchHit objects (structural boosting)
         symbol_hits = []
         for s in symbol_hits_data:
+            name = str(s.get("name", ""))
+            kind = str(s.get("kind", "")).lower()
+            qualname = str(s.get("qualname", ""))
+            exact = (name.lower() == q) or (qualname.lower() == q)
+            kind_boost = 0.0
+            if kind in {"class"}:
+                kind_boost = 600.0
+            elif kind in {"function"}:
+                kind_boost = 500.0
+            elif kind in {"method"}:
+                kind_boost = 350.0
+            elif kind in {"interface"}:
+                kind_boost = 450.0
             hit = SearchHit(
                 repo=s["repo"],
                 path=s["path"],
-                score=1000.0, # Massive starting score for symbol match
+                score=1000.0 + kind_boost + (800.0 if exact else 0.0),
                 snippet=s["snippet"],
                 mtime=s["mtime"],
                 size=s["size"],
@@ -52,6 +65,8 @@ class SearchEngine:
                 docstring=s.get("docstring", ""),
                 metadata=s.get("metadata", "{}")
             )
+            if exact:
+                hit.hit_reason = f"Symbol(exact): {s['kind']} {s['name']}"
             # Recency boost if enabled
             if opts.recency_boost:
                 hit.score = calculate_recency_score(hit.mtime, hit.score)
@@ -282,7 +297,7 @@ class SearchEngine:
                    f.mtime AS mtime,
                    f.size AS size,
                    ( -1.0 * bm25(files_fts) + {path_prior_sql} + {filetype_prior_sql} ) AS score,
-                   f.content AS content
+                   f.fts_content AS content
             FROM files_fts
             JOIN files f ON f.rowid = files_fts.rowid
             WHERE {where}

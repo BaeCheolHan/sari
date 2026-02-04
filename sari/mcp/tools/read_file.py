@@ -32,8 +32,20 @@ def execute_read_file(args: Dict[str, Any], db: LocalSearchDB, roots: List[str])
     if content is None:
         return mcp_response(
             "read_file",
-            lambda: pack_error("read_file", ErrorCode.NOT_INDEXED, f"File not found or not indexed: {db_path}"),
-            lambda: {"error": {"code": ErrorCode.NOT_INDEXED.value, "message": f"File not found or not indexed: {db_path}"}, "isError": True},
+            lambda: pack_error(
+                "read_file",
+                ErrorCode.NOT_INDEXED,
+                f"File not found or not indexed: {db_path}",
+                hints=["run scan_once", "verify path with search"],
+            ),
+            lambda: {
+                "error": {
+                    "code": ErrorCode.NOT_INDEXED.value,
+                    "message": f"File not found or not indexed: {db_path}",
+                    "hint": "run scan_once | verify path with search",
+                },
+                "isError": True,
+            },
         )
 
     def build_pack() -> str:

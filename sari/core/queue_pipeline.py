@@ -44,6 +44,11 @@ class DbTask:
     repo_meta: Optional[dict] = None
     engine_docs: Optional[List[dict]] = None
     engine_deletes: Optional[List[str]] = None
+    snippet_rows: Optional[List[tuple]] = None
+    context_rows: Optional[List[tuple]] = None
+    failed_rows: Optional[List[tuple]] = None
+    failed_paths: Optional[List[str]] = None
+    failed_updates: Optional[List[tuple]] = None
 
 
 def coalesce_action(existing: Optional[TaskAction], incoming: TaskAction) -> TaskAction:

@@ -31,8 +31,8 @@ def execute_search_api_endpoints(args: Dict[str, Any], db: Any, roots: List[str]
         sql += f" AND ({root_clause})"
         params.extend([f"{rid}/%" for rid in root_ids])
     
-    with db._read_lock:
-        rows = db._read.execute(sql, params).fetchall()
+    conn = db.get_read_connection() if hasattr(db, "get_read_connection") else db._read
+    rows = conn.execute(sql, params).fetchall()
 
     results = []
     for r in rows:

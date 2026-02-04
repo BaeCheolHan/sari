@@ -6,6 +6,7 @@ import sari.mcp.tools.status as status_tool
 import sari.mcp.tools.repo_candidates as repo_candidates_tool
 import sari.mcp.tools.list_files as list_files_tool
 import sari.mcp.tools.read_file as read_file_tool
+import sari.mcp.tools.grep_and_read as grep_and_read_tool
 import sari.mcp.tools.search_symbols as search_symbols_tool
 import sari.mcp.tools.read_symbol as read_symbol_tool
 import sari.mcp.tools.doctor as doctor_tool
@@ -16,6 +17,13 @@ import sari.mcp.tools.scan_once as scan_once_tool
 import sari.mcp.tools.get_callers as get_callers_tool
 import sari.mcp.tools.get_implementations as get_implementations_tool
 import sari.mcp.tools.deckard_guide as deckard_guide_tool
+import sari.mcp.tools.call_graph as call_graph_tool
+import sari.mcp.tools.call_graph_health as call_graph_health_tool
+import sari.mcp.tools.save_snippet as save_snippet_tool
+import sari.mcp.tools.get_snippet as get_snippet_tool
+import sari.mcp.tools.archive_context as archive_context_tool
+import sari.mcp.tools.get_context as get_context_tool
+import sari.mcp.tools.dry_run_diff as dry_run_diff_tool
 
 
 @dataclass
@@ -92,6 +100,32 @@ def build_default_registry() -> ToolRegistry:
             "required": ["query"],
         },
         handler=lambda ctx, args: search_tool.execute_search(args, ctx.db, ctx.logger, ctx.roots, engine=ctx.engine),
+    ))
+
+    reg.register(Tool(
+        name="grep_and_read",
+        description="Composite tool: search then read top files.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query"},
+                "repo": {"type": "string", "description": "Limit search to specific repository"},
+                "limit": {"type": "integer", "description": "Maximum search results (default: 8)", "default": 8},
+                "read_limit": {"type": "integer", "description": "Files to read from top results (default: 3)", "default": 3},
+                "file_types": {"type": "array", "items": {"type": "string"}, "description": "Filter by file extensions"},
+                "path_pattern": {"type": "string", "description": "Glob pattern for path matching"},
+                "exclude_patterns": {"type": "array", "items": {"type": "string"}, "description": "Patterns to exclude"},
+                "recency_boost": {"type": "boolean", "description": "Boost recently modified files", "default": False},
+                "use_regex": {"type": "boolean", "description": "Treat query as regex pattern", "default": False},
+                "case_sensitive": {"type": "boolean", "description": "Case-sensitive search", "default": False},
+                "context_lines": {"type": "integer", "description": "Number of context lines in snippet", "default": 5},
+                "total_mode": {"type": "string", "enum": ["exact", "approx"], "description": "Total count mode"},
+                "root_ids": {"type": "array", "items": {"type": "string"}, "description": "Limit search to specific root_ids"},
+                "scope": {"type": "string", "description": "Alias for 'repo'"},
+            },
+            "required": ["query"],
+        },
+        handler=lambda ctx, args: grep_and_read_tool.execute_grep_and_read(args, ctx.db, ctx.roots),
     ))
 
     reg.register(Tool(
@@ -207,6 +241,109 @@ def build_default_registry() -> ToolRegistry:
         description="Find implementations of a symbol (use after search_symbols).",
         input_schema={"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]},
         handler=lambda ctx, args: get_implementations_tool.execute_get_implementations(args, ctx.db, ctx.roots),
+    ))
+
+    reg.register(Tool(
+        name="call_graph",
+        description="Call graph for a symbol (upstream/downstream).",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string"},
+                "symbol_id": {"type": "string"},
+                "path": {"type": "string"},
+                "depth": {"type": "integer", "default": 2},
+                "include_path": {"type": "array", "items": {"type": "string"}},
+                "exclude_path": {"type": "array", "items": {"type": "string"}},
+                "sort": {"type": "string", "enum": ["line", "name"], "default": "line"},
+                "quality_score": {"type": "number"},
+            },
+            "required": ["symbol"],
+        },
+        handler=lambda ctx, args: call_graph_tool.execute_call_graph(args, ctx.db, ctx.roots),
+    ))
+
+    reg.register(Tool(
+        name="call_graph_health",
+        description="Check call-graph plugin health and API compatibility.",
+        input_schema={"type": "object", "properties": {}},
+        handler=lambda ctx, args: call_graph_health_tool.execute_call_graph_health(args),
+    ))
+
+    reg.register(Tool(
+        name="save_snippet",
+        description="Save code snippet with a tag.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "start_line": {"type": "integer"},
+                "end_line": {"type": "integer"},
+                "tag": {"type": "string"},
+                "note": {"type": "string"},
+                "commit": {"type": "string"},
+            },
+            "required": ["path", "tag"],
+        },
+        handler=lambda ctx, args: save_snippet_tool.execute_save_snippet(args, ctx.db, ctx.roots, indexer=ctx.indexer),
+    ))
+
+    reg.register(Tool(
+        name="get_snippet",
+        description="Retrieve saved snippets by tag or query.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "tag": {"type": "string"},
+                "query": {"type": "string"},
+                "limit": {"type": "integer", "default": 20},
+            },
+        },
+        handler=lambda ctx, args: get_snippet_tool.execute_get_snippet(args, ctx.db, ctx.roots),
+    ))
+
+    reg.register(Tool(
+        name="archive_context",
+        description="Archive domain knowledge/context.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "topic": {"type": "string"},
+                "content": {"type": "string"},
+                "tags": {"type": "array", "items": {"type": "string"}},
+                "related_files": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["topic", "content"],
+        },
+        handler=lambda ctx, args: archive_context_tool.execute_archive_context(args, ctx.db, ctx.roots, indexer=ctx.indexer),
+    ))
+
+    reg.register(Tool(
+        name="get_context",
+        description="Retrieve archived context by topic or query.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "topic": {"type": "string"},
+                "query": {"type": "string"},
+                "limit": {"type": "integer", "default": 20},
+            },
+        },
+        handler=lambda ctx, args: get_context_tool.execute_get_context(args, ctx.db, ctx.roots),
+    ))
+
+    reg.register(Tool(
+        name="dry_run_diff",
+        description="Preview diff and run lightweight syntax check before editing.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "content": {"type": "string"},
+            },
+            "required": ["path", "content"],
+        },
+        handler=lambda ctx, args: dry_run_diff_tool.execute_dry_run_diff(args, ctx.db, ctx.roots),
     ))
 
     return reg

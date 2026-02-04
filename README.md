@@ -537,14 +537,31 @@ Sari는 인덱싱 + FTS 기반 검색 구조라서 **“어떤 단계에서 쓰�
 - `status(details)`에서 `fts_enabled: true`인지 먼저 확인하세요.  
 - `fts_enabled: false`면 검색이 LIKE 폴백으로 전환되어 **느려지고 정확도도 떨어집니다.**
 - FTS가 켜져 있어도 **아주 짧은 쿼리(길이 < 3)** 또는 **유니코드 포함 쿼리**는 LIKE로 폴백될 수 있습니다.
+- 파일 수가 많고 검색이 느리다면 `status(details)`에 **엔진 추천 경고**가 표시됩니다.
+  - 기본 기준: **10,000 files 이상**이면 embedded(Tantivy) 권장
+  - 임계값: `DECKARD_ENGINE_SUGGEST_FILES`
+- FTS는 **압축 해제 병목을 피하기 위해** 별도의 `fts_content` 컬럼을 사용합니다. (검색 CPU 부담 감소)
 
 ### 3) 엔트리포인트 탐색은 심볼 기반이 유리
 - `search_symbols` → `read_symbol` 조합은 **필요한 코드 블록만 읽어** 토큰 비용을 줄입니다.
 - `read_file`은 “정말 전체 파일이 필요할 때만” 사용하세요.
+- 구조적 랭킹(Structural Boosting)이 적용되어 **class/function/method 심볼은 더 높은 점수**를 받습니다.
+- `search`는 **정확한 심볼 이름 매칭**에 추가 가중치를 부여합니다.
 
 ### 4) 큰 레포일수록 필터링이 핵심
 - `repo`, `file_types`, `path_pattern`을 적극 사용하세요.
 - 예) `list_files { repo: "sari", file_types: ["py"] }`
+
+### 5) 대량 브랜치 변경(Git checkout) 대응
+- `.git` 이벤트 감지 시 **개별 파일 이벤트 대신 rescan**으로 합쳐 처리합니다.
+- debounce는 `DECKARD_GIT_CHECKOUT_DEBOUNCE` (기본 3초)
+
+### 6) 대량 이벤트 성능/복구
+- 인덱싱 코얼레스는 **Sharded Lock**으로 분산되어 대규모 이벤트에서 병목을 줄입니다.
+  - 샤드 수: `DECKARD_COALESCE_SHARDS` (기본 16)
+- 실패한 인덱싱 작업은 **DLQ(Dead Letter Queue)** 로 저장됩니다.
+  - 재시도 간격: 1분 → 5분 → 1시간
+  - `doctor`에서 3회 이상 실패한 항목을 경고로 표시합니다.
 
 ---
 
@@ -732,6 +749,7 @@ m:fts_enabled=true
 | `INTERNAL` | 내부 서버 오류 |
 
 > **참고**: 기존 JSON 포맷이 필요하다면 환경변수 `DECKARD_FORMAT=json`을 설정하세요. (디버깅용)
+> 에러에는 `hint`가 함께 포함될 수 있습니다. (예: `run scan_once`, `run sari doctor`)
 
 ---
 
@@ -758,6 +776,140 @@ m:fts_enabled=true
 - **구조**: 
     - **Daemon**: 실제로 공부하고 검색을 처리하는 핵심 본체
     - **Proxy**: AI 앱과 Daemon 사이의 빠른 메신저
+
+---
+
+## 🧠 지식 도구 (Call Graph / Snippet / Context / Dry-run Diff)
+
+### 1) Call Graph (호출 관계)
+MCP tool: `call_graph`  
+CLI:
+```bash
+sari call-graph --symbol process_file --depth 2
+# 심볼이 겹칠 때는 symbol_id로 정확히 지정
+sari call-graph --symbol-id "<sid>" --depth 2
+# 트리 출력
+sari call-graph --symbol process_file --depth 2 --format tree
+# 경로 필터
+sari call-graph --symbol process_file --include-path sari/core --exclude-path tests
+# 정렬 기준
+sari call-graph --symbol process_file --format tree --sort name
+```
+설명:
+- `search_symbols` 결과에 `qualname`/`symbol_id`가 포함됩니다.
+- `symbol_id`를 전달하면 호출 관계가 훨씬 정확하게 매핑됩니다.
+- `DECKARD_CALLGRAPH_PLUGIN`으로 정적 분석 플러그인을 연결할 수 있습니다.
+  - 여러 개는 쉼표로 연결: `mod1,mod2`
+  - `augment_neighbors(direction, neighbors, context)` 또는 `filter_neighbors(...)` 구현 가능.
+  - 에러 로그: `DECKARD_CALLGRAPH_PLUGIN_LOG=/tmp/callgraph.log`
+- 정확도 힌트가 `precision_hint`로 제공됩니다 (언어별 세분화).
+- `search_symbols` 결과에도 `precision_hint`가 포함됩니다.
+  - 플러그인 매니페스트: `DECKARD_CALLGRAPH_PLUGIN_MANIFEST=/path/to/manifest.json`
+  - 매니페스트 스키마:
+    - JSON 리스트: `["mod1", "mod2"]`
+    - 또는 객체: `{"plugins": ["mod1", "mod2"]}`
+  - strict 검증: `DECKARD_CALLGRAPH_PLUGIN_MANIFEST_STRICT=1`
+  - `call_graph_health`에서 API 불일치/로드 실패 원인 확인 가능
+  - `quality_score` (0-100)로 정적 해석 신뢰도 제공 (파일 크기/관계 밀도 반영)
+
+언어별 특이사항:
+- **Python**: AST 기반, 정확도 높음. 동적 호출/리플렉션은 한계.
+- **JS/TS/Java/Kotlin/Go/C/C++**: 정규식 기반 파서로 호출 관계 정밀도 낮음.
+  - 오버로드/인터페이스/리플렉션/동적 디스패치에 약함.
+  - 동일 이름 심볼 충돌 가능 → `symbol_id` 권장.
+
+### 2) Save / Get Snippet
+MCP tools: `save_snippet`, `get_snippet`  
+CLI:
+```bash
+sari save-snippet --path "core/db.py:100-150" --tag "db-connection-pattern"
+sari get-snippet --tag "db-connection-pattern"
+sari get-snippet --tag "db-connection-pattern" --history
+sari get-snippet --tag "db-connection-pattern" --no-remap
+sari get-snippet --tag "db-connection-pattern" --update
+sari get-snippet --tag "db-connection-pattern" --update --diff-path /tmp/snippet.diff
+```
+설명:
+- 저장 시 스니펫 주변 앵커(앞/뒤 라인)를 함께 기록합니다.
+- 파일이 바뀌어도 `get_snippet`은 앵커/내용 매칭으로 자동 재매핑(remap)합니다.
+- 스니펫 내용이 바뀌면 이전 버전이 `snippet_versions`에 자동 보관됩니다.
+- `--update`를 사용하면 리매핑된 위치/내용을 DB에 반영합니다.
+- 리매핑 결과에는 `diff`(변경 요약)가 포함됩니다.
+- `--diff-path`를 지정하면 diff를 파일로 저장합니다.
+- `--diff-path`가 비어 있으면 기본 경로는 `~/.cache/sari/snippet-diffs/<tag>.diff` 입니다.
+- `--update` 시 저장된 스냅샷: `<tag>_<id>_<ts>_stored.txt`, `<tag>_<id>_<ts>_current.txt`
+- 리매핑이 유효하지 않으면 업데이트가 스킵됩니다 (`update_skipped_reason`).
+
+### 3) Archive / Get Context
+MCP tools: `archive_context`, `get_context`  
+CLI:
+```bash
+sari archive-context --topic "PricingLogic" --content "쿠폰 적용 전 할인 계산" --related-files core/pricing.py api/payment.py
+sari archive-context --topic "PricingLogic" --content "..." --source "issue-102" --valid-from 2024-02-01
+sari get-context --topic "PricingLogic"
+sari get-context --query "Pricing" --as-of 2024-06-01
+```
+설명:
+- `source`, `valid_from`, `valid_until`, `deprecated`를 기록할 수 있습니다.
+- `get_context --as-of`는 시점 기준으로 유효한 컨텍스트만 반환합니다.
+
+### 4) Dry-run Diff
+MCP tool: `dry_run_diff`  
+CLI:
+```bash
+sari dry-run-diff --path core/db.py --content "$(cat /tmp/new_db.py)"
+sari dry-run-diff --path core/db.py --content "$(cat /tmp/new_db.py)" --lint
+```
+설명:
+- 기본은 구문 체크만 수행합니다.
+- `--lint` 또는 `DECKARD_DRYRUN_LINT=1` 설정 시, 사용 가능한 린터(`ruff`/`eslint`)가 있으면 실행합니다.
+
+---
+
+## 🧰 Composite Tool (grep_and_read)
+MCP tool: `grep_and_read`  
+설명:
+- 검색 결과 상위 N개 파일을 즉시 읽어옵니다.
+- `search` → `read_file` 반복을 줄이기 위한 토큰/턴 절감 도구입니다.
+
+예시:
+```json
+{ "name": "grep_and_read", "arguments": { "query": "process_file", "limit": 5, "read_limit": 2 } }
+```
+
+---
+
+## 🩺 진단 (Doctor)
+
+CLI:
+```bash
+sari doctor
+sari doctor --auto-fix
+sari doctor --auto-fix --auto-fix-rescan
+```
+
+설명:
+- `--auto-fix`는 가능한 항목에 대해 자동 마이그레이션을 시도합니다.
+- `--auto-fix-rescan`은 자동 수정 이후 `scan_once`를 실행합니다.
+  - 진행 상태는 `Auto Fix Rescan Start` / `Auto Fix Rescan` 항목으로 표시됩니다.
+  - 자동 수정이 실패하면 `Auto Fix Rescan Skipped`로 표시됩니다.
+
+---
+
+## ✅ 엣지 테스트
+
+```bash
+scripts/run_edge_tests.sh
+```
+
+CI 포함:
+```bash
+scripts/run_tests_isolated.sh
+```
+
+## 🔌 Call-Graph 플러그인 헬스 체크
+
+MCP tool: `call_graph_health`
 
 ---
 

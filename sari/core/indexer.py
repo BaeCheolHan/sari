@@ -73,6 +73,17 @@ def _normalize_engine_text(text: str) -> str:
 def _cjk_space(text: str) -> str:
     return _cjk_space_impl(text)
 
+def _qualname(parent: str, name: str) -> str:
+    parent = (parent or "").strip()
+    if not parent:
+        return name
+    return f"{parent}.{name}"
+
+def _symbol_id(path: str, kind: str, qualname: str) -> str:
+    import hashlib
+    base = f"{path}|{kind}|{qualname}"
+    return hashlib.sha1(base.encode("utf-8")).hexdigest()
+
 def _env_flag(name: str, default: bool = False) -> bool:
     val = os.environ.get(name)
     if val is None:
@@ -320,11 +331,11 @@ class PythonParser(BaseParser):
             tree = ast.parse(content)
             lines = content.splitlines()
 
-            def _visit(node, parent="", current_symbol=None):
+            def _visit(node, parent_name="", parent_qual="", current_symbol=None, current_sid=None):
                 for child in ast.iter_child_nodes(node):
                     if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                         name = child.name
-                        kind = "class" if isinstance(child, ast.ClassDef) else ("method" if parent else "function")
+                        kind = "class" if isinstance(child, ast.ClassDef) else ("method" if parent_name else "function")
                         start, end = child.lineno, getattr(child, "end_lineno", child.lineno)
                         doc = self.clean_doc((ast.get_docstring(child) or "").splitlines())
                         # v2.5.0: Align with tests (use 'decorators', 'annotations', and '@' prefix)
@@ -371,15 +382,39 @@ class PythonParser(BaseParser):
                             if comment_lines:
                                 doc = self.clean_doc(comment_lines)
 
-                        symbols.append((path, name, kind, start, end, lines[start-1].strip() if 0 <= start-1 < len(lines) else "", parent, json.dumps(meta), doc))
-                        _visit(child, name, name)
+                        qual = _qualname(parent_qual, name)
+                        sid = _symbol_id(path, kind, qual)
+                        symbols.append((
+                            path,
+                            name,
+                            kind,
+                            start,
+                            end,
+                            lines[start-1].strip() if 0 <= start-1 < len(lines) else "",
+                            parent_name,
+                            json.dumps(meta),
+                            doc,
+                            qual,
+                            sid,
+                        ))
+                        _visit(child, name, qual, name, sid)
                     elif isinstance(child, ast.Call) and current_symbol:
                         target = ""
                         if isinstance(child.func, ast.Name): target = child.func.id
                         elif isinstance(child.func, ast.Attribute): target = child.func.attr
-                        if target: relations.append((path, current_symbol, "", target, "calls", child.lineno))
-                        _visit(child, parent, current_symbol)
-                    else: _visit(child, parent, current_symbol)
+                        if target:
+                            relations.append((
+                                path,
+                                current_symbol,
+                                current_sid or "",
+                                "",
+                                target,
+                                "",
+                                "calls",
+                                child.lineno,
+                            ))
+                        _visit(child, parent_name, parent_qual, current_symbol, current_sid)
+                    else: _visit(child, parent_name, parent_qual, current_symbol, current_sid)
             _visit(tree)
         except Exception:
             # v2.7.4: Fallback to regex parser if AST fails (useful for legacy tests or malformed files)
@@ -435,9 +470,11 @@ class GenericRegexParser(BaseParser):
         def flush_inheritance(line_no, clean_line):
             nonlocal pending_type_decl, pending_inheritance_mode, pending_inheritance_extends, pending_inheritance_impls
             if not pending_type_decl or "{" not in clean_line: return
-            name, decl_line = pending_type_decl
-            for b in pending_inheritance_extends: relations.append((path, name, "", b, "extends", decl_line))
-            for b in pending_inheritance_impls: relations.append((path, name, "", b, "implements", decl_line))
+            name, decl_line, from_sid = pending_type_decl
+            for b in pending_inheritance_extends:
+                relations.append((path, name, from_sid or "", "", b, "", "extends", decl_line))
+            for b in pending_inheritance_impls:
+                relations.append((path, name, from_sid or "", "", b, "", "implements", decl_line))
             pending_type_decl = None
             pending_inheritance_mode = None
             pending_inheritance_extends, pending_inheritance_impls = [], []
@@ -510,7 +547,10 @@ class GenericRegexParser(BaseParser):
                 kind = self.kind_norm.get(kind_raw, kind_raw)
                 if kind == "record": kind = "class"
                 matches.append((name, kind, m.start()))
-                pending_type_decl = (name, line_no)
+                parent_qual = active_scopes[-1][1].get("qual", "") if active_scopes else ""
+                qual = _qualname(parent_qual, name)
+                sid = _symbol_id(path, kind, qual)
+                pending_type_decl = (name, line_no, sid)
                 pending_inheritance_mode, pending_inheritance_extends, pending_inheritance_impls = None, [], []
                 
                 # Check for inline inheritance
@@ -544,15 +584,31 @@ class GenericRegexParser(BaseParser):
                 meta = {"annotations": pending_annos.copy()}
                 if last_path: meta["http_path"] = last_path
                 parent = active_scopes[-1][1]["name"] if active_scopes else ""
-                info = {"path": path, "name": name, "kind": kind, "line": line_no, "meta": json.dumps(meta), "doc": self.clean_doc(pending_doc), "raw": line.strip(), "parent": parent}
+                parent_qual = active_scopes[-1][1].get("qual", "") if active_scopes else ""
+                qual = _qualname(parent_qual, name)
+                sid = _symbol_id(path, kind, qual)
+                info = {
+                    "path": path,
+                    "name": name,
+                    "kind": kind,
+                    "line": line_no,
+                    "meta": json.dumps(meta),
+                    "doc": self.clean_doc(pending_doc),
+                    "raw": line.strip(),
+                    "parent": parent,
+                    "qual": qual,
+                    "sid": sid,
+                }
                 active_scopes.append((cur_bal, info))
                 pending_annos, last_path, pending_doc = [], None, []
 
             if not matches and clean and not clean.startswith("@") and not in_doc:
                 current_symbol = None
+                current_sid = None
                 for _, info in reversed(active_scopes):
                     if info.get("kind") in (self.method_kind, "method", "function"):
                         current_symbol = info.get("name")
+                        current_sid = info.get("sid")
                         break
                 if current_symbol and not looks_like_def:
                     call_names = set()
@@ -567,7 +623,7 @@ class GenericRegexParser(BaseParser):
                             continue
                         call_names.add(name)
                     for name in call_names:
-                        relations.append((path, current_symbol, "", name, "calls", line_no))
+                        relations.append((path, current_symbol, current_sid or "", "", name, "", "calls", line_no))
 
             if not matches and clean and not clean.startswith("@") and not in_doc:
                 if "{" not in clean and "}" not in clean: pending_doc = []
@@ -583,17 +639,44 @@ class GenericRegexParser(BaseParser):
             if op > 0 or cl > 0:
                 still_active = []
                 for bal, info in active_scopes:
-                    if cur_bal <= bal: symbols.append((info["path"], info["name"], info["kind"], info["line"], line_no, info["raw"], info["parent"], info["meta"], info["doc"]))
+                    if cur_bal <= bal:
+                        symbols.append((
+                            info["path"],
+                            info["name"],
+                            info["kind"],
+                            info["line"],
+                            line_no,
+                            info["raw"],
+                            info["parent"],
+                            info["meta"],
+                            info["doc"],
+                            info.get("qual", ""),
+                            info.get("sid", ""),
+                        ))
                     else: still_active.append((bal, info))
                 active_scopes = still_active
 
         last_line = len(lines)
         for _, info in active_scopes:
-            symbols.append((info["path"], info["name"], info["kind"], info["line"], last_line, info["raw"], info["parent"], info["meta"], info["doc"]))
+            symbols.append((
+                info["path"],
+                info["name"],
+                info["kind"],
+                info["line"],
+                last_line,
+                info["raw"],
+                info["parent"],
+                info["meta"],
+                info["doc"],
+                info.get("qual", ""),
+                info.get("sid", ""),
+            ))
         if pending_type_decl:
-            name, decl_line = pending_type_decl
-            for b in pending_inheritance_extends: relations.append((path, name, "", b, "extends", decl_line))
-            for b in pending_inheritance_impls: relations.append((path, name, "", b, "implements", decl_line))
+            name, decl_line, from_sid = pending_type_decl
+            for b in pending_inheritance_extends:
+                relations.append((path, name, from_sid or "", "", b, "", "extends", decl_line))
+            for b in pending_inheritance_impls:
+                relations.append((path, name, from_sid or "", "", b, "", "implements", decl_line))
         symbols.sort(key=lambda s: (s[3], 0 if s[2] in {"class", "interface", "enum", "record"} else 1, s[1]))
         return symbols, relations
 
@@ -748,6 +831,10 @@ class DBWriter:
         engine_docs: List[dict] = []
         engine_deletes: List[str] = []
         latency_samples: List[float] = []
+        snippet_rows: List[tuple] = []
+        context_rows: List[tuple] = []
+        failed_rows: List[tuple] = []
+        failed_clear_paths: List[str] = []
 
         for t in tasks:
             if t.kind == "delete_path" and t.path:
@@ -770,6 +857,14 @@ class DBWriter:
                 update_last_seen_paths.extend(t.paths)
             elif t.kind == "upsert_repo_meta" and t.repo_meta:
                 repo_meta_tasks.append(t.repo_meta)
+            elif t.kind == "upsert_snippets" and t.snippet_rows:
+                snippet_rows.extend(t.snippet_rows)
+            elif t.kind == "upsert_contexts" and t.context_rows:
+                context_rows.extend(t.context_rows)
+            elif t.kind == "dlq_upsert" and t.failed_rows:
+                failed_rows.extend(t.failed_rows)
+            elif t.kind == "dlq_clear" and t.failed_paths:
+                failed_clear_paths.extend(t.failed_paths)
 
         if delete_paths:
             upsert_files_rows = [r for r in upsert_files_rows if r[0] not in delete_paths]
@@ -777,6 +872,7 @@ class DBWriter:
             upsert_relations_rows = [r for r in upsert_relations_rows if r[0] not in delete_paths]
             update_last_seen_paths = [p for p in update_last_seen_paths if p not in delete_paths]
             engine_docs = [d for d in engine_docs if d.get("doc_id") not in delete_paths]
+            failed_clear_paths.extend(list(delete_paths))
 
         # Safety order: delete -> upsert_files -> upsert_symbols -> upsert_relations -> update_last_seen
         for p in delete_paths:
@@ -807,6 +903,14 @@ class DBWriter:
                     description=m.get("description", ""),
                     priority=int(m.get("priority", 0) or 0),
                 )
+        if snippet_rows:
+            self.db.upsert_snippet_tx(cur, snippet_rows)
+        if context_rows:
+            self.db.upsert_context_tx(cur, context_rows)
+        if failed_rows:
+            self.db.upsert_failed_tasks_tx(cur, failed_rows)
+        if failed_clear_paths:
+            self.db.clear_failed_tasks_tx(cur, failed_clear_paths)
 
         if delete_paths:
             engine_deletes.extend(list(delete_paths))
@@ -838,7 +942,16 @@ class Indexer:
         self._pipeline_started = False
         self._drain_timeout = 2.0
         self._coalesce_max_keys = 100000
-        self._coalesce_lock = threading.Lock()
+        try:
+            shard_count = int(os.environ.get("DECKARD_COALESCE_SHARDS", "16") or 16)
+        except Exception:
+            shard_count = 16
+        if shard_count <= 0:
+            shard_count = 1
+        self._coalesce_shards = shard_count
+        self._coalesce_locks = [threading.Lock() for _ in range(self._coalesce_shards)]
+        self._coalesce_size_lock = threading.Lock()
+        self._coalesce_size = 0
         self._coalesce_map: Dict[str, CoalesceTask] = {}
         self._legacy_purge_done = False
         self._event_queue = DedupQueue() if DedupQueue else None
@@ -855,6 +968,7 @@ class Indexer:
         self._drop_count_degraded = 0
         self._drop_count_shutdown = 0
         self._drop_count_telemetry = 0
+        self._dlq_thread = None
         max_workers = getattr(cfg, "max_workers", 4) or 4
         try:
             max_workers = int(max_workers)
@@ -875,6 +989,11 @@ class Indexer:
         except: pass
         if self._db_writer:
             self._db_writer.stop(timeout=self._drain_timeout)
+        if self._dlq_thread and self._dlq_thread.is_alive():
+            try:
+                self._dlq_thread.join(timeout=self._drain_timeout)
+            except Exception:
+                pass
         if self.logger and hasattr(self.logger, "stop"):
             try:
                 self.logger.stop(timeout=self._drain_timeout)
@@ -904,7 +1023,7 @@ class Indexer:
                 # Watch all roots
                 roots = [str(Path(os.path.expanduser(r)).absolute()) for r in self.cfg.workspace_roots if Path(r).exists()]
                 if roots:
-                    self.watcher = FileWatcher(roots, self._process_watcher_event)
+                    self.watcher = FileWatcher(roots, self._process_watcher_event, on_git_checkout=lambda _p: self.request_rescan())
                     self.watcher.start()
                     if self.logger: self.logger.log_info(f"FileWatcher started for {roots}")
             except Exception as e:
@@ -930,6 +1049,9 @@ class Indexer:
         self._worker_thread.start()
         self._metrics_thread = threading.Thread(target=self._metrics_loop, daemon=True)
         self._metrics_thread.start()
+        if not self._dlq_thread or not self._dlq_thread.is_alive():
+            self._dlq_thread = threading.Thread(target=self._dlq_loop, daemon=True)
+            self._dlq_thread.start()
 
     def _record_latency(self, value: float) -> None:
         self._latencies.append(value)
@@ -1014,11 +1136,42 @@ class Indexer:
 
     def _enqueue_delete_path(self, path: str, enqueue_ts: Optional[float] = None) -> None:
         self._db_writer.enqueue(DbTask(kind="delete_path", path=path, ts=enqueue_ts or time.time()))
+        self._enqueue_dlq_clear([path])
 
     def _enqueue_repo_meta(self, repo_name: str, tags: str, description: str) -> None:
         self._db_writer.enqueue(
             DbTask(kind="upsert_repo_meta", repo_meta={"repo_name": repo_name, "tags": tags, "description": description})
         )
+
+    def _enqueue_dlq_upsert(self, rows: List[tuple]) -> None:
+        if not rows:
+            return
+        self._db_writer.enqueue(DbTask(kind="dlq_upsert", failed_rows=list(rows)))
+
+    def _enqueue_dlq_clear(self, paths: List[str]) -> None:
+        if not paths:
+            return
+        self._db_writer.enqueue(DbTask(kind="dlq_clear", failed_paths=list(paths)))
+
+    def _dlq_backoff_seconds(self, attempts: int) -> int:
+        if attempts <= 1:
+            return 60
+        if attempts == 2:
+            return 300
+        return 3600
+
+    def _record_failed_task(self, path: str, err: Any, attempts: int) -> None:
+        if not path:
+            return
+        now = int(time.time())
+        safe_attempts = max(1, int(attempts))
+        next_retry = now + self._dlq_backoff_seconds(safe_attempts)
+        msg = str(err)[:500]
+        self._enqueue_dlq_upsert([(path, safe_attempts, msg, now, next_retry)])
+
+    def _coalesce_lock_for(self, key: str) -> threading.Lock:
+        idx = hash(key) % self._coalesce_shards if self._coalesce_shards > 1 else 0
+        return self._coalesce_locks[idx]
 
     def _normalize_path(self, path: str) -> Optional[str]:
         try:
@@ -1074,13 +1227,17 @@ class Indexer:
             return
         # Key must be unique per file. Use db path as key.
         key = norm
-        with self._coalesce_lock:
+        lock = self._coalesce_lock_for(key)
+        with lock:
             exists = key in self._coalesce_map
-            if not exists and len(self._coalesce_map) >= self._coalesce_max_keys:
-                self._drop_count_degraded += 1
-                if self.logger:
-                    self.logger.log_error(f"coalesce_map degraded: drop key={key}")
-                return
+            if not exists:
+                with self._coalesce_size_lock:
+                    if self._coalesce_size >= self._coalesce_max_keys:
+                        self._drop_count_degraded += 1
+                        if self.logger:
+                            self.logger.log_error(f"coalesce_map degraded: drop key={key}")
+                        return
+                    self._coalesce_size += 1
             if exists:
                 task = self._coalesce_map[key]
                 task.action = coalesce_action(task.action, action)
@@ -1110,14 +1267,45 @@ class Indexer:
             if not keys:
                 continue
             for key in keys:
-                with self._coalesce_lock:
+                lock = self._coalesce_lock_for(key)
+                with lock:
                     task = self._coalesce_map.pop(key, None)
+                if task:
+                    with self._coalesce_size_lock:
+                        self._coalesce_size = max(0, self._coalesce_size - 1)
                 if not task:
                     continue
                 if task.action == TaskAction.DELETE:
                     self._enqueue_delete_path(task.path, enqueue_ts=task.enqueue_ts)
                     continue
                 self._handle_index_task(task)
+
+    def _dlq_loop(self) -> None:
+        try:
+            interval = float(os.environ.get("DECKARD_DLQ_POLL_SECONDS", "60") or 60)
+        except Exception:
+            interval = 60.0
+        while not self._stop.is_set():
+            time.sleep(max(5.0, interval))
+            if self._stop.is_set():
+                break
+            try:
+                now = int(time.time())
+                rows = self.db.list_failed_tasks_ready(now_ts=now, limit=50)
+            except Exception:
+                rows = []
+            if not rows:
+                continue
+            for r in rows:
+                path = str(r.get("path") or "")
+                if not path:
+                    continue
+                attempts = int(r.get("attempts") or 0) + 1
+                next_retry = int(time.time()) + self._dlq_backoff_seconds(attempts)
+                last_error = str(r.get("last_error") or "")
+                # bump retry window to avoid repeated enqueue in the same cycle
+                self._enqueue_dlq_upsert([(path, attempts, last_error, int(time.time()), next_retry)])
+                self._enqueue_action(TaskAction.INDEX, path, time.time(), attempts=attempts)
 
     def _handle_index_task(self, task: CoalesceTask) -> None:
         resolved = self._decode_db_path(task.path)
@@ -1139,11 +1327,13 @@ class Indexer:
         except (IOError, PermissionError, OSError) as e:
             self._retry_task(task, e)
             return
-        except Exception:
+        except Exception as e:
             self.status.errors += 1
+            self._record_failed_task(task.path, e, max(1, task.attempts))
             return
 
         if not res or res.get("type") == "unchanged":
+            self._enqueue_dlq_clear([task.path])
             return
 
         self._enqueue_db_tasks(
@@ -1167,12 +1357,14 @@ class Indexer:
             engine_docs=[res.get("engine_doc")] if res.get("engine_doc") else [],
             enqueue_ts=task.enqueue_ts,
         )
+        self._enqueue_dlq_clear([task.path])
 
     def _retry_task(self, task: CoalesceTask, err: Exception) -> None:
         if task.attempts >= 2:
             self._drop_count_degraded += 1
             if self.logger:
                 self.logger.log_error(f"Task dropped after retries: {task.path} err={err}")
+            self._record_failed_task(task.path, err, task.attempts + 1)
             return
         self._retry_count += 1
         task.attempts += 1

@@ -21,15 +21,36 @@ try:
 except Exception:
     from queue_pipeline import FsEvent, FsEventKind
 
+def _is_git_event(path: str) -> bool:
+    if not path:
+        return False
+    norm = path.replace("\\", "/")
+    if "/.git/" in norm or norm.endswith("/.git"):
+        return True
+    base = os.path.basename(norm)
+    return base in {"HEAD", "index", "packed-refs", "ORIG_HEAD", "FETCH_HEAD"}
+
+
 class DebouncedEventHandler(FileSystemEventHandler):
     """Handles events with debounce to prevent duplicate indexing on save."""
-    def __init__(self, callback: Callable[[str], None], debounce_seconds: float = 1.0, logger=None):
+    def __init__(
+        self,
+        callback: Callable[[str], None],
+        debounce_seconds: float = 1.0,
+        logger=None,
+        git_callback: Optional[Callable[[str], None]] = None,
+        git_debounce_seconds: float = 3.0,
+    ):
         self.callback = callback
         self.debounce_seconds = debounce_seconds
         self.logger = logger
+        self.git_callback = git_callback
+        self.git_debounce_seconds = git_debounce_seconds
         self._timers = {}
         self._lock = threading.Lock()
         self._pending_events: Dict[str, FsEvent] = {}
+        self._git_timer: Optional[Timer] = None
+        self._git_last_path: str = ""
 
     def on_any_event(self, event):
         if event.is_directory:
@@ -52,6 +73,17 @@ class DebouncedEventHandler(FileSystemEventHandler):
             return
 
         key = event.src_path
+        if _is_git_event(event.src_path) or _is_git_event(getattr(event, "dest_path", "")):
+            if self.git_callback:
+                with self._lock:
+                    if self._git_timer:
+                        self._git_timer.cancel()
+                    self._git_last_path = event.src_path
+                    self._git_timer = Timer(self.git_debounce_seconds, self._trigger_git)
+                    self._git_timer.start()
+            if self.logger:
+                self.logger.log_info("Git activity detected; deferring to rescan.")
+            return
         fs_event = FsEvent(kind=evt_kind, path=event.src_path,
                            dest_path=getattr(event, 'dest_path', None),
                            ts=time.time())
@@ -77,11 +109,30 @@ class DebouncedEventHandler(FileSystemEventHandler):
             if self.logger:
                 self.logger.log_error(f"Watcher callback failed for {path}: {e}")
 
+    def _trigger_git(self):
+        path = ""
+        with self._lock:
+            path = self._git_last_path
+            self._git_timer = None
+        try:
+            if self.git_callback:
+                self.git_callback(path or ".git")
+        except Exception as e:
+            if self.logger:
+                self.logger.log_error(f"Watcher git callback failed for {path}: {e}")
+
 class FileWatcher:
-    def __init__(self, paths: List[str], on_change_callback: Callable[[FsEvent], None], logger=None):
+    def __init__(
+        self,
+        paths: List[str],
+        on_change_callback: Callable[[FsEvent], None],
+        logger=None,
+        on_git_checkout: Optional[Callable[[str], None]] = None,
+    ):
         self.paths = paths
         self.callback = on_change_callback
         self.logger = logger
+        self.git_callback = on_git_checkout
         self.observer = None
         self._running = False
         self._monitor_thread = None
@@ -97,7 +148,16 @@ class FileWatcher:
             return
 
         self.observer = Observer()
-        handler = DebouncedEventHandler(self.callback, logger=self.logger)
+        try:
+            git_debounce = float(os.environ.get("DECKARD_GIT_CHECKOUT_DEBOUNCE", "3") or 3)
+        except Exception:
+            git_debounce = 3.0
+        handler = DebouncedEventHandler(
+            self.callback,
+            logger=self.logger,
+            git_callback=self.git_callback,
+            git_debounce_seconds=max(1.0, git_debounce),
+        )
         
         started_any = False
         for p in self.paths:
@@ -145,7 +205,16 @@ class FileWatcher:
                 except Exception:
                     pass
             self.observer = Observer()
-            handler = DebouncedEventHandler(self.callback, logger=self.logger)
+            try:
+                git_debounce = float(os.environ.get("DECKARD_GIT_CHECKOUT_DEBOUNCE", "3") or 3)
+            except Exception:
+                git_debounce = 3.0
+            handler = DebouncedEventHandler(
+                self.callback,
+                logger=self.logger,
+                git_callback=self.git_callback,
+                git_debounce_seconds=max(1.0, git_debounce),
+            )
             started_any = False
             for p in self.paths:
                 if os.path.exists(p):

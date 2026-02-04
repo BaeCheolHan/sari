@@ -1,0 +1,5 @@
+{
+  "plugins": [
+    "sari.callgraph_plugins.sample_plugin"
+  ]
+}

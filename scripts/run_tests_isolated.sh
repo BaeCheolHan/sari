@@ -28,3 +28,4 @@ mkdir -p "$HOME" "$DECKARD_LOG_DIR"
 
 cd "$ROOT_DIR"
 python3 -m pytest "$@"
+python3 -m pytest -q tests/test_edge_cases.py

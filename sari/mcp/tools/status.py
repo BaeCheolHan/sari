@@ -2,6 +2,7 @@
 """
 Status tool for Local Search MCP Server.
 """
+import os
 from typing import Any, Dict, Optional
 from sari.mcp.tools._util import mcp_response, pack_header, pack_line, pack_encode_text, resolve_root_ids
 from sari.core.cjk import lindera_available, lindera_dict_uri, lindera_error
@@ -52,9 +53,11 @@ def execute_status(args: Dict[str, Any], indexer: Optional[Indexer], db: Optiona
         "http_api_port_config": config_http_port,
         "indexer_mode": getattr(indexer, "indexer_mode", "auto") if indexer else "off",
     }
+    engine_mode = "sqlite"
     if db and hasattr(db, "engine") and hasattr(db.engine, "status"):
         try:
             st = db.engine.status()
+            engine_mode = st.engine_mode or engine_mode
             status_data.update({
                 "engine_mode": st.engine_mode,
                 "engine_ready": st.engine_ready,
@@ -80,6 +83,17 @@ def execute_status(args: Dict[str, Any], indexer: Optional[Indexer], db: Optiona
                 "engine_mode": "embedded",
                 "engine_ready": False,
             })
+            engine_mode = status_data.get("engine_mode", engine_mode)
+    if "engine_mode" not in status_data:
+        status_data["engine_mode"] = engine_mode
+    if db:
+        try:
+            total_failed, high_failed = db.count_failed_tasks()
+            status_data["dlq_failed_total"] = total_failed
+            status_data["dlq_failed_high"] = high_failed
+        except Exception:
+            status_data["dlq_failed_total"] = 0
+            status_data["dlq_failed_high"] = 0
     if indexer and hasattr(indexer, "get_queue_depths"):
         status_data["queue_depths"] = indexer.get_queue_depths()
     
@@ -112,6 +126,31 @@ def execute_status(args: Dict[str, Any], indexer: Optional[Indexer], db: Optiona
         if status_data.get("engine_mode") == "embedded" and not status_data.get("engine_tokenizer_bundle_path"):
             tag = status_data.get("engine_tokenizer_bundle_tag", "")
             warnings.append(f"tokenizer bundle not found for {tag or 'platform'}")
+        # Smart engine suggestion (sqlite -> embedded) for large workspaces
+        try:
+            threshold = int(os.environ.get("DECKARD_ENGINE_SUGGEST_FILES", "10000") or 10000)
+        except (TypeError, ValueError):
+            threshold = 10000
+        file_count = int(status_data.get("indexed_files") or 0)
+        if file_count <= 0 and db:
+            try:
+                stats = db.get_repo_stats()
+                if stats:
+                    file_count = sum(int(v) for v in stats.values())
+            except Exception:
+                pass
+        if status_data.get("engine_mode") == "sqlite" and file_count >= threshold:
+            suggestion = {
+                "reason": f"large workspace ({file_count} files)",
+                "recommended_engine": "embedded",
+                "threshold": threshold,
+                "files": file_count,
+                "hint": "sari --cmd engine install",
+            }
+            status_data["engine_suggestion"] = suggestion
+            warnings.append(
+                f"engine suggestion: large workspace ({file_count} files) on sqlite; consider embedded engine (sari --cmd engine install)"
+            )
         if warnings:
             status_data["warnings"] = warnings
         return status_data
@@ -157,6 +196,13 @@ def execute_status(args: Dict[str, Any], indexer: Optional[Indexer], db: Optiona
             tag = status_data.get("engine_tokenizer_bundle_tag", "")
             msg = f"tokenizer bundle not found for {tag or 'platform'}"
             lines.append(pack_line("w", single_value=pack_encode_text(msg)))
+        if status_data.get("engine_suggestion"):
+            msg = status_data["engine_suggestion"].get("reason", "")
+            hint = status_data["engine_suggestion"].get("hint", "")
+            text = f"engine suggestion: {msg}"
+            if hint:
+                text += f" ({hint})"
+            lines.append(pack_line("w", single_value=pack_encode_text(text)))
             
         return "\n".join(lines)
 

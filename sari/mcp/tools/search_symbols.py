@@ -2,6 +2,31 @@ from typing import Any, Dict, List, Optional
 from sari.core.db import LocalSearchDB
 from sari.mcp.tools._util import mcp_response, pack_header, pack_line, pack_truncated, pack_encode_id, pack_encode_text, resolve_root_ids
 
+
+def _precision_hint(path: str) -> str:
+    ext = (path or "").lower().rsplit(".", 1)
+    if len(ext) == 2:
+        ext = f".{ext[1]}"
+    else:
+        ext = ""
+    if ext == ".py":
+        return "high (AST)"
+    if ext in {".js", ".jsx"}:
+        return "low (regex JS)"
+    if ext in {".ts", ".tsx"}:
+        return "low (regex TS)"
+    if ext == ".java":
+        return "low (regex Java)"
+    if ext == ".kt":
+        return "low (regex Kotlin)"
+    if ext == ".go":
+        return "low (regex Go)"
+    if ext in {".c", ".h"}:
+        return "low (regex C/C++)"
+    if ext == ".cpp":
+        return "low (regex C++)"
+    return "medium"
+
 def execute_search_symbols(args: Dict[str, Any], db: LocalSearchDB, roots: Optional[List[str]] = None) -> Dict[str, Any]:
     """
     Execute search_symbols tool.
@@ -20,7 +45,10 @@ def execute_search_symbols(args: Dict[str, Any], db: LocalSearchDB, roots: Optio
         return {
             "query": query,
             "count": len(results),
-            "symbols": results
+            "symbols": [
+                dict(r, precision_hint=_precision_hint(r.get("path", "")))
+                for r in results
+            ],
         }
 
     # --- PACK1 Builder ---
@@ -47,7 +75,10 @@ def execute_search_symbols(args: Dict[str, Any], db: LocalSearchDB, roots: Optio
                 "path": pack_encode_id(r["path"]),
                 "line": str(r["line"]),
                 "kind": pack_encode_id(r["kind"]),
-                "name": pack_encode_id(r["name"])
+                "name": pack_encode_id(r["name"]),
+                "qual": pack_encode_id(r.get("qualname", "")),
+                "sid": pack_encode_id(r.get("symbol_id", "")),
+                "precision": pack_encode_text(_precision_hint(r.get("path", ""))),
             }
             lines.append(pack_line("h", kv_line))
             

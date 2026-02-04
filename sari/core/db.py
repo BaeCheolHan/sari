@@ -44,6 +44,11 @@ def _normalize_engine_text(text: str) -> str:
 def _cjk_space(text: str) -> str:
     return _cjk_space_impl(text)
 
+def _symbol_id_for(path: str, kind: str, qualname: str) -> str:
+    import hashlib
+    base = f"{path}|{kind}|{qualname}"
+    return hashlib.sha1(base.encode("utf-8")).hexdigest()
+
 class LocalSearchDB:
     """SQLite + optional FTS5 backed index.
 
@@ -176,9 +181,15 @@ class LocalSearchDB:
                     r_list.append(0)
                 defaults = ["none", "none", "none", "none", 0, 0, 0, 0]
                 r_list.extend(defaults[: (14 - len(r_list))])
-            compressed_content = _compress(r_list[4])
+            raw_content = r_list[4]
+            compressed_content = _compress(raw_content)
+            parse_status = str(r_list[6]) if len(r_list) > 6 else "ok"
+            is_binary = int(r_list[10]) if len(r_list) > 10 else 0
+            fts_content = ""
+            if parse_status == "ok" and not is_binary:
+                fts_content = raw_content or ""
             rows_list.append((
-                r_list[0], r_list[1], r_list[2], r_list[3], compressed_content,
+                r_list[0], r_list[1], r_list[2], r_list[3], compressed_content, fts_content,
                 r_list[5], r_list[6], r_list[7], r_list[8], r_list[9],
                 r_list[10], r_list[11], r_list[12], r_list[13]
             ))
@@ -186,13 +197,14 @@ class LocalSearchDB:
             return 0
         cur.executemany(
             """
-            INSERT INTO files(path, repo, mtime, size, content, last_seen, parse_status, parse_reason, ast_status, ast_reason, is_binary, is_minified, sampled, content_bytes)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            INSERT INTO files(path, repo, mtime, size, content, fts_content, last_seen, parse_status, parse_reason, ast_status, ast_reason, is_binary, is_minified, sampled, content_bytes)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(path) DO UPDATE SET
               repo=excluded.repo,
               mtime=excluded.mtime,
               size=excluded.size,
               content=excluded.content,
+              fts_content=excluded.fts_content,
               last_seen=excluded.last_seen,
               parse_status=excluded.parse_status,
               parse_reason=excluded.parse_reason,
@@ -219,35 +231,67 @@ class LocalSearchDB:
             return 0
         normalized = []
         for s in symbols_list:
-            if len(s) == 7:
-                normalized.append(s + ("{}", ""))
-            elif len(s) == 9:
-                normalized.append(s)
+            vals = list(s)
+            while len(vals) < 7:
+                vals.append("")
+            if len(vals) < 8:
+                vals.append("{}")
+            if len(vals) < 9:
+                vals.append("")
+            path = str(vals[0]) if vals else ""
+            name = str(vals[1]) if len(vals) > 1 else ""
+            kind = str(vals[2]) if len(vals) > 2 else ""
+            parent = str(vals[6]) if len(vals) > 6 else ""
+            if len(vals) <= 9:
+                qualname = f"{parent}.{name}" if parent else name
+                vals.append(qualname)
             else:
-                tmp = list(s) + [""] * (9 - len(s))
-                normalized.append(tuple(tmp[:9]))
+                qualname = str(vals[9]) if vals[9] else (f"{parent}.{name}" if parent else name)
+                vals[9] = qualname
+            if len(vals) <= 10:
+                vals.append(_symbol_id_for(path, kind, qualname))
+            else:
+                if not vals[10]:
+                    vals[10] = _symbol_id_for(path, kind, qualname)
+            normalized.append(tuple(vals[:11]))
         symbols_list = normalized
         paths = {s[0] for s in symbols_list}
         cur.executemany("DELETE FROM symbols WHERE path = ?", [(p,) for p in paths])
         cur.executemany(
             """
-            INSERT INTO symbols(path, name, kind, line, end_line, content, parent_name, metadata, docstring)
-            VALUES(?,?,?,?,?,?,?,?,?)
+            INSERT INTO symbols(path, name, kind, line, end_line, content, parent_name, metadata, docstring, qualname, symbol_id)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?)
             """,
             symbols_list,
         )
         return len(symbols_list)
 
-    def upsert_relations_tx(self, cur: sqlite3.Cursor, relations: Iterable[tuple[str, str, str, str, str, int]]) -> int:
+    def upsert_relations_tx(self, cur: sqlite3.Cursor, relations: Iterable[tuple]) -> int:
         rels_list = list(relations)
         if not rels_list:
             return 0
+        normalized = []
+        for r in rels_list:
+            vals = list(r)
+            if len(vals) == 6:
+                from_path, from_symbol, to_path, to_symbol, rel_type, line = vals
+                normalized.append((from_path, from_symbol, "", to_path, to_symbol, "", rel_type, line))
+                continue
+            if len(vals) < 8:
+                vals = vals + [""] * (8 - len(vals))
+            # Heuristic: if rel_type appears at index 4 and line at index 5, shift to new order
+            if len(vals) >= 8 and isinstance(vals[5], int) and isinstance(vals[4], str) and vals[4] in {"calls", "extends", "implements"}:
+                from_path, from_symbol, to_path, to_symbol, rel_type, line, from_sid, to_sid = vals[:8]
+                normalized.append((from_path, from_symbol, from_sid, to_path, to_symbol, to_sid, rel_type, line))
+            else:
+                normalized.append(tuple(vals[:8]))
+        rels_list = normalized
         paths = {r[0] for r in rels_list}
         cur.executemany("DELETE FROM symbol_relations WHERE from_path = ?", [(p,) for p in paths])
         cur.executemany(
             """
-            INSERT INTO symbol_relations(from_path, from_symbol, to_path, to_symbol, rel_type, line)
-            VALUES(?,?,?,?,?,?)
+            INSERT INTO symbol_relations(from_path, from_symbol, from_symbol_id, to_path, to_symbol, to_symbol_id, rel_type, line)
+            VALUES(?,?,?,?,?,?,?,?)
             """,
             rels_list,
         )
@@ -305,6 +349,58 @@ class LocalSearchDB:
         ).fetchall()
         return [str(r["path"]) for r in rows]
 
+    def upsert_failed_tasks_tx(self, cur: sqlite3.Cursor, rows: Iterable[tuple]) -> int:
+        rows_list = [list(r) for r in rows]
+        if not rows_list:
+            return 0
+        normalized = []
+        for r in rows_list:
+            while len(r) < 5:
+                r.append(0)
+            normalized.append(tuple(r[:5]))
+        cur.executemany(
+            """
+            INSERT INTO failed_tasks(path, attempts, last_error, last_error_ts, next_retry_ts)
+            VALUES(?,?,?,?,?)
+            ON CONFLICT(path) DO UPDATE SET
+              attempts=excluded.attempts,
+              last_error=excluded.last_error,
+              last_error_ts=excluded.last_error_ts,
+              next_retry_ts=excluded.next_retry_ts;
+            """,
+            normalized,
+        )
+        return len(normalized)
+
+    def clear_failed_tasks_tx(self, cur: sqlite3.Cursor, paths: Iterable[str]) -> int:
+        paths_list = [p for p in paths if p]
+        if not paths_list:
+            return 0
+        cur.executemany("DELETE FROM failed_tasks WHERE path = ?", [(p,) for p in paths_list])
+        return len(paths_list)
+
+    def list_failed_tasks_ready(self, now_ts: int, limit: int = 50) -> List[Dict[str, Any]]:
+        conn = self.get_read_connection()
+        rows = conn.execute(
+            """
+            SELECT path, attempts, last_error, last_error_ts, next_retry_ts
+            FROM failed_tasks
+            WHERE next_retry_ts <= ?
+            ORDER BY next_retry_ts ASC
+            LIMIT ?;
+            """,
+            (int(now_ts), int(limit)),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def count_failed_tasks(self) -> tuple[int, int]:
+        conn = self.get_read_connection()
+        row = conn.execute("SELECT COUNT(*) AS c FROM failed_tasks").fetchone()
+        total = int(row["c"]) if row else 0
+        row2 = conn.execute("SELECT COUNT(*) AS c FROM failed_tasks WHERE attempts >= 3").fetchone()
+        high = int(row2["c"]) if row2 else 0
+        return total, high
+
     def _try_enable_fts(self, conn: sqlite3.Connection) -> bool:
         try:
             conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS __fts_test USING fts5(x)")
@@ -324,6 +420,7 @@ class LocalSearchDB:
                   mtime INTEGER NOT NULL,
                   size INTEGER NOT NULL,
                   content BLOB NOT NULL,
+                  fts_content TEXT DEFAULT '',
                   last_seen INTEGER DEFAULT 0,
                   parse_status TEXT NOT NULL DEFAULT 'none',
                   parse_reason TEXT NOT NULL DEFAULT 'none',
@@ -363,6 +460,8 @@ class LocalSearchDB:
                   parent_name TEXT DEFAULT '',
                   metadata TEXT DEFAULT '{}',
                   docstring TEXT DEFAULT '',
+                  qualname TEXT DEFAULT '',
+                  symbol_id TEXT DEFAULT '',
                   FOREIGN KEY(path) REFERENCES files(path) ON DELETE CASCADE
                 );
                 """
@@ -380,6 +479,14 @@ class LocalSearchDB:
             try:
                 cur.execute("ALTER TABLE symbols ADD COLUMN docstring TEXT DEFAULT ''")
             except sqlite3.OperationalError: pass
+            try:
+                cur.execute("ALTER TABLE symbols ADD COLUMN qualname TEXT DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                cur.execute("ALTER TABLE symbols ADD COLUMN symbol_id TEXT DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass
 
             # v2.9.0: Symbol Relations table
             cur.execute(
@@ -387,19 +494,33 @@ class LocalSearchDB:
                 CREATE TABLE IF NOT EXISTS symbol_relations (
                     from_path TEXT NOT NULL,
                     from_symbol TEXT NOT NULL,
+                    from_symbol_id TEXT DEFAULT '',
                     to_path TEXT NOT NULL,
                     to_symbol TEXT NOT NULL,
+                    to_symbol_id TEXT DEFAULT '',
                     rel_type TEXT NOT NULL, -- 'calls', 'implements', 'extends'
                     line INTEGER NOT NULL,
                     FOREIGN KEY(from_path) REFERENCES files(path) ON DELETE CASCADE
                 );
                 """
             )
+            try:
+                cur.execute("ALTER TABLE symbol_relations ADD COLUMN from_symbol_id TEXT DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                cur.execute("ALTER TABLE symbol_relations ADD COLUMN to_symbol_id TEXT DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass
 
             cur.execute("CREATE INDEX IF NOT EXISTS idx_symbols_path ON symbols(path);")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_symbols_qual ON symbols(qualname);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_symbols_sid ON symbols(symbol_id);")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_relations_from ON symbol_relations(from_symbol);")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_relations_to ON symbol_relations(to_symbol);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_relations_from_sid ON symbol_relations(from_symbol_id);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_relations_to_sid ON symbol_relations(to_symbol_id);")
 
             # Index for efficient filtering
             cur.execute("CREATE INDEX IF NOT EXISTS idx_files_repo ON files(repo);")
@@ -423,6 +544,7 @@ class LocalSearchDB:
                 "ALTER TABLE files ADD COLUMN is_minified INTEGER NOT NULL DEFAULT 0",
                 "ALTER TABLE files ADD COLUMN sampled INTEGER NOT NULL DEFAULT 0",
                 "ALTER TABLE files ADD COLUMN content_bytes INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE files ADD COLUMN fts_content TEXT DEFAULT ''",
             ]:
                 try:
                     cur.execute(stmt)
@@ -430,12 +552,122 @@ class LocalSearchDB:
                     pass
 
             cur.execute("CREATE INDEX IF NOT EXISTS idx_files_last_seen ON files(last_seen);")
-            
-            # v2.7.0: Compressed content storage with FTS support via VIEW
+
+            # --- Knowledge Store (Snippets / Context) ---
             cur.execute(
                 """
-                CREATE VIEW IF NOT EXISTS files_view AS
-                SELECT rowid, path, repo, deckard_decompress(content) AS content
+                CREATE TABLE IF NOT EXISTS snippets (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  tag TEXT NOT NULL,
+                  path TEXT NOT NULL,
+                  start_line INTEGER NOT NULL,
+                  end_line INTEGER NOT NULL,
+                  content TEXT NOT NULL,
+                  content_hash TEXT NOT NULL,
+                  anchor_before TEXT DEFAULT '',
+                  anchor_after TEXT DEFAULT '',
+                  repo TEXT DEFAULT '',
+                  root_id TEXT DEFAULT '',
+                  note TEXT DEFAULT '',
+                  commit_hash TEXT DEFAULT '',
+                  created_ts INTEGER NOT NULL,
+                  updated_ts INTEGER NOT NULL
+                );
+                """
+            )
+            try:
+                cur.execute("ALTER TABLE snippets ADD COLUMN anchor_before TEXT DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                cur.execute("ALTER TABLE snippets ADD COLUMN anchor_after TEXT DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass
+            cur.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_snippets_unique
+                ON snippets(tag, path, start_line, end_line);
+                """
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_snippets_tag ON snippets(tag);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_snippets_path ON snippets(path);")
+
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS snippet_versions (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  snippet_id INTEGER NOT NULL,
+                  content TEXT NOT NULL,
+                  content_hash TEXT NOT NULL,
+                  start_line INTEGER NOT NULL,
+                  end_line INTEGER NOT NULL,
+                  created_ts INTEGER NOT NULL,
+                  FOREIGN KEY(snippet_id) REFERENCES snippets(id) ON DELETE CASCADE
+                );
+                """
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_snippet_versions_sid ON snippet_versions(snippet_id);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_snippet_versions_hash ON snippet_versions(content_hash);")
+
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS contexts (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  topic TEXT NOT NULL UNIQUE,
+                  content TEXT NOT NULL,
+                  tags_json TEXT DEFAULT '[]',
+                  related_files_json TEXT DEFAULT '[]',
+                  source TEXT DEFAULT '',
+                  valid_from INTEGER DEFAULT 0,
+                  valid_until INTEGER DEFAULT 0,
+                  deprecated INTEGER DEFAULT 0,
+                  created_ts INTEGER NOT NULL,
+                  updated_ts INTEGER NOT NULL
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS failed_tasks (
+                  path TEXT PRIMARY KEY,
+                  attempts INTEGER NOT NULL DEFAULT 0,
+                  last_error TEXT DEFAULT '',
+                  last_error_ts INTEGER DEFAULT 0,
+                  next_retry_ts INTEGER DEFAULT 0
+                );
+                """
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_failed_tasks_retry ON failed_tasks(next_retry_ts);")
+            for stmt in [
+                "ALTER TABLE contexts ADD COLUMN source TEXT DEFAULT ''",
+                "ALTER TABLE contexts ADD COLUMN valid_from INTEGER DEFAULT 0",
+                "ALTER TABLE contexts ADD COLUMN valid_until INTEGER DEFAULT 0",
+                "ALTER TABLE contexts ADD COLUMN deprecated INTEGER DEFAULT 0",
+            ]:
+                try:
+                    cur.execute(stmt)
+                except sqlite3.OperationalError:
+                    pass
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_contexts_topic ON contexts(topic);")
+
+            # v2.7.0+: FTS uses uncompressed content to avoid query-time decompression
+            try:
+                cur.execute(
+                    "UPDATE files SET fts_content = deckard_decompress(content) "
+                    "WHERE (fts_content IS NULL OR fts_content = '') AND content IS NOT NULL"
+                )
+                self._write.commit()
+            except Exception:
+                pass
+            cur.execute(
+                """
+                DROP VIEW IF EXISTS files_view;
+                """
+            )
+            cur.execute(
+                """
+                CREATE VIEW files_view AS
+                SELECT rowid, path, repo, fts_content AS content
                 FROM files;
                 """
             )
@@ -460,7 +692,7 @@ class LocalSearchDB:
                     """
                     CREATE TRIGGER files_ai AFTER INSERT ON files BEGIN
                       INSERT INTO files_fts(rowid, path, repo, content) 
-                      VALUES (new.rowid, new.path, new.repo, deckard_decompress(new.content));
+                      VALUES (new.rowid, new.path, new.repo, new.fts_content);
                     END;
                     """
                 )
@@ -468,7 +700,7 @@ class LocalSearchDB:
                     """
                     CREATE TRIGGER files_ad AFTER DELETE ON files BEGIN
                       INSERT INTO files_fts(files_fts, rowid, path, repo, content) 
-                      VALUES('delete', old.rowid, old.path, old.repo, deckard_decompress(old.content));
+                      VALUES('delete', old.rowid, old.path, old.repo, old.fts_content);
                     END;
                     """
                 )
@@ -476,9 +708,9 @@ class LocalSearchDB:
                     """
                     CREATE TRIGGER files_au AFTER UPDATE ON files BEGIN
                       INSERT INTO files_fts(files_fts, rowid, path, repo, content) 
-                      VALUES('delete', old.rowid, old.path, old.repo, deckard_decompress(old.content));
+                      VALUES('delete', old.rowid, old.path, old.repo, old.fts_content);
                       INSERT INTO files_fts(rowid, path, repo, content) 
-                      VALUES (new.rowid, new.path, new.repo, deckard_decompress(new.content));
+                      VALUES (new.rowid, new.path, new.repo, new.fts_content);
                     END;
                     """
                 )
@@ -548,8 +780,8 @@ class LocalSearchDB:
             "docstring": row["docstring"]
         }
 
-    def upsert_relations(self, relations: Iterable[tuple[str, str, str, str, str, int]]) -> int:
-        """Upsert symbol relations (from_path, from_symbol, to_path, to_symbol, rel_type, line)."""
+    def upsert_relations(self, relations: Iterable[tuple]) -> int:
+        """Upsert symbol relations (from_path, from_symbol, from_symbol_id, to_path, to_symbol, to_symbol_id, rel_type, line)."""
         rels_list = list(relations)
         if not rels_list:
             return 0
@@ -840,7 +1072,8 @@ class LocalSearchDB:
             return []
             
         sql = """
-            SELECT s.path, s.name, s.kind, s.line, s.end_line, s.content, s.docstring, s.metadata, f.repo, f.mtime, f.size
+            SELECT s.path, s.name, s.kind, s.line, s.end_line, s.content, s.docstring, s.metadata,
+                   s.qualname, s.symbol_id, f.repo, f.mtime, f.size
             FROM symbols s
             JOIN files f ON s.path = f.path
             WHERE s.name LIKE ?
@@ -875,6 +1108,8 @@ class LocalSearchDB:
                 "snippet": r["content"],
                 "docstring": r["docstring"],
                 "metadata": r["metadata"],
+                "qualname": r["qualname"],
+                "symbol_id": r["symbol_id"],
                 "mtime": int(r["mtime"]),
                 "size": int(r["size"])
             }
@@ -895,6 +1130,12 @@ class LocalSearchDB:
                 clipped = raw[:max_bytes].decode("utf-8", errors="ignore")
                 return clipped + f"\n\n... [CONTENT TRUNCATED (read_file bytes={len(raw)} max_bytes={max_bytes})] ..."
         return content
+
+    def read_file_raw(self, path: str) -> Optional[str]:
+        """Read full file content without read size cap (for internal tools)."""
+        conn = self.get_read_connection()
+        row = conn.execute("SELECT content FROM files WHERE path = ?", (path,)).fetchone()
+        return _decompress(row["content"]) if row else None
 
     def iter_engine_documents(self, root_ids: list[str]) -> Iterable[Dict[str, Any]]:
         max_doc_bytes = int(os.environ.get("DECKARD_ENGINE_MAX_DOC_BYTES", "4194304") or 4194304)
@@ -999,3 +1240,222 @@ class LocalSearchDB:
 
     def repo_candidates(self, q: str, limit: int = 3, root_ids: Optional[list[str]] = None) -> List[Dict[str, Any]]:
         return self.engine.repo_candidates(q, limit, root_ids=root_ids or [])
+
+    # ---------- Knowledge Store (Snippets / Context) ----------
+
+    def upsert_snippet_tx(self, cur: sqlite3.Cursor, rows: Iterable[tuple]) -> int:
+        rows_list = [list(r) for r in rows]
+        if not rows_list:
+            return 0
+        normalized = []
+        for r in rows_list:
+            # Expected: tag, path, start, end, content, hash, anchor_before, anchor_after, repo, root_id, note, commit, created_ts, updated_ts
+            while len(r) < 6:
+                r.append("")
+            if len(r) < 8:
+                r.insert(6, "")
+                r.insert(7, "")
+            if len(r) < 12:
+                while len(r) < 12:
+                    r.append("")
+            if len(r) < 14:
+                now = int(time.time())
+                r.append(now)
+                r.append(now)
+            normalized.append(tuple(r[:14]))
+        rows_list = normalized
+        for r in rows_list:
+            tag, path, start_line, end_line = r[0], r[1], r[2], r[3]
+            row = cur.execute(
+                """
+                SELECT id, content, content_hash, start_line, end_line
+                FROM snippets WHERE tag = ? AND path = ? AND start_line = ? AND end_line = ?
+                """,
+                (tag, path, start_line, end_line),
+            ).fetchone()
+            if row and row["content_hash"] != r[5]:
+                cur.execute(
+                    """
+                    INSERT INTO snippet_versions(snippet_id, content, content_hash, start_line, end_line, created_ts)
+                    VALUES(?,?,?,?,?,?)
+                    """,
+                    (row["id"], row["content"], row["content_hash"], row["start_line"], row["end_line"], int(time.time())),
+                )
+        cur.executemany(
+            """
+            INSERT INTO snippets(tag, path, start_line, end_line, content, content_hash, anchor_before, anchor_after, repo, root_id, note, commit_hash, created_ts, updated_ts)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(tag, path, start_line, end_line) DO UPDATE SET
+              content=excluded.content,
+              content_hash=excluded.content_hash,
+              anchor_before=excluded.anchor_before,
+              anchor_after=excluded.anchor_after,
+              repo=excluded.repo,
+              root_id=excluded.root_id,
+              note=excluded.note,
+              commit_hash=excluded.commit_hash,
+              updated_ts=excluded.updated_ts;
+            """,
+            rows_list,
+        )
+        return len(rows_list)
+
+    def upsert_context_tx(self, cur: sqlite3.Cursor, rows: Iterable[tuple]) -> int:
+        rows_list = [list(r) for r in rows]
+        if not rows_list:
+            return 0
+        normalized = []
+        for r in rows_list:
+            while len(r) < 4:
+                r.append("")
+            if len(r) < 8:
+                # source, valid_from, valid_until, deprecated
+                r.insert(4, "")
+                r.insert(5, 0)
+                r.insert(6, 0)
+                r.insert(7, 0)
+            if len(r) < 10:
+                now = int(time.time())
+                while len(r) < 8:
+                    r.append(0)
+                r.append(now)
+                r.append(now)
+            normalized.append(tuple(r[:10]))
+        rows_list = normalized
+        cur.executemany(
+            """
+            INSERT INTO contexts(topic, content, tags_json, related_files_json, source, valid_from, valid_until, deprecated, created_ts, updated_ts)
+            VALUES(?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(topic) DO UPDATE SET
+              content=excluded.content,
+              tags_json=excluded.tags_json,
+              related_files_json=excluded.related_files_json,
+              source=excluded.source,
+              valid_from=excluded.valid_from,
+              valid_until=excluded.valid_until,
+              deprecated=excluded.deprecated,
+              updated_ts=excluded.updated_ts;
+            """,
+            rows_list,
+        )
+        return len(rows_list)
+
+    def list_snippets_by_tag(self, tag: str) -> List[Dict[str, Any]]:
+        conn = self.get_read_connection()
+        rows = conn.execute(
+            """
+            SELECT id, tag, path, start_line, end_line, content, content_hash, anchor_before, anchor_after,
+                   repo, root_id, note, commit_hash, created_ts, updated_ts
+            FROM snippets WHERE tag = ? ORDER BY updated_ts DESC;
+            """,
+            (tag,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def search_snippets(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
+        conn = self.get_read_connection()
+        like_q = f"%{query}%"
+        rows = conn.execute(
+            """
+            SELECT id, tag, path, start_line, end_line, content, content_hash, anchor_before, anchor_after,
+                   repo, root_id, note, commit_hash, created_ts, updated_ts
+            FROM snippets
+            WHERE tag LIKE ? OR path LIKE ? OR content LIKE ? OR note LIKE ?
+            ORDER BY updated_ts DESC
+            LIMIT ?;
+            """,
+            (like_q, like_q, like_q, like_q, int(limit)),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_snippet_by_key(self, tag: str, path: str, start_line: int, end_line: int) -> Optional[Dict[str, Any]]:
+        conn = self.get_read_connection()
+        row = conn.execute(
+            """
+            SELECT id, tag, path, start_line, end_line, content, content_hash, anchor_before, anchor_after,
+                   repo, root_id, note, commit_hash, created_ts, updated_ts
+            FROM snippets WHERE tag = ? AND path = ? AND start_line = ? AND end_line = ?;
+            """,
+            (tag, path, start_line, end_line),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def insert_snippet_version_tx(self, cur: sqlite3.Cursor, row: tuple) -> None:
+        cur.execute(
+            """
+            INSERT INTO snippet_versions(snippet_id, content, content_hash, start_line, end_line, created_ts)
+            VALUES(?,?,?,?,?,?)
+            """,
+            row,
+        )
+
+    def update_snippet_location_tx(
+        self,
+        cur: sqlite3.Cursor,
+        snippet_id: int,
+        start_line: int,
+        end_line: int,
+        content: str,
+        content_hash: str,
+        anchor_before: str,
+        anchor_after: str,
+        updated_ts: int,
+    ) -> None:
+        row = cur.execute(
+            "SELECT content, content_hash, start_line, end_line FROM snippets WHERE id = ?",
+            (snippet_id,),
+        ).fetchone()
+        if row and row["content_hash"] != content_hash:
+            cur.execute(
+                """
+                INSERT INTO snippet_versions(snippet_id, content, content_hash, start_line, end_line, created_ts)
+                VALUES(?,?,?,?,?,?)
+                """,
+                (snippet_id, row["content"], row["content_hash"], row["start_line"], row["end_line"], int(time.time())),
+            )
+        cur.execute(
+            """
+            UPDATE snippets
+            SET start_line = ?, end_line = ?, content = ?, content_hash = ?,
+                anchor_before = ?, anchor_after = ?, updated_ts = ?
+            WHERE id = ?
+            """,
+            (start_line, end_line, content, content_hash, anchor_before, anchor_after, updated_ts, snippet_id),
+        )
+
+    def list_snippet_versions(self, snippet_id: int, limit: int = 10) -> List[Dict[str, Any]]:
+        conn = self.get_read_connection()
+        rows = conn.execute(
+            """
+            SELECT id, snippet_id, content, content_hash, start_line, end_line, created_ts
+            FROM snippet_versions WHERE snippet_id = ? ORDER BY created_ts DESC LIMIT ?;
+            """,
+            (snippet_id, int(limit)),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_context_by_topic(self, topic: str) -> Optional[Dict[str, Any]]:
+        conn = self.get_read_connection()
+        row = conn.execute(
+            """
+            SELECT id, topic, content, tags_json, related_files_json, source, valid_from, valid_until, deprecated, created_ts, updated_ts
+            FROM contexts WHERE topic = ?;
+            """,
+            (topic,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def search_contexts(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
+        conn = self.get_read_connection()
+        like_q = f"%{query}%"
+        rows = conn.execute(
+            """
+            SELECT id, topic, content, tags_json, related_files_json, source, valid_from, valid_until, deprecated, created_ts, updated_ts
+            FROM contexts
+            WHERE topic LIKE ? OR content LIKE ? OR tags_json LIKE ? OR related_files_json LIKE ?
+            ORDER BY updated_ts DESC
+            LIMIT ?;
+            """,
+            (like_q, like_q, like_q, like_q, int(limit)),
+        ).fetchall()
+        return [dict(r) for r in rows]
