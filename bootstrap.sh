@@ -5,7 +5,11 @@
 # Resolve script directory
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 ROOT_DIR="$DIR"
-INSTALL_DIR="$HOME/.local/share/sari"
+if [ -n "$XDG_DATA_HOME" ]; then
+    INSTALL_DIR="$XDG_DATA_HOME/sari"
+else
+    INSTALL_DIR="$HOME/.local/share/sari"
+fi
 
 # Uninstall helper (explicit command)
 if [ "$1" = "uninstall" ]; then
@@ -17,37 +21,10 @@ if [ "$1" = "uninstall" ]; then
     if [ -d "$INSTALL_DIR" ]; then
         rm -rf "$INSTALL_DIR"
     fi
-    # Remove sari block from codex configs (project/global)
-    python3 - <<'PY'
-from pathlib import Path
-def strip_sari(cfg: Path):
-    if not cfg.exists():
-        return
-    lines = cfg.read_text(encoding="utf-8").splitlines()
-    new_lines = []
-    in_sari = False
-    for line in lines:
-        if line.strip() == "[mcp_servers.sari]":
-            in_sari = True
-            continue
-        if in_sari and line.startswith("[") and line.strip() != "[mcp_servers.sari]":
-            in_sari = False
-            new_lines.append(line)
-            continue
-        if not in_sari:
-            new_lines.append(line)
-    cfg.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-
-home = Path.home()
-strip_sari(home / ".codex" / "config.toml")
-strip_sari(home / ".gemini" / "config.toml")
-cwd = Path.cwd()
-strip_sari(cwd / ".codex" / "config.toml")
-strip_sari(cwd / ".gemini" / "config.toml")
-PY
-    echo "[sari] uninstall: done" >&2
+    echo "[sari] uninstall: done. Please manually remove [mcp_servers.sari] from your config files." >&2
     exit 0
 fi
+
 
 # Self-install/update: Disabled to prioritize local development
 # Use install.py manually if a global installation is needed.

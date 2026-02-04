@@ -19,6 +19,10 @@ import time
 import urllib.parse
 import urllib.request
 import ipaddress
+try:
+    import psutil
+except ImportError:
+    psutil = None
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
 
@@ -99,12 +103,11 @@ def _is_loopback(host: str) -> bool:
 
 
 def _enforce_loopback(host: str) -> None:
-    if os.environ.get("DECKARD_ALLOW_NON_LOOPBACK") == "1" or os.environ.get("LOCAL_SEARCH_ALLOW_NON_LOOPBACK") == "1":
-        return
+    # Security: Always enforce loopback. No overrides allowed.
     if not _is_loopback(host):
         raise RuntimeError(
             f"sari loopback-only: server_host must be 127.0.0.1/localhost/::1 (got={host}). "
-            "Set DECKARD_ALLOW_NON_LOOPBACK=1 to override (NOT recommended)."
+            "Remote access is NOT supported for security."
         )
 
 
@@ -253,8 +256,39 @@ def cmd_daemon_stop(args):
                 subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True, check=False)
                 print(f"Executed taskkill for PID {pid}")
             else:
-                os.kill(pid, signal.SIGTERM)
-                print(f"Sent SIGTERM to PID {pid}")
+                # Verify PID is actually sari/python before killing
+                try:
+                    if psutil:
+                        proc = psutil.Process(pid)
+                        proc_name = proc.name().lower()
+                        cmdline = " ".join(proc.cmdline()).lower()
+                        # Check if it looks like a python process running sari
+                        if "python" in proc_name or "sari" in cmdline or "mcp.daemon" in cmdline:
+                            os.kill(pid, signal.SIGTERM)
+                            print(f"Sent SIGTERM to PID {pid}")
+                        else:
+                            print(f"❌ Safety Check Failed: PID {pid} ({proc_name}) does not look like Sari. Aborting.")
+                            print(f"   Cmdline: {cmdline}")
+                            return 1
+                    else:
+                        # Fallback if psutil missing (warn but proceed? or strictly fail?)
+                        # Plan said "Use psutil". If missing, we can't be safe.
+                        # But failing completely prevents stopping.
+                        print(f"⚠️  psutil not installed. Skipping safety check for PID {pid}.")
+                        os.kill(pid, signal.SIGTERM)
+                        print(f"Sent SIGTERM to PID {pid}")
+                except Exception as e:
+                    if psutil and isinstance(e, psutil.NoSuchProcess):
+                        print(f"PID {pid} not found (already stopped?)")
+                        remove_pid()
+                        return 0
+                    # Handle psutil error or undefined
+                    # If psutil is None, we already handled in else block?
+                    # Wait, if psutil is None, we go to else block.
+                    # This except catches psutil.NoSuchProcess.
+                    # If psutil is None, name 'psutil' exists but is None.
+                    # isinstance(e, None) raises TypeError.
+                    raise e
 
             # Wait for shutdown
             for _ in range(30):

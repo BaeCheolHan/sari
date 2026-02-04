@@ -12,6 +12,7 @@ import os
 import socket
 import sqlite3
 import shutil
+import urllib.request
 from pathlib import Path
 
 # Add project root to sys.path
@@ -85,14 +86,13 @@ def check_db():
         return False
 
 def check_network():
-    """Check internet connectivity (DNS/TCP)."""
+    """Check internet connectivity (HTTPS to PyPI)."""
     try:
-        # Try connecting to a reliable public DNS (Google) or PyPI
-        # Using socket connection to 8.8.8.8:53 (DNS) is standard check
-        socket.create_connection(("8.8.8.8", 53), timeout=3)
+        # Use urllib to respect system proxy settings
+        urllib.request.urlopen("https://pypi.org", timeout=3)
         print_status("Network Check", True)
         return True
-    except OSError as e:
+    except Exception as e:
         print_status("Network Check", False, f"Unreachable: {e}")
         return False
 

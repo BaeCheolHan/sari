@@ -22,7 +22,11 @@ IS_WINDOWS = os.name == 'nt'
 if IS_WINDOWS:
     INSTALL_DIR = Path(os.environ.get("LOCALAPPDATA", os.path.expanduser("~\\AppData\\Local"))) / "sari"
 else:
-    INSTALL_DIR = Path.home() / ".local" / "share" / "sari"
+    xdg_data = os.environ.get("XDG_DATA_HOME")
+    if xdg_data:
+        INSTALL_DIR = Path(xdg_data) / "sari"
+    else:
+        INSTALL_DIR = Path.home() / ".local" / "share" / "sari"
 
 # Colors
 C_BLUE = "\033[1;34m"
@@ -76,7 +80,8 @@ def print_error(msg):
         _print_json("error", msg)
         return
 
-    print(f"{C_RED}[ERROR]{C_RESET} {msg}")
+    # Always print error to stderr, even in quiet mode
+    print(f"{C_RED}[ERROR]{C_RESET} {msg}", file=sys.stderr)
 
 def print_warn(msg):
     log(f"WARN: {msg}")

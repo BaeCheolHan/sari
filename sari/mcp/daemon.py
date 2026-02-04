@@ -69,17 +69,16 @@ class SariDaemon:
             logger.error(f"Failed to remove PID file: {e}")
 
     async def start(self):
-        allow_non_loopback = os.environ.get("DECKARD_ALLOW_NON_LOOPBACK") == "1" or os.environ.get("LOCAL_SEARCH_ALLOW_NON_LOOPBACK") == "1"
         host = (self.host or "127.0.0.1").strip()
         try:
             is_loopback = host.lower() == "localhost" or ipaddress.ip_address(host).is_loopback
         except ValueError:
             is_loopback = host.lower() == "localhost"
 
-        if (not is_loopback) and (not allow_non_loopback):
+        if not is_loopback:
             raise SystemExit(
                 f"sari daemon refused to start: host must be loopback only (127.0.0.1/localhost/::1). got={host}. "
-                "Set DECKARD_ALLOW_NON_LOOPBACK=1 to override (NOT recommended)."
+                "Remote access is NOT supported for security."
             )
 
         self._write_pid()
