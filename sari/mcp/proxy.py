@@ -108,7 +108,7 @@ def start_daemon_if_needed(host, port):
 
             # Detach process
             subprocess.Popen(
-                [sys.executable, "-m", "mcp.daemon"],
+                [sys.executable, "-m", "sari.mcp.daemon"],
                 cwd=repo_root,
                 env=env,
                 start_new_session=True,

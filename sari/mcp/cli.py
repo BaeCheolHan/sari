@@ -174,7 +174,7 @@ def cmd_daemon_start(args):
         print(f"Starting daemon on {host}:{port} (background)...")
 
         proc = subprocess.Popen(
-            [sys.executable, "-m", "mcp.daemon"],
+            [sys.executable, "-m", "sari.mcp.daemon"],
             cwd=repo_root,
             start_new_session=True,
             stdout=subprocess.DEVNULL,
@@ -232,7 +232,7 @@ def cmd_daemon_stop(args):
                         proc_name = proc.name().lower()
                         cmdline = " ".join(proc.cmdline()).lower()
                         # Check if it looks like a python process running sari
-                        if "python" in proc_name or "sari" in cmdline or "mcp.daemon" in cmdline:
+                        if "python" in proc_name or "sari" in cmdline or "sari.mcp.daemon" in cmdline:
                             os.kill(pid, signal.SIGTERM)
                             print(f"Sent SIGTERM to PID {pid}")
                         else:
@@ -348,7 +348,7 @@ def cmd_auto(args):
     if not is_daemon_running(host, port):
         repo_root = Path(__file__).parent.parent.resolve()
         subprocess.Popen(
-            [sys.executable, "-m", "mcp.daemon"],
+            [sys.executable, "-m", "sari.mcp.daemon"],
             cwd=repo_root,
             start_new_session=True,
             stdout=subprocess.DEVNULL,

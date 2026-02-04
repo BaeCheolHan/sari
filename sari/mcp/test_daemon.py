@@ -59,7 +59,7 @@ def test_daemon():
     repo_root = Path(__file__).parent.parent
 
     proc = subprocess.Popen(
-        [sys.executable, "-m", "mcp.daemon"],
+        [sys.executable, "-m", "sari.mcp.daemon"],
         cwd=str(repo_root),
         env=env,
         stdout=subprocess.PIPE,

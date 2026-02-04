@@ -306,7 +306,7 @@ def run_cmd(argv: List[str]) -> int:
 
 def main(argv: List[str] = None) -> int:
     argv = list(argv or sys.argv[1:])
-    if argv and argv[0] in {"daemon", "proxy", "status", "search", "init"}:
+    if argv and argv[0] in {"daemon", "proxy", "status", "search", "init", "auto"}:
         from sari.mcp.cli import main as legacy_main
         sys.argv = ["sari"] + argv
         return legacy_main()
