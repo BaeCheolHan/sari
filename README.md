@@ -54,11 +54,21 @@
 MCP 설정 파일에 아래 블록을 **직접 추가**하면, 실행 시 Sari가 자동 설치됩니다.
 (네트워크가 없으면 기존 설치된 버전을 실행합니다.)
 
+**macOS / Linux (Bash)**
 ```toml
 [mcp_servers.sari]
 command = "bash"
 args = ["-lc", "export PATH=$PATH:/usr/local/bin:/opt/homebrew/bin:$HOME/.local/bin && (curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python3 - -y || true) && exec ~/.local/share/sari/bootstrap.sh --transport stdio"]
 env = { DECKARD_WORKSPACE_ROOT = "/path/to/workspace", DECKARD_RESPONSE_COMPACT = "1" }
+startup_timeout_sec = 60
+```
+
+**Windows (PowerShell)**
+```toml
+[mcp_servers.sari]
+command = "powershell"
+args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "irm https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python - -y; & $env:LOCALAPPDATA\\sari\\bootstrap.bat --transport stdio"]
+env = { DECKARD_WORKSPACE_ROOT = "C:\\path\\to\\workspace", DECKARD_RESPONSE_COMPACT = "1" }
 startup_timeout_sec = 60
 ```
 
@@ -572,6 +582,7 @@ Sari는 인덱싱 + FTS 기반 검색 구조라서 **“어떤 단계에서 쓰�
 설정 파일(`claude_desktop_config.json`)을 찾아서 아래 내용을 쏙 넣어주세요.  
 이건 마치 선생님 이름표를 달아주는 작업입니다.
 
+**macOS / Linux**
 ```json
 {
   "mcpServers": {
@@ -590,12 +601,42 @@ Sari는 인덱싱 + FTS 기반 검색 구조라서 **“어떤 단계에서 쓰�
 }
 ```
 
+**Windows**
+```json
+{
+  "mcpServers": {
+    "sari": {
+      "command": "powershell",
+      "args": [
+        "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+        "irm https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python - -y; & $env:LOCALAPPDATA\\sari\\bootstrap.bat --transport stdio"
+      ],
+      "env": {
+        "DECKARD_WORKSPACE_ROOT": "C:\\path\\to\\workspace",
+        "DECKARD_RESPONSE_COMPACT": "1"
+      }
+    }
+  }
+}
+```
+
 ### 🧩 Codex / Gemini 설정 예시 (config.toml)
+
+**macOS / Linux**
 ```toml
 [mcp_servers.sari]
 command = "bash"
 args = ["-lc", "export PATH=$PATH:/usr/local/bin:/opt/homebrew/bin:$HOME/.local/bin && (curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python3 - -y || true) && exec ~/.local/share/sari/bootstrap.sh --transport stdio"]
 env = { DECKARD_WORKSPACE_ROOT = "/Users/[사용자명]/path/to/workspace", DECKARD_RESPONSE_COMPACT = "1" }
+startup_timeout_sec = 60
+```
+
+**Windows**
+```toml
+[mcp_servers.sari]
+command = "powershell"
+args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "irm https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python - -y; & $env:LOCALAPPDATA\\sari\\bootstrap.bat --transport stdio"]
+env = { DECKARD_WORKSPACE_ROOT = "C:\\path\\to\\workspace", DECKARD_RESPONSE_COMPACT = "1" }
 startup_timeout_sec = 60
 ```
 

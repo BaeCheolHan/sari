@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Sari Universal Installer/Uninstaller (v2.7.0)
-- Install: clones repo, configures Claude/Codex
+- Install: pip install sari
 - Uninstall: removes files, cleans configs
 - Features: Interactive/JSON/Quiet modes, Network Diagnostics
 """
@@ -18,17 +18,11 @@ import socket
 from pathlib import Path
 
 IS_WINDOWS = os.name == 'nt'
-REPO_URL = "https://github.com/BaeCheolHan/sari.git"
 
 if IS_WINDOWS:
     INSTALL_DIR = Path(os.environ.get("LOCALAPPDATA", os.path.expanduser("~\\AppData\\Local"))) / "sari"
-    CLAUDE_CONFIG_DIR = Path(os.environ.get("APPDATA", os.path.expanduser("~\\AppData\\Roaming"))) / "Claude"
 else:
     INSTALL_DIR = Path.home() / ".local" / "share" / "sari"
-    CLAUDE_CONFIG_DIR = Path.home() / "Library" / "Application Support" / "Claude"
-
-REPO_ROOT = Path(__file__).resolve().parent
-CLAUDE_CONFIG_FILE = CLAUDE_CONFIG_DIR / "claude_desktop_config.json"
 
 # Colors
 C_BLUE = "\033[1;34m"
@@ -63,13 +57,14 @@ def _print_json(status, msg, data=None):
 
 def print_step(msg):
     log(msg)
-    if CONFIG["json"]: return
+    if CONFIG["json"]:
+        return
     if not CONFIG["quiet"]:
         print(f"{C_BLUE}[Sari]{C_RESET} {msg}")
 
 def print_success(msg):
     log(f"SUCCESS: {msg}")
-    if CONFIG["json"]: 
+    if CONFIG["json"]:
         _print_json("success", msg)
         return
     if not CONFIG["quiet"]:
@@ -82,65 +77,13 @@ def print_error(msg):
         return
         
     print(f"{C_RED}[ERROR]{C_RESET} {msg}")
-    
-    # Shield Item 3: Smart Guide for Network/Permissions
-    lower_msg = msg.lower()
-    if "resolve host" in lower_msg or "temporary failure" in lower_msg or "connect" in lower_msg or "clone" in lower_msg:
-        print_warn("Network Error Detected!")
-        print(f"{C_YELLOW}  -> Check your internet connection.{C_RESET}")
-        print(f"{C_YELLOW}  -> If behind corporate proxy, set HTTP_PROXY/HTTPS_PROXY env vars.{C_RESET}")
-        print(f"{C_YELLOW}  -> Verify DNS settings.{C_RESET}")
-    elif "permission" in lower_msg or "access" in lower_msg:
-        print_warn("Permission Error Detected!")
-        print(f"{C_YELLOW}  -> Try running with valid permissions (check ~/.local/share ownership).{C_RESET}")
 
 def print_warn(msg):
     log(f"WARN: {msg}")
-    if CONFIG["json"]: return
+    if CONFIG["json"]:
+        return
     if not CONFIG["quiet"]:
         print(f"{C_YELLOW}[WARN]{C_RESET} {msg}")
-
-def print_next_steps(version):
-    if CONFIG["quiet"] or CONFIG["json"]:
-        return
-        
-    print("\n" + "="*50)
-    print(f"{C_GREEN}Sari v{version} Installed Successfully! 🚀{C_RESET}")
-    print("="*50)
-    print("Next Steps:")
-    print(f"1. {C_BLUE}Restart your Editor{C_RESET} (Claude/Cursor) to load MCP.")
-    print(f"2. Check status: {C_YELLOW}sari status{C_RESET}")
-    
-    bootstrap_path = INSTALL_DIR / ("bootstrap.bat" if IS_WINDOWS else "bootstrap.sh")
-    print(f"3. Run Doctor if issues: {C_YELLOW}{sys.executable} {INSTALL_DIR}/doctor.py{C_RESET}")
-    print("="*50 + "\n")
-
-def _daemon_address():
-    host = os.environ.get("DECKARD_DAEMON_HOST", "127.0.0.1")
-    port = int(os.environ.get("DECKARD_DAEMON_PORT", "47779"))
-    return host, port
-
-def _is_daemon_running() -> bool:
-    host, port = _daemon_address()
-    try:
-        with socket.create_connection((host, port), timeout=0.3):
-            return True
-    except Exception:
-        return False
-
-def _start_daemon(bootstrap_script: Path, env: dict) -> None:
-    try:
-        subprocess.run([str(bootstrap_script), "daemon", "start", "-d"], env=env, check=False, capture_output=CONFIG["quiet"])
-    except Exception as e:
-        print_warn(f"Failed to start daemon automatically: {e}")
-
-def _wait_for_daemon(timeout_s: float = 3.0, interval_s: float = 0.2) -> bool:
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        if _is_daemon_running():
-            return True
-        time.sleep(interval_s)
-    return False
 
 def confirm(question, default=True):
     """Ask a yes/no question via input()."""
@@ -161,220 +104,46 @@ def confirm(question, default=True):
             return valid[choice]
         sys.stdout.write("Please respond with 'yes' or 'no'.\n")
 
-def _run(cmd, **kwargs):
-    return subprocess.run(cmd, **kwargs)
-
-def _list_deckard_pids():
-    """Best-effort process scan to find sari-related daemons."""
-    pids = []
+def _create_bootstrap_script(install_dir: Path):
+    """Create a bootstrap script that runs 'python -m sari'."""
     if IS_WINDOWS:
-        try:
-            # Use tasklist to find python processes
-            res = _run(["tasklist", "/FO", "CSV", "/V"], capture_output=True, text=True, check=False)
-            if res.returncode == 0:
-                import csv
-                import io
-                reader = csv.DictReader(io.StringIO(res.stdout))
-                for row in reader:
-                    cmdline = row.get("Image Name", "") + " " + row.get("Window Title", "")
-                    pid = int(row.get("PID", 0))
-                    if "python" in cmdline.lower() and ("mcp.daemon" in cmdline or "sari" in cmdline.lower()):
-                        pids.append(pid)
-        except Exception: pass
+        script_path = install_dir / "bootstrap.bat"
+        content = (
+            "@echo off\r\n"
+            "REM Sari Bootstrap Script (Windows)\r\n"
+            "REM Auto-update logic can be added here if needed\r\n"
+            f'\"{sys.executable}\" -m sari %*\r\n'
+        )
     else:
-        try:
-            ps = _run(["ps", "-ax", "-o", "pid=", "-o", "command="], capture_output=True, text=True, check=False)
-            for line in ps.stdout.splitlines():
-                line = line.strip()
-                if not line: continue
-                try:
-                    pid_str, cmd = line.split(None, 1)
-                    pid = int(pid_str)
-                except Exception: continue
-                if "mcp.daemon" in cmd or "sari" in cmd or "sari" in cmd:
-                    if str(INSTALL_DIR) in cmd or "mcp.daemon" in cmd:
-                        pids.append(pid)
-        except Exception: pass
-    return pids
-
-def _terminate_pids(pids):
-    if not pids: return
-    for pid in pids:
-        try:
-            if IS_WINDOWS:
-                _run(["taskkill", "/F", "/PID", str(pid)], check=False)
-            else:
-                os.kill(pid, signal.SIGTERM)
-        except: pass
-    if not IS_WINDOWS:
-        time.sleep(1)
-        for pid in pids:
-            try: os.kill(pid, 0)
-            except: continue
-            try: os.kill(pid, signal.SIGKILL)
-            except: pass
-
-def _resolve_workspace_root():
-    for key in ("DECKARD_WORKSPACE_ROOT", "LOCAL_SEARCH_WORKSPACE_ROOT"):
-        val = os.environ.get(key, "").strip()
-        if val:
-            if val == "${cwd}": return str(Path.cwd())
-            p = Path(os.path.expanduser(val))
-            if p.exists(): return str(p.resolve())
-    return str(cwd)
-
-def _ssot_config_path() -> str:
-    val = os.environ.get("DECKARD_CONFIG", "").strip()
-    if val:
-        return str(Path(os.path.expanduser(val)))
-    if IS_WINDOWS:
-        return str(Path(os.environ.get("APPDATA", os.path.expanduser("~\\AppData\\Roaming"))) / "sari" / "config.json")
-    return str(Path.home() / ".config" / "sari" / "config.json")
-
-def _ensure_deckard_launcher() -> str:
-    """Create a 'sari' launcher in a standard bin dir."""
-    if IS_WINDOWS:
-        bin_dir = Path(os.environ.get("LOCALAPPDATA", os.path.expanduser("~\\AppData\\Local"))) / "sari"
-        target = bin_dir / "sari.cmd"
-        script = f'@echo off\r\n"{INSTALL_DIR}\\bootstrap.bat" %*\r\n'
-        try:
-            bin_dir.mkdir(parents=True, exist_ok=True)
-            target.write_text(script, encoding="utf-8")
-            return str(target)
-        except Exception:
-            return str(target)
-    else:
-        bin_dir = Path.home() / ".local" / "bin"
-        target = bin_dir / "sari"
-        script = f'#!/bin/sh\nexec "{INSTALL_DIR}/bootstrap.sh" "$@"\n'
-        try:
-            bin_dir.mkdir(parents=True, exist_ok=True)
-            target.write_text(script, encoding="utf-8")
-            os.chmod(target, 0o755)
-            return str(target)
-        except Exception:
-            return str(target)
-
-def _upsert_mcp_config(cfg_path: Path, command_path: str, workspace_root: str):
-    """Generic MCP server block upsert into TOML config (Codex)."""
-    cfg_path.parent.mkdir(parents=True, exist_ok=True)
-    lines = cfg_path.read_text(encoding="utf-8").splitlines() if cfg_path.exists() else []
+        script_path = install_dir / "bootstrap.sh"
+        content = (
+            "#!/bin/bash\n"
+            "# Sari Bootstrap Script\n"
+            "# Starts the server in Proxy Mode (stdio <-> Daemon)\n\n"
+            "# Optional: Auto-update on start\n"
+            "# python3 -m pip install --upgrade sari >/dev/null 2>&1 &\n\n"
+            "exec python3 -m sari \"$@\"\n"
+        )
     
-    new_lines = []
-    in_sari = False
-    for line in lines:
-        if line.strip() == "[mcp_servers.sari]":
-            in_sari = True
-            continue
-        if in_sari and line.startswith("[") and line.strip() != "[mcp_servers.sari]":
-            in_sari = False
-            new_lines.append(line)
-            continue
-        if not in_sari:
-            new_lines.append(line)
-
-    sari_block = [
-        "[mcp_servers.sari]",
-        f"command = \"{command_path}\"",
-        "args = [\"--transport\", \"stdio\", \"--format\", \"pack\"]",
-        f"env = {{ DECKARD_CONFIG = \"{_ssot_config_path()}\" }}",
-        "startup_timeout_sec = 60",
-    ]
-
-    # Try to insert after model parameters or at the top
-    insert_at = 0
-    for i, line in enumerate(new_lines):
-        if line.startswith("model_reasoning_effort") or line.startswith("model_name"):
-            insert_at = i + 1
-            break
-            
-    if insert_at == 0 and not new_lines: new_lines = sari_block
-    elif insert_at == 0: new_lines = sari_block + new_lines
-    else: new_lines = new_lines[:insert_at] + sari_block + new_lines[insert_at:]
-        
-    cfg_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-    print_step(f"Updated Sari config in {cfg_path}")
-
-def _upsert_gemini_settings(cfg_path: Path, command_path: str, workspace_root: str):
-    """Upsert MCP server config into Gemini CLI settings.json."""
-    cfg_path.parent.mkdir(parents=True, exist_ok=True)
-    data = {}
-    if cfg_path.exists():
-        try:
-            data = json.loads(cfg_path.read_text(encoding="utf-8"))
-        except Exception:
-            data = {}
-
-    mcp_servers = data.get("mcpServers") or {}
-    mcp_servers["sari"] = {
-        "command": command_path,
-        "args": ["--transport", "stdio", "--format", "pack"],
-        "env": {"DECKARD_CONFIG": _ssot_config_path()},
-    }
-    data["mcpServers"] = mcp_servers
-
-    cfg_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print_step(f"Updated Sari config in {cfg_path}")
-
-def _remove_mcp_config(cfg_path: Path):
-    """Generic MCP server block removal from TOML config (Codex/Gemini)."""
-    if not cfg_path.exists(): return
-    try:
-        lines = cfg_path.read_text(encoding="utf-8").splitlines()
-        new_lines = []
-        in_sari, removed = False, False
-        for line in lines:
-            if line.strip() == "[mcp_servers.sari]":
-                in_sari = True
-                removed = True
-                continue
-            if in_sari and line.startswith("[") and line.strip() != "[mcp_servers.sari]":
-                in_sari = False
-                new_lines.append(line)
-                continue
-            if not in_sari:
-                new_lines.append(line)
-        if removed:
-            print_step(f"Removed Sari config from {cfg_path}")
-            cfg_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-    except Exception as e:
-        print_warn(f"Failed to update {cfg_path}: {e}")
-
-def _remove_gemini_settings(cfg_path: Path):
-    """Remove Sari MCP server from Gemini CLI settings.json."""
-    if not cfg_path.exists(): return
-    try:
-        data = json.loads(cfg_path.read_text(encoding="utf-8"))
-        mcp_servers = data.get("mcpServers") or {}
-        if "sari" in mcp_servers:
-            mcp_servers.pop("sari", None)
-            if mcp_servers:
-                data["mcpServers"] = mcp_servers
-            else:
-                data.pop("mcpServers", None)
-            cfg_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            print_step(f"Removed Sari config from {cfg_path}")
-    except Exception as e:
-        print_warn(f"Failed to update {cfg_path}: {e}")
-
-# Backward-compatible aliases (tests/imports rely on old names)
-def _upsert_deckard_block(cfg_path: Path, command_path: str, workspace_root: str):
-    return _upsert_mcp_config(cfg_path, command_path, workspace_root)
-
-def _remove_deckard_block(cfg_path: Path):
-    return _remove_mcp_config(cfg_path)
+    script_path.write_text(content, encoding="utf-8")
+    if not IS_WINDOWS:
+        os.chmod(script_path, 0o755)
+    
+    print_step(f"Created bootstrap script: {script_path}")
+    return script_path
 
 def do_install(args):
     # Part 1: Handle global installation/update
     perform_global_install = False
-    version = "dev"
+    bootstrap_name = "bootstrap.bat" if IS_WINDOWS else "bootstrap.sh"
+    
     if args.update:
         if not args.yes and not confirm(f"Sari will be updated. This will replace the contents of {INSTALL_DIR}. Continue?", default=True):
             print_step("Update cancelled. Workspace will still be configured.")
         else:
             print_step("Updating Sari...")
             perform_global_install = True
-    elif not INSTALL_DIR.exists() or not (INSTALL_DIR / ("bootstrap.bat" if IS_WINDOWS else "bootstrap.sh")).exists():
+    elif not INSTALL_DIR.exists() or not (INSTALL_DIR / bootstrap_name).exists():
         print_step("Sari not found or corrupted. Starting installation...")
         perform_global_install = True
     else:
@@ -382,146 +151,61 @@ def do_install(args):
         print_warn("Use the --update flag to force a re-installation/update.")
 
     if perform_global_install:
-        # Stop any running daemons to prevent file locking issues
-        pids = _list_deckard_pids()
-        if pids:
-            print_step(f"Stopping running sari processes: {pids}")
-            _terminate_pids(pids)
-
-        # Remove previous installation if it exists
-        if INSTALL_DIR.exists() or INSTALL_DIR.is_symlink():
-            print_step(f"Removing existing installation at {INSTALL_DIR}...")
-            try:
-                if INSTALL_DIR.is_symlink():
-                    INSTALL_DIR.unlink()
-                else:
-                    shutil.rmtree(INSTALL_DIR)
-            except Exception as e:
-                print_error(f"Failed to remove existing directory: {e}")
-                sys.exit(1)
-        # Clone the repository (with local/offline fallback)
-        source_url = os.environ.get("DECKARD_INSTALL_SOURCE", REPO_URL)
-        print_step(f"Cloning latest Sari from {source_url} to {INSTALL_DIR}...")
-
-        def _source_path_from_url(url: str) -> Optional[Path]:
-            u = (url or "").strip()
-            if not u:
-                return None
-            if u.startswith("file://"):
-                u = u[7:]
-            p = Path(os.path.expanduser(u))
-            return p if p.exists() else None
-
-        source_path = _source_path_from_url(source_url)
-        if source_path is not None:
-            try:
-                shutil.copytree(source_path, INSTALL_DIR, dirs_exist_ok=True, ignore=shutil.ignore_patterns(".git"))
-            except Exception as e:
-                print_error(f"Failed to copy local source {source_path}: {e}")
-                sys.exit(1)
-        else:
-            try:
-                subprocess.run(["git", "clone", source_url, str(INSTALL_DIR)], check=True, capture_output=CONFIG["quiet"])
-            except (subprocess.CalledProcessError, FileNotFoundError, OSError) as e:
-                # Fallback: if running from a local repo, copy it directly
-                fallback = REPO_ROOT if REPO_ROOT.exists() else None
-                bootstrap_name = "bootstrap.bat" if IS_WINDOWS else "bootstrap.sh"
-                if fallback and (fallback / bootstrap_name).exists():
-                    print_warn("Git clone failed; falling back to local source copy.")
-                    try:
-                        shutil.copytree(fallback, INSTALL_DIR, dirs_exist_ok=True, ignore=shutil.ignore_patterns(".git"))
-                    except Exception as e2:
-                        print_error(f"Failed to copy fallback source {fallback}: {e2}")
-                        sys.exit(1)
-                else:
-                    print_error(f"Failed to clone/copy repo. Make sure 'git' is installed and in your PATH. Error: {e}")
-                    sys.exit(1)
-
-        # Setup bootstrap script and permissions
-        bootstrap_name = "bootstrap.bat" if IS_WINDOWS else "bootstrap.sh"
-        bootstrap_script = INSTALL_DIR / bootstrap_name
+        INSTALL_DIR.mkdir(parents=True, exist_ok=True)
         
-        if not bootstrap_script.exists():
-            print_error(f"{bootstrap_name} not found in cloned repo!")
-            sys.exit(1)
-            
-        if not IS_WINDOWS:
-            os.chmod(bootstrap_script, 0o755)
-
-        # Generate VERSION file from git tag
+        # 1. Install via Pip
+        print_step("Installing 'sari' package via pip...")
         try:
-            ver = subprocess.check_output(["git", "-C", str(INSTALL_DIR), "describe", "--tags", "--abbrev=0"], text=True).strip()
-            version = ver[1:] if ver.startswith("v") else ver
-            (INSTALL_DIR / "VERSION").write_text(version + "\n", encoding="utf-8")
-        except Exception:
-            pass # version remains 'dev'
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "--upgrade", "sari"],
+                check=True,
+                capture_output=CONFIG["quiet"]
+            )
+        except subprocess.CalledProcessError as e:
+            print_error(f"Pip install failed: {e}")
+            if e.stderr:
+                print_error(f"Pip error output: {e.stderr.decode('utf-8', errors='replace')}")
+            sys.exit(1)
 
-        # Remove .git and development artifacts
-        for artifact in [".git", "tests"]:
-            artifact_dir = INSTALL_DIR / artifact
-            if artifact_dir.exists():
-                try:
-                    shutil.rmtree(artifact_dir)
-                    print_step(f"Removed development artifact: {artifact}/")
-                except Exception:
-                    pass
+        # 2. Create Bootstrap Script
+        _create_bootstrap_script(INSTALL_DIR)
         
+        # 3. Create Version File (from installed package)
+        try:
+            ver_res = subprocess.run(
+                [sys.executable, "-c", "import sari.version; print(sari.version.__version__)"],
+                capture_output=True, text=True
+            )
+            if ver_res.returncode == 0:
+                (INSTALL_DIR / "VERSION").write_text(ver_res.stdout.strip() + "\n", encoding="utf-8")
+        except Exception:
+            pass
+
         print_success("Global installation/update complete!")
 
     # Part 2: print manual config instructions (no auto config writes)
     print_step("Manual MCP config required (no auto-write).")
-    bootstrap_name = "bootstrap.bat" if IS_WINDOWS else "bootstrap.sh"
-    bootstrap_script = INSTALL_DIR / bootstrap_name
-    if not bootstrap_script.exists():
-        print_error(f"Sari is not installed correctly. Missing {bootstrap_script}.")
-        print_error("Please run the installer again with the --update flag.")
-        sys.exit(1)
-
-    workspace_root = _resolve_workspace_root()
-    bash_cmd = (
-        "curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | "
-        "python3 - -y; exec ~/.local/share/sari/bootstrap.sh --transport stdio"
-    )
-    print_success("Add this block to your MCP config (Codex/Gemini):")
-    print(
-        "\n"
-        "[mcp_servers.sari]\n"
-        "command = \"bash\"\n"
-        f"args = [\"-lc\", \"{bash_cmd}\"]\n"
-        f"env = {{ DECKARD_WORKSPACE_ROOT = \"{workspace_root}\", DECKARD_RESPONSE_COMPACT = \"1\" }}\n"
-        "startup_timeout_sec = 60\n"
-    )
-
-    # Do not auto-create marker; roots are managed via config/env.
-
-    # Final health check only if we installed/updated something
-    if perform_global_install:
-        if not _is_daemon_running():
-            print_step("Starting Sari daemon...")
-            start_env = os.environ.copy()
-            start_env["DECKARD_WORKSPACE_ROOT"] = workspace_root
-            _start_daemon(bootstrap_script, start_env)
-            if not _wait_for_daemon():
-                print_warn("Daemon is still starting. Doctor may report 'Not running'.")
-
-        print_step("Running post-install health check (Doctor)...")
-        doctor_script = INSTALL_DIR / "doctor.py"
-        if doctor_script.exists():
-            try:
-                env = os.environ.copy()
-                env["DECKARD_WORKSPACE_ROOT"] = workspace_root
-                subprocess.run([sys.executable, str(doctor_script)], env=env, check=False, capture_output=CONFIG["quiet"])
-            except Exception as e:
-                print_warn(f"Doctor check failed to run: {e}")
-        
-        # Only show next steps on a fresh install/update
-        try:
-            ver_file = INSTALL_DIR / "VERSION"
-            if ver_file.exists():
-                version = ver_file.read_text().strip()
-        except Exception:
-            pass
-        print_next_steps(version)
+    
+    if IS_WINDOWS:
+        print_success("Add this block to your MCP config (Windows):")
+        print(
+            "\n"
+            "command = \"powershell\"\n"
+            "args = [\"-NoProfile\", \"-ExecutionPolicy\", \"Bypass\", \"-Command\", \"irm https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python - -y; & $env:LOCALAPPDATA\\sari\\bootstrap.bat --transport stdio\"]\n"
+        )
+    else:
+        print_success("Add this block to your MCP config (macOS/Linux):")
+        bash_cmd = (
+            "export PATH=$PATH:/usr/local/bin:/opt/homebrew/bin:$HOME/.local/bin && "
+            "(curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python3 - -y || true) && "
+            "exec ~/.local/share/sari/bootstrap.sh --transport stdio"
+        )
+        print(
+            "\n"
+            "[mcp_servers.sari]\n"
+            "command = \"bash\"\n"
+            f"args = [\"-lc\", \"{bash_cmd}\"]\n"
+        )
 
 def do_uninstall(args):
     def _schedule_remove(path: Path):
@@ -542,16 +226,22 @@ def do_uninstall(args):
 
     if not INSTALL_DIR.exists():
         print_warn("Sari is not installed.")
-        # Proceed anyway to clean configs
     
-    if not args.yes and not confirm("Uninstall Sari? (Deletes DB)", default=False):
+    if not args.yes and not confirm("Uninstall Sari? (Deletes DB & Configs)", default=False):
         return
 
-    pids = _list_deckard_pids()
-    if pids:
-        print_step(f"Stopping daemons: {pids}")
-        _terminate_pids(pids)
+    # 1. Pip Uninstall
+    print_step("Uninstalling 'sari' package via pip...")
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "uninstall", "-y", "sari"],
+            check=False,
+            capture_output=CONFIG["quiet"]
+        )
+    except Exception:
+        pass
 
+    # 2. Remove Data Directory
     if INSTALL_DIR.exists():
         print_step(f"Removing {INSTALL_DIR}...")
         try:
@@ -562,16 +252,6 @@ def do_uninstall(args):
                 shutil.rmtree(INSTALL_DIR)
         except Exception as e:
             print_warn(f"Failed to remove install dir: {e}")
-    
-    # Clean Codex configs
-    _remove_mcp_config(Path.home() / ".codex" / "config.toml")
-    _remove_mcp_config(Path.cwd() / ".codex" / "config.toml")
-    
-    # Clean Gemini configs
-    _remove_mcp_config(Path.home() / ".gemini" / "config.toml")
-    _remove_gemini_settings(Path.home() / ".gemini" / "settings.json")
-    _remove_mcp_config(Path.cwd() / ".gemini" / "config.toml")
-    _remove_gemini_settings(Path.cwd() / ".gemini" / "settings.json")
 
     print_success("Uninstallation Complete.")
 
@@ -594,7 +274,6 @@ def main():
         args.yes = True
 
     try:
-        doc_mode = False
         if args.uninstall: do_uninstall(args)
         else: do_install(args)
     except KeyboardInterrupt:

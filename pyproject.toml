@@ -24,10 +24,10 @@ engine = [
 ]
 
 [project.scripts]
-sari = "sari.deckard_compat.main:main"
+sari = "sari.main:main"
 
 [tool.setuptools]
-packages = { find = { include = ["sari", "sari.*", "deckard"] } }
+packages = { find = { include = ["sari", "sari.*"] } }
 package-data = { "sari.core" = ["engine_tokenizer_data/*"] }
 
 [tool.setuptools.dynamic]

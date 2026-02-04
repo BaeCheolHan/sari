@@ -103,9 +103,6 @@ export PYTHONPATH="$ROOT_DIR:$PYTHONPATH"
 # Inject Version from Git or File
 if [ -d "$ROOT_DIR/.git" ] && command -v git >/dev/null 2>&1; then
     VERSION=$(git -C "$ROOT_DIR" describe --tags --abbrev=0 2>/dev/null)
-    # If standard tag format (v1.2.3), strip 'v' if preferred, or keep it. 
-    # server.py expects string. Let's keep it as is (v1.1.0) or strip? 
-    # Most python libs use 1.1.0. 
     if [ -n "$VERSION" ]; then
         # Strip leading 'v'
         export DECKARD_VERSION="${VERSION#v}"
@@ -147,23 +144,9 @@ fi
 # Announce version to stderr (visible in host logs/console)
 echo "[Sari] Starting (v${DECKARD_VERSION:-dev})..." >&2
 
-# Run entrypoint (default to MCP stdio server if no args)
-python3 - <<'PY'
-import importlib.util
-raise SystemExit(0 if importlib.util.find_spec("sari.__main__") is not None else 1)
-PY
-HAS_SARI_MAIN=$?
-
-if [ "$HAS_SARI_MAIN" -eq 0 ]; then
-    if [ $# -eq 0 ]; then
-        exec python3 -m sari
-    else
-        exec python3 -m sari "$@"
-    fi
+# Run Sari (No more Deckard fallback)
+if [ $# -eq 0 ]; then
+    exec python3 -m sari
 else
-    if [ $# -eq 0 ]; then
-        exec python3 -m deckard
-    else
-        exec python3 -m deckard "$@"
-    fi
+    exec python3 -m sari "$@"
 fi
