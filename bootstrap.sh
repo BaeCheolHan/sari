@@ -13,13 +13,16 @@ fi
 
 # Uninstall helper (explicit command)
 if [ "$1" = "uninstall" ]; then
-    echo "[sari] uninstall: stopping daemon and removing install dir" >&2
-    if [ -x "$INSTALL_DIR/bootstrap.sh" ]; then
-        "$INSTALL_DIR/bootstrap.sh" daemon stop >/dev/null 2>&1 || true
-    fi
-    # Remove install dir
-    if [ -d "$INSTALL_DIR" ]; then
-        rm -rf "$INSTALL_DIR"
+    echo "[sari] uninstall: removing install, DB, configs, caches" >&2
+    if command -v python3 >/dev/null 2>&1 && [ -f "$ROOT_DIR/install.py" ]; then
+        python3 "$ROOT_DIR/install.py" --uninstall --no-interactive >/dev/null 2>&1 || true
+    else
+        if [ -x "$INSTALL_DIR/bootstrap.sh" ]; then
+            "$INSTALL_DIR/bootstrap.sh" daemon stop >/dev/null 2>&1 || true
+        fi
+        if [ -d "$INSTALL_DIR" ]; then
+            rm -rf "$INSTALL_DIR"
+        fi
     fi
     echo "[sari] uninstall: done. Please manually remove [mcp_servers.sari] from your config files." >&2
     exit 0

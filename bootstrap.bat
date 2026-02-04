@@ -28,11 +28,15 @@ if %ERRORLEVEL% equ 0 (
 
 :: Simple Uninstall (if requested manually)
 if "%~1"=="uninstall" (
-    echo [sari] uninstalling... >&2
-    if exist "%INSTALL_DIR%\bootstrap.bat" (
-        call "%INSTALL_DIR%\bootstrap.bat" daemon stop >nul 2>nul
+    echo [sari] uninstalling (remove install, DB, configs, caches)... >&2
+    if exist "%ROOT_DIR%\install.py" (
+        "%PY%" "%ROOT_DIR%\install.py" --uninstall --no-interactive >nul 2>nul
+    ) else (
+        if exist "%INSTALL_DIR%\bootstrap.bat" (
+            call "%INSTALL_DIR%\bootstrap.bat" daemon stop >nul 2>nul
+        )
+        if exist "%INSTALL_DIR%" rd /s /q "%INSTALL_DIR%"
     )
-    if exist "%INSTALL_DIR%" rd /s /q "%INSTALL_DIR%"
     echo [sari] done. >&2
     exit /b 0
 )

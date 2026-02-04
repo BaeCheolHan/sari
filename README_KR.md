@@ -193,7 +193,7 @@ sari doctor --auto-fix
 ```
 
 ### 제거 (Uninstall)
-Sari, 인덱스 데이터, 설정을 모두 제거합니다:
+Sari, 인덱스 데이터, 기본 설정을 제거합니다:
 Sari와 모든 인덱싱 데이터를 삭제하려면:
 
 ```bash
@@ -208,4 +208,12 @@ irm https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python 
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python3 - --uninstall --workspace-root /path/to/project
+```
+
+언인스톨은 홈 디렉터리에서 `.codex/tools/sari` 캐시도 찾아 제거합니다(최선 노력).
+
+`SARI_CONFIG` 또는 `DECKARD_CONFIG`로 커스텀 설정 경로를 사용 중이고 해당 파일도 제거하려면 다음 옵션을 사용하세요:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python3 - --uninstall --force-config
 ```

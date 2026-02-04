@@ -200,7 +200,7 @@ sari doctor --auto-fix
 ```
 
 ### Uninstall
-To remove Sari, indexed data, and configs:
+To remove Sari, indexed data, and default configs:
 
 ```bash
 # macOS/Linux
@@ -214,6 +214,14 @@ To also remove workspace-local caches (if used), pass the workspace root:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python3 - --uninstall --workspace-root /path/to/project
+```
+
+The uninstall command also scans your home directory for `.codex/tools/sari` caches and removes them (best effort).
+
+If you set `SARI_CONFIG` or `DECKARD_CONFIG` to a custom path and want that file removed too, pass:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python3 - --uninstall --force-config
 ```
 
 ---

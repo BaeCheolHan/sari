@@ -66,10 +66,10 @@ def print_step(msg):
     if not CONFIG["quiet"]:
         print(f"{C_BLUE}[Sari]{C_RESET} {msg}")
 
-def print_success(msg):
+def print_success(msg, data=None):
     log(f"SUCCESS: {msg}")
     if CONFIG["json"]:
-        _print_json("success", msg)
+        _print_json("success", msg, data)
         return
     if not CONFIG["quiet"]:
         print(f"{C_GREEN}[SUCCESS]{C_RESET} {msg}")
@@ -222,6 +222,85 @@ def do_install(args):
         )
 
 def do_uninstall(args):
+    removed_paths = []
+    failed_paths = []
+
+    def _record_result(path: Path, ok: bool):
+        if ok:
+            removed_paths.append(str(path))
+        else:
+            failed_paths.append(str(path))
+
+    def _safe_unlink(path: Path):
+        try:
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+            elif path.exists():
+                path.unlink()
+            _record_result(path, True)
+            return True
+        except Exception as e:
+            _record_result(path, False)
+            print_warn(f"Failed to remove {path}: {e}")
+            return False
+        return True
+
+    def _default_config_dir() -> Path:
+        if os.name == "nt":
+            return Path(os.environ.get("APPDATA", os.path.expanduser("~\\AppData\\Roaming"))) / "sari"
+        return Path.home() / ".config" / "sari"
+
+    def _remove_custom_config():
+        if not args.force_config:
+            return
+        for env_key in ["SARI_CONFIG", "DECKARD_CONFIG"]:
+            val = (os.environ.get(env_key) or "").strip()
+            if not val:
+                continue
+            cfg_path = Path(os.path.expanduser(val))
+            _safe_unlink(cfg_path)
+            # If the config file lives in a sari-named dir, remove that dir too.
+            if cfg_path.parent.name.lower() == "sari":
+                _safe_unlink(cfg_path.parent)
+
+    def _remove_workspace_cache():
+        ws_root = (
+            (args.workspace_root or "").strip()
+            or (os.environ.get("DECKARD_WORKSPACE_ROOT") or "").strip()
+            or (os.environ.get("LOCAL_SEARCH_WORKSPACE_ROOT") or "").strip()
+        )
+        if not ws_root:
+            return
+        root = Path(os.path.expanduser(ws_root))
+        candidates = [
+            root / ".codex" / "tools" / "sari",
+            root / ".codex" / "tools" / "SARI",
+        ]
+        for cand in candidates:
+            if cand.exists():
+                _safe_unlink(cand)
+
+    def _scan_and_remove_workspace_caches():
+        home_dir = Path.home()
+        max_dirs = 5000
+        scanned = 0
+        for root, dirnames, _ in os.walk(home_dir):
+            scanned += 1
+            if scanned > max_dirs:
+                print_warn("Workspace cache scan limit reached; some caches may remain.")
+                break
+
+            # Skip hidden dirs except .codex
+            dirnames[:] = [d for d in dirnames if d == ".codex" or not d.startswith(".")]
+            if ".codex" not in dirnames:
+                continue
+
+            codex_dir = Path(root) / ".codex" / "tools"
+            for leaf in ["sari", "SARI"]:
+                cand = codex_dir / leaf
+                if cand.exists():
+                    _safe_unlink(cand)
+
     def _schedule_remove(path: Path):
         """Remove install dir after this process exits (self-uninstall safe)."""
         try:
@@ -241,8 +320,18 @@ def do_uninstall(args):
     if not INSTALL_DIR.exists():
         print_warn("Sari is not installed.")
 
-    if not args.yes and not confirm("Uninstall Sari? (Deletes DB & Configs)", default=False):
+    if not args.yes and not confirm("Uninstall Sari? (Deletes DB, configs, caches)", default=False):
         return
+
+    # 0. Stop daemon if running (best effort)
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "sari", "daemon", "stop"],
+            check=False,
+            capture_output=True
+        )
+    except Exception:
+        pass
 
     # 1. Pip Uninstall
     print_step("Uninstalling 'sari' package via pip...")
@@ -267,11 +356,27 @@ def do_uninstall(args):
         except Exception as e:
             print_warn(f"Failed to remove install dir: {e}")
 
-    print_success("Uninstallation Complete.")
+    # 3. Remove config (default + custom env)
+    _remove_custom_config()
+    _safe_unlink(_default_config_dir())
+
+    # 4. Remove legacy config dirs (best effort)
+    _safe_unlink(Path.home() / ".SARI")
+
+    # 5. Remove workspace-local caches if workspace root is set
+    _remove_workspace_cache()
+    _scan_and_remove_workspace_caches()
+
+    print_success(
+        "Uninstallation Complete.",
+        data={"removed": removed_paths, "failed": failed_paths},
+    )
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--uninstall", action="store_true", help="Uninstall")
+    parser.add_argument("--workspace-root", help="Workspace root to remove local caches")
+    parser.add_argument("--force-config", action="store_true", help="Remove custom config paths from env")
     parser.add_argument("--update", action="store_true", help="Force update of existing installation")
     parser.add_argument("-y", "--yes", "--no-interactive", action="store_true", help="Skip prompts")
     parser.add_argument("-q", "--quiet", action="store_true", help="Quiet mode")

@@ -11,8 +11,11 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Checkout code
+      - name: Checkout main
         uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
 
       - name: Get Version
         id: check_version
@@ -21,7 +24,7 @@ jobs:
           echo "version=$TAG_VERSION" >> $GITHUB_OUTPUT
           echo "Releasing version: $TAG_VERSION"
 
-      - name: Update version.py
+      - name: Update version.py on main
         run: |
           VERSION=${{ steps.check_version.outputs.version }}
           # Update version.py securely
@@ -33,13 +36,22 @@ jobs:
           if [[ -n $(git status -s) ]]; then
             git add sari/version.py
             git commit -m "chore: bump version to $VERSION [skip ci]"
-            # Push to main branch (ensure we are on main)
-            git fetch origin main
-            git checkout main
-            git pull origin main
             git push origin main
           else
             echo "Version already matches."
+          fi
+
+      - name: Verify version.py matches tag
+        run: |
+          VERSION=${{ steps.check_version.outputs.version }}
+          FILE_VERSION=$(python - <<'PY'
+          from sari.version import __version__
+          print(__version__)
+          PY
+          )
+          if [ "$FILE_VERSION" != "$VERSION" ]; then
+            echo "version.py mismatch: expected=$VERSION got=$FILE_VERSION"
+            exit 1
           fi
 
       - name: Create Release
@@ -66,7 +78,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          ref: main # Ensure we checkout the updated version from main
+          ref: ${{ github.ref_name }} # Tag name (e.g., v1.2.3)
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -77,6 +90,21 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install build
+
+      - name: Set version.py for build (no commit)
+        run: |
+          VERSION=${{ github.ref_name }}
+          VERSION=${VERSION#v}
+          echo "__version__ = \"$VERSION\"" > sari/version.py
+          FILE_VERSION=$(python - <<'PY'
+          from sari.version import __version__
+          print(__version__)
+          PY
+          )
+          if [ "$FILE_VERSION" != "$VERSION" ]; then
+            echo "version.py mismatch: expected=$VERSION got=$FILE_VERSION"
+            exit 1
+          fi
 
       - name: Build package
         run: python -m build
