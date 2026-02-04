@@ -102,7 +102,10 @@ def confirm(question, default=True):
     while True:
         sys.stdout.write(question + prompt)
         sys.stdout.flush()
-        choice = input().lower()
+        try:
+            choice = input().lower()
+        except EOFError:
+            return default
         if default is not None and choice == "":
             return default
         if choice in valid:
@@ -169,17 +172,21 @@ def do_install(args):
             print_step("Installing 'sari' package via pip...")
             pip_cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "sari"]
 
-        try:
-            subprocess.run(
-                pip_cmd,
-                check=True,
-                capture_output=CONFIG["quiet"]
-            )
-        except subprocess.CalledProcessError as e:
-            print_error(f"Pip install failed: {e}")
-            if e.stderr:
-                print_error(f"Pip error output: {e.stderr.decode('utf-8', errors='replace')}")
-            sys.exit(1)
+        should_skip = os.environ.get("DECKARD_SKIP_INSTALL") == "1"
+        if should_skip:
+            print_warn("Skipping pip install (DECKARD_SKIP_INSTALL=1)")
+        else:
+            try:
+                subprocess.run(
+                    pip_cmd,
+                    check=True,
+                    capture_output=CONFIG["quiet"]
+                )
+            except subprocess.CalledProcessError as e:
+                print_error(f"Pip install failed: {e}")
+                if e.stderr:
+                    print_error(f"Pip error output: {e.stderr.decode('utf-8', errors='replace')}")
+                sys.exit(1)
 
         # 2. Create Bootstrap Script
         _create_bootstrap_script(INSTALL_DIR)
@@ -234,9 +241,11 @@ def do_uninstall(args):
     def _safe_unlink(path: Path):
         try:
             if path.is_dir():
-                shutil.rmtree(path, ignore_errors=True)
+                shutil.rmtree(path)
             elif path.exists():
                 path.unlink()
+            else:
+                return True
             _record_result(path, True)
             return True
         except Exception as e:
@@ -292,6 +301,8 @@ def do_uninstall(args):
 
             # Skip hidden dirs except .codex
             dirnames[:] = [d for d in dirnames if d == ".codex" or not d.startswith(".")]
+            if os.name == "nt":
+                dirnames[:] = [d for d in dirnames if d.lower() != "appdata"]
             if ".codex" not in dirnames:
                 continue
 
@@ -389,6 +400,9 @@ def main():
     CONFIG["verbose"] = args.verbose
 
     if args.yes or args.quiet or args.json:
+        os.environ["DECKARD_NO_INTERACTIVE"] = "1"
+        args.yes = True
+    elif not sys.stdin.isatty():
         os.environ["DECKARD_NO_INTERACTIVE"] = "1"
         args.yes = True
 
