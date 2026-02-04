@@ -21,6 +21,27 @@ jobs:
           echo "version=$TAG_VERSION" >> $GITHUB_OUTPUT
           echo "Releasing version: $TAG_VERSION"
 
+      - name: Update version.py
+        run: |
+          VERSION=${{ steps.check_version.outputs.version }}
+          # Update version.py securely
+          echo "__version__ = \"$VERSION\"" > sari/version.py
+          
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          if [[ -n $(git status -s) ]]; then
+            git add sari/version.py
+            git commit -m "chore: bump version to $VERSION [skip ci]"
+            # Push to main branch (ensure we are on main)
+            git fetch origin main
+            git checkout main
+            git pull origin main
+            git push origin main
+          else
+            echo "Version already matches."
+          fi
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:

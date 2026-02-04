@@ -374,8 +374,8 @@ def do_install(args):
         else:
             print_step("Updating Sari...")
             perform_global_install = True
-    elif not INSTALL_DIR.exists():
-        print_step("Sari not found. Starting first-time installation...")
+    elif not INSTALL_DIR.exists() or not (INSTALL_DIR / ("bootstrap.bat" if IS_WINDOWS else "bootstrap.sh")).exists():
+        print_step("Sari not found or corrupted. Starting installation...")
         perform_global_install = True
     else:
         print_step("Sari is already installed globally. Skipping global installation.")
