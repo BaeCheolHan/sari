@@ -117,6 +117,22 @@ python3 -m sari --transport stdio
 | `DECKARD_ENGINE_MODE` | 검색 엔진 백엔드. `embedded`(Tantivy)가 빠르고 정확합니다. `sqlite`(FTS5)는 호환성 모드입니다. | `embedded` |
 | `DECKARD_COALESCE_SHARDS` | 인덱싱 동시성 제어. 대규모 리포지토리(파일 10만 개 이상)에서는 늘리는 것이 좋습니다. | `16` |
 
+### 5. 설치 및 부트스트랩 (Installation & Bootstrapping)
+설치 및 시작 과정에 영향을 주는 설정입니다.
+
+| 변수명 | 설명 | 기본값 |
+|--------|------|--------|
+| `XDG_DATA_HOME` | 설치 경로를 변경합니다. 설정 시 `$XDG_DATA_HOME/sari`에 설치됩니다. | `~/.local/share` |
+| `DECKARD_SKIP_INSTALL` | `1`로 설정 시 시작할 때 `pip install` 자동 업데이트를 건너뜁니다. 개발 환경이나 오프라인에서 유용합니다. | `0` |
+| `DECKARD_NO_INTERACTIVE` | `1`로 설정 시 설치 스크립트의 대화형 질문을 끄고 기본값(Yes)으로 진행합니다. | `0` |
+
+### 6. 고급 / 디버그 (Advanced / Debug)
+개발자용 디버깅 옵션입니다.
+
+| 변수명 | 설명 | 기본값 |
+|--------|------|--------|
+| `DECKARD_LOG_LEVEL` | 로그 레벨 설정 (`DEBUG`, `INFO`, `WARNING`, `ERROR`). | `INFO` |
+
 ---
 
 ## 🩺 문제 해결 (Troubleshooting)
