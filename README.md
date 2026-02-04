@@ -142,6 +142,15 @@ Connectivity settings for the daemon.
 | `DECKARD_HTTP_API_PORT` | Port for the HTTP API server (optional). | `47777` |
 | `DECKARD_ALLOW_NON_LOOPBACK` | Allow connections from non-localhost IPs. **Security Risk:** Only enable in trusted networks. | `0` (Disabled) |
 
+### 6. Installation & Bootstrapping
+Settings affecting the installation and startup process.
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `XDG_DATA_HOME` | Custom data directory for installation. Sari installs to `$XDG_DATA_HOME/sari`. | `~/.local/share` |
+| `DECKARD_SKIP_INSTALL` | Set `1` to skip automatic pip install/upgrade on startup. Useful for development or offline usage. | `0` |
+| `DECKARD_NO_INTERACTIVE`| Set `1` to disable interactive prompts during installation (assumes 'yes'). | `0` |
+
 ### 5. Advanced / Debug
 Developer options for debugging and plugin extension.
 
