@@ -239,6 +239,27 @@ class IndexerLock:
             pass
 
 
+class ShardedLock:
+    def __init__(self, shard_count: int):
+        if shard_count <= 0:
+            shard_count = 1
+        self._shard_count = shard_count
+        self._locks = [threading.Lock() for _ in range(shard_count)]
+
+    def _shard_index(self, key: str) -> int:
+        import hashlib
+
+        digest = hashlib.sha1(key.encode("utf-8")).digest()
+        return digest[0] % self._shard_count
+
+    def get_lock(self, key: str) -> threading.Lock:
+        return self._locks[self._shard_index(key)]
+
+    @property
+    def shard_count(self) -> int:
+        return self._shard_count
+
+
 def resolve_indexer_settings(db_path: str) -> tuple[str, bool, bool, Any]:
     mode = (os.environ.get("DECKARD_INDEXER_MODE") or "auto").strip().lower()
     if mode not in {"auto", "leader", "follower", "off"}:
@@ -949,7 +970,7 @@ class Indexer:
         if shard_count <= 0:
             shard_count = 1
         self._coalesce_shards = shard_count
-        self._coalesce_locks = [threading.Lock() for _ in range(self._coalesce_shards)]
+        self._coalesce_lock = ShardedLock(self._coalesce_shards)
         self._coalesce_size_lock = threading.Lock()
         self._coalesce_size = 0
         self._coalesce_map: Dict[str, CoalesceTask] = {}
@@ -977,6 +998,20 @@ class Indexer:
         if max_workers <= 0:
             max_workers = 4
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+        self._parse_timeout_seconds = 0.0
+        self._parse_executor = None
+        try:
+            self._parse_timeout_seconds = float(os.environ.get("DECKARD_PARSE_TIMEOUT_SECONDS", "0") or 0)
+        except Exception:
+            self._parse_timeout_seconds = 0.0
+        if self._parse_timeout_seconds > 0:
+            try:
+                parse_workers = int(os.environ.get("DECKARD_PARSE_TIMEOUT_WORKERS", "2") or 2)
+            except Exception:
+                parse_workers = 2
+            if parse_workers <= 0:
+                parse_workers = 1
+            self._parse_executor = concurrent.futures.ThreadPoolExecutor(max_workers=parse_workers)
         self.watcher = None
 
     def stop(self):
@@ -987,6 +1022,11 @@ class Indexer:
         self._drain_queues()
         try: self._executor.shutdown(wait=False)
         except: pass
+        if self._parse_executor:
+            try:
+                self._parse_executor.shutdown(wait=False)
+            except Exception:
+                pass
         if self._db_writer:
             self._db_writer.stop(timeout=self._drain_timeout)
         if self._dlq_thread and self._dlq_thread.is_alive():
@@ -1169,9 +1209,18 @@ class Indexer:
         msg = str(err)[:500]
         self._enqueue_dlq_upsert([(path, safe_attempts, msg, now, next_retry)])
 
+    def _extract_symbols_with_timeout(self, path: str, content: str) -> Tuple[List[Tuple], List[Tuple]]:
+        if not self._parse_executor or self._parse_timeout_seconds <= 0:
+            return _extract_symbols_with_relations(path, content)
+        future = self._parse_executor.submit(_extract_symbols_with_relations, path, content)
+        try:
+            return future.result(timeout=self._parse_timeout_seconds)
+        except concurrent.futures.TimeoutError as exc:
+            future.cancel()
+            raise TimeoutError("parse timeout") from exc
+
     def _coalesce_lock_for(self, key: str) -> threading.Lock:
-        idx = hash(key) % self._coalesce_shards if self._coalesce_shards > 1 else 0
-        return self._coalesce_locks[idx]
+        return self._coalesce_lock.get_lock(key)
 
     def _normalize_path(self, path: str) -> Optional[str]:
         try:
@@ -1534,8 +1583,10 @@ class Indexer:
                                         ast_status, ast_reason = "skipped", "too_large"
                                     else:
                                         try:
-                                            symbols, relations = _extract_symbols_with_relations(db_path, content)
+                                            symbols, relations = self._extract_symbols_with_timeout(db_path, content)
                                             ast_status, ast_reason = "ok", "none"
+                                        except TimeoutError:
+                                            ast_status, ast_reason = "timeout", "timeout"
                                         except Exception:
                                             ast_status, ast_reason = "error", "error"
 
