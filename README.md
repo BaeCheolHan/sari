@@ -1,125 +1,26 @@
-# 🧙‍♂️ Sari (사리)
+# Sari (사리)
 
-> **"잠시 내 말 좀 들어보게나... 자네의 소스코드가 지옥의 비명을 지르는 소리를!"** (Stay awhile and listen...)
+**Sari** is a high-performance **Local Code Search Agent** implementing the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/). It empowers AI assistants (like Claude, Cursor, Codex) to efficiently navigate, understand, and search large codebases without sending code to external servers.
 
-**사리(Sari)**는 인공지능(AI) 친구들이 여러분의 복잡하고 거대한 코드를 아주 쉽고 빠르게 이해할 수 있도록 도와주는 **'호라드림의 수석 기록관'**이에요.
-
-사리 선생님만 계시면 아무리 얽히고설킨 코드라도 AI가 길을 잃지 않고 필요한 클래스를 0.1초 만에 찾아낼 수 있답니다.  
-호라드림의 촛불이 꺼지지 않는 한, 인덱싱 누락이라는 혼돈의 비명은 들리지 않게 될 거예요. 🚀 (선생님이 지팡이로 길을 아주 상세히 안내해주신답니다.)
-
----
-
-## 🧐 사리 선생님은 누구인가요? (쉽게 이해하기)
-
-여러분의 컴퓨터에는 아주 많은 코드 파일이 있어요. 똑똑한 **AI 친구(Codex, Claude, Cursor, Gemini 등)**에게 코드를 짜달라고 하면 가끔 이런 말을 할 거예요.
-*"미안해, 파일이 너무 많아서 어디에 뭐가 있는지 모르겠어!"*
-
-그때 바로 **사리 선생님**이 트리스트럼 어딘가에서 마법처럼 나타납니다!
-
-1.  **지독한 사서**: 사리 선생님은 여러분의 모든 코드를 미리 다 읽어두고, 누가 어느 지옥 구석에 사는지(어떤 함수가 어떤 파일에 있는지) 아주 상세한 **'호라드림 장부'**를 만들어둬요. (눈이 침침하셔도 정규식은 기가 막히게 보십니다.)
-2.  **AI의 길잡이**: AI 친구가 "이 프로젝트에서 회원가입은 어떻게 해?"라고 물어보면, 사리 선생님이 지팡이를 짚고 장부를 슥 보고는 "3번 선반 아래, 디아블로의 꼬리 옆에 있는 `user.py` 파일을 보게나! 주석 좀 똑바로 달지 그랬나..."라고 꾸짖으며 알려줍니다.
-3.  **MCP(Model Context Protocol)**: 이건 AI 친구와 사리 선생님이 서로 대화할 때 쓰는 **'호라드림 통역기'** 같은 거예요. 이 통역기 덕분에 사리 선생님은 세상의 모든 최신 AI와 대화할 수 있답니다! (고대어는 몰라도 Python은 꿰고 계시죠.) 🤝
+> **Key Features:**
+> - ⚡ **Fast Indexing:** SQLite FTS5 + AST-based symbol extraction.
+> - 🔍 **Smart Search:** Hybrid ranking (Keyword + Symbol structure).
+> - 🧠 **Code Intelligence:** Call graphs, snippets management, and domain context archiving.
+> - 🔒 **Local & Secure:** All data remains on your machine. No external API dependency.
 
 ---
 
-## 🌟 사리 선생님의 특별한 능력
+## 🚀 Installation & Setup
 
-- **⚡ 차원문 검색**: 수만 줄의 코드도 순식간에 읽어서 필요한 부분만 골라내요. (TP 타는 속도보다 빠릅니다.)
-- **🧠 코드 심령술**: 단순히 글자만 찾는 게 아니라, 이게 '함수'인지 '클래스'인지 코드의 영혼(AST)을 읽어냅니다.
-- **🔒 철통 보안**: 모든 공부는 여러분의 컴퓨터 안에서만 해요. 코드가 성역(인터넷) 밖으로 절대 나가지 않으니 안심하세요! 지옥의 악마도 여러분의 소스코드는 못 훔쳐갑니다. 🛡️
-- **👻 투명 망토**: 백그라운드에서 조용히 일하며 여러분이 코드를 고칠 때마다 장부를 알아서 업데이트해요. (가끔 계신지 확인하지 않으면 섭섭해하십니다.)
+Sari supports **automatic installation** via MCP configuration (Recommended) or manual installation via `pip`.
 
----
+### Option 1: Automatic Installation (Recommended)
 
-## 🚀 성역 소환 주문 (설치 방법 - Installation)
+Add the following configuration to your MCP client (Cursor, Claude Desktop, etc.). Sari will be automatically installed (via `pip`) and updated upon launch.
 
-> **중요:** `deckard` 모듈/엔트리포인트는 **호환용으로만 유지**됩니다.  
-> 앞으로는 **Sari 이름을 사용**해 주세요. (향후 버전에서 제거 예정)
->
-> **개발자 참고:** 내부 모듈은 `sari.core`, `sari.mcp` 네임스페이스로 제공됩니다.  
-> 충돌 방지를 위해 `app`, `mcp` 같은 최상위 패키지는 배포본에 포함되지 않습니다.
+#### 🍎 macOS / Linux
 
-설치 방식은 두 가지입니다.
-
-1) **설정만 추가하면 자동 설치 (권장)**  
-2) **직접 설치 (오프라인/제한 환경용)**
-
-**설치 안정성 기준 (KPI)**
-1. 오프라인/로컬 소스/다른 workspace 재현 성공률: 3/3
-
-**자동 설치 조건 요약**
-- `DECKARD_ENGINE_MODE=embedded` + `DECKARD_ENGINE_AUTO_INSTALL=1` + 네트워크/pip 가능
-
-### ✅ 1) 설정만 추가하면 자동 설치 (권장)
-MCP 설정 파일에 아래 블록을 **직접 추가**하면, 실행 시 Sari가 자동 설치됩니다.
-(네트워크가 없으면 기존 설치된 버전을 실행합니다.)
-
-**macOS / Linux (Bash)**
-```toml
-[mcp_servers.sari]
-command = "bash"
-args = ["-lc", "export PATH=$PATH:/usr/local/bin:/opt/homebrew/bin:$HOME/.local/bin && (curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python3 - -y || true) && exec ~/.local/share/sari/bootstrap.sh --transport stdio"]
-env = { DECKARD_WORKSPACE_ROOT = "/path/to/workspace", DECKARD_RESPONSE_COMPACT = "1" }
-startup_timeout_sec = 60
-```
-
-**Windows (PowerShell)**
-```toml
-[mcp_servers.sari]
-command = "powershell"
-args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "irm https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python - -y; & $env:LOCALAPPDATA\\sari\\bootstrap.bat --transport stdio"]
-env = { DECKARD_WORKSPACE_ROOT = "C:\\path\\to\\workspace", DECKARD_RESPONSE_COMPACT = "1" }
-startup_timeout_sec = 60
-```
-
----
-
-## 🧩 설정/설치 상세 가이드 (초보자용 / 고급자용)
-
-### ✅ 초보자용 (권장 경로)
-
-#### 1) 설치 방식 선택 가이드
-**A. 설정만 추가(권장)**  
-MCP 설정에 `bootstrap.sh` 실행 블록을 추가하면, 실행 시 자동 설치됩니다.
-
-**B. 오프라인/고정 설치**  
-네트워크가 불가한 환경이면 **이미 설치된 `bootstrap.sh` 경로**를 직접 지정하세요.
-
-**롤백(SQLite) 경고**  
-SQLite 모드로 롤백한 경우 **FTS 재빌드가 필요**할 수 있으며, 완료 전까지 검색 품질이 제한될 수 있습니다.
-
----
-
-#### 2) MCP 설정 파일 위치 (앱별)
-**Codex / Gemini**  
-`<workspace>/.codex/config.toml`
-
-**Claude Desktop**  
-`claude_desktop_config.json`
-
-**Cursor**  
-앱 Settings > MCP 메뉴
-
----
-
-#### 3) MCP 설정 템플릿 (TOML)
-```toml
-[mcp_servers.sari]
-command = "bash"
-args = ["-lc", "curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python3 - -y; exec ~/.local/share/sari/bootstrap.sh --transport stdio"]
-env = {
-  DECKARD_WORKSPACE_ROOT = "/path/to/workspace",
-  DECKARD_RESPONSE_COMPACT = "1",
-  DECKARD_ENGINE_MODE = "embedded",
-  DECKARD_ENGINE_TOKENIZER = "auto",
-  DECKARD_ENGINE_AUTO_INSTALL = "1"
-}
-startup_timeout_sec = 60
-```
-
----
-
-#### 4) MCP 설정 템플릿 (JSON)
+**Cursor / Claude Desktop Config:**
 ```json
 {
   "mcpServers": {
@@ -130,470 +31,7 @@ startup_timeout_sec = 60
         "export PATH=$PATH:/usr/local/bin:/opt/homebrew/bin:$HOME/.local/bin && (curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python3 - -y || true) && exec ~/.local/share/sari/bootstrap.sh --transport stdio"
       ],
       "env": {
-        "DECKARD_WORKSPACE_ROOT": "/path/to/workspace",
-        "DECKARD_RESPONSE_COMPACT": "1",
-        "DECKARD_ENGINE_MODE": "embedded",
-        "DECKARD_ENGINE_TOKENIZER": "auto",
-        "DECKARD_ENGINE_AUTO_INSTALL": "1"
-      },
-      "startup_timeout_sec": 60
-    }
-  }
-}
-```
-
----
-
-#### 5) env 옵션 설명 (핵심)
-`DECKARD_WORKSPACE_ROOT`  
-워크스페이스 루트. 가장 중요한 옵션.
-
-`DECKARD_ENGINE_MODE`  
-엔진 모드 선택. `embedded|sqlite` (기본: `embedded`)
-
-`DECKARD_RESPONSE_COMPACT`  
-PACK1 응답 압축(기본 `1`).
-
-`DECKARD_ENGINE_TOKENIZER`  
-`auto|cjk|latin` 선택.
-
-`DECKARD_ENGINE_AUTO_INSTALL`  
-`1`이면 첫 검색/재빌드 시 엔진 자동 설치.
-
-`DECKARD_READ_MAX_BYTES`  
-`read_file` 응답 최대 바이트 수 제한 (기본: 1,048,576 bytes). 큰 파일 OOM 방지용.
-`DECKARD_READ_POOL_MAX`  
-read 전용 커넥션 풀 상한 (기본: 32). 초과 시 기본 read 커넥션을 공유.
-
----
-
-#### 6) bootstrap.sh 단독 실행 (CLI)
-```bash
-DECKARD_WORKSPACE_ROOT=/path/to/workspace \
-DECKARD_ENGINE_MODE=embedded \
-DECKARD_ENGINE_TOKENIZER=cjk \
-DECKARD_ENGINE_AUTO_INSTALL=1 \
-~/.local/share/sari/bootstrap.sh --transport stdio
-```
-
----
-
-#### 7) 오프라인/고정 설치 경로
-**macOS/Linux**  
-`~/.local/share/sari/bootstrap.sh`
-
-**Windows**  
-`%LOCALAPPDATA%\\sari\\bootstrap.bat`
-
----
-
-#### 8) 가장 흔한 실수
-**workspace-root 미지정**  
-홈 디렉토리 전체가 인덱싱될 수 있습니다. 반드시 지정하세요.
-
-**args/env 불일치**  
-env가 우선 적용되므로 둘을 동일하게 맞추세요.
-
-**설치본/레포 경로 혼용**  
-하나의 경로만 사용하세요.
-
----
-
-### 🛠 고급자용 (커스터마이징)
-
-#### 1) 엔진/토크나이저 강제 설정
-```bash
-export DECKARD_ENGINE_TOKENIZER=latin
-export DECKARD_ENGINE_AUTO_INSTALL=0
-export DECKARD_ENGINE_MODE=embedded
-```
-
-#### 2) 응답 포맷 디버깅
-```bash
-export DECKARD_FORMAT=json
-export DECKARD_RESPONSE_COMPACT=0
-```
-
-#### 3) 루트/포트/DB 경로 고정
-```bash
-export DECKARD_WORKSPACE_ROOT=/path/to/workspace
-export DECKARD_HTTP_API_PORT=7331
-export DECKARD_DB_PATH=/absolute/path/to/index.db
-```
-
-#### 4) 멀티 루트 (고급)
-```bash
-export DECKARD_ROOTS_JSON='["/path/a","/path/b"]'
-```
-
-#### 5) 실행 예시 (단일 커맨드)
-```bash
-DECKARD_WORKSPACE_ROOT=/path/to/workspace \
-DECKARD_ENGINE_MODE=embedded \
-DECKARD_ENGINE_TOKENIZER=cjk \
-DECKARD_ENGINE_AUTO_INSTALL=1 \
-DECKARD_FORMAT=pack \
-~/.local/share/sari/bootstrap.sh --transport stdio
-```
-
-#### 6) 번들 크기 줄이기 (옵션)
-엔진 토크나이저 사전은 OS별 wheel이 함께 포함됩니다.  
-배포 크기를 줄이려면 현재 OS에 맞는 번들만 남기세요.
-
-```bash
-./scripts/prune_tokenizer_bundles.sh
-```
-
-Windows:
-```bat
-scripts\prune_tokenizer_bundles.bat
-```
-
-### 🔧 Engine/Tokenizer 옵션 (env로 주입)
-`bootstrap.sh`로 한방 설치해도 **env는 그대로 적용**됩니다.  
-MCP 설정의 `env`에 아래 옵션을 추가하세요.
-
-**모드 차이 (Embedded vs SQLite)**
-- `embedded`  
-  - Tantivy 기반 엔진 사용 (검색 품질/성능 우선)  
-  - 별도 엔진 설치 필요 (자동 설치 가능)  
-  - CJK 형태소 분석은 **번들된 lindera(ipadic) 사전**을 사용 (외부 다운로드 없음)
-  - 인덱스는 `~/.local/share/sari/index/<roots_hash>`에 관리
-- `sqlite`  
-  - SQLite FTS/LIKE 기반 (호환/롤백용)  
-  - 엔진 설치 없이 동작  
-  - 대용량/고속 검색 성능은 제한적
-
-**자동 설치 동작 조건**
-- `DECKARD_ENGINE_MODE=embedded`
-- `DECKARD_ENGINE_AUTO_INSTALL=1`
-- 네트워크 가능 + `pip` 설치 가능
-
-**자동 설치 비활성/실패 시**
-- 오프라인 환경이거나 `DECKARD_ENGINE_AUTO_INSTALL=0`인 경우 자동 설치가 동작하지 않습니다.
-- 수동 설치 명령: `sari --cmd engine install`
-
-**오류 메시지/복구 안내 (고정)**
-- 자동 설치 실패: `ERR_ENGINE_NOT_INSTALLED` → `sari --cmd engine install`
-- 엔진 준비 안 됨: `ERR_ENGINE_UNAVAILABLE` → `sari --cmd engine rebuild`
-
-**주요 옵션**
-- `DECKARD_ENGINE_MODE=embedded|sqlite`  
-  - 기본: `embedded`
-  - `embedded`: Tantivy 기반 엔진
-  - `sqlite`: SQLite 검색 엔진(호환/롤백용)
-- `DECKARD_ENGINE_TOKENIZER=auto|cjk|latin`  
-  - 기본: `auto`
-  - `cjk`: CJK 토크나이저 강제
-  - `latin`: latin 토크나이저 강제
-- `DECKARD_ENGINE_AUTO_INSTALL=1|0`  
-  - `1`: 첫 검색/재빌드 시 자동 설치
-  - `0`: 자동 설치 비활성 (오프라인/제한 환경)
-- `DECKARD_LINDERA_DICT_PATH=/path/to/dictionary`  
-  - 형태소 사전 경로 강제 지정 (필요 시)
-- `DECKARD_READ_MAX_BYTES=0|N`  
-  - `read_file` 응답 크기 제한. `0`이면 제한 없음.  
-  - 기본: `1048576` (약 1MB)
-- `DECKARD_READ_POOL_MAX=0|N`  
-  - read 전용 커넥션 풀 상한. `0`이면 제한 없음.  
-  - 기본: `32`
-
-**예시**
-```toml
-env = {
-  DECKARD_WORKSPACE_ROOT = "/path/to/workspace",
-  DECKARD_RESPONSE_COMPACT = "1",
-  DECKARD_ENGINE_MODE = "embedded",
-  DECKARD_ENGINE_TOKENIZER = "cjk",
-  DECKARD_ENGINE_AUTO_INSTALL = "1"
-}
-```
-
-### 🧰 2) 직접 설치 (오프라인/제한 환경용)
-터미널(Terminal)에서 직접 설치도 가능합니다.
-
-```bash
-# macOS / Linux
-curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python3 - -y
-
-# Windows (PowerShell)
-irm https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python - -y
-```
-
-### 📖 호라드림의 설치 계시 (How it works)
-사리 선생님의 설치 마법은 이렇게 동작합니다:
-
-1. **설정만 추가** → 실행 시 네트워크에서 자동 설치
-2. 설치 위치는 항상 **전역 고정** (`~/.local/share/sari` / `%LOCALAPPDATA%\\sari`)
-3. 데몬은 **항상 하나**로 유지
-
-
-### 설치하면 어떤 마법이 일어나나요?
-1.  **지혜 전수**: 사리 선생님이 일할 때 필요한 최소한의 도구(Python 엔진 등)를 자동으로 준비합니다.
-2.  **비밀 거처 마련**: 도서관 주소를 만듭니다. (이사 비용은 무료입니다.)
-    - **macOS/Linux**: `~/.local/share/sari` (사과 마크가 찍힌 비밀 창고)
-    - **Windows**: `%LOCALAPPDATA%\sari` (창문이 달린 비밀 창고)
-3.  **통역기 연결**: MCP 설정 블록만 추가하면 실행 시 자동으로 연결됩니다.
-
-### 설정은 어디에 숨겨지나요? (수동 등록 방식)
-**설정 파일은 자동으로 수정하지 않습니다.**  
-Codex/Gemini는 TOML, Cursor/Claude는 JSON 형식으로 동일 내용을 넣어주세요.
-
-### 여러 워크스페이스를 동시에? (분신술의 대가)
-- **설정은 워크스페이스별로 각자의 운명**을 가집니다.  
-  예: A에서 실행 → `A/.codex/config.toml` 생성 (A의 기록)  
-  B에서 실행 → `B/.codex/config.toml` 생성 (B의 밀서)
-- **몸은 하나, 지혜는 여러 곳에**: 사리 선생님은 하나의 데몬(Daemon)으로 동작하지만, 성역 곳곳에 분신을 보내어 **A와 B 워크스페이스를 동시에** 관리할 수 있습니다! (선생님이 워커홀릭이라 AB 둘 다 켜두면 둘 다 샅샅이 수집하신다네.)
-- **철저한 기록 분리**: A의 장부와 B의 장부는 서로 섞이지 않도록 엄격히 분리된 서랍(Data Directory)에 보관됩니다. A에서 디아블로를 검색했는데 B의 바알이 튀어나오는 일은 없으니 안심하시게나.
-
----
-
-## 🪄 설치 옵션 (대안)
-
-**오프라인/제한 환경용**  
-설정에서 `command`를 설치본 `bootstrap.sh`로 직접 지정하면 네트워크 없이 실행할 수 있습니다.
-
-**bootstrap 스크립트 위치**
-- **macOS/Linux**: `~/.local/share/sari/bootstrap.sh`
-- **Windows**: `%LOCALAPPDATA%\\sari\\bootstrap.bat`
-
----
-
-## 🧭 차원문 연결 위치와 동작 (실행 위치 요약)
-| 실행 위치 (차원문 주소) | workspace-root가 없을 때 운명 |
-|---|---|
-| 레포 내부 | 레포 또는 상위 `.codex-root`를 고향으로 인식 |
-| 워크스페이스 루트 | "여기가 내 집이구나!" 하고 바로 정착 |
-| 홈 디렉토리 (`~`) | 여러분의 온 집안 살림을 다 뒤집어 봄 (강력히 비추천!) |
-
----
-
-## ⚠️ "성스러운 혼용" 금지 경고
-`command`에 **설치본과 레포 경로를 섞어 쓰면** 지옥문이 열릴 수 있습니다:
-- 업데이트 규칙이 뒤엉켜서 고대 버전이 튀어나오거나,
-- 서로 다른 데몬이 나타나 포트 47779를 두고 '성전'을 벌이거나,
-- "어느 설정이 진짜인가" 하고 자아 분열이 일어납니다.
-
-따라서 **config에는 항상 한 경로만 유지**하세요. (1‑Step 또는 고정 모드 중 하나!)
-
----
-
-## 🔁 성역의 유지보수 (Update & Recovery)
-
-### 🔁 강제 업데이트 및 복구
-만약 설치 폴더가 손상되었거나, 최신 버전으로 강제 재설치가 필요하다면 `--update` 플래그를 사용하세요.
-
-```bash
-# 설치가 꼬였거나 업데이트가 필요할 때
-curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python3 - --update -y
-```
-
-### ✅ 수석 기록관의 최종 점검 (Checklist)
-설치 후 모든 것이 정상인지 확인하려면 **닥터(Doctor)**를 소환하세요:
-```bash
-python3 ~/.local/share/sari/doctor.py
-```
-
-### 🧹 도서관 대청소 및 보안 (Caution!)
-- **장부의 소멸**: 삭제 시 공들여 만든 기록(DB)도 함께 가루가 됩니다 → 재설치 후 **재인덱싱이라는 전설급 노가다**가 필요합니다.
-- **수행의 시간**: 첫 실행 시 시간이 오래 걸릴 수 있습니다. (호라드림 도서관 20,000평을 혼자 빗질하신다고 생각해보시게나, 지극히 정상이라네.)
-
-### 🔒 천상의 보안/프라이버시
-- 모든 공부와 검색은 **여러분의 안방(로컬)**에서만 수행됩니다.
-- 코드가 지옥(외부 서버)으로 전송되는 불상사는 결코 일어나지 않습니다.
-- 로그와 캐시는 오직 여러분의 하드디스크 깊숙한 곳에만 봉인됩니다. (디아블로도 못 훔쳐가네.)
-
-### 🧼 Redaction (민감정보 마스킹)
-- 인덱싱/텔레메트리 로그 기록 전 **민감정보를 마스킹**합니다.
-- 기본값은 `redact_enabled=true`이며, 설정에서 비활성화할 수 있습니다.
-- 마스킹 범위/패턴은 `app/indexer.py`의 `_redact` 로직 기준입니다.
-
----
-
-## 🧭 다중 워크스페이스를 똑똑하게 쓰는 방법
-“A도 보고 싶고 B도 보고 싶어!” 하시는 분들을 위한 **현실적인 추천 패턴**이에요.
-
-- **방법 1: 워크스페이스별로 설정을 나눠두기 (권장)**  
-  A, B 각각에 `.codex/config.toml`을 만들어 두고, 필요할 때 그 폴더에서 실행하세요.  
-  사리 선생님은 **현재 위치 기준**으로 움직이는 성격이라, 그게 제일 명확합니다.
-
-- **방법 2: 하나의 워크스페이스만 집중 관리**  
-  “지금은 A만 봐야 해!”라면 B는 과감하게 잊으세요.  
-사리는 **한 번에 하나에 집중하는 선생님**이에요. (멀티태스킹은 다음 학기에…)
-
----
-
-## 🧯 문제 해결 (Troubleshooting)
-
-### Q. MCP 연결이 안 돼요
-- `command`가 `bash`인지, 그리고 네트워크가 허용되는지 확인하세요.
-- 제한 환경이라면 **설치본 bootstrap 경로**로 전환하세요.
-- 데몬 상태 확인:
-  ```bash
-  # macOS/Linux
-  ~/.local/share/sari/bootstrap.sh daemon status
-  
-  # Windows
-  %LOCALAPPDATA%\sari\bootstrap.bat daemon status
-  ```
-- 기동이 느리면 `startup_timeout_sec`를 120~180으로 올려보세요.
-
-### Q. 첫 실행이 너무 느려요
-- 첫 인덱싱은 원래 시간이 좀 걸립니다. (호라드림 도서관 20,000평을 혼자 청소하신다고 생각해보세요.)
-- `--workspace-root`로 범위를 줄이면 훨씬 빨라집니다. (선생님께 청소 범위를 좁게 알려드리는 매너!)
-
-### Q. 테스트가 운영 데몬과 충돌해요
-- 격리된 환경에서 실행하려면 `scripts/run_tests_isolated.sh`를 사용하세요. (HOME/registry/log/port 분리)
-
-### Q. 업데이트가 안 되는 것 같아요
-- 설치본 `VERSION`을 확인하세요:
-  ```bash
-  cat ~/.local/share/sari/VERSION
-  ```
-- 필요하면 강제 업데이트:
-  ```bash
-  curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python3 - --update -y
-  ```
-
-### Q. 설정 파일이 여기저기 생겼어요
-- 사리 선생님은 **글로벌 설정과 프로젝트 설정이 뒤섞여 혼돈이 오는 걸 극도로 혐오합니다.**  
-  그래서 글로벌 `~/.codex/config.toml`은 평화롭게 정리하고, **프로젝트별 서랍(설정)**만 사용하도록 유도합니다.  
-  설정의 질서가 곧 코드의 평화입니다.
-
----
-
-## 🧩 왜 설정을 자동으로 다 안 고쳐주나요?
-Codex, Gemini, Claude, Cursor… 이 녀석들은 성격도 다르고 사는 곳(설정 경로)도 제각각이에요.  
-사리 선생님은 **“남의 집 안방 가구 배치를 함부로 바꾸지 않겠다”**는 엄격한 도덕적 철학이 있습니다. 😄  
-(사실 잘못 건드리면 지옥문이 열릴 수 있어서 그렇습니다.) 대신 참고할 수 있는 **비급서(설정 예시)**는 아래에 적어두었으니 직접 옮겨 적어보시게나!
-
----
-
-## 🎮 사리 선생님 부려먹기 (Usage)
-
-### 1단계: 내 프로젝트 공부시키기
-여러분 개발 실력의 결정체(혹은 지옥에서 온 스파게티 코드)인 폴더로 이동해서 아래 명령어를 입력하세요. 그럼 사리 선생님이 지팡이를 짚고 그 폴더를 샅샅이 뒤지기 시작합니다!
-
-```bash
-# macOS/Linux
-$HOME/.local/share/sari/bootstrap.sh init
-
-# Windows
-%LOCALAPPDATA%\sari\bootstrap.bat init
-```
-
-> **참고**: `--workspace-root`를 사용하면 선생님의 이동 범위를 제한할 수 있습니다.  
-> 예) `.../bootstrap.sh init --workspace-root /path/to/my_precious_code`
-
-### 2단계: AI에게 물어보기
-이제 AI 친구(Codex, Claude, Cursor 등)를 열고 평소처럼 질문해보세요.
-
-> "사리 선생님의 장부를 뒤져서 **로그인 로직**이 어느 지옥 구석에 있는지 찾아줘."  
-> "이 프로젝트의 **데이터베이스 구조**를 설명해주게나. 사서 선생님이 아는 대로 말이야."
-
-그럼 AI가 사리 선생님에게 달려가 장부를 확인하고, 아주 정확한 답변을 여러분께 알려줄 거예요! (가끔 답변 끝에 "Stay awhile and listen"이라고 붙여도 놀라지 마세요.) ✨
-
----
-
-## 📊 Sari MCP vs Standard Tools (실측 기반 분석)
-아래 수치는 **2026-02-02 기준, 실제 워크스페이스(636 files)**에서 실측한 바이트 크기입니다.  
-분석에 사용된 저장소 이름/코드 내용은 **공개하지 않았습니다**. (구조·통계만 공개)  
-토큰 추정은 `1,000 bytes ≈ 280 tokens` 기준으로 계산했습니다. (모델별 오버헤드는 제외)
-
-### 측정 방법 요약
-- Sari MCP: `status(details)`, `list_files`, `search_symbols` 응답의 **바이트 크기 측정**
-- Standard Tools: `ls -R`, `rg --files`, `rg "class.*Application"` 출력의 **바이트 크기 측정**
-- 동일 워크스페이스/동일 시점/동일 필터로 비교
-
-### 1) 구조 탐색 (파일 트리 파악)
-| 도구 | 측정 항목 | 바이트 | 추정 토큰 |
-| --- | --- | ---:| ---:|
-| Sari | `status(details)` | 1,649 | ~462 |
-| Sari | `list_files` (limit=2000, returned=500) | 115,397 | ~32,311 |
-| Standard | `ls -R` | 66,146 | ~18,521 |
-| Standard | `rg --files` | 73,196 | ~20,495 |
-
-**해석:**  
-- `status(details)`는 구조 파악용 요약으로 **출력량이 가장 작습니다.**  
-- `list_files`는 JSON 메타데이터 때문에 **전체 호출 시 출력량이 커질 수 있습니다.**
-- 따라서 **요약 → repo 좁히기 → 상세** 순으로 사용하는 것이 토큰 효율이 높습니다.
-
-### 2) 엔트리포인트 식별 (Application 클래스 탐색)
-| 도구 | 측정 항목 | 바이트 | 결과 수 |
-| --- | --- | ---:| ---:|
-| Sari | `search_symbols Application` | 1,008 | 4 |
-| Standard | `rg "class.*Application"` | 667 | 4 |
-
-**해석:**  
-- 출력량은 유사하지만, Sari는 **심볼 타입/경로/라인을 구조화**해 반환합니다.  
-- 후속 단계(`read_symbol`)로 이어질 때 **추가 탐색 비용이 줄어듭니다.**
-
-### 3) 결론 (실측 기반)
-Sari는 **“요약 → 좁히기 → 심볼 읽기”** 워크플로우에서 가장 효율적입니다.  
-반대로 `list_files`를 전체에 무심코 호출하면 토큰 비용이 커질 수 있으니,  
-**repo 지정 또는 요약 모드**를 반드시 사용하세요.
-
----
-
-## ⚡ 성능과 비용 최적화 가이드
-Sari는 인덱싱 + FTS 기반 검색 구조라서 **“어떤 단계에서 쓰느냐”**에 따라 체감 성능이 크게 달라집니다.
-
-### 1) 구조 파악: 요약 모드가 기본
-- **권장:** `status(details)` → `repo_candidates` → `list_files(repo=...)`
-- `list_files`는 **repo 미지정 시 요약 모드**로 동작합니다.  
-  큰 워크스페이스에서 **전체 파일 목록을 한 번에 덤프하면 비용/토큰 폭주**가 발생합니다.
- - HTTP 요청은 **스레드별 read 전용 커넥션**을 사용해 병렬 처리 효율을 높입니다.
-
-### 2) 검색 속도: FTS가 켜져 있는지 확인
-- `status(details)`에서 `fts_enabled: true`인지 먼저 확인하세요.  
-- `fts_enabled: false`면 검색이 LIKE 폴백으로 전환되어 **느려지고 정확도도 떨어집니다.**
-- FTS가 켜져 있어도 **아주 짧은 쿼리(길이 < 3)** 또는 **유니코드 포함 쿼리**는 LIKE로 폴백될 수 있습니다.
-- 파일 수가 많고 검색이 느리다면 `status(details)`에 **엔진 추천 경고**가 표시됩니다.
-  - 기본 기준: **10,000 files 이상**이면 embedded(Tantivy) 권장
-  - 임계값: `DECKARD_ENGINE_SUGGEST_FILES`
-- FTS는 **압축 해제 병목을 피하기 위해** 별도의 `fts_content` 컬럼을 사용합니다. (검색 CPU 부담 감소)
-
-### 3) 엔트리포인트 탐색은 심볼 기반이 유리
-- `search_symbols` → `read_symbol` 조합은 **필요한 코드 블록만 읽어** 토큰 비용을 줄입니다.
-- `read_file`은 “정말 전체 파일이 필요할 때만” 사용하세요.
-- 구조적 랭킹(Structural Boosting)이 적용되어 **class/function/method 심볼은 더 높은 점수**를 받습니다.
-- `search`는 **정확한 심볼 이름 매칭**에 추가 가중치를 부여합니다.
-
-### 4) 큰 레포일수록 필터링이 핵심
-- `repo`, `file_types`, `path_pattern`을 적극 사용하세요.
-- 예) `list_files { repo: "sari", file_types: ["py"] }`
-
-### 5) 대량 브랜치 변경(Git checkout) 대응
-- `.git` 이벤트 감지 시 **개별 파일 이벤트 대신 rescan**으로 합쳐 처리합니다.
-- debounce는 `DECKARD_GIT_CHECKOUT_DEBOUNCE` (기본 3초)
-
-### 6) 대량 이벤트 성능/복구
-- 인덱싱 코얼레스는 **Sharded Lock**으로 분산되어 대규모 이벤트에서 병목을 줄입니다.
-  - 샤드 수: `DECKARD_COALESCE_SHARDS` (기본 16)
-- 실패한 인덱싱 작업은 **DLQ(Dead Letter Queue)** 로 저장됩니다.
-  - 재시도 간격: 1분 → 5분 → 1시간
-  - `doctor`에서 3회 이상 실패한 항목을 경고로 표시합니다.
-
----
-
-## 🛠️ 내가 쓰는 앱에 연결하기 (상세 가이드)
-
-### 🤖 Claude Desktop 앱 연동
-설정 파일(`claude_desktop_config.json`)을 찾아서 아래 내용을 쏙 넣어주세요.  
-이건 마치 선생님 이름표를 달아주는 작업입니다.
-
-**macOS / Linux**
-```json
-{
-  "mcpServers": {
-    "sari": {
-      "command": "bash",
-      "args": [
-        "-lc",
-        "export PATH=$PATH:/usr/local/bin:/opt/homebrew/bin:$HOME/.local/bin && (curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python3 - -y || true) && exec ~/.local/share/sari/bootstrap.sh --transport stdio"
-      ],
-      "env": {
-        "DECKARD_WORKSPACE_ROOT": "/Users/[사용자명]/path/to/workspace",
+        "DECKARD_WORKSPACE_ROOT": "/path/to/your/project",
         "DECKARD_RESPONSE_COMPACT": "1"
       }
     }
@@ -601,18 +39,22 @@ Sari는 인덱싱 + FTS 기반 검색 구조라서 **“어떤 단계에서 쓰�
 }
 ```
 
-**Windows**
+#### 🪟 Windows (PowerShell)
+
+**Cursor / Claude Desktop Config:**
 ```json
 {
   "mcpServers": {
     "sari": {
       "command": "powershell",
       "args": [
-        "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
-        "irm https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python - -y; & $env:LOCALAPPDATA\\sari\\bootstrap.bat --transport stdio"
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-Command",
+        "irm https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python - -y; & $env:LOCALAPPDATA\sari\bootstrap.bat --transport stdio"
       ],
       "env": {
-        "DECKARD_WORKSPACE_ROOT": "C:\\path\\to\\workspace",
+        "DECKARD_WORKSPACE_ROOT": "C:\\path\\to\\your\\project",
         "DECKARD_RESPONSE_COMPACT": "1"
       }
     }
@@ -620,359 +62,153 @@ Sari는 인덱싱 + FTS 기반 검색 구조라서 **“어떤 단계에서 쓰�
 }
 ```
 
-### 🧩 Codex / Gemini 설정 예시 (config.toml)
+---
 
-**macOS / Linux**
-```toml
-[mcp_servers.sari]
-command = "bash"
-args = ["-lc", "export PATH=$PATH:/usr/local/bin:/opt/homebrew/bin:$HOME/.local/bin && (curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python3 - -y || true) && exec ~/.local/share/sari/bootstrap.sh --transport stdio"]
-env = { DECKARD_WORKSPACE_ROOT = "/Users/[사용자명]/path/to/workspace", DECKARD_RESPONSE_COMPACT = "1" }
-startup_timeout_sec = 60
-```
 
-**Windows**
-```toml
-[mcp_servers.sari]
-command = "powershell"
-args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "irm https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python - -y; & $env:LOCALAPPDATA\\sari\\bootstrap.bat --transport stdio"]
-env = { DECKARD_WORKSPACE_ROOT = "C:\\path\\to\\workspace", DECKARD_RESPONSE_COMPACT = "1" }
-startup_timeout_sec = 60
-```
+### Option 2: Manual Installation (Pip)
 
-**필드별 상세 설명**
-- `command`: 사리를 실행할 경로입니다.  
-- `command`: 기본은 `bash` (네트워크 자동 설치 방식).
-- `args`: `curl | python3`로 설치 후 `bootstrap.sh` 실행.
-- `env`: 환경 변수를 강제로 주입합니다.  
-  - `DECKARD_WORKSPACE_ROOT`는 **workspace-root를 고정**하려고 넣습니다.  
-- `startup_timeout_sec`: 데몬 기동 대기 시간(초).  
-  초기 인덱싱이 길다면 120~180으로 늘려보세요.
+If you prefer to manage the package manually:
 
-**설정 경로 우선순위(요약)**  
-1) `DECKARD_CONFIG` / `LOCAL_SEARCH_CONFIG`  
-2) `<workspace>/.codex/tools/sari/config/config.json`  
-3) 패키지 기본 config
-
-### 📈 텔레메트리 로그
-- `tool=search`/`tool=list_files` 등 도구 실행 로그가 기록됩니다.
-- `search-first` 정책 위반/경고는 별도 로그 항목으로 남습니다.
-
-### 🧵 응답 압축 모드
-- `DECKARD_RESPONSE_COMPACT=1`이면 MCP 응답 JSON이 **minified**로 출력됩니다. (기본값)
-- `DECKARD_RESPONSE_COMPACT=0`이면 기존 pretty JSON 출력으로 복원됩니다.
-- `list_files`는 compact 모드에서 `paths`만 반환합니다. (verbose 모드에서만 `files/meta`)
-
-**여러 워크스페이스를 넣을 수 있나요?**
-- 현재는 `--workspace-root` **단일 경로만 지원**합니다.
-- 여러 워크스페이스를 쓰려면 각 워크스페이스마다 별도 설정을 권장합니다.
-
-**env 없이도 되나요?**
-- 됩니다. `args`에 `--workspace-root`가 있으면 정상 동작합니다.
-- 다만 **환경 변수가 우선**되도록 사용 환경이 구성된 경우가 있어, 혼선을 줄이려면 `args`와 `env`를 같이 맞춰두는 것이 안전합니다.
-
-**args와 env가 서로 다르면?**
-- `DECKARD_WORKSPACE_ROOT`(환경 변수)가 왕의 권위를 가집니다.  
-  하지만 두 값이 다르면 선생님이 "어디로 가라는 건가!" 하고 지팡이를 휘두르실 테니, **항상 동일하게 맞추는 걸 추천**하네.
-
-### 💡 Cursor/CLI에서 옵션 넣는 방법
-Cursor/Claude/Gemini/Codex 같은 MCP 클라이언트는 **env 블록으로 옵션 주입**이 가능합니다.  
-CLI만 쓰는 경우엔 다음 중 하나를 사용하세요.
-
-**A) 쉘에서 직접 env 지정**
 ```bash
-DECKARD_ENGINE_TOKENIZER=cjk DECKARD_ENGINE_AUTO_INSTALL=1 \
-  ~/.local/share/sari/bootstrap.sh --transport stdio
+# Install from PyPI
+pip install sari
+
+# Run MCP Server
+python3 -m sari --transport stdio
 ```
-
-**B) 래퍼 스크립트**
-```bash
-#!/usr/bin/env bash
-export DECKARD_ENGINE_TOKENIZER=cjk
-export DECKARD_ENGINE_AUTO_INSTALL=1
-exec ~/.local/share/sari/bootstrap.sh --transport stdio
-```
-
-**`--workspace-root`를 생략하면 어떤 재앙이?**
-- 실행 위치를 기준으로 워크스페이스를 멋대로 추정합니다.  
-  - 현재 폴더 또는 상위 폴더에 `.codex-root`가 있으면 "찾았다!" 하고 사용
-  - 없다면 **현재 폴더 전체**를 자기 안방인 줄 압니다.
-
-**예: 홈 디렉토리에서 실수로 실행하면?**
-- 의도치 않게 여러분의 '비밀 사진첩'과 '다운로드 폴더' 전체가 호라드림 장부에 기록될 수 있습니다.  
-  정신 건강을 위해 `--workspace-root`를 명시하는 것을 **강력하고 간절하게** 추천하네.
-
-**설정 파일이 두 군데 있으면 어떻게 되나요?**
-- 사리 선생님은 **프로젝트 설정(현장 중심)**을 가장 신뢰합니다.  
-  글로벌 설정과 함께 존재하면 선생님이 헷갈려하시니,  
-  `install.py`는 자비롭게 글로벌의 `sari` 블록을 제거해 버린다네. (오직 질서!)
-
-### ⌨️ Cursor (AI 에디터) 연동
-1.  **환경설정(Settings)** > **MCP** 메뉴를 클릭하세요.
-2.  **+ Add New MCP Server** 버튼을 누릅니다.
-3.  이름엔 `sari`, 타입은 `stdio`를 선택하세요.
-4.  Command 칸에 `/Users/[사용자명]/.local/share/sari/bootstrap.sh`를 입력하고 'Save' 하면 끝!
 
 ---
 
-## 🗑️ 도서관 폐쇄 (삭제 방법 - Uninstall)
+## ⚙️ Configuration Reference
 
-이제 성역에 평화가 찾아왔거나, 선생님의 잔소리가 듣기 싫다면 언제든 보내드릴 수 있습니다. 터미널에 아래 명령어를 입력하세요. (눈물 주의)
+### How to Configure
+You can customize Sari's behavior by setting environment variables.
+- **MCP Config**: Add them to the `env` dictionary in your `config.json` or `config.toml`.
+- **CLI**: Prefix the command, e.g., `DECKARD_ENGINE_MODE=sqlite sari status`.
 
-```bash
-# 마법 주문에 --uninstall 옵션을 붙이면 선생님이 짐을 싸서 떠나십니다.
-curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python3 - --uninstall
+```json
+"env": {
+  "DECKARD_WORKSPACE_ROOT": "/path/to/project",
+  "DECKARD_ENGINE_TOKENIZER": "cjk"
+}
 ```
 
-또는 설치본 기준으로 이렇게도 가능합니다:
+### 1. Core & System
+Essential settings for basic operation.
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `DECKARD_WORKSPACE_ROOT` | **(Required)** Absolute path to the project root. Auto-detected if omitted, but recommended to set explicitly. | Auto-detect |
+| `DECKARD_DB_PATH` | Custom path for the SQLite database file. | `~/.local/share/sari/data/<hash>/index.db` |
+| `DECKARD_CONFIG` | Path to a specific config file to load. | `~/.config/sari/config.json` |
+| `DECKARD_RESPONSE_COMPACT` | Minify JSON responses (`pack` format) to save LLM tokens. Set `0` for pretty-print debugging. | `1` (Enabled) |
+| `DECKARD_FORMAT` | Output format for CLI tools. `pack` (text-based) or `json`. | `pack` |
+
+### 2. Search Engine
+Settings to tune search quality and backend behavior.
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `DECKARD_ENGINE_MODE` | Search backend. `embedded` uses Tantivy (faster, smart ranking), `sqlite` uses FTS5 (slower, fallback). | `embedded` |
+| `DECKARD_ENGINE_TOKENIZER` | Tokenizer strategy. `auto` (detects), `cjk` (optimized for KR/CN/JP), `latin` (standard). | `auto` |
+| `DECKARD_ENGINE_AUTO_INSTALL` | Automatically install engine binaries (Tantivy) if missing. | `1` (Enabled) |
+| `DECKARD_ENGINE_SUGGEST_FILES`| File count threshold to suggest upgrading to Tantivy engine in status checks. | `10000` |
+| `DECKARD_LINDERA_DICT_PATH` | Path to custom Lindera dictionary for CJK tokenization (Advanced). | - |
+
+### 3. Indexing & Performance
+Fine-tune resource usage and concurrency.
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `DECKARD_COALESCE_SHARDS` | Number of lock shards for indexing concurrency. Increase for massive repos with frequent changes. | `16` |
+| `DECKARD_PARSE_TIMEOUT_SECONDS`| Timeout per file parsing in seconds. Set `0` to disable timeout. Prevents parser hangs. | `0` |
+| `DECKARD_PARSE_TIMEOUT_WORKERS`| Worker threads for parsing with timeout. | `2` |
+| `DECKARD_MAX_PARSE_BYTES` | Max file size to attempt parsing (bytes). Larger files are skipped or sampled. | `16MB` |
+| `DECKARD_MAX_AST_BYTES` | Max file size to attempt AST extraction (bytes). | `8MB` |
+| `DECKARD_GIT_CHECKOUT_DEBOUNCE`| Seconds to wait after git checkout before starting bulk indexing. | `3.0` |
+| `DECKARD_FOLLOW_SYMLINKS` | Follow symbolic links during file scanning. **Caution:** May cause infinite loops if circular links exist. | `0` (Disabled) |
+| `DECKARD_READ_MAX_BYTES` | Max bytes returned by `read_file` tool. Prevents context overflow. | `1MB` |
+
+### 4. Network & Security
+Connectivity settings for the daemon.
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `DECKARD_DAEMON_HOST` | Host address for the background daemon. | `127.0.0.1` |
+| `DECKARD_DAEMON_PORT` | TCP port for the daemon. | `47779` |
+| `DECKARD_HTTP_API_PORT` | Port for the HTTP API server (optional). | `47777` |
+| `DECKARD_ALLOW_NON_LOOPBACK` | Allow connections from non-localhost IPs. **Security Risk:** Only enable in trusted networks. | `0` (Disabled) |
+
+### 5. Advanced / Debug
+Developer options for debugging and plugin extension.
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `DECKARD_CALLGRAPH_PLUGIN` | Python module path for custom static analysis plugin. | - |
+| `DECKARD_DRYRUN_LINT` | Enable linter checks (ruff/eslint) in `dry_run_diff` tool. | `0` |
+| `DECKARD_DLQ_POLL_SECONDS` | Interval to retry failed indexing tasks (Dead Letter Queue). | `60` |
+| `DECKARD_LOG_LEVEL` | Logging verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`). | `INFO` |
+
+---
+
+## 🛠️ Usage (MCP Tools)
+
+Once connected, your AI assistant can use these tools:
+
+### Core Tools
+- **`search`**: Search for code or documentation using keywords or regex.
+- **`read_file`**: Read file content (optimized for large files).
+- **`list_files`**: List files in the repository.
+- **`search_symbols`**: Find classes, functions, or methods by name.
+- **`read_symbol`**: Read only the definition of a specific symbol (saves context).
+
+### Intelligence Tools
+- **`call_graph`**: Analyze function call relationships (upstream/downstream).
+- **`save_snippet` / `get_snippet`**: Save and retrieve important code blocks with tags.
+- **`archive_context` / `get_context`**: Store domain knowledge and design decisions.
+- **`grep_and_read`**: Search and read top N files in one go (Composite tool).
+
+---
+
+## 🩺 Troubleshooting
+
+### Check Status
+You can check the daemon status and indexing progress:
+
+```bash
+# If installed automatically:
+~/.local/share/sari/bootstrap.sh status
+
+# If installed via pip:
+sari status
+```
+
+### Run Doctor
+Diagnose issues with your environment or installation:
+
+```bash
+# If installed automatically:
+~/.local/share/sari/bootstrap.sh doctor --auto-fix
+
+# If installed via pip:
+sari doctor --auto-fix
+```
+
+### Uninstall
+To remove Sari and all indexed data:
+
 ```bash
 # macOS/Linux
-~/.local/share/sari/bootstrap.sh uninstall
+curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python3 - --uninstall
 
 # Windows
-%LOCALAPPDATA%\sari\bootstrap.bat uninstall
-```
-
-### 삭제하면 무엇이 정화되나요? (이별의 미학)
-- **거처 정화**: 사리 선생님이 머물던 도서관과 낡은 장부(index.db)를 트리스트럼의 불길로 소멸시킵니다.
-- **쌍둥이 유령 퇴치**: `install.py --uninstall`은 Codex와 Gemini 양쪽의 인장을 모두 지워버리는 강력한 정화 의식을 거행합니다.
-- **선택적 작별**: `bootstrap.sh uninstall`은 오직 Codex의 인장만 지우고 떠나는 절제된 이별을 선사합니다. (Gemini/Claude 등은 그대로 남습니다.)
-- **윈도우 주의**: `bootstrap.bat uninstall`은 **설정 파일을 정리하지 않습니다.** 필요하면 수동으로 `config.toml`에서 `sari` 블록을 제거하세요.
-- **깔끔한 승천**: 여러분의 컴퓨터에 그 어떤 지옥의 찌꺼기도 남기지 않고 고결하게 사라지십니다!
-
----
-
-## 🤖 MCP 응답 포맷 (PACK1) 가이드
-
-사리 v2.5.0부터는 토큰 절약을 위해 **PACK1**이라는 압축 텍스트 포맷을 기본으로 사용합니다. JSON의 불필요한 괄호와 공백을 제거하여 **약 30~50%의 토큰을 절약**합니다.
-
-### 1. 포맷 개요
-- **헤더(Header)**: `PACK1 <tool> key=value ...`
-- **레코드(Record)**: `<type>:<payload>` (한 줄에 하나씩)
-- **인코딩**: 특수문자나 공백이 포함된 값은 안전하게 URL 인코딩됩니다.
-  - `ENC_ID`: 식별자용 (경로, 이름 등). `safe="/._-:@"`
-  - `ENC_TEXT`: 일반 텍스트용 (스니펫, 메시지 등). `safe=""`
-
-### 2. 주요 도구 예시
-
-**`list_files`**
-```text
-PACK1 list_files offset=0 limit=100 returned=2 total=2 total_mode=exact
-p:src/main.py
-p:src/utils.py
-```
-
-**`search_symbols`**
-```text
-PACK1 search_symbols q=User limit=50 returned=1 total_mode=none
-h:repo=my-repo path=src/user.py line=10 kind=class name=User
-```
-
-**`status`**
-```text
-PACK1 status returned=5
-m:index_ready=true
-m:scanned_files=100
-m:indexed_files=100
-m:errors=0
-m:fts_enabled=true
-```
-
-### 3. 에러 코드 (Error Codes)
-오류 발생 시 `PACK1 <tool> ok=false` 헤더와 함께 아래 코드가 반환됩니다.
-
-| 코드 | 설명 |
-|---|---|
-| `INVALID_ARGS` | 잘못된 인자 전달 |
-| `NOT_INDEXED` | 인덱싱이 완료되지 않음 |
-| `REPO_NOT_FOUND` | 존재하지 않는 저장소 |
-| `IO_ERROR` | 파일 읽기/쓰기 실패 |
-| `DB_ERROR` | 데이터베이스 오류 |
-| `INTERNAL` | 내부 서버 오류 |
-
-> **참고**: 기존 JSON 포맷이 필요하다면 환경변수 `DECKARD_FORMAT=json`을 설정하세요. (디버깅용)
-> 에러에는 `hint`가 함께 포함될 수 있습니다. (예: `run scan_once`, `run sari doctor`)
-
----
-
-## 🩺 MCP status/doctor 경고 안내
-아래 상태는 **MCP `status`/`doctor`에서 경고로 노출**됩니다.
-
-**1) tokenizer 등록 실패**  
-`engine tokenizers not registered; using default tokenizer`
-
-**2) 플랫폼용 번들 누락**  
-`tokenizer bundle not found for <platform_tag>`
-
-해결:
-- `app/engine_tokenizer_data/`에 해당 OS용 wheel 포함
-- 필요 시 `scripts/prune_tokenizer_bundles.sh`로 정리
-
----
-
-## 🏗️ 개발자를 위한 제원 (Tech Specs)
-
-- **언어**: Python 3.9+ (표준 라이브러리만 사용하는 제로 디펜던시!)
-- **DB**: SQLite (WAL 모드) + FTS5 (전문 검색 기술)
-- **통신**: MCP (Model Context Protocol) 
-- **구조**: 
-    - **Daemon**: 실제로 공부하고 검색을 처리하는 핵심 본체
-    - **Proxy**: AI 앱과 Daemon 사이의 빠른 메신저
-
----
-
-## 🧠 지식 도구 (Call Graph / Snippet / Context / Dry-run Diff)
-
-### 1) Call Graph (호출 관계)
-MCP tool: `call_graph`  
-CLI:
-```bash
-sari call-graph --symbol process_file --depth 2
-# 심볼이 겹칠 때는 symbol_id로 정확히 지정
-sari call-graph --symbol-id "<sid>" --depth 2
-# 트리 출력
-sari call-graph --symbol process_file --depth 2 --format tree
-# 경로 필터
-sari call-graph --symbol process_file --include-path sari/core --exclude-path tests
-# 정렬 기준
-sari call-graph --symbol process_file --format tree --sort name
-```
-설명:
-- `search_symbols` 결과에 `qualname`/`symbol_id`가 포함됩니다.
-- `symbol_id`를 전달하면 호출 관계가 훨씬 정확하게 매핑됩니다.
-- `DECKARD_CALLGRAPH_PLUGIN`으로 정적 분석 플러그인을 연결할 수 있습니다.
-  - 여러 개는 쉼표로 연결: `mod1,mod2`
-  - `augment_neighbors(direction, neighbors, context)` 또는 `filter_neighbors(...)` 구현 가능.
-  - 에러 로그: `DECKARD_CALLGRAPH_PLUGIN_LOG=/tmp/callgraph.log`
-- 정확도 힌트가 `precision_hint`로 제공됩니다 (언어별 세분화).
-- `search_symbols` 결과에도 `precision_hint`가 포함됩니다.
-  - 플러그인 매니페스트: `DECKARD_CALLGRAPH_PLUGIN_MANIFEST=/path/to/manifest.json`
-  - 매니페스트 스키마:
-    - JSON 리스트: `["mod1", "mod2"]`
-    - 또는 객체: `{"plugins": ["mod1", "mod2"]}`
-  - strict 검증: `DECKARD_CALLGRAPH_PLUGIN_MANIFEST_STRICT=1`
-  - `call_graph_health`에서 API 불일치/로드 실패 원인 확인 가능
-  - `quality_score` (0-100)로 정적 해석 신뢰도 제공 (파일 크기/관계 밀도 반영)
-
-언어별 특이사항:
-- **Python**: AST 기반, 정확도 높음. 동적 호출/리플렉션은 한계.
-- **JS/TS/Java/Kotlin/Go/C/C++**: 정규식 기반 파서로 호출 관계 정밀도 낮음.
-  - 오버로드/인터페이스/리플렉션/동적 디스패치에 약함.
-  - 동일 이름 심볼 충돌 가능 → `symbol_id` 권장.
-
-### 2) Save / Get Snippet
-MCP tools: `save_snippet`, `get_snippet`  
-CLI:
-```bash
-sari save-snippet --path "core/db.py:100-150" --tag "db-connection-pattern"
-sari get-snippet --tag "db-connection-pattern"
-sari get-snippet --tag "db-connection-pattern" --history
-sari get-snippet --tag "db-connection-pattern" --no-remap
-sari get-snippet --tag "db-connection-pattern" --update
-sari get-snippet --tag "db-connection-pattern" --update --diff-path /tmp/snippet.diff
-```
-설명:
-- 저장 시 스니펫 주변 앵커(앞/뒤 라인)를 함께 기록합니다.
-- 파일이 바뀌어도 `get_snippet`은 앵커/내용 매칭으로 자동 재매핑(remap)합니다.
-- 스니펫 내용이 바뀌면 이전 버전이 `snippet_versions`에 자동 보관됩니다.
-- `--update`를 사용하면 리매핑된 위치/내용을 DB에 반영합니다.
-- 리매핑 결과에는 `diff`(변경 요약)가 포함됩니다.
-- `--diff-path`를 지정하면 diff를 파일로 저장합니다.
-- `--diff-path`가 비어 있으면 기본 경로는 `~/.cache/sari/snippet-diffs/<tag>.diff` 입니다.
-- `--update` 시 저장된 스냅샷: `<tag>_<id>_<ts>_stored.txt`, `<tag>_<id>_<ts>_current.txt`
-- 리매핑이 유효하지 않으면 업데이트가 스킵됩니다 (`update_skipped_reason`).
-
-### 3) Archive / Get Context
-MCP tools: `archive_context`, `get_context`  
-CLI:
-```bash
-sari archive-context --topic "PricingLogic" --content "쿠폰 적용 전 할인 계산" --related-files core/pricing.py api/payment.py
-sari archive-context --topic "PricingLogic" --content "..." --source "issue-102" --valid-from 2024-02-01
-sari get-context --topic "PricingLogic"
-sari get-context --query "Pricing" --as-of 2024-06-01
-```
-설명:
-- `source`, `valid_from`, `valid_until`, `deprecated`를 기록할 수 있습니다.
-- `get_context --as-of`는 시점 기준으로 유효한 컨텍스트만 반환합니다.
-
-### 4) Dry-run Diff
-MCP tool: `dry_run_diff`  
-CLI:
-```bash
-sari dry-run-diff --path core/db.py --content "$(cat /tmp/new_db.py)"
-sari dry-run-diff --path core/db.py --content "$(cat /tmp/new_db.py)" --lint
-```
-설명:
-- 기본은 구문 체크만 수행합니다.
-- `--lint` 또는 `DECKARD_DRYRUN_LINT=1` 설정 시, 사용 가능한 린터(`ruff`/`eslint`)가 있으면 실행합니다.
-
----
-
-## 🧰 Composite Tool (grep_and_read)
-MCP tool: `grep_and_read`  
-설명:
-- 검색 결과 상위 N개 파일을 즉시 읽어옵니다.
-- `search` → `read_file` 반복을 줄이기 위한 토큰/턴 절감 도구입니다.
-
-예시:
-```json
-{ "name": "grep_and_read", "arguments": { "query": "process_file", "limit": 5, "read_limit": 2 } }
+irm https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python - --uninstall
 ```
 
 ---
 
-## 🩺 진단 (Doctor)
+## 📜 License
 
-CLI:
-```bash
-sari doctor
-sari doctor --auto-fix
-sari doctor --auto-fix --auto-fix-rescan
+Apache License 2.0
+
 ```
-
-설명:
-- `--auto-fix`는 가능한 항목에 대해 자동 마이그레이션을 시도합니다.
-- `--auto-fix-rescan`은 자동 수정 이후 `scan_once`를 실행합니다.
-  - 진행 상태는 `Auto Fix Rescan Start` / `Auto Fix Rescan` 항목으로 표시됩니다.
-  - 자동 수정이 실패하면 `Auto Fix Rescan Skipped`로 표시됩니다.
-
----
-
-## ✅ 엣지 테스트
-
-```bash
-scripts/run_edge_tests.sh
-```
-
-CI 포함:
-```bash
-scripts/run_tests_isolated.sh
-```
-
-## 🔌 Call-Graph 플러그인 헬스 체크
-
-MCP tool: `call_graph_health`
-
----
-
-## 🔐 DB 단일 Writer 정책 (중요)
-
-Sari는 SQLite의 단일 writer 원칙을 **강제**합니다.
-
-- **쓰기 작업은 DBWriter 전용 스레드에서만 수행**됩니다.
-- 내부에서 별도 writer 커넥션을 생성하지 않습니다.
-- 직접 DB 쓰기를 호출하면 `DB write attempted outside single-writer thread` 오류가 발생할 수 있습니다.
-
-즉, DB 쓰기는 **항상 인덱서 파이프라인을 통해서만** 수행되도록 설계되었습니다.  
-외부 확장/스크립트에서 DB를 직접 쓰는 것은 지원하지 않습니다.
-
----
-
-## 📜 라이선스 (License)
-
-이 프로젝트는 [Apache License 2.0](LICENSE)을 따르고 있어요. 누구나 자유롭게 사용하고, 고치고, 공유할 수 있습니다.  
-배포 시 `NOTICE` 파일의 고지사항도 함께 포함해야 합니다.
-
----
-
-**"자, 이제 사리 선생님과 함께 여러분의 코드 속에 숨겨진 비밀을 찾아보시겠나?"** 🧙‍♂️✨
