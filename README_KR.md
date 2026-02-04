@@ -111,6 +111,7 @@ python3 -m sari --transport stdio
 | 변수명 | 설명 | 기본값 |
 |--------|------|--------|
 | `DECKARD_WORKSPACE_ROOT` | **(필수 권장)** 프로젝트 최상위 루트 경로. | 자동 감지 |
+| `SARI_ROOTS_JSON` | 여러 개의 루트를 등록할 때 사용합니다. JSON 배열 문자열 예: `["/path/a", "/path/b"]` | - |
 | `DECKARD_RESPONSE_COMPACT` | 응답 JSON을 압축하여 LLM 토큰을 절약합니다. 디버깅 때는 `0`으로 끄세요. | `1` (켜짐) |
 | `DECKARD_DB_PATH` | SQLite 인덱스 DB 파일의 경로를 직접 지정합니다. | `~/.local/share/sari/data/...` |
 | `DECKARD_ENGINE_MODE` | 검색 엔진 백엔드. `embedded`(Tantivy)가 빠르고 정확합니다. `sqlite`(FTS5)는 호환성 모드입니다. | `embedded` |

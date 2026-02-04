@@ -100,7 +100,8 @@ Essential settings for basic operation.
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `DECKARD_WORKSPACE_ROOT` | **(Required)** Absolute path to the project root. Auto-detected if omitted, but recommended to set explicitly. | Auto-detect |
+| `DECKARD_WORKSPACE_ROOT` | **(Required)** Absolute path to the project root. Auto-detected if omitted. | Auto-detect |
+| `SARI_ROOTS_JSON` | JSON array of strings for multiple workspace roots. e.g., `["/path/a", "/path/b"]` | - |
 | `DECKARD_DB_PATH` | Custom path for the SQLite database file. | `~/.local/share/sari/data/<hash>/index.db` |
 | `DECKARD_CONFIG` | Path to a specific config file to load. | `~/.config/sari/config.json` |
 | `DECKARD_RESPONSE_COMPACT` | Minify JSON responses (`pack` format) to save LLM tokens. Set `0` for pretty-print debugging. | `1` (Enabled) |
