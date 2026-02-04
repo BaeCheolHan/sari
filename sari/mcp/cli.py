@@ -190,6 +190,7 @@ def cmd_daemon_start(args):
 
     repo_root = Path(__file__).parent.parent.resolve()
     env = os.environ.copy()
+    env["PYTHONPATH"] = str(repo_root) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     env["SARI_DAEMON_AUTOSTART"] = "1"
     env["SARI_WORKSPACE_ROOT"] = workspace_root
     if args.daemon_host:
@@ -207,7 +208,7 @@ def cmd_daemon_start(args):
 
         proc = subprocess.Popen(
             [sys.executable, "-m", "sari.mcp.daemon"],
-            cwd=repo_root,
+            cwd=repo_root.parent,
             start_new_session=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -233,6 +234,7 @@ def cmd_daemon_start(args):
             # Import and run directly
             os.environ["SARI_DAEMON_AUTOSTART"] = "1"
             os.environ["SARI_WORKSPACE_ROOT"] = workspace_root
+            os.environ["PYTHONPATH"] = str(repo_root) + (os.pathsep + os.environ["PYTHONPATH"] if os.environ.get("PYTHONPATH") else "")
             if args.daemon_host:
                 os.environ["SARI_DAEMON_HOST"] = args.daemon_host
             if args.daemon_port:
@@ -394,9 +396,10 @@ def cmd_auto(args):
         env = os.environ.copy()
         env["SARI_DAEMON_AUTOSTART"] = "1"
         env["SARI_WORKSPACE_ROOT"] = workspace_root
+        env["PYTHONPATH"] = str(repo_root) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
         subprocess.Popen(
             [sys.executable, "-m", "sari.mcp.daemon"],
-            cwd=repo_root,
+            cwd=repo_root.parent,
             start_new_session=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
