@@ -1,6 +1,7 @@
 import threading
 import logging
 import time
+import os
 from typing import Dict, Optional, Any
 from sari.core.config.manager import ConfigManager
 from sari.core.db.main import LocalSearchDB
@@ -48,7 +49,13 @@ class SharedState:
         
         # 4. Wire Scheduling Coordinator for Read-Priority
         self.db.coordinator = self.indexer.coordinator
-        self.search_engine = SearchEngine(self.db)
+        
+        try:
+            from sari.core.engine_registry import get_default_engine
+            self.db.set_engine(get_default_engine(self.db, cfg_obj, cfg_obj.workspace_roots))
+        except Exception:
+            self.search_engine = SearchEngine(self.db)
+            self.db.set_engine(self.search_engine)
         
         # 5. MCP Server instance (Lazy import to avoid circularity)
         from sari.mcp.server import LocalSearchMCPServer
@@ -59,7 +66,35 @@ class SharedState:
         self._lock = threading.Lock()
 
     def start(self): 
+        # 1. Start Indexer
         threading.Thread(target=self.indexer.run_forever, daemon=True).start()
+        
+        # 2. Start HTTP Server (Phase 4)
+        try:
+            from sari.core.http_server import serve_forever
+            from sari.core.server_registry import ServerRegistry
+            
+            host = self.config_data.get("server_host", "127.0.0.1")
+            port = int(self.config_data.get("server_port", 47777))
+            
+            # Start HTTP server
+            httpd, actual_port = serve_forever(
+                host, port, self.db, self.indexer, 
+                workspace_root=self.workspace_root,
+                mcp_server=self.server
+            )
+            self.httpd = httpd
+            self.http_port = actual_port
+            
+            # 3. Register HTTP info in ServerRegistry for CLI to find
+            ServerRegistry().set_workspace_http(
+                self.workspace_root, 
+                actual_port, 
+                http_host=host, 
+                http_pid=os.getpid()
+            )
+        except Exception as e:
+            logger.error(f"Failed to start HTTP server for {self.workspace_root}: {e}")
     
     def touch(self):
         with self._lock:
@@ -79,9 +114,10 @@ class Registry:
     def __init__(self): self._sessions: Dict[str, SharedState] = {}
     @classmethod
     def get_instance(cls):
-        with cls._lock:
-            if cls._instance is None: cls._instance = cls()
-            return cls._instance
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None: cls._instance = cls()
+        return cls._instance
     def get_or_create(self, workspace_root: str) -> SharedState:
         with self._lock:
             if workspace_root not in self._sessions:

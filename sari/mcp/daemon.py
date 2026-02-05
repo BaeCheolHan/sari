@@ -139,6 +139,10 @@ class SariDaemon:
             from sari.mcp.workspace_registry import Registry
             Registry.get_instance().get_or_create(workspace_root)
             self._pinned_workspace_root = workspace_root
+            
+            # Record workspace mapping so CLI can find this daemon
+            self._registry.set_workspace(workspace_root, self.boot_id)
+            
             logger.info(f"Auto-started workspace HTTP server for {workspace_root}")
         except Exception as e:
             logger.error(f"Failed to auto-start workspace HTTP server: {e}")

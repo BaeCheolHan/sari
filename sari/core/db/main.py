@@ -73,6 +73,12 @@ class LocalSearchDB:
     def set_settings(self, settings_obj: Any) -> None:
         self.settings = settings_obj
 
+    def search_v2(self, opts: Any) -> Tuple[List[Any], Dict[str, Any]]:
+        """Proxy to engine.search_v2."""
+        if self.engine and hasattr(self.engine, "search_v2"):
+            return self.engine.search_v2(opts)
+        return [], {"total": 0, "error": "Search engine not available"}
+
     # --- Roots ---
     def upsert_root(self, root_id: str, root_path: str, real_path: str, label: str = "", config_json: str = "{}"):
         with self._lock:

@@ -238,6 +238,13 @@ class Session:
         self.shared_state = self.registry.get_or_create(self.workspace_root)
         self.registry.touch_workspace(self.workspace_root)
 
+        # Record workspace mapping in global registry so other clients can find us
+        if _SARI_BOOT_ID:
+            try:
+                ServerRegistry().set_workspace(workspace_root, _SARI_BOOT_ID)
+            except Exception:
+                pass
+
         # Delegate specific initialize logic to the server instance
         # We need to construct the result based on server's response
         # LocalSearchMCPServer.handle_initialize returns the result dict directly

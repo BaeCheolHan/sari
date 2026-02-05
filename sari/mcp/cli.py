@@ -177,7 +177,7 @@ def _is_http_running(host: str, port: int, timeout: float = 0.4) -> bool:
         return False
 
 
-def _identify_sari_daemon(host: str, port: int, timeout: float = 0.3) -> Optional[Dict[str, Any]]:
+def _identify_sari_daemon(host: str, port: int, timeout: float = 1.0) -> Optional[Dict[str, Any]]:
     """Return identify payload if the server speaks Sari MCP."""
     try:
         with socket.create_connection((host, port), timeout=timeout) as sock:

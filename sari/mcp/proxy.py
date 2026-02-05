@@ -99,8 +99,6 @@ def _identify_sari_daemon(host: str, port: int, timeout: float = 0.3) -> bool:
 
 
 def _lock_file(lock_file) -> None:
-
-def _lock_file(lock_file) -> None:
     if fcntl is not None:
         fcntl.flock(lock_file, fcntl.LOCK_EX)
         return

@@ -11,6 +11,7 @@ from sari.core.settings import settings
 from sari.mcp.policies import PolicyEngine
 from sari.mcp.middleware import PolicyMiddleware, run_middlewares
 from sari.mcp.tools.registry import ToolContext, build_default_registry
+from sari.mcp.telemetry import TelemetryLogger
 
 try:
     import orjson as _orjson
@@ -36,6 +37,7 @@ class LocalSearchMCPServer:
         self.workspace_root = workspace_root
         self.registry = Registry.get_instance()
         self.policy_engine = PolicyEngine(mode=settings.SEARCH_FIRST_MODE)
+        self.logger = TelemetryLogger(WorkspaceManager.get_global_log_dir())
         self._tool_registry = build_default_registry()
         self._middlewares = [PolicyMiddleware(self.policy_engine)]
         # Add maxsize to prevent memory bloat under heavy load
@@ -78,6 +80,7 @@ class LocalSearchMCPServer:
             indexer=session.indexer,
             roots=session.config_data.get("workspace_roots", [self.workspace_root]), 
             cfg=None, # Legacy config object removed
+            logger=self.logger,
             workspace_root=self.workspace_root,
             server_version=self.SERVER_VERSION, 
             policy_engine=self.policy_engine
@@ -106,24 +109,50 @@ class LocalSearchMCPServer:
             return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32000, "message": str(e)}}
 
     def run(self) -> None:
-        """Standard MCP JSON-RPC loop."""
+        """Standard MCP JSON-RPC loop with Content-Length framing."""
         self._log_debug("Sari MCP Server starting run loop...")
+        input_stream = sys.stdin.buffer
         try:
-            while True:
-                line = sys.stdin.readline()
-                if not line:
-                    self._log_debug("IN: EOF reached (Connection closed by client)")
+            while not self._stop.is_set():
+                headers = {}
+                # 1. Read Headers
+                while True:
+                    line = input_stream.readline()
+                    if not line:
+                        break
+                    line_str = line.decode("utf-8").strip()
+                    if not line_str:
+                        break # End of headers
+                    if ":" in line_str:
+                        k, v = line_str.split(":", 1)
+                        headers[k.strip().lower()] = v.strip()
+                
+                if not headers and not line:
+                    break
+
+                # 2. Get Content-Length
+                try:
+                    content_length = int(headers.get("content-length", 0))
+                except (ValueError, TypeError):
+                    continue
+
+                if content_length <= 0:
+                    continue
+
+                # 3. Read Body
+                body_bytes = input_stream.read(content_length)
+                if not body_bytes:
                     break
                 
-                stripped = line.strip()
-                self._log_debug(f"IN: {stripped}")
+                body_str = body_bytes.decode("utf-8")
+                self._log_debug(f"IN: {body_str}")
                 
                 try:
-                    req = json.loads(stripped)
+                    req = json.loads(body_str)
                     # Async dispatch to avoid blocking the read loop
                     self._req_queue.put(req)
                 except Exception as e:
-                    self._log_debug(f"ERROR parsing input JSON: {e} | Raw line: {stripped}")
+                    self._log_debug(f"ERROR parsing input JSON: {e} | Body: {body_str}")
         except Exception as e:
             self._log_debug(f"CRITICAL in run loop: {e}")
         finally:
@@ -176,7 +205,19 @@ class LocalSearchMCPServer:
                     # --- DEBUG LOGGING ---
                     self._log_debug(f"OUT: {json_resp}")
                     
-                    print(json_resp, file=target, flush=True)
+                    # Content-Length framing for output
+                    body_bytes = json_resp.encode("utf-8")
+                    header = f"Content-Length: {len(body_bytes)}\r\n\r\n"
+                    
+                    # Try to write to buffer if available (standard for sys.stdout)
+                    if hasattr(target, "buffer"):
+                        target.buffer.write(header.encode("ascii"))
+                        target.buffer.write(body_bytes)
+                        target.buffer.flush()
+                    else:
+                        target.write(header)
+                        target.write(json_resp)
+                        target.flush()
         except Exception as e:
             self._log_debug(f"ERROR in _handle_and_respond: {e}")
 
