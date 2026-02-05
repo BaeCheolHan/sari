@@ -300,6 +300,86 @@ def _identify_sari_daemon(host: str, port: int, timeout: float = 0.3) -> Optiona
     return None
 
 
+def _ensure_workspace_http(daemon_host: str, daemon_port: int, workspace_root: Optional[str] = None) -> bool:
+    """Ensure workspace is initialized so HTTP server is started/registered."""
+    try:
+        root = workspace_root or os.environ.get("SARI_WORKSPACE_ROOT") or WorkspaceManager.resolve_workspace_root()
+        with socket.create_connection((daemon_host, daemon_port), timeout=1.0) as sock:
+            body = json.dumps({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {"rootUri": f"file://{root}", "capabilities": {}},
+            }).encode("utf-8")
+            header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
+            sock.sendall(header + body)
+            f = sock.makefile("rb")
+            headers = {}
+            while True:
+                line = f.readline()
+                if not line:
+                    break
+                line = line.strip()
+                if not line:
+                    break
+                if b":" in line:
+                    k, v = line.split(b":", 1)
+                    headers[k.strip().lower()] = v.strip()
+            try:
+                content_length = int(headers.get(b"content-length", b"0"))
+            except ValueError:
+                content_length = 0
+            if content_length > 0:
+                f.read(content_length)
+        return True
+    except Exception:
+        return False
+
+
+def _request_mcp_status(daemon_host: str, daemon_port: int, workspace_root: Optional[str] = None) -> Optional[dict]:
+    try:
+        root = workspace_root or os.environ.get("SARI_WORKSPACE_ROOT") or WorkspaceManager.resolve_workspace_root()
+        with socket.create_connection((daemon_host, daemon_port), timeout=2.0) as sock:
+            def _send(payload: dict) -> dict:
+                body = json.dumps(payload).encode("utf-8")
+                header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
+                sock.sendall(header + body)
+                f = sock.makefile("rb")
+                headers = {}
+                while True:
+                    line = f.readline()
+                    if not line:
+                        break
+                    line = line.strip()
+                    if not line:
+                        break
+                    if b":" in line:
+                        k, v = line.split(b":", 1)
+                        headers[k.strip().lower()] = v.strip()
+                try:
+                    content_length = int(headers.get(b"content-length", b"0"))
+                except ValueError:
+                    content_length = 0
+                body = f.read(content_length) if content_length > 0 else b""
+                return json.loads(body.decode("utf-8")) if body else {}
+
+            _send({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {"rootUri": f"file://{root}", "capabilities": {}},
+            })
+            resp = _send({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {"name": "status", "arguments": {"details": True}},
+            })
+            return resp.get("result") or resp
+    except Exception:
+        return None
+
+
 def _probe_sari_daemon(host: str, port: int, timeout: float = 0.3) -> bool:
     """Verify the server speaks Sari MCP (framed JSON-RPC)."""
     return _identify_sari_daemon(host, port, timeout=timeout) is not None
@@ -354,7 +434,7 @@ def cmd_daemon_start(args):
     """Start the daemon."""
     explicit_port = bool(args.daemon_port)
     force_start = (os.environ.get("SARI_DAEMON_FORCE_START") or "").strip().lower() in {"1", "true", "yes", "on"}
-    workspace_root = WorkspaceManager.resolve_workspace_root()
+    workspace_root = os.environ.get("SARI_WORKSPACE_ROOT") or WorkspaceManager.resolve_workspace_root()
     registry = ServerRegistry()
 
     if args.daemon_host or args.daemon_port:
@@ -668,6 +748,30 @@ def cmd_status(args):
         http_running = is_daemon_running(host, port)
 
         if not http_running:
+            if not daemon_running:
+                start_args = argparse.Namespace(
+                    daemonize=True,
+                    daemon_host="",
+                    daemon_port=None,
+                    http_host="",
+                    http_port=None,
+                )
+                cmd_daemon_start(start_args)
+                daemon_host, daemon_port = get_daemon_address()
+                daemon_running = is_daemon_running(daemon_host, daemon_port)
+            if daemon_running:
+                for _ in range(5):
+                    _ensure_workspace_http(daemon_host, daemon_port)
+                    host, port = _get_http_host_port(args.http_host, args.http_port)
+                    http_running = is_daemon_running(host, port)
+                    if http_running:
+                        break
+                    time.sleep(0.1)
+            if not http_running and daemon_running:
+                fallback = _request_mcp_status(daemon_host, daemon_port)
+                if fallback:
+                    print(json.dumps(fallback, ensure_ascii=False, indent=2))
+                    return 0
             print("❌ Error: Sari services are not fully running.")
             print(f"   Daemon: {'🟢' if daemon_running else '⚫'} {daemon_host}:{daemon_port}")
             print(f"   HTTP:   {'🟢' if http_running else '⚫'} {host}:{port}")

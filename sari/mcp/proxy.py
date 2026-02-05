@@ -323,20 +323,30 @@ def _send_payload(state, payload: bytes, mode: str) -> None:
 
 
 def _reconnect(state) -> bool:
+    max_attempts = int(os.environ.get("SARI_PROXY_RECONNECT_MAX", "10") or 10)
+    backoff = float(os.environ.get("SARI_PROXY_RECONNECT_BACKOFF", "0.2") or 0.2)
     with state["conn_lock"]:
         if not state.get("dead") and state.get("sock"):
             return True
 
         workspace_root = state.get("workspace_root") or ""
-        host, port = _resolve_daemon_target()
-        if not start_daemon_if_needed(host, port, workspace_root=workspace_root):
-            return False
-
-        host, port = _resolve_daemon_target()
-        try:
-            sock = socket.create_connection((host, port))
-        except Exception as e:
-            _log_error(f"Reconnect failed: {e}")
+        last_err = None
+        for _ in range(max_attempts):
+            host, port = _resolve_daemon_target()
+            if not start_daemon_if_needed(host, port, workspace_root=workspace_root):
+                last_err = "daemon start failed"
+                time.sleep(backoff)
+                continue
+            host, port = _resolve_daemon_target()
+            try:
+                sock = socket.create_connection((host, port))
+                last_err = None
+                break
+            except Exception as e:
+                last_err = str(e)
+                time.sleep(backoff)
+        else:
+            _log_error(f"Reconnect failed: {last_err}")
             return False
 
         state["sock"] = sock

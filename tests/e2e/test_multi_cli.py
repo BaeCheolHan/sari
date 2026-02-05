@@ -69,8 +69,15 @@ def _initialize(sock: socket.socket, root: str) -> dict:
         "method": "initialize",
         "params": {"rootUri": f"file://{root}", "capabilities": {}},
     }
-    resp = _send_framed(sock, req)
-    return resp.get("result") or {}
+    last_err = None
+    for _ in range(5):
+        try:
+            resp = _send_framed(sock, req)
+            return resp.get("result") or {}
+        except Exception as e:
+            last_err = e
+            time.sleep(0.1)
+    raise last_err if last_err else RuntimeError("initialize failed")
 
 
 def _start_daemon(env: dict, port: int) -> subprocess.Popen:

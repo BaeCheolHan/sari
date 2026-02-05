@@ -135,6 +135,7 @@ class SariDaemon:
             idle_sec = float(os.environ.get("SARI_DAEMON_IDLE_SEC", "600") or 600)
         except (TypeError, ValueError):
             idle_sec = 600.0
+        idle_with_active = (os.environ.get("SARI_DAEMON_IDLE_WITH_ACTIVE") or "").strip().lower() in {"1", "true", "yes", "on"}
         try:
             drain_grace = float(os.environ.get("SARI_DAEMON_DRAIN_GRACE_SEC", "10") or 10)
         except (TypeError, ValueError):
@@ -163,10 +164,13 @@ class SariDaemon:
                 else:
                     self._drain_since = None
                     if idle_sec > 0:
-                        if active_count == 0:
+                        if active_count == 0 or idle_with_active:
+                            last_activity = workspace_registry.get_last_activity_ts()
+                            if last_activity <= 0:
+                                last_activity = now
                             if self._idle_since is None:
-                                self._idle_since = now
-                            elif now - self._idle_since >= idle_sec:
+                                self._idle_since = last_activity
+                            if now - last_activity >= idle_sec:
                                 self.shutdown()
                                 break
                         else:

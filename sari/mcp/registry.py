@@ -9,6 +9,7 @@ import logging
 import threading
 import os
 import json
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional
@@ -134,6 +135,7 @@ class Registry:
         self._workspaces: Dict[str, SharedState] = {}
         self._registry_lock = threading.Lock()
         self._boot_id = (os.environ.get("SARI_BOOT_ID") or "").strip()
+        self._last_activity_ts = time.time()
 
     @classmethod
     def get_instance(cls) -> "Registry":
@@ -172,6 +174,7 @@ class Registry:
 
             state = self._workspaces[resolved_root]
             state.acquire()
+            self._last_activity_ts = time.time()
             try:
                 self._register_workspace(state)
             except Exception as e:
@@ -218,6 +221,8 @@ class Registry:
 
     def touch_workspace(self, workspace_root: str) -> None:
         """Update last activity timestamp for workspace."""
+        now = time.time()
+        self._last_activity_ts = now
         try:
             ServerRegistry().touch_workspace(workspace_root)
         except Exception as e:
@@ -253,6 +258,9 @@ class Registry:
         """
         with self._registry_lock:
             return len(self._workspaces)
+
+    def get_last_activity_ts(self) -> float:
+        return float(self._last_activity_ts or 0.0)
 
     def shutdown_all(self) -> None:
         """Shutdown all workspaces (for daemon stop)."""
