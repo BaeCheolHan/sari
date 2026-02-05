@@ -112,6 +112,7 @@ def execute_list_files(args: Dict[str, Any], db: LocalSearchDB, logger: Telemetr
             ]
             truncated = False
             returned = 0
+            returned_idx = len(lines) - 1
             for r in repos_all:
                 candidate = pack_line("r", {"repo": pack_encode_id(r["repo"]), "file_count": str(r["file_count"])})
                 if len(("\n".join(lines + [candidate])).encode("utf-8")) > summary_payload_budget:
@@ -119,7 +120,7 @@ def execute_list_files(args: Dict[str, Any], db: LocalSearchDB, logger: Telemetr
                     break
                 lines.append(candidate)
                 returned += 1
-                lines[-2] = pack_line("m", {"repos_returned": str(returned)})
+                lines[returned_idx] = pack_line("m", {"repos_returned": str(returned)})
             if truncated:
                 lines.append(pack_truncated(0, 0, "true"))
             return "\n".join(lines)

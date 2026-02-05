@@ -134,7 +134,7 @@ class LocalSearchDB:
         return sql, params
 
     def search_files(self, query: str, root_id: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
-        sql = "SELECT path, root_id, repo, mtime, size, parse_status FROM files"
+        sql = "SELECT path, root_id, repo, mtime, size, parse_status FROM files WHERE 1=1"
         sql, params = self.apply_root_filter(sql, root_id)
         if query:
             sql += " AND (path LIKE ? OR rel_path LIKE ?)"

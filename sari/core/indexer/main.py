@@ -206,8 +206,10 @@ class Indexer:
             with self._l1_lock:
                 if root_id in self._l1_buffer:
                     self._l1_buffer[root_id] = [r for r in self._l1_buffer[root_id] if r[0] != files_row[0]]
+                if root_id in self._l1_docs:
                     self._l1_docs[root_id] = [d for d in self._l1_docs[root_id] if d.get("doc_id") != files_row[0]]
-                    self._l1_syms[root_id] = [s for s in self._l1_syms.get(root_id, []) if s[1] != files_row[0]]
+                if root_id in self._l1_syms:
+                    self._l1_syms[root_id] = [s for s in self._l1_syms[root_id] if s[1] != files_row[0]]
 
                 self._l1_buffer.setdefault(root_id, []).append(files_row)
                 doc = res.get("engine_doc")
