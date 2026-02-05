@@ -114,10 +114,10 @@ def _platform_tokenizer_tag() -> str:
 def _check_engine_tokenizer_data() -> dict[str, Any]:
     """Check if tokenizer data (lindera) is installed as a package."""
     try:
-        import lindera_dictionary_ipadic
-        return _result("CJK Tokenizer Data", True, f"installed ({getattr(lindera_dictionary_ipadic, '__version__', 'unknown')})")
+        import lindera_python_ipadic
+        return _result("CJK Tokenizer Data", True, f"installed ({getattr(lindera_python_ipadic, '__version__', 'unknown')})")
     except ImportError:
-        return _result("CJK Tokenizer Data", False, "package 'lindera-dictionary-ipadic' not installed (optional)")
+        return _result("CJK Tokenizer Data", False, "package 'lindera-python-ipadic' not installed (optional)")
     except Exception as e:
         return _result("CJK Tokenizer Data", False, str(e))
 

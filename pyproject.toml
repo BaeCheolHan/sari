@@ -22,7 +22,7 @@ dependencies = [
 [project.optional-dependencies]
 # 한중일 검색 지원
 cjk = [
-  "lindera-dictionary-ipadic",
+  "lindera-python-ipadic",
 ]
 
 # 고정밀 코드 분석
@@ -39,7 +39,7 @@ treesitter = [
 
 # 전체 기능 (모든 의존성 포함)
 full = [
-  "lindera-dictionary-ipadic",
+  "lindera-python-ipadic",
   "tree-sitter",
   "tree-sitter-python",
   "tree-sitter-javascript",
@@ -54,7 +54,7 @@ full = [
 # 이전 버전 호환성
 engine = [
   "tantivy>=0.20.0",
-  "lindera-dictionary-ipadic",
+  "lindera-python-ipadic",
 ]
 
 [project.scripts]

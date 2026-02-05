@@ -19,7 +19,7 @@ def _resolve_dict_path() -> str:
         if p.exists():
             return str(p)
     try:
-        import lindera_dictionary_ipadic as ldi  # type: ignore
+        import lindera_python_ipadic as ldi  # type: ignore
         mod_path = Path(getattr(ldi, "__file__", ""))
         if mod_path.exists():
             # Usually the dictionary files are in the package directory
@@ -65,7 +65,7 @@ def _init_lindera() -> None:
                         _LINDERA_ERROR = f"dictionary load failed: {e}"
                         _LINDERA_TOKENIZER = None
                 else:
-                    _LINDERA_ERROR = "dictionary not found (install lindera-dictionary-ipadic)"
+                    _LINDERA_ERROR = "dictionary not found (install lindera-python-ipadic)"
         except ImportError:
              _LINDERA_ERROR = "lindera package not installed"
              _LINDERA_TOKENIZER = None
