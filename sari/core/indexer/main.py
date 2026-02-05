@@ -122,6 +122,8 @@ class Indexer:
         """Phase 2: Use Fair Queue for initial scanning."""
         now, scan_ts = time.time(), int(time.time())
         self.status.last_scan_ts = scan_ts
+        self.status.scanned_files = 0
+        self.status.indexed_files = 0
         self._active_roots = []
         
         for root_path in self.cfg.workspace_roots:
@@ -182,47 +184,49 @@ class Indexer:
                         self.logger.warning(f"Event publish failed (file_error): {e}")
                 return
             
-                if res["type"] == "unchanged":
-                    self.storage.enqueue_task(DbTask(kind="update_last_seen", paths=[res["rel"]]))
-                    try:
-                        self.event_bus.publish("file_unchanged", {"path": res["rel"], "root_id": root_id})
-                    except Exception as e:
-                        if self.logger:
-                            self.logger.warning(f"Event publish failed (file_unchanged): {e}")
-            else:
-                rel_path = str(task["path"].relative_to(task["root"]))
-                files_row = (
-                    res["rel"], rel_path, root_id, res["repo"], res["mtime"], res["size"], 
-                    res["content"], res.get("content_hash", ""), res.get("fts_content", ""), int(time.time()), 0, 
-                    res["parse_status"], res["parse_reason"], res["ast_status"], res["ast_reason"], 
-                    res["is_binary"], res["is_minified"], 0, res.get("content_bytes", len(res["content"])), res.get("metadata_json", "{}")
-                )
-                
-                with self._l1_lock:
-                    if root_id in self._l1_buffer:
-                        self._l1_buffer[root_id] = [r for r in self._l1_buffer[root_id] if r[0] != files_row[0]]
-                        self._l1_docs[root_id] = [d for d in self._l1_docs[root_id] if d.get("doc_id") != files_row[0]]
-                    
-                    self._l1_buffer.setdefault(root_id, []).append(files_row)
-                    doc = res.get("engine_doc")
-                    if doc:
-                        self._l1_docs.setdefault(root_id, []).append(doc)
-                    
-                    if len(self._l1_buffer[root_id]) >= self._l1_max_size:
-                        rows = self._l1_buffer.pop(root_id)
-                        # Avoid KeyError if docs list is missing (e.g. if all files skipped engine)
-                        docs = self._l1_docs.pop(root_id, [])
-                        self.storage.upsert_files(rows=rows, engine_docs=docs)
-                
-                if res.get("symbols"):
-                    sym_rows = [(s[0], s[1], root_id) + s[2:] for s in res["symbols"]]
-                    self.storage.enqueue_task(DbTask(kind="upsert_symbols", rows=sym_rows))
-                self.status.indexed_files += 1
+            if res["type"] == "unchanged":
+                self.storage.enqueue_task(DbTask(kind="update_last_seen", paths=[res["rel"]]))
                 try:
-                    self.event_bus.publish("file_indexed", {"path": res["rel"], "root_id": root_id})
+                    self.event_bus.publish("file_unchanged", {"path": res["rel"], "root_id": root_id})
                 except Exception as e:
                     if self.logger:
-                        self.logger.warning(f"Event publish failed (file_indexed): {e}")
+                        self.logger.warning(f"Event publish failed (file_unchanged): {e}")
+                return # BUG FIX: return here so unchanged files are not counted as indexed
+            
+            # Case: File Changed or New
+            rel_path = str(task["path"].relative_to(task["root"]))
+            files_row = (
+                res["rel"], rel_path, root_id, res["repo"], res["mtime"], res["size"], 
+                res["content"], res.get("content_hash", ""), res.get("fts_content", ""), int(time.time()), 0, 
+                res["parse_status"], res["parse_reason"], res["ast_status"], res["ast_reason"], 
+                res["is_binary"], res["is_minified"], 0, res.get("content_bytes", len(res["content"])), res.get("metadata_json", "{}")
+            )
+            
+            with self._l1_lock:
+                if root_id in self._l1_buffer:
+                    self._l1_buffer[root_id] = [r for r in self._l1_buffer[root_id] if r[0] != files_row[0]]
+                    self._l1_docs[root_id] = [d for d in self._l1_docs[root_id] if d.get("doc_id") != files_row[0]]
+                
+                self._l1_buffer.setdefault(root_id, []).append(files_row)
+                doc = res.get("engine_doc")
+                if doc:
+                    self._l1_docs.setdefault(root_id, []).append(doc)
+                
+                if len(self._l1_buffer[root_id]) >= self._l1_max_size:
+                    rows = self._l1_buffer.pop(root_id)
+                    # Avoid KeyError if docs list is missing (e.g. if all files skipped engine)
+                    docs = self._l1_docs.pop(root_id, [])
+                    self.storage.upsert_files(rows=rows, engine_docs=docs)
+            
+            if res.get("symbols"):
+                sym_rows = [(s[0], s[1], root_id) + s[2:] for s in res["symbols"]]
+                self.storage.enqueue_task(DbTask(kind="upsert_symbols", rows=sym_rows))
+            self.status.indexed_files += 1
+            try:
+                self.event_bus.publish("file_indexed", {"path": res["rel"], "root_id": root_id})
+            except Exception as e:
+                if self.logger:
+                    self.logger.warning(f"Event publish failed (file_indexed): {e}")
 
     def _enqueue_fsevent(self, evt: FsEvent):
         root_id = WorkspaceManager.root_id(str(evt.root))
