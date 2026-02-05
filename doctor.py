@@ -50,6 +50,14 @@ def print_status(name: str, passed: bool, error: str = ""):
     else:
         print(f"[{status}] {name}")
 
+
+def print_warn(name: str, msg: str = ""):
+    status = f"{YELLOW}WARN{RESET}"
+    if msg:
+        print(f"[{status}] {name}: {msg}")
+    else:
+        print(f"[{status}] {name}")
+
 def check_db():
     try:
         ws_root = WorkspaceManager.resolve_workspace_root()
@@ -96,8 +104,8 @@ def check_network():
         print_status("Network Check", False, f"Unreachable: {e}")
         return False
 
-def check_port(port: int = 47777, label: str = "Port"):
-    """Check if port is available."""
+def check_port_available(port: int = 47777, label: str = "Port"):
+    """Check if port is available to bind."""
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         s.bind(("127.0.0.1", port))
@@ -109,6 +117,17 @@ def check_port(port: int = 47777, label: str = "Port"):
          return False
     finally:
         s.close()
+
+
+def check_port_listening(port: int, label: str):
+    """Check if port is listening."""
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+            print_status(f"{label} {port} Listening", True)
+            return True
+    except Exception as e:
+        print_status(f"{label} {port} Listening", False, f"Unreachable: {e}")
+        return False
 
 def check_disk_space(min_gb: float = 1.0):
     """Check if free disk space is sufficient."""
@@ -156,14 +175,28 @@ def run_doctor():
     print(f"\n{YELLOW}[Runtime]{RESET}")
     check_daemon()
     daemon_host, daemon_port = get_daemon_address()
-    check_port(daemon_port, label="Daemon port")
+    inst = None
+    try:
+        inst = ServerRegistry().resolve_workspace_daemon(ws_root)
+    except Exception:
+        inst = None
+    if inst and inst.get("port"):
+        check_port_listening(int(inst.get("port")), label="Daemon port")
+    else:
+        # Fall back: check if default daemon port is free
+        check_port_available(daemon_port, label="Daemon port")
     check_network()
     try:
-        inst = ServerRegistry().get_instance(ws_root)
-        if inst and inst.get("port"):
-            check_port(int(inst.get("port")), label="HTTP API port")
+        ws_info = ServerRegistry().get_workspace(ws_root)
+        if ws_info and ws_info.get("http_port"):
+            check_port_listening(int(ws_info.get("http_port")), label="HTTP API port")
     except Exception:
         pass
+
+    # Default port check (advisory)
+    if daemon_port != 47779:
+        if not check_port_available(47779, label="Default daemon port"):
+            print_warn("Default daemon port", "In use; daemon may be running on a different port")
 
     # 3. DB & Storage
     print(f"\n{YELLOW}[Storage]{RESET}")

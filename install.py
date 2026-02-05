@@ -90,6 +90,42 @@ def print_warn(msg):
     if not CONFIG["quiet"]:
         print(f"{C_YELLOW}[WARN]{C_RESET} {msg}")
 
+
+def _stop_running_daemon_best_effort():
+    """Best-effort daemon shutdown before install/update to avoid port conflicts."""
+    # 1) Try CLI stop (if installed)
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "sari.mcp.cli", "daemon", "stop"],
+            check=False,
+            capture_output=True,
+        )
+        return
+    except Exception:
+        pass
+
+    # 2) Fallback: read registry and terminate daemon pids
+    reg_path = os.environ.get("SARI_REGISTRY_FILE")
+    if reg_path:
+        reg_file = Path(os.path.expanduser(reg_path))
+    else:
+        reg_file = Path.home() / ".local" / "share" / "sari" / "server.json"
+    try:
+        if not reg_file.exists():
+            return
+        data = json.loads(reg_file.read_text(encoding="utf-8"))
+        daemons = data.get("daemons") or {}
+        for info in daemons.values():
+            pid = info.get("pid")
+            if not pid:
+                continue
+            try:
+                os.kill(int(pid), signal.SIGTERM)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
 def confirm(question, default=True):
     """Ask a yes/no question via input()."""
     # Non-interactive mode force (env var)
@@ -208,6 +244,9 @@ def do_install(args):
     perform_global_install = False
     bootstrap_name = "bootstrap.bat" if IS_WINDOWS else "bootstrap.sh"
     install_source = (os.environ.get("SARI_INSTALL_SOURCE") or "").strip()
+
+    # Best-effort: stop running daemon before install/update to avoid conflicts
+    _stop_running_daemon_best_effort()
 
     if args.update:
         if not args.yes and not confirm(f"Sari will be updated. This will replace the contents of {INSTALL_DIR}. Continue?", default=True):

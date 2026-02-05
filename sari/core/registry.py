@@ -254,7 +254,7 @@ class ServerRegistry:
             data["version"] = self.VERSION
         self._update(_upd)
 
-    def set_workspace_http(self, workspace_root: str, http_port: int, http_host: Optional[str] = None) -> None:
+    def set_workspace_http(self, workspace_root: str, http_port: int, http_host: Optional[str] = None, http_pid: Optional[int] = None) -> None:
         ws = self._normalize_workspace_root(workspace_root)
 
         def _upd(data):
@@ -263,6 +263,8 @@ class ServerRegistry:
                 workspaces[ws]["http_port"] = int(http_port)
                 if http_host:
                     workspaces[ws]["http_host"] = str(http_host)
+                if http_pid:
+                    workspaces[ws]["http_pid"] = int(http_pid)
             data["workspaces"] = workspaces
             data["version"] = self.VERSION
         self._update(_upd)

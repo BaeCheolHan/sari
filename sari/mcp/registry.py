@@ -61,6 +61,7 @@ class SharedState:
                     self.workspace_root,
                     http_port=self.http_port,
                     http_host=cfg.http_api_host,
+                    http_pid=os.getpid(),
                 )
             except Exception as e:
                 logger.error(f"Failed to update registry http info: {e}")
