@@ -12,22 +12,11 @@ import importlib
 from pathlib import Path
 from typing import Any, Dict, List
 from sari.core.cjk import lindera_available, lindera_dict_uri, lindera_error
-
-try:
-    from sari.core.db import LocalSearchDB
-    from sari.core.config import Config
-    from sari.core.workspace import WorkspaceManager
-    from sari.core.registry import ServerRegistry
-    from sari.mcp.cli import get_daemon_address, is_daemon_running, read_pid, _get_http_host_port, _is_http_running
-except ImportError:
-    import sys
-    from pathlib import Path
-    sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-    from sari.core.db import LocalSearchDB
-    from sari.core.config import Config
-    from sari.core.workspace import WorkspaceManager
-    from sari.core.registry import ServerRegistry
-    from sari.mcp.cli import get_daemon_address, is_daemon_running, read_pid, _get_http_host_port, _is_http_running
+from sari.core.db import LocalSearchDB
+from sari.core.config import Config
+from sari.core.workspace import WorkspaceManager
+from sari.core.server_registry import ServerRegistry
+from sari.mcp.cli import get_daemon_address, is_daemon_running, read_pid, _get_http_host_port, _is_http_running
 
 
 def _result(name: str, passed: bool, error: str = "") -> dict[str, Any]:

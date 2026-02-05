@@ -3,16 +3,8 @@
 Rescan tool for Local Search MCP Server.
 """
 from typing import Any, Dict
-
 from sari.mcp.tools._util import mcp_response, pack_header, pack_line, pack_error, ErrorCode
-
-try:
-    from sari.core.indexer import Indexer
-except ImportError:
-    import sys
-    from pathlib import Path
-    sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-    from sari.core.indexer import Indexer
+from sari.core.indexer import Indexer
 
 
 def execute_rescan(args: Dict[str, Any], indexer: Indexer) -> Dict[str, Any]:

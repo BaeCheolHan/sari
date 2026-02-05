@@ -4,7 +4,7 @@ import asyncio
 import inspect
 import os
 from typing import Dict, Any, Optional
-from .registry import Registry, SharedState
+from .workspace_registry import Registry, SharedState
 
 try:
     from sari.version import __version__ as _SARI_VERSION
@@ -13,7 +13,7 @@ except Exception:
 _SARI_PROTOCOL_VERSION = "2025-11-25"
 _SARI_BOOT_ID = (os.environ.get("SARI_BOOT_ID") or "").strip()
 from sari.core.workspace import WorkspaceManager
-from sari.core.registry import ServerRegistry
+from sari.core.server_registry import ServerRegistry
 
 logger = logging.getLogger(__name__)
 

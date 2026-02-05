@@ -4,11 +4,7 @@ import urllib.parse
 from enum import Enum
 from typing import Any, Dict, Optional, List, Callable
 from pathlib import Path
-
-try:
-    from sari.core.workspace import WorkspaceManager
-except Exception:
-    WorkspaceManager = None
+from sari.core.workspace import WorkspaceManager
 
 # --- Constants & Enums ---
 

@@ -2,6 +2,7 @@
 import os
 import time
 import threading
+from collections import deque
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional
 from threading import Timer
@@ -51,6 +52,21 @@ class DebouncedEventHandler(FileSystemEventHandler):
         self._pending_events: Dict[str, FsEvent] = {}
         self._git_timer: Optional[Timer] = None
         self._git_last_path: str = ""
+        self._event_times = deque(maxlen=200)
+
+        # Adaptive debounce (ms) and rate window (sec)
+        self._debounce_min = float(os.environ.get("SARI_DEBOUNCE_MIN_MS", str(int(debounce_seconds * 1000)))) / 1000.0
+        self._debounce_max = float(os.environ.get("SARI_DEBOUNCE_MAX_MS", "1500")) / 1000.0
+        self._debounce_target_rps = float(os.environ.get("SARI_DEBOUNCE_TARGET_RPS", "20"))
+        self._rate_window = float(os.environ.get("SARI_DEBOUNCE_RATE_WINDOW", "2.0"))
+
+        # Token bucket for burst control
+        self._bucket_capacity = float(os.environ.get("SARI_EVENT_BUCKET_CAPACITY", "50"))
+        self._bucket_rate = float(os.environ.get("SARI_EVENT_BUCKET_RATE", "25"))
+        self._bucket_tokens = self._bucket_capacity
+        self._bucket_last_ts = time.time()
+        self._bucket_flush_seconds = float(os.environ.get("SARI_EVENT_BUCKET_FLUSH_MS", "500")) / 1000.0
+        self._bucket_timer: Optional[Timer] = None
 
     def on_any_event(self, event):
         if event.is_directory:
@@ -89,6 +105,18 @@ class DebouncedEventHandler(FileSystemEventHandler):
                            ts=time.time())
 
         with self._lock:
+            # Adaptive debounce update
+            self._update_debounce(fs_event.ts)
+
+            # Burst control: token bucket
+            if not self._try_consume_token(fs_event.ts):
+                if key in self._timers:
+                    self._timers[key].cancel()
+                    del self._timers[key]
+                self._pending_events[key] = fs_event
+                self._schedule_bucket_flush()
+                return
+
             if key in self._timers:
                 self._timers[key].cancel()
             self._pending_events[key] = fs_event
@@ -109,6 +137,59 @@ class DebouncedEventHandler(FileSystemEventHandler):
             if self.logger:
                 self.logger.log_error(f"Watcher callback failed for {path}: {e}")
 
+    def _update_debounce(self, now_ts: float) -> None:
+        self._event_times.append(now_ts)
+        # Drop old events outside window
+        while self._event_times and now_ts - self._event_times[0] > self._rate_window:
+            self._event_times.popleft()
+        rate = len(self._event_times) / max(0.5, self._rate_window)
+        scale = max(1.0, rate / max(1.0, self._debounce_target_rps))
+        self.debounce_seconds = min(self._debounce_max, max(self._debounce_min, self._debounce_min * scale))
+
+    def _refill_tokens(self, now_ts: float) -> None:
+        elapsed = max(0.0, now_ts - self._bucket_last_ts)
+        if elapsed > 0:
+            self._bucket_tokens = min(self._bucket_capacity, self._bucket_tokens + elapsed * self._bucket_rate)
+            self._bucket_last_ts = now_ts
+
+    def _try_consume_token(self, now_ts: float) -> bool:
+        self._refill_tokens(now_ts)
+        if self._bucket_tokens >= 1.0:
+            self._bucket_tokens -= 1.0
+            return True
+        return False
+
+    def _schedule_bucket_flush(self) -> None:
+        if self._bucket_timer and self._bucket_timer.is_alive():
+            return
+        self._bucket_timer = Timer(max(0.1, self._bucket_flush_seconds), self._flush_bucket)
+        self._bucket_timer.start()
+
+    def _flush_bucket(self) -> None:
+        to_dispatch: List[FsEvent] = []
+        with self._lock:
+            now = time.time()
+            self._refill_tokens(now)
+            items = sorted(self._pending_events.items(), key=lambda kv: kv[1].ts)
+            self._pending_events = {}
+            for key, evt in items:
+                if self._bucket_tokens >= 1.0:
+                    self._bucket_tokens -= 1.0
+                    to_dispatch.append(evt)
+                else:
+                    self._pending_events[key] = evt
+            if self._pending_events:
+                self._bucket_timer = Timer(max(0.1, self._bucket_flush_seconds), self._flush_bucket)
+                self._bucket_timer.start()
+            else:
+                self._bucket_timer = None
+        for evt in to_dispatch:
+            try:
+                self.callback(evt)
+            except Exception as e:
+                if self.logger:
+                    self.logger.log_error(f"Watcher callback failed for {evt.path}: {e}")
+
     def _trigger_git(self):
         path = ""
         with self._lock:
@@ -128,11 +209,13 @@ class FileWatcher:
         on_change_callback: Callable[[FsEvent], None],
         logger=None,
         on_git_checkout: Optional[Callable[[str], None]] = None,
+        event_bus=None,
     ):
         self.paths = paths
         self.callback = on_change_callback
         self.logger = logger
         self.git_callback = on_git_checkout
+        self.event_bus = event_bus
         self.observer = None
         self._running = False
         self._monitor_thread = None
@@ -153,7 +236,7 @@ class FileWatcher:
         except Exception:
             git_debounce = 3.0
         handler = DebouncedEventHandler(
-            self.callback,
+            self._dispatch_event,
             logger=self.logger,
             git_callback=self.git_callback,
             git_debounce_seconds=max(1.0, git_debounce),
@@ -210,7 +293,7 @@ class FileWatcher:
             except Exception:
                 git_debounce = 3.0
             handler = DebouncedEventHandler(
-                self.callback,
+                self._dispatch_event,
                 logger=self.logger,
                 git_callback=self.git_callback,
                 git_debounce_seconds=max(1.0, git_debounce),
@@ -251,3 +334,16 @@ class FileWatcher:
                 if self.logger:
                     self.logger.log_error("Watcher observer died; restarting.")
                 self._restart_observer()
+
+    def _dispatch_event(self, evt: FsEvent):
+        if self.event_bus:
+            try:
+                self.event_bus.publish("fs_event", evt)
+                return
+            except Exception:
+                pass
+        try:
+            self.callback(evt)
+        except Exception as e:
+            if self.logger:
+                self.logger.log_error(f"Watcher callback failed for {getattr(evt, 'path', '')}: {e}")

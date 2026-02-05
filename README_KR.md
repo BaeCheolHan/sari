@@ -156,8 +156,9 @@ MCP 서버가 실행되는 동안 동작을 제어하는 설정입니다. `env` 
 |--------|------|--------|
 | `SARI_WORKSPACE_ROOT` | **(필수 권장)** 프로젝트 최상위 루트 경로. 생략 시 자동 감지하지만 명시하는 것이 좋습니다. | 자동 감지 |
 | `SARI_ROOTS_JSON` | 여러 개의 루트를 등록할 때 사용합니다. JSON 배열 문자열 예: `["/path/a", "/path/b"]` | - |
-| `SARI_DB_PATH` | SQLite 인덱스 DB 파일의 경로를 직접 지정합니다. | `~/.local/share/sari/data/<hash>/index.db` |
+| `SARI_DB_PATH` | SQLite 인덱스 DB 파일의 경로를 직접 지정합니다. | `~/.local/share/sari/index.db` |
 | `SARI_CONFIG` | 특정 설정 파일을 로드합니다. | `~/.config/sari/config.json` |
+| `SARI_DATA_DIR` | 전역 데이터 디렉토리를 지정합니다 (DB/엔진/캐시). | `~/.local/share/sari` |
 | `SARI_RESPONSE_COMPACT` | 응답 JSON을 압축하여 LLM 토큰을 절약합니다. 디버깅 때는 `0`으로 끄세요. | `1` (켜짐) |
 | `SARI_FORMAT` | CLI 도구 출력 형식. `pack`(텍스트) 또는 `json`. | `pack` |
 
@@ -171,6 +172,11 @@ MCP 서버가 실행되는 동안 동작을 제어하는 설정입니다. `env` 
 | `SARI_ENGINE_AUTO_INSTALL` | 엔진 바이너리(Tantivy)가 없으면 자동으로 설치합니다. | `1` (켜짐) |
 | `SARI_ENGINE_SUGGEST_FILES`| 상태 체크 시 Tantivy 엔진 업그레이드를 제안하는 파일 수 임계값. | `10000` |
 | `SARI_LINDERA_DICT_PATH` | CJK 토큰화를 위한 커스텀 Lindera 사전 경로 (고급). | - |
+| `SARI_ENGINE_MEM_MB` | 임베디드 엔진 전체 메모리 예산 (MB). | `512` |
+| `SARI_ENGINE_INDEX_MEM_MB` | 임베디드 엔진 인덱싱 메모리 예산 (MB). | `256` |
+| `SARI_ENGINE_THREADS` | 임베디드 엔진 스레드 수. | `2` |
+| `SARI_ENGINE_MAX_DOC_BYTES` | 엔진에 인덱싱할 최대 문서 크기 (바이트). | `4194304` |
+| `SARI_ENGINE_PREVIEW_BYTES` | 문서당 프리뷰 바이트 수. | `8192` |
 
 **설정 파일(`config.json`) 대응값:**
 ```json
@@ -194,6 +200,8 @@ MCP 서버가 실행되는 동안 동작을 제어하는 설정입니다. `env` 
 | `SARI_GIT_CHECKOUT_DEBOUNCE`| Git 체크아웃 후 대량 인덱싱 시작 전 대기 시간(초). | `3.0` |
 | `SARI_FOLLOW_SYMLINKS` | 파일 스캔 시 심볼릭 링크를 따라갑니다. **주의:** 순환 링크가 있으면 무한 루프 위험이 있습니다. | `0` (꺼짐) |
 | `SARI_READ_MAX_BYTES` | `read_file` 도구가 반환하는 최대 바이트 수. 컨텍스트 초과 방지. | `1MB` |
+| `SARI_INDEX_MEM_MB` | 전체 인덱싱 메모리 예산 (MB). | `512` |
+| `SARI_INDEX_WORKERS` | 인덱싱 워커 수를 덮어씁니다. | `2` |
 
 #### 4. 네트워크 및 보안 (Network & Security)
 데몬 연결 설정입니다.

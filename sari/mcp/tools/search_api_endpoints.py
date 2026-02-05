@@ -1,10 +1,7 @@
 import json
 import sqlite3
 from typing import Any, Dict, List
-try:
-    from ._util import mcp_response, pack_header, pack_line, pack_encode_id, pack_encode_text, resolve_root_ids, pack_error, ErrorCode
-except ImportError:
-    from _util import mcp_response, pack_header, pack_line, pack_encode_id, pack_encode_text, resolve_root_ids, pack_error, ErrorCode
+from sari.mcp.tools._util import mcp_response, pack_header, pack_line, pack_encode_id, pack_encode_text, resolve_root_ids, pack_error, ErrorCode
 
 def execute_search_api_endpoints(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict[str, Any]:
     """Search for API endpoints by URL path pattern."""

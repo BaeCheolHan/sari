@@ -4,31 +4,17 @@ import time
 from datetime import datetime
 from typing import Any, Dict, List
 
-try:
-    from ._util import (
-        mcp_response,
-        pack_header,
-        pack_line,
-        pack_encode_id,
-        pack_encode_text,
-        pack_error,
-        ErrorCode,
-    )
-except ImportError:
-    from _util import (
-        mcp_response,
-        pack_header,
-        pack_line,
-        pack_encode_id,
-        pack_encode_text,
-        pack_error,
-        ErrorCode,
-    )
+from sari.mcp.tools._util import (
+    mcp_response,
+    pack_header,
+    pack_line,
+    pack_encode_id,
+    pack_encode_text,
+    pack_error,
+    ErrorCode,
+)
 
-try:
-    from sari.core.queue_pipeline import DbTask
-except Exception:
-    DbTask = None  # type: ignore
+from sari.core.queue_pipeline import DbTask
 
 
 def _enqueue_or_write(db: Any, indexer: Any, row: tuple) -> None:

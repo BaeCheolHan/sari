@@ -6,8 +6,10 @@ class DedupQueue:
     """
     A thread-safe queue that ignores duplicate items currently pending control.
     """
-    def __init__(self):
-        self.q: queue.Queue = queue.Queue()
+    def __init__(self, maxsize: Optional[int] = None):
+        # Default to 5000 if not provided
+        self.maxsize = maxsize or settings.get_int("INDEX_QUEUE_SIZE", 5000)
+        self.q: queue.Queue = queue.Queue(maxsize=self.maxsize)
         self.pending: Set[Any] = set()
         self.lock = threading.Lock()
 

@@ -1,11 +1,7 @@
 import time
 from typing import Any, Dict, List
 
-try:
-    from sari.core.queue_pipeline import FsEvent, FsEventKind
-except Exception:
-    FsEvent = None
-    FsEventKind = None
+from sari.core.queue_pipeline import FsEvent, FsEventKind
 
 from sari.mcp.tools._util import mcp_response, pack_error, ErrorCode, resolve_db_path, pack_header, pack_line, pack_encode_id
 

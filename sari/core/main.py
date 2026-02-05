@@ -71,6 +71,7 @@ def _write_server_info(workspace_root: str, host: str, actual_port: int, config_
 
 def main() -> int:
     # Auto-detect workspace root for HTTP fallback
+    WorkspaceManager.set_settings(settings)
     workspace_root = WorkspaceManager.resolve_workspace_root()
 
     # Set env var so Config can pick it up
@@ -93,14 +94,15 @@ def main() -> int:
     allow_non_loopback = os.environ.get("SARI_ALLOW_NON_LOOPBACK") == "1"
     host = _resolve_http_host(cfg.http_api_host, allow_non_loopback)
 
-    # Workspace-local DB path enforcement (multi-workspace support)
-    # DB path is now determined by Config.load
+    # Unified DB path (single DB across workspaces)
+    # DB path is determined by Config.load
     db_path = cfg.db_path
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
     print(f"[sari] DB path: {db_path}")
 
     db = LocalSearchDB(db_path)
+    db.set_settings(settings)
     try:
         from sari.core.engine_registry import get_default_engine
         db.set_engine(get_default_engine(db, cfg, cfg.workspace_roots))
@@ -109,6 +111,8 @@ def main() -> int:
     from sari.core.indexer import resolve_indexer_settings
     mode, enabled, startup_enabled, lock_handle = resolve_indexer_settings(str(db_path))
     indexer = Indexer(cfg, db, indexer_mode=mode, indexing_enabled=enabled, startup_index_enabled=startup_enabled, lock_handle=lock_handle)
+    # Wire search throttling coordinator to DB for read-priority hints
+    db.coordinator = getattr(indexer, "coordinator", None)
 
     # Start HTTP immediately so health checks don't block on initial indexing.
     # serve_forever returns (httpd, actual_port) for fallback tracking
@@ -148,11 +152,19 @@ def main() -> int:
         except Exception:
             pass
         try:
+            if mcp_server and hasattr(mcp_server, "shutdown"):
+                mcp_server.shutdown()
+        except Exception:
+            pass
+        try:
             httpd.shutdown()
         except Exception:
             pass
         try:
-            db.close()
+            if hasattr(db, "close_all"):
+                db.close_all()
+            else:
+                db.close()
         except Exception:
             pass
 

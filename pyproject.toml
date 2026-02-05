@@ -15,10 +15,12 @@ authors = [
 ]
 dependencies = [
   "watchdog>=2.0.0",
+  "orjson>=3.10.0",
 ]
 
 [project.optional-dependencies]
 engine = [
+  "tantivy>=0.20.0",
   "lindera",
   "lindera-dictionary-ipadic",
 ]
@@ -28,7 +30,10 @@ sari = "sari.main:main"
 
 [tool.setuptools]
 packages = { find = { include = ["sari", "sari.*"] } }
-package-data = { "sari.core" = ["engine_tokenizer_data/*"] }
+
+[tool.setuptools.package-data]
+sari = ["*.sql", "*.md"]
+"sari.core" = ["engine_tokenizer_data/*"]
 
 [tool.setuptools.dynamic]
 version = { attr = "sari.version.__version__" }

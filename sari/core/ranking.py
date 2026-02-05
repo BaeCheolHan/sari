@@ -77,8 +77,12 @@ def count_matches(content: str, query: str, use_regex: bool, case_sensitive: boo
             # Fallback to simple count if regex fails for any reason
             return content.lower().count(query.lower())
 
-def snippet_around(content: str, terms: List[str], max_lines: int,
+def snippet_around(content: Any, terms: List[str], max_lines: int,
                     highlight: bool = True) -> str:
+    if not content: return ""
+    if isinstance(content, (bytes, bytearray)):
+        content = content.decode("utf-8", errors="ignore")
+    
     if max_lines <= 0:
         return ""
     lines = content.splitlines()

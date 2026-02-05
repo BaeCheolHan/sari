@@ -5,28 +5,16 @@ import threading
 import time
 from pathlib import Path
 
-try:
-    from ._util import (
-        mcp_response,
-        pack_header,
-        pack_line,
-        pack_encode_id,
-        pack_encode_text,
-        pack_error,
-        ErrorCode,
-        resolve_fs_path,
-    )
-except ImportError:
-    from _util import (
-        mcp_response,
-        pack_header,
-        pack_line,
-        pack_encode_id,
-        pack_encode_text,
-        pack_error,
-        ErrorCode,
-        resolve_fs_path,
-    )
+from sari.mcp.tools._util import (
+    mcp_response,
+    pack_header,
+    pack_line,
+    pack_encode_id,
+    pack_encode_text,
+    pack_error,
+    ErrorCode,
+    resolve_fs_path,
+)
 
 def _read_lines(db: Any, db_path: str, roots: List[str]) -> List[str]:
     fs_path = resolve_fs_path(db_path, roots)

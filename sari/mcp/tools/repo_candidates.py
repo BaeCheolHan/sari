@@ -6,16 +6,8 @@ import json
 from typing import Any, Dict, List
 from sari.mcp.tools._util import mcp_response, pack_header, pack_line, pack_encode_id, pack_encode_text, pack_error, ErrorCode, resolve_root_ids
 
-try:
-    from sari.core.db import LocalSearchDB
-    from sari.mcp.telemetry import TelemetryLogger
-except ImportError:
-    # Fallback for direct script execution
-    import sys
-    from pathlib import Path
-    sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-    from sari.core.db import LocalSearchDB
-    from sari.mcp.telemetry import TelemetryLogger
+from sari.core.db import LocalSearchDB
+from sari.mcp.telemetry import TelemetryLogger
 
 
 def execute_repo_candidates(args: Dict[str, Any], db: LocalSearchDB, logger: TelemetryLogger = None, roots: List[str] = None) -> Dict[str, Any]:

@@ -163,8 +163,9 @@ Essential settings for basic operation. (`SARI_` prefix is also supported for ba
 |----------|-------------|---------|
 | `SARI_WORKSPACE_ROOT` | **(Required)** Absolute path to the project root. Auto-detected if omitted. | Auto-detect |
 | `SARI_ROOTS_JSON` | JSON array of strings for multiple workspace roots. e.g., `["/path/a", "/path/b"]` | - |
-| `SARI_DB_PATH` | Custom path for the SQLite database file. | `~/.local/share/sari/data/<hash>/index.db` |
+| `SARI_DB_PATH` | Custom path for the SQLite database file. | `~/.local/share/sari/index.db` |
 | `SARI_CONFIG` | Path to a specific config file to load. | `~/.config/sari/config.json` |
+| `SARI_DATA_DIR` | Override global data directory for DB, engine, and caches. | `~/.local/share/sari` |
 | `SARI_RESPONSE_COMPACT` | Minify JSON responses (`pack` format) to save LLM tokens. Set `0` for pretty-print debugging. | `1` (Enabled) |
 | `SARI_FORMAT` | Output format for CLI tools. `pack` (text-based) or `json`. | `pack` |
 
@@ -178,6 +179,11 @@ Settings to tune search quality and backend behavior.
 | `SARI_ENGINE_AUTO_INSTALL` | Automatically install engine binaries (Tantivy) if missing. | `1` (Enabled) |
 | `SARI_ENGINE_SUGGEST_FILES`| File count threshold to suggest upgrading to Tantivy engine in status checks. | `10000` |
 | `SARI_LINDERA_DICT_PATH` | Path to custom Lindera dictionary for CJK tokenization (Advanced). | - |
+| `SARI_ENGINE_MEM_MB` | Total embedded engine memory budget (MB). | `512` |
+| `SARI_ENGINE_INDEX_MEM_MB` | Embedded engine indexing memory budget (MB). | `256` |
+| `SARI_ENGINE_THREADS` | Embedded engine thread count. | `2` |
+| `SARI_ENGINE_MAX_DOC_BYTES` | Max document bytes to index in engine. | `4194304` |
+| `SARI_ENGINE_PREVIEW_BYTES` | Preview bytes per document. | `8192` |
 
 **Config file equivalents (`config.json`):**
 ```json
@@ -201,6 +207,8 @@ Fine-tune resource usage and concurrency.
 | `SARI_GIT_CHECKOUT_DEBOUNCE`| Seconds to wait after git checkout before starting bulk indexing. | `3.0` |
 | `SARI_FOLLOW_SYMLINKS` | Follow symbolic links during file scanning. **Caution:** May cause infinite loops if circular links exist. | `0` (Disabled) |
 | `SARI_READ_MAX_BYTES` | Max bytes returned by `read_file` tool. Prevents context overflow. | `1MB` |
+| `SARI_INDEX_MEM_MB` | Overall indexing memory budget (MB). | `512` |
+| `SARI_INDEX_WORKERS` | Override index worker count. | `2` |
 
 #### 4. Network & Security
 Connectivity settings for the daemon.

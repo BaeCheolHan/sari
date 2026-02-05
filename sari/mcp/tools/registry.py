@@ -44,6 +44,7 @@ class ToolContext:
     logger: Any
     workspace_root: str
     server_version: str
+    policy_engine: Optional[Any] = None  # Added for policy tracking
 
 
 class ToolRegistry:
@@ -67,7 +68,15 @@ class ToolRegistry:
         tool = self._tools.get(name)
         if not tool:
             raise ValueError(f"Unknown tool: {name}")
-        return tool.handler(ctx, args)
+            
+        result = tool.handler(ctx, args)
+        
+        # Post-execution policy hook: Mark search actions automatically
+        if ctx.policy_engine and not result.get("isError"):
+            if name in {"search", "search_symbols", "grep_and_read"}:
+                ctx.policy_engine.mark_action(name)
+                
+        return result
 
 
 def build_default_registry() -> ToolRegistry:

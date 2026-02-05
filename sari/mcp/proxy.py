@@ -19,7 +19,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from sari.mcp.telemetry import TelemetryLogger
 from sari.core.workspace import WorkspaceManager
-from sari.core.registry import ServerRegistry
+from sari.core.server_registry import ServerRegistry
 
 try:
     import fcntl  # type: ignore

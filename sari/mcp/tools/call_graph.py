@@ -4,28 +4,16 @@ import importlib
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Set, Callable
 
-try:
-    from ._util import (
-        mcp_response,
-        pack_header,
-        pack_line,
-        pack_encode_id,
-        pack_encode_text,
-        pack_error,
-        ErrorCode,
-        resolve_root_ids,
-    )
-except ImportError:
-    from _util import (
-        mcp_response,
-        pack_header,
-        pack_line,
-        pack_encode_id,
-        pack_encode_text,
-        pack_error,
-        ErrorCode,
-        resolve_root_ids,
-    )
+from sari.mcp.tools._util import (
+    mcp_response,
+    pack_header,
+    pack_line,
+    pack_encode_id,
+    pack_encode_text,
+    pack_error,
+    ErrorCode,
+    resolve_root_ids,
+)
 
 
 def _resolve_symbol(db: Any, name: str, path: Optional[str], symbol_id: Optional[str]) -> List[Dict[str, Any]]:

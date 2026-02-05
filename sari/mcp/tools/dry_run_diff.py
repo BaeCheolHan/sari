@@ -6,30 +6,17 @@ import shutil
 import subprocess
 from typing import Any, Dict, List
 
-try:
-    from ._util import (
-        mcp_response,
-        pack_header,
-        pack_line,
-        pack_encode_text,
-        pack_encode_id,
-        pack_error,
-        ErrorCode,
-        resolve_db_path,
-        resolve_fs_path,
-    )
-except ImportError:
-    from _util import (
-        mcp_response,
-        pack_header,
-        pack_line,
-        pack_encode_text,
-        pack_encode_id,
-        pack_error,
-        ErrorCode,
-        resolve_db_path,
-        resolve_fs_path,
-    )
+from sari.mcp.tools._util import (
+    mcp_response,
+    pack_header,
+    pack_line,
+    pack_encode_text,
+    pack_encode_id,
+    pack_error,
+    ErrorCode,
+    resolve_db_path,
+    resolve_fs_path,
+)
 
 
 def _read_current(db: Any, db_path: str, roots: List[str]) -> str:

@@ -18,17 +18,9 @@ from sari.mcp.tools._util import (
     ErrorCode,
 )
 
-try:
-    from sari.core.db import LocalSearchDB, SearchOptions
-    from sari.core.engine_runtime import EngineError
-    from sari.mcp.telemetry import TelemetryLogger
-except ImportError:
-    import sys
-    from pathlib import Path
-    sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-    from sari.core.db import LocalSearchDB, SearchOptions
-    from sari.core.engine_runtime import EngineError
-    from sari.mcp.telemetry import TelemetryLogger
+from sari.core.db import LocalSearchDB, SearchOptions
+from sari.core.engine_runtime import EngineError
+from sari.mcp.telemetry import TelemetryLogger
 
 
 def execute_search(

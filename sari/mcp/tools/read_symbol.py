@@ -7,17 +7,9 @@ import json
 import time
 from typing import Any, Dict, List
 
-try:
-    from sari.core.db import LocalSearchDB
-    from sari.mcp.telemetry import TelemetryLogger
-    from sari.mcp.tools._util import mcp_response, pack_error, ErrorCode, resolve_db_path, pack_header, pack_line, pack_encode_text
-except ImportError:
-    import sys
-    from pathlib import Path
-    sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-    from sari.core.db import LocalSearchDB
-    from sari.mcp.telemetry import TelemetryLogger
-    from sari.mcp.tools._util import mcp_response, pack_error, ErrorCode, resolve_db_path, pack_header, pack_line, pack_encode_text
+from sari.core.db import LocalSearchDB
+from sari.mcp.telemetry import TelemetryLogger
+from sari.mcp.tools._util import mcp_response, pack_error, ErrorCode, resolve_db_path, pack_header, pack_line, pack_encode_text
 
 
 def execute_read_symbol(args: Dict[str, Any], db: LocalSearchDB, logger: TelemetryLogger, roots: List[str]) -> Dict[str, Any]:

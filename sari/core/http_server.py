@@ -9,10 +9,12 @@ try:
     from .db import LocalSearchDB  # type: ignore
     from .indexer import Indexer  # type: ignore
     from .models import SearchOptions  # type: ignore
+    from .http_middleware import run_http_middlewares, default_http_middlewares  # type: ignore
 except ImportError:
     from db import LocalSearchDB  # type: ignore
     from indexer import Indexer  # type: ignore
     from models import SearchOptions  # type: ignore
+    from http_middleware import run_http_middlewares, default_http_middlewares  # type: ignore
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -24,6 +26,7 @@ class Handler(BaseHTTPRequestHandler):
     server_version: str = "dev"
     root_ids: list[str] = []
     mcp_server = None
+    middlewares = default_http_middlewares()
 
     def _json(self, obj, status=200):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
@@ -50,36 +53,47 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path
         qs = parse_qs(parsed.query)
 
+        ctx = {"method": "GET", "path": path, "qs": qs, "headers": dict(self.headers)}
+        def _exec():
+            return self._handle_get(path, qs)
+        resp = run_http_middlewares(ctx, self.middlewares, _exec)
+        if isinstance(resp, dict):
+            status = int(resp.pop("status", 200))
+            return self._json(resp, status=status)
+        return self._json({"ok": False, "error": "invalid response"}, status=500)
+
+    def _handle_get(self, path, qs):
         if path == "/health":
-            return self._json({"ok": True})
+            return {"ok": True}
 
         if path == "/status":
             st = self.indexer.status
-            return self._json(
-                {
-                    "ok": True,
-                    "host": self.server_host,
-                    "port": self.server_port,
-                    "version": self.server_version,
-                    "index_ready": bool(st.index_ready),
-                    "last_scan_ts": st.last_scan_ts,
-                    "last_commit_ts": self.indexer.get_last_commit_ts() if hasattr(self.indexer, "get_last_commit_ts") else 0,
-                    "scanned_files": st.scanned_files,
-                    "indexed_files": st.indexed_files,
-                    "errors": st.errors,
-                    "fts_enabled": self.db.fts_enabled,
-                    "queue_depths": self.indexer.get_queue_depths() if hasattr(self.indexer, "get_queue_depths") else {},
-                }
-            )
+            return {
+                "ok": True,
+                "host": self.server_host,
+                "port": self.server_port,
+                "version": self.server_version,
+                "index_ready": bool(st.index_ready),
+                "last_scan_ts": st.last_scan_ts,
+                "last_commit_ts": self.indexer.get_last_commit_ts() if hasattr(self.indexer, "get_last_commit_ts") else 0,
+                "scanned_files": st.scanned_files,
+                "indexed_files": st.indexed_files,
+                "errors": st.errors,
+                "fts_enabled": self.db.fts_enabled,
+                "queue_depths": self.indexer.get_queue_depths() if hasattr(self.indexer, "get_queue_depths") else {},
+            }
 
         if path == "/search":
             q = (qs.get("q") or [""])[0].strip()
             repo = (qs.get("repo") or [""])[0].strip() or None
-            limit = int((qs.get("limit") or ["20"])[0])
+            try:
+                limit = int((qs.get("limit") or ["20"])[0])
+            except (ValueError, TypeError):
+                limit = 20
             total_mode = (qs.get("total_mode") or [""])[0].strip().lower()
             root_ids = qs.get("root_ids") or []
             if not q:
-                return self._json({"ok": False, "error": "missing q"}, status=400)
+                return {"ok": False, "error": "missing q", "status": 400}
             engine = getattr(self.db, "engine", None)
             engine_mode = "sqlite"
             index_version = ""
@@ -91,7 +105,7 @@ class Handler(BaseHTTPRequestHandler):
                     if st.reason == "NOT_INSTALLED":
                         auto_install = (os.environ.get("SARI_ENGINE_AUTO_INSTALL", "1").strip().lower() not in {"0", "false", "no", "off"})
                         if not auto_install:
-                            return self._json({"ok": False, "error": "engine not installed", "hint": "sari --cmd engine install"}, status=503)
+                            return {"ok": False, "error": "engine not installed", "hint": "sari --cmd engine install", "status": 503}
                         if hasattr(engine, "install"):
                             try:
                                 engine.install()
@@ -99,9 +113,9 @@ class Handler(BaseHTTPRequestHandler):
                                 engine_mode = st.engine_mode
                                 index_version = st.index_version
                             except Exception as e:
-                                return self._json({"ok": False, "error": f"engine install failed: {e}", "hint": "sari --cmd engine install"}, status=503)
+                                return {"ok": False, "error": f"engine install failed: {e}", "hint": "sari --cmd engine install", "status": 503}
                     if engine_mode == "embedded" and not st.engine_ready:
-                        return self._json({"ok": False, "error": f"engine_ready=false reason={st.reason}", "hint": st.hint}, status=503)
+                        return {"ok": False, "error": f"engine_ready=false reason={st.reason}", "hint": st.hint, "status": 503}
             req_root_ids: list[str] = []
             for item in root_ids:
                 if "," in item:
@@ -116,8 +130,11 @@ class Handler(BaseHTTPRequestHandler):
                     if self.db.has_legacy_paths():
                         final_root_ids = []
                     else:
-                        return self._json({"ok": False, "error": "root_ids out of scope"}, status=400)
-            snippet_lines = max(1, min(int(self.indexer.cfg.snippet_max_lines), 20))
+                        return {"ok": False, "error": "root_ids out of scope", "status": 400}
+            try:
+                snippet_lines = max(1, min(int(self.indexer.cfg.snippet_max_lines), 20))
+            except (ValueError, TypeError, AttributeError):
+                snippet_lines = 3
             opts = SearchOptions(
                 query=q,
                 repo=repo,
@@ -129,25 +146,26 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 hits, meta = self.db.search_v2(opts)
             except Exception as e:
-                return self._json({"ok": False, "error": f"engine query failed: {e}"}, status=500)
-            return self._json(
-                {"ok": True, "q": q, "repo": repo, "meta": meta, "engine": engine_mode, "index_version": index_version, "hits": [h.__dict__ for h in hits]}
-            )
+                return {"ok": False, "error": f"engine query failed: {e}", "status": 500}
+            return {"ok": True, "q": q, "repo": repo, "meta": meta, "engine": engine_mode, "index_version": index_version, "hits": [h.__dict__ for h in hits]}
 
         if path == "/repo-candidates":
             q = (qs.get("q") or [""])[0].strip()
-            limit = int((qs.get("limit") or ["3"])[0])
+            try:
+                limit = int((qs.get("limit") or ["3"])[0])
+            except (ValueError, TypeError):
+                limit = 3
             if not q:
-                return self._json({"ok": False, "error": "missing q"}, status=400)
+                return {"ok": False, "error": "missing q", "status": 400}
             cands = self.db.repo_candidates(q=q, limit=max(1, min(limit, 5)), root_ids=self.root_ids)
-            return self._json({"ok": True, "q": q, "candidates": cands})
+            return {"ok": True, "q": q, "candidates": cands}
 
         if path == "/rescan":
             # Trigger a scan ASAP (non-blocking)
             self.indexer.request_rescan()
-            return self._json({"ok": True, "requested": True})
+            return {"ok": True, "requested": True}
 
-        return self._json({"ok": False, "error": "not found"}, status=404)
+        return {"ok": False, "error": "not found", "status": 404}
 
     def do_POST(self):
         parsed = urlparse(self.path)

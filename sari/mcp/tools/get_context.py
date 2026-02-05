@@ -1,25 +1,14 @@
 from typing import Any, Dict, List
 
-try:
-    from ._util import (
-        mcp_response,
-        pack_header,
-        pack_line,
-        pack_encode_id,
-        pack_encode_text,
-        pack_error,
-        ErrorCode,
-    )
-except ImportError:
-    from _util import (
-        mcp_response,
-        pack_header,
-        pack_line,
-        pack_encode_id,
-        pack_encode_text,
-        pack_error,
-        ErrorCode,
-    )
+from sari.mcp.tools._util import (
+    mcp_response,
+    pack_header,
+    pack_line,
+    pack_encode_id,
+    pack_encode_text,
+    pack_error,
+    ErrorCode,
+)
 
 
 def build_get_context(args: Dict[str, Any], db: Any) -> Dict[str, Any]:

@@ -3,14 +3,9 @@ from __future__ import annotations
 import os
 from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple
 
-try:
-    from .models import SearchHit, SearchOptions
-    from .search_engine import SqliteSearchEngineAdapter
-    from .engine_runtime import EmbeddedEngine
-except ImportError:
-    from models import SearchHit, SearchOptions
-    from search_engine import SqliteSearchEngineAdapter
-    from engine_runtime import EmbeddedEngine
+from sari.core.models import SearchHit, SearchOptions
+from sari.core.engine_runtime import EmbeddedEngine, SqliteSearchEngineAdapter
+from sari.core.settings import settings
 
 
 class SearchEngineInterface(Protocol):
@@ -52,8 +47,7 @@ def default_engine_name(cfg: Any = None) -> str:
         mode = (getattr(cfg, "engine_mode", "") or "").strip().lower()
         if mode in {"embedded", "sqlite"}:
             return mode
-    mode = (os.environ.get("SARI_ENGINE_MODE") or "embedded").strip().lower()
-    return "embedded" if mode == "embedded" else "sqlite"
+    return settings.ENGINE_MODE
 
 
 def get_default_engine(db: Any, cfg: Any = None, roots: Any = None) -> SearchEngineInterface:

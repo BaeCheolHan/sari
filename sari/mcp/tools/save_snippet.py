@@ -4,35 +4,19 @@ import threading
 import time
 from typing import Any, Dict, List, Optional
 
-try:
-    from ._util import (
-        mcp_response,
-        pack_header,
-        pack_line,
-        pack_encode_id,
-        pack_encode_text,
-        pack_error,
-        ErrorCode,
-        resolve_db_path,
-        resolve_fs_path,
-    )
-except ImportError:
-    from _util import (
-        mcp_response,
-        pack_header,
-        pack_line,
-        pack_encode_id,
-        pack_encode_text,
-        pack_error,
-        ErrorCode,
-        resolve_db_path,
-        resolve_fs_path,
-    )
+from sari.mcp.tools._util import (
+    mcp_response,
+    pack_header,
+    pack_line,
+    pack_encode_id,
+    pack_encode_text,
+    pack_error,
+    ErrorCode,
+    resolve_db_path,
+    resolve_fs_path,
+)
 
-try:
-    from sari.core.queue_pipeline import DbTask
-except Exception:
-    DbTask = None  # type: ignore
+from sari.core.queue_pipeline import DbTask
 
 
 def _parse_path_range(path: str, start_line: Optional[int], end_line: Optional[int]) -> tuple[str, Optional[int], Optional[int]]:

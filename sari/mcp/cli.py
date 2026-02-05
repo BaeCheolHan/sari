@@ -34,7 +34,7 @@ if str(REPO_ROOT) not in sys.path:
 
 
 from sari.core.workspace import WorkspaceManager
-from sari.core.registry import ServerRegistry, REGISTRY_FILE
+from sari.core.server_registry import ServerRegistry, REGISTRY_FILE
 from sari.core.config import Config
 from sari.core.db import LocalSearchDB
 from sari.mcp.tools.call_graph import build_call_graph
