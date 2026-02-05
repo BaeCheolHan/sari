@@ -113,13 +113,11 @@ def _platform_tokenizer_tag() -> str:
 
 def _check_engine_tokenizer_data() -> dict[str, Any]:
     """Check if tokenizer data (lindera) is installed as a package."""
-    try:
-        import lindera_python_ipadic
-        return _result("CJK Tokenizer Data", True, f"installed ({getattr(lindera_python_ipadic, '__version__', 'unknown')})")
-    except ImportError as e:
-        return _result("CJK Tokenizer Data", False, f"Import failed: {e} (package 'lindera-python-ipadic' optional)")
-    except Exception as e:
-        return _result("CJK Tokenizer Data", False, str(e))
+    if lindera_available():
+        uri = lindera_dict_uri() or "embedded://ipadic"
+        return _result("CJK Tokenizer", True, f"active ({uri})")
+    err = lindera_error() or "not available"
+    return _result("CJK Tokenizer", False, f"{err} (package 'lindera-python-ipadic' optional)")
 
 def _check_tree_sitter() -> dict[str, Any]:
     """Check if Tree-sitter and language parsers are installed."""
@@ -143,13 +141,8 @@ def _check_tree_sitter() -> dict[str, Any]:
         return _result("Tree-sitter Support", False, str(e))
 
 def _check_lindera_dictionary() -> dict[str, Any]:
-    if lindera_available():
-        uri = lindera_dict_uri() or "embedded://ipadic"
-        return _result("Lindera Engine", True, f"active dict={uri}")
-    err = lindera_error() or "not available"
-    # If package is missing, it's not an error but an optional state
-    is_error = "not installed" not in err
-    return _result("Lindera Engine", not is_error, err)
+    # Merged into CJK Tokenizer check above
+    return _check_engine_tokenizer_data()
 
 
 def _check_port(port: int, label: str) -> dict[str, Any]:

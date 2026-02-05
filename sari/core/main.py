@@ -6,6 +6,8 @@ import time
 import ipaddress
 from pathlib import Path
 from datetime import datetime
+import sys
+from sari.core.settings import settings
 
 # Support both `python3 app/main.py` (script mode) and package mode.
 try:
@@ -84,7 +86,7 @@ def main() -> int:
         cfg = Config.load(cfg_path)
     else:
         # Use safe defaults if config.json is missing.
-        print(f"[sari] Config not found in workspace ({cfg_path}), using defaults.")
+        print(f"[sari] Config not found in workspace ({cfg_path}), using defaults.", file=sys.stderr)
         defaults = config_mod.Config.get_defaults(workspace_root)
         cfg = Config(**defaults)
 
@@ -99,7 +101,7 @@ def main() -> int:
     db_path = cfg.db_path
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
-    print(f"[sari] DB path: {db_path}")
+    print(f"[sari] DB path: {db_path}", file=sys.stderr)
 
     db = LocalSearchDB(db_path)
     db.set_settings(settings)
@@ -107,7 +109,7 @@ def main() -> int:
         from sari.core.engine_registry import get_default_engine
         db.set_engine(get_default_engine(db, cfg, cfg.workspace_roots))
     except Exception as e:
-        print(f"[sari] engine init failed: {e}")
+        print(f"[sari] engine init failed: {e}", file=sys.stderr)
     from sari.core.indexer import resolve_indexer_settings
     mode, enabled, startup_enabled, lock_handle = resolve_indexer_settings(str(db_path))
     indexer = Indexer(cfg, db, indexer_mode=mode, indexing_enabled=enabled, startup_index_enabled=startup_enabled, lock_handle=lock_handle)
@@ -133,7 +135,7 @@ def main() -> int:
     _write_server_info(workspace_root, host, actual_port, cfg.http_api_port)
 
     if actual_port != cfg.http_api_port:
-        print(f"[sari] server.json updated with fallback port {actual_port}")
+        print(f"[sari] server.json updated with fallback port {actual_port}", file=sys.stderr)
 
     try:
         port_file = Path(db_path + ".http_api.port")

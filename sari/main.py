@@ -312,7 +312,7 @@ def _spawn_http_daemon(ns: argparse.Namespace) -> int:
         env=env,
     )
     port_note = ns.http_api_port or os.environ.get("SARI_HTTP_API_PORT") or "default"
-    print(f"[sari] HTTP daemon started in background (port: {port_note})")
+    print(f"[sari] HTTP daemon started in background (port: {port_note})", file=sys.stderr)
     return 0
 
 
