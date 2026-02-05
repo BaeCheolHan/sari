@@ -238,11 +238,22 @@ def _cmd_engine_verify() -> int:
 
 def _cmd_doctor() -> int:
     try:
-        from doctor import run_doctor
-        run_doctor()
+        from sari.mcp.tools.doctor import execute_doctor
+        # Use default args for CLI call
+        res = execute_doctor({})
+        
+        # Parse the 'pack' or 'json' response from execute_doctor
+        if isinstance(res, dict) and "content" in res:
+            content = res["content"][0]["text"]
+            # If the content is JSON, pretty-print it for better readability in terminal
+            try:
+                data = json.loads(content)
+                print(json.dumps(data, ensure_ascii=False, indent=2))
+            except Exception:
+                print(content)
         return 0
     except Exception as e:
-        print(str(e), file=sys.stderr)
+        print(f"Doctor failed: {e}", file=sys.stderr)
         return 1
 
 
@@ -333,7 +344,14 @@ def run_cmd(argv: List[str]) -> int:
 
 def main(argv: List[str] = None) -> int:
     argv = list(argv or sys.argv[1:])
-    if argv and argv[0] in {"daemon", "proxy", "status", "search", "init", "auto"}:
+    if not argv:
+        return run_cmd(["status"]) # Default behavior
+    
+    # Fast-path for subcommands
+    if argv[0] == "doctor":
+        return _cmd_doctor()
+    
+    if argv[0] in {"daemon", "proxy", "status", "search", "init", "auto"}:
         from sari.mcp.cli import main as legacy_main
         sys.argv = ["sari"] + argv
         return legacy_main()
