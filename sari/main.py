@@ -258,6 +258,11 @@ def _run_http_server() -> int:
     return http_main()
 
 
+def _set_http_api_port(port: str) -> None:
+    if port:
+        os.environ["SARI_HTTP_API_PORT"] = str(port)
+
+
 def _spawn_http_daemon(ns: argparse.Namespace) -> int:
     if os.environ.get("SARI_HTTP_DAEMON_CHILD"):
         return _run_http_server()
@@ -358,13 +363,11 @@ def main(argv: List[str] = None) -> int:
     os.environ["SARI_FORMAT"] = ns.format
 
     if ns.http_api:
-        if ns.http_api_port:
-            os.environ["SARI_HTTP_API_PORT"] = str(ns.http_api_port)
+        _set_http_api_port(ns.http_api_port)
         return _run_http_server()
 
     if ns.transport == "http":
-        if ns.http_api_port:
-            os.environ["SARI_HTTP_API_PORT"] = str(ns.http_api_port)
+        _set_http_api_port(ns.http_api_port)
         if _should_http_daemon(ns):
             return _spawn_http_daemon(ns)
         return _run_http_server()

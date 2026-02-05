@@ -130,11 +130,15 @@ def _ensure_venv(venv_dir: Path) -> None:
 def _install_engine_package(venv_dir: Path) -> None:
     _ensure_venv(venv_dir)
     py = _venv_python(venv_dir)
+    env = os.environ.copy()
+    env.setdefault("PIP_DISABLE_PIP_VERSION_CHECK", "1")
+    env.setdefault("PIP_NO_PYTHON_VERSION_WARNING", "1")
     # Keep MCP stdio clean: send installer output to stderr.
     subprocess.check_call(
         [str(py), "-m", "pip", "install", ENGINE_PACKAGE],
         stdout=sys.stderr,
         stderr=sys.stderr,
+        env=env,
     )
 
 
