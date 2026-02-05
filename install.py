@@ -255,8 +255,9 @@ def do_install(args):
     bootstrap_name = "bootstrap.bat" if IS_WINDOWS else "bootstrap.sh"
     install_source = (os.environ.get("SARI_INSTALL_SOURCE") or "").strip()
 
-    # Best-effort: stop running daemon before install/update to avoid conflicts
-    _stop_running_daemon_best_effort()
+    # REMOVED: _stop_running_daemon_best_effort() 
+    # Policy: Do not kill existing daemons during install/upgrade to support zero-downtime.
+    # Users should use 'sari daemon stop' manually if needed.
 
     if args.update:
         if not args.yes and not confirm(f"Sari will be updated. This will replace the contents of {INSTALL_DIR}. Continue?", default=True):
