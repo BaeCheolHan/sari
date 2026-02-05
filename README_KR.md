@@ -21,12 +21,12 @@ Sari는 **초경량(< 5MB)** 설계를 기본으로 합니다. 환경에 맞는 
 ### 방법 1: 자동 설치 스크립트 (권장)
 설치 과정에서 필요한 기능을 대화형으로 선택할 수 있습니다. 시스템에 **uv**가 설치되어 있다면 자동으로 사용하여 10배 더 빠르게 설치합니다.
 
-#### macOS / Linux
+#### 🍎 macOS / Linux
 ```bash
 curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python3 - -y --update
 ```
 
-#### Windows (PowerShell)
+#### 🪟 Windows (PowerShell)
 ```powershell
 irm https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python - -y --update
 ```

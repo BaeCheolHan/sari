@@ -21,12 +21,12 @@ Choose the method that best fits your workflow. Sari is **extremely lightweight 
 ### Method 1: Automatic Script (Recommended)
 This script handles everything, including binary detection and interactive feature selection. It will automatically use **uv** if available for 10x faster installation.
 
-#### macOS / Linux
+#### 🍎 macOS / Linux
 ```bash
 curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python3 - -y --update
 ```
 
-#### Windows (PowerShell)
+#### 🪟 Windows (PowerShell)
 ```powershell
 irm https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python - -y --update
 ```
