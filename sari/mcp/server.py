@@ -107,18 +107,27 @@ class LocalSearchMCPServer:
 
     def run(self) -> None:
         """Standard MCP JSON-RPC loop."""
+        self._log_debug("Sari MCP Server starting run loop...")
         try:
             while True:
                 line = sys.stdin.readline()
                 if not line:
+                    self._log_debug("IN: EOF reached (Connection closed by client)")
                     break
+                
+                stripped = line.strip()
+                self._log_debug(f"IN: {stripped}")
+                
                 try:
-                    req = json.loads(line)
+                    req = json.loads(stripped)
                     # Async dispatch to avoid blocking the read loop
                     self._req_queue.put(req)
-                except:
-                    pass
+                except Exception as e:
+                    self._log_debug(f"ERROR parsing input JSON: {e} | Raw line: {stripped}")
+        except Exception as e:
+            self._log_debug(f"CRITICAL in run loop: {e}")
         finally:
+            self._log_debug("Sari MCP Server shutting down...")
             self.shutdown()
 
     def shutdown(self) -> None:
@@ -162,7 +171,24 @@ class LocalSearchMCPServer:
                 with self._stdout_lock:
                     # Use the explicit stdout handle provided during initialization
                     target = getattr(self, "_original_stdout", sys.stdout)
-                    print(_json_dumps(resp), file=target, flush=True)
+                    json_resp = _json_dumps(resp)
+                    
+                    # --- DEBUG LOGGING ---
+                    self._log_debug(f"OUT: {json_resp}")
+                    
+                    print(json_resp, file=target, flush=True)
+        except Exception as e:
+            self._log_debug(f"ERROR in _handle_and_respond: {e}")
+
+    def _log_debug(self, message: str) -> None:
+        """Log MCP traffic to a dedicated debug file."""
+        try:
+            log_path = Path.home() / ".local" / "share" / "sari" / "mcp_debug.log"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(log_path, "a", encoding="utf-8") as f:
+                import time
+                ts = time.strftime("%Y-%m-%d %H:%M:%S")
+                f.write(f"[{ts}] {message}\n")
         except Exception:
             pass
 
