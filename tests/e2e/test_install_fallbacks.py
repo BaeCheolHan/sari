@@ -8,6 +8,7 @@ def _install_with_source(tmp_path, monkeypatch, source):
 
     install_dir = tmp_path / "sari-install"
     repo_root = Path(__file__).resolve().parents[2]
+    monkeypatch.chdir(repo_root)
 
     monkeypatch.setenv("SARI_INSTALL_SOURCE", source)
     monkeypatch.setenv("SARI_WORKSPACE_ROOT", str(tmp_path))

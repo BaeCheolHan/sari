@@ -213,12 +213,36 @@ def forward_socket_to_stdout(sock, state):
                 break
 
             msg_id = None
+            obj = None
             try:
                 obj = json.loads(body.decode("utf-8"))
                 if isinstance(obj, dict):
                     msg_id = obj.get("id")
             except Exception:
                 msg_id = None
+                obj = None
+
+            # If daemon is draining, reconnect and replay initialize without
+            # surfacing an error to the client.
+            try:
+                if isinstance(obj, dict):
+                    err = obj.get("error") or {}
+                    code = err.get("code")
+                    message = str(err.get("message") or "")
+                    if code == -32001 and "draining" in message.lower():
+                        _log_info("Server draining detected; reconnecting to latest daemon.")
+                        state["dead"] = True
+                        if _reconnect(state):
+                            init_req = state.get("init_request")
+                            if init_req:
+                                _send_payload(
+                                    state,
+                                    json.dumps(init_req).encode("utf-8"),
+                                    state.get("mode") or _MODE_FRAMED,
+                                )
+                            continue
+            except Exception:
+                pass
             if msg_id is not None:
                 with state["suppress_lock"]:
                     suppress_ids = state.setdefault("suppress_ids", set())

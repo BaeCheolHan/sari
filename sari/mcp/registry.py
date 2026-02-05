@@ -8,6 +8,8 @@ When all clients disconnect from a workspace (refcount=0), resources are cleaned
 import logging
 import threading
 import os
+import json
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -53,6 +55,28 @@ class SharedState:
                 workspace_root=self.workspace_root
             )
             logger.info(f"Started HTTP Server for {workspace_root} on port {self.http_port}")
+            try:
+                ServerRegistry().set_workspace_http(
+                    self.workspace_root,
+                    http_port=self.http_port,
+                    http_host=cfg.http_api_host,
+                )
+            except Exception as e:
+                logger.error(f"Failed to update registry http info: {e}")
+            try:
+                data_dir = Path(self.workspace_root) / ".codex" / "tools" / "sari" / "data"
+                data_dir.mkdir(parents=True, exist_ok=True)
+                server_json = data_dir / "server.json"
+                server_info = {
+                    "host": cfg.http_api_host,
+                    "port": self.http_port,
+                    "config_port": cfg.http_api_port,
+                    "pid": os.getpid(),
+                    "started_at": datetime.now().isoformat(),
+                }
+                server_json.write_text(json.dumps(server_info, indent=2), encoding="utf-8")
+            except Exception as e:
+                logger.error(f"Failed to write server.json: {e}")
 
         except Exception as e:
             logger.error(f"Failed to start server components for {workspace_root}: {e}")

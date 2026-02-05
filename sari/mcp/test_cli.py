@@ -41,13 +41,47 @@ def test_get_http_host_port_prefers_server_json():
             _set_env("SARI_WORKSPACE_ROOT", prev)
 
 
+def test_get_http_host_port_prefers_registry_when_no_server_json():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ws_root = Path(tmpdir).resolve()
+        reg_path = Path(tmpdir) / "registry.json"
+        data = {
+            "version": "2.0",
+            "daemons": {},
+            "workspaces": {
+                str(ws_root): {"boot_id": "boot-x", "http_port": 47799, "http_host": "127.0.0.1"}
+            },
+        }
+        reg_path.write_text(json.dumps(data), encoding="utf-8")
+
+        prev_root = os.environ.get("SARI_WORKSPACE_ROOT")
+        prev_reg = os.environ.get("SARI_REGISTRY_FILE")
+        _set_env("SARI_WORKSPACE_ROOT", str(ws_root))
+        _set_env("SARI_REGISTRY_FILE", str(reg_path))
+        try:
+            # Update registry module globals used by ServerRegistry.
+            from sari.core import registry as core_registry
+            core_registry.REGISTRY_FILE = reg_path
+            core_registry.REGISTRY_DIR = reg_path.parent
+            core_registry.LOCK_FILE = reg_path.parent / "server.json.lock"
+            host, port = _get_http_host_port()
+            assert host == "127.0.0.1"
+            assert port == 47799
+        finally:
+            _set_env("SARI_WORKSPACE_ROOT", prev_root)
+            _set_env("SARI_REGISTRY_FILE", prev_reg)
+
+
 def test_cmd_status_prints_json():
-    with patch("cli._request_http", return_value={"ok": True}) as mock_req:
+    with patch("cli._request_http", return_value={"ok": True}) as mock_req, \
+         patch("cli.is_daemon_running", return_value=True), \
+         patch("cli._get_http_host_port", return_value=("127.0.0.1", 47777)):
         buf = io.StringIO()
         with redirect_stdout(buf):
-            rc = cmd_status(None)
+            args = type("Args", (), {"daemon_host": "", "daemon_port": None, "http_host": "", "http_port": None})
+            rc = cmd_status(args)
         assert rc == 0
-        mock_req.assert_called_once_with("/status", {})
+        mock_req.assert_called_once_with("/status", {}, "127.0.0.1", 47777)
         out = buf.getvalue().strip()
         assert out == json.dumps({"ok": True}, ensure_ascii=False, indent=2)
 
@@ -67,6 +101,7 @@ def test_cmd_search_prints_json():
 def run_tests():
     tests = [
         test_get_http_host_port_prefers_server_json,
+        test_get_http_host_port_prefers_registry_when_no_server_json,
         test_cmd_status_prints_json,
         test_cmd_search_prints_json,
     ]

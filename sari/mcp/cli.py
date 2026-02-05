@@ -54,25 +54,40 @@ DEFAULT_HTTP_PORT = 47777
 
 
 def get_daemon_address():
-    """Get daemon host and port from environment, registry, or defaults."""
-    host = os.environ.get("SARI_DAEMON_HOST", DEFAULT_HOST)
+    """Get daemon host and port with workspace-aware resolution.
+
+    Priority:
+      1) Registry workspace mapping (multi-workspace safe)
+      2) Explicit env override (SARI_DAEMON_OVERRIDE=1)
+      3) Env fallback (host/port if set)
+      4) Defaults
+    """
+    env_host = os.environ.get("SARI_DAEMON_HOST")
     env_port = os.environ.get("SARI_DAEMON_PORT")
-    if env_port:
-        try:
-            return host, int(env_port)
-        except ValueError:
-            pass
+    env_override = (os.environ.get("SARI_DAEMON_OVERRIDE") or "").strip().lower() in {"1", "true", "yes", "on"}
 
     try:
         workspace_root = os.environ.get("SARI_WORKSPACE_ROOT") or WorkspaceManager.resolve_workspace_root()
         inst = ServerRegistry().resolve_workspace_daemon(str(workspace_root))
         if inst and inst.get("port"):
-            inst_host = inst.get("host") or host
+            inst_host = inst.get("host") or (env_host or DEFAULT_HOST)
             return inst_host, int(inst.get("port"))
     except Exception:
         pass
 
-    return host, DEFAULT_PORT
+    if env_override and env_port:
+        try:
+            return (env_host or DEFAULT_HOST), int(env_port)
+        except ValueError:
+            pass
+
+    if env_port:
+        try:
+            return (env_host or DEFAULT_HOST), int(env_port)
+        except ValueError:
+            pass
+
+    return (env_host or DEFAULT_HOST), DEFAULT_PORT
 
 
 def _package_config_path() -> Path:
@@ -583,8 +598,27 @@ def cmd_auto(args):
             return 0
         # Connection refused etc. We'll try to start daemon below.
 
-    if _identify_sari_daemon(host, port):
-        return cmd_proxy(args)
+    identify = _identify_sari_daemon(host, port)
+    if identify:
+        existing_version = identify.get("version") or ""
+        local_version = _get_local_version()
+        draining = bool(identify.get("draining"))
+        needs_upgrade = bool(existing_version and local_version and existing_version != local_version)
+        if needs_upgrade or draining:
+            # Start a new daemon (upgrade/drain path), then re-resolve.
+            start_args = argparse.Namespace(
+                daemonize=True,
+                daemon_host="",
+                daemon_port=None,
+                http_host="",
+                http_port=None,
+            )
+            cmd_daemon_start(start_args)
+            host, port = get_daemon_address()
+            if is_daemon_running(host, port):
+                return cmd_proxy(args)
+        else:
+            return cmd_proxy(args)
 
     # Try to start daemon in background, then proxy.
     if not is_daemon_running(host, port):

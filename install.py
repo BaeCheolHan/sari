@@ -191,6 +191,8 @@ def _create_bootstrap_script(install_dir: Path):
             "  exit 0\n"
             "fi\n\n"
             "python3 -m sari.mcp.cli daemon start -d >/dev/null 2>&1 || true\n"
+            # Avoid cwd shadowing when a repo checkout exists.
+            "cd \"$HOME\" >/dev/null 2>&1 || true\n"
             "exec python3 -m sari.main \"$@\"\n"
         )
 
