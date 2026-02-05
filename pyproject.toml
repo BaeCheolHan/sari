@@ -20,12 +20,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# 한중일(한국어/일본어/중국어) 검색 최적화용 사전 패키지
+# 한중일 검색 지원
 cjk = [
   "lindera-dictionary-ipadic",
 ]
 
-# 고정밀 코드 분석을 위한 Tree-sitter 패키지
+# 고정밀 코드 분석
 treesitter = [
   "tree-sitter",
   "tree-sitter-python",
@@ -37,7 +37,7 @@ treesitter = [
   "tree-sitter-cpp",
 ]
 
-# 모든 기능 포함 (순서 및 정합성을 위해 직접 나열)
+# 전체 기능 (모든 의존성 포함)
 full = [
   "lindera-dictionary-ipadic",
   "tree-sitter",
@@ -51,9 +51,10 @@ full = [
   "tantivy>=0.20.0",
 ]
 
-# 이전 버전과의 호환성을 위한 별칭
+# 이전 버전 호환성
 engine = [
-  "sari[full]"
+  "tantivy>=0.20.0",
+  "lindera-dictionary-ipadic",
 ]
 
 [project.scripts]

@@ -63,20 +63,24 @@ jobs:
   publish-pypi:
     needs: release
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.ref_name }} # Tag name (e.g., v1.2.3)
-          fetch-depth: 0
+          ref: ${{ github.ref_name }}
 
-      - name: Set up uv
-        uses: astral-sh/setup-uv@v5
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install build
 
       - name: Build package
-        run: uv build
+        run: python -m build
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
