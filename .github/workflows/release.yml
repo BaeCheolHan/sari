@@ -82,6 +82,7 @@ jobs:
     name: Publish to PyPI (OIDC)
     needs: release
     runs-on: ubuntu-latest
+    environment: pypi
     permissions:
       id-token: write # Required for OIDC
       contents: read
