@@ -5,7 +5,6 @@ import fnmatch
 from typing import List, Dict, Any, Set, Optional
 from sari.core.settings import settings
 from sari.core.workspace import WorkspaceManager
-from sari.core.workspace import WorkspaceManager
 from .profiles import PROFILES, Profile
 
 class ConfigManager:
@@ -122,7 +121,7 @@ class ConfigManager:
 
         # 3 & 4. Load Config Files (Accumulate Overrides)
         global_path = pathlib.Path(self.settings.GLOBAL_CONFIG_DIR) / "config.json"
-        ws_path = self.workspace_root / ".sari" / "config.json" if self.workspace_root else None
+        ws_path = pathlib.Path(WorkspaceManager.resolve_config_path(str(self.workspace_root))) if self.workspace_root else None
         
         for path in [global_path, ws_path]:
             data = self._load_json(path)
@@ -155,8 +154,19 @@ class ConfigManager:
 
     def _load_json(self, path: Optional[pathlib.Path]) -> Dict[str, Any]:
         if path and path.exists():
-            try: return json.loads(path.read_text())
-            except: pass
+            try:
+                with path.open("rb") as f:
+                    head = f.read(16)
+                if head.startswith(b"SQLite format 3"):
+                    raise ValueError(
+                        f"Invalid config file at {path}: detected SQLite DB; expected JSON."
+                    )
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    raise ValueError(f"Invalid config shape at {path}: expected JSON object.")
+                return data
+            except Exception as e:
+                raise ValueError(f"Failed to load config file {path}: {e}") from e
         return {}
 
     def to_dict(self, gitignore_lines: Optional[List[str]] = None) -> Dict[str, Any]:

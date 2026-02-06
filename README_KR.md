@@ -78,8 +78,11 @@ pip install "sari[full]"       # 선택 기능 포함
 # 1) 기존 tool 환경 제거
 uv tool uninstall sari
 
-# 2) PyPI에서 강제 재설치 (로컬 설정/소스 및 캐시 무시)
-uv tool install --reinstall --refresh --no-cache --no-config --no-sources "sari[full]==0.3.13"
+# 2) PyPI 최신 버전 강제 재설치 (로컬 설정/소스 및 캐시 무시)
+uv tool install --reinstall --refresh --no-cache --no-config --no-sources "sari[full]"
+
+# 또는 특정 버전 고정 설치(예시)
+uv tool install --reinstall --refresh --no-cache --no-config --no-sources "sari[full]==0.3.16"
 
 # 3) 설치된 도구 버전 확인
 uv tool list
@@ -158,7 +161,7 @@ Codex / Gemini (`.codex/config.toml` 또는 `.gemini/config.toml`):
 [mcp_servers.sari]
 command = "sari"
 args = ["--transport", "stdio", "--format", "pack"]
-env = { SARI_WORKSPACE_ROOT = "/absolute/path/to/project" }
+env = { SARI_WORKSPACE_ROOT = "/absolute/path/to/project", SARI_CONFIG = "/absolute/path/to/project/.sari/mcp-config.json" }
 startup_timeout_sec = 60
 ```
 
@@ -170,7 +173,8 @@ Gemini 구버전 설정 (`~/.gemini/settings.json`):
       "command": "sari",
       "args": ["--transport", "stdio", "--format", "pack"],
       "env": {
-        "SARI_WORKSPACE_ROOT": "/absolute/path/to/project"
+        "SARI_WORKSPACE_ROOT": "/absolute/path/to/project",
+        "SARI_CONFIG": "/absolute/path/to/project/.sari/mcp-config.json"
       }
     }
   }
@@ -186,6 +190,7 @@ Claude Desktop / Cursor (JSON):
       "args": ["--transport", "stdio", "--format", "pack"],
       "env": {
         "SARI_WORKSPACE_ROOT": "/absolute/path/to/project",
+        "SARI_CONFIG": "/absolute/path/to/project/.sari/mcp-config.json",
         "SARI_RESPONSE_COMPACT": "1"
       }
     }

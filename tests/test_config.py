@@ -4,6 +4,7 @@ import pytest
 from pathlib import Path
 from sari.core.config.main import Config
 from sari.core.config.manager import ConfigManager
+from sari.core.workspace import WorkspaceManager
 from sari.core.settings import settings
 
 def test_config_defaults():
@@ -95,3 +96,28 @@ def test_config_manager_merge(tmp_path):
     final = manager.resolve_final_config()
     assert ".custom_ext" in final["final_extensions"]
     assert "node_modules" not in final["final_exclude_dirs"]
+
+
+def test_config_load_rejects_db_path_equal_config_path(tmp_path, monkeypatch):
+    cfg_path = tmp_path / "mcp-config.json"
+    cfg_path.write_text(json.dumps({"db_path": str(cfg_path)}), encoding="utf-8")
+    monkeypatch.setenv("SARI_CONFIG", str(cfg_path))
+    with pytest.raises(ValueError, match="db_path must not equal config path"):
+        Config.load(str(cfg_path), workspace_root_override=str(tmp_path))
+
+
+def test_config_load_rejects_sqlite_file_as_config(tmp_path):
+    cfg_path = tmp_path / "mcp-config.json"
+    cfg_path.write_bytes(b"SQLite format 3\x00" + b"junk")
+    with pytest.raises(ValueError, match="detected SQLite DB"):
+        Config.load(str(cfg_path), workspace_root_override=str(tmp_path))
+
+
+def test_resolve_config_path_prefers_workspace_mcp_config(tmp_path, monkeypatch):
+    ws = tmp_path / "workspace"
+    (ws / ".sari").mkdir(parents=True)
+    cfg = ws / ".sari" / "mcp-config.json"
+    cfg.write_text("{}", encoding="utf-8")
+    monkeypatch.delenv("SARI_CONFIG", raising=False)
+    resolved = WorkspaceManager.resolve_config_path(str(ws))
+    assert resolved == str(cfg)

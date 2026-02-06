@@ -18,6 +18,31 @@ def _expanduser(p: str) -> str:
     return os.path.expanduser(p)
 
 
+def _load_config_json(path: str) -> dict:
+    """
+    Load config JSON strictly.
+    Raises ValueError for malformed or wrong file types (e.g. SQLite file).
+    """
+    p = Path(path)
+    try:
+        with p.open("rb") as f:
+            head = f.read(16)
+        if head.startswith(b"SQLite format 3"):
+            raise ValueError(
+                f"Invalid config file at {path}: detected SQLite DB. "
+                "Use a JSON config file for SARI_CONFIG."
+            )
+        with p.open("r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON config at {path}: {e}") from e
+    except UnicodeDecodeError as e:
+        raise ValueError(f"Invalid UTF-8 config at {path}: {e}") from e
+    if not isinstance(raw, dict):
+        raise ValueError(f"Invalid config shape at {path}: root must be a JSON object")
+    return raw
+
+
 @dataclass(frozen=True)
 class Config:
     workspace_root: str # Primary root
@@ -139,10 +164,11 @@ class Config:
         raw = {}
         if path and os.path.exists(path):
             try:
-                with open(path, "r", encoding="utf-8") as f:
-                    raw = json.load(f)
+                raw = _load_config_json(path)
             except Exception as e:
+                # Fail fast with actionable errors instead of silently falling back.
                 logger.error(f"Failed to load config from {path}: {e}")
+                raise
 
         # Backward compatibility
         legacy_indexing = raw.get("indexing", {}) if isinstance(raw, dict) else {}
@@ -189,9 +215,24 @@ class Config:
         engine_auto_install = settings_obj.ENGINE_AUTO_INSTALL if "SARI_ENGINE_AUTO_INSTALL" in os.environ else bool(raw.get("engine_auto_install", defaults["engine_auto_install"]))
 
         # DB path resolution
-        db_path = settings_obj.CONFIG_PATH or raw.get("db_path")
+        get_env = getattr(settings_obj, "get_env", None)
+        env_db_path = get_env("DB_PATH") if callable(get_env) else os.environ.get("SARI_DB_PATH")
+        db_path = env_db_path or raw.get("db_path")
         if not db_path:
             db_path = str(WorkspaceManager.get_global_db_path())
+        db_path = _expanduser(str(db_path))
+        if path:
+            cfg_abs = os.path.abspath(_expanduser(str(path)))
+            db_abs = os.path.abspath(db_path)
+            if cfg_abs == db_abs:
+                raise ValueError(
+                    f"Invalid configuration: db_path must not equal config path ({cfg_abs}). "
+                    "Set SARI_DB_PATH or db_path to a separate .db file."
+                )
+        if db_path.lower().endswith(".json"):
+            raise ValueError(
+                f"Invalid db_path '{db_path}': database path must be a .db file, not JSON."
+            )
 
         # --- ConfigManager (Profiles + Add/Remove) ---
         manual_only = bool(raw.get("manual_only")) if "manual_only" in raw else settings_obj.MANUAL_ONLY
@@ -214,7 +255,7 @@ class Config:
             scan_interval_seconds=int(raw.get("scan_interval_seconds", defaults["scan_interval_seconds"])),
             snippet_max_lines=int(raw.get("snippet_max_lines", defaults["snippet_max_lines"])),
             max_file_bytes=int(raw.get("max_file_bytes", defaults["max_file_bytes"])),
-            db_path=_expanduser(str(db_path)),
+            db_path=db_path,
             include_ext=list(include_ext),
             include_files=list(include_files),
             exclude_dirs=list(exclude_dirs),
@@ -239,3 +280,9 @@ class Config:
 def resolve_config_path(repo_root: str) -> str:
     """Resolve config path using unified WorkspaceManager logic."""
     return WorkspaceManager.resolve_config_path(repo_root)
+
+
+def validate_config_file(path: str) -> None:
+    """Validate config file format if it exists."""
+    if path and os.path.exists(path):
+        _load_config_json(path)

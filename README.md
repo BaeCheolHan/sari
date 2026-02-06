@@ -77,8 +77,11 @@ Use this when you want to verify the packaged release (e.g., MCP connection fix)
 # 1) Remove existing tool environment
 uv tool uninstall sari
 
-# 2) Force reinstall from PyPI (ignore local project config/sources and cache)
-uv tool install --reinstall --refresh --no-cache --no-config --no-sources "sari[full]==0.3.13"
+# 2) Force reinstall latest from PyPI (ignore local project config/sources and cache)
+uv tool install --reinstall --refresh --no-cache --no-config --no-sources "sari[full]"
+
+# or pin an explicit version (example)
+uv tool install --reinstall --refresh --no-cache --no-config --no-sources "sari[full]==0.3.16"
 
 # 3) Verify installed tool version
 uv tool list
@@ -157,7 +160,7 @@ Codex / Gemini TOML (`.codex/config.toml` or `.gemini/config.toml`):
 [mcp_servers.sari]
 command = "sari"
 args = ["--transport", "stdio", "--format", "pack"]
-env = { SARI_WORKSPACE_ROOT = "/absolute/path/to/project" }
+env = { SARI_WORKSPACE_ROOT = "/absolute/path/to/project", SARI_CONFIG = "/absolute/path/to/project/.sari/mcp-config.json" }
 startup_timeout_sec = 60
 ```
 
@@ -169,7 +172,8 @@ Gemini legacy JSON (`~/.gemini/settings.json`):
       "command": "sari",
       "args": ["--transport", "stdio", "--format", "pack"],
       "env": {
-        "SARI_WORKSPACE_ROOT": "/absolute/path/to/project"
+        "SARI_WORKSPACE_ROOT": "/absolute/path/to/project",
+        "SARI_CONFIG": "/absolute/path/to/project/.sari/mcp-config.json"
       }
     }
   }
@@ -185,6 +189,7 @@ Claude Desktop / Cursor JSON:
       "args": ["--transport", "stdio", "--format", "pack"],
       "env": {
         "SARI_WORKSPACE_ROOT": "/absolute/path/to/project",
+        "SARI_CONFIG": "/absolute/path/to/project/.sari/mcp-config.json",
         "SARI_RESPONSE_COMPACT": "1"
       }
     }

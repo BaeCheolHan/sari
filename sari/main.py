@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import List
 
 from sari.core.workspace import WorkspaceManager
-from sari.core.config import Config
+from sari.core.config import Config, validate_config_file
 from sari.core.db import LocalSearchDB
 from sari.core.engine_registry import get_default_engine
 
@@ -130,7 +130,7 @@ def _cmd_roots_add(path: str) -> int:
     roots = data.get("roots") or data.get("workspace_roots") or []
     roots = [r for r in roots if r]
     roots.append(path)
-    final = WorkspaceManager.resolve_workspace_roots(root_uri=None, roots_env={}, config_roots=roots)
+    final = WorkspaceManager.resolve_workspace_roots(root_uri=None, config_roots=roots)
     data["roots"] = final
     Path(cfg_path).parent.mkdir(parents=True, exist_ok=True)
     Path(cfg_path).write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -407,6 +407,19 @@ def main(argv: List[str] = None) -> int:
         from sari.mcp.server import LocalSearchMCPServer
         print(LocalSearchMCPServer.SERVER_VERSION)
         return 0
+
+    # Fast fail for malformed/invalid config files to avoid hanging MCP startup.
+    try:
+        cfg_path = WorkspaceManager.resolve_config_path(str(Path.cwd()))
+        validate_config_file(cfg_path)
+    except Exception as e:
+        print(f"[sari] startup preflight failed: {e}", file=sys.stderr)
+        print(
+            "[sari] fix: use a valid JSON config file and keep db_path separate from config path "
+            "(e.g. set SARI_DB_PATH=~/.local/share/sari/index.db).",
+            file=sys.stderr,
+        )
+        return 2
 
     os.environ["SARI_FORMAT"] = ns.format
 

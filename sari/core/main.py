@@ -12,14 +12,12 @@ from sari.core.settings import settings
 # Support both `python3 app/main.py` (script mode) and package mode.
 try:
     from .config import Config, resolve_config_path  # type: ignore
-    from . import config as config_mod  # type: ignore
     from .db import LocalSearchDB  # type: ignore
     from .http_server import serve_forever  # type: ignore
     from .indexer import Indexer  # type: ignore
     from .workspace import WorkspaceManager  # type: ignore
 except ImportError:  # script mode
     from config import Config, resolve_config_path  # type: ignore
-    import config as config_mod  # type: ignore
     from db import LocalSearchDB  # type: ignore
     from http_server import serve_forever  # type: ignore
     from indexer import Indexer  # type: ignore
@@ -84,11 +82,14 @@ def main() -> int:
     # Graceful config loading (Global Install Support)
     try:
         cfg = Config.load(cfg_path, workspace_root_override=workspace_root)
-    except Exception:
-        # Use safe defaults if config loading fails.
-        print(f"[sari] Config not found in workspace ({cfg_path}), using defaults.", file=sys.stderr)
-        defaults = config_mod.Config.get_defaults(workspace_root)
-        cfg = Config(**defaults)
+    except Exception as e:
+        # Fail fast with an actionable error to avoid ambiguous startup hangs.
+        print(f"[sari] Config load failed ({cfg_path}): {e}", file=sys.stderr)
+        print(
+            "[sari] fix: ensure SARI_CONFIG points to a valid JSON file and db_path targets a .db file.",
+            file=sys.stderr,
+        )
+        return 2
 
 
     # Security hardening: loopback-only by default.

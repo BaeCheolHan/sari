@@ -1,6 +1,8 @@
 import os
 import sys
 import hashlib
+import json
+import shutil
 from pathlib import Path
 from typing import Optional, List
 from sari.core.settings import settings
@@ -57,11 +59,64 @@ class WorkspaceManager:
 
     @staticmethod
     def resolve_config_path(_repo_root: str) -> str:
-        """Resolve global config path, honoring SARI_CONFIG if set."""
+        """
+        Resolve config path.
+        Priority:
+        1) SARI_CONFIG (explicit override)
+        2) workspace-local .sari/mcp-config.json (preferred)
+        3) global ~/.config/sari/config.json (legacy fallback)
+        """
         val = WorkspaceManager.settings.CONFIG_PATH
         if val:
             return str(Path(os.path.expanduser(val)).resolve())
+        repo_root = _repo_root or os.getcwd()
+        ws_root = WorkspaceManager.find_project_root(repo_root)
+        preferred = WorkspaceManager.workspace_config_path(ws_root)
+        WorkspaceManager._migrate_legacy_workspace_config(ws_root, preferred)
+        if preferred.exists():
+            return str(preferred)
         return str(Path(WorkspaceManager.settings.GLOBAL_CONFIG_DIR) / "config.json")
+
+    @staticmethod
+    def workspace_config_path(root_path: str) -> Path:
+        """Preferred workspace-local config path."""
+        root = Path(root_path)
+        return root / WorkspaceManager.settings.WORKSPACE_CONFIG_DIR_NAME / "mcp-config.json"
+
+    @staticmethod
+    def legacy_workspace_config_path(root_path: str) -> Path:
+        """Legacy workspace-local config path kept for backward compatibility."""
+        root = Path(root_path)
+        return root / WorkspaceManager.settings.WORKSPACE_CONFIG_DIR_NAME / "config.json"
+
+    @staticmethod
+    def _looks_like_sqlite(path: Path) -> bool:
+        try:
+            with path.open("rb") as f:
+                head = f.read(16)
+            return head.startswith(b"SQLite format 3")
+        except Exception:
+            return False
+
+    @staticmethod
+    def _migrate_legacy_workspace_config(root_path: str, preferred_path: Path) -> None:
+        """
+        One-way migration:
+        - If legacy config.json is valid JSON and preferred file is absent, copy it.
+        - Never migrate if legacy file looks like SQLite (corrupted/misused path).
+        """
+        legacy = WorkspaceManager.legacy_workspace_config_path(root_path)
+        if preferred_path.exists() or not legacy.exists():
+            return
+        if WorkspaceManager._looks_like_sqlite(legacy):
+            return
+        try:
+            data = json.loads(legacy.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                preferred_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(legacy, preferred_path)
+        except Exception:
+            return
 
     @staticmethod
     def get_global_data_dir() -> Path:
