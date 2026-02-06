@@ -101,6 +101,7 @@ Useful when stdio transport is unstable in your environment.
 Start HTTP directly:
 ```bash
 SARI_WORKSPACE_ROOT=/absolute/path/to/project \
+SARI_HTTP_AUTO_OPEN=0 \
 sari --transport http --http-api-port 47777 --http-daemon
 ```
 
@@ -250,6 +251,7 @@ How to set:
 | `SARI_HTTP_API_HOST` | HTTP API host (for daemon status routing). | `127.0.0.1` |
 | `SARI_HTTP_API_PORT` | HTTP API port. | `47777` |
 | `SARI_HTTP_DAEMON` | Background HTTP mode when using `--transport http`. | `0` |
+| `SARI_HTTP_AUTO_OPEN` | Auto-open browser tab for HTTP dashboard on startup (`0` to disable, recommended for CI/headless). | `1` |
 | `SARI_ALLOW_NON_LOOPBACK` | Allow non-loopback bind in HTTP mode. | `0` |
 
 ### Search / Index

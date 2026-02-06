@@ -1,6 +1,11 @@
 import os
 from typing import Any, Optional, List
 
+try:
+    from sari.version import __version__ as _PKG_VERSION
+except Exception:
+    _PKG_VERSION = "dev"
+
 def _allow_legacy() -> bool:
     val = str(os.environ.get("SARI_ALLOW_LEGACY", "")).strip().lower()
     return val in {"1", "true", "yes", "on"}
@@ -60,7 +65,7 @@ class Settings:
     def get_float(key: str, default: float) -> float: return _get_float(key, default)
 
     @property
-    def VERSION(self) -> str: return _get_env_any("VERSION", "dev")
+    def VERSION(self) -> str: return _get_env_any("VERSION", _PKG_VERSION or "dev")
     @property
     def LOG_LEVEL(self) -> str: return _get_env_any("LOG_LEVEL", "INFO").upper()
     @property

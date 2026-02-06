@@ -513,20 +513,23 @@ def serve_forever(host: str, port: int, db: LocalSearchDB, indexer: Indexer, ver
             Path(tmp_marker).touch()
 
             if sys.platform == "darwin":
-                # AppleScript to find and reload Sari tab in Chrome or Safari
+                # Refined AppleScript to find, reload and focus Sari tab
                 script = f'''
                 set found to false
+                set targetUrl to "localhost:{actual_port}"
                 try
                     tell application "Google Chrome"
                         repeat with w in windows
+                            set tabIndex to 1
                             repeat with t in tabs of w
-                                if URL of t contains "localhost:{actual_port}" then
-                                    reload t
+                                if URL of t contains targetUrl then
+                                    set active tab index of w to tabIndex
                                     set index of w to 1
-                                    set active tab index of w to (get id of t)
+                                    reload t
                                     set found to true
                                     exit repeat
                                 end if
+                                set tabIndex to tabIndex + 1
                             end repeat
                             if found then exit repeat
                         end repeat
@@ -537,9 +540,10 @@ def serve_forever(host: str, port: int, db: LocalSearchDB, indexer: Indexer, ver
                         tell application "Safari"
                             repeat with w in windows
                                 repeat with t in tabs of w
-                                    if URL of t contains "localhost:{actual_port}" then
-                                        tell t to set its URL to "{url}"
+                                    if URL of t contains targetUrl then
+                                        set current tab of w to t
                                         set index of w to 1
+                                        tell t to set its URL to "{url}"
                                         set found to true
                                         exit repeat
                                     end if
