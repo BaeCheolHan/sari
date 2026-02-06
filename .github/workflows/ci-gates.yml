@@ -14,10 +14,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: Set up uv
         uses: astral-sh/setup-uv@v5
+      - name: Create virtualenv
+        run: uv venv .venv
       - name: Install dependencies
-        run: uv pip install -e ".[full]" pytest pytest-cov
+        run: uv pip install --python .venv/bin/python -e ".[full]" pytest pytest-cov
       - name: Run gate tests (must pass)
-        run: uv run pytest -m gate -q
+        run: uv run --python .venv/bin/python pytest -m gate -q
 
   smoke-suite:
     name: Core Smoke Suite
@@ -27,8 +29,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Set up uv
         uses: astral-sh/setup-uv@v5
+      - name: Create virtualenv
+        run: uv venv .venv
       - name: Install dependencies
-        run: uv pip install -e ".[full]" pytest
+        run: uv pip install --python .venv/bin/python -e ".[full]" pytest
       - name: Run smoke tests
         run: |
-          uv run pytest -q tests/test_core_main.py tests/test_engines.py tests/test_server.py tests/test_search_engine_mapping.py
+          uv run --python .venv/bin/python pytest -q tests/test_core_main.py tests/test_engines.py tests/test_server.py tests/test_search_engine_mapping.py
