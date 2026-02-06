@@ -3,6 +3,7 @@
 Scan-once tool for Local Search MCP Server.
 """
 from typing import Any, Dict
+import time
 from sari.mcp.tools._util import mcp_response, pack_header, pack_line, pack_error, ErrorCode
 from sari.core.indexer import Indexer
 
@@ -26,6 +27,26 @@ def execute_scan_once(args: Dict[str, Any], indexer: Indexer) -> Dict[str, Any]:
         )
 
     indexer.scan_once()
+    # Best-effort drain so synchronous callers observe committed results.
+    deadline = time.time() + 8.0
+    stable_rounds = 0
+    while time.time() < deadline:
+        depths = indexer.get_queue_depths() if hasattr(indexer, "get_queue_depths") else {}
+        fair_q = int(depths.get("fair_queue", 0))
+        priority_q = int(depths.get("priority_queue", 0))
+        db_q = int(depths.get("db_writer", 0))
+        if fair_q == 0 and priority_q == 0 and db_q == 0:
+            stable_rounds += 1
+            if stable_rounds >= 3:
+                break
+        else:
+            stable_rounds = 0
+        time.sleep(0.1)
+    try:
+        if hasattr(indexer, "storage") and hasattr(indexer.storage, "writer"):
+            indexer.storage.writer.flush(timeout=2.0)
+    except Exception:
+        pass
     try:
         scanned = indexer.status.scanned_files
         indexed = indexer.status.indexed_files

@@ -140,6 +140,60 @@ def _check_tree_sitter() -> dict[str, Any]:
     except Exception as e:
         return _result("Tree-sitter Support", False, str(e))
 
+
+def _check_embedded_engine_module() -> dict[str, Any]:
+    """Check if embedded engine dependency (tantivy) is importable."""
+    try:
+        import tantivy  # type: ignore
+        ver = getattr(tantivy, "__version__", "unknown")
+        return _result("Embedded Engine Module", True, str(ver))
+    except Exception as e:
+        return _result("Embedded Engine Module", False, f"{type(e).__name__}: {e}")
+
+
+def _check_engine_runtime(ws_root: str) -> dict[str, Any]:
+    """Check current runtime engine readiness from config + engine registry."""
+    try:
+        cfg_path = WorkspaceManager.resolve_config_path(ws_root)
+        cfg = Config.load(cfg_path, workspace_root_override=ws_root)
+        db = LocalSearchDB(cfg.db_path)
+        try:
+            from sari.core.settings import settings as _settings
+            db.set_settings(_settings)
+        except Exception:
+            pass
+        try:
+            from sari.core.engine_registry import get_default_engine
+            engine = get_default_engine(db, cfg, cfg.workspace_roots)
+            db.set_engine(engine)
+            if hasattr(engine, "status"):
+                st = engine.status()
+                mode = getattr(st, "engine_mode", "unknown")
+                ready = bool(getattr(st, "engine_ready", False))
+                reason = str(getattr(st, "reason", "") or "")
+                hint = str(getattr(st, "hint", "") or "")
+                detail = f"mode={mode} ready={str(ready).lower()}"
+                if reason:
+                    detail += f" reason={reason}"
+                if hint:
+                    detail += f" hint={hint}"
+                passed = ready if mode == "embedded" else True
+                return _result("Search Engine Runtime", passed, detail)
+            return _result("Search Engine Runtime", False, "engine has no status()")
+        finally:
+            try:
+                if hasattr(db, "engine") and hasattr(db.engine, "close"):
+                    db.engine.close()
+            except Exception:
+                pass
+            try:
+                db.close()
+            except Exception:
+                pass
+    except Exception as e:
+        return _result("Search Engine Runtime", False, str(e))
+
+
 def _check_lindera_dictionary() -> dict[str, Any]:
     # Merged into CJK Tokenizer check above
     return _check_engine_tokenizer_data()
@@ -362,6 +416,8 @@ def execute_doctor(args: Dict[str, Any]) -> Dict[str, Any]:
 
     if include_db:
         results.extend(_check_db(ws_root))
+        results.append(_check_embedded_engine_module())
+        results.append(_check_engine_runtime(ws_root))
         results.append(_check_engine_tokenizer_data())
         results.append(_check_lindera_dictionary())
         results.append(_check_tree_sitter())

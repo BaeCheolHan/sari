@@ -19,7 +19,7 @@ from sari.mcp.tools._util import (
 )
 
 from sari.core.db import LocalSearchDB, SearchOptions
-from sari.core.engine_runtime import EngineError
+from sari.core.engine_runtime import EngineError, SqliteSearchEngineAdapter
 from sari.mcp.telemetry import TelemetryLogger
 
 
@@ -100,14 +100,10 @@ def execute_search(
             if st.reason == "NOT_INSTALLED":
                 auto_install = (os.environ.get("SARI_ENGINE_AUTO_INSTALL", "1").strip().lower() not in {"0", "false", "no", "off"})
                 if not auto_install:
-                    return mcp_response(
-                        "search",
-                        lambda: pack_error("search", ErrorCode.ERR_ENGINE_NOT_INSTALLED, "engine not installed", hints=["sari --cmd engine install"]),
-                        lambda: {
-                            "error": {"code": ErrorCode.ERR_ENGINE_NOT_INSTALLED.value, "message": "engine not installed", "hint": "sari --cmd engine install"},
-                            "isError": True,
-                        },
-                    )
+                    engine = SqliteSearchEngineAdapter(db)
+                    st = engine.status()
+                    engine_mode = st.engine_mode
+                    index_version = st.index_version
                 if hasattr(engine, "install"):
                     try:
                         engine.install()
@@ -115,27 +111,25 @@ def execute_search(
                         engine_mode = st.engine_mode
                         index_version = st.index_version
                     except EngineError as exc:
-                        code = getattr(ErrorCode, exc.code, ErrorCode.ERR_ENGINE_NOT_INSTALLED)
-                        return mcp_response(
-                            "search",
-                            lambda: pack_error("search", code, exc.message, hints=[exc.hint] if exc.hint else None),
-                            lambda: {"error": {"code": code.value, "message": exc.message, "hint": exc.hint}, "isError": True},
-                        )
+                        engine = SqliteSearchEngineAdapter(db)
+                        st = engine.status()
+                        engine_mode = st.engine_mode
+                        index_version = st.index_version
                     except Exception as exc:
-                        return mcp_response(
-                            "search",
-                            lambda: pack_error("search", ErrorCode.ERR_ENGINE_NOT_INSTALLED, f"engine install failed: {exc}", hints=["sari --cmd engine install"]),
-                            lambda: {"error": {"code": ErrorCode.ERR_ENGINE_NOT_INSTALLED.value, "message": f"engine install failed: {exc}", "hint": "sari --cmd engine install"}, "isError": True},
-                        )
+                        engine = SqliteSearchEngineAdapter(db)
+                        st = engine.status()
+                        engine_mode = st.engine_mode
+                        index_version = st.index_version
             if engine_mode == "embedded" and not st.engine_ready:
-                return mcp_response(
-                    "search",
-                    lambda: pack_error("search", ErrorCode.ERR_ENGINE_UNAVAILABLE, f"engine_ready=false reason={st.reason}", hints=[st.hint] if st.hint else None),
-                    lambda: {
-                        "error": {"code": ErrorCode.ERR_ENGINE_UNAVAILABLE.value, "message": f"engine_ready=false reason={st.reason}", "hint": st.hint},
-                        "isError": True,
-                    },
-                )
+                engine = SqliteSearchEngineAdapter(db)
+                st = engine.status()
+                engine_mode = st.engine_mode
+                index_version = st.index_version
+    elif engine is None:
+        engine = SqliteSearchEngineAdapter(db)
+        st = engine.status()
+        engine_mode = st.engine_mode
+        index_version = st.index_version
 
     opts = SearchOptions(
         query=query,

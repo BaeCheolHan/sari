@@ -151,20 +151,66 @@ class LocalSearchDB:
         cur.execute(sql, params)
         return [{"path": r[0], "root_id": r[1], "repo": r[2], "mtime": r[3], "size": r[4], "status": r[5]} for r in cur.fetchall()]
 
-    def search_symbols(self, query: str, root_id: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
-        sql = "SELECT symbol_id, path, root_id, name, kind, line, end_line FROM symbols"
-        sql, params = self.apply_root_filter(sql, root_id)
+    def search_symbols(
+        self,
+        query: str,
+        root_id: Optional[str] = None,
+        limit: int = 50,
+        root_ids: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        sql = (
+            "SELECT s.symbol_id, s.path, s.root_id, s.name, s.kind, s.line, s.end_line, "
+            "COALESCE(f.repo, '') AS repo, COALESCE(s.qualname, '') AS qualname "
+            "FROM symbols s LEFT JOIN files f ON f.path = s.path WHERE 1=1"
+        )
+        params: List[Any] = []
+        if root_ids:
+            sql += " AND s.root_id IN (" + ",".join("?" * len(root_ids)) + ")"
+            params.extend(root_ids)
+        elif root_id:
+            sql += " AND s.root_id = ?"
+            params.append(root_id)
         if query:
-            sql += " AND name LIKE ?"
+            sql += " AND s.name LIKE ?"
             params.append(f"%{query}%")
-        sql += " LIMIT ?"
+        sql += " ORDER BY s.name ASC LIMIT ?"
         params.append(limit)
         cur = self._get_conn().cursor()
         cur.execute(sql, params)
         return [
-            {"symbol_id": r[0], "path": r[1], "root_id": r[2], "name": r[3], "kind": r[4], "line": r[5], "end_line": r[6]}
+            {
+                "symbol_id": r[0],
+                "path": r[1],
+                "root_id": r[2],
+                "name": r[3],
+                "kind": r[4],
+                "line": r[5],
+                "end_line": r[6],
+                "repo": r[7],
+                "qualname": r[8],
+            }
             for r in cur.fetchall()
         ]
+
+    def repo_candidates(self, q: str, limit: int = 3, root_ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        # Preferred path: active engine adapter.
+        if self.engine and hasattr(self.engine, "repo_candidates"):
+            return self.engine.repo_candidates(q=q, limit=limit, root_ids=root_ids)
+
+        # Fallback SQL path for degraded environments.
+        sql = "SELECT repo, COUNT(1) AS score FROM files WHERE 1=1"
+        params: List[Any] = []
+        if root_ids:
+            sql += " AND root_id IN (" + ",".join("?" * len(root_ids)) + ")"
+            params.extend(root_ids)
+        if q:
+            sql += " AND (repo LIKE ? OR path LIKE ? OR rel_path LIKE ?)"
+            like_q = f"%{q}%"
+            params.extend([like_q, like_q, like_q])
+        sql += " GROUP BY repo ORDER BY score DESC LIMIT ?"
+        params.append(max(1, min(limit, 10)))
+        rows = self._get_conn().execute(sql, params).fetchall()
+        return [{"repo": r[0], "score": int(r[1])} for r in rows if r[0]]
 
     def list_files(self, repo=None, path_pattern=None, file_types=None, include_hidden=False, limit=100, offset=0, root_ids=None):
         sql = "SELECT path, repo, mtime FROM files WHERE 1=1"
