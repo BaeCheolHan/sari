@@ -586,6 +586,56 @@ def cmd_daemon_start(args):
 
 def cmd_daemon_stop(args):
     """Stop the daemon."""
+    def _kill_pid_immediate(pid: int, label: str) -> bool:
+        if not pid:
+            return False
+        try:
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True, check=False)
+                print(f"Executed taskkill for {label} PID {pid}")
+                return True
+            # User-requested fast stop path: no long graceful wait.
+            os.kill(pid, signal.SIGTERM)
+            time.sleep(0.15)
+            try:
+                os.kill(pid, 0)
+                os.kill(pid, signal.SIGKILL)
+                print(f"Sent SIGKILL to {label} PID {pid}")
+            except OSError:
+                print(f"Stopped {label} PID {pid}")
+            return True
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            print(f"Permission denied while stopping {label} PID {pid}")
+            return False
+
+    def _registry_targets(host: str, port: int, pid_hint: Optional[int]) -> Tuple[set[str], set[int]]:
+        boot_ids: set[str] = set()
+        http_pids: set[int] = set()
+        try:
+            reg = ServerRegistry()
+            data = reg._load()  # internal load is acceptable for stop-path recovery
+            daemons = data.get("daemons", {}) or {}
+            workspaces = data.get("workspaces", {}) or {}
+            for boot_id, info in daemons.items():
+                if str(info.get("host") or DEFAULT_HOST) != str(host):
+                    continue
+                if int(info.get("port") or 0) != int(port):
+                    continue
+                if pid_hint and int(info.get("pid") or 0) not in {0, int(pid_hint)}:
+                    continue
+                boot_ids.add(str(boot_id))
+            for ws_info in workspaces.values():
+                if str(ws_info.get("boot_id") or "") not in boot_ids:
+                    continue
+                http_pid = int(ws_info.get("http_pid") or 0)
+                if http_pid > 0:
+                    http_pids.add(http_pid)
+        except Exception:
+            pass
+        return boot_ids, http_pids
+
     if _arg(args, "daemon_host") or _arg(args, "daemon_port"):
         host = _arg(args, "daemon_host") or DEFAULT_HOST
         port = int(_arg(args, "daemon_port") or DEFAULT_PORT)
@@ -598,62 +648,37 @@ def cmd_daemon_stop(args):
         return 0
 
     pid = read_pid()
+    if not pid:
+        try:
+            # Fallback: derive daemon pid from registry when pid file is stale/missing.
+            reg = ServerRegistry()
+            data = reg._load()
+            for info in (data.get("daemons") or {}).values():
+                if str(info.get("host") or DEFAULT_HOST) == str(host) and int(info.get("port") or 0) == int(port):
+                    pid = int(info.get("pid") or 0) or None
+                    if pid:
+                        break
+        except Exception:
+            pid = None
+
+    boot_ids, http_pids = _registry_targets(host, port, pid)
+    for http_pid in sorted(http_pids):
+        _kill_pid_immediate(http_pid, "http")
 
     if pid:
         try:
-            if os.name == 'nt':
-                # Windows force kill
-                subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True, check=False)
-                print(f"Executed taskkill for PID {pid}")
-            else:
-                # Verify PID is actually sari/python before killing
-                try:
-                    if psutil:
-                        proc = psutil.Process(pid)
-                        proc_name = proc.name().lower()
-                        cmdline = " ".join(proc.cmdline()).lower()
-                        # Check if it looks like a python process running sari
-                        if "python" in proc_name or "sari" in cmdline or "sari.mcp.daemon" in cmdline:
-                            os.kill(pid, signal.SIGTERM)
-                            print(f"Sent SIGTERM to PID {pid}")
-                        else:
-                            print(f"❌ Safety Check Failed: PID {pid} ({proc_name}) does not look like Sari. Aborting.")
-                            print(f"   Cmdline: {cmdline}")
-                            return 1
-                    else:
-                        # Fallback if psutil missing (warn but proceed? or strictly fail?)
-                        # Plan said "Use psutil". If missing, we can't be safe.
-                        # But failing completely prevents stopping.
-                        print(f"⚠️  psutil not installed. Skipping safety check for PID {pid}.")
-                        os.kill(pid, signal.SIGTERM)
-                        print(f"Sent SIGTERM to PID {pid}")
-                except Exception as e:
-                    if psutil and isinstance(e, psutil.NoSuchProcess):
-                        print(f"PID {pid} not found (already stopped?)")
-                        try:
-                            os.kill(pid, signal.SIGTERM)
-                        except Exception:
-                            pass
-                        remove_pid()
-                        return 0
-                    # Fallback: if psutil inspection failed, still try SIGTERM.
-                    print(f"⚠️  psutil inspection failed ({e}); sending SIGTERM without metadata check.")
-                    os.kill(pid, signal.SIGTERM)
-                    print(f"Sent SIGTERM to PID {pid}")
-
-            # Wait for shutdown
-            for _ in range(30):
+            _kill_pid_immediate(pid, "daemon")
+            for _ in range(10):
                 if not is_daemon_running(host, port):
-                    print("✅ Daemon stopped")
-                    remove_pid()
-                    return 0
+                    break
                 time.sleep(0.1)
-
-            # Force kill (Unix only, Windows already done with /F)
-            if os.name != 'nt':
-                print("Daemon not responding, sending SIGKILL...")
-                os.kill(pid, signal.SIGKILL)
-
+            reg = ServerRegistry()
+            for boot_id in boot_ids:
+                reg.unregister_daemon(boot_id)
+            if is_daemon_running(host, port):
+                print("⚠️  Daemon port still responds after stop attempt.")
+            else:
+                print("✅ Daemon stopped")
             remove_pid()
             return 0
 
@@ -662,8 +687,16 @@ def cmd_daemon_stop(args):
             remove_pid()
             return 0
     else:
-        print("No PID file found. Try stopping manually.")
-        return 1
+        # No PID available: at least clean stale registry mappings for this endpoint.
+        try:
+            reg = ServerRegistry()
+            for boot_id in boot_ids:
+                reg.unregister_daemon(boot_id)
+        except Exception:
+            pass
+        remove_pid()
+        print("No PID file found. Registry cleaned for matching daemon endpoint.")
+        return 0
 
 
 def cmd_daemon_status(args):

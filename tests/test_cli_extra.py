@@ -29,16 +29,21 @@ def test_cmd_search():
 
 def test_cmd_daemon_stop():
     args = argparse.Namespace()
-    with patch('sari.mcp.cli.is_daemon_running', return_value=True):
-        with patch('sari.mcp.cli.read_pid', return_value=1234):
-            with patch('os.kill') as mock_kill:
-                import psutil
-                with patch('psutil.Process') as mock_proc:
-                    mock_proc.return_value.name.return_value = "python"
-                    with patch('sari.mcp.cli.is_daemon_running', side_effect=[True, False]):
-                        ret = cmd_daemon_stop(args)
-                        assert ret == 0
-                        assert mock_kill.called
+    with patch('sari.mcp.cli.read_pid', return_value=1234):
+        with patch('os.kill') as mock_kill:
+            with patch('sari.mcp.cli.ServerRegistry') as mock_registry_cls:
+                mock_registry = MagicMock()
+                mock_registry._load.return_value = {
+                    "daemons": {"b1": {"host": "127.0.0.1", "port": 47779, "pid": 1234}},
+                    "workspaces": {"/tmp/ws": {"boot_id": "b1", "http_pid": 4321}},
+                }
+                mock_registry_cls.return_value = mock_registry
+                # First call: daemon is running, later calls: stopped
+                with patch('sari.mcp.cli.is_daemon_running', side_effect=[True, False, False]):
+                    ret = cmd_daemon_stop(args)
+                    assert ret == 0
+                    # daemon + http kill path should execute
+                    assert mock_kill.called
 
 def test_uninstall():
     from sari.uninstall import main as uninstall_main
