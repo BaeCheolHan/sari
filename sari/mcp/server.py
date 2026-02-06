@@ -4,6 +4,7 @@ import sys
 import threading
 import queue
 import concurrent.futures
+from pathlib import Path
 from typing import Any, Dict, Optional, List
 from sari.mcp.workspace_registry import Registry
 from sari.core.workspace import WorkspaceManager
@@ -145,6 +146,7 @@ class LocalSearchMCPServer:
                 if line_str.startswith("{"):
                     # JSONL mode: First line is already the JSON body
                     body_str = line_str
+                    framing_mode = "jsonl"
                 elif line_str.lower().startswith("content-length:"):
                     # Content-Length mode: Parse headers
                     headers = {}
@@ -182,6 +184,7 @@ class LocalSearchMCPServer:
                         break
                     
                     body_str = body_bytes.decode("utf-8")
+                    framing_mode = "content-length"
                 else:
                     # Unknown line, skip
                     self._log_debug(f"Unknown input line: {line_str}")
@@ -191,6 +194,7 @@ class LocalSearchMCPServer:
                 
                 try:
                     req = json.loads(body_str)
+                    req["_sari_framing_mode"] = framing_mode
                     # Async dispatch to avoid blocking the read loop
                     self._req_queue.put(req)
                 except Exception as e:
@@ -250,16 +254,26 @@ class LocalSearchMCPServer:
                     # Content-Length framing for output
                     body_bytes = json_resp.encode("utf-8")
                     header = f"Content-Length: {len(body_bytes)}\r\n\r\n"
-                    
-                    # Try to write to buffer if available (standard for sys.stdout)
-                    if hasattr(target, "buffer"):
-                        target.buffer.write(header.encode("ascii"))
-                        target.buffer.write(body_bytes)
-                        target.buffer.flush()
+                    framing_mode = req.get("_sari_framing_mode", "content-length")
+                    # Match response framing to client request framing.
+                    if framing_mode == "jsonl":
+                        payload = (json_resp + "\n").encode("utf-8")
+                        if hasattr(target, "buffer"):
+                            target.buffer.write(payload)
+                            target.buffer.flush()
+                        else:
+                            target.write(json_resp + "\n")
+                            target.flush()
                     else:
-                        target.write(header)
-                        target.write(json_resp)
-                        target.flush()
+                        # Try to write to buffer if available (standard for sys.stdout)
+                        if hasattr(target, "buffer"):
+                            target.buffer.write(header.encode("ascii"))
+                            target.buffer.write(body_bytes)
+                            target.buffer.flush()
+                        else:
+                            target.write(header)
+                            target.write(json_resp)
+                            target.flush()
         except Exception as e:
             self._log_debug(f"ERROR in _handle_and_respond: {e}")
 
