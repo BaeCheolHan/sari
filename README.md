@@ -12,85 +12,79 @@
 
 ---
 
----
-
 ## 🚀 Installation & Setup
 
-Choose the method that best fits your workflow. Sari is **extremely lightweight (< 5MB)** by default.
+This section is written for first-time setup and daily use.
 
-### Method 1: Automatic Script (Recommended)
-This script handles everything, including binary detection and interactive feature selection. It will automatically use **uv** if available for 10x faster installation.
+### Prerequisites
+- Python `3.9+`
+- One package manager: `uv` (recommended) or `pip`
+- A workspace path you want Sari to index
 
-#### 🍎 macOS / Linux
+Check Python:
 ```bash
+python3 --version
+```
+
+### 5-Minute Quickstart (Recommended Path)
+1. Install Sari.
+```bash
+# macOS / Linux
 curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python3 - -y --update
 ```
 
-#### 🪟 Windows (PowerShell)
 ```powershell
+# Windows (PowerShell)
 irm https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python - -y --update
 ```
 
----
-
-### Method 2: Modern CLI Setup (via uv)
-For power users who want a clean, isolated installation with automatic PATH management.
-
+2. Go to your project root.
 ```bash
-# Recommended: Install as a global tool
+cd /absolute/path/to/your/project
+```
+
+3. Start daemon + HTTP for this workspace.
+```bash
+sari daemon start -d
+```
+
+4. Check health.
+```bash
+sari status
+sari doctor
+```
+
+5. Connect your MCP client (see **Client Configuration** below).
+
+### Alternative Install Methods
+`uv`:
+```bash
 uv tool install sari
-
-# Install with all high-precision features (CJK + Tree-sitter)
-uv tool install "sari[full]"
-
-# Or run instantly without installation
-uv x sari status
+uv tool install "sari[full]"   # optional extras
+uv x sari status               # run without install
 ```
 
----
-
-### Method 3: Legacy Installation (via pip)
-Standard installation for environments without `uv`.
-
+`pip`:
 ```bash
-# Core only
 pip install sari
-
-# Core + CJK + Tree-sitter
-pip install "sari[full]"
+pip install "sari[full]"       # optional extras
 ```
 
----
+### Pick Your Runtime Mode
+- `stdio` mode:
+Best default for MCP clients that launch server subprocesses.
+- `HTTP` mode:
+Useful when stdio transport is unstable in your environment.
 
-### Method 4: HTTP Mode (Most Stable)
-If you experience `Connection closed` errors with stdio, use HTTP mode. This separates the server process from the CLI noise.
-
-**1. Start Sari HTTP Server with Environment Variables:**
+Start HTTP directly:
 ```bash
-# Set workspace and log level inline
 SARI_WORKSPACE_ROOT=/absolute/path/to/project \
-SARI_LOG_LEVEL=INFO \
 sari --transport http --http-api-port 47777 --http-daemon
 ```
 
-**2. Client Configuration:**
-
-#### Gemini CLI (`~/.gemini/settings.json`)
-```json
-{
-  "mcpServers": {
-    "sari": {
-      "url": "http://127.0.0.1:47777/mcp"
-    }
-  }
-}
-```
-
-#### Codex CLI (`.codex/config.toml`)
-```toml
-[mcp_servers.sari]
-url = "http://127.0.0.1:47777/mcp"
-enabled = true
+HTTP MCP endpoint:
+```text
+http://127.0.0.1:47777/mcp
 ```
 
 ---
@@ -118,35 +112,60 @@ sari doctor
 
 ## 🔌 Client Configuration
 
-To use Sari with your AI assistant, add it to your MCP configuration file.
+Choose one of the options below.
 
-### 1. Gemini CLI / Codex CLI
-File: `~/.gemini/settings.json` (or `.codex/config.toml`)
+### Option A: Auto-write config (recommended)
+Use this when you want Sari to write config for you.
+```bash
+# Writes workspace-local config files:
+#   .codex/config.toml, .gemini/config.toml
+sari --cmd install --host codex
+sari --cmd install --host gemini
+sari --cmd install --host claude
+sari --cmd install --host cursor
+```
 
+Preview only:
+```bash
+sari --cmd install --host codex --print
+```
+
+### Option B: Manual stdio config
+Use this when you want full manual control.
+
+Codex / Gemini TOML (`.codex/config.toml` or `.gemini/config.toml`):
+```toml
+[mcp_servers.sari]
+command = "sari"
+args = ["--transport", "stdio", "--format", "pack"]
+env = { SARI_WORKSPACE_ROOT = "/absolute/path/to/project" }
+startup_timeout_sec = 60
+```
+
+Gemini legacy JSON (`~/.gemini/settings.json`):
 ```json
 {
   "mcpServers": {
     "sari": {
-      "command": "/Users/YOUR_USERNAME/.local/bin/sari",
+      "command": "sari",
       "args": ["--transport", "stdio", "--format", "pack"],
       "env": {
-        "SARI_WORKSPACE_ROOT": "/absolute/path/to/your/project"
+        "SARI_WORKSPACE_ROOT": "/absolute/path/to/project"
       }
     }
   }
 }
 ```
-*Note: Use the absolute path to the `sari` executable (usually in `~/.local/bin/sari`) to ensure it runs even if not in your system PATH.*
 
-### 2. Claude Desktop & Cursor
+Claude Desktop / Cursor JSON:
 ```json
 {
   "mcpServers": {
     "sari": {
-      "command": "/Users/YOUR_USERNAME/.local/bin/sari",
+      "command": "sari",
       "args": ["--transport", "stdio", "--format", "pack"],
       "env": {
-        "SARI_WORKSPACE_ROOT": "/absolute/path/to/your/project",
+        "SARI_WORKSPACE_ROOT": "/absolute/path/to/project",
         "SARI_RESPONSE_COMPACT": "1"
       }
     }
@@ -154,120 +173,88 @@ File: `~/.gemini/settings.json` (or `.codex/config.toml`)
 }
 ```
 
-### 3. Claude Code (CLI)
-Run the following command:
+### Option C: HTTP endpoint mode
+Use this if your client prefers MCP-over-HTTP URL.
+
+1. Start HTTP in background:
 ```bash
-claude mcp add sari -- uv tool run sari --transport stdio --format pack
+SARI_WORKSPACE_ROOT=/absolute/path/to/project \
+sari --transport http --http-api-port 47777 --http-daemon
 ```
+
+2. Point client MCP URL to:
+```text
+http://127.0.0.1:47777/mcp
+```
+
+### Connection Checklist
+After configuring the client:
+1. Restart the MCP client app/CLI session.
+2. Run:
+```bash
+sari status
+```
+3. Confirm:
+- daemon is running
+- HTTP is running
+- no connection error in client logs
 
 ---
 
 ## ⚙️ Configuration Reference
 
-Variables are categorized into **Installation-time** and **Runtime** settings.
+This section lists environment variables that are currently implemented in code.
 
-### How to set environment variables
+How to set:
+- MCP client: add them under MCP server `env`.
+- Shell: prefix command, e.g. `SARI_ENGINE_MODE=sqlite sari status`.
 
-- **MCP Client**: Add to the `env` block of your MCP server configuration.
-- **CLI**: Prefix the command, e.g., `SARI_ENGINE_MODE=sqlite sari status`.
-- **Permanent**: Export in your shell profile (e.g., `~/.zshrc`).
-
-```json
-"env": {
-  "SARI_WORKSPACE_ROOT": "/path/to/project",
-  "SARI_LOG_LEVEL": "ERROR",
-  "SARI_ENGINE_TOKENIZER": "cjk"
-}
-```
-
-### A. Installation & Bootstrapping
-Settings affecting the installation scripts (`install.py`, `bootstrap.sh`).
-
+### Core
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `XDG_DATA_HOME` | Custom data directory for installation. Sari installs to `$XDG_DATA_HOME/sari`. | `~/.local/share` |
-| `SARI_SKIP_INSTALL` | Set `1` to skip automatic pip install/upgrade on startup **when using the bootstrap script**. Useful for development or offline usage. | `0` |
-| `SARI_NO_INTERACTIVE`| Set `1` to disable interactive prompts during installation (assumes 'yes'). | `0` |
+| `SARI_WORKSPACE_ROOT` | Workspace root override. If omitted, Sari auto-detects from CWD. | Auto-detect |
+| `SARI_CONFIG` | Config file path override. | `~/.config/sari/config.json` |
+| `SARI_FORMAT` | Output format: `pack` or `json`. | `pack` |
+| `SARI_RESPONSE_COMPACT` | Compact response payloads for lower token usage. | `1` |
+| `SARI_LOG_LEVEL` | Logging level. | `INFO` |
 
-### B. System & Runtime
-Settings controlling the MCP server loop and behaviors. Add these to your `env` config.
-
-#### 1. Core & System
-Essential settings for basic operation. (`SARI_` prefix is also supported for backward compatibility).
-
+### Daemon / HTTP
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `SARI_WORKSPACE_ROOT` | **(Required)** Absolute path to the project root. Auto-detected if omitted. | Auto-detect |
-| `SARI_ROOTS_JSON` | JSON array of strings for multiple workspace roots. e.g., `["/path/a", "/path/b"]` | - |
-| `SARI_DB_PATH` | Custom path for the SQLite database file. | `~/.local/share/sari/index.db` |
-| `SARI_CONFIG` | Path to a specific config file to load. | `~/.config/sari/config.json` |
-| `SARI_DATA_DIR` | Override global data directory for DB, engine, and caches. | `~/.local/share/sari` |
-| `SARI_RESPONSE_COMPACT` | Minify JSON responses (`pack` format) to save LLM tokens. Set `0` for pretty-print debugging. | `1` (Enabled) |
-| `SARI_FORMAT` | Output format for CLI tools. `pack` (text-based) or `json`. | `pack` |
+| `SARI_DAEMON_HOST` | Daemon bind host. | `127.0.0.1` |
+| `SARI_DAEMON_PORT` | Daemon TCP port. | `47779` |
+| `SARI_HTTP_API_HOST` | HTTP API host (for daemon status routing). | `127.0.0.1` |
+| `SARI_HTTP_API_PORT` | HTTP API port. | `47777` |
+| `SARI_HTTP_DAEMON` | Background HTTP mode when using `--transport http`. | `0` |
+| `SARI_ALLOW_NON_LOOPBACK` | Allow non-loopback bind in HTTP mode. | `0` |
 
-#### 2. Search Engine
-Settings to tune search quality and backend behavior.
-
+### Search / Index
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `SARI_ENGINE_MODE` | Search backend. `embedded` uses Tantivy (faster, smart ranking), `sqlite` uses FTS5 (slower, fallback). | `embedded` |
-| `SARI_ENGINE_TOKENIZER` | Tokenizer strategy. `auto` (detects), `cjk` (optimized for KR/CN/JP), `latin` (standard). | `auto` |
-| `SARI_ENGINE_AUTO_INSTALL` | Automatically install engine binaries (Tantivy) if missing. | `1` (Enabled) |
-| `SARI_ENGINE_SUGGEST_FILES`| File count threshold to suggest upgrading to Tantivy engine in status checks. | `10000` |
-| `SARI_LINDERA_DICT_PATH` | Path to custom Lindera dictionary for CJK tokenization (Advanced). | - |
-| `SARI_ENGINE_MEM_MB` | Total embedded engine memory budget (MB). | `512` |
-| `SARI_ENGINE_INDEX_MEM_MB` | Embedded engine indexing memory budget (MB). | `256` |
-| `SARI_ENGINE_THREADS` | Embedded engine thread count. | `2` |
-| `SARI_ENGINE_MAX_DOC_BYTES` | Max document bytes to index in engine. | `4194304` |
+| `SARI_ENGINE_MODE` | `embedded` or `sqlite`. | `embedded` |
+| `SARI_ENGINE_AUTO_INSTALL` | Auto-install embedded engine runtime if missing. | `1` |
+| `SARI_ENGINE_TOKENIZER` | `auto`, `cjk`, or `latin`. | `auto` |
+| `SARI_ENGINE_INDEX_MEM_MB` | Embedded indexing memory budget. | `128` |
+| `SARI_ENGINE_MAX_DOC_BYTES` | Max bytes indexed per document. | `4194304` |
 | `SARI_ENGINE_PREVIEW_BYTES` | Preview bytes per document. | `8192` |
+| `SARI_MAX_DEPTH` | Max scan depth. | `30` |
+| `SARI_MAX_PARSE_BYTES` | Max parse file size. | `16777216` |
+| `SARI_MAX_AST_BYTES` | Max AST parse file size. | `8388608` |
+| `SARI_INDEX_WORKERS` | Index worker count. | `2` |
+| `SARI_INDEX_MEM_MB` | Indexing memory cap (`0` means no cap). | `0` |
+| `SARI_COALESCE_SHARDS` | Coalescing lock shard count. | `16` |
+| `SARI_PARSE_TIMEOUT_SECONDS` | Per-file parse timeout (`0` disables). | `0` |
+| `SARI_GIT_CHECKOUT_DEBOUNCE` | Debounce after git-heavy events. | `3.0` |
 
-**Config file equivalents (`config.json`):**
-```json
-{
-  "engine_mode": "embedded",
-  "engine_auto_install": true
-}
-```
-`SARI_ENGINE_MODE` and `SARI_ENGINE_AUTO_INSTALL` override these values at runtime.
-
-#### 3. Indexing & Performance
-Fine-tune resource usage and concurrency.
-
+### Maintenance / Advanced
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `SARI_COALESCE_SHARDS` | Number of lock shards for indexing concurrency. Increase for massive repos with frequent changes. | `16` |
-| `SARI_PARSE_TIMEOUT_SECONDS`| Timeout per file parsing in seconds. Set `0` to disable timeout. Prevents parser hangs. | `0` |
-| `SARI_PARSE_TIMEOUT_WORKERS`| Worker threads for parsing with timeout. | `2` |
-| `SARI_MAX_PARSE_BYTES` | Max file size to attempt parsing (bytes). Larger files are skipped or sampled. | `16MB` |
-| `SARI_MAX_AST_BYTES` | Max file size to attempt AST extraction (bytes). | `8MB` |
-| `SARI_GIT_CHECKOUT_DEBOUNCE`| Seconds to wait after git checkout before starting bulk indexing. | `3.0` |
-| `SARI_FOLLOW_SYMLINKS` | Follow symbolic links during file scanning. **Caution:** May cause infinite loops if circular links exist. | `0` (Disabled) |
-| `SARI_MAX_DEPTH` | Maximum directory depth to scan. Prevents infinite loops. | `30` |
-| `SARI_READ_MAX_BYTES` | Max bytes returned by `read_file` tool. Prevents context overflow. | `1MB` |
-| `SARI_INDEX_MEM_MB` | Overall indexing memory budget (MB). | `512` |
-| `SARI_INDEX_WORKERS` | Override index worker count. | `2` |
-| `SARI_AST_CACHE_ENTRIES` | LRU cache size for Tree-sitter ASTs. | `128` |
-
-#### 4. Network & Security
-Connectivity settings for the daemon.
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `SARI_DAEMON_HOST` | Host address for the background daemon. | `127.0.0.1` |
-| `SARI_DAEMON_PORT` | TCP port for the daemon. | `47779` |
-| `SARI_HTTP_API_PORT` | Port for the HTTP API server (optional). | `47777` |
-| `SARI_ALLOW_NON_LOOPBACK` | Allow connections from non-localhost IPs. **Security Risk:** Only enable in trusted networks. | `0` (Disabled) |
-
-#### 5. Advanced / Debug
-Developer options for debugging and plugin extension.
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `SARI_LOG_LEVEL` | Logging verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`). | `INFO` |
-| `SARI_DRYRUN_LINT` | Enable syntax checking (linting) in `dry-run-diff`. | `0` (Disabled) |
-| `SARI_PERSIST_ROOTS` | Set `1` to persist detected roots to `config.json`. | `0` (Disabled) |
-| `SARI_CALLGRAPH_PLUGIN` | Python module path for custom static analysis plugin. | - |
-| `SARI_DLQ_POLL_SECONDS` | Interval to retry failed indexing tasks (Dead Letter Queue). | `60` |
+| `SARI_DRYRUN_LINT` | Enable syntax check in `dry-run-diff`. | `0` |
+| `SARI_STORAGE_TTL_DAYS_SNIPPETS` | TTL days for snippets. | `30` |
+| `SARI_STORAGE_TTL_DAYS_FAILED_TASKS` | TTL days for failed tasks. | `7` |
+| `SARI_STORAGE_TTL_DAYS_CONTEXTS` | TTL days for contexts. | `30` |
+| `SARI_CALLGRAPH_PLUGIN` | Custom call-graph plugin module path. | - |
+| `SARI_PERSIST_ROOTS` | Persist resolved roots to config. | `0` |
 
 ---
 
@@ -340,7 +327,12 @@ sari status --daemon-port 47790 --http-port 47778
 Diagnose issues with your environment or installation:
 
 ```bash
-sari doctor --auto-fix
+sari doctor
+```
+
+Advanced doctor flags (including `--auto-fix`) are available via:
+```bash
+python3 -m sari.mcp.cli doctor --auto-fix
 ```
 
 ### Update
@@ -368,10 +360,10 @@ Existing data is automatically cleaned up based on TTL settings, or you can manu
 **Manual Prune:**
 ```bash
 # Prune all tables using default/configured TTL
-sari prune
+python3 -m sari.mcp.cli prune
 
 # Prune specific table with custom days
-sari prune --table failed_tasks --days 3
+python3 -m sari.mcp.cli prune --table failed_tasks --days 3
 ```
 
 **TTL Configuration (Environment Variables):**
@@ -398,7 +390,7 @@ curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | 
 
 The uninstall command also scans your home directory for `.codex/tools/sari` caches and removes them (best effort).
 
-If you set `SARI_CONFIG` or `SARI_CONFIG` to a custom path and want that file removed too, pass:
+If you set `SARI_CONFIG` to a custom path and want that file removed too, pass:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | python3 - --uninstall --force-config
@@ -409,5 +401,3 @@ curl -fsSL https://raw.githubusercontent.com/BaeCheolHan/sari/main/install.py | 
 ## 📜 License
 
 Apache License 2.0
-
-```

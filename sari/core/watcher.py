@@ -5,7 +5,6 @@ import threading
 from collections import deque
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional
-from threading import Timer
 
 try:
     from watchdog.observers import Observer
@@ -24,6 +23,8 @@ except Exception:
 
 def _is_git_event(path: str) -> bool:
     if not path:
+        return False
+    if not isinstance(path, str):
         return False
     norm = path.replace("\\", "/")
     if "/.git/" in norm or norm.endswith("/.git"):
@@ -50,7 +51,7 @@ class DebouncedEventHandler(FileSystemEventHandler):
         self._timers = {}
         self._lock = threading.Lock()
         self._pending_events: Dict[str, FsEvent] = {}
-        self._git_timer: Optional[Timer] = None
+        self._git_timer: Optional[threading.Timer] = None
         self._git_last_path: str = ""
         self._event_times = deque(maxlen=200)
 
@@ -66,7 +67,7 @@ class DebouncedEventHandler(FileSystemEventHandler):
         self._bucket_tokens = self._bucket_capacity
         self._bucket_last_ts = time.time()
         self._bucket_flush_seconds = float(os.environ.get("SARI_EVENT_BUCKET_FLUSH_MS", "500")) / 1000.0
-        self._bucket_timer: Optional[Timer] = None
+        self._bucket_timer: Optional[threading.Timer] = None
 
     def on_any_event(self, event):
         if event.is_directory:
@@ -88,20 +89,27 @@ class DebouncedEventHandler(FileSystemEventHandler):
         if not evt_kind:
             return
 
-        key = event.src_path
-        if _is_git_event(event.src_path) or _is_git_event(getattr(event, "dest_path", "")):
+        src_path = getattr(event, "src_path", "")
+        if not isinstance(src_path, str):
+            return
+        dest_path = getattr(event, "dest_path", "")
+        if not isinstance(dest_path, str):
+            dest_path = ""
+
+        key = src_path
+        if _is_git_event(src_path) or _is_git_event(dest_path):
             if self.git_callback:
                 with self._lock:
                     if self._git_timer:
                         self._git_timer.cancel()
-                    self._git_last_path = event.src_path
-                    self._git_timer = Timer(self.git_debounce_seconds, self._trigger_git)
+                    self._git_last_path = src_path
+                    self._git_timer = threading.Timer(self.git_debounce_seconds, self._trigger_git)
                     self._git_timer.start()
             if self.logger:
                 self.logger.log_info("Git activity detected; deferring to rescan.")
             return
-        fs_event = FsEvent(kind=evt_kind, path=event.src_path,
-                           dest_path=getattr(event, 'dest_path', None),
+        fs_event = FsEvent(kind=evt_kind, path=src_path,
+                           dest_path=dest_path or None,
                            ts=time.time())
 
         with self._lock:
@@ -120,7 +128,7 @@ class DebouncedEventHandler(FileSystemEventHandler):
             if key in self._timers:
                 self._timers[key].cancel()
             self._pending_events[key] = fs_event
-            t = Timer(self.debounce_seconds, self._trigger, args=[key])
+            t = threading.Timer(self.debounce_seconds, self._trigger, args=[key])
             self._timers[key] = t
             t.start()
 
@@ -162,7 +170,7 @@ class DebouncedEventHandler(FileSystemEventHandler):
     def _schedule_bucket_flush(self) -> None:
         if self._bucket_timer and self._bucket_timer.is_alive():
             return
-        self._bucket_timer = Timer(max(0.1, self._bucket_flush_seconds), self._flush_bucket)
+        self._bucket_timer = threading.Timer(max(0.1, self._bucket_flush_seconds), self._flush_bucket)
         self._bucket_timer.start()
 
     def _flush_bucket(self) -> None:
@@ -179,7 +187,7 @@ class DebouncedEventHandler(FileSystemEventHandler):
                 else:
                     self._pending_events[key] = evt
             if self._pending_events:
-                self._bucket_timer = Timer(max(0.1, self._bucket_flush_seconds), self._flush_bucket)
+                self._bucket_timer = threading.Timer(max(0.1, self._bucket_flush_seconds), self._flush_bucket)
                 self._bucket_timer.start()
             else:
                 self._bucket_timer = None

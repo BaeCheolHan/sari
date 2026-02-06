@@ -33,8 +33,12 @@ class LocalSearchMCPServer:
     SERVER_NAME = "sari"
     SERVER_VERSION = settings.VERSION
 
-    def __init__(self, workspace_root: str):
+    def __init__(self, workspace_root: str, cfg: Any = None, db: Any = None, indexer: Any = None):
         self.workspace_root = workspace_root
+        # Keep optional injected handles for backward compatibility with older callers.
+        self._injected_cfg = cfg
+        self._injected_db = db
+        self._injected_indexer = indexer
         self.registry = Registry.get_instance()
         self.policy_engine = PolicyEngine(mode=settings.SEARCH_FIRST_MODE)
         self.logger = TelemetryLogger(WorkspaceManager.get_global_log_dir())

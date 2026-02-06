@@ -1,10 +1,27 @@
 import pytest
 import os
 import shutil
+import inspect
+import asyncio
 from pathlib import Path
 from sari.core.settings import Settings, settings as global_settings
 from sari.core.db.main import LocalSearchDB
 from sari.core.workspace import WorkspaceManager
+
+
+def pytest_pyfunc_call(pyfuncitem):
+    """Run async tests even when pytest-asyncio is not installed."""
+    test_func = pyfuncitem.obj
+    if not inspect.iscoroutinefunction(test_func):
+        return None
+
+    kwargs = {name: pyfuncitem.funcargs[name] for name in pyfuncitem._fixtureinfo.argnames}
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(test_func(**kwargs))
+    finally:
+        loop.close()
+    return True
 
 @pytest.fixture
 def mock_env(monkeypatch, tmp_path):

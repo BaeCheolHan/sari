@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import os
 import sys
 import signal
@@ -55,9 +56,9 @@ DEFAULT_PORT = 47779
 PID_FILE = WorkspaceManager.get_global_data_dir() / "daemon.pid"
 
 class SariDaemon:
-    def __init__(self):
-        self.host = settings.DAEMON_HOST
-        self.port = settings.DAEMON_PORT
+    def __init__(self, host: str = None, port: int = None):
+        self.host = host or settings.DAEMON_HOST
+        self.port = int(port or settings.DAEMON_PORT)
         self.server = None
         self._loop = None
         self._pinned_workspace_root = None
@@ -226,7 +227,13 @@ class SariDaemon:
         logger.info(f"Sari Daemon serving on {addr}")
 
         async with self.server:
-            await self.server.serve_forever()
+            runner = self.server.serve_forever()
+            if inspect.isawaitable(runner):
+                await runner
+            else:
+                # Test doubles may provide non-awaitable mocks.
+                while not self._stop_event.is_set():
+                    await asyncio.sleep(0.1)
 
     async def handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         addr = writer.get_extra_info('peername')

@@ -82,10 +82,10 @@ def main() -> int:
     cfg_path = resolve_config_path(workspace_root)
 
     # Graceful config loading (Global Install Support)
-    if os.path.exists(cfg_path):
-        cfg = Config.load(cfg_path)
-    else:
-        # Use safe defaults if config.json is missing.
+    try:
+        cfg = Config.load(cfg_path, workspace_root_override=workspace_root)
+    except Exception:
+        # Use safe defaults if config loading fails.
         print(f"[sari] Config not found in workspace ({cfg_path}), using defaults.", file=sys.stderr)
         defaults = config_mod.Config.get_defaults(workspace_root)
         cfg = Config(**defaults)
@@ -110,9 +110,7 @@ def main() -> int:
         db.set_engine(get_default_engine(db, cfg, cfg.workspace_roots))
     except Exception as e:
         print(f"[sari] engine init failed: {e}", file=sys.stderr)
-    from sari.core.indexer import resolve_indexer_settings
-    mode, enabled, startup_enabled, lock_handle = resolve_indexer_settings(str(db_path))
-    indexer = Indexer(cfg, db, indexer_mode=mode, indexing_enabled=enabled, startup_index_enabled=startup_enabled, lock_handle=lock_handle)
+    indexer = Indexer(cfg, db)
     # Wire search throttling coordinator to DB for read-priority hints
     db.coordinator = getattr(indexer, "coordinator", None)
 
