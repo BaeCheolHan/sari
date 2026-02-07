@@ -1,5 +1,4 @@
 import json
-import re
 from typing import Any, Dict, Optional, Tuple
 from .java import BaseHandler
 
@@ -9,43 +8,35 @@ class JavaScriptHandler(BaseHandler):
         kind, name, meta = None, None, {"annotations": []}
         is_valid = False
         
-        txt = get_t(node)
-        
-        # Helper: Extract name using Regex if AST fails (Highly resilient)
-        def fallback_name(pattern, text):
-            m = re.search(pattern, text)
-            return m.group(1) if m else None
-
-        # 1. Classes & Components
-        if "class" in n_type:
+        # Priority Logic: Pure Truth Restoration
+        if n_type in ("class_declaration", "class"):
             kind, is_valid = "class", True
-            name = find_id(node) or fallback_name(r"class\s+([a-zA-Z0-9_]+)", txt)
+            name = find_id(node)
             
-        # 2. Functions (Standard & Async)
-        elif "function" in n_type and n_type != "arrow_function":
+        elif n_type in ("function_declaration", "function"):
             kind, is_valid = "function", True
-            name = find_id(node) or fallback_name(r"function\s+([a-zA-Z0-9_]+)", txt)
+            name = find_id(node)
             
-        # 3. Declarations (React Arrow Components, Hooks, Constants)
         elif n_type in ("lexical_declaration", "variable_declaration", "variable_declarator"):
-            v_name = find_id(node) or fallback_name(r"(?:const|let|var)\s+([a-zA-Z0-9_]+)", txt)
+            # Deep dive for arrow functions / components
+            v_name = find_id(node)
             if v_name:
                 name, is_valid = v_name, True
-                # Heuristic: Uppercase first letter + React keywords = class (Component)
-                if v_name[0].isupper() and any(x in txt for x in ("=>", "React.", "use", "return (", "return <")):
+                txt = get_t(node)
+                if v_name[0].isupper() and any(x in txt for x in ("=>", "React.", "Component", "memo", "forwardRef")):
                     kind = "class"
                 elif "=>" in txt or "function" in txt:
                     kind = "function"
                 else:
                     kind = "variable"
         
-        # 4. Methods & Fields
-        elif "method" in n_type or n_type == "public_field_definition":
+        elif "method" in n_type:
             kind, is_valid = "method", True
-            name = find_id(node) or fallback_name(r"([a-zA-Z0-9_]+)\s*\(", txt)
+            name = find_id(node)
 
-        # 5. Express Routes (Special case for search_api_endpoints)
+        # Express route symbols (compatibility for tests)
         elif n_type == "call_expression":
+            txt = get_t(node)
             if any(m in txt for m in (".get(", ".post(", ".put(", ".delete(")):
                 for m in ("GET", "POST", "PUT", "DELETE"):
                     if f".{m.lower()}(" in txt:
@@ -61,10 +52,8 @@ class JavaScriptHandler(BaseHandler):
             for m in ("get", "post", "put", "delete", "patch", "use"):
                 if f".{m}(" in txt:
                     res["http_methods"] = [m.upper()]
-                    # Look for the first string argument as the path
                     import re
-                    path_match = re.search(r'["\']([^"\']+)["\']', txt)
-                    if path_match:
-                        res["http_path"] = path_match.group(1)
+                    match = re.search(r'["\']([^"\']+)["\']', txt)
+                    if match: res["http_path"] = match.group(1)
                     break
         return res

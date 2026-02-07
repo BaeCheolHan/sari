@@ -120,12 +120,15 @@ class LocalSearchDB:
     def finalize_turbo_batch(self):
         conn = self.db.connection()
         try:
-            conn.execute("BEGIN")
+            conn.execute("BEGIN TRANSACTION")
             conn.execute("INSERT OR REPLACE INTO main.files SELECT * FROM staging_mem.files_temp")
             conn.execute("DELETE FROM staging_mem.files_temp")
-            conn.commit()
+            conn.execute("COMMIT")
+            # Force durability for tests
+            conn.execute("PRAGMA wal_checkpoint(FULL)")
         except:
-            conn.rollback()
+            try: conn.execute("ROLLBACK")
+            except: pass
 
     def upsert_symbols_tx(self, cur, rows: List[tuple], root_id: str = "root"):
         if not rows: return
