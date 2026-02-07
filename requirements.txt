@@ -1,4 +1,28 @@
-watchdog>=2.0.0
-psutil>=5.0.0
-# Core dependencies are minimal to ensure stability and low footprint.
-# Uses Python standard library (sqlite3, http.server, etc.) whenever possible.
+# --- Core Sari Infrastructure ---
+peewee>=3.17.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+polars>=0.20.0
+orjson>=3.9.0
+msgpack>=1.0.0
+tenacity>=8.2.0
+filelock>=3.12.0
+psutil>=5.9.0
+click>=8.1.0
+tantivy>=0.25.1
+
+# --- Tree-sitter Core ---
+tree-sitter==0.21.3
+tree-sitter-languages>=1.10.2
+
+# --- Critical Overrides (Must exist for Web/Enterprise) ---
+tree-sitter-javascript
+tree-sitter-typescript
+tree-sitter-python
+tree-sitter-java
+tree-sitter-kotlin
+tree-sitter-rust
+tree-sitter-go
+tree-sitter-bash
+tree-sitter-xml
+# Terraform support usually via tree-sitter-hcl if available, otherwise fallback

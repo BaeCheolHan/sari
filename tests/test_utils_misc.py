@@ -2,7 +2,7 @@ import pytest
 import logging
 import os
 from sari.core.utils.compression import _compress, _decompress
-from sari.core.utils.logging import get_logger, setup_global_logging
+from sari.core.utils.logging import get_logger, configure_logging
 from sari.core.workspace import WorkspaceManager
 
 def test_compression():
@@ -19,23 +19,19 @@ def test_compression():
     assert _decompress("already string") == "already string"
     assert _decompress(b"invalid data") == str(b"invalid data")
 
-def test_get_logger(tmp_path):
-    log_file = tmp_path / "test.log"
-    logger = get_logger("test_logger", log_file=str(log_file))
-    
-    assert logger.name == "test_logger"
-    assert len(logger.handlers) >= 2 # Stream + File
-    
-    logger.info("Test message")
-    assert log_file.exists()
-    with open(log_file, "r") as f:
-        content = f.read()
-        assert "Test message" in content
+def test_get_logger():
+    # New get_logger returns a structlog bound logger
+    logger = get_logger("test_logger")
+    # Verify it has logging methods
+    assert hasattr(logger, "info")
+    assert hasattr(logger, "error")
 
-def test_setup_global_logging():
-    # This just calls logging.basicConfig, hard to assert effect without side effects
-    # but we can ensure it doesn't crash.
-    setup_global_logging()
+def test_configure_logging():
+    # This calls structlog.configure
+    try:
+        configure_logging()
+    except Exception as e:
+        pytest.fail(f"configure_logging raised exception: {e}")
 
 
 def test_workspace_normalize_path_never_returns_empty_for_root():

@@ -16,7 +16,7 @@ async def test_daemon_start_mock(tmp_path):
     with patch('sari.mcp.daemon.PID_FILE', tmp_path / "daemon.pid"):
         daemon = SariDaemon()
         daemon.host = "127.0.0.1"
-        daemon.port = 47779
+        daemon.port = int(os.environ.get("SARI_DAEMON_PORT", 47779))
         
         with patch('asyncio.start_server') as mock_start:
             mock_server = MagicMock()

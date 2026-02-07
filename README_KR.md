@@ -269,6 +269,7 @@ sari status
 | `SARI_MAX_AST_BYTES` | AST 파싱 최대 파일 크기. | `8388608` |
 | `SARI_INDEX_WORKERS` | 인덱서 워커 수. | `6` |
 | `SARI_INDEX_MEM_MB` | 인덱싱 메모리 제한. | `4096` |
+| `SARI_INDEX_MERGE_INTERVAL_SEC` | 인덱싱 중 증분 스테이징 머지 간격(초). | `5.0` |
 | `SARI_COALESCE_SHARDS` | 코얼레싱 락 샤드 수. | `16` |
 | `SARI_PARSE_TIMEOUT_SECONDS` | 파일별 파싱 타임아웃(`0` 비활성). | `0` |
 | `SARI_GIT_CHECKOUT_DEBOUNCE` | Git 이벤트 후 디바운스 시간. | `3.0` |

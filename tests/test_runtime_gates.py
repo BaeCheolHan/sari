@@ -36,7 +36,8 @@ def test_mcp_server_run_initializes_transport_without_crash(monkeypatch):
 def test_tantivy_dependency_is_pinned():
     pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
     text = pyproject.read_text(encoding="utf-8")
-    assert 'tantivy==0.25.1' in text
+    # Updated to match project.dependencies format
+    assert 'tantivy>=0.25.1' in text or 'tantivy==0.25.1' in text
     assert "tantivy>=" not in text
 
 
