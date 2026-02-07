@@ -15,6 +15,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -467,6 +468,12 @@ def _ensure_daemon_running(
 
 def cmd_daemon_start(args):
     """Start the daemon."""
+    def _reap_child(proc: subprocess.Popen) -> None:
+        try:
+            proc.wait()
+        except Exception:
+            pass
+
     explicit_port = bool(_arg(args, "daemon_port"))
     force_start = (os.environ.get("SARI_DAEMON_FORCE_START") or "").strip().lower() in {"1", "true", "yes", "on"}
     workspace_root = os.environ.get("SARI_WORKSPACE_ROOT") or WorkspaceManager.resolve_workspace_root()
@@ -546,6 +553,8 @@ def cmd_daemon_start(args):
             stderr=subprocess.DEVNULL,
             env=env,
         )
+        # Reap child when it exits to prevent zombie processes in long-lived callers.
+        threading.Thread(target=_reap_child, args=(proc,), daemon=True).start()
 
         # PID file will be written by the daemon process itself
 

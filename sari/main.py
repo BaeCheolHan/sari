@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import sys
+import threading
 
 # CRITICAL: Hijack stdout to stderr at the absolute entry point to prevent 
 # ANY third-party library noise from breaking the MCP stdio protocol.
@@ -303,6 +304,12 @@ def _set_http_api_port(port: str) -> None:
 
 
 def _spawn_http_daemon(ns: argparse.Namespace) -> int:
+    def _reap_child(proc: subprocess.Popen) -> None:
+        try:
+            proc.wait()
+        except Exception:
+            pass
+
     if os.environ.get("SARI_HTTP_DAEMON_CHILD"):
         return _run_http_server()
     env = os.environ.copy()
@@ -310,13 +317,15 @@ def _spawn_http_daemon(ns: argparse.Namespace) -> int:
     cmd = [sys.executable, "-m", "sari", "--transport", "http"]
     if ns.http_api_port:
         cmd += ["--http-api-port", str(ns.http_api_port)]
-    subprocess.Popen(
+    proc = subprocess.Popen(
         cmd,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,
         env=env,
     )
+    # Reap child on exit to avoid defunct processes in long-lived MCP stdio hosts.
+    threading.Thread(target=_reap_child, args=(proc,), daemon=True).start()
     port_note = ns.http_api_port or os.environ.get("SARI_HTTP_API_PORT") or "default"
     print(f"[sari] HTTP daemon started in background (port: {port_note})", file=sys.stderr)
     return 0

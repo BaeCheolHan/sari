@@ -123,6 +123,12 @@ def _unlock_file(lock_file) -> None:
 
 def start_daemon_if_needed(host, port, workspace_root: str = ""):
     """Checks if daemon is running, if not starts it."""
+    def _reap_child(proc: subprocess.Popen) -> None:
+        try:
+            proc.wait()
+        except Exception:
+            pass
+
     if _identify_sari_daemon(host, port):
         return True
 
@@ -146,7 +152,7 @@ def start_daemon_if_needed(host, port, workspace_root: str = ""):
             env["SARI_DAEMON_AUTOSTART"] = "1"
             env["SARI_WORKSPACE_ROOT"] = workspace_root
 
-            subprocess.Popen(
+            proc = subprocess.Popen(
                 [sys.executable, "-m", "sari.mcp.cli", "daemon", "start", "-d"],
                 cwd=repo_root,
                 env=env,
@@ -154,6 +160,8 @@ def start_daemon_if_needed(host, port, workspace_root: str = ""):
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
+            # Reap helper process when it exits to prevent defunct children in proxy.
+            threading.Thread(target=_reap_child, args=(proc,), daemon=True).start()
 
             # Wait for it to come up (Increase to 10s for cold start reliability)
             for _ in range(100):
