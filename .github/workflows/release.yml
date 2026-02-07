@@ -1,0 +1,109 @@
+name: Release Sari
+
+on:
+  push:
+    tags:
+      - 'v*'
+      - '[0-9]*'
+  workflow_dispatch: # Allow manual trigger for dry-runs
+
+jobs:
+  validate:
+    name: CI Validation (Gatekeeper)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+      - name: Create virtualenv
+        run: uv venv .venv
+      - name: Install dependencies
+        run: uv pip install --python .venv/bin/python -e ".[full]" pytest pytest-cov
+      - name: Run tests
+        run: |
+          uv run --python .venv/bin/python pytest -m gate
+          uv run --python .venv/bin/python pytest tests/test_stability.py tests/test_server.py
+
+  release:
+    name: Create GitHub Release
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.check_version.outputs.version }}
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Get Version
+        id: check_version
+        run: |
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+          VERSION=$(echo $TAG_NAME | sed 's/^v//')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Releasing version: $VERSION"
+
+      - name: Update version.py on main
+        run: |
+          VERSION=${{ steps.check_version.outputs.version }}
+          # Update version.py securely
+          echo "__version__ = \"$VERSION\"" > sari/version.py
+          
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          if [[ -n $(git status -s) ]]; then
+            git add sari/version.py
+            git commit -m "chore: bump version to $VERSION [skip ci]"
+            git push origin main
+          else
+            echo "Version already matches."
+          fi
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          generate_release_notes: true
+          tag_name: ${{ github.ref_name }}
+
+      - name: Trigger Forge Update
+        uses: peter-evans/repository-dispatch@v2
+        with:
+          token: ${{ secrets.GHA_PAT }}
+          repository: BaeCheolHan/horadric-forge
+          event-type: sari-update
+          client-payload: '{"version": "${{ steps.check_version.outputs.version }}"}'
+
+  publish-pypi:
+    name: Publish to PyPI (OIDC)
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Sync version with tag
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          echo "Setting version to $VERSION"
+          echo "__version__ = \"$VERSION\"" > sari/version.py
+
+      - name: Build package
+        run: uv build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          print-hash: true
