@@ -21,6 +21,7 @@ from sari.mcp.telemetry import TelemetryLogger
 from sari.core.workspace import WorkspaceManager
 from sari.core.server_registry import ServerRegistry
 from sari.core.daemon_resolver import resolve_daemon_address as _resolve_daemon_target
+from sari.mcp.trace import trace
 
 try:
     import fcntl  # type: ignore
@@ -62,6 +63,7 @@ _MODE_JSONL = "jsonl"
 
 def _identify_sari_daemon(host: str, port: int, timeout: float = 0.3) -> bool:
     try:
+        trace("proxy_identify_start", host=host, port=port)
         with socket.create_connection((host, port), timeout=timeout) as sock:
             sock.settimeout(timeout)
             body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "sari/identify"}).encode("utf-8")
@@ -93,8 +95,10 @@ def _identify_sari_daemon(host: str, port: int, timeout: float = 0.3) -> bool:
             resp = json.loads(resp_body.decode("utf-8"))
             result = resp.get("result") or {}
             if result.get("name") == "sari":
+                trace("proxy_identify_ok", host=host, port=port)
                 return True
     except Exception:
+        trace("proxy_identify_error", host=host, port=port)
         pass
     return False
 
@@ -130,6 +134,7 @@ def start_daemon_if_needed(host, port, workspace_root: str = ""):
             pass
 
     if _identify_sari_daemon(host, port):
+        trace("proxy_daemon_already_running", host=host, port=port)
         return True
 
     if not workspace_root:
@@ -146,6 +151,7 @@ def start_daemon_if_needed(host, port, workspace_root: str = ""):
                 return True
 
             _log_info("Daemon not running, starting...")
+            trace("proxy_daemon_starting", host=host, port=port, workspace_root=workspace_root)
 
             repo_root = Path(__file__).parent.parent.parent
             env = os.environ.copy()
@@ -168,10 +174,12 @@ def start_daemon_if_needed(host, port, workspace_root: str = ""):
                 host, port = _resolve_daemon_target()
                 if _identify_sari_daemon(host, port):
                     _log_info("Daemon started successfully.")
+                    trace("proxy_daemon_started", host=host, port=port)
                     return True
                 time.sleep(0.1)
 
             _log_error("Failed to start daemon.")
+            trace("proxy_daemon_start_failed", host=host, port=port)
             return False
 
         finally:
@@ -251,8 +259,10 @@ def forward_socket_to_stdout(sock, state):
                 header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
                 sys.stdout.buffer.write(header + body)
                 sys.stdout.buffer.flush()
+            trace("proxy_forwarded_to_stdout", bytes=len(body))
     except Exception as e:
         _log_error(f"Error forwarding socket to stdout: {e}")
+        trace("proxy_forward_stdout_error", error=str(e))
     finally:
         state["dead"] = True
         try:
@@ -320,6 +330,7 @@ def _send_payload(state, payload: bytes, mode: str) -> None:
     else:
         header = f"Content-Length: {len(payload)}\r\n\r\n".encode("ascii")
         sock.sendall(header + payload)
+    trace("proxy_send_payload", bytes=len(payload), mode=mode)
 
 
 def _reconnect(state) -> bool:
@@ -347,10 +358,12 @@ def _reconnect(state) -> bool:
                 time.sleep(backoff)
         else:
             _log_error(f"Reconnect failed: {last_err}")
+            trace("proxy_reconnect_failed", error=last_err)
             return False
 
         state["sock"] = sock
         state["dead"] = False
+        trace("proxy_reconnect_ok", host=host, port=port)
 
         t = threading.Thread(target=forward_socket_to_stdout, args=(sock, state), daemon=True)
         t.start()
@@ -380,6 +393,7 @@ def forward_stdin_to_socket(state):
             if res is None:
                 break
             msg, mode = res
+            trace("proxy_received_from_stdin", bytes=len(msg), mode=mode)
             # Inject rootUri for initialize when client omits it (per-connection workspace)
             try:
                 req = json.loads(msg.decode("utf-8"))
@@ -441,6 +455,7 @@ def forward_stdin_to_socket(state):
                     _send_payload(state, msg, mode)
     except Exception as e:
         _log_error(f"Error forwarding stdin to socket: {e}")
+        trace("proxy_forward_stdin_error", error=str(e))
         try:
             sock = state.get("sock")
             if sock:
@@ -458,6 +473,7 @@ def main():
             os.environ.get("SARI_WORKSPACE_ROOT"),
         )
     )
+    trace("proxy_startup", cwd=os.getcwd(), argv=sys.argv, workspace_root=os.environ.get("SARI_WORKSPACE_ROOT"))
 
     workspace_root = os.environ.get("SARI_WORKSPACE_ROOT") or WorkspaceManager.resolve_workspace_root()
     host, port = _resolve_daemon_target()
@@ -470,6 +486,7 @@ def main():
         sock = socket.create_connection((host, port))
     except Exception as e:
         _log_error(f"Could not connect to daemon: {e}")
+        trace("proxy_connect_error", error=str(e))
         sys.exit(1)
 
     # Start threads for bidirectional forwarding

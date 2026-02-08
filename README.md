@@ -12,25 +12,35 @@ Sari focuses on:
 
 ## English
 
-### 1. Installation
+### 0. Overview
 
-Sari follows a policy of **plain install without extras**. The default package already includes the tokenizer and tree‑sitter dependencies required by Sari.
+Sari provides:
+- Local indexing + search for large codebases
+- MCP server for stdio and HTTP transports
+- Multi‑workspace collection with a single registry
 
-#### Option A: uv (recommended)
+### 1. Installation (Recommended)
+
+Sari is installed into the **active Python environment**. If you are using `uv`, you must create a venv first.
+
+#### Option A: `uv` + venv (recommended)
 ```bash
-# Create venv once
+# 1) Create venv once
 uv venv .venv
 
-# Install into the venv
+# 2) Install Sari into the venv
 uv pip install sari
+
+# 3) (Optional) Upgrade later
+uv pip install -U sari
 ```
 
-If you want to install into the system Python (not recommended):
+#### Option B: `uv` system install (not recommended)
 ```bash
 uv pip install --system sari
 ```
 
-#### Option B: pip
+#### Option C: `pip`
 ```bash
 pip install sari
 ```
@@ -46,24 +56,26 @@ pip install -e .
 
 Sari is installed into **the active Python environment**.
 
-- `uv pip install sari` → installed into the uv-managed environment
-- `pip install sari` → installed into the current Python environment
-
-To locate the package:
+Check install path:
 ```bash
 python -c "import sari,inspect; print(inspect.getfile(sari))"
 ```
 
+Check version:
+```bash
+python -c "import sari; print(sari.__version__)"
+```
+
 ### 3. Database & Storage Locations
 
-Sari writes its local database and runtime files to the following locations:
+Sari writes runtime state here:
 
 - **Global DB (default)**: `~/.local/share/sari/index.db`
-- **Workspace-local DB**: `<workspace>/.sari/index.db` (if the `.sari` directory exists)
-- **Registry file**: `~/.local/share/sari/server.json`
-- **Logs**: `~/.local/share/sari/logs` (default; can be overridden)
-- **Config (workspace)**: `<workspace>/.sari/config.json` or `<workspace>/sari.json`
-- **Config (global)**: `~/.config/sari/config.json`
+- **Workspace-local DB**: `<workspace>/.sari/index.db` (if `.sari` exists)
+- **Registry**: `~/.local/share/sari/server.json`
+- **Logs**: `~/.local/share/sari/logs`
+- **Workspace config**: `<workspace>/.sari/config.json` or `<workspace>/sari.json`
+- **Global config**: `~/.config/sari/config.json`
 
 ### 4. Quick Start
 
@@ -99,8 +111,6 @@ sari roots remove /absolute/path/to/workspace
 
 ### 6. Multi‑Workspace Collection
 
-Sari can index multiple workspace roots in one configuration.
-
 #### Option A: CLI
 ```bash
 sari roots add /path/to/workspaceA
@@ -119,12 +129,10 @@ sari roots list
 ```
 
 Notes:
-- Avoid overlapping roots (e.g., `/repo` and `/repo/sub`), otherwise indexing can be duplicated.
-- The MCP server will use the first root as the primary workspace for sessions.
+- Avoid overlapping roots (e.g., `/repo` and `/repo/sub`) to prevent duplication.
+- The MCP server uses the first root as the primary workspace for the session.
 
 ### 7. Configuration Reference (Common)
-
-Configuration file keys:
 
 ```json
 {
@@ -141,7 +149,7 @@ Configuration file keys:
 }
 ```
 
-Environment variables (high‑impact):
+High‑impact environment variables:
 - `SARI_WORKSPACE_ROOT`
 - `SARI_CONFIG`
 - `SARI_LOG_DIR`
@@ -151,18 +159,16 @@ Environment variables (high‑impact):
 
 Full list: `src/sari/docs/reference/ENVIRONMENT.md`
 
-### 8. Client & IDE Integration
+### 8. Transport & Client Integration (stdio / HTTP)
 
-Sari supports **both stdio and HTTP** transports.
+Sari supports **both stdio and HTTP**.
 
-#### 8.0 Transport Modes
-
-**stdio (recommended for MCP clients)**
+#### 8.1 stdio (recommended for MCP clients)
 ```bash
 sari --transport stdio --format pack
 ```
 
-**HTTP (explicit server mode)**
+#### 8.2 HTTP server mode
 ```bash
 sari --transport http --http-api --http-daemon
 ```
@@ -172,7 +178,7 @@ HTTP endpoint:
 http://127.0.0.1:47777/mcp
 ```
 
-#### 8.1 Gemini CLI (`.gemini/settings.json`) – stdio
+#### 8.3 Gemini CLI (`.gemini/settings.json`) – stdio
 ```json
 {
   "mcpServers": {
@@ -187,7 +193,7 @@ http://127.0.0.1:47777/mcp
 }
 ```
 
-#### 8.2 Codex CLI (`.codex/config.toml`) – stdio
+#### 8.4 Codex CLI (`.codex/config.toml`) – stdio
 ```toml
 [mcp_servers.sari]
 command = "sari"
@@ -196,7 +202,7 @@ env = { SARI_CONFIG = "/absolute/path/to/your/project/.sari/config.json" }
 startup_timeout_sec = 60
 ```
 
-#### 8.3 Claude Desktop (macOS) – stdio
+#### 8.5 Claude Desktop – stdio
 ```json
 {
   "mcpServers": {
@@ -211,28 +217,10 @@ startup_timeout_sec = 60
 }
 ```
 
-#### 8.4 Cursor – stdio
-```json
-{
-  "mcpServers": {
-    "sari": {
-      "command": "sari",
-      "args": ["--transport", "stdio", "--format", "json"],
-      "env": {
-        "SARI_CONFIG": "/absolute/path/to/your/project/.sari/config.json"
-      }
-    }
-  }
-}
-```
+#### 8.6 Cursor / VS Code / IntelliJ – stdio
+Use the same MCP JSON format as above.
 
-#### 8.5 VS Code (MCP-compatible plugins) – stdio
-Use the same MCP JSON format as Cursor or Claude.
-
-#### 8.6 IntelliJ / JetBrains – stdio
-If the MCP plugin supports JSON config, use the same format as Cursor.
-
-#### Optional: Auto‑write configs (stdio)
+#### Optional: auto‑write configs
 ```bash
 sari --cmd install --host codex
 sari --cmd install --host gemini
@@ -242,51 +230,69 @@ sari --cmd install --host cursor
 
 ### 9. Updating Sari
 
+#### If installed via `uv` (venv)
 ```bash
-# uv
 uv pip install -U sari
+```
 
-# pip
+#### If installed via `uv` (system)
+```bash
+uv pip install --system -U sari
+```
+
+#### If installed via `pip`
+```bash
 pip install -U sari
 ```
 
-If installed from source:
+#### If installed from source
 ```bash
 git pull
 pip install -e .
+```
+
+### 10. Testing / Dev (tree‑sitter parsers)
+
+If you run tests locally, you must install **language‑specific tree‑sitter packages** and pytest async plugin. For example:
+
+```bash
+pip install pytest pytest-asyncio
+pip install tree-sitter-java tree-sitter-javascript tree-sitter-typescript tree-sitter-python
 ```
 
 ---
 
 ## 한국어
 
-### 1. 설치 방법
+### 0. 소개
 
-Sari는 로컬에서 대규모 코드베이스를 빠르게 색인하고, MCP를 통해 AI 도구에 안전하게 연결하는 로컬 검색 에이전트입니다.
+Sari는 다음을 제공합니다:
+- 대규모 코드베이스 로컬 인덱싱 + 검색
+- stdio / HTTP MCP 서버
+- 다중 워크스페이스 수집을 위한 전역 레지스트리
 
-Sari의 핵심 지향점:
-- 대규모 저장소의 빠른 로컬 인덱싱
-- stdio/HTTP MCP 연동 지원
-- 전역 데이터와 워크스페이스 설정 분리
-- 다중 워크스페이스 인덱싱의 중복 방지
+### 1. 설치 방법 (권장)
 
-Sari는 **기본 설치만** 사용합니다. 기본 패키지에 토크나이저와 tree‑sitter 계열 의존성이 포함됩니다.
+Sari는 **현재 활성 Python 환경**에 설치됩니다. `uv`를 사용할 경우 **먼저 venv 생성이 필수**입니다.
 
-#### 방법 A: uv (권장)
+#### 방법 A: `uv` + venv (권장)
 ```bash
-# 최초 1회 가상환경 생성
+# 1) venv 생성 (최초 1회)
 uv venv .venv
 
-# venv에 설치
+# 2) venv에 설치
 uv pip install sari
+
+# 3) (선택) 업데이트
+uv pip install -U sari
 ```
 
-시스템 Python에 설치하려면(비권장):
+#### 방법 B: `uv` 시스템 설치 (비권장)
 ```bash
 uv pip install --system sari
 ```
 
-#### 방법 B: pip
+#### 방법 C: `pip`
 ```bash
 pip install sari
 ```
@@ -298,22 +304,24 @@ cd sari
 pip install -e .
 ```
 
-### 2. 설치 위치
+### 2. 설치 위치 확인
 
-Sari는 **현재 활성 Python 환경**에 설치됩니다.
-
-- `uv pip install sari` → uv 환경
-- `pip install sari` → 현재 Python 환경
+Sari는 **활성 Python 환경**에 설치됩니다.
 
 설치 경로 확인:
 ```bash
 python -c "import sari,inspect; print(inspect.getfile(sari))"
 ```
 
+버전 확인:
+```bash
+python -c "import sari; print(sari.__version__)"
+```
+
 ### 3. DB 및 파일 저장 위치
 
 - **전역 DB (기본)**: `~/.local/share/sari/index.db`
-- **워크스페이스 로컬 DB**: `<workspace>/.sari/index.db` (`.sari` 디렉터리가 있으면 로컬 사용)
+- **워크스페이스 로컬 DB**: `<workspace>/.sari/index.db` (`.sari` 폴더가 있으면 로컬 사용)
 - **레지스트리**: `~/.local/share/sari/server.json`
 - **로그**: `~/.local/share/sari/logs`
 - **워크스페이스 설정**: `<workspace>/.sari/config.json` 또는 `<workspace>/sari.json`
@@ -366,7 +374,8 @@ sari roots list
 ```
 
 주의:
-- 중첩 워크스페이스는 중복 인덱싱을 유발할 수 있습니다.
+- 중첩 워크스페이스는 인덱싱 중복을 유발합니다.
+- 세션의 기본 워크스페이스는 첫 번째 root 기준으로 잡힙니다.
 
 ### 7. 설정 값 안내 (대표)
 
@@ -391,22 +400,18 @@ sari roots list
 - `SARI_LOG_DIR`
 - `SARI_DAEMON_PORT`
 - `SARI_HTTP_API_PORT`
-- `SARI_ENGINE_INDEX_POLICY`
+- `SARI_ENGINE_INDEX_POLICY` (global | roots_hash | per_root)
 
 전체 목록: `src/sari/docs/reference/ENVIRONMENT.md`
 
-### 8. CLI/IDE 연동 가이드
+### 8. stdio / HTTP 설정법
 
-Sari는 **stdio / HTTP** 모두 지원합니다.
-
-#### 8.0 전송 모드
-
-**stdio (MCP 클라이언트 권장)**
+#### 8.1 stdio (MCP 클라이언트 권장)
 ```bash
 sari --transport stdio --format pack
 ```
 
-**HTTP (서버 모드)**
+#### 8.2 HTTP 서버 모드
 ```bash
 sari --transport http --http-api --http-daemon
 ```
@@ -416,7 +421,7 @@ HTTP 엔드포인트:
 http://127.0.0.1:47777/mcp
 ```
 
-#### 8.1 Gemini CLI – stdio
+#### 8.3 Gemini CLI – stdio
 ```json
 {
   "mcpServers": {
@@ -431,7 +436,7 @@ http://127.0.0.1:47777/mcp
 }
 ```
 
-#### 8.2 Codex CLI – stdio
+#### 8.4 Codex CLI – stdio
 ```toml
 [mcp_servers.sari]
 command = "sari"
@@ -440,7 +445,7 @@ env = { SARI_CONFIG = "/absolute/path/to/your/project/.sari/config.json" }
 startup_timeout_sec = 60
 ```
 
-#### 8.3 Claude Desktop – stdio
+#### 8.5 Claude Desktop – stdio
 ```json
 {
   "mcpServers": {
@@ -455,25 +460,10 @@ startup_timeout_sec = 60
 }
 ```
 
-#### 8.4 Cursor – stdio
-```json
-{
-  "mcpServers": {
-    "sari": {
-      "command": "sari",
-      "args": ["--transport", "stdio", "--format", "json"],
-      "env": {
-        "SARI_CONFIG": "/absolute/path/to/your/project/.sari/config.json"
-      }
-    }
-  }
-}
-```
+#### 8.6 Cursor / VS Code / IntelliJ – stdio
+위 JSON 형식을 그대로 사용하면 됩니다.
 
-#### 8.5 VS Code / IntelliJ – stdio
-Cursor와 동일한 MCP JSON 설정을 사용하면 됩니다.
-
-#### 자동 설정 쓰기 (stdio)
+#### 자동 설정 쓰기
 ```bash
 sari --cmd install --host codex
 sari --cmd install --host gemini
@@ -483,16 +473,32 @@ sari --cmd install --host cursor
 
 ### 9. 업데이트 방법
 
+#### `uv` + venv 사용 시
 ```bash
-# uv
 uv pip install -U sari
+```
 
-# pip
+#### `uv` 시스템 설치 시
+```bash
+uv pip install --system -U sari
+```
+
+#### `pip` 사용 시
+```bash
 pip install -U sari
 ```
 
-소스 설치 시:
+#### 소스 설치 시
 ```bash
 git pull
 pip install -e .
+```
+
+### 10. 테스트 / 개발용 (tree‑sitter 파서)
+
+테스트를 돌릴 경우 **언어별 tree‑sitter 패키지**와 pytest async 플러그인을 설치해야 합니다.
+
+```bash
+pip install pytest pytest-asyncio
+pip install tree-sitter-java tree-sitter-javascript tree-sitter-typescript tree-sitter-python
 ```

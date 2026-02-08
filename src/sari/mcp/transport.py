@@ -2,6 +2,7 @@ import json
 import sys
 import logging
 from typing import Any, Dict, Optional, Tuple, BinaryIO
+from sari.mcp.trace import trace
 
 logger = logging.getLogger("sari.mcp.transport")
 
@@ -29,6 +30,7 @@ class McpTransport:
         try:
             line = self.input.readline()
             if not line:
+                trace("transport_read_eof")
                 return None
             
             while line in (b"\n", b"\r\n"):
@@ -44,13 +46,16 @@ class McpTransport:
                 # JSONL Mode
                 if not self.allow_jsonl:
                     logger.debug("JSONL detected but not allowed. Ignoring.")
+                    trace("transport_jsonl_not_allowed")
                     return None
+                trace("transport_read_jsonl")
                 return self._parse_json(line_str), _MODE_JSONL
 
             if line_str.lower().startswith("content-length:"):
                 # Content-Length Mode
                 content_length = self._parse_headers(line_str)
                 if content_length is None or content_length <= 0 or content_length > MAX_MESSAGE_SIZE:
+                    trace("transport_invalid_content_length", value=content_length)
                     return None
 
                 body_bytes = b""
@@ -61,13 +66,15 @@ class McpTransport:
                     body_bytes += chunk
                 
                 if len(body_bytes) < content_length:
+                    trace("transport_incomplete_body", expected=content_length, actual=len(body_bytes))
                     return None
-                
+                trace("transport_read_framed", bytes=content_length)
                 return self._parse_json(body_bytes.decode("utf-8")), _MODE_FRAMED
 
             return None
         except Exception as e:
             logger.error(f"Error reading MCP message: {e}")
+            trace("transport_read_error", error=str(e))
             return None
 
     def write_message(self, message: Dict[str, Any], mode: Optional[str] = None):
@@ -81,14 +88,17 @@ class McpTransport:
             if mode == _MODE_JSONL:
                 payload = (json_str + "\n").encode("utf-8")
                 self.output.write(payload)
+                trace("transport_write_jsonl", bytes=len(payload))
             else:
                 body_bytes = json_str.encode("utf-8")
                 header = f"Content-Length: {len(body_bytes)}\r\n\r\n".encode("ascii")
                 self.output.write(header + body_bytes)
+                trace("transport_write_framed", bytes=len(body_bytes))
             
             self.output.flush()
         except Exception as e:
             logger.error(f"Error writing MCP message: {e}")
+            trace("transport_write_error", error=str(e))
 
     def _parse_headers(self, first_line: str) -> Optional[int]:
         headers = {}
@@ -152,6 +162,7 @@ class AsyncMcpTransport:
         try:
             line = await self.reader.readline()
             if not line:
+                trace("transport_async_read_eof")
                 return None
             
             # 빈 줄 스킵
@@ -168,21 +179,26 @@ class AsyncMcpTransport:
             if line_str.startswith("{"):
                 if not self.allow_jsonl:
                     logger.debug("JSONL detected but not allowed.")
+                    trace("transport_async_jsonl_not_allowed")
                     return None
+                trace("transport_async_read_jsonl")
                 return self._parse_json(line_str), _MODE_JSONL
             
             # Content-Length 모드 감지
             if line_str.lower().startswith("content-length:"):
                 content_length = await self._parse_headers_async(line_str)
                 if content_length is None or content_length <= 0 or content_length > MAX_MESSAGE_SIZE:
+                    trace("transport_async_invalid_content_length", value=content_length)
                     return None
                 
                 body = await self.reader.readexactly(content_length)
+                trace("transport_async_read_framed", bytes=content_length)
                 return self._parse_json(body.decode("utf-8")), _MODE_FRAMED
             
             return None
         except Exception as e:
             logger.error(f"Error reading async MCP message: {e}")
+            trace("transport_async_read_error", error=str(e))
             return None
     
     async def write_message(self, message: Dict[str, Any], mode: Optional[str] = None) -> None:
@@ -194,14 +210,17 @@ class AsyncMcpTransport:
             if mode == _MODE_JSONL:
                 payload = (json_str + "\n").encode("utf-8")
                 self.writer.write(payload)
+                trace("transport_async_write_jsonl", bytes=len(payload))
             else:
                 body_bytes = json_str.encode("utf-8")
                 header = f"Content-Length: {len(body_bytes)}\r\n\r\n".encode("ascii")
                 self.writer.write(header + body_bytes)
+                trace("transport_async_write_framed", bytes=len(body_bytes))
             
             await self.writer.drain()
         except Exception as e:
             logger.error(f"Error writing async MCP message: {e}")
+            trace("transport_async_write_error", error=str(e))
     
     async def _parse_headers_async(self, first_line: str) -> Optional[int]:
         """비동기적으로 HTTP 스타일 헤더를 파싱합니다."""

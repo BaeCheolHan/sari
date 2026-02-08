@@ -21,6 +21,7 @@ from sari.mcp.session import Session
 from sari.core.workspace import WorkspaceManager
 from sari.core.server_registry import ServerRegistry
 from sari.core.settings import settings
+from sari.mcp.trace import trace
 
 def _resolve_log_dir() -> Path:
     val = settings.LOG_DIR
@@ -83,6 +84,7 @@ class SariDaemon:
         self._heartbeat_thread = None
         self._idle_since = None
         self._drain_since = None
+        trace("daemon_init", host=self.host, port=self.port)
 
     def _cleanup_legacy_pid_file(self):
         """Best-effort cleanup for legacy pid file; registry is the SSOT."""
@@ -102,15 +104,19 @@ class SariDaemon:
             pid = os.getpid()
             self._registry.register_daemon(self.boot_id, host, port, pid, version=sari_version)
             logger.info(f"Registered daemon {self.boot_id} on {host}:{port}")
+            trace("daemon_registered", boot_id=self.boot_id, host=host, port=port, pid=pid, version=sari_version)
         except Exception as e:
             logger.error(f"Failed to register daemon: {e}")
+            trace("daemon_register_error", error=str(e))
 
     def _unregister_daemon(self):
         try:
             self._registry.unregister_daemon(self.boot_id)
             logger.info(f"Unregistered daemon {self.boot_id}")
+            trace("daemon_unregistered", boot_id=self.boot_id)
         except Exception as e:
             logger.error(f"Failed to unregister daemon: {e}")
+            trace("daemon_unregister_error", error=str(e))
 
     def _autostart_workspace(self) -> None:
         if not settings.DAEMON_AUTOSTART:
@@ -202,6 +208,7 @@ class SariDaemon:
             raise SystemExit(f"sari daemon already running on {host}:{self.port} (PID: {existing['pid']})")
 
         self._cleanup_legacy_pid_file()
+        trace("daemon_start_async", host=host, port=self.port)
         self.server = await asyncio.start_server(
             self.handle_client, self.host, self.port
         )
@@ -214,6 +221,7 @@ class SariDaemon:
 
         addr = self.server.sockets[0].getsockname()
         logger.info(f"Sari Daemon serving on {addr}")
+        trace("daemon_listening", addr=str(addr))
 
         async with self.server:
             runner = self.server.serve_forever()
@@ -238,11 +246,13 @@ class SariDaemon:
     async def handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         addr = writer.get_extra_info('peername')
         logger.info(f"Accepted connection from {addr}")
+        trace("daemon_client_accepted", addr=str(addr))
 
         session = Session(reader, writer)
         await session.handle_connection()
 
         logger.info(f"Closed connection from {addr}")
+        trace("daemon_client_closed", addr=str(addr))
 
     def stop(self):
         """Public stop method for external control (tests, etc.)."""
@@ -254,6 +264,7 @@ class SariDaemon:
         self._stop_event.set()
 
         logger.info("Initiating graceful shutdown...")
+        trace("daemon_shutdown_start")
 
         # 1. Stop Server Loop
         if self.server:
@@ -285,6 +296,7 @@ class SariDaemon:
         self._unregister_daemon()
         self._cleanup_legacy_pid_file()
         logger.info("Shutdown sequence complete.")
+        trace("daemon_shutdown_complete")
 
 async def main():
     daemon = SariDaemon()

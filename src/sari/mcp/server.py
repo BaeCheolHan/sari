@@ -17,6 +17,7 @@ from sari.mcp.tools.registry import ToolContext, build_default_registry
 from sari.mcp.telemetry import TelemetryLogger
 from sari.mcp.transport import McpTransport
 from sari.core.utils.logging import get_logger
+from sari.mcp.trace import trace
 
 try:
     import orjson as _orjson
@@ -50,6 +51,14 @@ class LocalSearchMCPServer:
 
     def __init__(self, workspace_root: str, cfg: Any = None, db: Any = None, indexer: Any = None, start_worker: bool = True):
         self.workspace_root = workspace_root
+        trace(
+            "server_init_start",
+            workspace_root=self.workspace_root,
+            injected_cfg=bool(cfg),
+            injected_db=bool(db),
+            injected_indexer=bool(indexer),
+            start_worker=start_worker,
+        )
         # Keep optional injected handles for backward compatibility with older callers.
         self._injected_cfg = cfg
         self._injected_db = db
@@ -84,16 +93,25 @@ class LocalSearchMCPServer:
                     self._log_debug(f"Daemon detected at {inst['host']}:{inst['port']}. Switching to thin-adapter mode.")
                     self._proxy_to_daemon = True
                     self._daemon_address = (inst["host"], int(inst["port"]))
+                    trace("server_daemon_detected", workspace_root=self.workspace_root, daemon_address=self._daemon_address)
             except Exception as e:
                 self._log_debug(f"Failed to check daemon registry: {e}")
+                trace("server_daemon_detect_failed", error=str(e))
 
         max_workers = int(os.environ.get("SARI_MCP_WORKERS", "4") or 4)
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
         self._worker = threading.Thread(target=self._worker_loop, daemon=True)
         if start_worker:
             self._worker.start()
+        trace("server_init_done", workspace_root=self.workspace_root, proxy_to_daemon=self._proxy_to_daemon)
 
     def handle_initialize(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        trace(
+            "initialize_enter",
+            workspace_root=self.workspace_root,
+            params_keys=sorted(list(params.keys())),
+            has_root_uri=bool(params.get("rootUri") or params.get("rootPath")),
+        )
         root_uri = params.get("rootUri") or params.get("rootPath")
         workspace_folders = params.get("workspaceFolders", [])
         
@@ -108,8 +126,10 @@ class LocalSearchMCPServer:
         if target_uri:
             # Update workspace if provided by client
             self.workspace_root = WorkspaceManager.resolve_workspace_root(root_uri=target_uri)
+            trace("initialize_resolved_workspace", workspace_root=self.workspace_root, target_uri=target_uri)
         
         negotiated_version = self._negotiate_protocol_version(params)
+        trace("initialize_negotiated_version", version=negotiated_version)
             
         return {
             "protocolVersion": negotiated_version,
@@ -291,6 +311,12 @@ class LocalSearchMCPServer:
         return self.handle_tools_call({"name": "search", "arguments": args})
 
     def handle_request(self, request: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        trace(
+            "handle_request_enter",
+            method=request.get("method"),
+            msg_id=request.get("id"),
+            proxy_to_daemon=self._proxy_to_daemon,
+        )
         if self._proxy_to_daemon:
             resp = self._forward_to_daemon(request)
             if isinstance(resp, dict):
@@ -300,7 +326,9 @@ class LocalSearchMCPServer:
                     self._log_debug("Daemon proxy failed; falling back to local MCP server.")
                     self._proxy_to_daemon = False
                     self._close_all_daemon_connections()
+                    trace("daemon_proxy_fallback", error=err)
                 else:
+                    trace("handle_request_proxy_response", has_error=bool(err), msg_id=request.get("id"))
                     return resp
             else:
                 return resp
@@ -331,25 +359,36 @@ class LocalSearchMCPServer:
             elif method in {"initialized", "notifications/initialized"}: result = {}
             elif method == "ping": result = {}
             else: return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32601, "message": f"Method not found: {method}"}}
-            return {"jsonrpc": "2.0", "id": msg_id, "result": result}
+            resp = {"jsonrpc": "2.0", "id": msg_id, "result": result}
+            trace("handle_request_exit", method=method, msg_id=msg_id, ok=True)
+            return resp
         except JsonRpcException as e:
+            trace("handle_request_error", method=method, msg_id=msg_id, code=e.code, message=e.message)
             return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": e.code, "message": e.message, "data": e.data}}
         except Exception as e:
+            trace("handle_request_error", method=method, msg_id=msg_id, code=-32000, message=str(e))
             return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32000, "message": str(e)}}
 
     def _forward_to_daemon(self, request: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Forward MCP request to the TCP daemon and return response."""
         tid = threading.get_ident()
+        trace("forward_to_daemon_enter", msg_id=request.get("id"), method=request.get("method"))
         try:
             conn, f = self._ensure_daemon_connection(tid)
             try:
-                return self._forward_over_open_socket(request, conn, f)
+                resp = self._forward_over_open_socket(request, conn, f)
+                trace("forward_to_daemon_exit", msg_id=request.get("id"), ok=bool(resp))
+                return resp
             except Exception:
                 # Retry once with a fresh per-thread connection.
+                trace("forward_to_daemon_retry", msg_id=request.get("id"))
                 self._close_daemon_connection(tid)
                 conn, f = self._ensure_daemon_connection(tid)
-                return self._forward_over_open_socket(request, conn, f)
+                resp = self._forward_over_open_socket(request, conn, f)
+                trace("forward_to_daemon_exit", msg_id=request.get("id"), ok=bool(resp))
+                return resp
         except Exception as e:
+            trace("forward_to_daemon_error", msg_id=request.get("id"), error=str(e))
             msg_id = request.get("id")
             return {
                 "jsonrpc": "2.0",
@@ -364,7 +403,9 @@ class LocalSearchMCPServer:
         with self._daemon_channels_lock:
             ch = self._daemon_channels.get(tid)
             if ch is not None:
+                trace("daemon_connection_reuse", tid=tid)
                 return ch
+        trace("daemon_connection_new", tid=tid, daemon_address=getattr(self, "_daemon_address", None))
         conn = socket.create_connection(self._daemon_address, timeout=settings.DAEMON_TIMEOUT_SEC)
         f = conn.makefile("rb")
         with self._daemon_channels_lock:
@@ -379,6 +420,7 @@ class LocalSearchMCPServer:
             ch = self._daemon_channels.pop(tid, None)
         if not ch:
             return
+        trace("daemon_connection_close", tid=tid)
         conn, f = ch
         try:
             f.close()
@@ -393,6 +435,7 @@ class LocalSearchMCPServer:
         with self._daemon_channels_lock:
             items = list(self._daemon_channels.items())
             self._daemon_channels.clear()
+        trace("daemon_connections_close_all", count=len(items))
         for _tid, (conn, f) in items:
             try:
                 f.close()
@@ -407,6 +450,7 @@ class LocalSearchMCPServer:
         body = json.dumps(request).encode("utf-8")
         header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
         conn.sendall(header + body)
+        trace("daemon_socket_sent", msg_id=request.get("id"), method=request.get("method"), bytes=len(body))
 
         headers: Dict[bytes, bytes] = {}
         while True:
@@ -422,15 +466,20 @@ class LocalSearchMCPServer:
 
         content_length = int(headers.get(b"content-length", b"0"))
         if content_length <= 0:
+            trace("daemon_socket_no_content", msg_id=request.get("id"))
             return None
         resp_body = f.read(content_length)
         if not resp_body:
+            trace("daemon_socket_no_body", msg_id=request.get("id"))
             return None
-        return json.loads(resp_body.decode("utf-8"))
+        resp = json.loads(resp_body.decode("utf-8"))
+        trace("daemon_socket_received", msg_id=request.get("id"), bytes=content_length)
+        return resp
 
     def run(self) -> None:
         """Standard MCP JSON-RPC loop with encapsulated transport."""
         self._log_debug("Sari MCP Server starting run loop...")
+        trace("run_loop_start", workspace_root=self.workspace_root)
         
         if not self.transport:
             input_stream = getattr(sys.stdin, "buffer", sys.stdin)
@@ -441,15 +490,18 @@ class LocalSearchMCPServer:
             wire_format = (os.environ.get("SARI_FORMAT") or "pack").strip().lower()
             self.transport = McpTransport(input_stream, output_stream, allow_jsonl=True)
             self.transport.default_mode = "jsonl" if wire_format == "json" else "content-length"
+            trace("transport_initialized", wire_format=self.transport.default_mode)
 
         try:
             while not self._stop.is_set():
                 res = self.transport.read_message()
                 if res is None:
+                    trace("run_loop_eof")
                     break
                 
                 req, mode = res
                 self._log_debug_request(mode, req)
+                trace("run_loop_received", msg_id=req.get("id"), method=req.get("method"), mode=mode)
                 
                 # Attach metadata for response framing matching
                 req["_sari_framing_mode"] = mode
@@ -473,13 +525,17 @@ class LocalSearchMCPServer:
                         with self._stdout_lock:
                             self.transport.write_message(error_resp, mode=mode)
                     self._log_debug(f"CRITICAL: MCP request queue is full! Dropping request {msg_id}")
+                    trace("run_loop_queue_full", msg_id=msg_id)
                 except Exception as e:
                     self._log_debug(f"ERROR putting req to queue: {e}")
+                    trace("run_loop_queue_error", error=str(e))
         except Exception as e:
             self._log_debug(f"CRITICAL in run loop: {e}")
+            trace("run_loop_error", error=str(e))
         finally:
             self._drain_pending_requests()
             self._log_debug("Sari MCP Server shutting down...")
+            trace("run_loop_shutdown")
             self.shutdown()
 
     def shutdown(self) -> None:
@@ -564,6 +620,7 @@ class LocalSearchMCPServer:
 
     def _handle_and_respond(self, req: Dict[str, Any]) -> None:
         try:
+            trace("handle_and_respond_enter", msg_id=req.get("id"), method=req.get("method"))
             resp = self.handle_request(req)
             if resp:
                 mode = req.get("_sari_framing_mode", "content-length")
@@ -573,8 +630,10 @@ class LocalSearchMCPServer:
                 # Serialize writes to stdout transport to avoid frame interleaving.
                 with self._stdout_lock:
                     self.transport.write_message(resp, mode=mode)
+                trace("handle_and_respond_sent", msg_id=req.get("id"), mode=mode)
         except Exception as e:
             self._log_debug(f"ERROR in _handle_and_respond: {e}")
+            trace("handle_and_respond_error", msg_id=req.get("id"), error=str(e))
 
     def _log_debug(self, message: str) -> None:
         """Log MCP traffic to the structured logger."""

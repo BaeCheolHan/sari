@@ -7,6 +7,7 @@ import urllib.parse
 from typing import Dict, Any, Optional
 from .workspace_registry import Registry, SharedState
 from sari.core.settings import settings
+from sari.mcp.trace import trace
 
 _SARI_VERSION = settings.VERSION
 _SARI_PROTOCOL_VERSION = "2025-11-25"
@@ -31,6 +32,7 @@ class Session:
         self.registry = Registry.get_instance()
         self.running = True
         self._preinit_server = None
+        trace("session_init", has_writer=bool(writer))
 
     def _get_preinit_server(self):
         if self._preinit_server is None:
@@ -40,6 +42,7 @@ class Session:
         return self._preinit_server
 
     async def handle_connection(self):
+        trace("session_handle_connection_start")
         try:
             while self.running:
                 try:
@@ -57,6 +60,7 @@ class Session:
                     if line_str.startswith("{"):
                         # JSONL mode: First line is the JSON body
                         request_str = line_str
+                        trace("session_detect_jsonl")
                     elif "content-length:" in line_str.lower():
                         # Content-Length mode: Parse headers
                         headers = {}
@@ -81,6 +85,7 @@ class Session:
                             content_length = int(headers.get("content-length", 0))
                         except (ValueError, TypeError):
                             logger.warning(f"Invalid Content-Length: {headers.get('content-length')}")
+                            trace("session_invalid_content_length", value=headers.get("content-length"))
                             continue
 
                         if content_length <= 0:
@@ -89,11 +94,14 @@ class Session:
                         body = await self.reader.readexactly(content_length)
                         if not body or len(body) != content_length:
                             logger.warning("Incomplete body read")
+                            trace("session_incomplete_body", expected=content_length, actual=len(body) if body else 0)
                             break
                         request_str = body.decode("utf-8")
+                        trace("session_read_framed", bytes=content_length)
                     else:
                         # Unknown line, skip but don't crash
                         logger.warning(f"Unknown input line in session: {line_str!r}")
+                        trace("session_unknown_line", line_preview=line_str[:120])
                         continue
 
                     if not request_str:
@@ -101,21 +109,26 @@ class Session:
 
                     try:
                         request = json.loads(request_str)
+                        trace("session_request_parsed", keys=sorted(list(request.keys())) if isinstance(request, dict) else type(request).__name__)
                         await self.process_request(request)
                     except json.JSONDecodeError as e:
                         logger.error(f"Invalid JSON received: {e}")
+                        trace("session_json_decode_error", error=str(e))
                         await self.send_error(None, -32700, "Parse error")
                     except Exception as e:
                         logger.error(f"Error processing request logic: {e}", exc_info=True)
+                        trace("session_process_error", error=str(e))
                         await self.send_error(None, -32603, str(e))
 
                 except (asyncio.IncompleteReadError, ConnectionResetError):
                     logger.info("Connection closed by client (IncompleteRead/Reset)")
+                    trace("session_connection_closed")
                     self.running = False
                     break
                 except Exception as e:
                     # CRITICAL: Do not let unhandled exceptions kill the loop
                     logger.error(f"Unhandled transport error: {e}", exc_info=True)
+                    trace("session_transport_error", error=str(e))
                     # Try to send error if writer is open, but don't crash if it fails
                     try:
                         await self.send_error(None, -32603, "Internal Transport Error")
@@ -125,6 +138,7 @@ class Session:
 
         except Exception as outer_e:
              logger.critical(f"Fatal session error: {outer_e}", exc_info=True)
+             trace("session_fatal_error", error=str(outer_e))
         finally:
             self.cleanup()
             try:
@@ -137,11 +151,13 @@ class Session:
                 await self.writer.wait_closed()
             except Exception:
                 pass
+            trace("session_handle_connection_end")
 
     async def process_request(self, request: Dict[str, Any]):
         method = request.get("method")
         params = request.get("params", {})
         msg_id = request.get("id")
+        trace("session_process_request", method=method, msg_id=msg_id, has_shared_state=bool(self.shared_state))
 
         if self.workspace_root:
             self.registry.touch_workspace(self.workspace_root)
@@ -230,6 +246,7 @@ class Session:
                         await self.send_json({"jsonrpc": "2.0", "id": msg_id, "result": {}})
                         return
                 await self.send_error(msg_id, -32002, "Server not initialized. Send 'initialize' first.")
+                trace("session_not_initialized", method=method, msg_id=msg_id)
                 return
 
             # Execute in thread pool to not block async loop
@@ -243,10 +260,12 @@ class Session:
 
             if response:
                 await self.send_json(response)
+                trace("session_response_sent", msg_id=msg_id, method=method)
 
     async def handle_initialize(self, request: Dict[str, Any]):
         params = request.get("params", {})
         msg_id = request.get("id")
+        trace("session_handle_initialize_enter", msg_id=msg_id, params_keys=sorted(list(params.keys())))
 
         boot_id = _boot_id()
         if boot_id:
@@ -263,6 +282,7 @@ class Session:
         if not root_uri:
             # Fallback for clients that omit rootUri/rootPath
             root_uri = WorkspaceManager.resolve_workspace_root()
+        trace("session_handle_initialize_root_uri", root_uri=root_uri)
 
         if root_uri.startswith("file://"):
             parsed = urllib.parse.urlparse(root_uri)
@@ -274,6 +294,7 @@ class Session:
             workspace_root = root_uri
             
         workspace_root = WorkspaceManager.normalize_path(workspace_root)
+        trace("session_handle_initialize_workspace_root", workspace_root=workspace_root)
 
         # If already bound to a different workspace, release it
         if self.workspace_root and self.workspace_root != workspace_root:
@@ -283,6 +304,7 @@ class Session:
         self.workspace_root = workspace_root
         self.shared_state = self.registry.get_or_create(self.workspace_root, persistent=True)
         self.registry.touch_workspace(self.workspace_root)
+        trace("session_handle_initialize_bound", workspace_root=self.workspace_root)
 
         # Record workspace mapping in global registry so other clients can find us
         if not boot_id:
@@ -319,11 +341,13 @@ class Session:
                 "result": result
             }
             await self.send_json(response)
+            trace("session_handle_initialize_success", msg_id=msg_id)
         except Exception as e:
             # Rollback: release the workspace if initialization failed
             self.registry.release(self.workspace_root)
             self.workspace_root = None
             self.shared_state = None
+            trace("session_handle_initialize_error", msg_id=msg_id, error=str(e))
             await self.send_error(msg_id, -32000, str(e))
 
     async def send_json(self, data: Dict[str, Any]):
@@ -333,6 +357,7 @@ class Session:
         if inspect.isawaitable(res):
             await res
         await self.writer.drain()
+        trace("session_send_json", msg_id=data.get("id"), has_error="error" in data, bytes=len(body))
 
     async def send_error(self, msg_id: Any, code: int, message: str):
         response = {
