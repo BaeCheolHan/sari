@@ -23,6 +23,9 @@ class StdoutGuard:
         self._fallback = fallback or sys.stderr
         self._lock = threading.Lock()
         self._buffer = ""
+
+        # Binary-safe passthrough for code paths that write to stdout.buffer
+        self.buffer = getattr(real_stdout, "buffer", None)
         
         # 원본 stdout의 속성 복사
         self.encoding = getattr(real_stdout, 'encoding', 'utf-8')
@@ -40,6 +43,17 @@ class StdoutGuard:
         """
         if not data:
             return 0
+
+        # bytes 입력도 허용 (일부 경로는 바이너리 쓰기)
+        if isinstance(data, (bytes, bytearray)):
+            with self._lock:
+                if self.buffer is not None:
+                    return self.buffer.write(data)
+                # buffer가 없으면 텍스트로 디코딩 후 처리
+                try:
+                    data = data.decode(self.encoding or "utf-8", errors=self.errors or "strict")
+                except Exception:
+                    data = data.decode("utf-8", errors="replace")
         
         # MCP 프로토콜 메시지 감지
         stripped = data.lstrip()
@@ -62,6 +76,11 @@ class StdoutGuard:
             self._real.flush()
         except Exception:
             pass
+        if self.buffer is not None:
+            try:
+                self.buffer.flush()
+            except Exception:
+                pass
         try:
             self._fallback.flush()
         except Exception:
