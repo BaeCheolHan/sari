@@ -57,6 +57,20 @@ class LocalSearchDB:
         """
         self._writer_thread_id = thread_id
 
+    def count_failed_tasks(self) -> Tuple[int, int]:
+        """Return total failed tasks and those with high retry count."""
+        if not HAS_PEEWEE:
+            return 0, 0
+        try:
+            cur = self.db._get_conn().cursor()
+            row = cur.execute("SELECT COUNT(*) FROM failed_tasks").fetchone()
+            total = int(row[0]) if row else 0
+            row2 = cur.execute("SELECT COUNT(*) FROM failed_tasks WHERE attempts >= 3").fetchone()
+            high = int(row2[0]) if row2 else 0
+            return total, high
+        except Exception:
+            return 0, 0
+
     def _init_mem_staging(self):
         try:
             conn = self.db.connection()

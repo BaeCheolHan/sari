@@ -189,7 +189,13 @@ class IndexWorker:
                 "engine_doc": self._build_engine_doc(db_path, repo, rel_to_root, normalized, int(st.st_mtime), size)
             }
         except Exception as e:
-            if self.logger: self.logger.error(f"Worker failed for {file_path}: {e}")
+            if isinstance(e, FileNotFoundError) or (isinstance(e, OSError) and getattr(e, "errno", None) == 2):
+                # File disappeared between stat and read; treat as a benign race.
+                if self.logger:
+                    self.logger.info(f"Worker skipped missing file: {file_path}")
+                return None
+            if self.logger:
+                self.logger.error(f"Worker failed for {file_path}: {e}")
             return None
 
     def _derive_repo_label(self, root: Path, file_path: Path, rel_to_root: str) -> str:
