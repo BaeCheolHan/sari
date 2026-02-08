@@ -17,6 +17,7 @@ from sari.mcp.tools._util import (
     ErrorCode,
     resolve_root_ids,
 )
+from sari.core.services.call_graph_service import CallGraphService
 
 PLUGIN_API_VERSION = 1
 
@@ -392,7 +393,8 @@ def execute_call_graph(args: Dict[str, Any], db: Any, logger: Any = None, roots:
         return "\n".join(lines)
 
     try:
-        payload = build_call_graph(args, db, roots or [])
+        svc = CallGraphService(db, roots or [])
+        payload = svc.build(args)
     except Exception as e:
         import traceback
         stack = traceback.format_exc()

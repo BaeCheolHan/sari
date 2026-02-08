@@ -20,6 +20,7 @@ from sari.mcp.tools._util import (
 
 from sari.core.db import LocalSearchDB, SearchOptions
 from sari.core.engine_runtime import EngineError, SqliteSearchEngineAdapter
+from sari.core.services.search_service import SearchService
 from sari.mcp.telemetry import TelemetryLogger
 
 
@@ -29,6 +30,7 @@ def execute_search(
     logger: TelemetryLogger,
     roots: List[str],
     engine: Any = None,
+    indexer: Any = None,
 ) -> Dict[str, Any]:
     start_ts = time.time()
     engine = engine or getattr(db, "engine", None)
@@ -147,8 +149,9 @@ def execute_search(
         root_ids=root_ids,
     )
 
+    service = SearchService(db=db, engine=engine, indexer=indexer)
     try:
-        hits, meta = engine.search_v2(opts) if engine else ([], {})
+        hits, meta = service.search(opts)
     except EngineError as exc:
         code = getattr(ErrorCode, exc.code, ErrorCode.ERR_ENGINE_QUERY)
         return mcp_response(
@@ -157,35 +160,45 @@ def execute_search(
             lambda: {"error": {"code": code.value, "message": exc.message, "hint": exc.hint}, "isError": True},
         )
     except Exception as exc:
-        return mcp_response(
-            "search",
-            lambda: pack_error("search", ErrorCode.ERR_ENGINE_QUERY, f"engine query failed: {exc}"),
-            lambda: {"error": {"code": ErrorCode.ERR_ENGINE_QUERY.value, "message": f"engine query failed: {exc}"}, "isError": True},
-        )
+        hits, meta = [], {"partial": True, "db_health": "error", "db_error": str(exc), "engine": "fallback"}
 
     latency_ms = int((time.time() - start_ts) * 1000)
     total = meta.get("total", -1)
     total_mode = meta.get("total_mode", total_mode)
+    partial = bool(meta.get("partial", False))
+    db_health = meta.get("db_health", "ok")
+    db_error = meta.get("db_error", "")
+
+    index_meta = service.index_meta()
+    index_ready = index_meta.get("index_ready") if index_meta else None
+    indexed_files = index_meta.get("indexed_files") if index_meta else None
+    scanned_files = index_meta.get("scanned_files") if index_meta else None
+    index_errors = index_meta.get("index_errors") if index_meta else None
+    if index_ready is False:
+        partial = True
 
     def build_json() -> Dict[str, Any]:
         results: List[Dict[str, Any]] = []
         for hit in hits:
-            results.append({
-                "doc_id": hit.path,
-                "repo": hit.repo,
-                "path": hit.path,
-                "score": hit.score,
-                "snippet": hit.snippet,
-                "mtime": hit.mtime,
-                "size": hit.size,
-                "match_count": hit.match_count,
-                "file_type": hit.file_type,
-                "hit_reason": hit.hit_reason,
-                "scope_reason": hit.scope_reason,
-                "context_symbol": hit.context_symbol,
-                "docstring": hit.docstring,
-                "metadata": hit.metadata,
-            })
+            if hasattr(hit, "to_result_dict"):
+                results.append(hit.to_result_dict())
+            else:
+                results.append({
+                    "doc_id": hit.path,
+                    "repo": hit.repo,
+                    "path": hit.path,
+                    "score": hit.score,
+                    "snippet": hit.snippet,
+                    "mtime": hit.mtime,
+                    "size": hit.size,
+                    "match_count": hit.match_count,
+                    "file_type": hit.file_type,
+                    "hit_reason": hit.hit_reason,
+                    "scope_reason": hit.scope_reason,
+                    "context_symbol": getattr(hit, "context_symbol", ""),
+                    "docstring": getattr(hit, "docstring", ""),
+                    "metadata": getattr(hit, "metadata", {}),
+                })
         return {
             "query": query,
             "limit": limit,
@@ -197,6 +210,13 @@ def execute_search(
                 "engine": engine_mode,
                 "latency_ms": latency_ms,
                 "index_version": index_version,
+                "partial": partial,
+                "db_health": db_health,
+                "db_error": db_error,
+                "index_ready": index_ready,
+                "indexed_files": indexed_files,
+                "scanned_files": scanned_files,
+                "index_errors": index_errors,
             },
         }
 
@@ -210,6 +230,19 @@ def execute_search(
         lines.append(pack_line("m", {"latency_ms": str(latency_ms)}))
         if index_version:
             lines.append(pack_line("m", {"index_version": pack_encode_id(index_version)}))
+        lines.append(pack_line("m", {"partial": str(partial).lower()}))
+        if db_health:
+            lines.append(pack_line("m", {"db_health": pack_encode_id(db_health)}))
+        if db_error:
+            lines.append(pack_line("m", {"db_error": pack_encode_text(db_error)}))
+        if index_ready is not None:
+            lines.append(pack_line("m", {"index_ready": str(index_ready).lower()}))
+        if indexed_files is not None:
+            lines.append(pack_line("m", {"indexed_files": str(indexed_files)}))
+        if scanned_files is not None:
+            lines.append(pack_line("m", {"scanned_files": str(scanned_files)}))
+        if index_errors is not None:
+            lines.append(pack_line("m", {"index_errors": str(index_errors)}))
         
         # Efficiency hint for LLMs (Serena-inspired)
         lines.append(pack_line("m", {"efficiency_hint": "To save tokens, use list_symbols <path> to see file structure before read_file."}))

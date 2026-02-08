@@ -382,3 +382,15 @@ uv pip install -U sari
 문제가 발생하면 `docs/TROUBLESHOOTING.md`를 확인하세요.
 
 Please see `docs/TROUBLESHOOTING.md` when issues occur.
+
+---
+
+## 10. 부분응답 모드 / Partial-Response Mode
+
+### (KR)
+DB I/O 오류나 인덱싱 미완료 상태에서도 **부분 결과**를 반환합니다.  
+응답 메타에 `partial=true`, `db_health`, `index_ready`가 표시됩니다.
+
+### (EN)
+Even when DB I/O fails or indexing is incomplete, Sari can return **partial results**.  
+The response meta includes `partial=true`, `db_health`, and `index_ready`.

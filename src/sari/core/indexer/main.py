@@ -316,3 +316,16 @@ class IndexStatus:
         self.errors = 0
         self.index_version = ""
         self.last_error = ""
+
+    def to_meta(self) -> dict:
+        return {
+            "index_ready": bool(self.index_ready),
+            "indexed_files": int(self.indexed_files or 0),
+            "scanned_files": int(self.scanned_files or 0),
+            "index_errors": int(self.errors or 0),
+            "symbols_extracted": int(self.symbols_extracted or 0),
+            "index_version": self.index_version or "",
+            "last_error": self.last_error or "",
+            "scan_started_ts": int(self.scan_started_ts or 0),
+            "scan_finished_ts": int(self.scan_finished_ts or 0),
+        }

@@ -1,7 +1,6 @@
-import time
 from typing import Any, Dict, List
 
-from sari.core.queue_pipeline import FsEvent, FsEventKind
+from sari.core.services.index_service import IndexService
 
 from sari.mcp.tools._util import mcp_response, pack_error, ErrorCode, resolve_db_path, pack_header, pack_line, pack_encode_id
 
@@ -15,21 +14,7 @@ def execute_index_file(args: Dict[str, Any], indexer: Any, roots: List[str]) -> 
             lambda: {"error": {"code": ErrorCode.INVALID_ARGS.value, "message": "File path is required"}, "isError": True},
         )
 
-    if not indexer:
-        return mcp_response(
-            "index_file",
-            lambda: pack_error("index_file", ErrorCode.INTERNAL, "Indexer not available"),
-            lambda: {"error": {"code": ErrorCode.INTERNAL.value, "message": "Indexer not available"}, "isError": True},
-        )
-
-    if not getattr(indexer, "indexing_enabled", True):
-        mode = getattr(indexer, "indexer_mode", "off")
-        code = ErrorCode.ERR_INDEXER_DISABLED if mode == "off" else ErrorCode.ERR_INDEXER_FOLLOWER
-        return mcp_response(
-            "index_file",
-            lambda: pack_error("index_file", code, "Indexer is not available in follower/off mode", fields={"mode": mode}),
-            lambda: {"error": {"code": code.value, "message": "Indexer is not available in follower/off mode", "data": {"mode": mode}}, "isError": True},
-        )
+    svc = IndexService(indexer)
 
     db_path = resolve_db_path(path, roots)
     if not db_path:
@@ -46,12 +31,16 @@ def execute_index_file(args: Dict[str, Any], indexer: Any, roots: List[str]) -> 
             if decoded:
                 _, fs_path = decoded
                 fs_path = str(fs_path)
-        # Trigger watcher event logic which handles upsert/delete
-        if FsEvent and FsEventKind:
-            evt = FsEvent(kind=FsEventKind.MODIFIED, path=fs_path, dest_path=None, ts=time.time())
-            indexer._enqueue_fsevent(evt)
-        else:
-            indexer._enqueue_fsevent(FsEvent(kind=FsEventKind.MODIFIED, path=fs_path, dest_path=None, ts=time.time()))
+        result = svc.index_file(fs_path)
+        if not result.get("ok"):
+            code = result.get("code", ErrorCode.INTERNAL)
+            message = result.get("message", "Indexer not available")
+            data = result.get("data")
+            return mcp_response(
+                "index_file",
+                lambda: pack_error("index_file", code, message, fields=data),
+                lambda: {"error": {"code": code.value, "message": message, "data": data}, "isError": True},
+            )
 
         def build_pack() -> str:
             lines = [pack_header("index_file", {}, returned=1)]

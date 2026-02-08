@@ -18,6 +18,24 @@ class SearchEngine:
         self._snippet_lru: List[tuple] = []
         self.storage = GlobalStorageManager.get_instance(db)
 
+    def search_l2_only(self, opts: SearchOptions) -> Tuple[List[SearchHit], Dict[str, Any]]:
+        q = (opts.query or "").strip()
+        if not q:
+            return [], {"total": 0, "engine": "l2", "partial": True}
+        from .workspace import WorkspaceManager
+        root_id = WorkspaceManager.normalize_path(list(opts.root_ids)[0]) if opts.root_ids else None
+        meta: Dict[str, Any] = {"engine": "l2", "partial": True, "db_health": "error", "coverage": "l2-only"}
+        try:
+            recent_rows = self.storage.get_recent_files(q, root_id=root_id, limit=opts.limit)
+            hits = self._process_sqlite_rows(recent_rows, opts)
+            for h in hits:
+                h.hit_reason = "L2 Cache (Degraded)"
+                h.score = 3.0
+            return hits[:opts.limit], meta
+        except Exception as e:
+            meta["db_error"] = str(e)
+            return [], meta
+
     def search_v2(self, opts: SearchOptions) -> Tuple[List[SearchHit], Dict[str, Any]]:
         """Enhanced search with Score Normalization and Merged Results."""
         if hasattr(self.db, "coordinator") and self.db.coordinator:
@@ -29,14 +47,20 @@ class SearchEngine:
 
             from .workspace import WorkspaceManager
             root_id = WorkspaceManager.normalize_path(list(opts.root_ids)[0]) if opts.root_ids else None
-            meta: Dict[str, Any] = {"engine": "hybrid"}
+            meta: Dict[str, Any] = {"engine": "hybrid", "partial": False, "db_health": "ok", "db_error": ""}
 
             # 1. L2 Cache (Recent) - 최상위 우선순위
-            recent_rows = self.storage.get_recent_files(q, root_id=root_id, limit=opts.limit)
-            recent_hits = self._process_sqlite_rows(recent_rows, opts)
-            for h in recent_hits:
-                h.hit_reason = "L2 Cache (Recent)"
-                h.score = 100.0 # 매우 높은 고정 점수
+            try:
+                recent_rows = self.storage.get_recent_files(q, root_id=root_id, limit=opts.limit)
+                recent_hits = self._process_sqlite_rows(recent_rows, opts)
+                for h in recent_hits:
+                    h.hit_reason = "L2 Cache (Recent)"
+                    h.score = 100.0 # 매우 높은 고정 점수
+            except Exception as e:
+                recent_hits = []
+                meta["db_health"] = "error"
+                meta["db_error"] = str(e)
+                meta["partial"] = True
             
             seen_paths = {h.path for h in recent_hits}
             all_hits = recent_hits
@@ -58,49 +82,54 @@ class SearchEngine:
 
             # 3. SQLite (Fallback/Secondary DB Search)
             if not all_hits or len(all_hits) < opts.limit:
-                cur = self.db._get_conn().cursor()
-                # Try FTS first
-                is_fts = False
-                if getattr(self.db, "settings", None) and getattr(self.db.settings, "ENABLE_FTS", False):
-                    try:
-                        fts_q = self._fts_query(q)
-                        sql = ("SELECT f.path, f.rel_path, f.root_id, f.repo, f.mtime, f.size, f.content "
-                               "FROM files_fts JOIN files f ON files_fts.rowid = f.rowid "
-                               "WHERE files_fts MATCH ? AND f.deleted_ts = 0")
-                        params = [fts_q]
-                        if root_id: sql += " AND f.root_id = ?"; params.append(root_id)
-                        if opts.repo: sql += " AND f.repo = ?"; params.append(opts.repo)
+                try:
+                    cur = self.db._get_conn().cursor()
+                    # Try FTS first
+                    is_fts = False
+                    if getattr(self.db, "settings", None) and getattr(self.db.settings, "ENABLE_FTS", False):
+                        try:
+                            fts_q = self._fts_query(q)
+                            sql = ("SELECT f.path, f.rel_path, f.root_id, f.repo, f.mtime, f.size, f.content "
+                                   "FROM files_fts JOIN files f ON files_fts.rowid = f.rowid "
+                                   "WHERE files_fts MATCH ? AND f.deleted_ts = 0")
+                            params = [fts_q]
+                            if root_id: sql += " AND f.root_id = ?"; params.append(root_id)
+                            if opts.repo: sql += " AND f.repo = ?"; params.append(opts.repo)
+                            cur.execute(sql + f" LIMIT {opts.limit}", params)
+                            db_hits = self._process_sqlite_rows(cur.fetchall(), opts)
+                            for h in db_hits:
+                                h.score = 5.0
+                                if h.path not in seen_paths:
+                                    all_hits.append(h)
+                                    seen_paths.add(h.path)
+                            is_fts = True
+                        except Exception: pass
+                    
+                    # Broad LIKE fallback if still no results or FTS skipped
+                    if not all_hits or len(all_hits) < opts.limit:
+                        like_q = f"%{q}%"
+                        sql = (
+                            "SELECT path, rel_path, root_id, repo, mtime, size, content FROM files "
+                            "WHERE (path LIKE ? OR rel_path LIKE ? OR fts_content LIKE ?) AND deleted_ts = 0"
+                        )
+                        params = [like_q, like_q, like_q]
+                        if root_id:
+                            sql += " AND root_id = ?"
+                            params.append(root_id)
+                        if opts.repo:
+                            sql += " AND repo = ?"
+                            params.append(opts.repo)
                         cur.execute(sql + f" LIMIT {opts.limit}", params)
                         db_hits = self._process_sqlite_rows(cur.fetchall(), opts)
                         for h in db_hits:
-                            h.score = 5.0
+                            h.score = 4.0
                             if h.path not in seen_paths:
                                 all_hits.append(h)
                                 seen_paths.add(h.path)
-                        is_fts = True
-                    except Exception: pass
-                
-                # Broad LIKE fallback if still no results or FTS skipped
-                if not all_hits or len(all_hits) < opts.limit:
-                    like_q = f"%{q}%"
-                    sql = (
-                        "SELECT path, rel_path, root_id, repo, mtime, size, content FROM files "
-                        "WHERE (path LIKE ? OR rel_path LIKE ? OR fts_content LIKE ?) AND deleted_ts = 0"
-                    )
-                    params = [like_q, like_q, like_q]
-                    if root_id:
-                        sql += " AND root_id = ?"
-                        params.append(root_id)
-                    if opts.repo:
-                        sql += " AND repo = ?"
-                        params.append(opts.repo)
-                    cur.execute(sql + f" LIMIT {opts.limit}", params)
-                    db_hits = self._process_sqlite_rows(cur.fetchall(), opts)
-                    for h in db_hits:
-                        h.score = 4.0
-                        if h.path not in seen_paths:
-                            all_hits.append(h)
-                            seen_paths.add(h.path)
+                except sqlite3.Error as e:
+                    meta["db_health"] = "error"
+                    meta["db_error"] = str(e)
+                    meta["partial"] = True
 
             # Root 우선 가중치 (workspace root에 속한 결과를 앞쪽으로)
             if root_id:

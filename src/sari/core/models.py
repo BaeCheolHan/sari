@@ -24,6 +24,27 @@ class SearchHit(BaseModel):
     file_type: str = ""
     hit_reason: str = ""
     scope_reason: str = ""
+    context_symbol: str = ""
+    docstring: str = ""
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+    def to_result_dict(self) -> Dict[str, Any]:
+        return {
+            "doc_id": self.path,
+            "repo": self.repo,
+            "path": self.path,
+            "score": self.score,
+            "snippet": self.snippet,
+            "mtime": self.mtime,
+            "size": self.size,
+            "match_count": self.match_count,
+            "file_type": self.file_type,
+            "hit_reason": self.hit_reason,
+            "scope_reason": self.scope_reason,
+            "context_symbol": self.context_symbol,
+            "docstring": self.docstring,
+            "metadata": self.metadata,
+        }
 
 class RepoStat(BaseModel):
     repo: str

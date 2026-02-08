@@ -121,7 +121,7 @@ def build_default_registry() -> ToolRegistry:
             },
             "required": ["query"],
         },
-        handler=lambda ctx, args: search_tool.execute_search(args, ctx.db, ctx.logger, ctx.roots, engine=ctx.engine),
+        handler=lambda ctx, args: search_tool.execute_search(args, ctx.db, ctx.logger, ctx.roots, engine=ctx.engine, indexer=ctx.indexer),
     ))
 
     reg.register(Tool(
