@@ -28,6 +28,25 @@ try:
 except Exception:
     from workspace import WorkspaceManager
 
+
+
+def _log(logger, level: str, message: str) -> None:
+    if not logger:
+        return
+    # Support both TelemetryLogger (log_info/log_error/...) and stdlib logging.Logger (info/error/...)
+    method = getattr(logger, f"log_{level}", None)
+    if callable(method):
+        method(message)
+        return
+    method = getattr(logger, level, None)
+    if callable(method):
+        method(message)
+        return
+    # Last resort: try generic logger.log if present
+    method = getattr(logger, "log", None)
+    if callable(method):
+        method(message)
+
 def _is_git_event(path: str) -> bool:
     if not path:
         return False
@@ -114,7 +133,7 @@ class DebouncedEventHandler(FileSystemEventHandler):
                     self._git_timer = threading.Timer(self.git_debounce_seconds, self._trigger_git)
                     self._git_timer.start()
             if self.logger:
-                self.logger.log_info("Git activity detected; deferring to rescan.")
+                _log(self.logger, "info", "Git activity detected; deferring to rescan.")
             return
         fs_event = FsEvent(kind=evt_kind, path=src_path,
                            root="", # Will be inferred in dispatch
@@ -152,7 +171,7 @@ class DebouncedEventHandler(FileSystemEventHandler):
            self.callback(fs_event)
         except Exception as e:
             if self.logger:
-                self.logger.log_error(f"Watcher callback failed for {path}: {e}")
+                _log(self.logger, "error", f"Watcher callback failed for {path}: {e}")
 
     def _update_debounce(self, now_ts: float) -> None:
         self._event_times.append(now_ts)
@@ -211,7 +230,7 @@ class DebouncedEventHandler(FileSystemEventHandler):
                 self.callback(evt)
             except Exception as e:
                 if self.logger:
-                    self.logger.log_error(f"Watcher callback failed for {evt.path}: {e}")
+                    _log(self.logger, "error", f"Watcher callback failed for {evt.path}: {e}")
 
     def _trigger_git(self):
         path = ""
@@ -223,7 +242,7 @@ class DebouncedEventHandler(FileSystemEventHandler):
                 self.git_callback(path or ".git")
         except Exception as e:
             if self.logger:
-                self.logger.log_error(f"Watcher git callback failed for {path}: {e}")
+                _log(self.logger, "error", f"Watcher git callback failed for {path}: {e}")
 
 class FileWatcher:
     def __init__(
@@ -247,7 +266,7 @@ class FileWatcher:
     def start(self):
         if not HAS_WATCHDOG:
             if self.logger:
-                self.logger.log_info("Watchdog not installed. Skipping real-time monitoring.")
+                _log(self.logger, "info", "Watchdog not installed. Skipping real-time monitoring.")
             return
 
         if self._running:
@@ -274,7 +293,7 @@ class FileWatcher:
                     started_any = True
                 except Exception as e:
                     if self.logger:
-                        self.logger.log_error(f"Failed to watch path {p}: {e}")
+                        _log(self.logger, "error", f"Failed to watch path {p}: {e}")
 
         if started_any:
             try:
@@ -282,10 +301,10 @@ class FileWatcher:
                 self._running = True
                 self._start_monitor()
                 if self.logger:
-                    self.logger.log_info(f"Watcher started on: {self.paths}")
+                    _log(self.logger, "info", f"Watcher started on: {self.paths}")
             except Exception as e:
                 if self.logger:
-                    self.logger.log_error(f"Failed to start observer: {e}")
+                    _log(self.logger, "error", f"Failed to start observer: {e}")
 
     def stop(self):
         self._stop_event.set()
@@ -314,7 +333,7 @@ class FileWatcher:
                         self.observer.join(timeout=5.0)
                         if self.observer.is_alive():
                             if self.logger:
-                                self.logger.log_warning(
+                                _log(self.logger, "warning", 
                                     f"Observer still alive after stop (attempt {attempt+1}/{max_retries})"
                                 )
                             if attempt < max_retries - 1:
@@ -322,10 +341,10 @@ class FileWatcher:
                                 continue
                             else:
                                 if self.logger:
-                                    self.logger.log_error("Observer forced restart after max retries")
+                                    _log(self.logger, "error", "Observer forced restart after max retries")
                     except Exception as e:
                         if self.logger:
-                            self.logger.log_error(f"Error stopping observer: {e}")
+                            _log(self.logger, "error", f"Error stopping observer: {e}")
                 
                 # 새 observer 생성
                 self.observer = Observer()
@@ -347,21 +366,21 @@ class FileWatcher:
                             started_any = True
                         except Exception as e:
                             if self.logger:
-                                self.logger.log_error(f"Failed to watch path {p}: {e}")
+                                _log(self.logger, "error", f"Failed to watch path {p}: {e}")
                 if started_any:
                     self.observer.start()
                     self._running = True
                     if self.logger:
-                        self.logger.log_info("Watcher restarted successfully.")
+                        _log(self.logger, "info", "Watcher restarted successfully.")
                     break  # 성공
                 else:
                     if self.logger:
-                        self.logger.log_error("Watcher restart failed: no valid paths.")
+                        _log(self.logger, "error", "Watcher restart failed: no valid paths.")
                     self._running = False
                     break
             except Exception as e:
                 if self.logger:
-                    self.logger.log_error(f"Watcher restart attempt {attempt+1}/{max_retries} failed: {e}")
+                    _log(self.logger, "error", f"Watcher restart attempt {attempt+1}/{max_retries} failed: {e}")
                 if attempt < max_retries - 1:
                     time.sleep(1.0)
                 else:
@@ -379,7 +398,7 @@ class FileWatcher:
                 break
             if self.observer and not self.observer.is_alive() and self._running:
                 if self.logger:
-                    self.logger.log_error("Watcher observer died; restarting.")
+                    _log(self.logger, "error", "Watcher observer died; restarting.")
                 self._restart_observer()
 
     def _dispatch_event(self, evt: FsEvent):
@@ -408,7 +427,7 @@ class FileWatcher:
             self.callback(normalized_evt)
         except Exception as e:
             if self.logger:
-                self.logger.log_error(f"Watcher callback failed for {getattr(normalized_evt, 'path', '')}: {e}")
+                _log(self.logger, "error", f"Watcher callback failed for {getattr(normalized_evt, 'path', '')}: {e}")
 
     def _infer_root_for_path(self, event_path: str) -> str:
         if not event_path:

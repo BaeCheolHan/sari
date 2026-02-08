@@ -23,7 +23,11 @@ class LocalSearchDB:
         self.logger = logger or logging.getLogger("sari.db")
         self.settings = None
         self.engine = None
+        self._swap_in_progress = threading.Event()
         if not HAS_PEEWEE: return
+        dir_path = os.path.dirname(self.db_path)
+        if self.db_path not in (":memory:", "") and dir_path:
+            os.makedirs(dir_path, exist_ok=True)
         self.db = SqliteDatabase(self.db_path, pragmas={
             'journal_mode': 'wal', 'synchronous': 'normal',
             'busy_timeout': 60000, 'foreign_keys': 1
@@ -33,6 +37,13 @@ class LocalSearchDB:
         with self.db.atomic(): init_schema(self.db.connection())
         self._init_mem_staging()
         self._lock = threading.Lock()
+
+    def _wait_for_swap(self, timeout: float = 2.0) -> None:
+        if not self._swap_in_progress.is_set():
+            return
+        start = time.time()
+        while self._swap_in_progress.is_set() and time.time() - start < timeout:
+            time.sleep(0.01)
 
     def set_engine(self, engine): self.engine = engine
     def set_settings(self, settings): self.settings = settings
@@ -240,11 +251,37 @@ class LocalSearchDB:
     def close_all(self): self.close()
     @property
     def _read(self):
+        self._wait_for_swap()
         conn = self.db.connection(); conn.row_factory = sqlite3.Row
         return conn
     @property
-    def _write(self): return self.db.connection()
-    def _get_conn(self): return self._read
+    def _write(self):
+        self._wait_for_swap()
+        return self.db.connection()
+    def _get_conn(self):
+        self._wait_for_swap()
+        return self._read
     def prune_stale_data(self, root_id: str, active_paths: List[str]):
         if not active_paths: return
         File.update(deleted_ts=int(time.time())).where(File.root_id == root_id, File.path.not_in(active_paths)).execute()
+
+    def swap_db_file(self, snapshot_path: str) -> None:
+        if not snapshot_path or not os.path.exists(snapshot_path):
+            raise FileNotFoundError(f"snapshot db not found: {snapshot_path}")
+        with self._lock:
+            self._swap_in_progress.set()
+            try:
+                try:
+                    self.db.close()
+                except Exception:
+                    pass
+                os.replace(snapshot_path, self.db_path)
+                self.db = SqliteDatabase(self.db_path, pragmas={
+                    'journal_mode': 'wal', 'synchronous': 'normal',
+                    'busy_timeout': 60000, 'foreign_keys': 1
+                }, check_same_thread=False)
+                self.db.connect(reuse_if_open=True)
+                db_proxy.initialize(self.db)
+                self._init_mem_staging()
+            finally:
+                self._swap_in_progress.clear()

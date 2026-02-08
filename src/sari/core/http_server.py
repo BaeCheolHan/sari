@@ -324,6 +324,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/rescan":
             # Trigger a scan ASAP (non-blocking)
             self.indexer.status.index_ready = False
+            if hasattr(self.indexer, "request_rescan"):
+                try:
+                    self.indexer.request_rescan()
+                except Exception:
+                    pass
             return {"ok": True, "requested": True}
 
         return {"ok": False, "error": "not found", "status": 404}

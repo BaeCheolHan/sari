@@ -1,6 +1,10 @@
 import os
 import time
+import json
 import logging
+import threading
+import multiprocessing
+import tempfile
 import concurrent.futures
 from typing import List, Optional, Dict, Any
 from pathlib import Path
@@ -9,6 +13,138 @@ from sari.core.db.main import LocalSearchDB
 from .worker import IndexWorker
 from sari.core.workspace import WorkspaceManager
 
+def _scan_to_db(config: Config, db: LocalSearchDB, logger: logging.Logger) -> Dict[str, Any]:
+    status = {
+        "scan_started_ts": int(time.time()),
+        "scan_finished_ts": 0,
+        "scanned_files": 0,
+        "indexed_files": 0,
+        "symbols_extracted": 0,
+        "errors": 0,
+        "index_version": "",
+    }
+    worker = IndexWorker(config, db, logger, None)
+    max_workers = os.cpu_count() or 4
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+    try:
+        all_files = []
+        for root in config.workspace_roots:
+            rid = WorkspaceManager.root_id(root)
+            db.ensure_root(rid, str(root))
+            for path in Path(root).rglob("*"):
+                if path.is_file() and config.should_index(str(path)):
+                    all_files.append((root, path, rid))
+
+        status["scanned_files"] = len(all_files)
+        futures = []
+        now = int(time.time())
+        for root, path, rid in all_files:
+            try:
+                st = path.stat()
+                futures.append(executor.submit(
+                    worker.process_file_task,
+                    root, path, st, now, st.st_mtime, True, root_id=rid
+                ))
+            except Exception:
+                status["errors"] += 1
+
+        file_rows = []
+        all_symbols = []
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                res = future.result()
+                if res and res.get("type") in ("changed", "new"):
+                    status["indexed_files"] += 1
+                    file_row = (
+                        res.get("path", ""),
+                        res.get("rel", ""),
+                        res.get("root_id", "root"),
+                        res.get("repo", ""),
+                        res.get("mtime", 0),
+                        res.get("size", 0),
+                        res.get("content", ""),
+                        res.get("content_hash", ""),
+                        res.get("fts_content", ""),
+                        res.get("scan_ts", 0),
+                        0,
+                        res.get("parse_status", "ok"),
+                        res.get("parse_reason", ""),
+                        res.get("ast_status", "skipped"),
+                        res.get("ast_reason", ""),
+                        res.get("is_binary", 0),
+                        res.get("is_minified", 0),
+                        0,
+                        res.get("content_bytes", 0),
+                        res.get("metadata_json", "{}"),
+                    )
+                    file_rows.append(file_row)
+
+                    symbols = res.get("symbols", [])
+                    if symbols:
+                        root_id = res.get("root_id", "root")
+                        augmented_symbols = []
+                        for s in symbols:
+                            if len(s) >= 11:
+                                augmented_symbols.append((
+                                    s[10],
+                                    s[0],
+                                    root_id,
+                                    s[1],
+                                    s[2],
+                                    s[3],
+                                    s[4],
+                                    s[5],
+                                    s[6],
+                                    s[7],
+                                    s[8],
+                                    s[9],
+                                ))
+                        all_symbols.extend(augmented_symbols)
+                        status["symbols_extracted"] += len(symbols)
+            except Exception as e:
+                status["errors"] += 1
+                if logger:
+                    logger.error(f"Error processing future result: {e}")
+
+        if file_rows:
+            db.upsert_files_turbo(file_rows)
+        db.finalize_turbo_batch()
+        if all_symbols:
+            try:
+                db.upsert_symbols_tx(None, all_symbols)
+            except Exception as e:
+                if logger:
+                    logger.error(f"Error storing symbols: {e}")
+        status["scan_finished_ts"] = int(time.time())
+        status["index_version"] = str(status["scan_finished_ts"])
+        return status
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
+
+def _worker_build_snapshot(config_dict: Dict[str, Any], snapshot_path: str, status_path: str, log_path: str) -> None:
+    logger = logging.getLogger("sari.indexer.worker")
+    if log_path:
+        try:
+            fh = logging.FileHandler(log_path, encoding="utf-8")
+            fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+            logger.addHandler(fh)
+            logger.setLevel(logging.INFO)
+        except Exception:
+            pass
+    try:
+        cfg = Config(**config_dict)
+        db = LocalSearchDB(snapshot_path, logger=logger)
+        status = _scan_to_db(cfg, db, logger)
+        db.close_all()
+        with open(status_path, "w", encoding="utf-8") as f:
+            json.dump({"ok": True, "status": status, "snapshot_path": snapshot_path}, f)
+    except Exception as e:
+        try:
+            with open(status_path, "w", encoding="utf-8") as f:
+                json.dump({"ok": False, "error": str(e), "snapshot_path": snapshot_path}, f)
+        except Exception:
+            pass
+
 class Indexer:
     def __init__(self, config: Config, db: LocalSearchDB, logger=None, **kwargs):
         self.config = config
@@ -16,136 +152,158 @@ class Indexer:
         self.logger = logger or logging.getLogger("sari.indexer")
         self.status = IndexStatus()
         self.worker = IndexWorker(config, db, self.logger, None)
-        # 병렬 처리를 위한 ThreadPoolExecutor (I/O 바운드 작업에 적합)
-        max_workers = kwargs.get("max_workers", os.cpu_count() or 4)
-        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self.indexing_enabled = True
+        self.indexer_mode = "worker"
+        self._rescan_event = threading.Event()
+        self._stop_event = threading.Event()
+        self._scan_lock = threading.Lock()
+        self._worker_proc: Optional[multiprocessing.Process] = None
+        self._worker_snapshot_path: Optional[str] = None
+        self._worker_status_path: Optional[str] = None
+        self._worker_log_path: Optional[str] = None
+        self._pending_rescan = False
 
     def scan_once(self):
-        self.status.scan_started_ts = int(time.time())
-        all_files = []
-        for root in self.config.workspace_roots:
-            rid = WorkspaceManager.root_id(root)
-            self.db.ensure_root(rid, str(root))
-            for path in Path(root).rglob("*"):
-                if path.is_file() and self.config.should_index(str(path)):
-                    all_files.append((root, path, rid))
-        
-        self.status.scanned_files = len(all_files)
-        
-        # 병렬 처리
-        futures = []
-        for root, path, rid in all_files:
+        with self._scan_lock:
+            self.status.index_ready = False
+            snapshot_path = self._snapshot_path()
+            snapshot_db = LocalSearchDB(snapshot_path, logger=self.logger)
+            status = _scan_to_db(self.config, snapshot_db, self.logger)
             try:
-                st = path.stat()
-                future = self._executor.submit(
-                    self.worker.process_file_task,
-                    root, path, st, int(time.time()), st.st_mtime, True, root_id=rid
-                )
-                futures.append(future)
+                snapshot_db.close_all()
             except Exception:
-                self.status.errors += 1
-        
-        # 결과 수집 및 DB 저장
-        file_rows = []
-        all_symbols = []
-        for future in concurrent.futures.as_completed(futures):
+                try:
+                    snapshot_db.close()
+                except Exception:
+                    pass
             try:
-                res = future.result()
-                if res and res.get("type") in ("changed", "new"):
-                    self.status.indexed_files += 1
-                    
-                    # 워커 결과를 DB 튜플 형식으로 변환
-                    # File 모델 필드 순서 (20개):
-                    # path, rel_path, root_id, repo, mtime, size, content, content_hash, fts_content,
-                    # last_seen, deleted_ts, parse_status, parse_reason, ast_status, ast_reason,
-                    # is_binary, is_minified, sampled, content_bytes, metadata_json
-                    file_row = (
-                        res.get("path", ""),  # path (Absolute path to match Symbol FK)
-                        res.get("rel", ""),  # rel_path
-                        res.get("root_id", "root"),  # root_id
-                        res.get("repo", ""),  # repo
-                        res.get("mtime", 0),  # mtime
-                        res.get("size", 0),  # size
-                        res.get("content", ""),  # content
-                        res.get("content_hash", ""),  # content_hash
-                        res.get("fts_content", ""),  # fts_content
-                        res.get("scan_ts", 0),  # last_seen
-                        0,  # deleted_ts (0 = 활성 파일)
-                        res.get("parse_status", "ok"),  # parse_status
-                        res.get("parse_reason", ""),  # parse_reason
-                        res.get("ast_status", "skipped"),  # ast_status
-                        res.get("ast_reason", ""),  # ast_reason
-                        res.get("is_binary", 0),  # is_binary
-                        res.get("is_minified", 0),  # is_minified
-                        0,  # sampled
-                        res.get("content_bytes", 0),  # content_bytes
-                        res.get("metadata_json", "{}")  # metadata_json
-                    )
-                    file_rows.append(file_row)
-                    
-                    # 심볼 수집
-                    symbols = res.get("symbols", [])
-                    if symbols:
-                        # Augment symbols with root_id to ensure upsert_symbols_tx uses correct root
-                        # Symbol format from worker: (path, name, kind, line, end_line, content, parent, metadata, docstring, qualname, sid)
-                        # We want to prepend the root_id so upsert_symbols_tx can use it.
-                        root_id = res.get("root_id", "root")
-                        augmented_symbols = []
-                        for s in symbols:
-                            # Construct Format A (12-element):
-                            # (sid, path, root_id, name, kind, line, end_line, content, parent_name, metadata, docstring, qualname)
-                            if len(s) >= 11:
-                                augmented = (
-                                    s[10], # sid
-                                    s[0],  # path
-                                    root_id, # root_id
-                                    s[1],  # name
-                                    s[2],  # kind
-                                    s[3],  # line
-                                    s[4],  # end_line
-                                    s[5],  # content
-                                    s[6],  # parent
-                                    s[7],  # metadata
-                                    s[8],  # docstring
-                                    s[9]   # qualname
-                                )
-                                augmented_symbols.append(augmented)
-                        
-                        all_symbols.extend(augmented_symbols)
-                        self.status.symbols_extracted += len(symbols)
+                self.db.swap_db_file(snapshot_path)
+                self.status.scan_started_ts = status.get("scan_started_ts", 0)
+                self.status.scan_finished_ts = status.get("scan_finished_ts", 0)
+                self.status.scanned_files = status.get("scanned_files", 0)
+                self.status.indexed_files = status.get("indexed_files", 0)
+                self.status.symbols_extracted = status.get("symbols_extracted", 0)
+                self.status.errors = status.get("errors", 0)
+                self.status.index_version = status.get("index_version", "")
+                self.status.index_ready = True
             except Exception as e:
                 self.status.errors += 1
+                self.status.last_error = str(e)
                 if self.logger:
-                    self.logger.error(f"Error processing future result: {e}")
-        
-        # DB에 저장
-        if file_rows:
-            self.db.upsert_files_turbo(file_rows)
-        
-        self.db.finalize_turbo_batch()
-        
-        # 심볼 저장
-        if all_symbols:
-            # symbols는 리스트의 리스트 형식: [[path, name, kind, line, end_line, ...]]
-            try:
-                # Use collected symbols which now are in Format A with explicit root_id
-                self.db.upsert_symbols_tx(None, all_symbols)
-            except Exception as e:
-                if self.logger:
-                    self.logger.error(f"Error storing symbols: {e}")
-        
-        self.status.scan_finished_ts = int(time.time())
-        self.status.index_ready = True
+                    self.logger.error(f"Snapshot swap failed: {e}")
 
     def stop(self):
+        self._stop_event.set()
+        if self._worker_proc and self._worker_proc.is_alive():
+            try:
+                self._worker_proc.terminate()
+                self._worker_proc.join(timeout=2.0)
+            except Exception:
+                pass
         if self._executor:
             self._executor.shutdown(wait=True, cancel_futures=True)
             self._executor = None
     
     def run_forever(self):
-        while True:
-            self.scan_once()
-            time.sleep(self.config.scan_interval_seconds)
+        next_due = time.time()
+        while not self._stop_event.is_set():
+            self._finalize_worker_if_done()
+            now = time.time()
+            if self._rescan_event.is_set() or now >= next_due:
+                self._rescan_event.clear()
+                self._start_worker_scan()
+                next_due = now + self.config.scan_interval_seconds
+            time.sleep(0.2)
+
+    def request_rescan(self):
+        self._rescan_event.set()
+
+    def index_file(self, _path: str):
+        self.request_rescan()
+
+    def _enqueue_fsevent(self, _evt: Any) -> None:
+        self.request_rescan()
+
+    def _snapshot_path(self) -> str:
+        base = getattr(self.db, "db_path", "") or ""
+        if base in ("", ":memory:"):
+            tmp_dir = os.path.join(tempfile.gettempdir(), "sari_snapshots")
+            os.makedirs(tmp_dir, exist_ok=True)
+            base = os.path.join(tmp_dir, "index.db")
+        return f"{base}.snapshot.{int(time.time() * 1000)}"
+
+    def _serialize_config(self) -> Dict[str, Any]:
+        data = dict(self.config.__dict__)
+        return data
+
+    def _start_worker_scan(self) -> None:
+        if self._worker_proc and self._worker_proc.is_alive():
+            self._pending_rescan = True
+            return
+        self.status.index_ready = False
+        self.status.last_error = ""
+        self._worker_snapshot_path = self._snapshot_path()
+        self._worker_status_path = f"{self.db.db_path}.snapshot.status.json"
+        self._worker_log_path = f"{self.db.db_path}.snapshot.log"
+        cfg = self._serialize_config()
+        ctx = multiprocessing.get_context("spawn")
+        self._worker_proc = ctx.Process(
+            target=_worker_build_snapshot,
+            args=(cfg, self._worker_snapshot_path, self._worker_status_path, self._worker_log_path),
+            daemon=True
+        )
+        self._worker_proc.start()
+
+    def _finalize_worker_if_done(self) -> None:
+        if not self._worker_proc:
+            return
+        if self._worker_proc.is_alive():
+            return
+        exitcode = self._worker_proc.exitcode
+        self._worker_proc = None
+        status_path = self._worker_status_path
+        snapshot_path = self._worker_snapshot_path
+        self._worker_status_path = None
+        self._worker_snapshot_path = None
+        if not status_path or not snapshot_path or not os.path.exists(status_path):
+            self.status.errors += 1
+            self.status.last_error = "worker status missing"
+            return
+        try:
+            with open(status_path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except Exception as e:
+            self.status.errors += 1
+            self.status.last_error = f"worker status read failed: {e}"
+            return
+        if not payload.get("ok"):
+            self.status.errors += 1
+            self.status.last_error = payload.get("error", "worker failed")
+            return
+        if exitcode not in (0, None):
+            self.status.errors += 1
+            self.status.last_error = f"worker exit {exitcode}"
+            return
+        status = payload.get("status", {})
+        try:
+            self.db.swap_db_file(snapshot_path)
+            self.status.scan_started_ts = status.get("scan_started_ts", 0)
+            self.status.scan_finished_ts = status.get("scan_finished_ts", 0)
+            self.status.scanned_files = status.get("scanned_files", 0)
+            self.status.indexed_files = status.get("indexed_files", 0)
+            self.status.symbols_extracted = status.get("symbols_extracted", 0)
+            self.status.errors = status.get("errors", 0)
+            self.status.index_version = status.get("index_version", "")
+            self.status.index_ready = True
+        except Exception as e:
+            self.status.errors += 1
+            self.status.last_error = str(e)
+            if self.logger:
+                self.logger.error(f"Snapshot swap failed: {e}")
+        if self._pending_rescan:
+            self._pending_rescan = False
+            self._start_worker_scan()
 
 class IndexStatus:
     def __init__(self):
@@ -156,3 +314,5 @@ class IndexStatus:
         self.scan_finished_ts = 0
         self.scanned_files = 0
         self.errors = 0
+        self.index_version = ""
+        self.last_error = ""

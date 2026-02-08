@@ -13,12 +13,47 @@ try:
 except ImportError:
     HAS_LIBS = False
 
+def _patch_parser_init() -> None:
+    if not HAS_LIBS:
+        return
+    try:
+        if getattr(Parser, "_sari_patched", False):
+            return
+        orig_init = Parser.__init__
+        def _init(self, language=None):
+            orig_init(self)
+            if language is not None:
+                try:
+                    self.set_language(language)
+                except Exception:
+                    pass
+        Parser.__init__ = _init
+        Parser._sari_patched = True
+    except Exception:
+        pass
+
+_patch_parser_init()
+
 def _symbol_id(path: str, kind: str, name: str) -> str:
     h = hashlib.sha1(f"{path}:{kind}:{name}".encode()).hexdigest()
     return h
 
 def _qualname(parent: str, name: str) -> str:
     return f"{parent}.{name}" if parent else name
+
+def _build_language(ptr: Any, name: str) -> Any:
+    try:
+        return Language(ptr, name)
+    except TypeError:
+        try:
+            import ctypes
+            capsule_ptr = ctypes.pythonapi.PyCapsule_GetPointer
+            capsule_ptr.restype = ctypes.c_void_p
+            capsule_ptr.argtypes = [ctypes.py_object, ctypes.c_char_p]
+            raw_ptr = capsule_ptr(ptr, b"tree_sitter.Language")
+            return Language(raw_ptr, name)
+        except Exception:
+            return Language(ptr)
 
 class ASTEngine:
     def __init__(self):
@@ -42,59 +77,71 @@ class ASTEngine:
         }
         target = m.get(name.lower(), name.lower())
         
-        # 1. Try individual packages (swift, kotlin, ruby, yaml, python, etc.)
+        # 1. Try tree-sitter-languages (bundled)
+        try:
+            lang = get_language(target)
+            if lang:
+                return lang
+        except Exception:
+            pass
+
+        # 2. Try individual packages (swift, kotlin, ruby, yaml, python, etc.)
         try:
             if target == "swift":
                 import tree_sitter_swift
-                return Language(tree_sitter_swift.language())
+                return _build_language(tree_sitter_swift.language(), "swift")
             elif target == "kotlin":
                 import tree_sitter_kotlin
-                return Language(tree_sitter_kotlin.language())
+                return _build_language(tree_sitter_kotlin.language(), "kotlin")
             elif target == "ruby":
                 import tree_sitter_ruby
-                return Language(tree_sitter_ruby.language())
+                return _build_language(tree_sitter_ruby.language(), "ruby")
             elif target == "yaml":
                 import tree_sitter_yaml
-                return Language(tree_sitter_yaml.language())
+                return _build_language(tree_sitter_yaml.language(), "yaml")
             elif target == "python":
                 import tree_sitter_python
-                return Language(tree_sitter_python.language())
+                return _build_language(tree_sitter_python.language(), "python")
             elif target == "javascript":
                 import tree_sitter_javascript
-                return Language(tree_sitter_javascript.language())
+                return _build_language(tree_sitter_javascript.language(), "javascript")
             elif target == "typescript":
                 import tree_sitter_typescript
-                return Language(tree_sitter_typescript.language_typescript())
+                return _build_language(tree_sitter_typescript.language_typescript(), "typescript")
             elif target == "go":
                 import tree_sitter_go
-                return Language(tree_sitter_go.language())
+                return _build_language(tree_sitter_go.language(), "go")
             elif target == "rust":
                 import tree_sitter_rust
-                return Language(tree_sitter_rust.language())
+                return _build_language(tree_sitter_rust.language(), "rust")
             elif target == "java":
                 import tree_sitter_java
-                return Language(tree_sitter_java.language())
+                return _build_language(tree_sitter_java.language(), "java")
             elif target == "php":
                 import tree_sitter_php
-                return Language(tree_sitter_php.language_php())
+                return _build_language(tree_sitter_php.language_php(), "php")
             elif target == "bash":
                 import tree_sitter_bash
-                return Language(tree_sitter_bash.language())
+                return _build_language(tree_sitter_bash.language(), "bash")
         except Exception as e:
             print(f"DEBUG ENGINE EXCEPTION for {target}: {e}")
             if self.logger: self.logger.debug(f"Failed to load parser for {target}: {e}")
 
-        # 2. Try tree-sitter-languages (bundled)
+        # 3. Last resort: bundled lookup
         try: return get_language(target)
         except: pass
-            
+        
         return None
 
     def parse(self, language: str, content: str, old_tree: Any = None) -> Optional[Any]:
         if not HAS_LIBS: return None
         lang_obj = self._get_language(language)
         if not lang_obj: return None
-        parser = Parser(lang_obj)
+        parser = Parser()
+        try:
+            parser.set_language(lang_obj)
+        except Exception:
+            return None
         encoded_content = content.encode("utf-8", errors="ignore")
         if old_tree is not None:
             return parser.parse(encoded_content, old_tree)
