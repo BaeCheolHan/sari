@@ -70,6 +70,8 @@ class LocalSearchMCPServer:
         self._tool_registry = build_default_registry()
         self._middlewares = [PolicyMiddleware(self.policy_engine)]
         self._debug_enabled = settings.DEBUG or os.environ.get("SARI_MCP_DEBUG", "0") == "1"
+        self._dev_jsonl = (os.environ.get("SARI_DEV_JSONL") or "").strip().lower() in {"1", "true", "yes", "on"}
+        self._force_content_length = (os.environ.get("SARI_FORCE_CONTENT_LENGTH") or "").strip().lower() in {"1", "true", "yes", "on"}
         # Add maxsize to prevent memory bloat under heavy load
         self._req_queue: "queue.Queue[Dict[str, Any]]" = queue.Queue(maxsize=settings.get_int("MCP_QUEUE_SIZE", 1000))
         self._stop = threading.Event()
@@ -111,6 +113,8 @@ class LocalSearchMCPServer:
             workspace_root=self.workspace_root,
             params_keys=sorted(list(params.keys())),
             has_root_uri=bool(params.get("rootUri") or params.get("rootPath")),
+            protocol_version=params.get("protocolVersion"),
+            supported_versions=params.get("supportedProtocolVersions"),
         )
         root_uri = params.get("rootUri") or params.get("rootPath")
         workspace_folders = params.get("workspaceFolders", [])
@@ -488,9 +492,20 @@ class LocalSearchMCPServer:
             if output_stream is None:
                 output_stream = getattr(sys.stdout, "buffer", sys.stdout)
             wire_format = (os.environ.get("SARI_FORMAT") or "pack").strip().lower()
+            # Accept JSONL input for compatibility, but default to Content-Length framing unless dev mode.
             self.transport = McpTransport(input_stream, output_stream, allow_jsonl=True)
-            self.transport.default_mode = "jsonl" if wire_format == "json" else "content-length"
-            trace("transport_initialized", wire_format=self.transport.default_mode)
+            if self._force_content_length:
+                self.transport.default_mode = "content-length"
+            elif wire_format == "json":
+                self.transport.default_mode = "jsonl"
+            else:
+                self.transport.default_mode = "content-length"
+            trace(
+                "transport_initialized",
+                wire_format=self.transport.default_mode,
+                dev_jsonl=self._dev_jsonl,
+                force_content_length=self._force_content_length,
+            )
 
         try:
             while not self._stop.is_set():
@@ -623,7 +638,13 @@ class LocalSearchMCPServer:
             trace("handle_and_respond_enter", msg_id=req.get("id"), method=req.get("method"))
             resp = self.handle_request(req)
             if resp:
-                mode = req.get("_sari_framing_mode", "content-length")
+                req_mode = req.get("_sari_framing_mode", "content-length")
+                if self._force_content_length:
+                    mode = "content-length"
+                    if req_mode == "jsonl":
+                        trace("force_content_length_response", msg_id=req.get("id"))
+                else:
+                    mode = req_mode
                 self._log_debug_response(mode, resp)
                 if self.transport is None:
                     raise RuntimeError("transport is not initialized")
