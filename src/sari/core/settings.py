@@ -47,12 +47,15 @@ class Settings(BaseSettings):
     DAEMON_HOST: str = "127.0.0.1"
     DAEMON_PORT: int = 47800
     HTTP_API_PORT: int = 47777
-    DAEMON_IDLE_SEC: int = 3600
+    # Default policy: autostop on last session close.
+    # Idle timeout is opt-in by setting SARI_DAEMON_IDLE_SEC > 0.
+    DAEMON_IDLE_SEC: int = 0
     DAEMON_TIMEOUT_SEC: int = 5
     DAEMON_AUTOSTART: bool = False
     DAEMON_HEARTBEAT_SEC: int = 5
     DAEMON_IDLE_WITH_ACTIVE: bool = False
     DAEMON_DRAIN_GRACE_SEC: int = 0
+    DAEMON_AUTOSTOP: bool = True
     
     # --- MCP SETTINGS ---
     SEARCH_FIRST_MODE: bool = True

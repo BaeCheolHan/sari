@@ -55,7 +55,17 @@ uv pip install -U sari
 
 ---
 
-## 4. MCP 연결 오류
+## 4. 데몬 종료 정책
+
+기본 동작은 **마지막 연결 종료 시 즉시 종료(autostop)** 입니다.
+
+옵션:
+- `SARI_DAEMON_AUTOSTOP=1` (기본값, 즉시 종료)
+- `SARI_DAEMON_IDLE_SEC=300` (idle 5분 후 종료, autostop 대신 사용)
+
+---
+
+## 5. MCP 연결 오류
 
 ### 4.1 `MCP error -32000: Connection closed`
 
@@ -81,7 +91,7 @@ uv pip install -U sari
 
 ---
 
-## 5. 검색/인덱싱 오류
+## 6. 검색/인덱싱 오류
 
 ### 5.1 검색 결과가 엉뚱한 경로로 섞이는 경우
 
@@ -94,7 +104,7 @@ uv pip install -U sari
 
 ---
 
-## 6. 도구 실패 시 권장 fallback
+## 7. 도구 실패 시 권장 fallback
 
 - `grep_and_read` 실패
   → `search` 후 `read_file`로 대체
@@ -110,14 +120,14 @@ uv pip install -U sari
 
 ---
 
-## 7. 요약
+## 8. 요약
 
 Sari는 DB/엔진 상태에 따라 도구 가용성이 크게 좌우됩니다.
 따라서 **상태 진단 → 자동 복구 → 재시도** 흐름을 기본으로 유지하는 것이 가장 안정적인 운영 방식입니다.
 
 ---
 
-## 8. 부분응답(Partial) 안내
+## 9. 부분응답(Partial) 안내
 
 DB 장애나 인덱싱 미완료 상태에서는 `partial=true`로 표시되며,  
 `db_health`, `index_ready` 등의 메타를 함께 제공합니다.  

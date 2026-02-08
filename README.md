@@ -310,6 +310,8 @@ sari roots list
 | `store_content` | 원문 저장 여부 | Store file content | `true` |
 | `http_api_host` | HTTP 호스트 | HTTP host | `127.0.0.1` |
 | `http_api_port` | HTTP 포트 | HTTP port | `47777` |
+| `DAEMON_AUTOSTOP` | 마지막 연결 종료 시 즉시 종료 | Autostop on last session close | `true` |
+| `DAEMON_IDLE_SEC` | idle 타임아웃(옵션) | Idle timeout seconds (optional) | `0` |
 
 ---
 

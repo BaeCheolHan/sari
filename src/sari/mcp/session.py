@@ -375,7 +375,7 @@ class Session:
         if self.workspace_root:
             self.registry.release(self.workspace_root)
             # Optional immediate autostop when the last connection closes.
-            autostop = str(os.environ.get("SARI_DAEMON_AUTOSTOP", "")).strip().lower() in {"1", "true", "yes", "on"}
+            autostop = settings.get_bool("DAEMON_AUTOSTOP", True)
             if autostop:
                 try:
                     if self.registry.active_count() == 0:
