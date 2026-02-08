@@ -30,6 +30,14 @@ class Session:
         self.shared_state: Optional[SharedState] = None
         self.registry = Registry.get_instance()
         self.running = True
+        self._preinit_server = None
+
+    def _get_preinit_server(self):
+        if self._preinit_server is None:
+            from sari.mcp.server import LocalSearchMCPServer
+            workspace_root = WorkspaceManager.resolve_workspace_root()
+            self._preinit_server = LocalSearchMCPServer(workspace_root, start_worker=False)
+        return self._preinit_server
 
     async def handle_connection(self):
         try:
@@ -198,6 +206,25 @@ class Session:
         else:
             # Forward other requests to the bound server
             if not self.shared_state:
+                if method in {"tools/list", "prompts/list", "resources/list", "resources/templates/list", "ping"}:
+                    if msg_id is None:
+                        return
+                    if method == "tools/list":
+                        tools = self._get_preinit_server().list_tools()
+                        await self.send_json({"jsonrpc": "2.0", "id": msg_id, "result": {"tools": tools}})
+                        return
+                    if method == "prompts/list":
+                        await self.send_json({"jsonrpc": "2.0", "id": msg_id, "result": {"prompts": []}})
+                        return
+                    if method == "resources/list":
+                        await self.send_json({"jsonrpc": "2.0", "id": msg_id, "result": {"resources": []}})
+                        return
+                    if method == "resources/templates/list":
+                        await self.send_json({"jsonrpc": "2.0", "id": msg_id, "result": {"resourceTemplates": []}})
+                        return
+                    if method == "ping":
+                        await self.send_json({"jsonrpc": "2.0", "id": msg_id, "result": {}})
+                        return
                 await self.send_error(msg_id, -32002, "Server not initialized. Send 'initialize' first.")
                 return
 

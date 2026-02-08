@@ -18,7 +18,16 @@ Sari follows a policy of **plain install without extras**. The default package a
 
 #### Option A: uv (recommended)
 ```bash
+# Create venv once
+uv venv .venv
+
+# Install into the venv
 uv pip install sari
+```
+
+If you want to install into the system Python (not recommended):
+```bash
+uv pip install --system sari
 ```
 
 #### Option B: pip
@@ -265,7 +274,16 @@ Sari는 **기본 설치만** 사용합니다. 기본 패키지에 토크나이�
 
 #### 방법 A: uv (권장)
 ```bash
+# 최초 1회 가상환경 생성
+uv venv .venv
+
+# venv에 설치
 uv pip install sari
+```
+
+시스템 Python에 설치하려면(비권장):
+```bash
+uv pip install --system sari
 ```
 
 #### 방법 B: pip
