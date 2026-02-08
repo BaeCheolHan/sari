@@ -198,7 +198,8 @@ class LocalSearchDB:
             conn.executemany(f"INSERT OR REPLACE INTO staging_mem.files_temp VALUES ({placeholders})", mapped)
             if conn.in_transaction: conn.commit()
         except Exception as e:
-            print(f"DEBUG: upsert_files_turbo FAILED: {e}")
+            if self.logger:
+                self.logger.error("upsert_files_turbo failed: %s", e)
             raise
 
     def upsert_files_tx(self, cur, rows: List[tuple]):

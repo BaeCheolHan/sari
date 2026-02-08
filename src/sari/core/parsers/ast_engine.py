@@ -64,7 +64,8 @@ class ASTEngine:
     def enabled(self) -> bool: return HAS_LIBS
     
     def _get_language(self, name: str) -> Any:
-        print(f"DEBUG ENGINE: HAS_LIBS={HAS_LIBS} name={name}")
+        if self.logger and self.logger.isEnabledFor(logging.DEBUG):
+            self.logger.debug("AST engine lookup (HAS_LIBS=%s, name=%s)", HAS_LIBS, name)
         if not HAS_LIBS: return None
         # Normalization map
         m = {
@@ -124,8 +125,8 @@ class ASTEngine:
                 import tree_sitter_bash
                 return _build_language(tree_sitter_bash.language(), "bash")
         except Exception as e:
-            print(f"DEBUG ENGINE EXCEPTION for {target}: {e}")
-            if self.logger: self.logger.debug(f"Failed to load parser for {target}: {e}")
+            if self.logger:
+                self.logger.debug("Failed to load parser for %s: %s", target, e)
 
         # 3. Last resort: bundled lookup
         try: return get_language(target)
@@ -181,7 +182,8 @@ class ASTEngine:
                 # ParserFactory expects extension with dot
                 p_ext = ext if ext.startswith(".") else f".{ext}"
                 parser = ParserFactory.get_parser(p_ext)
-                print(f"DEBUG FALLBACK: ext={ext} p_ext={p_ext} parser={parser}")
+                if self.logger and self.logger.isEnabledFor(logging.DEBUG):
+                    self.logger.debug("AST fallback: ext=%s p_ext=%s parser=%s", ext, p_ext, parser)
                 if isinstance(parser, GenericRegexParser):
                     if isinstance(content, bytes):
                         text_content = content.decode("utf-8", errors="ignore")
@@ -191,8 +193,8 @@ class ASTEngine:
                     # print(f"DEBUG FALLBACK RES LEN: {len(res[0])}")
                     return res
             except ImportError:
-                print("DEBUG FALLBACK IMPORT ERROR")
-                pass
+                if self.logger and self.logger.isEnabledFor(logging.DEBUG):
+                    self.logger.debug("AST fallback import error")
             return [], []
         
         if tree is None: 
