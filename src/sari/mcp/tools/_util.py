@@ -162,6 +162,27 @@ def _default_error_hints(tool: str, code: Any, msg: str) -> List[str]:
 
     return hints
 
+def require_db_schema(db: Any, tool: str, table: str, columns: List[str]):
+    """Return error response if required table/columns are missing."""
+    checker = getattr(db, "has_table_columns", None)
+    if not checker:
+        return None
+    try:
+        res = checker(table, columns)
+        if not isinstance(res, tuple) or len(res) != 2:
+            return None
+        ok, missing = res
+    except Exception:
+        return None
+    if ok:
+        return None
+    msg = f"DB schema mismatch: {table} missing columns: {', '.join(missing)}"
+    return mcp_response(
+        tool,
+        lambda: pack_error(tool, ErrorCode.DB_ERROR, msg),
+        lambda: {"error": {"code": ErrorCode.DB_ERROR.value, "message": msg}, "isError": True},
+    )
+
 def pack_truncated(next_offset: int, limit: int, truncated_state: str) -> str:
     """
     m:truncated=true|maybe next=use_offset offset=<nextOffset> limit=<limit>

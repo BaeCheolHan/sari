@@ -332,12 +332,13 @@ class LocalSearchDB:
         if not paths:
             return
         placeholders = ",".join(["?"] * len(paths))
-        sql = f"UPDATE files SET last_seen_ts={ts} WHERE path IN ({placeholders})"
+        sql = f"UPDATE files SET last_seen_ts = ? WHERE path IN ({placeholders})"
+        params = [ts] + list(paths)
         if cur:
-            cur.execute(sql, paths)
+            cur.execute(sql, params)
         else:
             with self.db.atomic():
-                self.db.execute_sql(sql, paths)
+                self.db.execute_sql(sql, params)
 
     def get_repo_stats(self, root_ids: Optional[List[str]] = None) -> Dict[str, int]:
         query = File.select(File.repo, fn.COUNT(File.path).alias('count')).where(File.deleted_ts == 0)
@@ -368,6 +369,14 @@ class LocalSearchDB:
     def _get_conn(self):
         self._wait_for_swap()
         return self._read
+    def has_table_columns(self, table: str, columns: Iterable[str]) -> Tuple[bool, List[str]]:
+        try:
+            cur = self._read.execute(f"PRAGMA table_info({table})")
+            existing = {row[1] for row in cur.fetchall() if row and len(row) > 1}
+            missing = [c for c in columns if c not in existing]
+            return len(missing) == 0, missing
+        except Exception:
+            return False, list(columns)
     def prune_stale_data(self, root_id: str, active_paths: List[str]):
         if not active_paths: return
         File.update(deleted_ts=int(time.time())).where(File.root_id == root_id, File.path.not_in(active_paths)).execute()

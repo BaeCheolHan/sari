@@ -95,7 +95,9 @@ class SearchEngine:
                             params = [fts_q]
                             if root_id: sql += " AND f.root_id = ?"; params.append(root_id)
                             if opts.repo: sql += " AND f.repo = ?"; params.append(opts.repo)
-                            cur.execute(sql + f" LIMIT {opts.limit}", params)
+                            sql += " LIMIT ?"
+                            params.append(opts.limit)
+                            cur.execute(sql, params)
                             db_hits = self._process_sqlite_rows(cur.fetchall(), opts)
                             for h in db_hits:
                                 h.score = 5.0
@@ -119,7 +121,9 @@ class SearchEngine:
                         if opts.repo:
                             sql += " AND repo = ?"
                             params.append(opts.repo)
-                        cur.execute(sql + f" LIMIT {opts.limit}", params)
+                        sql += " LIMIT ?"
+                        params.append(opts.limit)
+                        cur.execute(sql, params)
                         db_hits = self._process_sqlite_rows(cur.fetchall(), opts)
                         for h in db_hits:
                             h.score = 4.0

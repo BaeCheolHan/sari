@@ -14,6 +14,7 @@ from sari.mcp.tools._util import (
     pack_error,
     ErrorCode,
     resolve_fs_path,
+    require_db_schema,
 )
 
 def _read_lines(db: Any, db_path: str, roots: List[str]) -> List[str]:
@@ -269,6 +270,14 @@ def build_get_snippet(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict[s
 
 
 def execute_get_snippet(args: Dict[str, Any], db: Any, logger: Any = None, roots: List[str] = None) -> Dict[str, Any]:
+    guard = require_db_schema(
+        db,
+        "get_snippet",
+        "snippets",
+        ["tag", "path", "root_id", "start_line", "end_line", "content"],
+    )
+    if guard:
+        return guard
     if roots is None and isinstance(logger, list):
         roots = logger
         logger = None

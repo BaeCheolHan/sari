@@ -63,7 +63,7 @@ def _maybe_lint(path: str, content: str) -> Dict[str, Any]:
     if ext.endswith(".py") and shutil.which("ruff"):
         try:
             proc = subprocess.run(
-                ["ruff", "check", "--quiet", "--stdin-filename", path, "-"],
+                ["ruff", "check", "--quiet", "--stdin-filename", path, "--", "-"],
                 input=content.encode("utf-8"),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -82,7 +82,7 @@ def _maybe_lint(path: str, content: str) -> Dict[str, Any]:
     if (ext.endswith(".js") or ext.endswith(".ts") or ext.endswith(".jsx") or ext.endswith(".tsx")) and shutil.which("eslint"):
         try:
             proc = subprocess.run(
-                ["eslint", "--stdin", "--stdin-filename", path],
+                ["eslint", "--stdin", "--stdin-filename", path, "--"],
                 input=content.encode("utf-8"),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

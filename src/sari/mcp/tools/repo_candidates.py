@@ -4,7 +4,7 @@ Repo candidates tool for Sari MCP Server.
 """
 import json
 from typing import Any, Dict, List
-from sari.mcp.tools._util import mcp_response, pack_header, pack_line, pack_encode_id, pack_encode_text, pack_error, ErrorCode, resolve_root_ids
+from sari.mcp.tools._util import mcp_response, pack_header, pack_line, pack_encode_id, pack_encode_text, pack_error, ErrorCode, resolve_root_ids, require_db_schema
 
 from sari.core.db import LocalSearchDB
 from sari.mcp.telemetry import TelemetryLogger
@@ -12,6 +12,14 @@ from sari.mcp.telemetry import TelemetryLogger
 
 def execute_repo_candidates(args: Dict[str, Any], db: LocalSearchDB, logger: TelemetryLogger = None, roots: List[str] = None) -> Dict[str, Any]:
     """Execute repo_candidates tool."""
+    guard = require_db_schema(
+        db,
+        "repo_candidates",
+        "files",
+        ["path", "rel_path", "root_id", "repo", "deleted_ts", "fts_content"],
+    )
+    if guard:
+        return guard
     query = args.get("query", "")
     try:
         limit_arg = min(int(args.get("limit", 3)), 5)

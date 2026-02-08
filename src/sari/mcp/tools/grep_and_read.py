@@ -11,6 +11,7 @@ from sari.mcp.tools._util import (
     pack_encode_id,
     ErrorCode,
     resolve_root_ids,
+    require_db_schema,
 )
 
 
@@ -29,6 +30,14 @@ def execute_grep_and_read(args: Dict[str, Any], db: LocalSearchDB, roots: List[s
     """
     Composite tool: search then read top results.
     """
+    guard = require_db_schema(
+        db,
+        "grep_and_read",
+        "files",
+        ["path", "rel_path", "root_id", "repo", "deleted_ts", "fts_content"],
+    )
+    if guard:
+        return guard
     query = _normalize_query(args.get("query"))
     if not query:
         return mcp_response(

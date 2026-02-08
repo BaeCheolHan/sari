@@ -135,19 +135,22 @@ class GlobalStorageManager:
             for path, row in reversed(list(self._overlay_files.items())):
                 if len(results) >= limit:
                     break
-                if root_id and row[2] != root_id:
+                # row: (path, root_id, repo, mtime, size, snippet)
+                if root_id and row[1] != root_id:
                     continue
                 content_match = False
-                if len(row) > 8:
-                    fts_content = row[8]
+                # snippet is at index 5 in l2_row
+                if len(row) > 5:
+                    fts_content = row[5]
                     if fts_content and q in str(fts_content).lower():
                         content_match = True
                 if q in str(path).lower() or content_match:
                     # Normalize to match SearchEngine's SQLite query structure:
-                    # (path, root_id, repo, mtime, size, content)
-                    # row structure from Indexer:
-                    # 0: path, 1: rel_path, 2: root_id, 3: repo, 4: mtime, 5: size, 6: content, ...
-                    normalized = (row[0], row[2], row[3], row[4], row[5], row[6])
+                    # (path, rel_path, root_id, repo, mtime, size, content)
+                    # Note: We don't have full content or rel_path in L2, use fallbacks.
+                    # SearchEngine expects at least 6 or 7 elements.
+                    # Let's provide: (path, path, root_id, repo, mtime, size, snippet)
+                    normalized = (row[0], row[0], row[1], row[2], row[3], row[4], row[5])
                     results.append(normalized)
         return results
 

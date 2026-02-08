@@ -8,6 +8,7 @@ from sari.mcp.tools._util import (
     pack_encode_text,
     pack_error,
     ErrorCode,
+    require_db_schema,
 )
 
 
@@ -58,6 +59,14 @@ def build_get_context(args: Dict[str, Any], db: Any) -> Dict[str, Any]:
 
 
 def execute_get_context(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict[str, Any]:
+    guard = require_db_schema(
+        db,
+        "get_context",
+        "contexts",
+        ["topic", "content", "tags_json", "related_files_json", "created_ts", "updated_ts"],
+    )
+    if guard:
+        return guard
     try:
         payload = build_get_context(args, db)
     except ValueError as e:

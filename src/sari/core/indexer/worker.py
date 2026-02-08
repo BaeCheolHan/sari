@@ -221,7 +221,7 @@ class IndexWorker:
             return self._git_top_level_cache[parent_key]
         try:
             proc = subprocess.run(
-                ["git", "-C", parent_key, "rev-parse", "--show-toplevel"],
+                ["git", "-C", parent_key, "rev-parse", "--show-toplevel", "--"],
                 capture_output=True,
                 text=True,
                 check=False,

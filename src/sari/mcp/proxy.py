@@ -140,7 +140,8 @@ def start_daemon_if_needed(host, port, workspace_root: str = ""):
     if not workspace_root:
         workspace_root = os.environ.get("SARI_WORKSPACE_ROOT") or WorkspaceManager.resolve_workspace_root()
 
-    lock_path = os.path.join(tempfile.gettempdir(), f"sari-daemon-{host}-{port}.lock")
+    safe_host = "".join(c for c in str(host) if c.isalnum() or c in ".-")
+    lock_path = os.path.join(tempfile.gettempdir(), f"sari-daemon-{safe_host}-{int(port)}.lock")
     with open(lock_path, "w") as lock_file:
         try:
             # Acquire exclusive lock (blocking)
