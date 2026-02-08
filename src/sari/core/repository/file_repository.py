@@ -111,9 +111,17 @@ class FileRepository(BaseRepository):
             return
         cur.executemany("UPDATE files SET last_seen_ts = ? WHERE path = ?", [(ts, p) for p in paths])
 
-    def get_file_meta(self, path: str) -> Optional[Tuple[int, int]]:
-        row = self.execute("SELECT mtime, size FROM files WHERE path = ?", (path,)).fetchone()
-        return (row["mtime"], row["size"]) if row else None
+    def get_file_meta(self, path: str) -> Optional[Tuple[int, int, str]]:
+        row = self.execute("SELECT mtime, size, metadata_json FROM files WHERE path = ?", (path,)).fetchone()
+        if not row:
+            return None
+        ch = ""
+        try:
+            import json
+            ch = json.loads(row["metadata_json"]).get("content_hash", "")
+        except:
+            pass
+        return (row["mtime"], row["size"], ch)
 
     def get_unseen_paths(self, ts: int) -> List[str]:
         rows = self.execute("SELECT path FROM files WHERE last_seen_ts < ?", (ts,)).fetchall()
@@ -178,3 +186,29 @@ class FileRepository(BaseRepository):
         row2 = self.execute("SELECT COUNT(*) AS c FROM failed_tasks WHERE attempts >= 3").fetchone()
         high = int(row2["c"]) if row2 else 0
         return total, high
+
+    def list_files(self, limit: int = 50, repo: Optional[str] = None, root_ids: Optional[List[str]] = None) -> List[Dict]:
+        sql = "SELECT path, size, repo FROM files WHERE deleted_ts = 0"
+        params: List[Any] = []
+        if repo:
+            sql += " AND repo = ?"
+            params.append(repo)
+        if root_ids:
+            placeholders = ",".join(["?"] * len(root_ids))
+            sql += f" AND root_id IN ({placeholders})"
+            params.extend(root_ids)
+        sql += " LIMIT ?"
+        params.append(limit)
+        cursor = self.execute(sql, params)
+        return [{"path": r["path"], "size": r["size"], "repo": r["repo"]} for r in cursor.fetchall()]
+
+    def get_repo_stats(self, root_ids: Optional[List[str]] = None) -> Dict[str, int]:
+        sql = "SELECT repo, COUNT(path) AS c FROM files WHERE deleted_ts = 0"
+        params = []
+        if root_ids:
+            placeholders = ",".join(["?"] * len(root_ids))
+            sql += f" AND root_id IN ({placeholders})"
+            params.extend(root_ids)
+        sql += " GROUP BY repo"
+        cursor = self.execute(sql, params)
+        return {r["repo"]: r["c"] for r in cursor.fetchall()}

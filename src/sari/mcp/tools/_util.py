@@ -3,143 +3,27 @@ import os
 import urllib.parse
 from enum import Enum
 from typing import Any, Dict, Optional, List, Callable, Tuple
+import json
+import os
+import urllib.parse
+from enum import Enum
+from typing import Any, Dict, Optional, List, Callable, Tuple
 from pathlib import Path
 from sari.core.workspace import WorkspaceManager
-
-# --- Constants & Enums ---
-
-class ErrorCode(str, Enum):
-    INVALID_ARGS = "INVALID_ARGS"
-    NOT_INDEXED = "NOT_INDEXED"
-    REPO_NOT_FOUND = "REPO_NOT_FOUND"
-    IO_ERROR = "IO_ERROR"
-    DB_ERROR = "DB_ERROR"
-    INTERNAL = "INTERNAL"
-    ERR_INDEXER_FOLLOWER = "ERR_INDEXER_FOLLOWER"
-    ERR_INDEXER_DISABLED = "ERR_INDEXER_DISABLED"
-    ERR_ROOT_OUT_OF_SCOPE = "ERR_ROOT_OUT_OF_SCOPE"
-    ERR_MCP_HTTP_UNSUPPORTED = "ERR_MCP_HTTP_UNSUPPORTED"
-    ERR_ENGINE_NOT_INSTALLED = "ERR_ENGINE_NOT_INSTALLED"
-    ERR_ENGINE_INIT = "ERR_ENGINE_INIT"
-    ERR_ENGINE_QUERY = "ERR_ENGINE_QUERY"
-    ERR_ENGINE_INDEX = "ERR_ENGINE_INDEX"
-    ERR_ENGINE_UNAVAILABLE = "ERR_ENGINE_UNAVAILABLE"
-    ERR_ENGINE_REBUILD = "ERR_ENGINE_REBUILD"
-
-# --- Format Selection ---
-
-# --- Format Selection ---
-
-def _get_env_any(key_suffix: str, default: Any = None) -> Any:
-    val = os.environ.get(f"SARI_{key_suffix}")
-    if val is not None:
-        return val
-    allow_legacy = str(os.environ.get("SARI_ALLOW_LEGACY", "")).strip().lower() in {"1", "true", "yes", "on"}
-    if allow_legacy:
-        raw = os.environ.get(key_suffix)
-        if raw is not None:
-            return raw
-    return default
-
-def _get_format() -> str:
-    """Get response format (pack or json).
-    
-    Returns 'pack' or 'json'.
-    Defaults to 'pack'.
-    """
-    fmt = _get_env_any("FORMAT", "pack").strip().lower()
-    return "json" if fmt == "json" else "pack"
-
-def _compact_enabled() -> bool:
-    """Always use compact JSON for better token efficiency."""
-    return True
-
-# --- PACK1 Encoders ---
-
-def pack_encode_text(s: Any) -> str:
-    """
-    ENC_TEXT: safe=""
-    Used for snippet, msg, reason, detail, hint.
-    """
-    return urllib.parse.quote(str(s), safe="")
-
-def pack_encode_id(s: Any) -> str:
-    """
-    ENC_ID: safe="/._-:@"
-    Used for path, repo, name (identifiers).
-    """
-    return urllib.parse.quote(str(s), safe="/._-:@")
-
-# --- PACK1 Builders ---
-
-def pack_header(tool: str, kv: Dict[str, Any], returned: Optional[int] = None,
-                total: Optional[int] = None, total_mode: Optional[str] = None) -> str:
-    """
-    Builds the PACK1 header line.
-    PACK1 tool=<tool> ok=true k=v ... [returned=<N>] [total=<M>] [total_mode=<mode>]
-    """
-    parts = ["PACK1", f"tool={tool}", "ok=true"]
-
-    # Add custom KV pairs
-    for k, v in kv.items():
-        parts.append(f"{k}={v}")
-
-    if returned is not None:
-        parts.append(f"returned={returned}")
-
-    if total_mode:
-        parts.append(f"total_mode={total_mode}")
-
-    if total is not None and total_mode != "none":
-        parts.append(f"total={total}")
-
-    return " ".join(parts)
-
-def pack_line(kind: str, kv: Optional[Dict[str, str]] = None, single_value: Optional[str] = None) -> str:
-    """
-    Builds a PACK1 record line.
-    If single_value is provided: <kind>:<single_value>
-    If kv is provided: <kind>:k=v k2=v2 ...
-    """
-    if single_value is not None:
-        return f"{kind}:{single_value}"
-
-    if kv:
-        field_strs = [f"{k}={v}" for k, v in kv.items()]
-        return f"{kind}:{ ' '.join(field_strs) }"
-
-    return f"{kind}:"
-
-def pack_error(tool: str, code: Any, msg: str, hints: List[str] = None, trace: str = None, fields: Dict[str, Any] = None) -> str:
-    """
-    Generates PACK1 error response.
-    PACK1 tool=<tool> ok=false code=<CODE> msg=<ENCODED_MSG> [hint=<ENC>] [trace=<ENC>]
-    """
-    if hints is None:
-        hints = _default_error_hints(tool, code, msg)
-
-    parts = [
-        "PACK1",
-        f"tool={tool}",
-        "ok=false",
-        f"code={code.value if isinstance(code, ErrorCode) else str(code)}",
-        f"msg={pack_encode_text(msg)}",
-    ]
-    if hints:
-        joined = " | ".join(hints)
-        parts.append(f"hint={pack_encode_text(joined)}")
-    if trace:
-        parts.append(f"trace={pack_encode_text(trace)}")
-    if fields:
-        for k, v in fields.items():
-            parts.append(f"{k}={pack_encode_text(v)}")
-    return " ".join(parts)
-
+from .protocol import (
+    ErrorCode,
+    pack_encode_text,
+    pack_encode_id,
+    pack_header,
+    pack_line,
+    pack_error,
+    pack_truncated
+)
 
 def _default_error_hints(tool: str, code: Any, msg: str) -> List[str]:
     """Generate default hints/fallbacks for common failures."""
     hints: List[str] = []
-    code_val = code.value if isinstance(code, ErrorCode) else str(code)
+    code_val = code.value if isinstance(code, Enum) else str(code)
     msg_lower = str(msg or "").lower()
 
     if "database" in msg_lower or "db" in msg_lower or code_val == ErrorCode.DB_ERROR.value:
@@ -183,13 +67,7 @@ def require_db_schema(db: Any, tool: str, table: str, columns: List[str]):
         lambda: {"error": {"code": ErrorCode.DB_ERROR.value, "message": msg}, "isError": True},
     )
 
-def pack_truncated(next_offset: int, limit: int, truncated_state: str) -> str:
-    """
-    m:truncated=true|maybe next=use_offset offset=<nextOffset> limit=<limit>
-    """
-    return f"m:truncated={truncated_state} next=use_offset offset={next_offset} limit={limit}"
-
-# --- Main Utility ---
+# --- Format Selection ---
 
 def mcp_response(
     tool_name: str,

@@ -46,7 +46,11 @@ class LocalSearchDB:
         if not self._swap_in_progress.is_set():
             return
         start = time.time()
-        while self._swap_in_progress.is_set() and time.time() - start < timeout:
+        while self._swap_in_progress.is_set():
+            if time.time() - start >= timeout:
+                if self.logger:
+                    self.logger.warning("DB swap wait timeout; proceeding with risk of stale data.")
+                break
             time.sleep(0.01)
 
     def set_engine(self, engine): self.engine = engine
@@ -321,19 +325,7 @@ class LocalSearchDB:
         return str(content)
 
     def list_files(self, limit: int = 50, repo: Optional[str] = None, root_ids: Optional[List[str]] = None) -> List[Dict]:
-        sql = "SELECT path, size, repo FROM files WHERE deleted_ts = 0"
-        params: List[Any] = []
-        if repo:
-            sql += " AND repo = ?"
-            params.append(repo)
-        if root_ids:
-            placeholders = ",".join(["?"] * len(root_ids))
-            sql += f" AND root_id IN ({placeholders})"
-            params.extend(root_ids)
-        sql += " LIMIT ?"
-        params.append(limit)
-        cursor = self.db.execute_sql(sql, params)
-        return [{"path": r[0], "size": r[1], "repo": r[2]} for r in cursor.fetchall()]
+        return self._file_repo().list_files(limit=limit, repo=repo, root_ids=root_ids)
 
     def has_legacy_paths(self) -> bool:
         """Check if database uses legacy path format (pre-multi-workspace)."""
@@ -341,31 +333,18 @@ class LocalSearchDB:
 
     def update_last_seen_tx(self, cur, paths: List[str], ts: int) -> None:
         """Update last_seen timestamp for given paths."""
-        if not paths:
-            return
-        placeholders = ",".join(["?"] * len(paths))
-        sql = f"UPDATE files SET last_seen_ts = ? WHERE path IN ({placeholders})"
-        params = [ts] + list(paths)
-        if cur:
-            cur.execute(sql, params)
-        else:
-            with self.db.atomic():
-                self.db.execute_sql(sql, params)
+        self._file_repo(cur).update_last_seen_tx(cur, paths, ts)
 
     def get_repo_stats(self, root_ids: Optional[List[str]] = None) -> Dict[str, int]:
-        query = File.select(File.repo, fn.COUNT(File.path).alias('count')).where(File.deleted_ts == 0)
-        if root_ids:
-            query = query.where(File.root_id.in_(root_ids))
-        query = query.group_by(File.repo)
-        return {row['repo']: row['count'] for row in query.dicts()}
+        return self._file_repo().get_repo_stats(root_ids=root_ids)
+
+    def _file_repo(self, cur=None) -> FileRepository:
+        from sari.core.repository.file_repository import FileRepository
+        conn = cur.connection if cur else self._read
+        return FileRepository(conn)
 
     def get_file_meta(self, path: str) -> Optional[Tuple[int, int, str]]:
-        row = File.select(File.mtime, File.size, File.metadata_json).where(File.path == path).first()
-        if not row: return None
-        ch = ""
-        try: ch = json.loads(row.metadata_json).get("content_hash", "")
-        except: pass
-        return (row.mtime, row.size, ch)
+        return self._file_repo().get_file_meta(path)
 
     def close(self): self.db.close()
     def close_all(self): self.close()

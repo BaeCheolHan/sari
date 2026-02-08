@@ -544,12 +544,13 @@ class LocalSearchMCPServer:
         if self._stop.is_set():
             return
         self._stop.set()
+        trace("server_shutdown_start")
         
-        # 1. Stop processing new requests
+        # 1. Stop processing new requests and WAIT for current ones
         try:
             self._executor.shutdown(wait=True, cancel_futures=False)
-        except Exception:
-            pass
+        except Exception as e:
+            self._log_debug(f"Executor shutdown error: {e}")
             
         # 2. Cleanup all workspace resources (DB, Engine)
         try:
@@ -567,7 +568,7 @@ class LocalSearchMCPServer:
         except Exception:
             pass
         try:
-            self._close_daemon_connection()
+            self._close_all_daemon_connections()
         except Exception:
             pass
         try:
@@ -577,6 +578,7 @@ class LocalSearchMCPServer:
                 self._session = None
         except Exception:
             pass
+        trace("server_shutdown_done")
 
     def _worker_loop(self) -> None:
         while not self._stop.is_set():
