@@ -119,6 +119,7 @@ def test_server_run_enables_jsonl_transport_when_format_json(monkeypatch):
         return t
 
     monkeypatch.setenv("SARI_FORMAT", "json")
+    monkeypatch.setenv("SARI_DEV_JSONL", "1")
     monkeypatch.setattr(server_mod, "McpTransport", _fake_transport)
 
     server = LocalSearchMCPServer("/tmp/ws")
