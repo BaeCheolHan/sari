@@ -133,7 +133,7 @@ def _worker_build_snapshot(config_dict: Dict[str, Any], snapshot_path: str, stat
             pass
     try:
         cfg = Config(**config_dict)
-        db = LocalSearchDB(snapshot_path, logger=logger)
+        db = LocalSearchDB(snapshot_path, logger=logger, journal_mode="delete")
         status = _scan_to_db(cfg, db, logger)
         db.close_all()
         with open(status_path, "w", encoding="utf-8") as f:
@@ -168,7 +168,7 @@ class Indexer:
         with self._scan_lock:
             self.status.index_ready = False
             snapshot_path = self._snapshot_path()
-            snapshot_db = LocalSearchDB(snapshot_path, logger=self.logger)
+            snapshot_db = LocalSearchDB(snapshot_path, logger=self.logger, journal_mode="delete")
             status = _scan_to_db(self.config, snapshot_db, self.logger)
             try:
                 snapshot_db.close_all()

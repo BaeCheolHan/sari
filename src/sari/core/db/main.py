@@ -18,7 +18,7 @@ except ImportError:
 from .schema import init_schema
 
 class LocalSearchDB:
-    def __init__(self, db_path: str, logger=None):
+    def __init__(self, db_path: str, logger=None, journal_mode: str = "wal"):
         self.db_path = db_path
         self.logger = logger or logging.getLogger("sari.db")
         self.settings = None
@@ -29,7 +29,7 @@ class LocalSearchDB:
         if self.db_path not in (":memory:", "") and dir_path:
             os.makedirs(dir_path, exist_ok=True)
         self.db = SqliteDatabase(self.db_path, pragmas={
-            'journal_mode': 'wal', 'synchronous': 'normal',
+            'journal_mode': journal_mode, 'synchronous': 'normal',
             'busy_timeout': 60000, 'foreign_keys': 1
         }, check_same_thread=False)
         self.db.connect(reuse_if_open=True)
@@ -275,12 +275,32 @@ class LocalSearchDB:
                     self.db.close()
                 except Exception:
                     pass
+                # Cleanup stale WAL/SHM for target path (can cause I/O errors)
+                for suffix in ("-wal", "-shm"):
+                    try:
+                        os.remove(self.db_path + suffix)
+                    except FileNotFoundError:
+                        pass
+                # Cleanup snapshot WAL/SHM before swap
+                for suffix in ("-wal", "-shm"):
+                    try:
+                        os.remove(snapshot_path + suffix)
+                    except FileNotFoundError:
+                        pass
                 os.replace(snapshot_path, self.db_path)
-                self.db = SqliteDatabase(self.db_path, pragmas={
-                    'journal_mode': 'wal', 'synchronous': 'normal',
-                    'busy_timeout': 60000, 'foreign_keys': 1
-                }, check_same_thread=False)
-                self.db.connect(reuse_if_open=True)
+                try:
+                    self.db = SqliteDatabase(self.db_path, pragmas={
+                        'journal_mode': 'wal', 'synchronous': 'normal',
+                        'busy_timeout': 60000, 'foreign_keys': 1
+                    }, check_same_thread=False)
+                    self.db.connect(reuse_if_open=True)
+                except Exception:
+                    # Fallback to DELETE mode to avoid WAL-related I/O errors on some FS
+                    self.db = SqliteDatabase(self.db_path, pragmas={
+                        'journal_mode': 'delete', 'synchronous': 'normal',
+                        'busy_timeout': 60000, 'foreign_keys': 1
+                    }, check_same_thread=False)
+                    self.db.connect(reuse_if_open=True)
                 db_proxy.initialize(self.db)
                 self._init_mem_staging()
             finally:
