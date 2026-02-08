@@ -24,8 +24,8 @@ class Config:
         self.workspace_root = kwargs.get("workspace_root", os.getcwd())
         self.workspace_roots = kwargs.get("workspace_roots", [self.workspace_root])
         self.include_ext = kwargs.get("include_ext", [".py", ".js", ".ts", ".java", ".go", ".rs", ".rb", ".php", ".xml", ".yml", ".yaml", ".md", ".cs", ".swift", ".vue", ".hcl", ".tf", ".sql", ".txt"])
-        self.exclude_dirs = kwargs.get("exclude_dirs", [".git", "node_modules", "target", "build", "dist", ".pytest_cache", "__pycache__", ".sari"])
-        self.exclude_globs = kwargs.get("exclude_globs", [])
+        self.exclude_dirs = kwargs.get("exclude_dirs", [".git", "node_modules", "target", "build", "dist", ".pytest_cache", "__pycache__", ".sari", ".venv", "venv", ".virtualenv", "env"])
+        self.exclude_globs = kwargs.get("exclude_globs", [".venv*", "venv*", "env*", "*.egg-info"])
         self.max_depth = kwargs.get("max_depth", 20)
         # max_file_size는 Settings.MAX_PARSE_BYTES 사용 (통일)
         self.gitignore_lines = kwargs.get("gitignore_lines", [])
@@ -90,8 +90,16 @@ class Config:
                     "Set db_path to a separate .db file."
                 )
         
-        if not data:
-            data = cls.get_defaults(root)
+        defaults = cls.get_defaults(root)
+        if data:
+            merged = defaults.copy()
+            merged.update(data)
+            data = merged
+        else:
+            data = defaults
+
+        if not data.get("db_path"):
+            data["db_path"] = defaults.get("db_path", "")
         
         return cls(**data)
 
@@ -102,8 +110,8 @@ class Config:
             "workspace_root": root,
             "workspace_roots": [root],
             "include_ext": [".py", ".js", ".ts", ".java", ".go", ".rs", ".rb", ".php", ".xml", ".yml", ".yaml", ".md", ".cs", ".swift", ".vue", ".hcl", ".tf", ".sql", ".txt"],
-            "exclude_dirs": [".git", "node_modules", "target", "build", "dist", ".pytest_cache", "__pycache__", ".sari"],
-            "exclude_globs": [],
+            "exclude_dirs": [".git", "node_modules", "target", "build", "dist", ".pytest_cache", "__pycache__", ".sari", ".venv", "venv", ".virtualenv", "env"],
+            "exclude_globs": [".venv*", "venv*", "env*", "*.egg-info"],
             "max_depth": 20,
             "db_path": str(WorkspaceManager.get_global_db_path()),
             "server_port": 47777,

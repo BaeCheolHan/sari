@@ -49,6 +49,14 @@ class LocalSearchDB:
     def set_settings(self, settings): self.settings = settings
     def create_staging_table(self, cur=None): self._ensure_staging()
 
+    def register_writer_thread(self, thread_id: int) -> None:
+        """Allow external callers to register the current writer thread.
+
+        Peewee's threadlocal handling can be sensitive in multi-threaded callers.
+        We only track the id for compatibility with MCP tools.
+        """
+        self._writer_thread_id = thread_id
+
     def _init_mem_staging(self):
         try:
             conn = self.db.connection()
@@ -77,6 +85,38 @@ class LocalSearchDB:
                 label=path.split("/")[-1]
             ).on_conflict_ignore().execute()        # DB에 저장
         self.db.commit()
+
+    def list_snippets_by_tag(self, tag: str) -> List[Dict[str, Any]]:
+        """Return snippet rows matching a tag (most recent first)."""
+        try:
+            cur = self.db._get_conn().cursor()
+            cur.execute(
+                "SELECT tag, path, root_id, start_line, end_line, content, metadata_json, created_ts, updated_ts "
+                "FROM snippets WHERE tag = ? ORDER BY updated_ts DESC",
+                (tag,)
+            )
+            rows = cur.fetchall() or []
+            cols = ["tag", "path", "root_id", "start_line", "end_line", "content", "metadata_json", "created_ts", "updated_ts"]
+            return [dict(zip(cols, r)) for r in rows]
+        except Exception:
+            return []
+
+    def get_context_by_topic(self, topic: str) -> Optional[Dict[str, Any]]:
+        """Return a single context row for a topic."""
+        try:
+            cur = self.db._get_conn().cursor()
+            cur.execute(
+                "SELECT topic, content, tags_json, related_files_json, source, valid_from, valid_until, deprecated, created_ts, updated_ts "
+                "FROM contexts WHERE topic = ?",
+                (topic,)
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            cols = ["topic", "content", "tags_json", "related_files_json", "source", "valid_from", "valid_until", "deprecated", "created_ts", "updated_ts"]
+            return dict(zip(cols, row))
+        except Exception:
+            return None
 
     def upsert_files_turbo(self, rows: Iterable[tuple]):
         self._ensure_staging()
@@ -215,8 +255,19 @@ class LocalSearchDB:
         if isinstance(content, bytes): return content.decode("utf-8", errors="ignore")
         return str(content)
 
-    def list_files(self, limit: int = 50) -> List[Dict]:
-        cursor = self.db.execute_sql("SELECT path, size, repo FROM files LIMIT ?", (limit,))
+    def list_files(self, limit: int = 50, repo: Optional[str] = None, root_ids: Optional[List[str]] = None) -> List[Dict]:
+        sql = "SELECT path, size, repo FROM files WHERE deleted_ts = 0"
+        params: List[Any] = []
+        if repo:
+            sql += " AND repo = ?"
+            params.append(repo)
+        if root_ids:
+            placeholders = ",".join(["?"] * len(root_ids))
+            sql += f" AND root_id IN ({placeholders})"
+            params.extend(root_ids)
+        sql += " LIMIT ?"
+        params.append(limit)
+        cursor = self.db.execute_sql(sql, params)
         return [{"path": r[0], "size": r[1], "repo": r[2]} for r in cursor.fetchall()]
 
     def has_legacy_paths(self) -> bool:
@@ -235,8 +286,11 @@ class LocalSearchDB:
             with self.db.atomic():
                 self.db.execute_sql(sql, paths)
 
-    def get_repo_stats(self) -> Dict[str, int]:
-        query = File.select(File.repo, fn.COUNT(File.path).alias('count')).where(File.deleted_ts == 0).group_by(File.repo)
+    def get_repo_stats(self, root_ids: Optional[List[str]] = None) -> Dict[str, int]:
+        query = File.select(File.repo, fn.COUNT(File.path).alias('count')).where(File.deleted_ts == 0)
+        if root_ids:
+            query = query.where(File.root_id.in_(root_ids))
+        query = query.group_by(File.repo)
         return {row['repo']: row['count'] for row in query.dicts()}
 
     def get_file_meta(self, path: str) -> Optional[Tuple[int, int, str]]:

@@ -115,6 +115,9 @@ def pack_error(tool: str, code: Any, msg: str, hints: List[str] = None, trace: s
     Generates PACK1 error response.
     PACK1 tool=<tool> ok=false code=<CODE> msg=<ENCODED_MSG> [hint=<ENC>] [trace=<ENC>]
     """
+    if hints is None:
+        hints = _default_error_hints(tool, code, msg)
+
     parts = [
         "PACK1",
         f"tool={tool}",
@@ -131,6 +134,33 @@ def pack_error(tool: str, code: Any, msg: str, hints: List[str] = None, trace: s
         for k, v in fields.items():
             parts.append(f"{k}={pack_encode_text(v)}")
     return " ".join(parts)
+
+
+def _default_error_hints(tool: str, code: Any, msg: str) -> List[str]:
+    """Generate default hints/fallbacks for common failures."""
+    hints: List[str] = []
+    code_val = code.value if isinstance(code, ErrorCode) else str(code)
+    msg_lower = str(msg or "").lower()
+
+    if "database" in msg_lower or "db" in msg_lower or code_val == ErrorCode.DB_ERROR.value:
+        hints.extend([
+            "run doctor to diagnose DB/engine 상태",
+            "db_path 설정 확인 및 rescan",
+        ])
+
+    if code_val in {ErrorCode.NOT_INDEXED.value, ErrorCode.ERR_ENGINE_QUERY.value, ErrorCode.ERR_ENGINE_UNAVAILABLE.value}:
+        hints.append("scan_once 또는 rescan으로 인덱싱 갱신")
+
+    if tool in {"grep_and_read"}:
+        hints.append("fallback: search -> read_file")
+    if tool in {"repo_candidates"}:
+        hints.append("fallback: list_files 요약 보기")
+    if tool in {"search_api_endpoints"}:
+        hints.append("repo 또는 root_ids를 명시해 스코프 고정")
+    if tool in {"read_symbol", "get_callers", "get_implementations", "call_graph", "call_graph_health"}:
+        hints.append("심볼 인덱싱 여부 확인 후 재시도")
+
+    return hints
 
 def pack_truncated(next_offset: int, limit: int, truncated_state: str) -> str:
     """

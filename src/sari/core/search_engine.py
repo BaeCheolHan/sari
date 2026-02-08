@@ -69,6 +69,7 @@ class SearchEngine:
                                "WHERE files_fts MATCH ? AND f.deleted_ts = 0")
                         params = [fts_q]
                         if root_id: sql += " AND f.root_id = ?"; params.append(root_id)
+                        if opts.repo: sql += " AND f.repo = ?"; params.append(opts.repo)
                         cur.execute(sql + f" LIMIT {opts.limit}", params)
                         db_hits = self._process_sqlite_rows(cur.fetchall(), opts)
                         for h in db_hits:
@@ -90,6 +91,9 @@ class SearchEngine:
                     if root_id:
                         sql += " AND root_id = ?"
                         params.append(root_id)
+                    if opts.repo:
+                        sql += " AND repo = ?"
+                        params.append(opts.repo)
                     cur.execute(sql + f" LIMIT {opts.limit}", params)
                     db_hits = self._process_sqlite_rows(cur.fetchall(), opts)
                     for h in db_hits:
@@ -97,6 +101,17 @@ class SearchEngine:
                         if h.path not in seen_paths:
                             all_hits.append(h)
                             seen_paths.add(h.path)
+
+            # Root 우선 가중치 (workspace root에 속한 결과를 앞쪽으로)
+            if root_id:
+                for h in all_hits:
+                    if h.path and h.path.startswith(root_id + "/"):
+                        h.score += 50.0
+
+            # 스코프 매칭 근거 기록
+            if root_id or opts.repo:
+                for h in all_hits:
+                    h.scope_reason = f"root_id={root_id or 'any'}; repo={opts.repo or 'any'}"
 
             # 최종 정렬: 점수 내림차순 -> 시간 내림차순
             all_hits.sort(key=lambda x: (-x.score, -x.mtime))
@@ -124,6 +139,8 @@ class SearchEngine:
                 content = r[5]
             else:
                 continue
+            if opts.repo and repo != opts.repo:
+                continue
             hits.append(SearchHit(
                 repo=repo,
                 path=path,
@@ -141,6 +158,8 @@ class SearchEngine:
         results: List[SearchHit] = []
         for h in hits:
             path = h.get("path", "")
+            if opts.repo and h.get("repo", "") != opts.repo:
+                continue
             # Double check with DB to filter out deleted files not yet purged from Tantivy
             is_deleted = False
             try:

@@ -23,6 +23,7 @@ class SearchHit(BaseModel):
     match_count: int = 1
     file_type: str = ""
     hit_reason: str = ""
+    scope_reason: str = ""
 
 class RepoStat(BaseModel):
     repo: str

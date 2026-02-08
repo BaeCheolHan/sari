@@ -34,6 +34,17 @@ def _check_db(ws_root: str) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     cfg_path = WorkspaceManager.resolve_config_path(ws_root)
     cfg = Config.load(cfg_path, workspace_root_override=ws_root)
+    # Auto-fix: persist db_path if missing in config file
+    try:
+        if cfg_path and Path(cfg_path).exists():
+            raw = json.loads(Path(cfg_path).read_text(encoding="utf-8"))
+            if isinstance(raw, dict) and not raw.get("db_path") and cfg.db_path:
+                raw["db_path"] = cfg.db_path
+                Path(cfg_path).parent.mkdir(parents=True, exist_ok=True)
+                Path(cfg_path).write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                results.append(_result("DB Path AutoFix", True, f"db_path set to {cfg.db_path}"))
+    except Exception as e:
+        results.append(_result("DB Path AutoFix", False, f"failed: {e}"))
     db_path = Path(cfg.db_path)
     if not db_path.exists():
         results.append(_result("DB Existence", False, f"DB not found at {db_path}"))

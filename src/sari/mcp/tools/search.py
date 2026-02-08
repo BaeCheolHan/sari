@@ -181,6 +181,7 @@ def execute_search(
                 "match_count": hit.match_count,
                 "file_type": hit.file_type,
                 "hit_reason": hit.hit_reason,
+                "scope_reason": hit.scope_reason,
                 "context_symbol": hit.context_symbol,
                 "docstring": hit.docstring,
                 "metadata": hit.metadata,
@@ -222,6 +223,8 @@ def execute_search(
                 "size": str(h.size),
                 "file_type": pack_encode_id(h.file_type),
                 "snippet": pack_encode_text(h.snippet),
+                "hit_reason": pack_encode_text(h.hit_reason),
+                "scope_reason": pack_encode_text(h.scope_reason),
             }))
         if returned >= limit:
             lines.append(pack_truncated(offset + limit, limit, "maybe"))

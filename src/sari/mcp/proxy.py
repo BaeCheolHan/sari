@@ -407,11 +407,7 @@ def forward_stdin_to_socket(state):
                         return obj, False
 
                     # PRIORITY: SARI_
-                    ws = None
-                    val = os.environ.get("SARI_WORKSPACE_ROOT")
-                    if val:
-                        ws = val
-                    
+                    ws = os.environ.get("SARI_WORKSPACE_ROOT") or state.get("workspace_root")
                     if not ws:
                         state["init_request"] = obj
                         return obj, False

@@ -10,12 +10,15 @@ def execute_status(args: Dict[str, Any], indexer: Optional[Indexer], db: Optiona
     # Gather extra stats from DB if available
     total_symbols = 0
     total_files = 0
+    db_error = ""
     if db:
         try:
             total_files = db.db.execute_sql("SELECT COUNT(1) FROM files").fetchone()[0]
             total_symbols = db.db.execute_sql("SELECT COUNT(1) FROM symbols").fetchone()[0]
         except Exception:
-            pass
+            db_error = "DB 접근 실패"
+    else:
+        db_error = "DB 미연결"
 
     status_data = {
         "index_ready": indexer.status.index_ready if indexer else False,
@@ -25,6 +28,7 @@ def execute_status(args: Dict[str, Any], indexer: Optional[Indexer], db: Optiona
         "errors": indexer.status.errors if indexer else 0,
         "total_files_db": total_files,
         "total_symbols_db": total_symbols,
+        "db_error": db_error,
         "server_version": server_version,
         "workspace_root": workspace_root,
         "db_engine": "PeeWee+Turbo",
