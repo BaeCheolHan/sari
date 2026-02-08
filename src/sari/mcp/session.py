@@ -261,6 +261,8 @@ class Session:
             if response:
                 await self.send_json(response)
                 trace("session_response_sent", msg_id=msg_id, method=method)
+        finally:
+            self.cleanup()
 
     async def handle_initialize(self, request: Dict[str, Any]):
         params = request.get("params", {})
@@ -302,7 +304,8 @@ class Session:
             self.shared_state = None
 
         self.workspace_root = workspace_root
-        self.shared_state = self.registry.get_or_create(self.workspace_root, persistent=True)
+        persist = str(os.environ.get("SARI_PERSIST_WORKSPACE", "")).strip().lower() in {"1", "true", "yes", "on"}
+        self.shared_state = self.registry.get_or_create(self.workspace_root, persistent=persist)
         self.registry.touch_workspace(self.workspace_root)
         trace("session_handle_initialize_bound", workspace_root=self.workspace_root)
 
