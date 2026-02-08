@@ -149,7 +149,9 @@ curl http://127.0.0.1:47777/health
       "command": "/abs/path/to/.venv/bin/python",
       "args": ["-m", "sari", "--transport", "stdio"],
       "env": {
-        "SARI_CONFIG": "/abs/path/to/workspace/.sari/config.json"
+        "SARI_CONFIG": "/abs/path/to/workspace/.sari/config.json",
+        "SARI_DAEMON_AUTOSTOP": "1",
+        "SARI_DAEMON_IDLE_SEC": "0"
       }
     }
   }
@@ -180,7 +182,7 @@ curl http://127.0.0.1:47777/health
 [mcp_servers.sari]
 command = "/abs/path/to/.venv/bin/python"
 args = ["-m", "sari", "--transport", "stdio"]
-env = { SARI_CONFIG = "/abs/path/to/workspace/.sari/config.json" }
+env = { SARI_CONFIG = "/abs/path/to/workspace/.sari/config.json", SARI_DAEMON_AUTOSTOP = "1", SARI_DAEMON_IDLE_SEC = "0" }
 ```
 
 ### 4.2 (EN) Codex CLI
@@ -189,7 +191,7 @@ env = { SARI_CONFIG = "/abs/path/to/workspace/.sari/config.json" }
 [mcp_servers.sari]
 command = "/abs/path/to/.venv/bin/python"
 args = ["-m", "sari", "--transport", "stdio"]
-env = { SARI_CONFIG = "/abs/path/to/workspace/.sari/config.json" }
+env = { SARI_CONFIG = "/abs/path/to/workspace/.sari/config.json", SARI_DAEMON_AUTOSTOP = "1", SARI_DAEMON_IDLE_SEC = "0" }
 ```
 
 ---
@@ -202,7 +204,9 @@ env = { SARI_CONFIG = "/abs/path/to/workspace/.sari/config.json" }
   "command": "/abs/path/to/python",
   "args": ["-m", "sari", "--transport", "stdio"],
   "env": {
-    "SARI_CONFIG": "/abs/path/to/workspace/.sari/config.json"
+    "SARI_CONFIG": "/abs/path/to/workspace/.sari/config.json",
+    "SARI_DAEMON_AUTOSTOP": "1",
+    "SARI_DAEMON_IDLE_SEC": "0"
   }
 }
 ```
@@ -286,13 +290,159 @@ sari roots list
 }
 ```
 
+### 6.3 (KR) 수집 실행 예제
+전역 설정(`~/.config/sari/config.json`)에 다중 워크스페이스를 등록한 뒤 실행합니다.
+
+```json
+{
+  "workspace_roots": [
+    "/Users/<user>/Documents/StockBatch",
+    "/Users/<user>/Documents/StockFront",
+    "/Users/<user>/Documents/StockManager"
+  ]
+}
+```
+
+실행:
+```bash
+SARI_CONFIG=~/.config/sari/config.json sari --transport stdio
+```
+
+CLI로 등록 후 실행:
+```bash
+sari roots add /Users/<user>/Documents/StockBatch
+sari roots add /Users/<user>/Documents/StockFront
+sari roots add /Users/<user>/Documents/StockManager
+sari roots list
+SARI_CONFIG=~/.config/sari/config.json sari --transport stdio
+```
+
+### 6.3 (EN) Collection Example
+Register multi-workspaces in the global config (`~/.config/sari/config.json`) and run.
+
+```json
+{
+  "workspace_roots": [
+    "/Users/<user>/Documents/StockBatch",
+    "/Users/<user>/Documents/StockFront",
+    "/Users/<user>/Documents/StockManager"
+  ]
+}
+```
+
+Run:
+```bash
+SARI_CONFIG=~/.config/sari/config.json sari --transport stdio
+```
+
+CLI registration then run:
+```bash
+sari roots add /Users/<user>/Documents/StockBatch
+sari roots add /Users/<user>/Documents/StockFront
+sari roots add /Users/<user>/Documents/StockManager
+sari roots list
+SARI_CONFIG=~/.config/sari/config.json sari --transport stdio
+```
+
 주의/Note:
 - 상위/하위가 중첩되는 경로는 피하세요.
 - Avoid nested roots (parent/child) to prevent duplicate scans.
 
 ---
 
-## 7. 설정 레퍼런스 / Configuration Reference
+## 7. 데이터 수집 정책 / Indexing Policy
+
+### (KR)
+Sari는 다음 순서로 수집 대상(workspace)을 결정합니다.
+
+1. 전역/워크스페이스 설정의 `workspace_roots`
+2. `SARI_WORKSPACE_ROOT` 환경변수
+3. 클라이언트가 전달한 `rootUri/rootPath` (MCP 초기화 시)
+4. 위가 없으면 **현재 실행 디렉토리(CWD)**
+
+즉, **명시 설정이 없으면 CLI를 실행한 위치가 워크스페이스로 간주**되어 그 위치 기준으로 수집됩니다.  
+레포 루트가 아니라 하위 폴더에서 실행하면 **일부만 인덱싱**될 수 있으니 주의하세요.
+
+추가 팁:
+- `.sariroot` 파일이 있으면 해당 위치를 프로젝트 루트로 고정합니다.
+- 레포 최상단에서 실행하거나 `workspace_roots`를 명시하는 것을 권장합니다.
+
+예시:
+1) 전역 설정에 `workspace_roots`가 있고, 다른 디렉토리에서 CLI 실행
+```json
+// ~/.config/sari/config.json
+{
+  "workspace_roots": [
+    "/Users/<user>/Documents/StockBatch",
+    "/Users/<user>/Documents/StockFront"
+  ]
+}
+```
+```bash
+cd /Users/<user>/Documents/OtherRepo
+sari --transport stdio
+```
+결과: `StockBatch`, `StockFront`, **그리고 `OtherRepo`까지** 함께 수집됩니다.
+
+2) Gemini/Codex 설정이 서로 다른 경우
+```json
+// Gemini: workspace_roots = A,B
+// Codex:  workspace_roots = C
+```
+두 CLI를 동시에 켜면 전역 DB에 **A+B+C가 모두 섞여 인덱싱**됩니다.
+
+해결:
+- 두 CLI 모두 동일한 `SARI_CONFIG` 사용
+- `workspace_roots` 통일
+- 필요 시 `root_ids`/`repo`로 스코프 제한
+
+### (EN)
+Sari determines indexing roots in this order:
+
+1. `workspace_roots` from global/workspace config
+2. `SARI_WORKSPACE_ROOT` environment variable
+3. `rootUri/rootPath` from MCP initialize
+4. Fallback to **current working directory (CWD)**
+
+If no explicit config is provided, **the CLI working directory is treated as the workspace**,  
+so running from a subdirectory may index only a subset of the repo.
+
+Tips:
+- Add a `.sariroot` file to pin the project root.
+- Prefer running from repo root or explicitly set `workspace_roots`.
+
+Examples:
+1) Global `workspace_roots` set, but CLI is executed from another directory
+```json
+// ~/.config/sari/config.json
+{
+  "workspace_roots": [
+    "/Users/<user>/Documents/StockBatch",
+    "/Users/<user>/Documents/StockFront"
+  ]
+}
+```
+```bash
+cd /Users/<user>/Documents/OtherRepo
+sari --transport stdio
+```
+Result: `StockBatch`, `StockFront`, **and `OtherRepo`** are indexed together.
+
+2) Gemini/Codex configs differ
+```json
+// Gemini: workspace_roots = A,B
+// Codex:  workspace_roots = C
+```
+Running both will **mix A+B+C into the same global DB**.
+
+Fix:
+- Use the same `SARI_CONFIG` in both CLIs
+- Align `workspace_roots`
+- Scope with `root_ids`/`repo` when needed
+
+---
+
+## 8. 설정 레퍼런스 / Configuration Reference
 
 다음은 주요 설정값입니다.
 
