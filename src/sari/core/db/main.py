@@ -69,19 +69,19 @@ class LocalSearchDB:
 
     def create_staging_table(self, cur=None): self._ensure_staging()
 
-    def _snippet_repo(self) -> SnippetRepository:
+    def _snippet_repo(self) -> "SnippetRepository":
         return SnippetRepository(self._read)
 
-    def _context_repo(self) -> ContextRepository:
+    def _context_repo(self) -> "ContextRepository":
         return ContextRepository(self._read)
 
-    def _symbol_repo(self) -> SymbolRepository:
+    def _symbol_repo(self) -> "SymbolRepository":
         return SymbolRepository(self._read)
 
-    def _search_repo(self) -> SearchRepository:
+    def _search_repo(self) -> "SearchRepository":
         return SearchRepository(self._read)
 
-    def _failed_task_repo(self) -> FailedTaskRepository:
+    def _failed_task_repo(self) -> "FailedTaskRepository":
         return FailedTaskRepository(self._read)
 
     def register_writer_thread(self, thread_id: int) -> None:
@@ -338,7 +338,7 @@ class LocalSearchDB:
     def get_repo_stats(self, root_ids: Optional[List[str]] = None) -> Dict[str, int]:
         return self._file_repo().get_repo_stats(root_ids=root_ids)
 
-    def _file_repo(self, cur=None) -> FileRepository:
+    def _file_repo(self, cur=None) -> "FileRepository":
         from sari.core.repository.file_repository import FileRepository
         conn = cur.connection if cur else self._read
         return FileRepository(conn)

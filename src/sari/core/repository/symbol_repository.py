@@ -1,8 +1,8 @@
 import sqlite3
-from typing import Iterable, List, Optional, Tuple
-
+from typing import Iterable, List, Optional, Tuple, Dict
 from .base import BaseRepository
 from ..parsers.common import _symbol_id
+from ..models import SymbolDTO
 
 class SymbolRepository(BaseRepository):
     def upsert_symbols_tx(self, cur: sqlite3.Cursor, symbols: Iterable[tuple]) -> int:
@@ -146,3 +146,37 @@ class SymbolRepository(BaseRepository):
         if not row:
             return None
         return int(row["line"]), int(row["end_line"])
+
+    def list_symbols_by_path(self, path: str) -> List[SymbolDTO]:
+        rows = self.execute(
+            "SELECT * FROM symbols WHERE path = ? ORDER BY line ASC",
+            (path,)
+        ).fetchall()
+        return [SymbolDTO.from_row(r) for r in rows]
+
+    def search_symbols(self, query: str, limit: int = 20, **kwargs) -> List[SymbolDTO]:
+        lq = f"%{query}%"
+        # Base query joining files to get repo information if needed (though not in DTO yet)
+        sql = "SELECT * FROM symbols WHERE (name LIKE ? OR qualname LIKE ?)"
+        params = [lq, lq]
+        
+        if kwargs.get("kinds"):
+            ks = kwargs["kinds"]
+            placeholders = ",".join(["?"] * len(ks))
+            sql += f" AND kind IN ({placeholders})"
+            params.extend(ks)
+        elif kwargs.get("kind"):
+            sql += " AND kind = ?"
+            params.append(kwargs["kind"])
+            
+        if kwargs.get("root_ids"):
+            rs = kwargs["root_ids"]
+            placeholders = ",".join(["?"] * len(rs))
+            sql += f" AND root_id IN ({placeholders})"
+            params.extend(rs)
+            
+        sql += " LIMIT ?"
+        params.append(limit)
+        
+        rows = self.execute(sql, params).fetchall()
+        return [SymbolDTO.from_row(r) for r in rows]

@@ -116,19 +116,34 @@ def main() -> int:
     db.coordinator = getattr(indexer, "coordinator", None)
 
     # Start HTTP immediately so health checks don't block on initial indexing.
-    # serve_forever returns (httpd, actual_port) for fallback tracking
     version = _resolve_version()
     mcp_server = _create_mcp_server(workspace_root, cfg, db, indexer)
-    httpd, actual_port = serve_forever(
-        host,
-        cfg.http_api_port,
-        db,
-        indexer,
-        version=version,
-        workspace_root=workspace_root,
-        cfg=cfg,
-        mcp_server=mcp_server,
-    )
+    
+    # Prioritize Async server
+    try:
+        from .async_http_server import serve_async
+        httpd, actual_port = serve_async(
+            host,
+            cfg.http_api_port,
+            db,
+            indexer,
+            version=version,
+            workspace_root=workspace_root,
+            cfg=cfg,
+            mcp_server=mcp_server,
+        )
+    except Exception as e:
+        print(f"[sari] async server start failed: {e}. falling back to sync.", file=sys.stderr)
+        httpd, actual_port = serve_forever(
+            host,
+            cfg.http_api_port,
+            db,
+            indexer,
+            version=version,
+            workspace_root=workspace_root,
+            cfg=cfg,
+            mcp_server=mcp_server,
+        )
 
     # Write server.json with actual binding info (single source of truth for port tracking)
     _write_server_info(workspace_root, host, actual_port, cfg.http_api_port)

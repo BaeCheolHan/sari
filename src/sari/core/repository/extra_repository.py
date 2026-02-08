@@ -1,8 +1,7 @@
 import sqlite3
 from typing import Any, Dict, Iterable, List, Optional
-
 from .base import BaseRepository
-
+from ..models import SnippetDTO, ContextDTO
 
 class SnippetRepository(BaseRepository):
     def upsert_snippet_tx(self, cur: sqlite3.Cursor, rows: Iterable[tuple]) -> int:
@@ -93,13 +92,14 @@ class SnippetRepository(BaseRepository):
         )
 
     def list_snippet_versions(self, snippet_id: int) -> List[Dict[str, Any]]:
+        # This keeps raw dict for internal version history, but we could DTO-ize if needed
         rows = self.execute(
             "SELECT id, content, content_hash, created_ts FROM snippet_versions WHERE snippet_id = ? ORDER BY created_ts DESC",
             (int(snippet_id),),
         ).fetchall()
         return [dict(r) for r in rows]
 
-    def list_snippets_by_tag(self, tag: str, limit: int = 20) -> List[Dict[str, Any]]:
+    def list_snippets_by_tag(self, tag: str, limit: int = 20) -> List[SnippetDTO]:
         rows = self.execute(
             """
             SELECT id, tag, path, root_id, start_line, end_line, content, content_hash, anchor_before, anchor_after, repo, note, commit_hash, created_ts, updated_ts, metadata_json
@@ -107,9 +107,9 @@ class SnippetRepository(BaseRepository):
             """,
             (tag, int(limit)),
         ).fetchall()
-        return [dict(r) for r in rows]
+        return [SnippetDTO.from_row(r) for r in rows]
 
-    def search_snippets(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
+    def search_snippets(self, query: str, limit: int = 20) -> List[SnippetDTO]:
         if not query:
             return []
         lq = f"%{query}%"
@@ -121,7 +121,7 @@ class SnippetRepository(BaseRepository):
             """,
             (lq, lq, lq, lq, int(limit)),
         ).fetchall()
-        return [dict(r) for r in rows]
+        return [SnippetDTO.from_row(r) for r in rows]
 
 
 class ContextRepository(BaseRepository):
@@ -165,26 +165,26 @@ class ContextRepository(BaseRepository):
         )
         return len(normalized)
 
-    def get_context_by_topic(self, topic: str) -> Optional[Dict[str, Any]]:
+    def get_context_by_topic(self, topic: str) -> Optional[ContextDTO]:
         row = self.execute(
             """
-            SELECT topic, content, tags_json, related_files_json, source, valid_from, valid_until, deprecated, created_ts, updated_ts
+            SELECT id, topic, content, tags_json, related_files_json, source, valid_from, valid_until, deprecated, created_ts, updated_ts
             FROM contexts WHERE topic = ?
             """,
             (topic,),
         ).fetchone()
-        return dict(row) if row else None
+        return ContextDTO.from_row(row) if row else None
 
-    def search_contexts(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
+    def search_contexts(self, query: str, limit: int = 20) -> List[ContextDTO]:
         if not query:
             return []
         lq = f"%{query}%"
         rows = self.execute(
             """
-            SELECT topic, content, tags_json, related_files_json, source, valid_from, valid_until, deprecated, created_ts, updated_ts
+            SELECT id, topic, content, tags_json, related_files_json, source, valid_from, valid_until, deprecated, created_ts, updated_ts
             FROM contexts WHERE topic LIKE ? OR content LIKE ? OR tags_json LIKE ?
             ORDER BY updated_ts DESC LIMIT ?
             """,
             (lq, lq, lq, int(limit)),
         ).fetchall()
-        return [dict(r) for r in rows]
+        return [ContextDTO.from_row(r) for r in rows]

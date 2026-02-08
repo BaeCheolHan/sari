@@ -2,6 +2,7 @@ import sqlite3
 from typing import Iterable, List, Optional, Tuple, Dict, Any
 from .base import BaseRepository
 from ..utils.compression import _compress
+from ..models import FileDTO
 
 class FileRepository(BaseRepository):
     def upsert_files_tx(self, cur: sqlite3.Cursor, rows: Iterable[tuple]) -> int:

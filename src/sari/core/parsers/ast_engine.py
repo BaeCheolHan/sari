@@ -4,6 +4,7 @@ import json
 from typing import List, Tuple, Optional, Any, Dict
 from pathlib import Path
 from .handlers import HandlerRegistry
+from .special_parsers import SpecialParser
 import hashlib
 
 try:
@@ -152,11 +153,13 @@ class ASTEngine:
         if not content: return [], []
         ext = path.split(".")[-1].lower() if "." in path else language.lower()
         
-        # Non-AST Fallbacks
+        # Non-AST Fallbacks using SpecialParser
         if ext in ("dockerfile", "docker") or path.lower() == "dockerfile":
-            return self._dockerfile(path, content), []
-        if ext == "xml" and ("<mapper" in content or "<sqlMap" in content): return self._mybatis(path, content), []
-        if ext in ("md", "markdown"): return self._markdown(path, content), []
+            return SpecialParser.parse_dockerfile(path, content), []
+        if ext == "xml" and ("<mapper" in content or "<sqlMap" in content): 
+            return SpecialParser.parse_mybatis(path, content), []
+        if ext in ("md", "markdown"): 
+            return SpecialParser.parse_markdown(path, content), []
         
         # Vue Special Handling
         if ext == "vue":
@@ -277,40 +280,3 @@ class ASTEngine:
             for child in node.children: walk(child, p_name, p_meta)
 
         walk(tree.root_node, p_meta={}); return symbols, []
-
-    def _dockerfile(self, path, content):
-        symbols = []
-        for i, line in enumerate(content.splitlines()):
-            raw = line.strip()
-            if not raw or raw.startswith("#"):
-                continue
-            m = re.match(r"^([A-Z]+)\b", raw)
-            if not m:
-                continue
-            instr = m.group(1)
-            sid = _symbol_id(path, "instruction", instr)
-            meta = json.dumps({"instruction": instr})
-            symbols.append((path, instr, "instruction", i + 1, i + 1, raw, "", meta, "", instr, sid))
-        return symbols
-
-    def _mybatis(self, path, content):
-        symbols = []
-        for i, line in enumerate(content.splitlines()):
-            m = re.search(r'<(select|insert|update|delete|sql)\s+id=["\']([^"\']+)["\']', line)
-            if m:
-                tag, name = m.group(1), m.group(2)
-                sid = _symbol_id(path, "method", name)
-                meta = json.dumps({"mybatis_tag": tag, "framework": "MyBatis"})
-                symbols.append((path, name, "method", i+1, i+1, line.strip(), "", meta, "", name, sid))
-        return symbols
-
-    def _markdown(self, path, content):
-        symbols = []
-        for i, line in enumerate(content.splitlines()):
-            m = re.match(r"^(#+)\s+(.*)", line.strip())
-            if m:
-                lvl, name = len(m.group(1)), m.group(2)
-                sid = _symbol_id(path, "doc", name)
-                meta = json.dumps({"lvl": lvl})
-                symbols.append((path, name, "doc", i+1, i+1, line.strip(), "", meta, "", name, sid))
-        return symbols

@@ -18,13 +18,13 @@ def execute_list_files(args: Dict[str, Any], db: "LocalSearchDB", logger=None, r
         if len(stats) == 1:
             files = db.list_files(limit=5, root_ids=root_ids)
             for f in files:
-                lines.append(f"f:path={f['path']} repo={f['repo']}")
+                lines.append(f"f:path={f.path} repo={f.repo}")
     else:
         # Detail mode
         files = db.list_files(limit=limit, repo=repo, root_ids=root_ids)
         lines = [f"PACK1 tool=list_files ok=true returned={len(files)} total={len(files)}"]
         for f in files:
-            lines.append(f"f:path={f['path']} size={f['size']} repo={f['repo']}")
+            lines.append(f"f:path={f.path} size={f.size} repo={f.repo}")
         lines.append("m:hint=repo 필터는 정확히 일치해야 합니다. 예) repo=MyRepoName")
         
     return {"content": [{"type": "text", "text": "\n".join(lines)}]}
