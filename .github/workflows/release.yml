@@ -51,13 +51,13 @@ jobs:
         run: |
           VERSION=${{ steps.check_version.outputs.version }}
           # Update version.py securely
-          echo "__version__ = \"$VERSION\"" > sari/version.py
+          echo "__version__ = \"$VERSION\"" > src/sari/version.py
           
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           
           if [[ -n $(git status -s) ]]; then
-            git add sari/version.py
+            git add src/sari/version.py
             git commit -m "chore: bump version to $VERSION [skip ci]"
             git push origin main
           else
@@ -97,7 +97,7 @@ jobs:
         run: |
           VERSION=${GITHUB_REF_NAME#v}
           echo "Setting version to $VERSION"
-          echo "__version__ = \"$VERSION\"" > sari/version.py
+          echo "__version__ = \"$VERSION\"" > src/sari/version.py
 
       - name: Build package
         run: uv build
