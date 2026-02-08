@@ -28,7 +28,7 @@ class SpecialParser:
     def parse_mybatis(path: str, content: str) -> List[Tuple]:
         symbols = []
         for i, line in enumerate(content.splitlines()):
-            m = re.search(r'<(select|insert|update|delete|sql)\s+id=["']([^"']+)["']', line)
+            m = re.search(r'<(select|insert|update|delete|sql)\s+id=["\']([^"\']+)["\']', line)
             if m:
                 tag, name = m.group(1), m.group(2)
                 sid = _symbol_id(path, "method", name)
