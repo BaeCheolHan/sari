@@ -8,12 +8,26 @@ from filelock import FileLock
 
 # Backward compatibility for legacy tests/tools that patch module-level path.
 REGISTRY_FILE = Path.home() / ".local" / os.path.join("share", "sari") / "server.json"
+_FALLBACK_REGISTRY = Path(os.environ.get("SARI_REGISTRY_FALLBACK", "/tmp/sari/server.json"))
+
+def _ensure_writable_dir(path: Path) -> bool:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return os.access(str(path.parent), os.W_OK)
+    except Exception:
+        return False
 
 def get_registry_path() -> Path:
     """Dynamically determine registry path from environment or default."""
-    if os.environ.get("SARI_REGISTRY_FILE"):
-        return Path(os.environ["SARI_REGISTRY_FILE"]).resolve()
-    return REGISTRY_FILE
+    env_path = os.environ.get("SARI_REGISTRY_FILE")
+    if env_path:
+        return Path(env_path).resolve()
+    # Default path may be blocked in sandboxed/test environments.
+    if _ensure_writable_dir(REGISTRY_FILE):
+        return REGISTRY_FILE
+    # Fallback to a temp location when home directory is not writable.
+    _ensure_writable_dir(_FALLBACK_REGISTRY)
+    return _FALLBACK_REGISTRY.resolve()
 
 class ServerRegistry:
     """
@@ -26,12 +40,21 @@ class ServerRegistry:
     VERSION = "2.0"
 
     def __init__(self):
+        # Delay lock initialization so tests can patch get_registry_path first.
+        self._lock = None
+
+    def _ensure_lock(self) -> FileLock:
         reg_file = get_registry_path()
         reg_file.parent.mkdir(parents=True, exist_ok=True)
-        # Use FileLock for cross-platform reliability and built-in timeouts
-        self._lock = FileLock(str(reg_file.with_suffix(".json.lock")), timeout=10)
+        if self._lock is None:
+            # Use FileLock for cross-platform reliability and built-in timeouts
+            self._lock = FileLock(str(reg_file.with_suffix(".json.lock")), timeout=10)
         if not reg_file.exists():
-            self._save(self._empty())
+            # Initialize registry file under lock without re-entering _ensure_lock.
+            with self._lock:
+                if not reg_file.exists():
+                    self._atomic_write(self._empty())
+        return self._lock
 
     def _empty(self) -> Dict[str, Any]:
         return {"version": self.VERSION, "daemons": {}, "workspaces": {}}
@@ -103,15 +126,18 @@ class ServerRegistry:
         return self._empty()
 
     def _load(self) -> Dict[str, Any]:
-        with self._lock:
+        lock = self._ensure_lock()
+        with lock:
             return self._load_unlocked()
 
     def _save(self, data: Dict[str, Any]):
-        with self._lock:
+        lock = self._ensure_lock()
+        with lock:
             self._atomic_write(data)
 
     def _update(self, updater) -> None:
-        with self._lock:
+        lock = self._ensure_lock()
+        with lock:
             data = self._load_unlocked()
             updater(data)
             self._atomic_write(data)
@@ -202,6 +228,56 @@ class ServerRegistry:
                     return res
         return None
 
+    def resolve_latest_daemon(self, workspace_root: Optional[str] = None, allow_draining: bool = True) -> Optional[Dict[str, Any]]:
+        data = self._load()
+        daemons = data.get("daemons", {}) or {}
+        workspaces = data.get("workspaces", {}) or {}
+
+        if workspace_root:
+            ws = self._normalize_workspace_root(workspace_root)
+            info = workspaces.get(ws)
+            if info:
+                boot_id = info.get("boot_id")
+                daemon = daemons.get(boot_id)
+                if daemon and (allow_draining or not daemon.get("draining")) and self._is_process_alive(daemon.get("pid")):
+                    res = dict(daemon)
+                    res["boot_id"] = boot_id
+                    return res
+
+        best = None
+        best_ts = -1.0
+        for bid, info in daemons.items():
+            if not allow_draining and info.get("draining"):
+                continue
+            if not self._is_process_alive(info.get("pid")):
+                continue
+            ts = float(info.get("last_seen_ts") or 0.0)
+            if ts > best_ts:
+                best_ts = ts
+                best = (bid, info)
+
+        if best:
+            res = dict(best[1])
+            res["boot_id"] = best[0]
+            return res
+        return None
+
+    def find_free_port(self, host: str = "127.0.0.1", start_port: int = 47790, max_tries: int = 200) -> int:
+        import socket
+        port = int(start_port)
+        for _ in range(max_tries):
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                try:
+                    s.bind((host, port))
+                    return port
+                except OSError:
+                    port += 1
+        # Fallback: ask OS for an ephemeral port
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind((host, 0))
+            return s.getsockname()[1]
+
     def _is_nested_pair(self, a: str, b: str) -> bool:
         if not a or not b or a == b: return False
         return a.startswith(b + os.sep) or b.startswith(a + os.sep)
@@ -261,6 +337,10 @@ class ServerRegistry:
             if boot_id in daemons:
                 daemons[boot_id]["last_seen_ts"] = time.time()
         self._update(_upd)
+
+    def prune_dead(self) -> None:
+        """Public method to prune dead daemons and associated workspaces."""
+        self._update(self._prune_dead_locked)
 
     def touch_daemon(self, boot_id: str) -> None:
         """Update last_seen_ts for a daemon to indicate it is still alive."""

@@ -23,7 +23,7 @@ class Config:
     def __init__(self, **kwargs):
         self.workspace_root = kwargs.get("workspace_root", os.getcwd())
         self.workspace_roots = kwargs.get("workspace_roots", [self.workspace_root])
-        self.include_ext = kwargs.get("include_ext", [".py", ".js", ".ts", ".java", ".go", ".rs", ".rb", ".php", ".xml", ".yml", ".yaml", ".md", ".cs", ".swift", ".vue", ".hcl", ".tf", ".sql"])
+        self.include_ext = kwargs.get("include_ext", [".py", ".js", ".ts", ".java", ".go", ".rs", ".rb", ".php", ".xml", ".yml", ".yaml", ".md", ".cs", ".swift", ".vue", ".hcl", ".tf", ".sql", ".txt"])
         self.exclude_dirs = kwargs.get("exclude_dirs", [".git", "node_modules", "target", "build", "dist", ".pytest_cache", "__pycache__", ".sari"])
         self.exclude_globs = kwargs.get("exclude_globs", [])
         self.max_depth = kwargs.get("max_depth", 20)
@@ -101,7 +101,7 @@ class Config:
         return {
             "workspace_root": root,
             "workspace_roots": [root],
-            "include_ext": [".py", ".js", ".ts", ".java", ".go", ".rs", ".rb", ".php", ".xml", ".yml", ".yaml", ".md", ".cs", ".swift", ".vue", ".hcl", ".tf", ".sql"],
+            "include_ext": [".py", ".js", ".ts", ".java", ".go", ".rs", ".rb", ".php", ".xml", ".yml", ".yaml", ".md", ".cs", ".swift", ".vue", ".hcl", ".tf", ".sql", ".txt"],
             "exclude_dirs": [".git", "node_modules", "target", "build", "dist", ".pytest_cache", "__pycache__", ".sari"],
             "exclude_globs": [],
             "max_depth": 20,

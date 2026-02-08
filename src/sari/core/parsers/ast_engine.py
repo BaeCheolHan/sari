@@ -77,6 +77,9 @@ class ASTEngine:
             elif target == "php":
                 import tree_sitter_php
                 return Language(tree_sitter_php.language_php())
+            elif target == "bash":
+                import tree_sitter_bash
+                return Language(tree_sitter_bash.language())
         except Exception as e:
             print(f"DEBUG ENGINE EXCEPTION for {target}: {e}")
             if self.logger: self.logger.debug(f"Failed to load parser for {target}: {e}")
@@ -102,6 +105,8 @@ class ASTEngine:
         ext = path.split(".")[-1].lower() if "." in path else language.lower()
         
         # Non-AST Fallbacks
+        if ext in ("dockerfile", "docker") or path.lower() == "dockerfile":
+            return self._dockerfile(path, content), []
         if ext == "xml" and ("<mapper" in content or "<sqlMap" in content): return self._mybatis(path, content), []
         if ext in ("md", "markdown"): return self._markdown(path, content), []
         
@@ -119,9 +124,29 @@ class ASTEngine:
 
         lang_obj = self._get_language(ext)
         handler = self.registry.get_handler(ext)
-        print(f"DEBUG ENGINE: ext={ext} lang_obj={lang_obj} handler={handler}")
+        # print(f"DEBUG ENGINE: ext={ext} lang_obj={lang_obj} handler={handler}")
         
-        if not lang_obj: return [], []
+        if not lang_obj: 
+            # Fallback to GenericRegexParser if available
+            try:
+                from .factory import ParserFactory
+                from .generic import GenericRegexParser
+                # ParserFactory expects extension with dot
+                p_ext = ext if ext.startswith(".") else f".{ext}"
+                parser = ParserFactory.get_parser(p_ext)
+                print(f"DEBUG FALLBACK: ext={ext} p_ext={p_ext} parser={parser}")
+                if isinstance(parser, GenericRegexParser):
+                    if isinstance(content, bytes):
+                        text_content = content.decode("utf-8", errors="ignore")
+                    else:
+                        text_content = content
+                    res = parser.extract(path, text_content)
+                    # print(f"DEBUG FALLBACK RES LEN: {len(res[0])}")
+                    return res
+            except ImportError:
+                print("DEBUG FALLBACK IMPORT ERROR")
+                pass
+            return [], []
         
         if tree is None: 
             tree = self.parse(ext, content)
@@ -203,6 +228,21 @@ class ASTEngine:
             for child in node.children: walk(child, p_name, p_meta)
 
         walk(tree.root_node, p_meta={}); return symbols, []
+
+    def _dockerfile(self, path, content):
+        symbols = []
+        for i, line in enumerate(content.splitlines()):
+            raw = line.strip()
+            if not raw or raw.startswith("#"):
+                continue
+            m = re.match(r"^([A-Z]+)\b", raw)
+            if not m:
+                continue
+            instr = m.group(1)
+            sid = _symbol_id(path, "instruction", instr)
+            meta = json.dumps({"instruction": instr})
+            symbols.append((path, instr, "instruction", i + 1, i + 1, raw, "", meta, "", instr, sid))
+        return symbols
 
     def _mybatis(self, path, content):
         symbols = []

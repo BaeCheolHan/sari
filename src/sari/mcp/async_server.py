@@ -8,6 +8,7 @@ import logging
 import os
 import sys
 import signal
+import inspect
 from typing import Any, Dict, Optional
 from sari.mcp.server import LocalSearchMCPServer
 from sari.mcp.transport import AsyncMcpTransport
@@ -135,7 +136,10 @@ class AsyncLocalSearchMCPServer(LocalSearchMCPServer):
             
             # Close transport
             try:
-                self._async_transport.close()
+                if self._async_transport and hasattr(self._async_transport, "close"):
+                    res = self._async_transport.close()
+                    if inspect.isawaitable(res):
+                        await res
                 writer.close()
                 await writer.wait_closed()
             except Exception:

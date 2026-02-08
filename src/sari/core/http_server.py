@@ -377,7 +377,16 @@ def serve_forever(host: str, port: int, db: LocalSearchDB, indexer: Indexer, ver
     except Exception:
         BoundHandler.root_ids = []
 
-    httpd = DualStackServer((host, port), BoundHandler)
+    if port is None:
+        port = 0
+    try:
+        httpd = DualStackServer((host, port), BoundHandler)
+    except OSError as e:
+        # Address already in use -> retry with ephemeral port.
+        if getattr(e, "errno", None) in (48, 98, 10048) and port != 0:
+            httpd = DualStackServer((host, 0), BoundHandler)
+        else:
+            raise
     actual_port = httpd.server_address[1]
     BoundHandler.server_port = actual_port
 

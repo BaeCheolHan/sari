@@ -7,6 +7,46 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Iterable, Set
 
+try:
+    import fcntl  # type: ignore
+except Exception:
+    fcntl = None
+
+try:
+    import msvcrt  # type: ignore
+except Exception:
+    msvcrt = None
+
+class _WriteGate:
+    """Cross-platform advisory lock for DB write access."""
+    def __init__(self, db_path: str):
+        self.lock_path = f"{db_path}.lock"
+        self._fh = None
+
+    def __enter__(self):
+        self._fh = open(self.lock_path, "a+")
+        if fcntl is not None:
+            fcntl.flock(self._fh, fcntl.LOCK_EX)
+        elif msvcrt is not None:
+            self._fh.seek(0)
+            msvcrt.locking(self._fh.fileno(), msvcrt.LK_LOCK, 1)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            if self._fh:
+                if fcntl is not None:
+                    fcntl.flock(self._fh, fcntl.LOCK_UN)
+                elif msvcrt is not None:
+                    self._fh.seek(0)
+                    msvcrt.locking(self._fh.fileno(), msvcrt.LK_UNLCK, 1)
+        finally:
+            try:
+                if self._fh:
+                    self._fh.close()
+            finally:
+                self._fh = None
+
 @dataclass
 class DbTask:
     kind: str

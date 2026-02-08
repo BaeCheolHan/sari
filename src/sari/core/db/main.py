@@ -75,8 +75,20 @@ class LocalSearchDB:
         for r in rows:
             base = [None] * 20
             for i in range(min(len(r), 20)): base[i] = r[i]
-            if base[6] is None: base[6] = b""
+            
+            # Fill NOT NULL defaults for resilience
+            if base[0] is None: continue # Primary key must exist
+            if base[1] is None: base[1] = os.path.basename(str(base[0])) # rel_path
+            if base[2] is None: base[2] = "root" # root_id
+            if base[3] is None: base[3] = "" # repo
+            if base[4] is None: base[4] = 0 # mtime
+            if base[5] is None: base[5] = 0 # size
+            if base[6] is None: base[6] = b"" # content
             elif isinstance(base[6], str): base[6] = base[6].encode("utf-8", errors="ignore")
+            # Other defaults
+            if base[9] is None: base[9] = 0 # last_seen_ts
+            if base[10] is None: base[10] = 0 # deleted_ts
+            
             mapped.append(tuple(base))
         try: 
             conn.executemany(f"INSERT OR REPLACE INTO staging_mem.files_temp VALUES ({placeholders})", mapped)

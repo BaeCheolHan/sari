@@ -9,6 +9,7 @@ def test_is_git_event():
     assert _is_git_event("src/main.py") is False
 
 def test_debounced_event_handler_direct():
+    print(f"DEBUG: time.time is {time.time}")
     callback = MagicMock()
     handler = DebouncedEventHandler(callback, debounce_seconds=0.01)
     handler._bucket_tokens = 100.0

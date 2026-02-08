@@ -29,7 +29,7 @@ def test_express_route_extraction_truth():
     symbols, _ = engine.extract_symbols("server.js", "javascript", code)
     route = next(s for s in symbols if "route.get" in s[1])
     assert route[2] == "method"
-    metadata = json.loads(route[9])
+    metadata = json.loads(route[7])
     assert "/api/users" in metadata["route_path"]
     print(f"DEBUG: Express SUCCESS. Route: {route[1]} Path: {metadata['route_path']}")
 

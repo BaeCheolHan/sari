@@ -14,6 +14,8 @@ def test_db_malformed_row_isolation(db):
     Verify that one bad row doesn't corrupt the entire DB.
     """
     # Staging table should be isolated
+    # Ensure root exists for FK constraint
+    db.ensure_root("root", "root")
     bad_row = ("p1",) # Too short, should cause SQL error
     try:
         db.upsert_files_turbo([bad_row])

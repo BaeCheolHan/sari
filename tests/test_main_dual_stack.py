@@ -8,11 +8,11 @@ def test_main_stdio_triggers_http_ensure(monkeypatch):
     with patch.object(main_mod, "validate_config_file", return_value=None):
         with patch.object(main_mod.WorkspaceManager, "resolve_config_path", return_value="/tmp/fake-config.json"):
             with patch.object(main_mod, "_ensure_http_daemon_for_stdio") as ensure_http:
-                with patch("sari.mcp.server.main") as mcp_main:
+                with patch("sari.mcp.server.LocalSearchMCPServer") as server_cls:
                     rc = main_mod.main(["--transport", "stdio", "--format", "pack"])
                     assert rc == 0
                     ensure_http.assert_called_once()
-                    mcp_main.assert_called_once()
+                    server_cls.return_value.run.assert_called_once()
 
 
 def test_ensure_http_daemon_for_stdio_uses_daemon_start():

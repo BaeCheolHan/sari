@@ -554,7 +554,6 @@ def cmd_daemon_start(args):
         print(f"Starting daemon on {host}:{port} (background)...")
         
         # --- ENRICH ENVIRONMENT ---
-        env = os.environ.copy()
         sari_root = str(repo_root.parent)
         env["PYTHONPATH"] = f"{sari_root}:{env.get('PYTHONPATH', '')}"
 
@@ -756,6 +755,32 @@ def cmd_daemon_status(args):
             pass
 
     return 0 if running else 1
+
+
+def cmd_daemon_ensure(args):
+    """Ensure daemon is running and workspace HTTP is ready."""
+    if _arg(args, "daemon_host") or _arg(args, "daemon_port"):
+        host = _arg(args, "daemon_host") or DEFAULT_HOST
+        port = int(_arg(args, "daemon_port") or DEFAULT_PORT)
+    else:
+        host, port = get_daemon_address()
+
+    host, port, running = _ensure_daemon_running(
+        host,
+        port,
+        http_host=_arg(args, "http_host") or None,
+        http_port=_arg(args, "http_port"),
+        allow_upgrade=False,
+    )
+    if not running:
+        print("❌ Daemon is not running.")
+        return 1
+
+    ok = _ensure_workspace_http(host, port)
+    if not ok:
+        print("❌ Failed to ensure workspace HTTP server.")
+        return 1
+    return 0
 
 
 def cmd_proxy(args):
@@ -1188,6 +1213,14 @@ def main():
     status_parser.add_argument("--daemon-host", default="", help="Daemon host override")
     status_parser.add_argument("--daemon-port", type=int, default=None, help="Daemon port override")
     status_parser.set_defaults(func=cmd_daemon_status)
+
+    # daemon ensure
+    ensure_parser = daemon_sub.add_parser("ensure", help="Ensure daemon and workspace HTTP are running")
+    ensure_parser.add_argument("--daemon-host", default="", help="Daemon host override")
+    ensure_parser.add_argument("--daemon-port", type=int, default=None, help="Daemon port override")
+    ensure_parser.add_argument("--http-host", default="", help="HTTP host override (default: 127.0.0.1)")
+    ensure_parser.add_argument("--http-port", type=int, default=None, help="HTTP port override (default: 47777)")
+    ensure_parser.set_defaults(func=cmd_daemon_ensure)
 
     # proxy subcommand
     proxy_parser = subparsers.add_parser("proxy", help="Run in proxy mode")

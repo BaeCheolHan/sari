@@ -46,3 +46,9 @@ def db(tmp_path):
     return db_inst
 
 
+
+@pytest.fixture(autouse=True)
+def cleanup_mocks():
+    yield
+    from unittest.mock import patch
+    patch.stopall()

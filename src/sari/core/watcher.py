@@ -9,8 +9,11 @@ from typing import Callable, Dict, List, Optional
 try:
     from watchdog.observers import Observer
     from watchdog.events import FileSystemEventHandler
+    # Guard against mocked watchdog modules that return non-types.
+    if not isinstance(FileSystemEventHandler, type) or not isinstance(Observer, type):
+        raise ImportError("watchdog mocked")
     HAS_WATCHDOG = True
-except ImportError:
+except Exception:
     HAS_WATCHDOG = False
     # Dummy classes for safe definition
     class FileSystemEventHandler: pass

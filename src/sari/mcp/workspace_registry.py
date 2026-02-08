@@ -26,8 +26,9 @@ class SharedState:
         self.config_data = self.config_manager.resolve_final_config()
         
         # 2. Init DB (Phase 4)
+        local_dir = WorkspaceManager.get_workspace_data_dir(workspace_root)
         local_db = WorkspaceManager.get_workspace_db_path(workspace_root)
-        if local_db.exists():
+        if local_dir.exists():
             db_path = str(local_db)
             logger.info(f"Using workspace-local DB: {db_path}")
         else:

@@ -32,8 +32,11 @@ def test_core_main_flow(mock_resolve, mock_config, mock_db, mock_indexer, mock_s
     with patch('time.sleep', side_effect=[None, InterruptedError]):
         try:
             from sari.core.main import main
-            # To avoid the while loop running forever, we can patch the stop_evt
-            with patch('threading.Event.is_set', side_effect=[False, True]):
+            # To avoid the while loop running forever, we can patch the Event class
+            with patch('threading.Event') as mock_event_class:
+                mock_event = MagicMock()
+                mock_event_class.return_value = mock_event
+                mock_event.is_set.side_effect = [False, True]
                 main()
         except Exception: pass
     

@@ -202,8 +202,8 @@ class IndexWorker:
 
         # 2) Non-git fallback: first workspace-relative directory name.
         # This heuristic is often wrong for standard project roots (e.g. returns 'src').
-        # if os.sep in rel_to_root:
-        #    return rel_to_root.split(os.sep, 1)[0]
+        if os.sep in rel_to_root:
+            return rel_to_root.split(os.sep, 1)[0]
 
         # 3) Workspace root-level file fallback: workspace directory name.
         ws_name = Path(root).name

@@ -26,6 +26,9 @@ class ParserFactory:
         ".rb": "ruby",
         ".yaml": "yaml",
         ".yml": "yaml",
+        ".sql": "sql",
+        ".tf": "hcl",
+        ".hcl": "hcl",
     }
 
     @classmethod
@@ -35,15 +38,28 @@ class ParserFactory:
             key = "python"
             if key not in cls._parsers:
                 cls._parsers[key] = PythonParser()
+            if key not in cls._parsers:
+                cls._parsers[key] = PythonParser()
             return cls._parsers[key]
+        
+        if ext in (".tf", ".hcl"):
+            from .generic import HCLRegexParser
+            key = "hcl_regex"
+            if key not in cls._parsers:
+                # Provide dummy config for parent GenericRegexParser
+                dummy = {"re_class": _safe_compile(r""), "re_method": _safe_compile(r"")}
+                cls._parsers[key] = HCLRegexParser(dummy, ext)
+            return cls._parsers[key]
+
         configs = {
             ".java": {
                 "re_class": _safe_compile(r"\b(class|interface|enum|record|@interface)\s+([a-zA-Z0-9_]+)"),
-                "re_method": _safe_compile(r"(?:(?:public|protected|private|static|final|native|synchronized|abstract|transient|@\w+(?:\([^)]*\))?)\s+)+[\w<>\[\]\s,\?]+\s+(\w+)\s*\("),
+                "re_method": _safe_compile(r"(?:\b(?:public|protected|private|static|final|native|synchronized|abstract|transient|@\w+(?:\([^)]*\))?)\s+)*[\w<>\[\]\s,\?]+\s+(\w+)\s*\("),
             },
             ".kt": {"re_class": _safe_compile(r"\b(class|interface|enum|object|data\s+class|sealed\s+class)\s+([a-zA-Z0-9_]+)"), "re_method": _safe_compile(r"\bfun\s+(?:<[^>]+>\s+)?([a-zA-Z0-9_]+)\b\s*\(")},
             ".go": {"re_class": _safe_compile(r"\b(type|struct|interface)\s+([a-zA-Z0-9_]+)"), "re_method": _safe_compile(r"\bfunc\s+(?:\([^)]+\)\s+)?([a-zA-Z0-9_]+)\b\s*\("), "method_kind": "function"},
             ".cpp": {"re_class": _safe_compile(r"\b(class|struct|enum|namespace)\s+([a-zA-Z0-9_]+)"), "re_method": _safe_compile(r"(?:[a-zA-Z0-9_:<>]+\s+)?\b([a-zA-Z0-9_]+)\b\s*\(")},
+            ".cs": {"re_class": _safe_compile(r"\b(class|struct|interface|enum|record)\s+([a-zA-Z0-9_]+)"), "re_method": _safe_compile(r"\b(?:public|private|protected|internal|static|virtual|override|async|task)\s+[\w<>\[\]\s]+\s+([a-zA-Z0-9_]+)\s*\(")},
             ".js": {"re_class": _safe_compile(r"\b(class)\s+([a-zA-Z0-9_]+)"), "re_method": _safe_compile(r"(?:async\s+)?function\s+([a-zA-Z0-9_]+)\b\s*\(|\b([a-zA-Z0-9_]+)\s*=\s*(?:async\s*)?function\b|\b([a-zA-Z0-9_]+)\s*=\s*(?:async\s*)?\([^)]*\)\s*=>|\b([a-zA-Z0-9_]+)\s*\([^)]*\)\s*\{")},
             ".jsx": {"re_class": _safe_compile(r"\b(class)\s+([a-zA-Z0-9_]+)"), "re_method": _safe_compile(r"(?:async\s+)?function\s+([a-zA-Z0-9_]+)\b\s*\(|\b([a-zA-Z0-9_]+)\s*=\s*(?:async\s*)?function\b|\b([a-zA-Z0-9_]+)\s*=\s*(?:async\s*)?\([^)]*\)\s*=>|\b([a-zA-Z0-9_]+)\s*\([^)]*\)\s*\{")},
             ".ts": {"re_class": _safe_compile(r"\b(class|interface|enum)\s+([a-zA-Z0-9_]+)"), "re_method": _safe_compile(r"(?:async\s+)?function\s+([a-zA-Z0-9_]+)\b\s*\(|\b([a-zA-Z0-9_]+)\s*=\s*(?:async\s*)?function\b|\b([a-zA-Z0-9_]+)\s*=\s*(?:async\s*)?\([^)]*\)\s*=>|\b([a-zA-Z0-9_]+)\s*\([^)]*\)\s*\{")},
@@ -54,7 +70,19 @@ class ParserFactory:
             ".exs": {"re_class": _safe_compile(r"\bdefmodule\s+([a-zA-Z0-9_.]+)"), "re_method": _safe_compile(r"\bdef(?:p)?\s+([a-zA-Z0-9_!?]+)\b\s*[({]|\bdef(?:p)?\s+([a-zA-Z0-9_!?]+)\s*,\s*do")},
             ".rb": {"re_class": _safe_compile(r"\b(class|module)\s+([a-zA-Z0-9_:]+)"), "re_method": _safe_compile(r"\bdef\s+([a-zA-Z0-9_!?]+)")},
             ".yaml": {"re_class": _safe_compile(r"^kind:\s*([a-zA-Z0-9_]+)"), "re_method": _safe_compile(r"^\s*name:\s*([a-zA-Z0-9_-]+)")},
-            ".yml": {"re_class": _safe_compile(r"^kind:\s*([a-zA-Z0-9_]+)"), "re_method": _safe_compile(r"^\s*name:\s*([a-zA-Z0-9_-]+)")}
+            ".yml": {"re_class": _safe_compile(r"^kind:\s*([a-zA-Z0-9_]+)"), "re_method": _safe_compile(r"^\s*name:\s*([a-zA-Z0-9_-]+)")},
+            ".sql": {
+                "re_class": _safe_compile(r"\bCREATE\s+(?:OR\s+REPLACE\s+)?(TABLE|VIEW|INDEX|PROCEDURE|FUNCTION)\s+(?:IF\s+NOT\s+EXISTS\s+)?([a-zA-Z0-9_]+)"),
+                "re_method": _safe_compile(r"\bCONSTRAINT\s+([a-zA-Z0-9_]+)")  # Optional: constraints as methods/properties
+            },
+            ".tf": {
+                "re_class": _safe_compile(r"^(resource|module|variable|output|data)\s+(?:\"[^\"]+\"\s+)?\"([a-zA-Z0-9_-]+)\""),
+                "re_method": _safe_compile(r"^\s*(source|type)\s*=\s*\"([^\"]+)\"")
+            },
+            ".hcl": {
+                "re_class": _safe_compile(r"^(resource|module|variable|output|data)\s+(?:\"[^\"]+\"\s+)?\"([a-zA-Z0-9_-]+)\""),
+                "re_method": _safe_compile(r"^\s*(source|type)\s*=\s*\"([^\"]+)\"")
+            }
         }
         if ext in configs:
             key = f"generic:{ext}"

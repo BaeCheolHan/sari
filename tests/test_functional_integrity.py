@@ -4,6 +4,7 @@ import sqlite3
 from pathlib import Path
 from sari.core.indexer.main import Indexer
 from sari.core.db.main import LocalSearchDB
+from sari.core.workspace import WorkspaceManager
 from sari.core.config import Config
 
 @pytest.fixture
@@ -70,7 +71,8 @@ def test_stale_data_pruning_integrity(func_env):
     
     # ACTIVATE PRUNING: Only p1 remains active
     active_paths = [str(p1)]
-    db.prune_stale_data("root", active_paths)
+    rid = WorkspaceManager.root_id(str(ws))
+    db.prune_stale_data(rid, active_paths)
     
     # VERIFY: GONE.PY is wiped, EXISTS.PY remains
     assert len(db.search_files("gone.py")) == 0

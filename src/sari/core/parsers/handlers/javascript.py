@@ -20,7 +20,7 @@ class JavaScriptHandler(BaseHandler):
             txt = get_t(node)
             m = re.search(r"\.(get|post|put|delete|patch|use)\(['\"]([^'\"]+)['\"]", txt)
             if m:
-                method = m.group(1).upper()
+                method = m.group(1).lower()
                 path = m.group(2)
                 # Ensure unique name for the symbol
                 sym_name = f"route.{method}:{path}"

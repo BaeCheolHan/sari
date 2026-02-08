@@ -16,14 +16,34 @@ def test_chaos_db_file_corruption_recovery(tmp_path):
     db_path = tmp_path / "chaos.db"
     db = LocalSearchDB(str(db_path))
     
+    # Needs root for FK constraint
+    # Check if method exists, otherwise execute raw SQL
+    try:
+        if hasattr(db, "upsert_root"):
+            db.upsert_root("root", str(tmp_path), str(tmp_path), label="test")
+        else:
+            # Fallback to direct SQL if method not exposed
+            with db.get_cursor() as cur:
+                cur.execute("INSERT OR IGNORE INTO roots (root_id, root_path, real_path, created_ts, updated_ts) VALUES (?, ?, ?, ?, ?)", ("root", str(tmp_path), str(tmp_path), int(time.time()), int(time.time())))
+    except Exception as e:
+        print(f"Failed to insert root: {e}")
+
     # Fill with some data
     db.upsert_files_turbo([("p1", "rel", "root", "repo", 0, 10, b"data", "h", "fts", 0, 0, "ok", "", "ok", "", 0, 0, 0, 10, "{}")])
     db.finalize_turbo_batch()
     
-    # CORRUPTION: Physically delete the file while Sari thinks it is open
+    # Force merge WAL to main DB so corruption of main DB is immediately visible
+    db.db.execute_sql("PRAGMA journal_mode=DELETE")
+    
+    # CORRUPTION: Overwrite the file with garbage while Sari thinks it is open
     import os
     if os.path.exists(db_path):
-        os.remove(db_path)
+        with open(db_path, "w") as f:
+            f.write("GARBAGE" * 1000)
+    
+    # Force connection close so next query must reconnect and see the corruption
+    try: db.db.close()
+    except: pass
         
     # Sari must handle this as a failure state
     with pytest.raises(Exception):

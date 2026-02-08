@@ -9,7 +9,7 @@ class BashHandler(BaseHandler):
         is_valid = False
         
         if n_type == "function_definition":
-            kind, is_valid = "function", True
+            kind, is_valid = "method", True
             # In bash tree-sitter, the name is usually under a 'word' node
             for c in node.children:
                 if c.type == "word":
