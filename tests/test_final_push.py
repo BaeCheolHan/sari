@@ -65,8 +65,8 @@ def test_indexer_advanced(tmp_path):
         indexer = Indexer(cfg, db, settings_obj=mock_settings)
         indexer.scan_once()
         # Call some internal methods for coverage
-        indexer._retry_failed_tasks()
-        indexer.get_queue_depths()
+        # indexer._retry_failed_tasks() # Removed in V26
+        # indexer.get_queue_depths() # Removed
 
 def test_session_async():
     from sari.mcp.session import Session

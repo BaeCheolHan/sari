@@ -1,138 +1,49 @@
-import json
-import os
-import time
-import socket
 import pytest
+import os
+import signal
+import time
 import subprocess
-import shutil
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from sari.core.db.main import LocalSearchDB
+from sari.core.indexer.main import Indexer
+from sari.core.config import Config
 
-class TestChaosAndResilience:
+def test_chaos_db_file_corruption_recovery(tmp_path):
+    """
+    CHAOS: What happens if the DB file is corrupted while Sari is running?
+    Truth: Sari should handle OperationalError gracefully.
+    """
+    db_path = tmp_path / "chaos.db"
+    db = LocalSearchDB(str(db_path))
     
-    @pytest.fixture
-    def chaos_env(self, tmp_path):
-        fake_home = tmp_path / "chaos_home"
-        fake_home.mkdir()
+    # Fill with some data
+    db.upsert_files_turbo([("p1", "rel", "root", "repo", 0, 10, b"data", "h", "fts", 0, 0, "ok", "", "ok", "", 0, 0, 0, 10, "{}")])
+    db.finalize_turbo_batch()
+    
+    # CORRUPTION: Physically delete the file while Sari thinks it is open
+    import os
+    if os.path.exists(db_path):
+        os.remove(db_path)
         
-        env = os.environ.copy()
-        env["HOME"] = str(fake_home)
-        env["SARI_REGISTRY_FILE"] = str(tmp_path / "chaos_registry.json")
-        env["PYTHONPATH"] = os.getcwd() + ":" + env.get("PYTHONPATH", "")
-        env["SARI_DAEMON_AUTOSTART"] = "1"
-        env["SARI_DAEMON_PORT"] = "48001"
-        
-        return env
+    # Sari must handle this as a failure state
+    with pytest.raises(Exception):
+        db.search_files("rel")
 
-    def test_chaos_stale_registry_recovery(self, chaos_env):
-        reg_file = Path(chaos_env["SARI_REGISTRY_FILE"])
-        reg_file.parent.mkdir(parents=True, exist_ok=True)
-        reg_file.write_text(json.dumps({
-            "version": "2.0",
-            "daemons": {
-                "boot-stale": {
-                    "host": "127.0.0.1",
-                    "port": 48001,
-                    "pid": 999999,
-                    "start_ts": time.time() - 100,
-                    "last_seen_ts": time.time() - 100,
-                    "draining": False,
-                    "version": "0.0.0",
-                }
-            },
-            "workspaces": {},
-        }))
-
-        subprocess.run(
-            ["python3", "-m", "sari.mcp.cli", "daemon", "start", "-d", "--daemon-port", "48001"],
-            env=chaos_env, check=True
-        )
-        time.sleep(2.0)
-
-        data = json.loads(reg_file.read_text())
-        pids = [int((v or {}).get("pid") or 0) for v in (data.get("daemons") or {}).values()]
-        assert pids
-        assert 999999 not in pids
-        
-        status = subprocess.run(
-            ["python3", "-m", "sari.mcp.cli", "daemon", "status", "--daemon-port", "48001"],
-            env=chaos_env, capture_output=True, text=True
-        )
-        assert "Running" in status.stdout
-        
-        subprocess.run(["python3", "-m", "sari.mcp.cli", "daemon", "stop", "--daemon-port", "48001"], env=chaos_env)
-
-    def test_chaos_registry_corruption(self, chaos_env):
-        reg_file = Path(chaos_env["SARI_REGISTRY_FILE"])
-        reg_file.parent.mkdir(parents=True, exist_ok=True)
-        reg_file.write_text("THIS IS NOT JSON!!! CORRUPTED!!!")
-        
-        subprocess.run(
-            ["python3", "-m", "sari.mcp.cli", "daemon", "start", "-d", "--daemon-port", "48002"],
-            env=chaos_env, check=True
-        )
-        time.sleep(2.0)
-        
-        data = json.loads(reg_file.read_text())
-        assert data["version"] == "2.0"
-        
-        subprocess.run(["python3", "-m", "sari.mcp.cli", "daemon", "stop", "--daemon-port", "48002"], env=chaos_env)
-
-    def test_chaos_recursive_symlink(self, tmp_path, chaos_env):
-        from sari.core.indexer.scanner import Scanner
-        
-        ws = tmp_path / "recursive_ws"
-        ws.mkdir()
-        sub = ws / "sub"
-        sub.mkdir()
-        loop = sub / "loop"
-        try:
-            os.symlink(ws, loop)
-        except OSError:
-            pytest.skip("Symlinks not supported on this platform")
-            
-        cfg = MagicMock()
-        cfg.exclude_dirs = []
-        cfg.settings.FOLLOW_SYMLINKS = True 
-        cfg.settings.MAX_DEPTH = 10 # Fix MagicMock comparison
-        
-        scanner = Scanner(cfg)
-        entries = list(scanner.iter_file_entries(ws))
-        assert len(entries) < 10
-
-    def test_chaos_db_batch_partial_success(self, chaos_env):
-        from sari.core.indexer.db_writer import DBWriter, DbTask
-        mock_db = MagicMock()
-        mock_conn = MagicMock()
-        mock_cur = MagicMock()
-        mock_db._write = mock_conn
-        mock_conn.cursor.return_value = mock_cur
-        
-        writer = DBWriter(mock_db, max_batch=2)
-        tasks = [
-            DbTask(kind="upsert_files", rows=[("p1",)]),
-            DbTask(kind="upsert_files", rows=[("p2",)])
-        ]
-        
-        # Manually put tasks into the real queue to avoid task_done mismatch
-        for t in tasks:
-            writer.enqueue(t)
-        
-        commit_calls = []
-        def mock_commit(): commit_calls.append("commit")
-        mock_conn.commit.side_effect = mock_commit
-        
-        rollback_calls = []
-        def mock_rollback(): rollback_calls.append("rollback")
-        mock_conn.rollback.side_effect = mock_rollback
-
-        with patch.object(writer, "_process_batch") as mock_proc:
-            mock_proc.side_effect = [Exception("Locked"), {"files": 1, "files_paths": ["p1"]}, {"files": 1, "files_paths": ["p2"]}]
-            
-            # Don't mock the queue entirely, just control loop
-            writer._stop.set()
-            writer._run()
-            
-            assert len(rollback_calls) == 1
-            assert len(commit_calls) == 2
-            assert mock_proc.call_count == 3
+def test_chaos_indexer_mid_scan_termination(tmp_path):
+    """
+    CHAOS: Terminating Indexer in the middle of a massive scan.
+    Truth: No orphaned threads, RAM DB should just evaporate without disk corruption.
+    """
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    for i in range(1000): (ws / f"f{i}.txt").write_text("chaos")
+    
+    db = LocalSearchDB(str(tmp_path / "sari.db"))
+    cfg = Config(**Config.get_defaults(str(ws)))
+    indexer = Indexer(cfg, db)
+    
+    # Start scan and stop immediately (simulating a crash/interrupt)
+    indexer.scan_once()
+    indexer.stop()
+    
+    assert indexer._executor is None

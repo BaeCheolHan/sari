@@ -1,73 +1,48 @@
 import pytest
 import os
-import shutil
-import inspect
-import asyncio
+import sys
 from pathlib import Path
-from sari.core.settings import Settings, settings as global_settings
-from sari.core.db.main import LocalSearchDB
-from sari.core.workspace import WorkspaceManager
 
-
-def pytest_pyfunc_call(pyfuncitem):
-    """Run async tests even when pytest-asyncio is not installed."""
-    test_func = pyfuncitem.obj
-    if not inspect.iscoroutinefunction(test_func):
-        return None
-
-    kwargs = {name: pyfuncitem.funcargs[name] for name in pyfuncitem._fixtureinfo.argnames}
-    loop = asyncio.new_event_loop()
-    try:
-        loop.run_until_complete(test_func(**kwargs))
-    finally:
-        loop.close()
-    return True
-
-@pytest.fixture
-def mock_env(monkeypatch, tmp_path):
-    """Clean environment for each test."""
-    monkeypatch.setenv("SARI_RESPONSE_COMPACT", "0")
-    monkeypatch.setenv("SARI_LOG_LEVEL", "DEBUG")
-    # Enable FTS for all tests by default
-    monkeypatch.setenv("SARI_ENABLE_FTS", "1")
-    
-    # Isolate global registry and config
-    monkeypatch.setenv("SARI_REGISTRY_FILE", str(tmp_path / "registry.json"))
-    monkeypatch.setenv("SARI_CONFIG", str(tmp_path / "config.json"))
-    
-    return monkeypatch
-
-@pytest.fixture
-def temp_workspace(tmp_path, monkeypatch):
-    """Creates a temporary workspace with basic structure."""
-    ws = tmp_path / "workspace"
-    ws.mkdir()
-    (ws / ".sari").mkdir()
-    (ws / "src").mkdir()
-    # Correctly formatted multiline string
-    code = "def hello():\n    print('world')"
-    (ws / "src" / "main.py").write_text(code, encoding="utf-8")
-    (ws / "README.md").write_text("# Test Project", encoding="utf-8")
-    
-    # Create explicit config to include .py files
-    import json
-    config_data = {
-        "include_ext": [".py", ".md", ".json"],
-        "profiles": ["core", "python"], # Force python profile
-        "manual_only": False
-    }
-    (ws / ".sari" / "config.json").write_text(json.dumps(config_data), encoding="utf-8")
-    
-    # Isolate CWD to prevent indexing the actual repo
-    monkeypatch.chdir(ws)
-    return ws
+@pytest.fixture(autouse=True)
+def sari_env(monkeypatch):
+    monkeypatch.setenv("SARI_DAEMON_PORT", "48000")
+    monkeypatch.setenv("SARI_DAEMON_IDLE_SEC", "3600")
+    monkeypatch.setenv("SARI_TEST_MODE", "1")
 
 @pytest.fixture
 
-def db(temp_workspace, mock_env):
+def db(tmp_path):
 
-    """Creates a fresh DB initialized with the schema."""
+    from sari.core.db.main import LocalSearchDB
 
-    db_path = temp_workspace / ".sari" / "index.db"
+    db_file = tmp_path / f"sari_test_{os.getpid()}.db"
 
-    return LocalSearchDB(str(db_path))
+    
+
+    # Enable Foreign Keys explicitly
+
+    db_inst = LocalSearchDB(str(db_file))
+
+    db_inst.db.close()
+
+    db_inst.db = db_inst.db.__class__(str(db_file), pragmas={
+
+        'journal_mode': 'wal', 'synchronous': 'normal', 
+
+        'busy_timeout': 60000, 'foreign_keys': 1 
+
+    })
+
+    db_inst.db.connect()
+
+    
+
+    from sari.core.db.schema import init_schema
+
+    with db_inst.db.atomic(): init_schema(db_inst.db.connection())
+
+    
+
+    return db_inst
+
+

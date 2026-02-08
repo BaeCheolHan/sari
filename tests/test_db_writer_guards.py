@@ -31,7 +31,7 @@ def _files_row(path: str, root_id: str) -> tuple:
 
 def test_db_writer_engine_failure_raises_and_rolls_back(tmp_path):
     db = LocalSearchDB(str(tmp_path / "w.db"))
-    db.upsert_root("root1", str(tmp_path), str(tmp_path), "root")
+    db.upsert_root("root1", str(tmp_path), str(tmp_path), label="root")
 
     class BadEngine:
         def upsert_documents(self, _docs):
@@ -73,7 +73,7 @@ def test_write_gate_windows_lock_path(monkeypatch, tmp_path):
         def locking(fd, mode, nbytes):
             calls.append((fd, mode, nbytes))
 
-    monkeypatch.setattr(dbw, "fcntl", None)
+    monkeypatch.setattr(dbw, "fcntl", None, raising=False)
     monkeypatch.setattr(dbw, "msvcrt", FakeMsvcrt)
 
     gate = dbw._WriteGate(str(tmp_path / "gate.db"))
@@ -87,7 +87,7 @@ def test_write_gate_windows_lock_path(monkeypatch, tmp_path):
 
 def test_db_writer_applies_update_last_seen_task(tmp_path):
     db = LocalSearchDB(str(tmp_path / "u.db"))
-    db.upsert_root("root1", str(tmp_path), str(tmp_path), "root")
+    db.upsert_root("root1", str(tmp_path), str(tmp_path), label="root")
     row = _files_row("root1/a.py", "root1")
     with db._lock:
         cur = db._write.cursor()

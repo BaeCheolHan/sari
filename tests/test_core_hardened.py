@@ -84,15 +84,16 @@ def test_staging_merge_integrity():
     
     # Insert 5 files into staging
     rows = []
+    db.ensure_root(root_id, "/tmp")
     for i in range(5):
         rows.append((
             f"{root_id}/file_{i}.py", f"file_{i}.py", root_id, "repo", 100, 10,
             b"content", "hash", "fts", 1000, 0, "ok", "", "ok", "", 0, 0, 0, 10, "{}"
         ))
-    db.upsert_files_staging(cur, rows)
+    db.upsert_files_turbo(rows)
     
     # Merge
-    db.merge_staging_to_main(cur)
+    db.finalize_turbo_batch()
     db._write.commit()
     
     # Verify
@@ -102,6 +103,7 @@ def test_staging_merge_integrity():
     db.close_all()
     if os.path.exists(db_path): os.remove(db_path)
 
+@pytest.mark.skip(reason="Legacy L1 buffer logic removed in Ultra Turbo architecture")
 def test_fast_track_priority():
     """Test that Fast Track events skip the L1 buffer."""
     test_root = Path("/tmp/sari_fast_track").resolve()

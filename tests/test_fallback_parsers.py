@@ -15,7 +15,7 @@ def test_js_arrow_functions():
     parser = ParserFactory.get_parser(".js")
     symbols, _ = parser.extract("test.js", js_code)
     
-    names = [s[1] for s in symbols]
+    names = [s[3] for s in symbols]
     assert "MyServer" in names
     assert "doSomething" in names
     assert "myArrow" in names
@@ -34,7 +34,7 @@ def test_rust_traits():
     parser = ParserFactory.get_parser(".rs")
     symbols, _ = parser.extract("test.rs", rs_code)
     
-    names = [s[1] for s in symbols]
+    names = [s[3] for s in symbols]
     assert "Point" in names
     assert "Drawable" in names
     assert "draw" in names
@@ -53,7 +53,7 @@ def test_comment_stripping():
     parser = ParserFactory.get_parser(".java")
     symbols, _ = parser.extract("test.java", code)
     
-    names = [s[1] for s in symbols]
+    names = [s[3] for s in symbols]
     assert "RealClass" in names
     assert "realMethod" in names
     assert "FakeInComment" not in names
@@ -75,7 +75,7 @@ def test_vue_script_symbols():
     """
     parser = ParserFactory.get_parser(".vue")
     symbols, _ = parser.extract("Comp.vue", vue_code)
-    names = [s[1] for s in symbols]
+    names = [s[3] for s in symbols]
     assert "Comp" in names
     assert "onClick" in names
     assert "helper" in names
@@ -93,7 +93,7 @@ def test_java_annotation_without_group1_does_not_crash():
     """
     parser = ParserFactory.get_parser(".java")
     symbols, _ = parser.extract("DemoController.java", java_code)
-    names = [s[1] for s in symbols]
+    names = [s[3] for s in symbols]
     assert "DemoController" in names
     assert "ping" in names
 

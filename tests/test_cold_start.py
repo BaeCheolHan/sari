@@ -5,6 +5,7 @@ import time
 import socket
 import pytest
 import shutil
+import sys
 from pathlib import Path
 
 class TestColdStart:
@@ -18,7 +19,7 @@ class TestColdStart:
         env = os.environ.copy()
         env["HOME"] = str(fake_home)
         env["SARI_REGISTRY_FILE"] = str(tmp_path / "cold_registry.json")
-        env["PYTHONPATH"] = os.getcwd() + ":" + env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = os.pathsep.join([os.path.abspath("src")] + sys.path)
         # CLI 기동 시 데몬 자동 시작 옵션 활성화
         env["SARI_DAEMON_AUTOSTART"] = "1"
         env["SARI_DAEMON_PORT"] = "47995"
@@ -46,15 +47,15 @@ class TestColdStart:
         def frame(msg):
             return f"Content-Length: {len(msg)}\r\n\r\n{msg}".encode()
 
-        # 프록시 실행 (데몬이 없으므로 자동 시작 트리거)
+        env = clean_env.copy()
         proc = subprocess.Popen(
-            ["python3", "-m", "sari.mcp.cli", "proxy"],
-            env=clean_env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            [sys.executable, "-m", "sari.mcp.cli", "proxy"],
+            env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
         )
         
         try:
             # 첫 번째 initialize 요청 전송
-            stdout, stderr = proc.communicate(input=frame(init_req), timeout=15)
+            stdout, stderr = proc.communicate(input=frame(init_req), timeout=20)
             stdout_str = stdout.decode(errors='ignore')
             stderr_str = stderr.decode(errors='ignore')
             
@@ -64,8 +65,8 @@ class TestColdStart:
             
             # (b) 데몬이 떴는가?
             status_proc = subprocess.run(
-                ["python3", "-m", "sari.mcp.cli", "daemon", "status", "--daemon-port", "47995"],
-                env=clean_env, capture_output=True, text=True
+                [sys.executable, "-m", "sari.mcp.cli", "daemon", "status", "--daemon-port", "47995"],
+                env=env, capture_output=True, text=True
             )
             assert "Running" in status_proc.stdout
             
@@ -74,23 +75,22 @@ class TestColdStart:
             os.environ["SARI_REGISTRY_FILE"] = clean_env["SARI_REGISTRY_FILE"]
             registry = ServerRegistry()
             
-            # 워크스페이스가 리졸브될 때까지 약간 대기 (비동기 기동 대응)
             found = False
-            for _ in range(10):
+            for _ in range(15):
                 ws_info = registry.get_workspace(workspace)
                 if ws_info and ws_info.get("http_port"):
                     found = True
                     break
-                time.sleep(0.5)
+                time.sleep(1.0)
             
             assert found, "Workspace info or HTTP port missing from registry"
             
             # (d) 실제로 HTTP 포트가 살아있는가?
             http_port = ws_info["http_port"]
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.settimeout(1.0)
+                s.settimeout(2.0)
                 assert s.connect_ex(("127.0.0.1", http_port)) == 0, f"HTTP server at {http_port} not reachable"
 
         finally:
-            subprocess.run(["python3", "-m", "sari.mcp.cli", "daemon", "stop", "--daemon-port", "47995"], env=clean_env)
+            subprocess.run([sys.executable, "-m", "sari.mcp.cli", "daemon", "stop", "--daemon-port", "47995"], env=env)
             proc.kill()

@@ -44,7 +44,7 @@ class TestConfigMatrix:
             content = "Hello " * 100
             f.write_text(content)
             
-            res = worker.process_file_task(root, f, f.stat(), int(time.time()), time.time(), False)
+            res = worker.process_file_task(root, f, f.stat(), int(time.time()), time.time(), False, root_id="root")
             
             assert res["type"] == "changed"
             assert isinstance(res["content"], bytes)
@@ -114,7 +114,7 @@ class TestConfigMatrix:
         f.write_text("print('x')")
 
         with patch.object(worker, "_git_top_level_for_file", return_value=str(root / "real-repo")):
-            res = worker.process_file_task(root, f, f.stat(), int(time.time()), time.time(), False)
+            res = worker.process_file_task(root, f, f.stat(), int(time.time()), time.time(), False, root_id="root")
             assert res is not None
             assert res["repo"] == "real-repo"
 
@@ -129,7 +129,7 @@ class TestConfigMatrix:
         f.write_text("print('x')")
 
         with patch.object(worker, "_git_top_level_for_file", return_value=None):
-            res = worker.process_file_task(root, f, f.stat(), int(time.time()), time.time(), False)
+            res = worker.process_file_task(root, f, f.stat(), int(time.time()), time.time(), False, root_id="root")
             assert res is not None
             assert res["repo"] == "services"
 
@@ -144,6 +144,6 @@ class TestConfigMatrix:
         f.write_text("print('x')")
 
         with patch.object(worker, "_git_top_level_for_file", return_value=None):
-            res = worker.process_file_task(root, f, f.stat(), int(time.time()), time.time(), False)
+            res = worker.process_file_task(root, f, f.stat(), int(time.time()), time.time(), False, root_id="root")
             assert res is not None
             assert res["repo"] == "workspaceC"

@@ -36,11 +36,12 @@ def test_execute_list_files_detail():
     db = MagicMock()
     logger = MagicMock()
     roots = ["/tmp/ws"]
-    db.list_files.return_value = ([{"path": "file1", "repo": "repo1", "mtime": 100}], {"total": 1})
+    db.list_files.return_value = [{"path": "file1", "repo": "repo1", "mtime": 100, "size": 10}]
     args = {"repo": "repo1", "limit": 10}
     resp = execute_list_files(args, db, logger, roots)
-    assert "PACK1 tool=list_files ok=true" in resp["content"][0]["text"]
-    assert "p:file1" in resp["content"][0]["text"]
+    text = resp["content"][0]["text"]
+    assert "PACK1 tool=list_files ok=true" in text
+    assert "f:path=file1" in text
 
 def test_execute_status():
     indexer = MagicMock()

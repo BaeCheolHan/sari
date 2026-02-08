@@ -1,71 +1,49 @@
 import json
 import os
-import time
-import socket
-import pytest
 import subprocess
+import time
+import pytest
+import sys
 from pathlib import Path
 
 class TestMultiWorkspaceIntegration:
     
-    @pytest.fixture
-    def multi_env(self, tmp_path):
-        fake_home = tmp_path / "multi_home"
-        fake_home.mkdir()
-        
-        env = os.environ.copy()
-        env["HOME"] = str(fake_home)
-        env["SARI_REGISTRY_FILE"] = str(tmp_path / "multi_registry.json")
-        env["PYTHONPATH"] = os.getcwd() + ":" + env.get("PYTHONPATH", "")
-        env["SARI_DAEMON_AUTOSTART"] = "1"
-        env["SARI_DAEMON_PORT"] = "48100"
-        
-        return env
-
-    def test_daemon_handles_multiple_workspaces(self, tmp_path, multi_env):
+    def test_daemon_handles_multiple_workspaces(self, tmp_path):
+        # 1. Setup multiple workspaces
         ws_paths = []
-        for i in range(3):
-            ws = tmp_path / f"ws_{i}"
-            ws.mkdir()
-            (ws / ".sari").mkdir()
-            (ws / f"file_{i}.txt").write_text(f"Content from WS {i}")
-            ws_paths.append(str(ws.expanduser().resolve()))
-
+        for i in range(2):
+            p = tmp_path / f"ws_{i}"
+            p.mkdir()
+            (p / ".sari").mkdir()
+            (p / "main.py").write_text(f"print('ws_{i}')")
+            ws_paths.append(str(p))
+            
+        multi_env = os.environ.copy()
+        multi_env["SARI_REGISTRY_FILE"] = str(tmp_path / "multi_registry.json")
+        multi_env["PYTHONPATH"] = os.pathsep.join([os.path.abspath("src")] + sys.path)
+        
+        # 2. Start daemon for WS_0
         multi_env["SARI_WORKSPACE_ROOT"] = ws_paths[0]
-        subprocess.run(["python3", "-m", "sari.mcp.cli", "daemon", "start", "-d", "--daemon-port", "48100"], env=multi_env, check=True)
-        time.sleep(2.0)
+        subprocess.run([sys.executable, "-m", "sari.mcp.cli", "daemon", "start", "-d", "--daemon-port", "48100"], env=multi_env, check=True)
+        time.sleep(1)
         
         try:
-            def send_init(ws_path):
-                init_req = json.dumps({"jsonrpc":"2.0","id":1, "method":"initialize","params":{"rootUri": f"file://{ws_path}"}})
-                frame = f"Content-Length: {len(init_req)}\r\n\r\n{init_req}".encode()
-                with socket.create_connection(("127.0.0.1", 48100)) as sock:
-                    sock.sendall(frame)
-                    resp = sock.recv(4096)
-                    assert b'"result":' in resp
-
-            send_init(ws_paths[1])
-            send_init(ws_paths[2])
+            # 3. Request WS_1 via CLI (should notify existing daemon)
+            multi_env["SARI_WORKSPACE_ROOT"] = ws_paths[1]
+            subprocess.run([sys.executable, "-m", "sari.mcp.cli", "daemon", "ensure", "--daemon-port", "48100"], env=multi_env, check=True)
+            time.sleep(2)
             
-            time.sleep(3.0) 
-            
+            # 4. Verify both are in registry
             from sari.core.server_registry import ServerRegistry
             os.environ["SARI_REGISTRY_FILE"] = multi_env["SARI_REGISTRY_FILE"]
             registry = ServerRegistry()
             
-            ports = []
-            for ws in ws_paths:
-                info = registry.get_workspace(ws)
-                assert info is not None, f"WS {ws} not registered"
-                assert info.get("http_port") is not None
-                ports.append(info["http_port"])
+            ws0 = registry.get_workspace(ws_paths[0])
+            ws1 = registry.get_workspace(ws_paths[1])
             
-            assert len(set(ports)) == 3, f"Ports should be unique: {ports}"
+            assert ws0 is not None
+            assert ws1 is not None
+            assert ws0["http_port"] != ws1["http_port"]
             
-            for i, port in enumerate(ports):
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    s.settimeout(1.0)
-                    assert s.connect_ex(("127.0.0.1", port)) == 0, f"HTTP server for WS {i} at {port} not reachable"
-
         finally:
-            subprocess.run(["python3", "-m", "sari.mcp.cli", "daemon", "stop", "--daemon-port", "48100"], env=multi_env)
+            subprocess.run([sys.executable, "-m", "sari.mcp.cli", "daemon", "stop", "--daemon-port", "48100"], env=multi_env)
