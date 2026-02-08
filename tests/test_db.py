@@ -10,6 +10,9 @@ def test_db_turbo_ingestion_and_search(db):
     """
     Verify the Ultra-Turbo ingestion logic: RAM Staging -> Flush -> Search.
     """
+    # 0. Prerequisite: Root must exist
+    db.upsert_root("root1", "/tmp/root1", "/tmp/root1")
+
     # 1. High-speed write to RAM
     row = ("p1", "rel1", "root1", "repo1", 100, 50, b"content1", "h1", "fts", 200, 0, "ok", "", "ok", "", 0, 0, 0, 50, "{}")
     db.upsert_files_turbo([row])
@@ -32,6 +35,8 @@ def test_db_intelligent_read_compressed(db):
     content = "Modern Sari Engine"
     compressed = b"ZLIB\0" + zlib.compress(content.encode("utf-8"))
     
+    db.upsert_root("root", "/tmp/root", "/tmp/root")
+
     row = ("p_comp", "rel", "root", "repo", 100, len(compressed), compressed, "h", "fts", 200, 0, "ok", "", "ok", "", 0, 0, 0, len(content), "{}")
     db.upsert_files_turbo([row])
     db.finalize_turbo_batch()

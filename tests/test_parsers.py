@@ -66,4 +66,4 @@ def top_func():
 
         # Standard Format: index 3 is name
 
-        assert any(s[3] == "MyClass" for s in symbols)
+        assert any(s[1] == "MyClass" for s in symbols)

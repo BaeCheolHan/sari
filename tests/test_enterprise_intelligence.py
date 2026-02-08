@@ -20,13 +20,13 @@ def test_spring_data_jpa_integrity():
     symbols, _ = engine.extract_symbols("User.java", "java", code)
     
     # Check Entity
-    user_cls = next(s for s in symbols if s[3] == "User")
-    user_meta = json.loads(user_cls[9])
+    user_cls = next(s for s in symbols if s[1] == "User")
+    user_meta = json.loads(user_cls[7])
     assert "Entity" in user_meta["annotations"]
     
     # Check Repository
-    repo_iface = next(s for s in symbols if s[3] == "UserRepository")
-    repo_meta = json.loads(repo_iface[9])
+    repo_iface = next(s for s in symbols if s[1] == "UserRepository")
+    repo_meta = json.loads(repo_iface[7])
     assert repo_meta["framework_role"] == "Repository"
     assert any("JpaRepository" in h for h in repo_meta["extends"])
     
@@ -49,12 +49,12 @@ def test_spring_data_redis_and_caching():
     )
     symbols, _ = engine.extract_symbols("Redis.java", "java", code)
     
-    session_cls = next(s for s in symbols if s[3] == "UserSession")
-    assert "RedisHash" in json.loads(session_cls[9])["annotations"]
+    session_cls = next(s for s in symbols if s[1] == "UserSession")
+    assert "RedisHash" in json.loads(session_cls[7])["annotations"]
     
-    cache_method = next(s for s in symbols if s[3] == "findById")
-    assert "Cacheable" in json.loads(cache_method[9])["annotations"]
-    print(f"DEBUG: Redis/Caching SUCCESS. Found: {session_cls[3]}, {cache_method[1]}")
+    cache_method = next(s for s in symbols if s[1] == "findById")
+    assert "Cacheable" in json.loads(cache_method[7])["annotations"]
+    print(f"DEBUG: Redis/Caching SUCCESS. Found: {session_cls[1]}, {cache_method[1]}")
 
 def test_spring_webflux_reactive_truth():
     """
@@ -70,8 +70,8 @@ def test_spring_webflux_reactive_truth():
     )
     symbols, _ = engine.extract_symbols("Flux.java", "java", code)
     
-    hello_fn = next(s for s in symbols if s[3] == "getHello")
-    meta = json.loads(hello_fn[9])
+    hello_fn = next(s for s in symbols if s[1] == "getHello")
+    meta = json.loads(hello_fn[7])
     assert meta["reactive"] is True
     assert "Mono" in meta["return_type"]
     

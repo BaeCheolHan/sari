@@ -23,7 +23,7 @@ def test_ast_engine_parses_python_with_current_treesitter_api():
 def test_ast_engine_extracts_python_symbols():
     engine = ASTEngine()
     symbols, _ = engine.extract_symbols("root-x/main.py", "python", "class A:\n    def m(self):\n        pass\n")
-    names = [s[3] for s in symbols]
+    names = [s[1] for s in symbols]
     assert "A" in names
     assert "m" in names
 

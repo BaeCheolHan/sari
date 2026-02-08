@@ -205,7 +205,7 @@ class LocalSearchDB:
         if not paths:
             return
         placeholders = ",".join(["?"] * len(paths))
-        sql = f"UPDATE files SET last_seen={ts} WHERE path IN ({placeholders})"
+        sql = f"UPDATE files SET last_seen_ts={ts} WHERE path IN ({placeholders})"
         if cur:
             cur.execute(sql, paths)
         else:

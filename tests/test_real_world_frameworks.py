@@ -20,7 +20,7 @@ def test_mybatis_xml_symbol_extraction():
     symbols, _ = engine.extract_symbols("UserMapper.xml", "xml", code)
     
     assert len(symbols) == 2
-    select_sql = next(s for s in symbols if s[3] == "findByUsername")
+    select_sql = next(s for s in symbols if s[1] == "findByUsername")
     # In standard format, kind is at index 2 AND index 4 for compatibility
     assert select_sql[2] == "method"
     
@@ -39,7 +39,7 @@ def test_querydsl_generated_class_detection():
     )
     symbols, _ = engine.extract_symbols("QUser.java", "java", code)
     
-    q_cls = next(s for s in symbols if s[3] == "QUser")
+    q_cls = next(s for s in symbols if s[1] == "QUser")
     meta = json.loads(q_cls[9])
     assert meta["generated"] is True
 

@@ -15,9 +15,9 @@ def test_dockerfile_insight():
     )
     # Correct unpack for standardized return type
     symbols, _ = engine.extract_symbols("Dockerfile", "dockerfile", code)
-    assert any(s[3] == "FROM" for s in symbols)
-    assert any(s[3] == "EXPOSE" for s in symbols)
-    print(f"\nDEBUG: Docker SUCCESS. Found: {[s[3] for s in symbols]}")
+    assert any(s[1] == "FROM" for s in symbols)
+    assert any(s[1] == "EXPOSE" for s in symbols)
+    print(f"\nDEBUG: Docker SUCCESS. Found: {[s[1] for s in symbols]}")
 
 def test_markdown_navigation():
     """
@@ -30,9 +30,9 @@ def test_markdown_navigation():
         "### Ultra Turbo Engine\n"
     )
     symbols, _ = engine.extract_symbols("README.md", "markdown", code)
-    assert any(s[3] == "Sari Project" for s in symbols)
-    assert any(s[3] == "Core Architecture" for s in symbols)
-    print(f"DEBUG: Markdown SUCCESS. Found headers: {[s[3] for s in symbols]}")
+    assert any(s[1] == "Sari Project" for s in symbols)
+    assert any(s[1] == "Core Architecture" for s in symbols)
+    print(f"DEBUG: Markdown SUCCESS. Found headers: {[s[1] for s in symbols]}")
 
 def test_bash_script_logic():
     """
@@ -47,6 +47,6 @@ def test_bash_script_logic():
         "}\n"
     )
     symbols, _ = engine.extract_symbols("bootstrap.sh", "bash", code)
-    assert any(s[3] == "start_daemon" and s[4] == "method" for s in symbols)
-    assert any(s[3] == "SARI_PORT" and s[4] == "variable" for s in symbols)
-    print(f"DEBUG: Bash SUCCESS. Found: {[s[3] for s in symbols]}")
+    assert any(s[1] == "start_daemon" and s[2] == "method" for s in symbols)
+    assert any(s[1] == "SARI_PORT" and s[2] == "variable" for s in symbols)
+    print(f"DEBUG: Bash SUCCESS. Found: {[s[1] for s in symbols]}")

@@ -119,8 +119,8 @@ def test_vue_regex_parser_filters_keyword_and_single_char_noise():
         "function boot() { return true; }\n"
         "</script>\n",
     )
-    # Standard Format: index 3 is name
-    names = [s[3] for s in symbols]
+    # Standard Format: index 1 is name
+    names = [s[1] for s in symbols]
     assert "boot" in names
     assert "if" not in names
     assert "catch" not in names

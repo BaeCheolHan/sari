@@ -6,13 +6,13 @@ def test_csharp_support_truth():
     engine = ASTEngine()
     code = "public class MySvc { public void Start() {} }"
     symbols, _ = engine.extract_symbols("Engine.cs", "c_sharp", code)
-    assert any(s[3] == "MySvc" for s in symbols)
+    assert any(s[1] == "MySvc" for s in symbols)
 
 def test_sql_ddl_truth():
     engine = ASTEngine()
     code = "CREATE TABLE users (id INT);"
     symbols, _ = engine.extract_symbols("db.sql", "sql", code)
-    assert any(s[3] == "users" for s in symbols)
+    assert any(s[1] == "users" for s in symbols)
 
 def test_terraform_hcl_truth():
     """
@@ -26,5 +26,5 @@ def test_terraform_hcl_truth():
     )
     symbols, _ = engine.extract_symbols("main.tf", "hcl", code)
     # HCL blocks will now be found as class-level symbols
-    assert any("aws_instance.web" in s[3] for s in symbols)
-    print(f"\nDEBUG: HCL SUCCESS. Found blocks: {[s[3] for s in symbols]}")
+    assert any("aws_instance.web" in s[1] for s in symbols)
+    print(f"\nDEBUG: HCL SUCCESS. Found blocks: {[s[1] for s in symbols]}")

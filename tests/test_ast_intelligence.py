@@ -21,14 +21,14 @@ def test_java_annotation_extraction():
     symbols, _ = engine.extract_symbols("MyController.java", "java", code)
     
     # Priority Fix: Use index 3 for name in 12-column standard
-    cls_symbol = next(s for s in symbols if s[3] == "MyController")
-    metadata = json.loads(cls_symbol[9]) # Metadata is index 9
+    cls_symbol = next(s for s in symbols if s[1] == "MyController")
+    metadata = json.loads(cls_symbol[7]) # Metadata is index 9
     
     assert "RestController" in metadata["annotations"]
     assert "RequestMapping" in metadata["annotations"]
     
-    func_symbol = next(s for s in symbols if s[3] == "sayHello")
-    func_meta = json.loads(func_symbol[9])
+    func_symbol = next(s for s in symbols if s[1] == "sayHello")
+    func_meta = json.loads(func_symbol[7])
     
     assert "GetMapping" in func_meta["annotations"]
 
@@ -46,8 +46,8 @@ def test_python_decorator_extraction():
     symbols, _ = engine.extract_symbols("app.py", "python", code)
     
     # Priority Fix: Use index 3 for name
-    idx_symbol = next(s for s in symbols if s[3] == "index")
-    metadata = json.loads(idx_symbol[9])
+    idx_symbol = next(s for s in symbols if s[1] == "index")
+    metadata = json.loads(idx_symbol[7])
     
     assert "login_required" in metadata["annotations"]
     assert any("route" in a for a in metadata["annotations"])

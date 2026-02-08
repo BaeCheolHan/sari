@@ -97,10 +97,10 @@ def test_db_writer_applies_update_last_seen_task(tmp_path):
     writer = DBWriter(db)
     conn = db._write
     cur = conn.cursor()
-    before = db._read.execute("SELECT last_seen FROM files WHERE path = ?", ("root1/a.py",)).fetchone()[0]
+    before = db._read.execute("SELECT last_seen_ts FROM files WHERE path = ?", ("root1/a.py",)).fetchone()[0]
     cur.execute("BEGIN")
     writer._process_batch(cur, [DbTask(kind="update_last_seen", paths=["root1/a.py"])])
     conn.commit()
-    after = db._read.execute("SELECT last_seen FROM files WHERE path = ?", ("root1/a.py",)).fetchone()[0]
+    after = db._read.execute("SELECT last_seen_ts FROM files WHERE path = ?", ("root1/a.py",)).fetchone()[0]
     assert int(after) >= int(before)
     db.close_all()

@@ -13,8 +13,8 @@ def test_react_functional_component_truth():
         "};\n"
     )
     symbols, _ = engine.extract_symbols("User.jsx", "javascript", code)
-    assert any(s[3] == "UserProfile" and s[4] == "class" for s in symbols)
-    print(f"\nDEBUG: React SUCCESS. Found: {[s[3] for s in symbols]}")
+    assert any(s[1] == "UserProfile" and s[2] == "class" for s in symbols)
+    print(f"\nDEBUG: React SUCCESS. Found: {[s[1] for s in symbols]}")
 
 def test_express_route_extraction_truth():
     """
@@ -27,7 +27,7 @@ def test_express_route_extraction_truth():
         "});\n"
     )
     symbols, _ = engine.extract_symbols("server.js", "javascript", code)
-    route = next(s for s in symbols if "route.get" in s[3])
+    route = next(s for s in symbols if "route.get" in s[1])
     assert route[2] == "method"
     metadata = json.loads(route[9])
     assert "/api/users" in metadata["route_path"]
@@ -49,5 +49,5 @@ def test_vue_script_block_truth():
         "</script>\n"
     )
     symbols, _ = engine.extract_symbols("App.vue", "vue", code)
-    assert any("data" in s[3] for s in symbols)
-    print(f"DEBUG: Vue SUCCESS. Found symbols in script: {[s[3] for s in symbols]}")
+    assert any("data" in s[1] for s in symbols)
+    print(f"DEBUG: Vue SUCCESS. Found symbols in script: {[s[1] for s in symbols]}")

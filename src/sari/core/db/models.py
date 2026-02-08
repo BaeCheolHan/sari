@@ -31,7 +31,7 @@ class File(BaseModel):
     content = BlobField()
     content_hash = CharField(index=True, default="")
     fts_content = TextField(default="")
-    last_seen = IntegerField(default=0)
+    last_seen_ts = IntegerField(default=0)
     deleted_ts = IntegerField(default=0)
     parse_status = CharField(default="none")
     parse_reason = TextField(default="none")
