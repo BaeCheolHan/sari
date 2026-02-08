@@ -218,6 +218,14 @@ class ServerRegistry:
             data["workspaces"] = {ws: info for ws, info in workspaces.items() if info.get("boot_id") != boot_id}
         self._update(_upd)
 
+    def set_daemon_draining(self, boot_id: str, draining: bool = True) -> None:
+        def _upd(data):
+            daemons = data.get("daemons", {})
+            if boot_id in daemons:
+                daemons[boot_id]["draining"] = bool(draining)
+                daemons[boot_id]["last_seen_ts"] = time.time()
+        self._update(_upd)
+
     def resolve_daemon_by_endpoint(self, host: str, port: int) -> Optional[Dict[str, Any]]:
         data = self._load()
         daemons = data.get("daemons", {})

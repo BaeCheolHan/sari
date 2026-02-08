@@ -261,8 +261,6 @@ class Session:
             if response:
                 await self.send_json(response)
                 trace("session_response_sent", msg_id=msg_id, method=method)
-        finally:
-            self.cleanup()
 
     async def handle_initialize(self, request: Dict[str, Any]):
         params = request.get("params", {})
@@ -376,5 +374,15 @@ class Session:
     def cleanup(self):
         if self.workspace_root:
             self.registry.release(self.workspace_root)
+            # Optional immediate autostop when the last connection closes.
+            autostop = str(os.environ.get("SARI_DAEMON_AUTOSTOP", "")).strip().lower() in {"1", "true", "yes", "on"}
+            if autostop:
+                try:
+                    if self.registry.active_count() == 0:
+                        boot_id = _boot_id()
+                        if boot_id:
+                            ServerRegistry().set_daemon_draining(boot_id, True)
+                except Exception:
+                    pass
             self.workspace_root = None
             self.shared_state = None
