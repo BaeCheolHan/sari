@@ -794,19 +794,8 @@ def _tcp_blocked(err: OSError) -> bool:
 
 
 def cmd_auto(args):
-    """Try TCP daemon/proxy first, fallback to STDIO server."""
+    """Daemon-first: require daemon/proxy for stdio. No local stdio fallback."""
     host, port = get_daemon_address()
-
-    # Fast path: if TCP is blocked by sandbox, skip daemon/proxy.
-    try:
-        with socket.create_connection((host, port), timeout=0.1):
-            pass
-    except OSError as e:
-        if _tcp_blocked(e):
-            from sari.mcp.server import main as server_main
-            server_main()
-            return 0
-        # Connection refused etc. We'll try to start daemon below.
 
     identify = _identify_sari_daemon(host, port)
     if identify and not _needs_upgrade_or_drain(identify):
@@ -820,24 +809,16 @@ def cmd_auto(args):
     if not is_daemon_running(host, port):
         _start_daemon_background()
         for _ in range(30):
-            try:
-                host, port = get_daemon_address()
-                if is_daemon_running(host, port):
-                    break
-            except OSError as e:
-                if _tcp_blocked(e):
-                    from sari.mcp.server import main as server_main
-                    server_main()
-                    return 0
+            host, port = get_daemon_address()
+            if is_daemon_running(host, port):
+                break
             time.sleep(0.1)
 
     if is_daemon_running(host, port):
         return cmd_proxy(args)
 
-    # Final fallback to STDIO server.
-    from sari.mcp.server import main as server_main
-    server_main()
-    return 0
+    print("❌ Daemon is not running. Start it with: sari daemon start -d", file=sys.stderr)
+    return 1
 
 
 def cmd_status(args):

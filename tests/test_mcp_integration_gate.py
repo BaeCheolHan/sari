@@ -27,8 +27,6 @@ def _read_framed_output(raw: bytes) -> dict:
 
 
 def test_mcp_runloop_real_framed_io(monkeypatch):
-    monkeypatch.setenv("SARI_STANDALONE_ONLY", "1")
-
     class NonClosingBytesIO(io.BytesIO):
         def close(self):
             # Keep buffer readable for assertion after server shutdown.
@@ -50,8 +48,6 @@ def test_mcp_runloop_real_framed_io(monkeypatch):
 
 
 def test_daemon_forward_reuses_single_socket(monkeypatch):
-    monkeypatch.setenv("SARI_STANDALONE_ONLY", "1")
-
     accepted = {"connections": 0, "requests": 0}
     class FakeReader:
         def __init__(self):

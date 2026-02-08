@@ -38,16 +38,20 @@ pip install sari
 
 ## 2. stdio (MCP 기본 운용)
 
-**안정 운영 기준은 stdio 고정입니다.**
-- `--format json` 사용 금지
-- stdio와 HTTP를 동시에 혼합 운영하지 말 것
+**stdio는 데몬 프록시로 동작합니다.**  
+즉, stdio를 사용하려면 데몬이 필요합니다.
 
-### 2.1 실행 (로컬 테스트)
+### 2.1 데몬 시작
+```bash
+sari daemon start -d
+```
+
+### 2.2 실행 (stdio)
 ```bash
 python -m sari --transport stdio
 ```
 
-### 2.2 Gemini CLI 설정 (stdio 고정)
+### 2.3 Gemini CLI 설정 (stdio)
 `~/.gemini/settings.json`
 ```json
 {
@@ -63,7 +67,7 @@ python -m sari --transport stdio
 }
 ```
 
-### 2.3 Codex CLI 설정 (stdio 고정)
+### 2.4 Codex CLI 설정 (stdio)
 `~/.codex/config.toml`
 ```toml
 [mcp_servers.sari]
@@ -76,7 +80,7 @@ env = { SARI_CONFIG = "/abs/path/to/project/.sari/config.json" }
 
 ## 3. HTTP 모드 (선택)
 
-HTTP 모드는 **stdio와 분리된 별도 프로세스**로만 운영합니다.
+HTTP 모드는 **stdio와 분리된 별도 프로세스**로 운영합니다.
 
 ```bash
 python -m sari --transport http --http-api
@@ -153,4 +157,3 @@ uv pip install -U sari
 ## 8. 트러블슈팅
 
 문제가 발생하면 `TROUBLESHOOTING.md`를 확인하세요.
-

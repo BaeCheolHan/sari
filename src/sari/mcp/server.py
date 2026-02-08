@@ -84,21 +84,9 @@ class LocalSearchMCPServer:
         self._daemon_channels: Dict[int, Any] = {}
         # Duplicate assignment removed. Use _debug_enabled from above.
         
-        # Ownership Enforcment: Check if daemon is active for this workspace
+        # Daemon proxy is handled by the stdio proxy process, not the MCP server.
         self._proxy_to_daemon = False
         self._daemon_sock = None
-        if not os.environ.get("SARI_STANDALONE_ONLY") and not self._injected_db:
-            try:
-                from sari.core.server_registry import ServerRegistry
-                inst = ServerRegistry().resolve_workspace_daemon(self.workspace_root)
-                if inst and inst.get("host") and inst.get("port"):
-                    self._log_debug(f"Daemon detected at {inst['host']}:{inst['port']}. Switching to thin-adapter mode.")
-                    self._proxy_to_daemon = True
-                    self._daemon_address = (inst["host"], int(inst["port"]))
-                    trace("server_daemon_detected", workspace_root=self.workspace_root, daemon_address=self._daemon_address)
-            except Exception as e:
-                self._log_debug(f"Failed to check daemon registry: {e}")
-                trace("server_daemon_detect_failed", error=str(e))
 
         max_workers = int(os.environ.get("SARI_MCP_WORKERS", "4") or 4)
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)

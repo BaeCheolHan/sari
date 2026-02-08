@@ -16,6 +16,10 @@
    ```bash
    pgrep -af "sari|sari\.mcp|sari\.main|sari-mcp"
    ```
+3. **데몬 상태 확인**
+   ```bash
+   sari daemon status
+   ```
 3. **로그 확인**
    ```bash
    tail -n 80 ~/.local/share/sari/logs/mcp_trace.log
@@ -85,12 +89,11 @@ python -c "import sari,inspect; print(inspect.getfile(sari))"
 
 ---
 
-## 6) 클라이언트 설정 확인 (stdio 고정)
+## 6) 클라이언트 설정 확인 (stdio)
 
 Gemini/Codex 설정에서 다음을 확인하세요.
 - `python -m sari --transport stdio`
-- `--format json` 사용 금지
-- stdio와 HTTP 동시 운용 금지
+- 데몬이 떠 있어야 함: `sari daemon start -d`
 
 ---
 
@@ -100,4 +103,3 @@ Gemini/Codex 설정에서 다음을 확인하세요.
 pkill -f "sari|sari\.mcp|sari\.main|sari-mcp"
 rm -f ~/.local/share/sari/server.json ~/.local/share/sari/server.json.lock
 ```
-

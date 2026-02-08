@@ -336,55 +336,6 @@ def _spawn_http_daemon(ns: argparse.Namespace) -> int:
     return 0
 
 
-def _ensure_http_daemon_for_stdio(ns: argparse.Namespace) -> None:
-    """Best-effort: keep HTTP endpoint up even when running MCP over stdio."""
-    enable_stdio_daemon = (os.environ.get("SARI_ENABLE_HTTP_DAEMON_FOR_STDIO") or "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-    if not (enable_stdio_daemon or getattr(ns, "http_api", False) or getattr(ns, "http_daemon", False)):
-        return
-    try:
-        from sari.mcp.cli import _get_http_host_port, _is_http_running, _start_daemon_background
-    except Exception:
-        return
-
-    host_override = None
-    port_override = None
-    if ns.http_api_port:
-        try:
-            port_override = int(ns.http_api_port)
-        except (TypeError, ValueError):
-            port_override = None
-
-    try:
-        host, port = _get_http_host_port(host_override, port_override)
-    except Exception:
-        host, port = ("127.0.0.1", port_override or 47777)
-
-    try:
-        if _is_http_running(host, port):
-            return
-    except Exception:
-        pass
-
-    # Primary path: start daemon background and let it own workspace+HTTP lifecycle.
-    try:
-        started = _start_daemon_background(http_host=host, http_port=port)
-        if started:
-            return
-    except Exception:
-        pass
-
-    # Fallback path: start standalone HTTP daemon.
-    try:
-        _spawn_http_daemon(ns)
-    except Exception:
-        pass
-
-
 def run_cmd(argv: List[str]) -> int:
     if not argv:
         print("missing subcommand", file=sys.stderr)
@@ -528,10 +479,7 @@ def main(argv: List[str] = None, original_stdout: Any = None) -> int:
         except Exception as e:
              print(f"Async MCP server failed: {e}. Falling back to sync.", file=sys.stderr)
 
-    _ensure_http_daemon_for_stdio(ns)
-    from sari.mcp.server import LocalSearchMCPServer
-    # Pass the clean stdout handle to the MCP server
-    server = LocalSearchMCPServer(WorkspaceManager.resolve_workspace_root())
-    server._original_stdout = clean_stdout
-    server.run()
+    # stdio: always proxy to the daemon for stable multi-client operation.
+    from sari.mcp.proxy import main as proxy_main
+    proxy_main()
     return 0
