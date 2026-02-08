@@ -14,29 +14,25 @@ Sari는 다음을 제공합니다.
 
 ---
 
-## 1. 설치
+## 1. 설치 (고정)
 
-Sari는 **현재 활성화된 파이썬 환경**에 설치됩니다. `uv`를 쓰는 경우 **venv가 필요**합니다.
+Sari는 **venv 환경에서만 설치/실행**합니다.
 
-### 1.1 uv + venv (권장)
 ```bash
 uv venv .venv
+source .venv/bin/activate
 uv pip install sari
 ```
 
 업데이트:
 ```bash
+source .venv/bin/activate
 uv pip install -U sari
-```
-
-### 1.2 pip
-```bash
-pip install sari
 ```
 
 ---
 
-## 2. stdio (MCP 기본 운용)
+## 2. stdio (MCP 고정 운용)
 
 **stdio는 데몬 프록시로 동작합니다.**  
 즉, stdio를 사용하려면 데몬이 필요합니다.
@@ -78,22 +74,7 @@ env = { SARI_CONFIG = "/abs/path/to/project/.sari/config.json" }
 
 ---
 
-## 3. HTTP 모드 (선택)
-
-HTTP 모드는 **stdio와 분리된 별도 프로세스**로 운영합니다.
-
-```bash
-python -m sari --transport http --http-api
-```
-
-기본 엔드포인트:
-```
-http://127.0.0.1:47777/mcp
-```
-
----
-
-## 4. 데이터/로그 경로
+## 3. 데이터/로그 경로
 
 - 전역 DB: `~/.local/share/sari/index.db`
 - 전역 레지스트리: `~/.local/share/sari/server.json`
@@ -103,7 +84,7 @@ http://127.0.0.1:47777/mcp
 
 ---
 
-## 5. 다중 워크스페이스
+## 4. 다중 워크스페이스
 
 ### 5.1 CLI
 ```bash
@@ -127,7 +108,7 @@ sari roots list
 
 ---
 
-## 6. 설정 예시
+## 5. 설정 예시
 
 ```json
 {
@@ -146,14 +127,15 @@ sari roots list
 
 ---
 
-## 7. 업데이트
+## 6. 업데이트
 
 ```bash
+source .venv/bin/activate
 uv pip install -U sari
 ```
 
 ---
 
-## 8. 트러블슈팅
+## 7. 트러블슈팅
 
 문제가 발생하면 `TROUBLESHOOTING.md`를 확인하세요.
