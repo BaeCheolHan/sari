@@ -87,14 +87,21 @@ class GlobalStorageManager:
                 if existing and existing[4] > mtime:
                     continue
 
+                # Priority 9 Fix: Don't store full content in L2 cache to prevent memory explosion
+                # Full row structure from Indexer has content at index 6. 
+                # We strip it for L2 storage but keep it for L3 DB queue.
                 r_list = list(row)
                 if len(r_list) > 8:
                     r_list[8] = clean_for_fts(r_list[8])
+                
                 new_row = tuple(r_list)
+                # For L2 cache, we keep a trimmed version (path, root_id, repo, mtime, size, snippet)
+                # row[0]: path, row[2]: root_id, row[3]: repo, row[4]: mtime, row[5]: size, row[8]: snippet
+                l2_row = (row[0], row[2], row[3], row[4], row[5], r_list[8] if len(r_list) > 8 else "")
                 
                 cleaned_rows.append(new_row)
                 valid_doc_ids.add(path)
-                self._overlay_files[path] = new_row
+                self._overlay_files[path] = l2_row # Store lightweight row in memory
                 self._overlay_files.move_to_end(path)
                 if len(self._overlay_files) > self._max_overlay_size:
                     self._overlay_files.popitem(last=False)

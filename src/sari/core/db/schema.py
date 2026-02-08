@@ -56,7 +56,7 @@ def _create_all_tables(cur: sqlite3.Cursor):
             content BLOB NOT NULL,
             content_hash TEXT DEFAULT '',
             fts_content TEXT DEFAULT '',
-            last_seen INTEGER DEFAULT 0,
+            last_seen_ts INTEGER DEFAULT 0,
             deleted_ts INTEGER DEFAULT 0,
             parse_status TEXT NOT NULL DEFAULT 'none',
             parse_reason TEXT NOT NULL DEFAULT 'none',

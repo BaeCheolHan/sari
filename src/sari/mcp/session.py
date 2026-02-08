@@ -141,12 +141,29 @@ class Session:
         if method == "sari/identify":
             draining = False
             boot_id = _boot_id()
-            if boot_id:
-                try:
-                    info = ServerRegistry().get_daemon(boot_id) or {}
+            latest_info = None
+            try:
+                reg = ServerRegistry()
+                if boot_id:
+                    info = reg.get_daemon(boot_id) or {}
                     draining = bool(info.get("draining"))
-                except Exception:
-                    draining = False
+                
+                # Fetch latest non-draining daemon for this workspace
+                # (Simple version for Phase 0: just find any latest non-draining daemon)
+                daemons = reg.get_active_daemons()
+                if daemons:
+                    # Sort by version and start time
+                    daemons.sort(key=lambda x: (x.get("version", ""), x.get("start_ts", 0)), reverse=True)
+                    latest = daemons[0]
+                    latest_info = {
+                        "host": latest.get("host"),
+                        "port": latest.get("port"),
+                        "bootId": latest.get("boot_id"),
+                        "version": latest.get("version")
+                    }
+            except Exception:
+                draining = False
+
             response = {
                 "jsonrpc": "2.0",
                 "id": msg_id,
@@ -156,6 +173,7 @@ class Session:
                     "protocolVersion": _SARI_PROTOCOL_VERSION,
                     "bootId": boot_id,
                     "draining": draining,
+                    "latest": latest_info
                 },
             }
             await self.send_json(response)

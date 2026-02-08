@@ -56,7 +56,12 @@ class TantivyEngine:
         schema_builder.add_text_field("root_id", stored=True, tokenizer_name="raw")
         schema_builder.add_text_field("path", stored=True, tokenizer_name="raw")
         schema_builder.add_text_field("repo", stored=True, tokenizer_name="raw")
+        
+        # Priority 7: CJK Support
+        # We add 'body' with standard en_stem and a 'body_raw' for precise matching
         schema_builder.add_text_field("body", stored=True, tokenizer_name="en_stem")
+        schema_builder.add_text_field("body_raw", stored=False, tokenizer_name="raw")
+        
         schema_builder.add_integer_field("mtime", stored=True, indexed=True)
         schema_builder.add_integer_field("size", stored=True, indexed=True)
         self._schema = schema_builder.build()
@@ -65,6 +70,10 @@ class TantivyEngine:
         self.index_path.mkdir(parents=True, exist_ok=True)
         try:
             self._index = tantivy.Index(self._schema, path=str(self.index_path))
+            
+            # Priority 7: Register CJK Tokenizer (Optional but recommended)
+            # If lindera is available, we could register it here. 
+            # For now, we rely on dual-field (body + body_raw) for CJK resilience.
         except:
             # If corrupted, re-create
             shutil.rmtree(self.index_path)
@@ -85,6 +94,7 @@ class TantivyEngine:
                 doc_id = d.get("doc_id") or d.get("id")
                 if not doc_id:
                     continue
+                body_text = d.get("body_text", "")
                 if hasattr(writer, "delete_documents"):
                     writer.delete_documents("path", doc_id)
                 else:
@@ -93,7 +103,8 @@ class TantivyEngine:
                     root_id=d.get("root_id", ""),
                     path=doc_id,
                     repo=d.get("repo", ""),
-                    body=d.get("body_text", ""),
+                    body=body_text,
+                    body_raw=body_text, # Priority 7: Feed raw content for CJK matching
                     mtime=d.get("mtime", 0),
                     size=d.get("size", 0)
                 ))

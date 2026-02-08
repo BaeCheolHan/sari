@@ -11,7 +11,7 @@ def resolve_daemon_address(workspace_root: Optional[str] = None) -> Tuple[str, i
     Single Source of Truth for resolving daemon address.
     Priority:
       1. Env Override (Explicit debugging) -> Highest priority
-      2. Registry (Workspace mapping) -> Ensures multi-workspace support
+      2. Registry SSOT (resolve_latest_daemon) -> Ensures version/draining awareness
       3. Env Fallback (Legacy)
       4. Default
     """
@@ -29,9 +29,16 @@ def resolve_daemon_address(workspace_root: Optional[str] = None) -> Tuple[str, i
     # 2. Check Registry (SSOT)
     try:
         root = workspace_root or os.environ.get("SARI_WORKSPACE_ROOT") or WorkspaceManager.resolve_workspace_root()
-        inst = ServerRegistry().resolve_workspace_daemon(str(root))
+        reg = ServerRegistry()
+        
+        # Phase 1: Try to find the absolute best daemon (non-draining, latest)
+        inst = reg.resolve_latest_daemon(workspace_root=str(root), allow_draining=False)
+        
+        # Fallback to current bound daemon if no 'latest' found (might be first boot)
+        if not inst:
+            inst = reg.resolve_workspace_daemon(str(root))
+            
         if inst and inst.get("port"):
-            # Registry found a daemon for this workspace
             host = inst.get("host") or (env_host or DEFAULT_HOST)
             return host, int(inst.get("port"))
     except Exception:

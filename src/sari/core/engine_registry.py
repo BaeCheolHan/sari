@@ -43,11 +43,25 @@ def get_registry() -> EngineRegistry:
 
 
 def default_engine_name(cfg: Any = None) -> str:
+    # Priority 11: Auto-detect best engine based on installed libs
+    try:
+        import tantivy
+        HAS_TANTIVY = True
+    except ImportError:
+        HAS_TANTIVY = False
+
     if cfg is not None:
         mode = (getattr(cfg, "engine_mode", "") or "").strip().lower()
         if mode in {"embedded", "sqlite"}:
+            # Respect explicit user choice if valid
+            if mode == "embedded" and not HAS_TANTIVY:
+                return "sqlite" # Graceful fallback
             return mode
-    return settings.ENGINE_MODE
+            
+    # Default selection logic: prefer embedded if lib exists
+    if HAS_TANTIVY:
+        return "embedded"
+    return "sqlite"
 
 
 def get_default_engine(db: Any, cfg: Any = None, roots: Any = None) -> SearchEngineInterface:
