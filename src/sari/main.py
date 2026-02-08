@@ -338,6 +338,14 @@ def _spawn_http_daemon(ns: argparse.Namespace) -> int:
 
 def _ensure_http_daemon_for_stdio(ns: argparse.Namespace) -> None:
     """Best-effort: keep HTTP endpoint up even when running MCP over stdio."""
+    enable_stdio_daemon = (os.environ.get("SARI_ENABLE_HTTP_DAEMON_FOR_STDIO") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if not (enable_stdio_daemon or getattr(ns, "http_api", False) or getattr(ns, "http_daemon", False)):
+        return
     try:
         from sari.mcp.cli import _get_http_host_port, _is_http_running, _start_daemon_background
     except Exception:

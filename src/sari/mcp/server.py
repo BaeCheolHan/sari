@@ -71,12 +71,7 @@ class LocalSearchMCPServer:
         self._middlewares = [PolicyMiddleware(self.policy_engine)]
         self._debug_enabled = settings.DEBUG or os.environ.get("SARI_MCP_DEBUG", "0") == "1"
         self._dev_jsonl = (os.environ.get("SARI_DEV_JSONL") or "").strip().lower() in {"1", "true", "yes", "on"}
-        force_env = os.environ.get("SARI_FORCE_CONTENT_LENGTH")
-        if force_env is None or force_env == "":
-            # Default to Content-Length framing for stdio unless explicitly in dev JSONL mode.
-            self._force_content_length = not self._dev_jsonl
-        else:
-            self._force_content_length = force_env.strip().lower() in {"1", "true", "yes", "on"}
+        self._force_content_length = (os.environ.get("SARI_FORCE_CONTENT_LENGTH") or "").strip().lower() in {"1", "true", "yes", "on"}
         # Add maxsize to prevent memory bloat under heavy load
         self._req_queue: "queue.Queue[Dict[str, Any]]" = queue.Queue(maxsize=settings.get_int("MCP_QUEUE_SIZE", 1000))
         self._stop = threading.Event()
@@ -497,9 +492,9 @@ class LocalSearchMCPServer:
             if output_stream is None:
                 output_stream = getattr(sys.stdout, "buffer", sys.stdout)
             wire_format = (os.environ.get("SARI_FORMAT") or "pack").strip().lower()
-            # Accept JSONL input for compatibility, but default to Content-Length framing unless dev mode.
+            # Accept JSONL input for compatibility, but default to Content-Length framing unless explicitly configured.
             self.transport = McpTransport(input_stream, output_stream, allow_jsonl=True)
-            if self._dev_jsonl and wire_format == "json":
+            if wire_format == "json":
                 self.transport.default_mode = "jsonl"
             else:
                 self.transport.default_mode = "content-length"
@@ -642,10 +637,8 @@ class LocalSearchMCPServer:
             resp = self.handle_request(req)
             if resp:
                 req_mode = req.get("_sari_framing_mode", "content-length")
-                if self._force_content_length:
+                if self._force_content_length and req_mode != "jsonl":
                     mode = "content-length"
-                    if req_mode == "jsonl":
-                        trace("force_content_length_response", msg_id=req.get("id"))
                 else:
                     mode = req_mode
                 self._log_debug_response(mode, resp)

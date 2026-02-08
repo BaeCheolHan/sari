@@ -21,6 +21,7 @@ def test_ensure_http_daemon_for_stdio_uses_daemon_start():
             with patch("sari.mcp.cli._start_daemon_background", return_value=True) as start_bg:
                 with patch.object(main_mod, "_spawn_http_daemon") as fallback_spawn:
                     ns = type("Ns", (), {"http_api_port": None})()
-                    main_mod._ensure_http_daemon_for_stdio(ns)
+                    with patch.dict(os.environ, {"SARI_ENABLE_HTTP_DAEMON_FOR_STDIO": "1"}):
+                        main_mod._ensure_http_daemon_for_stdio(ns)
                     start_bg.assert_called_once()
                     fallback_spawn.assert_not_called()
