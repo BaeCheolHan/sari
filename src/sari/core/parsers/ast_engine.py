@@ -29,24 +29,69 @@ class ASTEngine:
     def enabled(self) -> bool: return HAS_LIBS
     
     def _get_language(self, name: str) -> Any:
+        print(f"DEBUG ENGINE: HAS_LIBS={HAS_LIBS} name={name}")
         if not HAS_LIBS: return None
+        # Normalization map
         m = {
             "hcl": "hcl", "tf": "hcl", "terraform": "hcl",
             "py": "python", "js": "javascript", "ts": "typescript", 
             "jsx": "javascript", "tsx": "typescript", "java": "java", "kt": "kotlin", 
             "rs": "rust", "go": "go", "sh": "bash", "sql": "sql", "swift": "swift", 
-            "vue": "vue", "xml": "xml", "php": "php", "ruby": "ruby", "yaml": "yaml", "cs": "c_sharp"
+            "vue": "vue", "xml": "xml", "php": "php", "ruby": "ruby", "yaml": "yaml", "cs": "c_sharp",
+            "rb": "ruby", "yml": "yaml"
         }
         target = m.get(name.lower(), name.lower())
+        
+        # 1. Try individual packages (swift, kotlin, ruby, yaml, python, etc.)
+        try:
+            if target == "swift":
+                import tree_sitter_swift
+                return Language(tree_sitter_swift.language())
+            elif target == "kotlin":
+                import tree_sitter_kotlin
+                return Language(tree_sitter_kotlin.language())
+            elif target == "ruby":
+                import tree_sitter_ruby
+                return Language(tree_sitter_ruby.language())
+            elif target == "yaml":
+                import tree_sitter_yaml
+                return Language(tree_sitter_yaml.language())
+            elif target == "python":
+                import tree_sitter_python
+                return Language(tree_sitter_python.language())
+            elif target == "javascript":
+                import tree_sitter_javascript
+                return Language(tree_sitter_javascript.language())
+            elif target == "typescript":
+                import tree_sitter_typescript
+                return Language(tree_sitter_typescript.language_typescript())
+            elif target == "go":
+                import tree_sitter_go
+                return Language(tree_sitter_go.language())
+            elif target == "rust":
+                import tree_sitter_rust
+                return Language(tree_sitter_rust.language())
+            elif target == "java":
+                import tree_sitter_java
+                return Language(tree_sitter_java.language())
+            elif target == "php":
+                import tree_sitter_php
+                return Language(tree_sitter_php.language_php())
+        except Exception as e:
+            print(f"DEBUG ENGINE EXCEPTION for {target}: {e}")
+            if self.logger: self.logger.debug(f"Failed to load parser for {target}: {e}")
+
+        # 2. Try tree-sitter-languages (bundled)
         try: return get_language(target)
-        except: return None
+        except: pass
+            
+        return None
 
     def parse(self, language: str, content: str, old_tree: Any = None) -> Optional[Any]:
         if not HAS_LIBS: return None
         lang_obj = self._get_language(language)
         if not lang_obj: return None
-        parser = Parser()
-        parser.set_language(lang_obj)
+        parser = Parser(lang_obj)
         encoded_content = content.encode("utf-8", errors="ignore")
         if old_tree is not None:
             return parser.parse(encoded_content, old_tree)
@@ -74,10 +119,13 @@ class ASTEngine:
 
         lang_obj = self._get_language(ext)
         handler = self.registry.get_handler(ext)
+        print(f"DEBUG ENGINE: ext={ext} lang_obj={lang_obj} handler={handler}")
         
         if not lang_obj: return [], []
         
-        if tree is None: tree = self.parse(ext, content)
+        if tree is None: 
+            tree = self.parse(ext, content)
+            # if not tree: print(f"DEBUG ENGINE: parse failed for {ext}")
         if not tree: return [], []
         
         data = content.encode("utf-8", errors="ignore"); lines = content.splitlines(); symbols = []

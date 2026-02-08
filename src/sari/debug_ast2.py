@@ -14,7 +14,7 @@ def debug_lang(lang_name, code):
     try:
         lang = get_language(lang_name)
         parser = Parser()
-        parser.set_language(lang)
+        parser = Parser(lang)
         tree = parser.parse(code.encode("utf-8"))
         print_tree(tree.root_node)
     except Exception as e:

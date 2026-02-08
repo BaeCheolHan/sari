@@ -10,8 +10,7 @@ def test_investigate_kotlin_ast_nodes():
     engine = ASTEngine()
     lang_obj = engine._get_language("kotlin")
     from tree_sitter import Parser
-    parser = Parser()
-    parser.language = lang_obj
+    parser = Parser(lang_obj)
     
     code = "@RestController class MyClass { fun myFun() {} }"
     tree = parser.parse(code.encode())
