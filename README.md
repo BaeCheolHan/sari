@@ -225,10 +225,10 @@ Use the following template in your MCP settings.
 ## 5. 데이터/설치 경로 / Data & Install Paths
 
 ### (KR)
-- 전역 DB: `~/.local/share/sari/index.db`
+- 전역 DB: `~/.local/share/sari/index.db` (단일 DB 고정)
 - 전역 레지스트리: `~/.local/share/sari/server.json`
 - 로그: `~/.local/share/sari/logs`
-- 워크스페이스 설정: `<workspace>/.sari/config.json` 또는 `<workspace>/sari.json`
+- 워크스페이스 설정: `<workspace>/.sari/config.json` 또는 `<workspace>/sari.json` (db_path는 무시됨)
 - 전역 설정: `~/.config/sari/config.json`
 
 설치 경로는 설치 방식에 따라 다릅니다.
@@ -237,10 +237,10 @@ Use the following template in your MCP settings.
 - system install: 시스템 Python site-packages
 
 ### (EN)
-- Global DB: `~/.local/share/sari/index.db`
+- Global DB: `~/.local/share/sari/index.db` (single DB only)
 - Global registry: `~/.local/share/sari/server.json`
 - Logs: `~/.local/share/sari/logs`
-- Workspace config: `<workspace>/.sari/config.json` or `<workspace>/sari.json`
+- Workspace config: `<workspace>/.sari/config.json` or `<workspace>/sari.json` (`db_path` ignored)
 - Global config: `~/.config/sari/config.json`
 
 Install path depends on the chosen method.
@@ -300,7 +300,7 @@ sari roots list
 | --- | --- | --- | --- |
 | `workspace_root` | 기본 워크스페이스 루트 | Default workspace root | 현재 작업 디렉토리 |
 | `workspace_roots` | 다중 워크스페이스 목록 | Multi-workspace roots | `[workspace_root]` |
-| `db_path` | DB 파일 경로 | DB file path | `~/.local/share/sari/index.db` |
+| `db_path` | DB 파일 경로 (전역 설정만 적용) | DB file path (global only) | `~/.local/share/sari/index.db` |
 | `include_ext` | 인덱싱 확장자 | File extensions to index | `.py, .js, .ts, .java, ...` |
 | `include_files` | 확장자와 무관한 추가 파일 | Extra files regardless of extension | `[]` |
 | `exclude_dirs` | 제외 디렉토리 | Excluded directories | `.git, node_modules, .venv, ...` |

@@ -25,14 +25,12 @@ class SharedState:
         self.config_manager = ConfigManager(workspace_root)
         self.config_data = self.config_manager.resolve_final_config()
         
-        # 2. Init DB (Phase 4)
+        # 2. Init DB (Phase 4) - Force global DB only
+        db_path = str(WorkspaceManager.get_global_db_path())
         local_dir = WorkspaceManager.get_workspace_data_dir(workspace_root)
-        local_db = WorkspaceManager.get_workspace_db_path(workspace_root)
         if local_dir.exists():
-            db_path = str(local_db)
-            logger.info(f"Using workspace-local DB: {db_path}")
+            logger.info(f"Workspace-local DB detected; ignoring in favor of global DB: {db_path}")
         else:
-            db_path = str(WorkspaceManager.get_global_db_path())
             logger.info(f"Using global DB: {db_path}")
             
         self.db = LocalSearchDB(db_path)

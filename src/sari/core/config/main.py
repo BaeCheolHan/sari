@@ -98,6 +98,22 @@ class Config:
         else:
             data = defaults
 
+        # Enforce single global DB regardless of workspace-local config.
+        try:
+            from sari.core.workspace import WorkspaceManager
+            ws_dir = Path(root).resolve() / WorkspaceManager.settings.WORKSPACE_CONFIG_DIR_NAME
+            cfg_abs = Path(cfg_path).resolve()
+            is_workspace_cfg = False
+            try:
+                cfg_abs.relative_to(ws_dir)
+                is_workspace_cfg = True
+            except Exception:
+                is_workspace_cfg = False
+            if is_workspace_cfg:
+                data["db_path"] = str(WorkspaceManager.get_global_db_path())
+        except Exception:
+            pass
+
         if not data.get("db_path"):
             data["db_path"] = defaults.get("db_path", "")
         

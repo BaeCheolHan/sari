@@ -54,9 +54,9 @@ This separation avoids blocking requests during heavy indexing and keeps the ser
 4. Indexer starts background scan and file watcher.
 
 ## Server Data Paths
-- DB: `~/.local/share/sari/index.db`
+- DB: `~/.local/share/sari/index.db` (single global DB only)
 - Engine index: `~/.local/share/sari/index/global` (policy-dependent)
-- Config: `~/.config/sari/config.json` and `<workspace>/.sari/config.json`
+- Config: `~/.config/sari/config.json` (global), `<workspace>/.sari/config.json` (workspace overrides, **db_path ignored**)
 
 ## Key Policies
 - Search-first throttling under load.

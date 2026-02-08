@@ -18,10 +18,11 @@
 ### 2.1 `DB Access` 실패 / `database must be initialized`
 
 **원인**
-- 설정 파일에 `db_path`가 비어있음
+- 전역 설정 파일에 `db_path`가 비어있음
 
 **해결**
-- `doctor` 실행 시 자동으로 기본 `db_path`가 설정됩니다.
+- `doctor` 실행 시 전역 `db_path`가 자동 설정됩니다.
+- 전역 설정 파일(`~/.config/sari/config.json`)에서만 `db_path`가 적용됩니다.
 - 수동 설정 예시:
 ```json
 {

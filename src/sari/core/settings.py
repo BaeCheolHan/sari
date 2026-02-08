@@ -78,7 +78,7 @@ class Settings(BaseSettings):
 
     @property
     def db_path(self) -> str:
-        return os.path.join(self.WORKSPACE_ROOT, ".sari", "sari.db")
+        return str(Path.home() / ".local" / "share" / "sari" / "index.db")
 
     def get_int(self, key: str, default: int) -> int:
         val = getattr(self, key, None)
