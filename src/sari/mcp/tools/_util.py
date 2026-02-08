@@ -388,21 +388,19 @@ def resolve_db_path(input_path: str, roots: List[str]) -> Optional[str]:
     val = _get_env_any("FOLLOW_SYMLINKS", "0")
     follow_symlinks = (val.strip().lower() in ("1", "true", "yes", "on"))
     try:
-        p = Path(os.path.expanduser(input_path))
-        if not p.is_absolute():
-            p = (Path.cwd() / p).resolve()
-        else:
-            p = p.resolve()
+        # Use realpath to resolve macOS /var -> /private/var and symlinks
+        p = Path(os.path.expanduser(input_path)).resolve()
     except Exception:
         return None
 
     for root in roots:
         try:
-            root_norm = WorkspaceManager._normalize_path(root, follow_symlinks=follow_symlinks)  # type: ignore
-            root_path = Path(root_norm)
+            root_path = Path(root).expanduser().resolve()
             if p == root_path or root_path in p.parents:
                 rel = p.relative_to(root_path).as_posix()
-                return f"{WorkspaceManager.root_id_for_workspace(str(root_path))}/{rel}"
+                # Ensure we use the NEW root_id format
+                rid = WorkspaceManager.root_id_for_workspace(str(root_path))
+                return f"{rid}/{rel}"
         except Exception:
             continue
     return None

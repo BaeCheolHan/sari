@@ -56,9 +56,9 @@ class ScoringPolicy:
         p = self.sql_priors
         return f"""
         CASE
-            WHEN f.path LIKE 'src/%' OR f.path LIKE '%/src/%' OR f.path LIKE 'app/%' OR f.path LIKE '%/app/%' OR f.path LIKE 'core/%' OR f.path LIKE '%/core/%' THEN {p['src_path']}
-            WHEN f.path LIKE 'config/%' OR f.path LIKE '%/config/%' OR f.path LIKE 'domain/%' OR f.path LIKE '%/domain/%' OR f.path LIKE 'service/%' OR f.path LIKE '%/service/%' THEN {p['config_path']}
-            WHEN f.path LIKE 'test/%' OR f.path LIKE '%/test/%' OR f.path LIKE 'tests/%' OR f.path LIKE '%/tests/%' OR f.path LIKE 'example/%' OR f.path LIKE '%/example/%' OR f.path LIKE 'dist/%' OR f.path LIKE '%/dist/%' OR f.path LIKE 'build/%' OR f.path LIKE '%/build/%' THEN {p['test_path']}
+            WHEN f.path LIKE 'src/%' OR f.path LIKE '%/src/%' OR f.path LIKE 'app/%' OR f.path LIKE '%/app/%' OR f.path LIKE 'core/%' OR f.path LIKE '%/core/%' THEN {float(p['src_path'])}
+            WHEN f.path LIKE 'config/%' OR f.path LIKE '%/config/%' OR f.path LIKE 'domain/%' OR f.path LIKE '%/domain/%' OR f.path LIKE 'service/%' OR f.path LIKE '%/service/%' THEN {float(p['config_path'])}
+            WHEN f.path LIKE 'test/%' OR f.path LIKE '%/test/%' OR f.path LIKE 'tests/%' OR f.path LIKE '%/tests/%' OR f.path LIKE 'example/%' OR f.path LIKE '%/example/%' OR f.path LIKE 'dist/%' OR f.path LIKE '%/dist/%' OR f.path LIKE 'build/%' OR f.path LIKE '%/build/%' THEN {float(p['test_path'])}
             ELSE 0.0
         END
         """
@@ -67,9 +67,9 @@ class ScoringPolicy:
         p = self.sql_priors
         return f"""
         CASE
-            WHEN f.path LIKE '%.py' OR f.path LIKE '%.ts' OR f.path LIKE '%.go' OR f.path LIKE '%.java' OR f.path LIKE '%.kt' THEN {p['code_ext']}
-            WHEN f.path LIKE '%.yaml' OR f.path LIKE '%.yml' OR f.path LIKE '%.json' THEN {p['config_ext']}
-            WHEN f.path LIKE '%.lock' OR f.path LIKE '%.min.js' OR f.path LIKE '%.map' THEN {p['noise_ext']}
+            WHEN f.path LIKE '%.py' OR f.path LIKE '%.ts' OR f.path LIKE '%.go' OR f.path LIKE '%.java' OR f.path LIKE '%.kt' THEN {float(p['code_ext'])}
+            WHEN f.path LIKE '%.yaml' OR f.path LIKE '%.yml' OR f.path LIKE '%.json' THEN {float(p['config_ext'])}
+            WHEN f.path LIKE '%.lock' OR f.path LIKE '%.min.js' OR f.path LIKE '%.map' THEN {float(p['noise_ext'])}
             ELSE 0.0
         END
         """

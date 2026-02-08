@@ -345,7 +345,10 @@ class Handler(BaseHTTPRequestHandler):
 
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length)
-        payload = json.loads(body.decode("utf-8"))
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return self._json({"ok": False, "error": "invalid json"}, status=400)
 
         def _handle_one(req):
             return self.mcp_server.handle_request(req)

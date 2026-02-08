@@ -1,14 +1,14 @@
 import re
 
 _REDACT_ASSIGNMENTS_QUOTED = re.compile(
-    r"(?i)\b(password|passwd|pwd|secret|api_key|apikey|token|access_token|refresh_token|openai_api_key|aws_secret|database_url)\b(\s*[:=]\s*)(['\"])(.*?)(\3)"
+    r"(?i)\b(password|passwd|pwd|secret|api_key|apikey|token|access_token|refresh_token|openai_api_key|aws_secret|database_url)\b(\s*[:=]\s*)(['\"])([^'\"]{0,256})(\3)"
 )
 _REDACT_ASSIGNMENTS_BARE = re.compile(
-    r"(?i)\b(password|passwd|pwd|secret|api_key|apikey|token|access_token|refresh_token|openai_api_key|aws_secret|database_url)\b(\s*[:=]\s*)([^'\"\s,][^\s,]*)"
+    r"(?i)\b(password|passwd|pwd|secret|api_key|apikey|token|access_token|refresh_token|openai_api_key|aws_secret|database_url)\b(\s*[:=]\s*)([^'\"\s,]{1,256})"
 )
-_REDACT_AUTH_BEARER = re.compile(r"(?i)\bAuthorization\b\s*:\s*Bearer\s+([^\s,]+)")
+_REDACT_AUTH_BEARER = re.compile(r"(?i)\bAuthorization\b\s*:\s*Bearer\s+([a-zA-Z0-9._~+/-]{1,512})")
 _REDACT_PRIVATE_KEY = re.compile(
-    r"(?is)-----BEGIN [A-Z0-9 ]+PRIVATE KEY-----.*?-----END [A-Z0-9 ]+PRIVATE KEY-----"
+    r"(?is)-----BEGIN [A-Z0-9 ]+PRIVATE KEY-----[\s\S]{1,4096}-----END [A-Z0-9 ]+PRIVATE KEY-----"
 )
 
 def _redact(text: str) -> str:

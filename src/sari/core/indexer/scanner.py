@@ -51,7 +51,10 @@ class Scanner:
         For example, "**/*.{js,ts}" becomes ["**/*.js", "**/*.ts"].
         """
         patterns = [pattern]
+        max_expansion = 1000  # Safety limit
         while any("{" in p for p in patterns):
+            if len(patterns) > max_expansion:
+                break
             new_patterns = []
             for p in patterns:
                 match = re.search(r"\{([^{}]+)\}", p)
@@ -61,6 +64,8 @@ class Scanner:
                     options = match.group(1).split(",")
                     for option in options:
                         new_patterns.append(f"{prefix}{option}{suffix}")
+                        if len(new_patterns) > max_expansion:
+                            return patterns # Fallback to partially expanded
                 else:
                     new_patterns.append(p)
             patterns = new_patterns
@@ -75,8 +80,12 @@ class Scanner:
             
         regex_parts = []
         for pat in expanded_patterns:
-            # ALWAYS use fnmatch.translate for glob semantics
-            regex_parts.append(fnmatch.translate(pat))
+            try:
+                # ALWAYS use fnmatch.translate for glob semantics
+                regex_parts.append(fnmatch.translate(pat))
+            except Exception:
+                continue
+        if not regex_parts: return None
         return re.compile("|".join(regex_parts))
 
     def iter_file_entries(self, root: Path, apply_exclude: bool = True) -> Iterable[Tuple[Path, os.stat_result, bool]]:
@@ -92,7 +101,7 @@ class Scanner:
             if self.workspace_trie.is_path_owned_by_sub_workspace(str(current_dir), str(root)):
                 return
 
-        # Cycle detection for symlinks
+        # Cycle detection for symlinks (Directories)
         if follow_symlinks:
             try:
                 real_path = str(current_dir.resolve())
@@ -131,6 +140,16 @@ class Scanner:
             
             elif entry.is_file(follow_symlinks=follow_symlinks):
                 # File processing
+                # Cycle detection for symlinks (Files)
+                if follow_symlinks:
+                    try:
+                        real_f_path = str(p.resolve())
+                        if real_f_path in visited:
+                            continue
+                        visited.add(real_f_path)
+                    except (PermissionError, OSError):
+                        continue
+
                 fn = entry.name
                 excluded = False
                 if self.exclude_glob_regex and (self.exclude_glob_regex.match(fn) or self.exclude_glob_regex.match(rel)):

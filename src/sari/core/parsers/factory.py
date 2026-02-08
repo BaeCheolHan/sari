@@ -38,8 +38,6 @@ class ParserFactory:
             key = "python"
             if key not in cls._parsers:
                 cls._parsers[key] = PythonParser()
-            if key not in cls._parsers:
-                cls._parsers[key] = PythonParser()
             return cls._parsers[key]
         
         if ext in (".tf", ".hcl"):

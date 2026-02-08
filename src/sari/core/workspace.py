@@ -140,7 +140,8 @@ class WorkspaceManager:
         if WorkspaceManager._looks_like_sqlite(legacy):
             return
         try:
-            data = json.loads(legacy.read_text(encoding="utf-8"))
+            with legacy.open("r", encoding="utf-8") as f:
+                data = json.load(f)
             if isinstance(data, dict):
                 preferred_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(legacy, preferred_path)

@@ -51,6 +51,18 @@ class LocalSearchDB:
 
     def set_engine(self, engine): self.engine = engine
     def set_settings(self, settings): self.settings = settings
+
+    @property
+    def fts_enabled(self) -> bool:
+        """Check if FTS5 is supported by the SQLite library."""
+        try:
+            conn = self.db.connection()
+            res = conn.execute("PRAGMA compile_options").fetchall()
+            options = [r[0] for r in res]
+            return "ENABLE_FTS5" in options
+        except Exception:
+            return False
+
     def create_staging_table(self, cur=None): self._ensure_staging()
 
     def _snippet_repo(self) -> SnippetRepository:

@@ -24,7 +24,9 @@ class _WriteGate:
         self._fh = None
 
     def __enter__(self):
-        self._fh = open(self.lock_path, "a+")
+        # Use os.open with O_CREAT to ensure atomic creation/access
+        fd = os.open(self.lock_path, os.O_RDWR | os.O_CREAT, 0o666)
+        self._fh = os.fdopen(fd, "a+")
         if fcntl is not None:
             fcntl.flock(self._fh, fcntl.LOCK_EX)
         elif msvcrt is not None:
@@ -118,6 +120,10 @@ class DBWriter:
             elif t.kind == "upsert_files_staging" and t.rows: self.db.upsert_files_staging(cur, t.rows)
             elif t.kind == "staging_merge": self.db.finalize_turbo_batch()
             elif t.kind == "update_last_seen": self.db.update_last_seen_tx(cur, t.paths, int(time.time()))
+            elif t.kind == "delete_path" and t.path:
+                self.db.delete_path_tx(cur, t.path)
+                if t.engine_deletes and hasattr(self.db, "engine") and self.db.engine:
+                    self.db.engine.delete_documents(t.engine_deletes)
 
     def get_performance_metrics(self) -> Dict[str, Any]:
         return {"throughput_docs_sec": 0.0, "latency_p95": 0.0, "queue_depth": self.qsize()}

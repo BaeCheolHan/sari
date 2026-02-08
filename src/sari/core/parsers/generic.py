@@ -49,7 +49,11 @@ class GenericRegexParser(BaseParser):
                 info = {"sid": sid, "path": path, "name": name, "kind": kind, "line": line_no, "meta": "{}", "raw": line.strip(), "qual": name}
                 active_scopes.append((cur_bal, info))
 
-            op, cl = clean.count("{"), clean.count("}")
+            # Safer brace counting: ignore characters in strings
+            # Note: This is a heuristic for Generic Regex Parser
+            tmp_line = re.sub(r'"[^"\\]*(?:\\.[^"\\]*)*"', "", clean)
+            tmp_line = re.sub(r"'[^'\\]*(?:\\.[^'\\]*)*'", "", tmp_line)
+            op, cl = tmp_line.count("{"), tmp_line.count("}")
             cur_bal += (op - cl)
 
             still_active = []
@@ -113,7 +117,10 @@ class HCLRegexParser(GenericRegexParser):
                 info = {"sid": sid, "path": path, "name": name, "kind": kind, "line": line_no, "meta": "{}", "raw": line.strip(), "qual": name}
                 active_scopes.append((cur_bal, info))
 
-            op, cl = clean.count("{"), clean.count("}")
+            # Safer brace counting: ignore characters in strings
+            tmp_line = re.sub(r'"[^"\\]*(?:\\.[^"\\]*)*"', "", clean)
+            tmp_line = re.sub(r"'[^'\\]*(?:\\.[^'\\]*)*'", "", tmp_line)
+            op, cl = tmp_line.count("{"), tmp_line.count("}")
             cur_bal += (op - cl)
 
             still_active = []

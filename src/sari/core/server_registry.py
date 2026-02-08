@@ -349,11 +349,3 @@ class ServerRegistry:
     def prune_dead(self) -> None:
         """Public method to prune dead daemons and associated workspaces."""
         self._update(self._prune_dead_locked)
-
-    def touch_daemon(self, boot_id: str) -> None:
-        """Update last_seen_ts for a daemon to indicate it is still alive."""
-        def _upd(data):
-            daemons = data.get("daemons", {})
-            if boot_id in daemons:
-                daemons[boot_id]["last_seen_ts"] = time.time()
-        self._update(_upd)

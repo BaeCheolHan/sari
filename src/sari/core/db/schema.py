@@ -162,5 +162,5 @@ def _init_fts(cur: sqlite3.Cursor):
         )
         if settings.FTS_REBUILD_ON_START:
             cur.execute("INSERT INTO files_fts(files_fts) VALUES ('rebuild')")
-    except:
-        pass
+    except Exception as e:
+        logger.error(f"FTS initialization failed: {e}")

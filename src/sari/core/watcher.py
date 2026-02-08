@@ -436,6 +436,9 @@ class FileWatcher:
         roots = [WorkspaceManager.normalize_path(p) for p in self.paths if p]
         roots.sort(key=len, reverse=True)
         for root in roots:
-            if norm_event == root or norm_event.startswith(root + os.sep):
-                return root
+            try:
+                if os.path.commonpath([norm_event, root]) == root:
+                    return root
+            except ValueError:
+                continue
         return ""

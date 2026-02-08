@@ -50,11 +50,13 @@ def execute_list_symbols(args: Dict[str, Any], db: LocalSearchDB, roots: List[st
             "qual": r[5]
         })
 
-    def build_tree(nodes, parent=""):
+    def build_tree(nodes, parent="", depth=0):
+        if depth > 10:  # Safety limit to prevent infinite recursion
+            return []
         tree = []
         for n in nodes:
             if n["parent"] == parent:
-                children = build_tree(nodes, n["name"])
+                children = build_tree(nodes, n["name"], depth + 1)
                 item = {"name": n["name"], "kind": n["kind"], "line": n["line"], "end": n["end_line"]}
                 if children:
                     item["children"] = children
