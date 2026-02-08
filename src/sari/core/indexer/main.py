@@ -2,6 +2,7 @@ import os
 import time
 import logging
 import concurrent.futures
+import threading
 from typing import List, Optional, Dict, Any
 from pathlib import Path
 from sari.core.config.main import Config
@@ -19,6 +20,8 @@ class Indexer:
         # 병렬 처리를 위한 ThreadPoolExecutor (I/O 바운드 작업에 적합)
         max_workers = kwargs.get("max_workers", os.cpu_count() or 4)
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+        self._rescan_event = threading.Event()
+        self._scan_lock = threading.Lock()
 
     def scan_once(self):
         self.status.scan_started_ts = int(time.time())
@@ -137,15 +140,30 @@ class Indexer:
         self.status.scan_finished_ts = int(time.time())
         self.status.index_ready = True
 
+    def _run_scan_once(self):
+        with self._scan_lock:
+            self.scan_once()
+
+    def request_rescan(self):
+        self._rescan_event.set()
+
+    def index_file(self, _path: str):
+        self.request_rescan()
+
+    def run_forever(self):
+        next_due = time.time()
+        while True:
+            if self._rescan_event.is_set() or time.time() >= next_due:
+                self._rescan_event.clear()
+                self._run_scan_once()
+                next_due = time.time() + self.config.scan_interval_seconds
+            time.sleep(0.2)
+
     def stop(self):
         if self._executor:
             self._executor.shutdown(wait=True, cancel_futures=True)
             self._executor = None
     
-    def run_forever(self):
-        while True:
-            self.scan_once()
-            time.sleep(self.config.scan_interval_seconds)
 
 class IndexStatus:
     def __init__(self):
