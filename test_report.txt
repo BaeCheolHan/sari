@@ -1,0 +1,2512 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.9.6, pytest-8.4.2, pluggy-1.6.0
+rootdir: /Users/baecheolhan/Documents/repositories
+configfile: pytest.ini
+testpaths: tests
+plugins: anyio-4.12.1, asyncio-1.2.0, cov-7.0.0
+asyncio: mode=strict, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 274 items
+
+tests/test_advanced_edge_cases.py .....                                  [  1%]
+tests/test_advanced_language_patterns.py FFF.FFFF..FFFFFF.FFF            [  9%]
+tests/test_ast_engine.py .F                                              [  9%]
+tests/test_ast_intelligence.py FF                                        [ 10%]
+tests/test_async_server.py ...                                           [ 11%]
+tests/test_broken_scenarios.py ....                                      [ 13%]
+tests/test_business_logic_smoke.py .                                     [ 13%]
+tests/test_catastrophic_scenarios.py ..                                  [ 14%]
+tests/test_chaos.py F.                                                   [ 14%]
+tests/test_cli_commands.py ......                                        [ 17%]
+tests/test_cli_deep.py ...                                               [ 18%]
+tests/test_cli_extra.py ....                                             [ 19%]
+tests/test_cold_start.py F                                               [ 20%]
+tests/test_config.py ..........                                          [ 23%]
+tests/test_config_matrix.py ....F.                                       [ 25%]
+tests/test_core_flow.py ..                                               [ 26%]
+tests/test_core_hardened.py ...s                                         [ 28%]
+tests/test_core_main.py ....                                             [ 29%]
+tests/test_core_resilience_deep.py ....                                  [ 31%]
+tests/test_core_stress_extreme.py F.                                     [ 31%]
+tests/test_daemon.py ...                                                 [ 32%]
+tests/test_daemon_cli_integration.py .                                   [ 33%]
+tests/test_daemon_resolver.py ...                                        [ 34%]
+tests/test_daemon_session_deep.py .F.                                    [ 35%]
+tests/test_daemon_stability_new.py ..                                    [ 36%]
+tests/test_data_integrity.py .....                                       [ 37%]
+tests/test_db.py FF                                                      [ 38%]
+tests/test_db_concurrency.py .                                           [ 39%]
+tests/test_db_writer_guards.py .F.                                       [ 40%]
+tests/test_debug_integrity.py .                                          [ 40%]
+tests/test_doctor_runtime_guards.py ..                                   [ 41%]
+tests/test_doctor_self_healing.py F..                                    [ 42%]
+tests/test_edge_cases.py .........                                       [ 45%]
+tests/test_embedded_server.py FF                                         [ 46%]
+tests/test_engines.py .....                                              [ 48%]
+tests/test_enterprise_intelligence.py FFF                                [ 49%]
+tests/test_fallback_parsers.py ..F..                                     [ 51%]
+tests/test_final_push.py ...                                             [ 52%]
+tests/test_fullstack_intelligence.py FFF                                 [ 53%]
+tests/test_functional_integrity.py .F.                                   [ 54%]
+tests/test_indexer.py ..                                                 [ 55%]
+tests/test_indexer_new_features.py .                                     [ 55%]
+tests/test_infra_edge_cases.py .F                                        [ 56%]
+tests/test_main_dual_stack.py F.                                         [ 56%]
+tests/test_mcp_integration_gate.py ..                                    [ 57%]
+tests/test_mcp_tools.py ....                                             [ 59%]
+tests/test_mcp_tools_complex.py ..                                       [ 59%]
+tests/test_mcp_tools_extra.py .................                          [ 66%]
+tests/test_mcp_tools_full.py ..                                          [ 66%]
+tests/test_mcp_utils.py ......                                           [ 68%]
+tests/test_multi_workspace.py F                                          [ 69%]
+tests/test_nested_workspaces.py ..                                       [ 70%]
+tests/test_new_languages.py FFFFFFFFFF                                   [ 73%]
+tests/test_parser_truth.py .                                             [ 74%]
+tests/test_parsers.py ....                                               [ 75%]
+tests/test_pro_doctor_edge_cases.py ....                                 [ 77%]
+tests/test_real_workspace_ast.py F.                                      [ 77%]
+tests/test_real_world_frameworks.py FF.                                  [ 78%]
+tests/test_runtime_gates.py .F......FF                                   [ 82%]
+tests/test_search_engine_mapping.py ..                                   [ 83%]
+tests/test_server.py ..........                                          [ 86%]
+tests/test_stability.py ....                                             [ 88%]
+tests/test_standard_essentials.py FFF                                    [ 89%]
+tests/test_storage.py .                                                  [ 89%]
+tests/test_symbol_tools_e2e.py .F                                        [ 90%]
+tests/test_universal_ast.py FF                                           [ 91%]
+tests/test_utils_context.py .                                            [ 91%]
+tests/test_utils_file.py ....                                            [ 93%]
+tests/test_utils_misc.py .....                                           [ 94%]
+tests/test_version_reporting.py .                                        [ 95%]
+tests/test_watcher.py .FFF.                                              [ 97%]
+tests/test_web_intelligence.py FFF                                       [ 98%]
+tests/test_workspace_policy.py ....                                      [ 99%]
+tests/test_z_bulk_tools.py .                                             [100%]
+
+=================================== FAILURES ===================================
+______ TestJavaSpringAdvanced.test_spring_controller_with_request_mapping ______
+
+self = <test_advanced_language_patterns.TestJavaSpringAdvanced object at 0x109806760>
+
+        def test_spring_controller_with_request_mapping(self):
+            """@Controller와 @RequestMapping 라우트 감지"""
+            engine = ASTEngine()
+            code = '''
+    @Controller
+    @RequestMapping("/api/v1")
+    public class UserController {
+    
+        @Autowired
+        private UserService userService;
+    
+        @GetMapping("/users/{id}")
+        public ResponseEntity<User> getUser(@PathVariable Long id) {
+            return ResponseEntity.ok(userService.findById(id));
+        }
+    
+        @PostMapping("/users")
+        public ResponseEntity<User> createUser(@RequestBody UserDto dto) {
+            return ResponseEntity.created(userService.create(dto));
+        }
+    
+        @DeleteMapping("/users/{id}")
+        public ResponseEntity<Void> deleteUser(@PathVariable Long id) {
+            userService.delete(id);
+            return ResponseEntity.noContent().build();
+        }
+    }
+    '''
+            symbols, _ = engine.extract_symbols("UserController.java", "java", code)
+            names = [s[3] for s in symbols]
+    
+            # Controller 클래스 감지
+>           assert "UserController" in names
+E           AssertionError: assert 'UserController' in [2, 9, 10, 14, 15, 19, ...]
+
+tests/test_advanced_language_patterns.py:48: AssertionError
+________ TestJavaSpringAdvanced.test_spring_service_with_transactional _________
+
+self = <test_advanced_language_patterns.TestJavaSpringAdvanced object at 0x109806d30>
+
+        def test_spring_service_with_transactional(self):
+            """@Service와 @Transactional 패턴"""
+            engine = ASTEngine()
+            code = '''
+    @Service
+    @Transactional(readOnly = true)
+    public class OrderService {
+    
+        @Transactional
+        public Order createOrder(OrderRequest request) {
+            return orderRepository.save(new Order(request));
+        }
+    
+        @Transactional(propagation = Propagation.REQUIRES_NEW)
+        public void processPayment(Long orderId) {
+            // 별도 트랜잭션으로 처리
+        }
+    }
+    '''
+            symbols, _ = engine.extract_symbols("OrderService.java", "java", code)
+    
+>           service = next(s for s in symbols if s[3] == "OrderService")
+E           StopIteration
+
+tests/test_advanced_language_patterns.py:79: StopIteration
+__________ TestJavaSpringAdvanced.test_spring_configuration_and_beans __________
+
+self = <test_advanced_language_patterns.TestJavaSpringAdvanced object at 0x10982f1c0>
+
+        def test_spring_configuration_and_beans(self):
+            """@Configuration과 @Bean 패턴"""
+            engine = ASTEngine()
+            code = '''
+    @Configuration
+    @EnableAsync
+    @EnableScheduling
+    public class AppConfig {
+    
+        @Bean
+        @Primary
+        public DataSource dataSource() {
+            return new HikariDataSource();
+        }
+    
+        @Bean
+        @ConditionalOnProperty(name = "cache.enabled", havingValue = "true")
+        public CacheManager cacheManager() {
+            return new RedisCacheManager();
+        }
+    }
+    '''
+            symbols, _ = engine.extract_symbols("AppConfig.java", "java", code)
+            names = [s[3] for s in symbols]
+    
+>           assert "AppConfig" in names
+E           AssertionError: assert 'AppConfig' in [2, 7, 9, 13, 15]
+
+tests/test_advanced_language_patterns.py:111: AssertionError
+___________________ TestReactAdvanced.test_react_hooks_usage ___________________
+
+self = <test_advanced_language_patterns.TestReactAdvanced object at 0x10982f670>
+
+        def test_react_hooks_usage(self):
+            """React Hooks 패턴 (useState, useEffect, useMemo)"""
+            engine = ASTEngine()
+            code = '''
+    const UserProfile = ({ userId }) => {
+        const [user, setUser] = useState(null);
+        const [loading, setLoading] = useState(true);
+    
+        useEffect(() => {
+            fetchUser(userId).then(data => {
+                setUser(data);
+                setLoading(false);
+            });
+        }, [userId]);
+    
+        const fullName = useMemo(() => {
+            return user ? `${user.firstName} ${user.lastName}` : '';
+        }, [user]);
+    
+        if (loading) return <Spinner />;
+        return <div>{fullName}</div>;
+    };
+    
+    export default UserProfile;
+    '''
+            symbols, _ = engine.extract_symbols("UserProfile.jsx", "javascript", code)
+            names = [s[3] for s in symbols]
+    
+            # 함수형 컴포넌트 감지
+>           assert "UserProfile" in names
+E           AssertionError: assert 'UserProfile' in [2, 13]
+
+tests/test_advanced_language_patterns.py:179: AssertionError
+_________________ TestReactAdvanced.test_react_class_component _________________
+
+self = <test_advanced_language_patterns.TestReactAdvanced object at 0x10982f880>
+
+        def test_react_class_component(self):
+            """React Class Component 패턴"""
+            engine = ASTEngine()
+            code = '''
+    class Counter extends React.Component {
+        constructor(props) {
+            super(props);
+            this.state = { count: 0 };
+        }
+    
+        componentDidMount() {
+            console.log('Mounted');
+        }
+    
+        handleClick = () => {
+            this.setState(prev => ({ count: prev.count + 1 }));
+        }
+    
+        render() {
+            return (
+                <div>
+                    <p>{this.state.count}</p>
+                    <button onClick={this.handleClick}>+</button>
+                </div>
+            );
+        }
+    }
+    '''
+            symbols, _ = engine.extract_symbols("Counter.jsx", "javascript", code)
+            names = [s[3] for s in symbols]
+    
+            # Class Component 감지
+>           assert "Counter" in names
+E           AssertionError: assert 'Counter' in [2, 3, 8, 16]
+
+tests/test_advanced_language_patterns.py:215: AssertionError
+______________ TestReactAdvanced.test_react_memo_and_forward_ref _______________
+
+self = <test_advanced_language_patterns.TestReactAdvanced object at 0x10982fa90>
+
+        def test_react_memo_and_forward_ref(self):
+            """React.memo와 forwardRef 패턴"""
+            engine = ASTEngine()
+            code = '''
+    const MemoizedList = React.memo(({ items }) => {
+        return (
+            <ul>
+                {items.map(item => <li key={item.id}>{item.name}</li>)}
+            </ul>
+        );
+    });
+    
+    const FancyInput = React.forwardRef((props, ref) => {
+        return <input ref={ref} className="fancy" {...props} />;
+    });
+    
+    const withAuth = (WrappedComponent) => {
+        return function AuthWrapper(props) {
+            const isAuth = useAuth();
+            if (!isAuth) return <Redirect to="/login" />;
+            return <WrappedComponent {...props} />;
+        };
+    };
+    '''
+            symbols, _ = engine.extract_symbols("Advanced.jsx", "javascript", code)
+            names = [s[3] for s in symbols]
+    
+            # 다양한 컴포넌트 형태 감지
+>           assert "MemoizedList" in names or "FancyInput" in names or "withAuth" in names
+E           AssertionError: assert ('MemoizedList' in [2, 10, 14] or 'FancyInput' in [2, 10, 14] or 'withAuth' in [2, 10, 14])
+
+tests/test_advanced_language_patterns.py:247: AssertionError
+__________________ TestVueAdvanced.test_vue_options_api_full ___________________
+
+self = <test_advanced_language_patterns.TestVueAdvanced object at 0x10982fd60>
+
+        def test_vue_options_api_full(self):
+            """Vue Options API 전체 패턴"""
+            engine = ASTEngine()
+            code = '''
+    <template>
+      <div class="user-profile">
+        <h1>{{ fullName }}</h1>
+        <p>{{ formattedDate }}</p>
+        <button @click="handleClick">Save</button>
+      </div>
+    </template>
+    
+    <script>
+    export default {
+      name: 'UserProfile',
+    
+      props: {
+        userId: {
+          type: Number,
+          required: true
+        }
+      },
+    
+      data() {
+        return {
+          user: null,
+          loading: true
+        };
+      },
+    
+      computed: {
+        fullName() {
+          return this.user ? `${this.user.firstName} ${this.user.lastName}` : '';
+        },
+        formattedDate() {
+          return new Date().toLocaleDateString();
+        }
+      },
+    
+      watch: {
+        userId: {
+          handler(newVal) {
+            this.fetchUser(newVal);
+          },
+          immediate: true
+        }
+      },
+    
+      created() {
+        console.log('Component created');
+      },
+    
+      mounted() {
+        console.log('Component mounted');
+      },
+    
+      methods: {
+        async fetchUser(id) {
+          this.loading = true;
+          this.user = await api.getUser(id);
+          this.loading = false;
+        },
+        handleClick() {
+          this.$emit('save', this.user);
+        }
+      }
+    };
+    </script>
+    '''
+            symbols, _ = engine.extract_symbols("UserProfile.vue", "vue", code)
+            names = [s[3] for s in symbols]
+    
+            # Options API 핵심 메서드 감지
+>           assert "data" in names
+E           AssertionError: assert 'data' in [4, 11, 18, 19, 22, 27, ...]
+
+tests/test_advanced_language_patterns.py:330: AssertionError
+_________ TestTypeScriptAdvanced.test_typescript_class_with_decorators _________
+
+self = <test_advanced_language_patterns.TestTypeScriptAdvanced object at 0x10982f6a0>
+
+        def test_typescript_class_with_decorators(self):
+            """TypeScript 클래스와 데코레이터"""
+            engine = ASTEngine()
+            code = '''
+    @Injectable()
+    @Controller('users')
+    class UserController {
+        constructor(
+            private readonly userService: UserService,
+            @Inject('CONFIG') private config: AppConfig
+        ) {}
+    
+        @Get(':id')
+        @UseGuards(AuthGuard)
+        async getUser(@Param('id') id: string): Promise<User> {
+            return this.userService.findById(id);
+        }
+    
+        @Post()
+        @HttpCode(201)
+        async createUser(@Body() dto: CreateUserDto): Promise<User> {
+            return this.userService.create(dto);
+        }
+    }
+    '''
+            symbols, _ = engine.extract_symbols("user.controller.ts", "typescript", code)
+            names = [s[3] for s in symbols]
+    
+>           assert "UserController" in names
+E           AssertionError: assert 'UserController' in [2, 5, 12, 18]
+
+tests/test_advanced_language_patterns.py:435: AssertionError
+___________ TestTypeScriptAdvanced.test_typescript_generic_functions ___________
+
+self = <test_advanced_language_patterns.TestTypeScriptAdvanced object at 0x109806130>
+
+        def test_typescript_generic_functions(self):
+            """TypeScript Generic 함수"""
+            engine = ASTEngine()
+            code = '''
+    function identity<T>(arg: T): T {
+        return arg;
+    }
+    
+    const reverseArray = <T>(items: T[]): T[] => {
+        return items.reverse();
+    };
+    
+    async function fetchData<T>(url: string): Promise<T> {
+        const response = await fetch(url);
+        return response.json();
+    }
+    
+    class DataService<T extends Entity> {
+        async find(id: string): Promise<T | null> {
+            return null;
+        }
+    }
+    '''
+            symbols, _ = engine.extract_symbols("generics.ts", "typescript", code)
+            names = [s[3] for s in symbols]
+    
+>           assert "identity" in names or "DataService" in names
+E           AssertionError: assert ('identity' in [2, 6, 10, 15, 16] or 'DataService' in [2, 6, 10, 15, 16])
+
+tests/test_advanced_language_patterns.py:464: AssertionError
+____________ TestPythonAdvanced.test_python_dataclass_and_pydantic _____________
+
+self = <test_advanced_language_patterns.TestPythonAdvanced object at 0x1098393d0>
+
+        def test_python_dataclass_and_pydantic(self):
+            """Dataclass와 Pydantic 모델"""
+            engine = ASTEngine()
+            code = '''
+    from dataclasses import dataclass, field
+    from typing import Optional, List
+    from pydantic import BaseModel, validator
+    
+    @dataclass
+    class UserEntity:
+        id: int
+        name: str
+        email: str
+        roles: List[str] = field(default_factory=list)
+        is_active: bool = True
+    
+    @dataclass(frozen=True)
+    class ImmutableConfig:
+        host: str
+        port: int
+    
+    class UserRequest(BaseModel):
+        name: str
+        email: str
+    
+        @validator('email')
+        def validate_email(cls, v):
+            if '@' not in v:
+                raise ValueError('Invalid email')
+            return v
+    
+    class UserResponse(BaseModel):
+        id: int
+        name: str
+        email: str
+    
+        class Config:
+            orm_mode = True
+    '''
+            symbols, _ = engine.extract_symbols("models.py", "python", code)
+            names = [s[3] for s in symbols]
+    
+>           assert "UserEntity" in names
+E           AssertionError: assert 'UserEntity' in [2, 7, 8, 15, 16, 19, ...]
+
+tests/test_advanced_language_patterns.py:516: AssertionError
+________________ TestPythonAdvanced.test_python_async_functions ________________
+
+self = <test_advanced_language_patterns.TestPythonAdvanced object at 0x1098395e0>
+
+        def test_python_async_functions(self):
+            """Python Async/Await 패턴"""
+            engine = ASTEngine()
+            code = '''
+    import asyncio
+    from typing import List
+    
+    async def fetch_user(user_id: int) -> dict:
+        """Fetch user from API"""
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f'/users/{user_id}') as response:
+                return await response.json()
+    
+    async def fetch_all_users(user_ids: List[int]) -> List[dict]:
+        tasks = [fetch_user(uid) for uid in user_ids]
+        return await asyncio.gather(*tasks)
+    
+    class AsyncRepository:
+        async def find_by_id(self, id: int):
+            return await self.db.fetch_one(id)
+    
+        async def save(self, entity):
+            return await self.db.insert(entity)
+    '''
+            symbols, _ = engine.extract_symbols("async_service.py", "python", code)
+            names = [s[3] for s in symbols]
+    
+>           assert "fetch_user" in names
+E           AssertionError: assert 'fetch_user' in [2, 5, 6, 8, 9, 11, ...]
+
+tests/test_advanced_language_patterns.py:548: AssertionError
+___________ TestPythonAdvanced.test_python_decorators_and_properties ___________
+
+self = <test_advanced_language_patterns.TestPythonAdvanced object at 0x1098397f0>
+
+        def test_python_decorators_and_properties(self):
+            """Python 데코레이터와 Property"""
+            engine = ASTEngine()
+            code = '''
+    from functools import wraps
+    
+    def log_calls(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            print(f"Calling {func.__name__}")
+            return func(*args, **kwargs)
+        return wrapper
+    
+    def retry(times=3):
+        def decorator(func):
+            @wraps(func)
+            def wrapper(*args, **kwargs):
+                for i in range(times):
+                    try:
+                        return func(*args, **kwargs)
+                    except Exception:
+                        if i == times - 1:
+                            raise
+            return wrapper
+        return decorator
+    
+    class User:
+        def __init__(self, name: str, birth_year: int):
+            self._name = name
+            self._birth_year = birth_year
+    
+        @property
+        def name(self) -> str:
+            return self._name
+    
+        @name.setter
+        def name(self, value: str):
+            self._name = value
+    
+        @property
+        def age(self) -> int:
+            return 2024 - self._birth_year
+    
+        @staticmethod
+        def create_anonymous():
+            return User("Anonymous", 2000)
+    
+        @classmethod
+        def from_dict(cls, data: dict):
+            return cls(data['name'], data['birth_year'])
+    '''
+            symbols, _ = engine.extract_symbols("decorators.py", "python", code)
+            names = [s[3] for s in symbols]
+    
+>           assert "log_calls" in names
+E           AssertionError: assert 'log_calls' in [2, 4, 5, 6, 7, 11, ...]
+
+tests/test_advanced_language_patterns.py:606: AssertionError
+______________ TestHCLAdvanced.test_terraform_aws_infrastructure _______________
+
+self = <test_advanced_language_patterns.TestHCLAdvanced object at 0x109839ac0>
+
+        def test_terraform_aws_infrastructure(self):
+            """AWS 인프라 리소스"""
+            engine = ASTEngine()
+            code = '''
+    terraform {
+      required_providers {
+        aws = {
+          source  = "hashicorp/aws"
+          version = "~> 5.0"
+        }
+      }
+    }
+    
+    provider "aws" {
+      region = var.aws_region
+    }
+    
+    resource "aws_vpc" "main" {
+      cidr_block           = "10.0.0.0/16"
+      enable_dns_hostnames = true
+    
+      tags = {
+        Name = "main-vpc"
+      }
+    }
+    
+    resource "aws_subnet" "public" {
+      count             = 2
+      vpc_id            = aws_vpc.main.id
+      cidr_block        = cidrsubnet(aws_vpc.main.cidr_block, 8, count.index)
+      availability_zone = data.aws_availability_zones.available.names[count.index]
+    
+      tags = {
+        Name = "public-subnet-${count.index}"
+      }
+    }
+    
+    resource "aws_security_group" "web" {
+      name        = "web-sg"
+      description = "Security group for web servers"
+      vpc_id      = aws_vpc.main.id
+    
+      ingress {
+        from_port   = 443
+        to_port     = 443
+        protocol    = "tcp"
+        cidr_blocks = ["0.0.0.0/0"]
+      }
+    }
+    '''
+            symbols, _ = engine.extract_symbols("main.tf", "hcl", code)
+            names = [s[3] for s in symbols]
+    
+            # Resource 블록 감지
+>           assert any("aws_vpc" in n for n in names)
+
+tests/test_advanced_language_patterns.py:672: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+.0 = <list_iterator object at 0x109c0b4f0>
+
+>   assert any("aws_vpc" in n for n in names)
+E   TypeError: argument of type 'int' is not iterable
+
+tests/test_advanced_language_patterns.py:672: TypeError
+___________________ TestSQLAdvanced.test_sql_complex_schema ____________________
+
+self = <test_advanced_language_patterns.TestSQLAdvanced object at 0x109839f70>
+
+        def test_sql_complex_schema(self):
+            """복잡한 스키마 정의"""
+            engine = ASTEngine()
+            code = '''
+    CREATE TABLE users (
+        id BIGINT PRIMARY KEY AUTO_INCREMENT,
+        email VARCHAR(255) NOT NULL UNIQUE,
+        password_hash VARCHAR(255) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        deleted_at TIMESTAMP NULL,
+        INDEX idx_email (email),
+        INDEX idx_created (created_at)
+    );
+    
+    CREATE TABLE orders (
+        id BIGINT PRIMARY KEY AUTO_INCREMENT,
+        user_id BIGINT NOT NULL,
+        status ENUM('pending', 'processing', 'shipped', 'delivered') DEFAULT 'pending',
+        total_amount DECIMAL(10, 2) NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    
+    CREATE INDEX idx_user_orders ON orders(user_id, status);
+    
+    ALTER TABLE users ADD COLUMN phone VARCHAR(20) NULL AFTER email;
+    '''
+            symbols, _ = engine.extract_symbols("schema.sql", "sql", code)
+            names = [s[3] for s in symbols]
+    
+            # CREATE TABLE 감지
+>           assert "users" in names
+E           AssertionError: assert 'users' in [2, 13]
+
+tests/test_advanced_language_patterns.py:764: AssertionError
+____________ TestExpressAdvanced.test_express_router_and_middleware ____________
+
+self = <test_advanced_language_patterns.TestExpressAdvanced object at 0x10983f250>
+
+        def test_express_router_and_middleware(self):
+            """Express Router와 Middleware"""
+            engine = ASTEngine()
+            code = '''
+    const express = require('express');
+    const router = express.Router();
+    
+    // Middleware
+    const authMiddleware = (req, res, next) => {
+        if (!req.headers.authorization) {
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
+        next();
+    };
+    
+    const logMiddleware = (req, res, next) => {
+        console.log(`${req.method} ${req.path}`);
+        next();
+    };
+    
+    router.use(logMiddleware);
+    
+    router.get('/users', async (req, res) => {
+        const users = await User.findAll();
+        res.json(users);
+    });
+    
+    router.get('/users/:id', authMiddleware, async (req, res) => {
+        const user = await User.findById(req.params.id);
+        if (!user) return res.status(404).json({ error: 'Not found' });
+        res.json(user);
+    });
+    
+    router.post('/users', authMiddleware, async (req, res) => {
+        const user = await User.create(req.body);
+        res.status(201).json(user);
+    });
+    
+    router.put('/users/:id', authMiddleware, async (req, res) => {
+        const user = await User.update(req.params.id, req.body);
+        res.json(user);
+    });
+    
+    router.delete('/users/:id', authMiddleware, async (req, res) => {
+        await User.delete(req.params.id);
+        res.status(204).send();
+    });
+    
+    module.exports = router;
+    '''
+            symbols, _ = engine.extract_symbols("users.router.js", "javascript", code)
+            names = [s[3] for s in symbols]
+    
+            # Middleware 함수 감지
+>           assert "authMiddleware" in names or "logMiddleware" in names
+E           AssertionError: assert ('authMiddleware' in [6, 13, 20, 25, 31, 36, ...] or 'logMiddleware' in [6, 13, 20, 25, 31, 36, ...])
+
+tests/test_advanced_language_patterns.py:829: AssertionError
+______________ TestBashAdvanced.test_bash_functions_and_variables ______________
+
+self = <test_advanced_language_patterns.TestBashAdvanced object at 0x10983f4f0>
+
+        def test_bash_functions_and_variables(self):
+            """Bash 함수와 변수"""
+            engine = ASTEngine()
+            code = '''
+    #!/bin/bash
+    
+    # 환경 변수
+    export SARI_HOME="/opt/sari"
+    SARI_PORT=47800
+    LOG_DIR="${SARI_HOME}/logs"
+    
+    # 함수 정의
+    function log_info() {
+        echo "[INFO] $(date): $1"
+    }
+    
+    function log_error() {
+        echo "[ERROR] $(date): $1" >&2
+    }
+    
+    function start_daemon() {
+        log_info "Starting daemon on port ${SARI_PORT}"
+        python3 -m sari.daemon --port ${SARI_PORT} &
+        echo $! > "${SARI_HOME}/daemon.pid"
+    }
+    
+    function stop_daemon() {
+        if [ -f "${SARI_HOME}/daemon.pid" ]; then
+            kill $(cat "${SARI_HOME}/daemon.pid")
+            rm "${SARI_HOME}/daemon.pid"
+            log_info "Daemon stopped"
+        fi
+    }
+    
+    # 메인 로직
+    case "$1" in
+        start)
+            start_daemon
+            ;;
+        stop)
+            stop_daemon
+            ;;
+        *)
+            echo "Usage: $0 {start|stop}"
+            exit 1
+            ;;
+    esac
+    '''
+            symbols, _ = engine.extract_symbols("sari.sh", "bash", code)
+            names = [s[3] for s in symbols]
+    
+            # 함수 감지
+>           assert "log_info" in names or "start_daemon" in names or "stop_daemon" in names
+E           AssertionError: assert ('log_info' in [5, 6, 7, 10, 14, 18, ...] or 'start_daemon' in [5, 6, 7, 10, 14, 18, ...] or 'stop_daemon' in [5, 6, 7, 10, 14, 18, ...])
+
+tests/test_advanced_language_patterns.py:895: AssertionError
+___________________ test_ast_engine_extracts_python_symbols ____________________
+
+    @pytest.mark.skipif(not _has_python_ts(), reason="tree-sitter python runtime not installed")
+    def test_ast_engine_extracts_python_symbols():
+        engine = ASTEngine()
+        symbols, _ = engine.extract_symbols("root-x/main.py", "python", "class A:\n    def m(self):\n        pass\n")
+        names = [s[3] for s in symbols]
+>       assert "A" in names
+E       AssertionError: assert 'A' in [1, 1, 2, 2, 3]
+
+tests/test_ast_engine.py:27: AssertionError
+_______________________ test_java_annotation_extraction ________________________
+
+    def test_java_annotation_extraction():
+        """
+        Verify that the modernized AST engine extracts Spring annotations.
+        Standard Tuple: 0:sid, 1:path, 2:root, 3:name, 4:kind, 5:line, 6:end, 7:content, 8:parent, 9:meta, 10:doc, 11:qual
+        """
+        engine = ASTEngine()
+        code = (
+            "@RestController\n"
+            "@RequestMapping(\"/api\")\n"
+            "public class MyController {\n"
+            "    @GetMapping(\"/hello\")\n"
+            "    public String sayHello() {\n"
+            "        return \"world\";\n"
+            "    }\n"
+        "}\n"
+        )
+        symbols, _ = engine.extract_symbols("MyController.java", "java", code)
+    
+        # Priority Fix: Use index 3 for name in 12-column standard
+>       cls_symbol = next(s for s in symbols if s[3] == "MyController")
+E       StopIteration
+
+tests/test_ast_intelligence.py:24: StopIteration
+_______________________ test_python_decorator_extraction _______________________
+
+    def test_python_decorator_extraction():
+        """
+        Verify that decorators in Python are also correctly captured.
+        """
+        engine = ASTEngine()
+        code = (
+            "@app.route(\"/\")\n"
+            "@login_required\n"
+            "def index():\n"
+            "    pass\n"
+        )
+        symbols, _ = engine.extract_symbols("app.py", "python", code)
+    
+        # Priority Fix: Use index 3 for name
+>       idx_symbol = next(s for s in symbols if s[3] == "index")
+E       StopIteration
+
+tests/test_ast_intelligence.py:49: StopIteration
+____________________ test_chaos_db_file_corruption_recovery ____________________
+
+tmp_path = PosixPath('/private/var/folders/53/1642qrvs7rdg6qlcn2v_50sh0000gn/T/pytest-of-baecheolhan/pytest-761/test_chaos_db_file_corruption_0')
+
+    def test_chaos_db_file_corruption_recovery(tmp_path):
+        """
+        CHAOS: What happens if the DB file is corrupted while Sari is running?
+        Truth: Sari should handle OperationalError gracefully.
+        """
+        db_path = tmp_path / "chaos.db"
+        db = LocalSearchDB(str(db_path))
+    
+        # Fill with some data
+        db.upsert_files_turbo([("p1", "rel", "root", "repo", 0, 10, b"data", "h", "fts", 0, 0, "ok", "", "ok", "", 0, 0, 0, 10, "{}")])
+>       db.finalize_turbo_batch()
+
+tests/test_chaos.py:21: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/sari/core/db/main.py:118: in finalize_turbo_batch
+    raise te
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <sari.core.db.main.LocalSearchDB object at 0x109d264f0>
+
+    def finalize_turbo_batch(self):
+        conn = self.db.connection()
+        try:
+            if conn.in_transaction: conn.commit()
+            self._ensure_staging()
+            res = conn.execute("SELECT count(*) FROM staging_mem.files_temp").fetchone()
+            cnt = res[0] if res else 0
+            if cnt == 0: return
+            try:
+                conn.execute("BEGIN IMMEDIATE TRANSACTION")
+>               conn.execute("INSERT OR REPLACE INTO main.files SELECT * FROM staging_mem.files_temp")
+E               sqlite3.IntegrityError: FOREIGN KEY constraint failed
+
+src/sari/core/db/main.py:112: IntegrityError
+------------------------------ Captured log call -------------------------------
+ERROR    sari.db:main.py:123 Failed to finalize turbo batch: FOREIGN KEY constraint failed
+_________________ TestColdStart.test_pure_cold_start_via_proxy _________________
+
+self = <test_cold_start.TestColdStart object at 0x10987a430>
+tmp_path = PosixPath('/private/var/folders/53/1642qrvs7rdg6qlcn2v_50sh0000gn/T/pytest-of-baecheolhan/pytest-761/test_pure_cold_start_via_proxy0')
+clean_env = {'ANTIGRAVITY_AGENT': '1', 'ANTIGRAVITY_CLI_ALIAS': 'agy', 'BUNDLED_DEBUGPY_PATH': '/Users/baecheolhan/.antigravity/ex...py-2025.18.0-darwin-arm64/bundled/libs/debugpy', 'CODEX_HOME': '/Users/baecheolhan/Documents/repositories/.codex', ...}
+
+    def test_pure_cold_start_via_proxy(self, tmp_path, clean_env):
+        workspace = str(tmp_path / "cold_ws")
+        os.makedirs(os.path.join(workspace, ".sari"), exist_ok=True)
+        clean_env["SARI_WORKSPACE_ROOT"] = workspace
+    
+        init_req = json.dumps({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri": f"file://{workspace}"}})
+    
+        def frame(msg):
+            return f"Content-Length: {len(msg)}\r\n\r\n{msg}".encode()
+    
+        env = clean_env.copy()
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "sari.mcp.cli", "proxy"],
+            env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+    
+        try:
+            # 첫 번째 initialize 요청 전송
+            stdout, stderr = proc.communicate(input=frame(init_req), timeout=20)
+            stdout_str = stdout.decode(errors='ignore')
+            stderr_str = stderr.decode(errors='ignore')
+    
+            # 2. 결과 확인
+            # (a) 프록시가 정상 응답을 받았는가?
+            assert '"result":' in stdout_str, f"Proxy failed to respond. Stderr: {stderr_str}"
+    
+            # (b) 데몬이 떴는가?
+            status_proc = subprocess.run(
+                [sys.executable, "-m", "sari.mcp.cli", "daemon", "status", "--daemon-port", "47995"],
+                env=env, capture_output=True, text=True
+            )
+            assert "Running" in status_proc.stdout
+    
+            # (c) 중요: 임베디드 HTTP 서버가 자동으로 떴는가?
+            from sari.core.server_registry import ServerRegistry
+            os.environ["SARI_REGISTRY_FILE"] = clean_env["SARI_REGISTRY_FILE"]
+            registry = ServerRegistry()
+    
+            found = False
+            for _ in range(15):
+                ws_info = registry.get_workspace(workspace)
+                if ws_info and ws_info.get("http_port"):
+                    found = True
+                    break
+                time.sleep(1.0)
+    
+>           assert found, "Workspace info or HTTP port missing from registry"
+E           AssertionError: Workspace info or HTTP port missing from registry
+E           assert False
+
+tests/test_cold_start.py:86: AssertionError
+----------------------------- Captured stdout call -----------------------------
+Sent SIGKILL to daemon PID 17265
+✅ Daemon stopped
+----------------------------- Captured stderr call -----------------------------
+/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/runpy.py:127: RuntimeWarning: 'sari.mcp.cli' found in sys.modules after import of package 'sari.mcp', but prior to execution of 'sari.mcp.cli'; this may result in unpredictable behaviour
+  warn(RuntimeWarning(msg))
+________ TestConfigMatrix.test_repo_label_non_git_uses_first_directory _________
+
+self = <test_config_matrix.TestConfigMatrix object at 0x10988cc40>
+mock_db = <sari.core.db.main.LocalSearchDB object at 0x109d23c40>
+mock_cfg = <MagicMock id='4460274832'>
+tmp_path = PosixPath('/private/var/folders/53/1642qrvs7rdg6qlcn2v_50sh0000gn/T/pytest-of-baecheolhan/pytest-761/test_repo_label_non_git_uses_f0')
+
+    def test_repo_label_non_git_uses_first_directory(self, mock_db, mock_cfg, tmp_path):
+        from sari.core.settings import Settings
+        s = Settings()
+        worker = IndexWorker(mock_cfg, mock_db, None, lambda p, c: ([], []), settings_obj=s)
+    
+        root = tmp_path / "workspaceB"
+        (root / "services").mkdir(parents=True, exist_ok=True)
+        f = root / "services" / "api.py"
+        f.write_text("print('x')")
+    
+        with patch.object(worker, "_git_top_level_for_file", return_value=None):
+            res = worker.process_file_task(root, f, f.stat(), int(time.time()), time.time(), False, root_id="root")
+            assert res is not None
+>           assert res["repo"] == "services"
+E           AssertionError: assert 'workspaceB' == 'services'
+E             
+E             - services
+E             + workspaceB
+
+tests/test_config_matrix.py:134: AssertionError
+_______________________ test_indexer_massive_file_stress _______________________
+
+tmp_path = PosixPath('/private/var/folders/53/1642qrvs7rdg6qlcn2v_50sh0000gn/T/pytest-of-baecheolhan/pytest-761/test_indexer_massive_file_stre0')
+
+    def test_indexer_massive_file_stress(tmp_path):
+        """
+        STRESS: 10,000 files indexing.
+        Verify that ProcessPoolExecutor and Turbo DB can handle heavy load without memory leaks or deadlocks.
+        """
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        db = LocalSearchDB(str(tmp_path / "stress.db"))
+    
+        # Create 10,000 files
+        for i in range(10000):
+            (ws / f"file_{i}.txt").write_text(f"Stress content for file {i}")
+    
+        cfg = Config(**Config.get_defaults(str(ws)))
+        indexer = Indexer(cfg, db)
+    
+        start = time.time()
+        indexer.scan_once()
+        elapsed = time.time() - start
+    
+        # Verify results
+>       assert indexer.status.indexed_files == 10000
+E       assert 0 == 10000
+E        +  where 0 = <sari.core.indexer.main.IndexStatus object at 0x109e124c0>.indexed_files
+E        +    where <sari.core.indexer.main.IndexStatus object at 0x109e124c0> = <sari.core.indexer.main.Indexer object at 0x109e12310>.status
+
+tests/test_core_stress_extreme.py:30: AssertionError
+_______________________ test_daemon_server_communication _______________________
+
+    def test_daemon_server_communication():
+        """Test SariDaemon internal server and command handling."""
+        port = 49991
+        daemon = SariDaemon(host="127.0.0.1", port=port)
+    
+        # Mocking background indexing
+        with patch("sari.core.indexer.main.Indexer.run_forever"):
+            daemon_thread = threading.Thread(target=daemon.start, daemon=True)
+            daemon_thread.start()
+            time.sleep(1.0)
+    
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=2.0) as sock:
+                    req = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+                    body = json.dumps(req).encode("utf-8")
+                    header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
+                    sock.sendall(header + body)
+    
+>                   resp_data = sock.recv(4096)
+E                   socket.timeout: timed out
+
+tests/test_daemon_session_deep.py:55: timeout
+------------------------------ Captured log call -------------------------------
+ERROR    sari.registry:workspace_registry.py:97 Failed to ensure root for /Users/baecheolhan/Documents/repositories: database is locked
+ERROR    sari.registry:workspace_registry.py:108 Failed to start FileWatcher: 'Logger' object has no attribute 'log_error'
+ERROR    sari.registry:workspace_registry.py:136 Failed to start HTTP server for /Users/baecheolhan/Documents/repositories: [Errno 48] Address already in use
+ERROR    sari.registry:workspace_registry.py:157 Error stopping HTTP server: 'NoneType' object has no attribute 'shutdown'
+______________________ test_db_turbo_ingestion_and_search ______________________
+
+db = <sari.core.db.main.LocalSearchDB object at 0x109e9fe80>
+
+    def test_db_turbo_ingestion_and_search(db):
+        """
+        Verify the Ultra-Turbo ingestion logic: RAM Staging -> Flush -> Search.
+        """
+        # 1. High-speed write to RAM
+        row = ("p1", "rel1", "root1", "repo1", 100, 50, b"content1", "h1", "fts", 200, 0, "ok", "", "ok", "", 0, 0, 0, 50, "{}")
+        db.upsert_files_turbo([row])
+    
+        # Verify not yet in Disk
+        assert len(db.search_files("rel1")) == 0
+    
+        # 2. Flush to Disk
+>       db.finalize_turbo_batch()
+
+tests/test_db.py:21: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/sari/core/db/main.py:118: in finalize_turbo_batch
+    raise te
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <sari.core.db.main.LocalSearchDB object at 0x109e9fe80>
+
+    def finalize_turbo_batch(self):
+        conn = self.db.connection()
+        try:
+            if conn.in_transaction: conn.commit()
+            self._ensure_staging()
+            res = conn.execute("SELECT count(*) FROM staging_mem.files_temp").fetchone()
+            cnt = res[0] if res else 0
+            if cnt == 0: return
+            try:
+                conn.execute("BEGIN IMMEDIATE TRANSACTION")
+>               conn.execute("INSERT OR REPLACE INTO main.files SELECT * FROM staging_mem.files_temp")
+E               sqlite3.IntegrityError: FOREIGN KEY constraint failed
+
+src/sari/core/db/main.py:112: IntegrityError
+------------------------------ Captured log call -------------------------------
+ERROR    sari.db:main.py:123 Failed to finalize turbo batch: FOREIGN KEY constraint failed
+_____________________ test_db_intelligent_read_compressed ______________________
+
+db = <sari.core.db.main.LocalSearchDB object at 0x109e9f640>
+
+    def test_db_intelligent_read_compressed(db):
+        """
+        Verify that read_file handles compressed data automatically.
+        """
+        content = "Modern Sari Engine"
+        compressed = b"ZLIB\0" + zlib.compress(content.encode("utf-8"))
+    
+        row = ("p_comp", "rel", "root", "repo", 100, len(compressed), compressed, "h", "fts", 200, 0, "ok", "", "ok", "", 0, 0, 0, len(content), "{}")
+        db.upsert_files_turbo([row])
+>       db.finalize_turbo_batch()
+
+tests/test_db.py:37: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/sari/core/db/main.py:118: in finalize_turbo_batch
+    raise te
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <sari.core.db.main.LocalSearchDB object at 0x109e9f640>
+
+    def finalize_turbo_batch(self):
+        conn = self.db.connection()
+        try:
+            if conn.in_transaction: conn.commit()
+            self._ensure_staging()
+            res = conn.execute("SELECT count(*) FROM staging_mem.files_temp").fetchone()
+            cnt = res[0] if res else 0
+            if cnt == 0: return
+            try:
+                conn.execute("BEGIN IMMEDIATE TRANSACTION")
+>               conn.execute("INSERT OR REPLACE INTO main.files SELECT * FROM staging_mem.files_temp")
+E               sqlite3.IntegrityError: FOREIGN KEY constraint failed
+
+src/sari/core/db/main.py:112: IntegrityError
+------------------------------ Captured log call -------------------------------
+ERROR    sari.db:main.py:123 Failed to finalize turbo batch: FOREIGN KEY constraint failed
+______________________ test_write_gate_windows_lock_path _______________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10a1fd910>
+tmp_path = PosixPath('/private/var/folders/53/1642qrvs7rdg6qlcn2v_50sh0000gn/T/pytest-of-baecheolhan/pytest-761/test_write_gate_windows_lock_p0')
+
+    def test_write_gate_windows_lock_path(monkeypatch, tmp_path):
+        import sari.core.indexer.db_writer as dbw
+    
+        calls = []
+    
+        class FakeMsvcrt:
+            LK_LOCK = 1
+            LK_UNLCK = 2
+    
+            @staticmethod
+            def locking(fd, mode, nbytes):
+                calls.append((fd, mode, nbytes))
+    
+        monkeypatch.setattr(dbw, "fcntl", None, raising=False)
+>       monkeypatch.setattr(dbw, "msvcrt", FakeMsvcrt)
+E       AttributeError: <module 'sari.core.indexer.db_writer' from '/Users/baecheolhan/Documents/repositories/src/sari/core/indexer/db_writer.py'> has no attribute 'msvcrt'
+
+tests/test_db_writer_guards.py:77: AttributeError
+_________ TestDoctorSelfHealing.test_doctor_heals_stale_registry_entry _________
+
+self = <test_doctor_self_healing.TestDoctorSelfHealing object at 0x109a0d2b0>
+doctor_env = {'ANTIGRAVITY_AGENT': '1', 'ANTIGRAVITY_CLI_ALIAS': 'agy', 'BUNDLED_DEBUGPY_PATH': '/Users/baecheolhan/.antigravity/ex...py-2025.18.0-darwin-arm64/bundled/libs/debugpy', 'CODEX_HOME': '/Users/baecheolhan/Documents/repositories/.codex', ...}
+
+    def test_doctor_heals_stale_registry_entry(self, doctor_env):
+        reg_file = Path(doctor_env["SARI_REGISTRY_FILE"])
+        reg_file.parent.mkdir(parents=True, exist_ok=True)
+        reg_file.write_text(json.dumps({
+            "version": "2.0",
+            "daemons": {
+                "boot-x": {
+                    "host": "127.0.0.1",
+                    "port": 48999,
+                    "pid": 999999,
+                    "start_ts": time.time(),
+                    "last_seen_ts": time.time(),
+                    "draining": False,
+                    "version": "1.0.0",
+                }
+            },
+            "workspaces": {},
+        }))
+    
+        with patch.dict("os.environ", doctor_env):
+            res = execute_doctor({"auto_fix": False})
+            data = json.loads(res["content"][0]["text"])
+    
+            daemon_res = next(r for r in data["results"] if r["name"] == "Sari Daemon")
+            assert not daemon_res["passed"]
+            assert "stale registry entry" in daemon_res["error"]
+    
+            res = execute_doctor({"auto_fix": True})
+            data = json.loads(res["content"][0]["text"])
+    
+            fix_res = next(r for r in data["auto_fix"] if "Sari Daemon" in r["name"])
+>           assert fix_res["passed"]
+E           assert False
+
+tests/test_doctor_self_healing.py:59: AssertionError
+________________ TestEmbeddedServer.test_http_server_lifecycle _________________
+
+self = <test_embedded_server.TestEmbeddedServer object at 0x109a19700>
+workspace = '/private/var/folders/53/1642qrvs7rdg6qlcn2v_50sh0000gn/T/pytest-of-baecheolhan/pytest-761/test_http_server_lifecycle0/test_ws_embedded'
+test_env = {'ANTIGRAVITY_AGENT': '1', 'ANTIGRAVITY_CLI_ALIAS': 'agy', 'BUNDLED_DEBUGPY_PATH': '/Users/baecheolhan/.antigravity/ex...py-2025.18.0-darwin-arm64/bundled/libs/debugpy', 'CODEX_HOME': '/Users/baecheolhan/Documents/repositories/.codex', ...}
+
+    def test_http_server_lifecycle(self, workspace, test_env):
+        from sari.mcp.workspace_registry import Registry
+        from sari.core.server_registry import ServerRegistry
+    
+        os.environ["SARI_REGISTRY_FILE"] = test_env["SARI_REGISTRY_FILE"]
+        Registry._instance = None
+        registry = Registry.get_instance()
+    
+        # 1. Create Session
+        session = registry.get_or_create(workspace)
+        port = session.http_port
+>       assert self._is_port_open(port)
+
+tests/test_embedded_server.py:37: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <test_embedded_server.TestEmbeddedServer object at 0x109a19700>
+port = None
+
+    def _is_port_open(self, port):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.2)
+>           return s.connect_ex(("127.0.0.1", port)) == 0
+E           TypeError: an integer is required (got type NoneType)
+
+tests/test_embedded_server.py:94: TypeError
+------------------------------ Captured log call -------------------------------
+ERROR    sari.registry:workspace_registry.py:97 Failed to ensure root for /private/var/folders/53/1642qrvs7rdg6qlcn2v_50sh0000gn/T/pytest-of-baecheolhan/pytest-761/test_http_server_lifecycle0/test_ws_embedded: database is locked
+ERROR    sari.registry:workspace_registry.py:108 Failed to start FileWatcher: 
+ERROR    sari.registry:workspace_registry.py:136 Failed to start HTTP server for /private/var/folders/53/1642qrvs7rdg6qlcn2v_50sh0000gn/T/pytest-of-baecheolhan/pytest-761/test_http_server_lifecycle0/test_ws_embedded: [Errno 48] Address already in use
+_____________ TestEmbeddedServer.test_multi_cli_single_http_server _____________
+
+self = <test_embedded_server.TestEmbeddedServer object at 0x109a20df0>
+workspace = '/private/var/folders/53/1642qrvs7rdg6qlcn2v_50sh0000gn/T/pytest-of-baecheolhan/pytest-761/test_multi_cli_single_http_ser0/test_ws_embedded'
+test_env = {'ANTIGRAVITY_AGENT': '1', 'ANTIGRAVITY_CLI_ALIAS': 'agy', 'BUNDLED_DEBUGPY_PATH': '/Users/baecheolhan/.antigravity/ex...py-2025.18.0-darwin-arm64/bundled/libs/debugpy', 'CODEX_HOME': '/Users/baecheolhan/Documents/repositories/.codex', ...}
+
+    def test_multi_cli_single_http_server(self, workspace, test_env):
+        # 1. Start a daemon
+        test_env["SARI_WORKSPACE_ROOT"] = workspace
+        test_env["SARI_DAEMON_PORT"] = "47991"
+    
+        subprocess.run(["python3", "-m", "sari.mcp.cli", "daemon", "start", "-d", "--daemon-port", "47991"], env=test_env, check=True)
+        time.sleep(2.0)
+    
+        try:
+            from sari.core.server_registry import ServerRegistry
+            os.environ["SARI_REGISTRY_FILE"] = test_env["SARI_REGISTRY_FILE"]
+            ws_info = ServerRegistry().get_workspace(workspace)
+>           assert ws_info is not None
+E           assert None is not None
+
+tests/test_embedded_server.py:67: AssertionError
+----------------------------- Captured stdout call -----------------------------
+Starting daemon on 127.0.0.1:47991 (background)...
+✅ Daemon started (PID: 17404)
+Stopped daemon PID 17404
+✅ Daemon stopped
+----------------------------- Captured stderr call -----------------------------
+/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/runpy.py:127: RuntimeWarning: 'sari.mcp.cli' found in sys.modules after import of package 'sari.mcp', but prior to execution of 'sari.mcp.cli'; this may result in unpredictable behaviour
+  warn(RuntimeWarning(msg))
+/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/runpy.py:127: RuntimeWarning: 'sari.mcp.cli' found in sys.modules after import of package 'sari.mcp', but prior to execution of 'sari.mcp.cli'; this may result in unpredictable behaviour
+  warn(RuntimeWarning(msg))
+________________________ test_spring_data_jpa_integrity ________________________
+
+    def test_spring_data_jpa_integrity():
+        """
+        Verify that Sari understands JPA Entities and Repositories.
+        """
+        engine = ASTEngine()
+        code = (
+            "@Entity\n"
+            "@Table(name = \"users\")\n"
+            "public class User {\n"
+            "    @Id private Long id;\n"
+            "}\n"
+            "\n"
+            "public interface UserRepository extends JpaRepository<User, Long> {}\n"
+        )
+        # --- FIX: UNPACK PROPERLY ---
+        symbols, _ = engine.extract_symbols("User.java", "java", code)
+    
+        # Check Entity
+>       user_cls = next(s for s in symbols if s[3] == "User")
+E       StopIteration
+
+tests/test_enterprise_intelligence.py:23: StopIteration
+______________________ test_spring_data_redis_and_caching ______________________
+
+    def test_spring_data_redis_and_caching():
+        """
+        Verify that Redis and Caching markers are captured.
+        """
+        engine = ASTEngine()
+        code = (
+            "@RedisHash(\"user_cache\")\n"
+            "public class UserSession {}\n"
+            "\n"
+            "@Service\n"
+            "public class UserService {\n"
+            "    @Cacheable(\"users\")\n"
+            "    public User findById(Long id) { return null; }\n"
+            "}\n"
+        )
+        symbols, _ = engine.extract_symbols("Redis.java", "java", code)
+    
+>       session_cls = next(s for s in symbols if s[3] == "UserSession")
+E       StopIteration
+
+tests/test_enterprise_intelligence.py:52: StopIteration
+______________________ test_spring_webflux_reactive_truth ______________________
+
+    def test_spring_webflux_reactive_truth():
+        """
+        Verify that WebFlux reactive return types (Mono/Flux) are detected.
+        """
+        engine = ASTEngine()
+        code = (
+            "@RestController\n"
+            "public class FluxController {\n"
+            "    public Mono<String> getHello() { return Mono.just(\"hi\"); }\n"
+            "    public Flux<User> listUsers() { return Flux.empty(); }\n"
+            "}\n"
+        )
+        symbols, _ = engine.extract_symbols("Flux.java", "java", code)
+    
+>       hello_fn = next(s for s in symbols if s[3] == "getHello")
+E       StopIteration
+
+tests/test_enterprise_intelligence.py:73: StopIteration
+____________________________ test_comment_stripping ____________________________
+
+    def test_comment_stripping():
+        code = """
+        class RealClass {
+            // class FakeInComment { }
+            /*
+               fn fake_in_block() { }
+            */
+            void realMethod() { }
+        }
+        """
+        parser = ParserFactory.get_parser(".java")
+        symbols, _ = parser.extract("test.java", code)
+    
+        names = [s[3] for s in symbols]
+        assert "RealClass" in names
+>       assert "realMethod" in names
+E       AssertionError: assert 'realMethod' in ['RealClass']
+
+tests/test_fallback_parsers.py:58: AssertionError
+__________________________ test_csharp_support_truth ___________________________
+
+    def test_csharp_support_truth():
+        engine = ASTEngine()
+        code = "public class MySvc { public void Start() {} }"
+        symbols, _ = engine.extract_symbols("Engine.cs", "c_sharp", code)
+>       assert any(s[3] == "MySvc" for s in symbols)
+E       assert False
+E        +  where False = any(<generator object test_csharp_support_truth.<locals>.<genexpr> at 0x10a4a3970>)
+
+tests/test_fullstack_intelligence.py:9: AssertionError
+______________________________ test_sql_ddl_truth ______________________________
+
+    def test_sql_ddl_truth():
+        engine = ASTEngine()
+        code = "CREATE TABLE users (id INT);"
+        symbols, _ = engine.extract_symbols("db.sql", "sql", code)
+>       assert any(s[3] == "users" for s in symbols)
+E       assert False
+E        +  where False = any(<generator object test_sql_ddl_truth.<locals>.<genexpr> at 0x10a343120>)
+
+tests/test_fullstack_intelligence.py:15: AssertionError
+___________________________ test_terraform_hcl_truth ___________________________
+
+    def test_terraform_hcl_truth():
+        """
+        Verify HCL block extraction with proper grammar.
+        """
+        engine = ASTEngine()
+        code = (
+            "resource \"aws_instance\" \"web\" {\n"
+            "  ami = \"123\"\n"
+            "}\n"
+        )
+        symbols, _ = engine.extract_symbols("main.tf", "hcl", code)
+        # HCL blocks will now be found as class-level symbols
+>       assert any("aws_instance.web" in s[3] for s in symbols)
+
+tests/test_fullstack_intelligence.py:29: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+.0 = <list_iterator object at 0x10a656040>
+
+>   assert any("aws_instance.web" in s[3] for s in symbols)
+E   TypeError: argument of type 'int' is not iterable
+
+tests/test_fullstack_intelligence.py:29: TypeError
+______________________ test_stale_data_pruning_integrity _______________________
+
+func_env = {'cfg': <sari.core.config.main.Config object at 0x10a353880>, 'db': <sari.core.db.main.LocalSearchDB object at 0x10a35...folders/53/1642qrvs7rdg6qlcn2v_50sh0000gn/T/pytest-of-baecheolhan/pytest-761/test_stale_data_pruning_integr0/func_ws')}
+
+    def test_stale_data_pruning_integrity(func_env):
+        """
+        2. Verify that deleted files are correctly removed from the DB.
+        """
+        ws, db, cfg = func_env["ws"], func_env["db"], func_env["cfg"]
+    
+        p1 = ws / "exists.py"
+        p1.write_text("content")
+        p2 = ws / "gone.py"
+        p2.write_text("content")
+    
+        indexer = Indexer(cfg, db)
+        indexer.scan_once()
+    
+        # Verify both exist
+        assert len(db.search_files("exists.py")) == 1
+        assert len(db.search_files("gone.py")) == 1
+    
+        # DELETE GONE.PY
+        os.remove(p2)
+    
+        # RE-SCAN: Finds only p1
+        indexer.scan_once()
+    
+        # ACTIVATE PRUNING: Only p1 remains active
+        active_paths = [str(p1)]
+        db.prune_stale_data("root", active_paths)
+    
+        # VERIFY: GONE.PY is wiped, EXISTS.PY remains
+>       assert len(db.search_files("gone.py")) == 0
+E       AssertionError: assert 1 == 0
+E        +  where 1 = len([{'ast_reason': 'none', 'ast_status': 'ok', 'content': b'ZLIB\x00x\x9cK\xce\xcf+I\xcd+\x01\x00\x0b\xcb\x02\xfc', 'content_bytes': 7, ...}])
+E        +    where [{'ast_reason': 'none', 'ast_status': 'ok', 'content': b'ZLIB\x00x\x9cK\xce\xcf+I\xcd+\x01\x00\x0b\xcb\x02\xfc', 'content_bytes': 7, ...}] = search_files('gone.py')
+E        +      where search_files = <sari.core.db.main.LocalSearchDB object at 0x10a3532b0>.search_files
+
+tests/test_functional_integrity.py:76: AssertionError
+_______________________ test_db_malformed_row_isolation ________________________
+
+db = <sari.core.db.main.LocalSearchDB object at 0x109d59a90>
+
+    def test_db_malformed_row_isolation(db):
+        """
+        Verify that one bad row doesn't corrupt the entire DB.
+        """
+        # Staging table should be isolated
+        bad_row = ("p1",) # Too short, should cause SQL error
+        try:
+            db.upsert_files_turbo([bad_row])
+        except: pass
+    
+        # DB should still be functional
+>       db.finalize_turbo_batch()
+
+tests/test_infra_edge_cases.py:23: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/sari/core/db/main.py:118: in finalize_turbo_batch
+    raise te
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <sari.core.db.main.LocalSearchDB object at 0x109d59a90>
+
+    def finalize_turbo_batch(self):
+        conn = self.db.connection()
+        try:
+            if conn.in_transaction: conn.commit()
+            self._ensure_staging()
+            res = conn.execute("SELECT count(*) FROM staging_mem.files_temp").fetchone()
+            cnt = res[0] if res else 0
+            if cnt == 0: return
+            try:
+                conn.execute("BEGIN IMMEDIATE TRANSACTION")
+>               conn.execute("INSERT OR REPLACE INTO main.files SELECT * FROM staging_mem.files_temp")
+E               sqlite3.IntegrityError: NOT NULL constraint failed: files.rel_path
+
+src/sari/core/db/main.py:112: IntegrityError
+------------------------------ Captured log call -------------------------------
+ERROR    sari.db:main.py:123 Failed to finalize turbo batch: NOT NULL constraint failed: files.rel_path
+_____________________ test_main_stdio_triggers_http_ensure _____________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10a35bb80>
+
+    def test_main_stdio_triggers_http_ensure(monkeypatch):
+        with patch.object(main_mod, "validate_config_file", return_value=None):
+            with patch.object(main_mod.WorkspaceManager, "resolve_config_path", return_value="/tmp/fake-config.json"):
+                with patch.object(main_mod, "_ensure_http_daemon_for_stdio") as ensure_http:
+                    with patch("sari.mcp.server.main") as mcp_main:
+                        rc = main_mod.main(["--transport", "stdio", "--format", "pack"])
+                        assert rc == 0
+                        ensure_http.assert_called_once()
+>                       mcp_main.assert_called_once()
+
+tests/test_main_dual_stack.py:15: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <MagicMock name='main' id='4467131296'>
+
+    def assert_called_once(self):
+        """assert that the mock was called only once.
+        """
+        if not self.call_count == 1:
+            msg = ("Expected '%s' to have been called once. Called %s times.%s"
+                   % (self._mock_name or 'mock',
+                      self.call_count,
+                      self._calls_repr()))
+>           raise AssertionError(msg)
+E           AssertionError: Expected 'main' to have been called once. Called 0 times.
+
+/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/mock.py:886: AssertionError
+------------------------------ Captured log call -------------------------------
+ERROR    sari.mcp.transport:transport.py:70 Error reading MCP message: pytest: reading from stdin while output is captured!  Consider using `-s`.
+ERROR    sari.registry:workspace_registry.py:157 Error stopping HTTP server: 'NoneType' object has no attribute 'shutdown'
+____ TestMultiWorkspaceIntegration.test_daemon_handles_multiple_workspaces _____
+
+self = <test_multi_workspace.TestMultiWorkspaceIntegration object at 0x109aa3ac0>
+tmp_path = PosixPath('/private/var/folders/53/1642qrvs7rdg6qlcn2v_50sh0000gn/T/pytest-of-baecheolhan/pytest-761/test_daemon_handles_multiple_w0')
+
+    def test_daemon_handles_multiple_workspaces(self, tmp_path):
+        # 1. Setup multiple workspaces
+        ws_paths = []
+        for i in range(2):
+            p = tmp_path / f"ws_{i}"
+            p.mkdir()
+            (p / ".sari").mkdir()
+            (p / "main.py").write_text(f"print('ws_{i}')")
+            ws_paths.append(str(p))
+    
+        multi_env = os.environ.copy()
+        multi_env["SARI_REGISTRY_FILE"] = str(tmp_path / "multi_registry.json")
+        multi_env["PYTHONPATH"] = os.pathsep.join([os.path.abspath("src")] + sys.path)
+    
+        # 2. Start daemon for WS_0
+        multi_env["SARI_WORKSPACE_ROOT"] = ws_paths[0]
+>       subprocess.run([sys.executable, "-m", "sari.mcp.cli", "daemon", "start", "-d", "--daemon-port", "48100"], env=multi_env, check=True)
+
+tests/test_multi_workspace.py:27: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+input = None, capture_output = False, timeout = None, check = True
+popenargs = (['/Library/Developer/CommandLineTools/usr/bin/python3', '-m', 'sari.mcp.cli', 'daemon', 'start', '-d', ...],)
+kwargs = {'env': {'ANTIGRAVITY_AGENT': '1', 'ANTIGRAVITY_CLI_ALIAS': 'agy', 'BUNDLED_DEBUGPY_PATH': '/Users/baecheolhan/.antigr...y-2025.18.0-darwin-arm64/bundled/libs/debugpy', 'CODEX_HOME': '/Users/baecheolhan/Documents/repositories/.codex', ...}}
+process = <Popen: returncode: 1 args: ['/Library/Developer/CommandLineTools/usr/bin/py...>
+stdout = None, stderr = None, retcode = 1
+
+    def run(*popenargs,
+            input=None, capture_output=False, timeout=None, check=False, **kwargs):
+        """Run command with arguments and return a CompletedProcess instance.
+    
+        The returned instance will have attributes args, returncode, stdout and
+        stderr. By default, stdout and stderr are not captured, and those attributes
+        will be None. Pass stdout=PIPE and/or stderr=PIPE in order to capture them.
+    
+        If check is True and the exit code was non-zero, it raises a
+        CalledProcessError. The CalledProcessError object will have the return code
+        in the returncode attribute, and output & stderr attributes if those streams
+        were captured.
+    
+        If timeout is given, and the process takes too long, a TimeoutExpired
+        exception will be raised.
+    
+        There is an optional argument "input", allowing you to
+        pass bytes or a string to the subprocess's stdin.  If you use this argument
+        you may not also use the Popen constructor's "stdin" argument, as
+        it will be used internally.
+    
+        By default, all communication is in bytes, and therefore any "input" should
+        be bytes, and the stdout and stderr will be bytes. If in text mode, any
+        "input" should be a string, and stdout and stderr will be strings decoded
+        according to locale encoding, or by "encoding" if set. Text mode is
+        triggered by setting any of text, encoding, errors or universal_newlines.
+    
+        The other arguments are the same as for the Popen constructor.
+        """
+        if input is not None:
+            if kwargs.get('stdin') is not None:
+                raise ValueError('stdin and input arguments may not both be used.')
+            kwargs['stdin'] = PIPE
+    
+        if capture_output:
+            if kwargs.get('stdout') is not None or kwargs.get('stderr') is not None:
+                raise ValueError('stdout and stderr arguments may not be used '
+                                 'with capture_output.')
+            kwargs['stdout'] = PIPE
+            kwargs['stderr'] = PIPE
+    
+        with Popen(*popenargs, **kwargs) as process:
+            try:
+                stdout, stderr = process.communicate(input, timeout=timeout)
+            except TimeoutExpired as exc:
+                process.kill()
+                if _mswindows:
+                    # Windows accumulates the output in a single blocking
+                    # read() call run on child threads, with the timeout
+                    # being done in a join() on those threads.  communicate()
+                    # _after_ kill() is required to collect that and add it
+                    # to the exception.
+                    exc.stdout, exc.stderr = process.communicate()
+                else:
+                    # POSIX _communicate already populated the output so
+                    # far into the TimeoutExpired exception.
+                    process.wait()
+                raise
+            except:  # Including KeyboardInterrupt, communicate handled that.
+                process.kill()
+                # We don't call process.wait() as .__exit__ does that for us.
+                raise
+            retcode = process.poll()
+            if check and retcode:
+>               raise CalledProcessError(retcode, process.args,
+                                         output=stdout, stderr=stderr)
+E               subprocess.CalledProcessError: Command '['/Library/Developer/CommandLineTools/usr/bin/python3', '-m', 'sari.mcp.cli', 'daemon', 'start', '-d', '--daemon-port', '48100']' returned non-zero exit status 1.
+
+/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/subprocess.py:528: CalledProcessError
+----------------------------- Captured stdout call -----------------------------
+Starting daemon on 127.0.0.1:48100 (background)...
+----------------------------- Captured stderr call -----------------------------
+/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/runpy.py:127: RuntimeWarning: 'sari.mcp.cli' found in sys.modules after import of package 'sari.mcp', but prior to execution of 'sari.mcp.cli'; this may result in unpredictable behaviour
+  warn(RuntimeWarning(msg))
+❌ Daemon failed to start
+________________ TestKotlinSpring.test_kotlin_spring_controller ________________
+
+self = <test_new_languages.TestKotlinSpring object at 0x109a8ed00>
+
+        def test_kotlin_spring_controller(self):
+            """Kotlin Spring Controller with annotations"""
+            engine = ASTEngine()
+            code = '''
+    @RestController
+    @RequestMapping("/api/users")
+    class UserController(private val userService: UserService) {
+        @GetMapping("/{id}")
+        fun getUser(@PathVariable id: Long): User {
+            return userService.findById(id)
+        }
+    
+        @PostMapping
+        suspend fun createUser(@RequestBody user: UserRequest): User {
+            return userService.create(user)
+        }
+    }
+    '''
+            symbols, _ = engine.extract_symbols("UserController.kt", "kotlin", code)
+            names = [s[3] for s in symbols]
+    
+>           assert "UserController" in names
+E           AssertionError: assert 'UserController' in [2, 5, 10]
+
+tests/test_new_languages.py:30: AssertionError
+___________________ TestKotlinSpring.test_kotlin_data_class ____________________
+
+self = <test_new_languages.TestKotlinSpring object at 0x109aaa7f0>
+
+        def test_kotlin_data_class(self):
+            """Kotlin data class"""
+            engine = ASTEngine()
+            code = '''
+    data class User(
+        val id: Long,
+        val name: String,
+        val email: String
+    )
+    
+    sealed class Result<out T> {
+        data class Success<T>(val data: T) : Result<T>()
+        data class Error(val message: String) : Result<Nothing>()
+    }
+    
+    object UserRepository {
+        private val users = mutableListOf<User>()
+    
+        fun findAll(): List<User> = users
+    }
+    '''
+            symbols, _ = engine.extract_symbols("Models.kt", "kotlin", code)
+            names = [s[3] for s in symbols]
+    
+            # data class
+>           assert "User" in names
+E           AssertionError: assert 'User' in [2, 8, 9, 10, 13, 16]
+
+tests/test_new_languages.py:58: AssertionError
+____________________ TestPHPLaravel.test_laravel_controller ____________________
+
+self = <test_new_languages.TestPHPLaravel object at 0x109aaac40>
+
+        def test_laravel_controller(self):
+            """Laravel Controller"""
+            engine = ASTEngine()
+            code = '''<?php
+    namespace App\\Http\\Controllers;
+    
+    use App\\Models\\User;
+    use Illuminate\\Http\\Request;
+    
+    class UserController extends Controller {
+        public function index() {
+            return User::all();
+        }
+    
+        public function store(Request $request) {
+            return User::create($request->validated());
+        }
+    
+        public function show(User $user) {
+            return $user;
+        }
+    }
+    '''
+            symbols, _ = engine.extract_symbols("UserController.php", "php", code)
+            names = [s[3] for s in symbols]
+    
+>           assert "UserController" in names
+E           AssertionError: assert 'UserController' in [7, 8, 12, 16]
+
+tests/test_new_languages.py:92: AssertionError
+______________________ TestPHPLaravel.test_laravel_model _______________________
+
+self = <test_new_languages.TestPHPLaravel object at 0x109aaae50>
+
+        def test_laravel_model(self):
+            """Laravel Eloquent Model"""
+            engine = ASTEngine()
+            code = '''<?php
+    namespace App\\Models;
+    
+    class User extends Model {
+        protected $fillable = ['name', 'email', 'password'];
+    
+        public function posts() {
+            return $this->hasMany(Post::class);
+        }
+    
+        public function profile() {
+            return $this->hasOne(Profile::class);
+        }
+    }
+    '''
+            symbols, _ = engine.extract_symbols("User.php", "php", code)
+            names = [s[3] for s in symbols]
+            kinds = [s[4] for s in symbols]
+    
+>           assert "User" in names
+E           AssertionError: assert 'User' in [4, 7, 11]
+
+tests/test_new_languages.py:117: AssertionError
+________________________ TestRubyRails.test_rails_model ________________________
+
+self = <test_new_languages.TestRubyRails object at 0x109ab9130>
+
+        def test_rails_model(self):
+            """Rails ActiveRecord Model"""
+            engine = ASTEngine()
+            code = '''
+    class User < ApplicationRecord
+      has_many :posts, dependent: :destroy
+      has_one :profile
+      belongs_to :organization, optional: true
+    
+      validates :email, presence: true, uniqueness: true
+      validates :name, length: { minimum: 2 }
+    
+      scope :active, -> { where(active: true) }
+    
+      def full_name
+        "#{first_name} #{last_name}"
+      end
+    end
+    '''
+            symbols, _ = engine.extract_symbols("user.rb", "ruby", code)
+            names = [s[3] for s in symbols]
+    
+>           assert "User" in names
+E           AssertionError: assert 'User' in []
+
+tests/test_new_languages.py:146: AssertionError
+_____________________ TestRubyRails.test_rails_controller ______________________
+
+self = <test_new_languages.TestRubyRails object at 0x109ab9340>
+
+        def test_rails_controller(self):
+            """Rails Controller"""
+            engine = ASTEngine()
+            code = '''
+    class UsersController < ApplicationController
+      before_action :authenticate_user!
+      before_action :set_user, only: [:show, :edit, :update, :destroy]
+    
+      def index
+        @users = User.all
+      end
+    
+      def show
+      end
+    
+      def create
+        @user = User.new(user_params)
+        if @user.save
+          redirect_to @user
+        else
+          render :new
+        end
+      end
+    
+      private
+    
+      def user_params
+        params.require(:user).permit(:name, :email)
+      end
+    end
+    '''
+            symbols, _ = engine.extract_symbols("users_controller.rb", "ruby", code)
+            names = [s[3] for s in symbols]
+    
+>           assert "UsersController" in names
+E           AssertionError: assert 'UsersController' in []
+
+tests/test_new_languages.py:183: AssertionError
+____________________ TestPythonFastAPI.test_fastapi_routes _____________________
+
+self = <test_new_languages.TestPythonFastAPI object at 0x109ab95e0>
+
+        def test_fastapi_routes(self):
+            """FastAPI route handlers"""
+            engine = ASTEngine()
+            code = '''
+    from fastapi import FastAPI, Depends, HTTPException
+    from pydantic import BaseModel
+    
+    app = FastAPI()
+    
+    class UserCreate(BaseModel):
+        name: str
+        email: str
+    
+    @app.get("/users/{user_id}")
+    async def get_user(user_id: int):
+        return {"id": user_id}
+    
+    @app.post("/users")
+    async def create_user(user: UserCreate):
+        return user
+    
+    @app.delete("/users/{user_id}")
+    async def delete_user(user_id: int):
+        return {"deleted": user_id}
+    '''
+            symbols, _ = engine.extract_symbols("main.py", "python", code)
+            names = [s[3] for s in symbols]
+    
+            # Pydantic model
+>           assert "UserCreate" in names
+E           AssertionError: assert 'UserCreate' in [2, 7, 8, 12, 13, 16, ...]
+
+tests/test_new_languages.py:219: AssertionError
+_____________________ TestPythonFastAPI.test_flask_routes ______________________
+
+self = <test_new_languages.TestPythonFastAPI object at 0x109ab97f0>
+
+        def test_flask_routes(self):
+            """Flask route handlers"""
+            engine = ASTEngine()
+            code = '''
+    from flask import Flask, jsonify, request
+    
+    app = Flask(__name__)
+    
+    @app.get("/items")
+    def list_items():
+        return jsonify([])
+    
+    @app.post("/items")
+    def create_item():
+        data = request.json
+        return jsonify(data)
+    
+    @blueprint.get("/categories")
+    def list_categories():
+        return jsonify([])
+    '''
+            symbols, _ = engine.extract_symbols("routes.py", "python", code)
+            names = [s[3] for s in symbols]
+    
+            # 최소한 하나의 라우트 핸들러가 감지되어야 함
+>           assert "list_items" in names or "create_item" in names
+E           AssertionError: assert ('list_items' in [2, 7, 8, 11, 12, 16, ...] or 'create_item' in [2, 7, 8, 11, 12, 16, ...])
+
+tests/test_new_languages.py:248: AssertionError
+____________________ TestYAMLKubernetes.test_k8s_deployment ____________________
+
+self = <test_new_languages.TestYAMLKubernetes object at 0x109ab9a90>
+
+        def test_k8s_deployment(self):
+            """Kubernetes Deployment"""
+            engine = ASTEngine()
+            code = '''
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: user-service
+      namespace: production
+    spec:
+      replicas: 3
+      selector:
+        matchLabels:
+          app: user-service
+      template:
+        spec:
+          containers:
+            - name: app
+              image: user-service:latest
+              ports:
+                - containerPort: 8080
+    '''
+            symbols, _ = engine.extract_symbols("deployment.yaml", "yaml", code)
+            names = [s[3] for s in symbols]
+    
+            # K8s 리소스 감지
+>           assert any("Deployment" in n for n in names) or any("user-service" in n for n in names)
+
+tests/test_new_languages.py:280: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+.0 = <list_iterator object at 0x10a2bb3d0>
+
+>   assert any("Deployment" in n for n in names) or any("user-service" in n for n in names)
+E   TypeError: argument of type 'int' is not iterable
+
+tests/test_new_languages.py:280: TypeError
+_____________________ TestYAMLKubernetes.test_k8s_service ______________________
+
+self = <test_new_languages.TestYAMLKubernetes object at 0x109ab9ca0>
+
+        def test_k8s_service(self):
+            """Kubernetes Service"""
+            engine = ASTEngine()
+            code = '''
+    apiVersion: v1
+    kind: Service
+    metadata:
+      name: user-svc
+    spec:
+      selector:
+        app: user-service
+      ports:
+        - port: 80
+          targetPort: 8080
+      type: ClusterIP
+    '''
+            symbols, _ = engine.extract_symbols("service.yml", "yaml", code)
+            names = [s[3] for s in symbols]
+    
+>           assert any("Service" in n for n in names) or any("user-svc" in n for n in names)
+E           assert (False or False)
+E            +  where False = any(<generator object TestYAMLKubernetes.test_k8s_service.<locals>.<genexpr> at 0x109ddc660>)
+E            +  and   False = any(<generator object TestYAMLKubernetes.test_k8s_service.<locals>.<genexpr> at 0x109ddccf0>)
+
+tests/test_new_languages.py:301: AssertionError
+______________________ test_investigate_kotlin_ast_nodes _______________________
+
+    def test_investigate_kotlin_ast_nodes():
+        """
+        INVESTIGATION: Print all node types in a Kotlin file to find the real names.
+        """
+        engine = ASTEngine()
+        lang_obj = engine._get_language("kotlin")
+        from tree_sitter import Parser
+        parser = Parser()
+>       parser.language = lang_obj
+E       AttributeError: 'tree_sitter.Parser' object has no attribute 'language'
+
+tests/test_real_workspace_ast.py:14: AttributeError
+______________________ test_mybatis_xml_symbol_extraction ______________________
+
+    def test_mybatis_xml_symbol_extraction():
+        """
+        Verify that MyBatis SQL IDs are extracted as searchable symbols.
+        """
+        engine = ASTEngine()
+        code = (
+            "<mapper namespace=\"com.example.UserMapper\">\n"
+            "    <select id=\"findByUsername\" resultType=\"User\">\n"
+            "        SELECT * FROM users WHERE username = #{username}\n"
+            "    </select>\n"
+            "    <update id=\"updateLastLogin\">\n"
+            "        UPDATE users SET last_login = NOW() WHERE id = #{id}\n"
+            "    </update>\n"
+            "</mapper>\n"
+        )
+        symbols, _ = engine.extract_symbols("UserMapper.xml", "xml", code)
+    
+        assert len(symbols) == 2
+>       select_sql = next(s for s in symbols if s[3] == "findByUsername")
+E       StopIteration
+
+tests/test_real_world_frameworks.py:23: StopIteration
+___________________ test_querydsl_generated_class_detection ____________________
+
+    def test_querydsl_generated_class_detection():
+        """
+        Verify that QueryDSL Q-classes are identified as generated.
+        """
+        engine = ASTEngine()
+        code = (
+            "public class QUser extends EntityPathBase<User> {\n"
+            "    public final StringPath username = createString(\"username\");\n"
+            "}\n"
+        )
+        symbols, _ = engine.extract_symbols("QUser.java", "java", code)
+    
+>       q_cls = next(s for s in symbols if s[3] == "QUser")
+E       StopIteration
+
+tests/test_real_world_frameworks.py:42: StopIteration
+______________________ test_tantivy_dependency_is_pinned _______________________
+
+    def test_tantivy_dependency_is_pinned():
+        pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+        text = pyproject.read_text(encoding="utf-8")
+        # Updated to match project.dependencies format
+        assert 'tantivy>=0.25.1' in text or 'tantivy==0.25.1' in text
+>       assert "tantivy>=" not in text
+E       assert 'tantivy>=' not in '[build-syst... = ["src"]\n'
+E         
+E         'tantivy>=' is contained here:
+E           .0",
+E               "tantivy>=0.25.1",
+E         ?      +++++++++
+E               "pathspec>=0.12.0",
+E               "watchdog>=4.0.0",...
+E         
+E         ...Full output truncated (12 lines hidden), use '-vv' to show
+
+tests/test_runtime_gates.py:41: AssertionError
+_________________ test_mcp_debug_log_redacts_sensitive_fields __________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10a344bb0>
+tmp_path = PosixPath('/private/var/folders/53/1642qrvs7rdg6qlcn2v_50sh0000gn/T/pytest-of-baecheolhan/pytest-761/test_mcp_debug_log_redacts_sen0')
+
+    def test_mcp_debug_log_redacts_sensitive_fields(monkeypatch, tmp_path):
+        monkeypatch.setenv("SARI_MCP_DEBUG_LOG", "1")
+        monkeypatch.setenv("HOME", str(tmp_path))
+    
+        server = LocalSearchMCPServer("/tmp/ws")
+        req = {
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "tools/call",
+            "params": {
+                "name": "search",
+                "arguments": {
+                    "query": "hello",
+                    "api_key": "sk-live-secret",
+                    "content": "private source code payload",
+                },
+            },
+        }
+        server._log_debug_request("content-length", req)
+        server.shutdown()
+    
+        log_path = tmp_path / ".local" / "share" / "sari" / "mcp_debug.log"
+>       text = log_path.read_text(encoding="utf-8")
+
+tests/test_runtime_gates.py:195: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/pathlib.py:1256: in read_text
+    with self.open(mode='r', encoding=encoding, errors=errors) as f:
+/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/pathlib.py:1242: in open
+    return io.open(self, mode, buffering, encoding, errors, newline,
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = PosixPath('/private/var/folders/53/1642qrvs7rdg6qlcn2v_50sh0000gn/T/pytest-of-baecheolhan/pytest-761/test_mcp_debug_log_redacts_sen0/.local/share/sari/mcp_debug.log')
+name = '/private/var/folders/53/1642qrvs7rdg6qlcn2v_50sh0000gn/T/pytest-of-baecheolhan/pytest-761/test_mcp_debug_log_redacts_sen0/.local/share/sari/mcp_debug.log'
+flags = 16777216, mode = 438
+
+    def _opener(self, name, flags, mode=0o666):
+        # A stub for the opener argument to built-in open()
+>       return self._accessor.open(self, flags, mode)
+E       FileNotFoundError: [Errno 2] No such file or directory: '/private/var/folders/53/1642qrvs7rdg6qlcn2v_50sh0000gn/T/pytest-of-baecheolhan/pytest-761/test_mcp_debug_log_redacts_sen0/.local/share/sari/mcp_debug.log'
+
+/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/pathlib.py:1110: FileNotFoundError
+__________ test_root_id_explicit_workspace_is_stable_for_nested_repos __________
+
+tmp_path = PosixPath('/private/var/folders/53/1642qrvs7rdg6qlcn2v_50sh0000gn/T/pytest-of-baecheolhan/pytest-761/test_root_id_explicit_workspac0')
+
+    def test_root_id_explicit_workspace_is_stable_for_nested_repos(tmp_path):
+        parent = tmp_path / "parent"
+        child = parent / "child"
+        parent.mkdir(parents=True)
+        child.mkdir(parents=True)
+        (parent / ".sariroot").write_text("", encoding="utf-8")
+    
+        legacy = WorkspaceManager.root_id(str(child))
+        explicit = WorkspaceManager.root_id_for_workspace(str(child))
+    
+        # Legacy may lift to explicit boundary marker (.sariroot);
+        # explicit must bind to selected workspace.
+        assert explicit == WorkspaceManager.root_id_for_workspace(str(child))
+        # assert explicit.startswith("root-")  <-- Removed, implementation uses normalized path
+        assert explicit.endswith("child")
+>       assert legacy.startswith("root-")
+E       AssertionError: assert False
+E        +  where False = <built-in method startswith of str object at 0x10a1d1930>('root-')
+E        +    where <built-in method startswith of str object at 0x10a1d1930> = '/private/var/folders/53/1642qrvs7rdg6qlcn2v_50sh0000gn/T/pytest-of-baecheolhan/pytest-761/test_root_id_explicit_workspac0/parent'.startswith
+
+tests/test_runtime_gates.py:217: AssertionError
+___________________________ test_dockerfile_insight ____________________________
+
+    def test_dockerfile_insight():
+        """
+        Verify that Dockerfile instructions are captured.
+        """
+        engine = ASTEngine()
+        code = (
+            "FROM python:3.9-slim\n"
+            "ENV SARI_HOME=/app\n"
+            "EXPOSE 47800\n"
+            "CMD [\"python\", \"-m\", \"sari\"]\n"
+        )
+        # Correct unpack for standardized return type
+        symbols, _ = engine.extract_symbols("Dockerfile", "dockerfile", code)
+>       assert any(s[3] == "FROM" for s in symbols)
+E       assert False
+E        +  where False = any(<generator object test_dockerfile_insight.<locals>.<genexpr> at 0x10a5f2dd0>)
+
+tests/test_standard_essentials.py:18: AssertionError
+___________________________ test_markdown_navigation ___________________________
+
+    def test_markdown_navigation():
+        """
+        Verify that Markdown headers are extracted for navigation.
+        """
+        engine = ASTEngine()
+        code = (
+            "# Sari Project\n"
+            "## Core Architecture\n"
+            "### Ultra Turbo Engine\n"
+        )
+        symbols, _ = engine.extract_symbols("README.md", "markdown", code)
+>       assert any(s[3] == "Sari Project" for s in symbols)
+E       assert False
+E        +  where False = any(<generator object test_markdown_navigation.<locals>.<genexpr> at 0x10a2a3890>)
+
+tests/test_standard_essentials.py:33: AssertionError
+____________________________ test_bash_script_logic ____________________________
+
+    def test_bash_script_logic():
+        """
+        Verify that Shell script functions and variables are captured.
+        """
+        engine = ASTEngine()
+        code = (
+            "#!/bin/bash\n"
+            "SARI_PORT=47800\n"
+            "function start_daemon() {\n"
+            "  echo 'Starting...'\n"
+            "}\n"
+        )
+        symbols, _ = engine.extract_symbols("bootstrap.sh", "bash", code)
+>       assert any(s[3] == "start_daemon" and s[4] == "method" for s in symbols)
+E       assert False
+E        +  where False = any(<generator object test_bash_script_logic.<locals>.<genexpr> at 0x10a2a3d60>)
+
+tests/test_standard_essentials.py:50: AssertionError
+_________ test_vue_regex_parser_filters_keyword_and_single_char_noise __________
+
+    def test_vue_regex_parser_filters_keyword_and_single_char_noise():
+        from sari.core.parsers.factory import ParserFactory
+    
+        p = ParserFactory.get_parser(".vue")
+        symbols, _ = p.extract(
+            "Comp.vue",
+            "<script>\n"
+            "const d = () => 1;\n"
+            "if (ok) { run(); }\n"
+            "catch(err) { return; }\n"
+            "function boot() { return true; }\n"
+            "</script>\n",
+        )
+        # Standard Format: index 3 is name
+        names = [s[3] for s in symbols]
+        assert "boot" in names
+>       assert "if" not in names
+E       AssertionError: assert 'if' not in ['d', 'if', 'catch', 'boot', 'Comp']
+
+tests/test_symbol_tools_e2e.py:125: AssertionError
+_______________________ test_investigate_swift_ast_nodes _______________________
+
+    def test_investigate_swift_ast_nodes():
+        """
+        INVESTIGATION: Print all node types in a Swift file.
+        """
+        engine = ASTEngine()
+        lang_obj = engine._get_language("swift")
+>       assert lang_obj is not None, "Swift parser must be loaded"
+E       AssertionError: Swift parser must be loaded
+E       assert None is not None
+
+tests/test_universal_ast.py:11: AssertionError
+___________________________ test_rust_support_truth ____________________________
+
+    def test_rust_support_truth():
+        engine = ASTEngine()
+        code = "struct SariTurbo { speed: u64 }\nfn main() {}"
+        symbols, _ = engine.extract_symbols("main.rs", "rust", code)
+>       assert any(s[3] == "SariTurbo" for s in symbols)
+E       assert False
+E        +  where False = any(<generator object test_rust_support_truth.<locals>.<genexpr> at 0x10a72a4a0>)
+
+tests/test_universal_ast.py:30: AssertionError
+_____________________ test_debounced_event_handler_direct ______________________
+
+    def test_debounced_event_handler_direct():
+        callback = MagicMock()
+>       handler = DebouncedEventHandler(callback, debounce_seconds=0.01)
+
+tests/test_watcher.py:13: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/mock.py:1093: in __call__
+    return self._mock_call(*args, **kwargs)
+/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/mock.py:1097: in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <MagicMock spec='str' id='4457647936'>
+args = (<MagicMock id='4470327616'>,), kwargs = {'debounce_seconds': 0.01}
+effect = <tuple_iterator object at 0x109b29eb0>
+
+    def _execute_mock_call(self, /, *args, **kwargs):
+        # separate from _increment_mock_call so that awaited functions are
+        # executed separately from their call, also AsyncMock overrides this method
+    
+        effect = self.side_effect
+        if effect is not None:
+            if _is_exception(effect):
+                raise effect
+            elif not _callable(effect):
+>               result = next(effect)
+E               StopIteration
+
+/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/mock.py:1154: StopIteration
+__________________ test_debounced_event_handler_on_any_event ___________________
+
+    def test_debounced_event_handler_on_any_event():
+        callback = MagicMock()
+        with patch('threading.Timer'):
+>           handler = DebouncedEventHandler(callback, debounce_seconds=0.01)
+
+tests/test_watcher.py:27: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/mock.py:1093: in __call__
+    return self._mock_call(*args, **kwargs)
+/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/mock.py:1097: in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <MagicMock spec='str' id='4457647936'>
+args = (<MagicMock id='4467927312'>,), kwargs = {'debounce_seconds': 0.01}
+effect = <tuple_iterator object at 0x109b29eb0>
+
+    def _execute_mock_call(self, /, *args, **kwargs):
+        # separate from _increment_mock_call so that awaited functions are
+        # executed separately from their call, also AsyncMock overrides this method
+    
+        effect = self.side_effect
+        if effect is not None:
+            if _is_exception(effect):
+                raise effect
+            elif not _callable(effect):
+>               result = next(effect)
+E               StopIteration
+
+/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/mock.py:1154: StopIteration
+___________________________ test_watcher_start_stop ____________________________
+
+tmp_path = PosixPath('/private/var/folders/53/1642qrvs7rdg6qlcn2v_50sh0000gn/T/pytest-of-baecheolhan/pytest-761/test_watcher_start_stop0')
+
+    def test_watcher_start_stop(tmp_path):
+        callback = MagicMock()
+        watcher = FileWatcher([str(tmp_path)], callback)
+        with patch('watchdog.observers.Observer'):
+>           watcher.start()
+
+tests/test_watcher.py:40: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/sari/core/watcher.py:259: in start
+    handler = DebouncedEventHandler(
+/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/mock.py:1093: in __call__
+    return self._mock_call(*args, **kwargs)
+/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/mock.py:1097: in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <MagicMock spec='str' id='4457647936'>
+args = (<bound method FileWatcher._dispatch_event of <sari.core.watcher.FileWatcher object at 0x10a73d850>>,)
+kwargs = {'git_callback': None, 'git_debounce_seconds': 3.0, 'logger': None}
+effect = <tuple_iterator object at 0x109b29eb0>
+
+    def _execute_mock_call(self, /, *args, **kwargs):
+        # separate from _increment_mock_call so that awaited functions are
+        # executed separately from their call, also AsyncMock overrides this method
+    
+        effect = self.side_effect
+        if effect is not None:
+            if _is_exception(effect):
+                raise effect
+            elif not _callable(effect):
+>               result = next(effect)
+E               StopIteration
+
+/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/mock.py:1154: StopIteration
+____________________ test_react_functional_component_truth _____________________
+
+    def test_react_functional_component_truth():
+        """
+        Verify that React functional components are recognized as major symbols.
+        """
+        engine = ASTEngine()
+        code = (
+            "const UserProfile = ({ name }) => {\n"
+            "    return <div>{name}</div>;\n"
+            "};\n"
+        )
+        symbols, _ = engine.extract_symbols("User.jsx", "javascript", code)
+>       assert any(s[3] == "UserProfile" and s[4] == "class" for s in symbols)
+E       assert False
+E        +  where False = any(<generator object test_react_functional_component_truth.<locals>.<genexpr> at 0x10a459eb0>)
+
+tests/test_web_intelligence.py:16: AssertionError
+_____________________ test_express_route_extraction_truth ______________________
+
+    def test_express_route_extraction_truth():
+        """
+        Verify that Express route handlers are extracted with their paths.
+        """
+        engine = ASTEngine()
+        code = (
+            "app.get('/api/users', (req, res) => {\n"
+            "    res.send('ok');\n"
+            "});\n"
+        )
+        symbols, _ = engine.extract_symbols("server.js", "javascript", code)
+>       route = next(s for s in symbols if "route.get" in s[3])
+
+tests/test_web_intelligence.py:30: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+.0 = <list_iterator object at 0x109aa3580>
+
+>   route = next(s for s in symbols if "route.get" in s[3])
+E   TypeError: argument of type 'int' is not iterable
+
+tests/test_web_intelligence.py:30: TypeError
+_________________________ test_vue_script_block_truth __________________________
+
+    def test_vue_script_block_truth():
+        """
+        Verify that Vue .vue files have their script blocks parsed.
+        """
+        engine = ASTEngine()
+        code = (
+            "<template>\n"
+            "  <h1>{{ msg }}</h1>\n"
+            "</template>\n"
+            "<script>\n"
+            "export default {\n"
+            "  data() { return { msg: 'Hello Vue' } }\n"
+            "}\n"
+            "</script>\n"
+        )
+        symbols, _ = engine.extract_symbols("App.vue", "vue", code)
+>       assert any("data" in s[3] for s in symbols)
+
+tests/test_web_intelligence.py:52: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+.0 = <list_iterator object at 0x109da2580>
+
+>   assert any("data" in s[3] for s in symbols)
+E   TypeError: argument of type 'int' is not iterable
+
+tests/test_web_intelligence.py:52: TypeError
+=============================== warnings summary ===============================
+tests/test_advanced_language_patterns.py: 20 warnings
+tests/test_ast_engine.py: 2 warnings
+tests/test_ast_intelligence.py: 2 warnings
+tests/test_broken_scenarios.py: 2 warnings
+tests/test_business_logic_smoke.py: 1 warning
+tests/test_cli_deep.py: 1 warning
+tests/test_config_matrix.py: 3 warnings
+tests/test_core_flow.py: 1 warning
+tests/test_data_integrity.py: 3 warnings
+tests/test_debug_integrity.py: 1 warning
+tests/test_doctor_self_healing.py: 3 warnings
+tests/test_enterprise_intelligence.py: 3 warnings
+tests/test_fullstack_intelligence.py: 3 warnings
+tests/test_functional_integrity.py: 3 warnings
+tests/test_indexer.py: 1 warning
+tests/test_mcp_tools_complex.py: 1 warning
+tests/test_nested_workspaces.py: 1 warning
+tests/test_new_languages.py: 10 warnings
+tests/test_pro_doctor_edge_cases.py: 2 warnings
+tests/test_real_workspace_ast.py: 1 warning
+tests/test_real_world_frameworks.py: 2 warnings
+tests/test_standard_essentials.py: 2 warnings
+tests/test_symbol_tools_e2e.py: 1 warning
+tests/test_universal_ast.py: 2 warnings
+tests/test_web_intelligence.py: 3 warnings
+  /Users/baecheolhan/Library/Python/3.9/lib/python/site-packages/tree_sitter/__init__.py:36: FutureWarning: Language(path, name) is deprecated. Use Language(ptr, name) instead.
+    warn("{} is deprecated. Use {} instead.".format(old, new), FutureWarning)
+
+tests/test_async_server.py::test_async_server_run_flow
+  /Users/baecheolhan/Documents/repositories/src/sari/mcp/async_server.py:138: RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited
+    self._async_transport.close()
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_advanced_language_patterns.py::TestJavaSpringAdvanced::test_spring_controller_with_request_mapping
+FAILED tests/test_advanced_language_patterns.py::TestJavaSpringAdvanced::test_spring_service_with_transactional
+FAILED tests/test_advanced_language_patterns.py::TestJavaSpringAdvanced::test_spring_configuration_and_beans
+FAILED tests/test_advanced_language_patterns.py::TestReactAdvanced::test_react_hooks_usage
+FAILED tests/test_advanced_language_patterns.py::TestReactAdvanced::test_react_class_component
+FAILED tests/test_advanced_language_patterns.py::TestReactAdvanced::test_react_memo_and_forward_ref
+FAILED tests/test_advanced_language_patterns.py::TestVueAdvanced::test_vue_options_api_full
+FAILED tests/test_advanced_language_patterns.py::TestTypeScriptAdvanced::test_typescript_class_with_decorators
+FAILED tests/test_advanced_language_patterns.py::TestTypeScriptAdvanced::test_typescript_generic_functions
+FAILED tests/test_advanced_language_patterns.py::TestPythonAdvanced::test_python_dataclass_and_pydantic
+FAILED tests/test_advanced_language_patterns.py::TestPythonAdvanced::test_python_async_functions
+FAILED tests/test_advanced_language_patterns.py::TestPythonAdvanced::test_python_decorators_and_properties
+FAILED tests/test_advanced_language_patterns.py::TestHCLAdvanced::test_terraform_aws_infrastructure
+FAILED tests/test_advanced_language_patterns.py::TestSQLAdvanced::test_sql_complex_schema
+FAILED tests/test_advanced_language_patterns.py::TestExpressAdvanced::test_express_router_and_middleware
+FAILED tests/test_advanced_language_patterns.py::TestBashAdvanced::test_bash_functions_and_variables
+FAILED tests/test_ast_engine.py::test_ast_engine_extracts_python_symbols - As...
+FAILED tests/test_ast_intelligence.py::test_java_annotation_extraction - Stop...
+FAILED tests/test_ast_intelligence.py::test_python_decorator_extraction - Sto...
+FAILED tests/test_chaos.py::test_chaos_db_file_corruption_recovery - sqlite3....
+FAILED tests/test_cold_start.py::TestColdStart::test_pure_cold_start_via_proxy
+FAILED tests/test_config_matrix.py::TestConfigMatrix::test_repo_label_non_git_uses_first_directory
+FAILED tests/test_core_stress_extreme.py::test_indexer_massive_file_stress - ...
+FAILED tests/test_daemon_session_deep.py::test_daemon_server_communication - ...
+FAILED tests/test_db.py::test_db_turbo_ingestion_and_search - sqlite3.Integri...
+FAILED tests/test_db.py::test_db_intelligent_read_compressed - sqlite3.Integr...
+FAILED tests/test_db_writer_guards.py::test_write_gate_windows_lock_path - At...
+FAILED tests/test_doctor_self_healing.py::TestDoctorSelfHealing::test_doctor_heals_stale_registry_entry
+FAILED tests/test_embedded_server.py::TestEmbeddedServer::test_http_server_lifecycle
+FAILED tests/test_embedded_server.py::TestEmbeddedServer::test_multi_cli_single_http_server
+FAILED tests/test_enterprise_intelligence.py::test_spring_data_jpa_integrity
+FAILED tests/test_enterprise_intelligence.py::test_spring_data_redis_and_caching
+FAILED tests/test_enterprise_intelligence.py::test_spring_webflux_reactive_truth
+FAILED tests/test_fallback_parsers.py::test_comment_stripping - AssertionErro...
+FAILED tests/test_fullstack_intelligence.py::test_csharp_support_truth - asse...
+FAILED tests/test_fullstack_intelligence.py::test_sql_ddl_truth - assert False
+FAILED tests/test_fullstack_intelligence.py::test_terraform_hcl_truth - TypeE...
+FAILED tests/test_functional_integrity.py::test_stale_data_pruning_integrity
+FAILED tests/test_infra_edge_cases.py::test_db_malformed_row_isolation - sqli...
+FAILED tests/test_main_dual_stack.py::test_main_stdio_triggers_http_ensure - ...
+FAILED tests/test_multi_workspace.py::TestMultiWorkspaceIntegration::test_daemon_handles_multiple_workspaces
+FAILED tests/test_new_languages.py::TestKotlinSpring::test_kotlin_spring_controller
+FAILED tests/test_new_languages.py::TestKotlinSpring::test_kotlin_data_class
+FAILED tests/test_new_languages.py::TestPHPLaravel::test_laravel_controller
+FAILED tests/test_new_languages.py::TestPHPLaravel::test_laravel_model - Asse...
+FAILED tests/test_new_languages.py::TestRubyRails::test_rails_model - Asserti...
+FAILED tests/test_new_languages.py::TestRubyRails::test_rails_controller - As...
+FAILED tests/test_new_languages.py::TestPythonFastAPI::test_fastapi_routes - ...
+FAILED tests/test_new_languages.py::TestPythonFastAPI::test_flask_routes - As...
+FAILED tests/test_new_languages.py::TestYAMLKubernetes::test_k8s_deployment
+FAILED tests/test_new_languages.py::TestYAMLKubernetes::test_k8s_service - as...
+FAILED tests/test_real_workspace_ast.py::test_investigate_kotlin_ast_nodes - ...
+FAILED tests/test_real_world_frameworks.py::test_mybatis_xml_symbol_extraction
+FAILED tests/test_real_world_frameworks.py::test_querydsl_generated_class_detection
+FAILED tests/test_runtime_gates.py::test_tantivy_dependency_is_pinned - asser...
+FAILED tests/test_runtime_gates.py::test_mcp_debug_log_redacts_sensitive_fields
+FAILED tests/test_runtime_gates.py::test_root_id_explicit_workspace_is_stable_for_nested_repos
+FAILED tests/test_standard_essentials.py::test_dockerfile_insight - assert False
+FAILED tests/test_standard_essentials.py::test_markdown_navigation - assert F...
+FAILED tests/test_standard_essentials.py::test_bash_script_logic - assert False
+FAILED tests/test_symbol_tools_e2e.py::test_vue_regex_parser_filters_keyword_and_single_char_noise
+FAILED tests/test_universal_ast.py::test_investigate_swift_ast_nodes - Assert...
+FAILED tests/test_universal_ast.py::test_rust_support_truth - assert False
+FAILED tests/test_watcher.py::test_debounced_event_handler_direct - StopItera...
+FAILED tests/test_watcher.py::test_debounced_event_handler_on_any_event - Sto...
+FAILED tests/test_watcher.py::test_watcher_start_stop - StopIteration
+FAILED tests/test_web_intelligence.py::test_react_functional_component_truth
+FAILED tests/test_web_intelligence.py::test_express_route_extraction_truth - ...
+FAILED tests/test_web_intelligence.py::test_vue_script_block_truth - TypeErro...
+====== 69 failed, 204 passed, 1 skipped, 75 warnings in 166.01s (0:02:46) ======
