@@ -284,7 +284,11 @@ def _ensure_workspace_http(daemon_host: str, daemon_port: int, workspace_root: O
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "initialize",
-                "params": {"rootUri": f"file://{root}", "capabilities": {}},
+                "params": {
+                    "rootUri": f"file://{root}",
+                    "capabilities": {},
+                    "sariPersist": True,
+                },
             }).encode("utf-8")
             header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
             sock.sendall(header + body)

@@ -16,6 +16,10 @@ except ImportError:
     db_proxy = None
 
 from .schema import init_schema
+from sari.core.repository.extra_repository import SnippetRepository, ContextRepository
+from sari.core.repository.symbol_repository import SymbolRepository
+from sari.core.repository.search_repository import SearchRepository
+from sari.core.repository.failed_task_repository import FailedTaskRepository
 
 class LocalSearchDB:
     def __init__(self, db_path: str, logger=None, journal_mode: str = "wal"):
@@ -49,6 +53,21 @@ class LocalSearchDB:
     def set_settings(self, settings): self.settings = settings
     def create_staging_table(self, cur=None): self._ensure_staging()
 
+    def _snippet_repo(self) -> SnippetRepository:
+        return SnippetRepository(self._read)
+
+    def _context_repo(self) -> ContextRepository:
+        return ContextRepository(self._read)
+
+    def _symbol_repo(self) -> SymbolRepository:
+        return SymbolRepository(self._read)
+
+    def _search_repo(self) -> SearchRepository:
+        return SearchRepository(self._read)
+
+    def _failed_task_repo(self) -> FailedTaskRepository:
+        return FailedTaskRepository(self._read)
+
     def register_writer_thread(self, thread_id: int) -> None:
         """Allow external callers to register the current writer thread.
 
@@ -57,17 +76,13 @@ class LocalSearchDB:
         """
         self._writer_thread_id = thread_id
 
+    def get_read_connection(self) -> sqlite3.Connection:
+        return self._read
+
     def count_failed_tasks(self) -> Tuple[int, int]:
         """Return total failed tasks and those with high retry count."""
-        if not HAS_PEEWEE:
-            return 0, 0
         try:
-            cur = self.db._get_conn().cursor()
-            row = cur.execute("SELECT COUNT(*) FROM failed_tasks").fetchone()
-            total = int(row[0]) if row else 0
-            row2 = cur.execute("SELECT COUNT(*) FROM failed_tasks WHERE attempts >= 3").fetchone()
-            high = int(row2[0]) if row2 else 0
-            return total, high
+            return self._failed_task_repo().count_failed_tasks()
         except Exception:
             return 0, 0
 
@@ -103,34 +118,58 @@ class LocalSearchDB:
     def list_snippets_by_tag(self, tag: str) -> List[Dict[str, Any]]:
         """Return snippet rows matching a tag (most recent first)."""
         try:
-            cur = self.db._get_conn().cursor()
-            cur.execute(
-                "SELECT tag, path, root_id, start_line, end_line, content, metadata_json, created_ts, updated_ts "
-                "FROM snippets WHERE tag = ? ORDER BY updated_ts DESC",
-                (tag,)
-            )
-            rows = cur.fetchall() or []
-            cols = ["tag", "path", "root_id", "start_line", "end_line", "content", "metadata_json", "created_ts", "updated_ts"]
-            return [dict(zip(cols, r)) for r in rows]
+            return self._snippet_repo().list_snippets_by_tag(tag)
         except Exception:
             return []
 
     def get_context_by_topic(self, topic: str) -> Optional[Dict[str, Any]]:
         """Return a single context row for a topic."""
         try:
-            cur = self.db._get_conn().cursor()
-            cur.execute(
-                "SELECT topic, content, tags_json, related_files_json, source, valid_from, valid_until, deprecated, created_ts, updated_ts "
-                "FROM contexts WHERE topic = ?",
-                (topic,)
-            )
-            row = cur.fetchone()
-            if not row:
-                return None
-            cols = ["topic", "content", "tags_json", "related_files_json", "source", "valid_from", "valid_until", "deprecated", "created_ts", "updated_ts"]
-            return dict(zip(cols, row))
+            return self._context_repo().get_context_by_topic(topic)
         except Exception:
             return None
+
+    def search_contexts(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
+        if not query:
+            return []
+        try:
+            return self._context_repo().search_contexts(query, limit=limit)
+        except Exception:
+            return []
+
+    def upsert_context_tx(self, cur: sqlite3.Cursor, rows: Iterable[tuple]) -> int:
+        return self._context_repo().upsert_context_tx(cur, rows)
+
+    def upsert_snippet_tx(self, cur: sqlite3.Cursor, rows: Iterable[tuple]) -> int:
+        return self._snippet_repo().upsert_snippet_tx(cur, rows)
+
+    def update_snippet_location_tx(self, cur: sqlite3.Cursor, snippet_id: int, start: int, end: int, content: str,
+                                   content_hash: str, anchor_before: str, anchor_after: str, updated_ts: int) -> None:
+        self._snippet_repo().update_snippet_location_tx(
+            cur,
+            snippet_id=snippet_id,
+            start=start,
+            end=end,
+            content=content,
+            content_hash=content_hash,
+            anchor_before=anchor_before,
+            anchor_after=anchor_after,
+            updated_ts=updated_ts,
+        )
+
+    def list_snippet_versions(self, snippet_id: int) -> List[Dict[str, Any]]:
+        try:
+            return self._snippet_repo().list_snippet_versions(snippet_id)
+        except Exception:
+            return []
+
+    def search_snippets(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
+        if not query:
+            return []
+        try:
+            return self._snippet_repo().search_snippets(query, limit=limit)
+        except Exception:
+            return []
 
     def upsert_files_turbo(self, rows: Iterable[tuple]):
         self._ensure_staging()
@@ -200,50 +239,15 @@ class LocalSearchDB:
                 self.logger.error(f"Failed to finalize turbo batch: {e}")
             raise
     def upsert_symbols_tx(self, cur, rows: List[tuple], root_id: str = "root"):
-        """Insert or update symbols with robust format detection.
-        
-        Supports two formats:
-        - Format A (12-element, DB schema): (sid, path, root_id, name, kind, line, end_line, content, parent_name, metadata, docstring, qualname)
-        - Format B (11-element, legacy): (path, name, kind, line, end_line, content, parent, metadata, docstring, qualname, sid)
-        """
-        if not rows: return
-        conn = self.db.connection()        
-        self.ensure_root(root_id, root_id)
-        
-        mapped_rows = []
-        for r in rows:
-            if not isinstance(r, (list, tuple)): continue
-            
-            # Format detection
-            if len(r) >= 12:
-                # Likely Format A: Check if r[1] looks like a path (contains "/" or ".")
-                if "/" in str(r[1]) or "\\" in str(r[1]):
-                    # Format A: (sid, path, root_id, name, kind, line, end_line, content, parent_name, metadata, docstring, qualname)
-                    mapped = (r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], r[9], r[10], r[11])
-                else:
-                    # Ambiguous, default to using provided root_id
-                    mapped = (r[0], r[1], root_id, r[3], r[4], r[5], r[6], r[7], r[8], r[9], r[10], r[11])
-            elif len(r) == 11:
-                # Format B: (path, name, kind, line, end_line, content, parent, metadata, docstring, qualname, sid)
-                mapped = (r[10], r[0], root_id, r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], r[9])
-            else:
-                # Unknown format, skip
-                if self.logger: self.logger.warning(f"Skipping symbol with unexpected format (len={len(r)})")
-                continue
-            
-            mapped_rows.append(mapped)
-            
-        if not mapped_rows: return
-
-        # Ensure files exist to satisfy FOREIGN KEY constraint
-        # We extract unique paths and insert minimal file records if they don't exist
-        # caused by: race conditions or partial indexing failure
-        placeholders = ",".join(["?"] * 12)
+        if not rows:
+            return
         try:
-            with self.db.atomic():
-                conn.executemany(f"INSERT OR REPLACE INTO symbols VALUES ({placeholders})", mapped_rows)
+            if cur is None:
+                cur = self._write.cursor()
+            self._symbol_repo().upsert_symbols_tx(cur, rows)
         except Exception as e:
-            if self.logger: self.logger.error(f"Failed to upsert symbols: {e}")
+            if self.logger:
+                self.logger.error(f"Failed to upsert symbols: {e}")
             raise
 
     def search_files(self, query: str, limit: int = 50) -> List[Dict]:
@@ -259,6 +263,40 @@ class LocalSearchDB:
         if kwargs.get("root_ids"): q = q.where(Symbol.root_id << kwargs.get("root_ids"))
         return list(q.limit(limit).dicts())
 
+    def repo_candidates(self, q: str, limit: int = 3, root_ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        if not q:
+            return []
+        try:
+            if self.engine and hasattr(self.engine, "repo_candidates"):
+                return self.engine.repo_candidates(q, limit=limit, root_ids=root_ids)
+            return self._search_repo().repo_candidates(q, limit=limit, root_ids=root_ids)
+        except Exception:
+            return []
+
+    def get_symbol_block(self, path: str, symbol_name: str) -> Optional[str]:
+        try:
+            loc = self._symbol_repo().get_symbol_range(path, symbol_name)
+            if not loc:
+                return None
+            start, end = loc
+            content = self.read_file(path)
+            if not content:
+                return None
+            lines = content.splitlines()
+            if 1 <= start <= len(lines):
+                return "\n".join(lines[start - 1 : end])
+            return None
+        except Exception:
+            return None
+
+    def read_file_raw(self, path: str) -> Optional[str]:
+        # Return raw content as text for tools expecting string.
+        return self.read_file(path)
+
+    def search_v2(self, opts: Any):
+        if self.engine and hasattr(self.engine, "search_v2"):
+            return self.engine.search_v2(opts)
+        return self._search_repo().search_v2(opts)
     def read_file(self, path: str) -> Optional[str]:
         row = File.select(File.content).where(File.path == path).first()
         if not row: return None

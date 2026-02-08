@@ -214,6 +214,9 @@ class Registry:
     def active_count(self) -> int:
         with self._lock:
             return sum(1 for s in self._sessions.values() if s.ref_count > 0)
+    def has_persistent(self) -> bool:
+        with self._lock:
+            return any(s.persistent for s in self._sessions.values())
     def get_last_activity_ts(self) -> float: 
         with self._lock:
             return max((s.last_activity for s in self._sessions.values() if s.ref_count > 0), default=0.0)

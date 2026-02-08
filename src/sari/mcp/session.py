@@ -302,7 +302,8 @@ class Session:
             self.shared_state = None
 
         self.workspace_root = workspace_root
-        persist = str(os.environ.get("SARI_PERSIST_WORKSPACE", "")).strip().lower() in {"1", "true", "yes", "on"}
+        persist_flag = params.get("sariPersist") or params.get("persist")
+        persist = bool(persist_flag) or str(os.environ.get("SARI_PERSIST_WORKSPACE", "")).strip().lower() in {"1", "true", "yes", "on"}
         self.shared_state = self.registry.get_or_create(self.workspace_root, persistent=persist)
         self.registry.touch_workspace(self.workspace_root)
         trace("session_handle_initialize_bound", workspace_root=self.workspace_root)
@@ -378,7 +379,7 @@ class Session:
             autostop = settings.get_bool("DAEMON_AUTOSTOP", True)
             if autostop:
                 try:
-                    if self.registry.active_count() == 0:
+                    if self.registry.active_count() == 0 and not self.registry.has_persistent():
                         boot_id = _boot_id()
                         if boot_id:
                             ServerRegistry().set_daemon_draining(boot_id, True)
