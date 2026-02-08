@@ -120,6 +120,7 @@ class LocalSearchMCPServer:
                 "tools": {"listChanged": False},
                 "prompts": {"listChanged": False},
                 "resources": {"subscribe": False, "listChanged": False},
+                "roots": {"listChanged": False},
             },
         }
 
@@ -208,6 +209,25 @@ class LocalSearchMCPServer:
             lambda: self._tool_registry.execute(tool_name, ctx, args),
         )
 
+    def list_roots(self) -> List[Dict[str, str]]:
+        """Return configured workspace roots as MCP root objects."""
+        cfg = None
+        try:
+            cfg_path = WorkspaceManager.resolve_config_path(self.workspace_root)
+            cfg = Config.load(cfg_path, workspace_root_override=self.workspace_root)
+        except Exception:
+            cfg = None
+        config_roots = list(getattr(cfg, "workspace_roots", []) or []) if cfg else []
+        roots = WorkspaceManager.resolve_workspace_roots(
+            root_uri=f"file://{self.workspace_root}",
+            config_roots=config_roots,
+        )
+        result = []
+        for r in roots:
+            name = Path(r).name or r
+            result.append({"uri": f"file://{r}", "name": name})
+        return result
+
     @staticmethod
     def _sanitize_for_llm_tools(schema: dict) -> dict:
         """
@@ -272,7 +292,18 @@ class LocalSearchMCPServer:
 
     def handle_request(self, request: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if self._proxy_to_daemon:
-            return self._forward_to_daemon(request)
+            resp = self._forward_to_daemon(request)
+            if isinstance(resp, dict):
+                err = resp.get("error") if isinstance(resp, dict) else None
+                if isinstance(err, dict) and err.get("code") == -32002:
+                    # Daemon is unreachable; fall back to local stdio handling.
+                    self._log_debug("Daemon proxy failed; falling back to local MCP server.")
+                    self._proxy_to_daemon = False
+                    self._close_all_daemon_connections()
+                else:
+                    return resp
+            else:
+                return resp
 
         method, params, msg_id = request.get("method"), request.get("params", {}), request.get("id")
         if msg_id is None: return None # Ignore notifications for now
@@ -283,6 +314,7 @@ class LocalSearchMCPServer:
             elif method == "prompts/list": result = {"prompts": []}
             elif method == "resources/list": result = {"resources": []}
             elif method == "resources/templates/list": result = {"resourceTemplates": []}
+            elif method == "roots/list": result = {"roots": self.list_roots()}
             elif method == "tools/call": 
                 result = self.handle_tools_call(params)
                 if isinstance(result, dict) and result.get("isError"):

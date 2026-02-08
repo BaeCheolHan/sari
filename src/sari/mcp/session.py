@@ -206,7 +206,7 @@ class Session:
         else:
             # Forward other requests to the bound server
             if not self.shared_state:
-                if method in {"tools/list", "prompts/list", "resources/list", "resources/templates/list", "ping"}:
+                if method in {"tools/list", "prompts/list", "resources/list", "resources/templates/list", "roots/list", "ping"}:
                     if msg_id is None:
                         return
                     if method == "tools/list":
@@ -221,6 +221,10 @@ class Session:
                         return
                     if method == "resources/templates/list":
                         await self.send_json({"jsonrpc": "2.0", "id": msg_id, "result": {"resourceTemplates": []}})
+                        return
+                    if method == "roots/list":
+                        roots = self._get_preinit_server().list_roots()
+                        await self.send_json({"jsonrpc": "2.0", "id": msg_id, "result": {"roots": roots}})
                         return
                     if method == "ping":
                         await self.send_json({"jsonrpc": "2.0", "id": msg_id, "result": {}})
