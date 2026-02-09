@@ -3,6 +3,7 @@ import os
 import threading
 import mimetypes
 import time
+import zlib
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -99,6 +100,9 @@ class Handler(BaseHTTPRequestHandler):
             <title>Sari Dashboard</title>
             <script src="https://cdn.tailwindcss.com"></script>
             <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+            <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+            <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+            <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
             <style>
                 body { background-color: #0b0e14; color: #d8d9da; font-family: 'Inter', ui-sans-serif, system-ui; }
                 .grafana-card { background-color: #181b1f; border-left: 4px solid #3274d9; transition: transform 0.2s; }
@@ -107,17 +111,40 @@ class Handler(BaseHTTPRequestHandler):
                 .btn-primary:hover { background-color: #1f60c4; }
                 .scan-pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
                 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
-                .bg-health { background: linear-gradient(90deg, #3274d9 0%, #1f60c4 100%); }
             </style>
         </head>
         <body class="p-6">
             <div id="root"></div>
-            <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-            <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-            <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
-            
             <script type="text/babel">
                 const { useState, useEffect } = React;
+
+                function HealthMetric({ label, percent, color }) {
+                    return (
+                        <div className="w-32">
+                            <div className="flex justify-between text-[10px] font-black text-gray-500 uppercase mb-1">
+                                <span>{label}</span>
+                                <span>{Math.round(percent)}%</span>
+                            </div>
+                            <div className="h-1.5 w-full bg-gray-800 rounded-full overflow-hidden border border-gray-700">
+                                <div className={`h-full ${color} transition-all duration-500`} style={{ width: `${Math.min(100, percent)}%` }}></div>
+                            </div>
+                        </div>
+                    );
+                }
+
+                function StatCard({ icon, title, value, color }) {
+                    return (
+                        <div className="grafana-card rounded-lg p-6 shadow-xl">
+                            <div className="flex justify-between items-start mb-4">
+                                <span className="text-[10px] font-black text-gray-500 uppercase tracking-widest">{title}</span>
+                                <div className={`w-8 h-8 rounded-full bg-gray-800/50 flex items-center justify-center ${color}`}>
+                                    <i className={`fas ${icon}`}></i>
+                                </div>
+                            </div>
+                            <div className="text-3xl font-black text-white tracking-tighter">{value}</div>
+                        </div>
+                    );
+                }
 
                 function Dashboard() {
                     const [data, setData] = useState(null);
@@ -218,37 +245,6 @@ class Handler(BaseHTTPRequestHandler):
                             <footer className="mt-12 text-center text-gray-600 text-[10px] font-mono uppercase tracking-widest">
                                 Sari High-Performance Indexing Engine • Gemini CLI Optimized
                             </footer>
-                        </div>
-                    );
-                }
-
-                function StatCard({ icon, title, value, color }) {
-                    return (
-                        <div className="grafana-card rounded-lg p-6 shadow-xl">
-                            <div className="flex justify-between items-start mb-4">
-                                <span className="text-[10px] font-black text-gray-500 uppercase tracking-widest">{title}</span>
-                                <div className={`w-8 h-8 rounded-full bg-gray-800/50 flex items-center justify-center ${color}`}>
-                                    <i className={`fas ${icon}`}></i>
-                                </div>
-                            </div>
-                            <div className="text-3xl font-black text-white tracking-tighter">{value}</div>
-                        </div>
-                    );
-                }
-
-                function HealthMetric({ label, percent, color }) {
-                    return (
-                        <div className="w-32">
-                            <div className="flex justify-between text-[10px] font-black text-gray-500 uppercase mb-1">
-                                <span>{label}</span>
-                                <span>{Math.round(percent)}%</span>
-                            </div>
-                            <div className="h-1.5 w-full bg-gray-800 rounded-full overflow-hidden border border-gray-700">
-                                <div 
-                                    className={`h-full ${color} transition-all duration-500`} 
-                                    style={{ width: `${Math.min(100, percent)}%` }}
-                                ></div>
-                            </div>
                         </div>
                     );
                 }
