@@ -50,35 +50,31 @@ uv pip install -U sari
 
 ---
 
-### 2.2 (KR) 전역 설치(선택)
-전역 설치도 가능하지만 MCP 설정 경로가 꼬이기 쉬우므로 venv를 권장합니다.
+### 2.2 (KR) 편리한 전역 설치: uv tool (추천)
+가상환경을 수동으로 관리하기 번거롭다면 `uv tool`을 사용하세요. 실행 파일만 전역 경로에 연결해줍니다.
 
-옵션 A: uv tool
 ```bash
 uv tool install sari
 ```
 
-옵션 B: 시스템 설치
+설치 후 다음 명령어로 **절대 경로**를 확인하세요 (MCP 설정에 필요).
 ```bash
-uv pip install --system sari
+which sari
+# 예시: /Users/yourname/.local/bin/sari
 ```
 
-MCP 설정의 `command`는 **설치된 파이썬 경로**를 사용해야 합니다.
+### 2.2 (EN) Global-like: uv tool (Recommended)
+Use `uv tool` for automatic management of the execution environment.
 
-### 2.2 (EN) Global install (optional)
-Global install is possible, but venv is safer for MCP path consistency.
-
-Option A: uv tool
 ```bash
 uv tool install sari
 ```
 
-Option B: system install
+After installation, find the **absolute path** of the binary:
 ```bash
-uv pip install --system sari
+which sari
+# Example: /Users/yourname/.local/bin/sari
 ```
-
-For MCP configs, the `command` must point to the **Python executable from the chosen install**.
 
 ---
 
@@ -140,31 +136,29 @@ curl http://127.0.0.1:47777/health
 
 ## 4. MCP 클라이언트 설정 / MCP Client Setup
 
-### 4.1 (KR) Gemini CLI
-`~/.gemini/settings.json`
+### 4.1 Gemini CLI (~/.gemini/settings.json)
+
+**A. `uv tool install` (Recommended)**
 ```json
 {
   "mcpServers": {
     "sari": {
-      "command": "/abs/path/to/.venv/bin/python",
-      "args": ["-m", "sari", "--transport", "stdio"],
+      "command": "/Users/yourname/.local/bin/sari",
+      "args": ["--transport", "stdio"],
       "env": {
-        "SARI_CONFIG": "/abs/path/to/workspace/.sari/config.json",
-        "SARI_DAEMON_AUTOSTOP": "1",
-        "SARI_DAEMON_IDLE_SEC": "0"
+        "SARI_CONFIG": "/abs/path/to/workspace/.sari/config.json"
       }
     }
   }
 }
 ```
 
-### 4.1 (EN) Gemini CLI
-`~/.gemini/settings.json`
+**B. `venv` install**
 ```json
 {
   "mcpServers": {
     "sari": {
-      "command": "/abs/path/to/.venv/bin/python",
+      "command": "/abs/path/to/project/.venv/bin/python",
       "args": ["-m", "sari", "--transport", "stdio"],
       "env": {
         "SARI_CONFIG": "/abs/path/to/workspace/.sari/config.json"
@@ -176,44 +170,31 @@ curl http://127.0.0.1:47777/health
 
 ---
 
-### 4.2 (KR) Codex CLI
-`~/.codex/config.toml`
+### 4.2 Codex CLI (~/.codex/config.toml)
+
+**A. `uv tool install` (Recommended)**
 ```toml
 [mcp_servers.sari]
-command = "/abs/path/to/.venv/bin/python"
-args = ["-m", "sari", "--transport", "stdio"]
-env = { SARI_CONFIG = "/abs/path/to/workspace/.sari/config.json", SARI_DAEMON_AUTOSTOP = "1", SARI_DAEMON_IDLE_SEC = "0" }
+command = "/Users/yourname/.local/bin/sari"
+args = ["--transport", "stdio"]
+
+[mcp_servers.sari.env]
+SARI_CONFIG = "/abs/path/to/workspace/.sari/config.json"
 ```
 
-### 4.2 (EN) Codex CLI
-`~/.codex/config.toml`
+**B. `venv` install**
 ```toml
 [mcp_servers.sari]
-command = "/abs/path/to/.venv/bin/python"
+command = "/abs/path/to/project/.venv/bin/python"
 args = ["-m", "sari", "--transport", "stdio"]
-env = { SARI_CONFIG = "/abs/path/to/workspace/.sari/config.json", SARI_DAEMON_AUTOSTOP = "1", SARI_DAEMON_IDLE_SEC = "0" }
+
+[mcp_servers.sari.env]
+SARI_CONFIG = "/abs/path/to/workspace/.sari/config.json"
 ```
 
 ---
 
-### 4.3 (KR) 기타 MCP 클라이언트/IDE
-아래 템플릿을 MCP 설정에 맞게 사용하세요.
-
-```json
-{
-  "command": "/abs/path/to/python",
-  "args": ["-m", "sari", "--transport", "stdio"],
-  "env": {
-    "SARI_CONFIG": "/abs/path/to/workspace/.sari/config.json",
-    "SARI_DAEMON_AUTOSTOP": "1",
-    "SARI_DAEMON_IDLE_SEC": "0"
-  }
-}
-```
-
-### 4.3 (EN) Other MCP clients/IDEs
-Use the following template in your MCP settings.
-
+### 4.3 Other MCP clients/IDEs
 ```json
 {
   "command": "/abs/path/to/python",
