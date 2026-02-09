@@ -91,9 +91,21 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(self._get_dashboard_html().encode("utf-8"))
 
     def _get_dashboard_html(self):
-        return """
+        """Generate complete dashboard HTML."""
+        return f"""
         <!DOCTYPE html>
         <html lang="en" class="dark">
+        {self._get_dashboard_head()}
+        <body class="p-6">
+            <div id="root"></div>
+            {self._get_dashboard_script()}
+        </body>
+        </html>
+        """
+
+    def _get_dashboard_head(self):
+        """Generate HTML head section with styles and external dependencies."""
+        return """
         <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -113,11 +125,26 @@ class Handler(BaseHTTPRequestHandler):
                 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
             </style>
         </head>
-        <body class="p-6">
-            <div id="root"></div>
-            <script type="text/babel">
-                const { useState, useEffect } = React;
+        """
 
+    def _get_dashboard_script(self):
+        """Generate React dashboard script."""
+        return f"""
+            <script type="text/babel">
+                const {{ useState, useEffect }} = React;
+
+                {self._get_react_components()}
+
+                {self._get_dashboard_component()}
+
+                const root = ReactDOM.createRoot(document.getElementById('root'));
+                root.render(<Dashboard />);
+            </script>
+        """
+
+    def _get_react_components(self):
+        """Generate reusable React components (HealthMetric, StatCard)."""
+        return """
                 function HealthMetric({ label, percent, color }) {
                     return (
                         <div className="w-32">
@@ -145,7 +172,11 @@ class Handler(BaseHTTPRequestHandler):
                         </div>
                     );
                 }
+        """
 
+    def _get_dashboard_component(self):
+        """Generate main Dashboard React component."""
+        return """
                 function Dashboard() {
                     const [data, setData] = useState(null);
                     const [loading, setLoading] = useState(true);
@@ -248,12 +279,6 @@ class Handler(BaseHTTPRequestHandler):
                         </div>
                     );
                 }
-
-                const root = ReactDOM.createRoot(document.getElementById('root'));
-                root.render(<Dashboard />);
-            </script>
-        </body>
-        </html>
         """
 
     def _serve_static(self, path: str) -> bool:

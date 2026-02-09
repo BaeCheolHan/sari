@@ -44,9 +44,22 @@ def init_schema(conn: sqlite3.Connection):
     _init_fts(cur)
 
 def _create_all_tables(cur: sqlite3.Cursor):
+    """Create all database tables."""
     cur.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY, applied_ts INTEGER NOT NULL)")
+    
+    _create_roots_table(cur)
+    _create_files_table(cur)
+    _create_symbols_table(cur)
+    _create_symbol_relations_table(cur)
+    _create_contexts_table(cur)
+    _create_snippets_table(cur)
+    _create_failed_tasks_table(cur)
+    _create_embeddings_table(cur)
+    _create_meta_stats_table(cur)
 
-    # 1. Roots table
+
+def _create_roots_table(cur: sqlite3.Cursor):
+    """Create roots table for workspace tracking."""
     cur.execute("""
         CREATE TABLE IF NOT EXISTS roots (
             root_id TEXT PRIMARY KEY,
@@ -63,7 +76,9 @@ def _create_all_tables(cur: sqlite3.Cursor):
         );
     """)
 
-    # 2. Files table
+
+def _create_files_table(cur: sqlite3.Cursor):
+    """Create files table with indexes."""
     cur.execute("""
         CREATE TABLE IF NOT EXISTS files (
             path TEXT PRIMARY KEY,
@@ -92,7 +107,9 @@ def _create_all_tables(cur: sqlite3.Cursor):
     cur.execute("CREATE INDEX IF NOT EXISTS idx_files_root ON files(root_id);")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_files_rel_path ON files(rel_path);")
 
-    # 3. Symbols table
+
+def _create_symbols_table(cur: sqlite3.Cursor):
+    """Create symbols table with indexes."""
     cur.execute("""
         CREATE TABLE IF NOT EXISTS symbols (
             symbol_id TEXT PRIMARY KEY,
@@ -114,7 +131,9 @@ def _create_all_tables(cur: sqlite3.Cursor):
     cur.execute("CREATE INDEX IF NOT EXISTS idx_symbols_path ON symbols(path);")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);")
 
-    # 4. Symbol Relations table
+
+def _create_symbol_relations_table(cur: sqlite3.Cursor):
+    """Create symbol_relations table for tracking symbol dependencies."""
     cur.execute("""
         CREATE TABLE IF NOT EXISTS symbol_relations (
             from_path TEXT NOT NULL,
@@ -131,7 +150,9 @@ def _create_all_tables(cur: sqlite3.Cursor):
         );
     """)
 
-    # 5. Contexts table
+
+def _create_contexts_table(cur: sqlite3.Cursor):
+    """Create contexts table for storing contextual information."""
     cur.execute("""
         CREATE TABLE IF NOT EXISTS contexts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -148,7 +169,9 @@ def _create_all_tables(cur: sqlite3.Cursor):
         );
     """)
 
-    # 6. Snippets table
+
+def _create_snippets_table(cur: sqlite3.Cursor):
+    """Create snippets table for code snippet storage."""
     cur.execute("""
         CREATE TABLE IF NOT EXISTS snippets (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -172,7 +195,9 @@ def _create_all_tables(cur: sqlite3.Cursor):
         );
     """)
 
-    # 7. Failed Tasks table
+
+def _create_failed_tasks_table(cur: sqlite3.Cursor):
+    """Create failed_tasks table for retry tracking."""
     cur.execute("""
         CREATE TABLE IF NOT EXISTS failed_tasks (
             path TEXT PRIMARY KEY,
@@ -186,7 +211,9 @@ def _create_all_tables(cur: sqlite3.Cursor):
         );
     """)
 
-    # 8. Embeddings table
+
+def _create_embeddings_table(cur: sqlite3.Cursor):
+    """Create embeddings table for vector storage."""
     cur.execute("""
         CREATE TABLE IF NOT EXISTS embeddings (
             root_id TEXT NOT NULL,
@@ -201,8 +228,11 @@ def _create_all_tables(cur: sqlite3.Cursor):
         );
     """)
 
-    # 9. Meta Stats table
+
+def _create_meta_stats_table(cur: sqlite3.Cursor):
+    """Create meta_stats table for metadata storage."""
     cur.execute("CREATE TABLE IF NOT EXISTS meta_stats (key TEXT PRIMARY KEY, value TEXT, updated_ts INTEGER)")
+
 
 def _init_fts(cur: sqlite3.Cursor):
     cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='files_fts'")

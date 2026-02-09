@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Read Symbol Tool for Local Search MCP Server.
-Reads only the specific code block (function/class) of a symbol.
+심볼 읽기 도구 (Mcp Tool).
+특정 심볼(함수/클래스)의 코드 블록만 선택적으로 읽습니다.
 """
 import json
 import time
@@ -23,6 +23,7 @@ from sari.mcp.tools._util import (
 
 
 def _extract_block_from_lines(content: str, start_line: int, end_line: int) -> str:
+    """전체 파일 내용에서 지정된 라인 범위의 코드 블록을 추출합니다."""
     lines = content.splitlines()
     if not lines:
         return ""
@@ -41,6 +42,10 @@ def _symbol_candidates(
     roots: List[str],
     limit: int = 50,
 ) -> List[Dict[str, Any]]:
+    """
+    주어진 조건(이름, ID, 경로)에 맞는 심볼 후보들을 검색합니다.
+    동일한 이름의 심볼이 여러 파일에 존재할 수 있으므로 후보 목록을 반환합니다.
+    """
     conn = db.get_read_connection() if hasattr(db, "get_read_connection") else db._read
     params: List[Any] = []
     sql = "SELECT symbol_id, path, name, kind, line, end_line, qualname FROM symbols WHERE 1=1"
@@ -65,7 +70,11 @@ def _symbol_candidates(
 
 
 def execute_read_symbol(args: Dict[str, Any], db: LocalSearchDB, logger: TelemetryLogger, roots: List[str]) -> Dict[str, Any]:
-    """Execute read_symbol tool."""
+    """
+    read_symbol 도구 실행 핸들러.
+    심볼 이름이나 ID를 받아 해당 코드 블록을 찾아 반환합니다.
+    여러 후보가 발견되면 모호성 해결을 위해 후보 목록을 반환합니다.
+    """
     start_ts = time.time()
 
     path = str(args.get("path") or "").strip() or None
@@ -97,6 +106,7 @@ def execute_read_symbol(args: Dict[str, Any], db: LocalSearchDB, logger: Telemet
             lambda: {"error": {"code": ErrorCode.NOT_INDEXED.value, "message": "Symbol not found in current index."}, "isError": True},
         )
 
+    # 후보가 여러 개이고 특정 파일/ID 지정이 없는 경우: 후보 목록 반환 (Disambiguation)
     if len(candidates) > 1 and not db_path and not symbol_id:
         preview = candidates[:20]
 
@@ -132,6 +142,7 @@ def execute_read_symbol(args: Dict[str, Any], db: LocalSearchDB, logger: Telemet
     full_content = db.read_file(target_path) or ""
     block = _extract_block_from_lines(full_content, start_line, end_line)
     if not block:
+        # 라인 정보가 부정확할 경우를 대비해 스니펫 조회 시도 (Fallback)
         block = db.get_symbol_block(target_path, str(target.get("name", symbol_name))) or ""
 
     latency_ms = int((time.time() - start_ts) * 1000)
@@ -160,7 +171,8 @@ def execute_read_symbol(args: Dict[str, Any], db: LocalSearchDB, logger: Telemet
         "qualname": str(target.get("qualname", "")),
     }
 
-    # 1. Summary Mode Extraction
+    # 1. Summary Mode Extraction (요약 모드)
+    # outline=True 또는 summary=True 일 때 구현부를 생략하고 시그니처와 독스트링만 반환
     summary_mode = bool(args.get("summary") or args.get("outline", False))
 
     doc = block_dict.get("docstring", "")
@@ -168,13 +180,13 @@ def execute_read_symbol(args: Dict[str, Any], db: LocalSearchDB, logger: Telemet
     content = str(block_dict.get("content", ""))
 
     if summary_mode:
-        # Optimization: Only first line (signature) + docstring
+        # 최적화: 첫 줄(시그니처) + 독스트링만 포함
         lines = content.splitlines()
         sig = lines[0].strip() if lines else "[empty]"
         content = f"{sig}\n{doc}\n... [implementation omitted for token optimization]"
 
     def build_pack() -> str:
-        # Use a cleaner, raw-friendly format for Phase 11
+        # Phase 11을 위한 깔끔한 Raw 데이터 포맷 사용
         kv = {
             "sid": pack_encode_id(block_dict.get("symbol_id", "")),
             "path": pack_encode_id(block_dict.get("path", "")),
@@ -189,7 +201,7 @@ def execute_read_symbol(args: Dict[str, Any], db: LocalSearchDB, logger: Telemet
             "name": pack_encode_id(block_dict.get("name", symbol_name)),
             "qual": pack_encode_id(block_dict.get("qualname", "")),
         }))
-        # Raw Body: Use a multiline separator for 'Raw Data' support
+        # 본문 데이터 (Raw Body)
         lines_out.append("b:")
         lines_out.append(content)
         return "\n".join(lines_out)

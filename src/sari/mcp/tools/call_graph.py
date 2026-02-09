@@ -11,38 +11,7 @@ from ._util import (
     pack_error,
     ErrorCode,
 )
-from sari.core.services.call_graph_service import CallGraphService
-
-def _render_tree(node: Dict[str, Any], depth: int, max_lines: int = 200) -> str:
-    """Renders the hierarchical tree as a string for PACK1/Text output."""
-    lines: List[str] = []
-    
-    def _walk(n: Dict[str, Any], d: int, prefix: str) -> None:
-        if len(lines) >= max_lines: return
-        name = n.get("name") or "(unknown)"
-        path = n.get("path") or ""
-        line = n.get("line") or 0
-        
-        # Simple deduplication
-        children = n.get("children") or []
-        grouped_children = []
-        seen = set()
-        for c in children:
-            key = (c.get("name"), c.get("path"))
-            if key not in seen:
-                seen.add(key)
-                grouped_children.append(c)
-
-        meta = f" [{path}:{line}]" if path else ""
-        lines.append(f"{prefix}{name}{meta}")
-        
-        if d <= 0: return
-        for i, c in enumerate(grouped_children):
-            branch = "└─ " if i == len(grouped_children) - 1 else "├─ "
-            _walk(c, d - 1, prefix + branch)
-
-    _walk(node, depth, "")
-    return "\n".join(lines)
+from sari.core.services.call_graph.service import CallGraphService
 
 def build_call_graph(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict[str, Any]:
     """Legacy entry point, redirects to CallGraphService."""

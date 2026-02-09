@@ -101,89 +101,130 @@ class ASTEngine:
         return parser.parse(encoded_content)
 
     def extract_symbols(self, path: str, language: str, content: str, tree: Any = None) -> Tuple[List[Tuple], List[Any]]:
-        if not content: return [], []
+        """Extract symbols from source code using AST parsing."""
+        if not content:
+            return [], []
+        
         ext = path.split(".")[-1].lower() if "." in path else language.lower()
         
-        # Non-AST Fallbacks using SpecialParser
-        if ext in ("dockerfile", "docker") or path.lower() == "dockerfile":
-            return SpecialParser.parse_dockerfile(path, content), []
-        if ext == "xml" and ("<mapper" in content or "<sqlMap" in content): 
-            return SpecialParser.parse_mybatis(path, content), []
-        if ext in ("md", "markdown"): 
-            return SpecialParser.parse_markdown(path, content), []
+        # Try special parsers first
+        special_result = self._try_special_parsers(path, ext, content)
+        if special_result:
+            return special_result
         
-        # Vue Special Handling
-        if ext == "vue":
-            m = re.search(r"<script[^>]*>\s*(.*?)\s*</script>", content, re.DOTALL)
-            script_content = m.group(1) if m else ""
-            if script_content:
-                # Delegate to JS parser but keep original path context
-                js_syms, js_rels = self.extract_symbols(path.replace(".vue", ".js"), "javascript", script_content)
-                # Fix paths back to original .vue path
-                fixed_syms = [(path, *s[1:]) for s in js_syms]
-                return fixed_syms, js_rels
-            return [], []
-
+        # Get language object and handler
         lang_obj = self._get_language(ext)
         handler = self.registry.get_handler(ext)
-        # print(f"DEBUG ENGINE: ext={ext} lang_obj={lang_obj} handler={handler}")
         
-        if not lang_obj: 
-            # Fallback to GenericRegexParser if available
-            try:
-                from .factory import ParserFactory
-                from .generic import GenericRegexParser
-                # ParserFactory expects extension with dot
-                p_ext = ext if ext.startswith(".") else f".{ext}"
-                parser = ParserFactory.get_parser(p_ext)
-                if self.logger and self.logger.isEnabledFor(logging.DEBUG):
-                    self.logger.debug("AST fallback: ext=%s p_ext=%s parser=%s", ext, p_ext, parser)
-                if isinstance(parser, GenericRegexParser):
-                    if isinstance(content, bytes):
-                        text_content = content.decode("utf-8", errors="ignore")
-                    else:
-                        text_content = content
-                    res = parser.extract(path, text_content)
-                    # print(f"DEBUG FALLBACK RES LEN: {len(res[0])}")
-                    return res
-            except ImportError:
-                if self.logger and self.logger.isEnabledFor(logging.DEBUG):
-                    self.logger.debug("AST fallback import error")
+        # Fallback to generic regex parser if no AST support
+        if not lang_obj:
+            return self._try_generic_fallback(path, ext, content)
+        
+        # Parse tree if not provided
+        if tree is None:
+            tree = self.parse(ext, content)
+        if not tree:
             return [], []
         
-        if tree is None: 
-            tree = self.parse(ext, content)
-            # if not tree: print(f"DEBUG ENGINE: parse failed for {ext}")
-        if not tree: return [], []
+        # Extract symbols from tree
+        return self._extract_from_tree(path, content, tree, handler, ext)
+
+    def _try_special_parsers(self, path: str, ext: str, content: str) -> Optional[Tuple[List[Tuple], List[Any]]]:
+        """Try special parsers for non-AST languages."""
+        # Dockerfile
+        if ext in ("dockerfile", "docker") or path.lower() == "dockerfile":
+            return SpecialParser.parse_dockerfile(path, content), []
         
-        data = content.encode("utf-8", errors="ignore"); lines = content.splitlines(); symbols = []
-        def get_t(n): return data[n.start_byte:n.end_byte].decode("utf-8", errors="ignore")
+        # MyBatis XML
+        if ext == "xml" and ("<mapper" in content or "<sqlMap" in content):
+            return SpecialParser.parse_mybatis(path, content), []
+        
+        # Markdown
+        if ext in ("md", "markdown"):
+            return SpecialParser.parse_markdown(path, content), []
+        
+        # Vue (extract script section and parse as JavaScript)
+        if ext == "vue":
+            return self._parse_vue_file(path, content)
+        
+        return None
+
+    def _parse_vue_file(self, path: str, content: str) -> Tuple[List[Tuple], List[Any]]:
+        """Extract and parse script section from Vue file."""
+        m = re.search(r"<script[^>]*>\s*(.*?)\s*</script>", content, re.DOTALL)
+        script_content = m.group(1) if m else ""
+        if script_content:
+            # Delegate to JS parser but keep original path context
+            js_syms, js_rels = self.extract_symbols(path.replace(".vue", ".js"), "javascript", script_content)
+            # Fix paths back to original .vue path
+            fixed_syms = [(path, *s[1:]) for s in js_syms]
+            return fixed_syms, js_rels
+        return [], []
+
+    def _try_generic_fallback(self, path: str, ext: str, content: str) -> Tuple[List[Tuple], List[Any]]:
+        """Fallback to GenericRegexParser if AST not available."""
+        try:
+            from .factory import ParserFactory
+            from .generic import GenericRegexParser
+            # ParserFactory expects extension with dot
+            p_ext = ext if ext.startswith(".") else f".{ext}"
+            parser = ParserFactory.get_parser(p_ext)
+            if self.logger and self.logger.isEnabledFor(logging.DEBUG):
+                self.logger.debug("AST fallback: ext=%s p_ext=%s parser=%s", ext, p_ext, parser)
+            if isinstance(parser, GenericRegexParser):
+                if isinstance(content, bytes):
+                    text_content = content.decode("utf-8", errors="ignore")
+                else:
+                    text_content = content
+                return parser.extract(path, text_content)
+        except ImportError:
+            if self.logger and self.logger.isEnabledFor(logging.DEBUG):
+                self.logger.debug("AST fallback import error")
+        return [], []
+
+    def _extract_from_tree(self, path: str, content: str, tree: Any, handler: Any, ext: str) -> Tuple[List[Tuple], List[Any]]:
+        """Extract symbols by walking the AST tree."""
+        data = content.encode("utf-8", errors="ignore")
+        lines = content.splitlines()
+        symbols = []
+        
+        # Helper functions for tree traversal
+        def get_t(n):
+            return data[n.start_byte:n.end_byte].decode("utf-8", errors="ignore")
+        
         def get_child(n, *types):
             for c in n.children:
-                if c.type in types: return c
+                if c.type in types:
+                    return c
             return None
         
         def find_id(node, prefer_pure_identifier=False):
+            """Find identifier name in node."""
             # 1. Pure identifier (standard)
             for c in node.children:
-                if c.type == "identifier": return get_t(c)
+                if c.type == "identifier":
+                    return get_t(c)
             # 2. Language specific identifiers
             if not prefer_pure_identifier:
                 for c in node.children:
-                    if c.type in ("name", "type_identifier", "constant", "simple_identifier", "variable_name", "property_identifier"): 
+                    if c.type in ("name", "type_identifier", "constant", "simple_identifier", "variable_name", "property_identifier"):
                         return get_t(c)
             # 3. Recursive fallback (shallow)
             if not prefer_pure_identifier:
                 for c in node.children:
-                    if c.type in ("modifiers", "annotation", "parameter_list"): continue
-                    res = find_id(c, True) # Try pure identifier in children
-                    if res: return res
+                    if c.type in ("modifiers", "annotation", "parameter_list"):
+                        continue
+                    res = find_id(c, True)  # Try pure identifier in children
+                    if res:
+                        return res
             return None
 
         def walk(node, p_name="", p_meta=None):
+            """Recursively walk AST and extract symbols."""
             kind, name, meta, is_valid = None, None, {"annotations": []}, False
             n_type = node.type
             
+            # Try handler-specific extraction
             if handler:
                 kind, name, meta, is_valid = handler.handle_node(node, get_t, find_id, ext, p_meta or {})
                 # API Info Extraction (Backup Logic Restoration)
@@ -195,7 +236,8 @@ class ASTEngine:
                         meta["http_path"] = full_path
                         meta["http_methods"] = api_info.get("http_methods", [])
                         meta["api"] = True
-                if is_valid and not name: name = find_id(node)
+                if is_valid and not name:
+                    name = find_id(node)
             
             # Universal Fallback (Restored from Backup)
             if not is_valid:
@@ -205,13 +247,15 @@ class ASTEngine:
                     # Enhanced HCL label extraction
                     if n_type in ("block", "resource", "module"):
                         labels = [get_t(c).strip('"') for c in node.children if c.type in ("identifier", "string_lit", "string_literal")]
-                        if labels and labels[0] in ("resource", "variable", "module", "output", "data"): labels = labels[1:]
+                        if labels and labels[0] in ("resource", "variable", "module", "output", "data"):
+                            labels = labels[1:]
                         name = ".".join(labels) if labels else find_id(node)
                     else:
                         name = find_id(node)
 
             if is_valid:
-                if not name: name = "unknown"
+                if not name:
+                    name = "unknown"
                 start, end = node.start_point[0] + 1, node.end_point[0] + 1
                 line_content = lines[start-1].strip() if start <= len(lines) else ""
                 sid = _symbol_id(path, kind, name)
@@ -219,15 +263,19 @@ class ASTEngine:
                 
                 # Standard Tuple: (sid, path, kind, name, kind, line, end, content, parent, meta, doc, qual)
                 # Ensure Meta has critical keys for tests
-                for k in ("annotations", "extends"): 
-                    if k not in meta: meta[k] = []
+                for k in ("annotations", "extends"):
+                    if k not in meta:
+                        meta[k] = []
                 for k in ("generated", "reactive"):
-                    if k not in meta: meta[k] = False
+                    if k not in meta:
+                        meta[k] = False
                 
                 meta_str = json.dumps(meta) if isinstance(meta, dict) else str(meta)
                 symbols.append((path, name, kind, start, end, line_content, p_name, meta_str, "", qual, sid))
                 p_name, p_meta = name, meta
             
-            for child in node.children: walk(child, p_name, p_meta)
+            for child in node.children:
+                walk(child, p_name, p_meta)
 
-        walk(tree.root_node, p_meta={}); return symbols, []
+        walk(tree.root_node, p_meta={})
+        return symbols, []

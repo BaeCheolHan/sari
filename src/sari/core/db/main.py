@@ -16,19 +16,32 @@ from ..utils.path import PathUtils
 logger = logging.getLogger("sari.db")
 
 class LocalSearchDB:
+    """
+    Sari의 로컬 SQLite 데이터베이스를 관리하는 핵심 클래스입니다.
+    파일 인덱스, 심볼, 메타데이터 등을 저장하고 검색하는 기능을 제공합니다.
+    Peewee ORM을 기반으로 하며, 성능을 위해 직접 SQL을 실행하거나 메모리 스테이징을 사용하기도 합니다.
+    """
+    
     def __init__(self, db_path: str, logger_obj: Optional[logging.Logger] = None, **kwargs):
+        """
+        Args:
+            db_path: SQLite 데이터베이스 파일 경로
+            logger_obj: 로거 객체 (기본값: sari.db)
+            kwargs: 추가 DB 설정 (journal_mode 등)
+        """
         self.db_path = db_path
         self.logger = logger_obj or logger
         self.engine = None
         self._lock = threading.Lock()
         try:
+            # SQLite 최적화 설정
             self.db = SqliteDatabase(db_path, pragmas={
-                'journal_mode': kwargs.get('journal_mode', 'wal'),
-                'cache_size': -10000,
-                'foreign_keys': 1,
+                'journal_mode': kwargs.get('journal_mode', 'wal'), # WAL 모드 (동시성 향상)
+                'cache_size': -10000, # 약 10MB 페이지 캐시
+                'foreign_keys': 1,    # 외래 키 제약 조건 활성화
                 'ignore_check_constraints': 0,
-                'synchronous': 0,
-                'busy_timeout': 15000
+                'synchronous': 0,     # 쓰기 동기화 최소화 (속도 향상, 위험 감수)
+                'busy_timeout': 15000 # Lock 대기 시간
             })
             db_proxy.initialize(self.db)
             self.db.connect()
@@ -39,6 +52,10 @@ class LocalSearchDB:
             raise
 
     def _init_mem_staging(self, force=True):
+        """
+        대량 삽입 성능을 위해 인메모리 스테이징(staging) 테이블을 초기화합니다.
+        메인 디스크 DB에 쓰기 전, 메모리 DB(Attached DB)에 먼저 기록합니다.
+        """
         try:
             conn = self.db.connection()
             dbs = [row[1] for row in conn.execute("PRAGMA database_list").fetchall()]
@@ -59,6 +76,7 @@ class LocalSearchDB:
         self._init_mem_staging(force=True)
 
     def upsert_root(self, root_id: str, root_path: str, real_path: str, **kwargs):
+        """워크스페이스 루트 정보를 갱신하거나 삽입합니다."""
         with self.db.atomic():
             Root.insert(
                 root_id=root_id, root_path=PathUtils.normalize(root_path), real_path=PathUtils.normalize(real_path),
@@ -70,15 +88,22 @@ class LocalSearchDB:
         self.upsert_root(root_id, path, path)
 
     def upsert_files_tx(self, cur, rows: List[tuple]):
+        """파일 정보를 트랜잭션 내에서 일괄 삽입합니다 (기본 방식)."""
         self._file_repo(cur).upsert_files_tx(cur, rows)
 
     def upsert_files_staging(self, cur, rows: List[tuple]):
+        """파일 정보를 메모리 스테이징 테이블에 삽입합니다."""
         self._ensure_staging()
         col_names = ", ".join(FILE_COLUMNS)
         placeholders = ",".join(["?"] * len(FILE_COLUMNS))
         cur.executemany(f"INSERT OR REPLACE INTO staging_mem.files_temp({col_names}) VALUES ({placeholders})", rows)
 
     def upsert_files_turbo(self, rows: Iterable[Any]):
+        """
+        대량의 파일 정보를 고속으로 처리합니다 (Turbo Mode).
+        데이터를 튜플로 매핑하고 메모리 스테이징 테이블에 기록합니다.
+        실제 DB 반영은 finalize_turbo_batch()에서 수행됩니다.
+        """
         conn = self.db.connection()
         mapped_tuples = []
         now = int(time.time())
@@ -125,6 +150,7 @@ class LocalSearchDB:
             self.logger.error("upsert_files_turbo commit failed: %s", e, exc_info=True); raise
 
     def finalize_turbo_batch(self):
+        """메모리 스테이징 테이블의 데이터를 메인 DB 파일로 일괄 이동하고 반영합니다."""
         conn = self.db.connection()
         try:
             res = conn.execute("SELECT count(*) FROM staging_mem.files_temp").fetchone()
@@ -146,6 +172,7 @@ class LocalSearchDB:
             self.logger.error("Critical error in finalize_turbo_batch: %s", e); raise
 
     def update_stats(self):
+        """루트별 파일 및 심볼 통계를 갱신합니다."""
         try:
             conn = self.db.connection()
             conn.execute("UPDATE roots SET file_count = (SELECT COUNT(1) FROM files WHERE files.root_id = roots.root_id AND deleted_ts = 0)")
@@ -154,6 +181,7 @@ class LocalSearchDB:
         except Exception as e: self.logger.error("Failed to update statistics: %s", e)
 
     def get_repo_stats(self, root_ids: Optional[List[str]] = None) -> Dict[str, int]:
+        """레포지토리별 파일 수 통계를 반환합니다."""
         try:
             query = Root.select(Root.label, Root.file_count)
             if root_ids: query = query.where(Root.root_id << root_ids)
@@ -161,6 +189,7 @@ class LocalSearchDB:
         except Exception: return self._file_repo().get_repo_stats(root_ids=root_ids)
 
     def read_file(self, path: str) -> Optional[str]:
+        """특정 경로의 파일 내용을 DB에서 읽어 반환합니다 (압축 해제 포함)."""
         # Critical: let OperationalError (corruption) bubble up!
         db_path = self._resolve_db_path(path)
         row = File.select(File.content).where(File.path == db_path).first()
@@ -175,18 +204,22 @@ class LocalSearchDB:
         return str(content)
 
     def search_files(self, query: str, limit: int = 50) -> List[Dict]:
+        """파일 경로 또는 내용을 기준으로 단순 검색을 수행합니다."""
         lq = f"%{query}%"
         # No try-except here! Let the engine errors be seen.
         return list(File.select().where((File.path ** lq) | (File.rel_path ** lq) | (File.fts_content ** lq)).where(File.deleted_ts == 0).limit(limit).dicts())
 
     def list_files(self, limit: int = 50, repo: Optional[str] = None, root_ids: Optional[List[str]] = None) -> List[Dict]:
+        """조건에 맞는 파일 목록을 반환합니다."""
         return self._file_repo().list_files(limit=limit, repo=repo, root_ids=root_ids)
 
     def get_file_meta(self, path: str) -> Optional[Tuple[int, int, str]]:
+        """파일의 메타데이터(크기, 수정시간, 해시)를 반환합니다."""
         try: return self._file_repo().get_file_meta(self._resolve_db_path(path))
         except Exception: return None
 
     def upsert_symbols_tx(self, cur, rows: List[tuple], root_id: str = "root"):
+        """심볼 정보를 트랜잭션 내에서 일괄 삽입합니다."""
         if not rows: return
         if cur is None: cur = self.db.connection().cursor()
         self._symbol_repo(cur).upsert_symbols_tx(cur, rows)
@@ -204,6 +237,7 @@ class LocalSearchDB:
         return self._context_repo().search_contexts(query, limit=limit)
 
     def prune_stale_data(self, root_id: str, active_paths: List[str]):
+        """더 이상 존재하지 않는 파일 데이터를 DB에서 정리(제거)합니다."""
         with self.db.atomic():
             if active_paths: File.delete().where((File.root == root_id) & (File.path.not_in(active_paths))).execute()
             else: File.delete().where(File.root == root_id).execute()
@@ -215,9 +249,11 @@ class LocalSearchDB:
         self._file_repo(cur).update_last_seen_tx(cur, paths, ts)
 
     def search_symbols(self, query: str, limit: int = 20, **kwargs) -> List[Dict]:
+        """심볼 이름으로 검색을 수행합니다."""
         return [s.model_dump() for s in self._symbol_repo().search_symbols(query, limit=limit, **kwargs)]
 
     def search_v2(self, opts: Any):
+        """V2 검색 인터페이스 (엔진 위임 또는 저장소 직접 검색)."""
         if self.engine and hasattr(self.engine, "search_v2"): return self.engine.search_v2(opts)
         return self._search_repo().search_v2(opts)
 
@@ -226,12 +262,17 @@ class LocalSearchDB:
         return self._search_repo().repo_candidates(q, limit=limit, root_ids=root_ids)
 
     def get_symbol_fan_in_stats(self, symbol_names: List[str]) -> Dict[str, int]:
+        """심볼의 참조 횟수(Fan-in) 통계를 반환합니다."""
         return self._symbol_repo().get_symbol_fan_in_stats(symbol_names)
 
     def has_legacy_paths(self) -> bool: return False
     def set_engine(self, engine): self.engine = engine
     
     def swap_db_file(self, new_path: str):
+        """
+        워커 프로세스에서 생성된 스냅샷 DB의 내용을 메인 DB로 병합합니다.
+        ATTACH DATABASE를 사용하여 테이블 간 데이터 복사를 수행합니다.
+        """
         if not new_path or not os.path.exists(new_path): return
         conn = self.db.connection()
         try:
@@ -260,6 +301,7 @@ class LocalSearchDB:
     def _read(self): return self.get_read_connection()
     def _get_conn(self): return self.db.connection()
 
+    # 하위 리포지토리 접근 프로퍼티 (지연 로딩)
     @property
     def files(self): return self._file_repo()
     @property
@@ -274,6 +316,7 @@ class LocalSearchDB:
         return FailedTaskRepository(self.db.connection())
 
     def _resolve_db_path(self, path: str) -> str:
+        """절대 경로를 DB 내부의 상대 경로(root_id/rel_path)로 변환합니다."""
         if os.path.isabs(path):
             from sari.core.workspace import WorkspaceManager
             root = WorkspaceManager.find_root_for_path(path)

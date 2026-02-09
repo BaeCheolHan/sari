@@ -4,51 +4,78 @@ from sari.core.engine_runtime import EngineError
 
 
 class SearchService:
+    """
+    RRF(Reciprocal Rank Fusion) 알고리즘을 사용한 하이브리드 검색 서비스입니다.
+    키워드 검색(Rust 엔진)과 시맨틱 검색(임베딩) 결과를 병합하여 최적의 검색 결과를 제공합니다.
+    """
+    
     def __init__(self, db: Any, engine: Any = None, indexer: Any = None):
+        """
+        Args:
+            db: 데이터베이스 접근 객체
+            engine: 검색 엔진 객체 (Tantivy/Rust 등)
+            indexer: 인덱서 객체 (상태 확인용)
+        """
         self.db = db
         self.engine = engine
         self.indexer = indexer
 
     def _rrf_fusion(self, keyword_hits: List[SearchHit], semantic_hits: List[SearchHit], k: int = 60) -> List[SearchHit]:
-        """Merges results using Reciprocal Rank Fusion (RRF) algorithm."""
+        """
+        RRF 알고리즘을 사용하여 검색 결과를 병합합니다.
+        순위 기반 점수 합산 방식으로, 서로 다른 스코어 체계를 가진 검색 결과들을 효과적으로 결합합니다.
+        
+        Args:
+            keyword_hits: 키워드 검색 결과 목록
+            semantic_hits: 시맨틱 검색 결과 목록
+            k: 랭크 상수 (기본값 60)
+            
+        Returns:
+            병합되고 정렬된 검색 결과 목록
+        """
         scores: Dict[str, float] = {}
         hit_map: Dict[str, SearchHit] = {}
         
-        # Process Keyword ranks
+        # 키워드 검색 결과 순위 처리
         for i, h in enumerate(keyword_hits):
             scores[h.path] = scores.get(h.path, 0.0) + (1.0 / (k + i + 1))
             hit_map[h.path] = h
             
-        # Process Semantic ranks
+        # 시맨틱 검색 결과 순위 처리
         for i, h in enumerate(semantic_hits):
             scores[h.path] = scores.get(h.path, 0.0) + (1.0 / (k + i + 1))
             if h.path not in hit_map:
                 hit_map[h.path] = h
             else:
-                # If duplicate, mark as hybrid and combine scores
+                # 중복되는 경우 하이브리드 매칭으로 표시
                 hit_map[h.path].hit_reason += f" + Semantic"
                 
-        # Sort by fused score
+        # 퓨전 점수 기준 내림차순 정렬
         sorted_paths = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)
         
         results = []
         for path in sorted_paths:
             h = hit_map[path]
-            # Normalize score for output (mapping RRF score to human-readable scale)
+            # 점수 정규화 (RRF 점수를 보기 좋은 1000점 만점 스케일로 변환)
             h.score = scores[path] * 1000.0 
             results.append(h)
         return results
 
     def search(self, opts: SearchOptions) -> Tuple[List[SearchHit], Dict[str, Any]]:
-        """Unified hybrid search with RRF fusion."""
+        """
+        통합 하이브리드 검색을 수행합니다.
+        1. 키워드 검색 수행
+        2. (가능한 경우) 시맨틱 검색 수행
+        3. 결과 병합 및 반환
+        """
         engine = self.engine
         try:
-            # 1. Primary Keyword Search
+            # 1. 1차 키워드 검색
             keyword_hits, meta = ([], {})
             if engine:
                 keyword_hits, meta = engine.search_v2(opts)
             
-            # 2. Semantic Search (if vector provided in metadata or explicitly)
+            # 2. 2차 시맨틱 검색 (메타데이터에 쿼리 벡터가 있거나 명시된 경우)
             semantic_hits = []
             query_vector = getattr(opts, "query_vector", None)
             if query_vector and hasattr(self.db, "search_repo"):
@@ -60,7 +87,7 @@ class SearchService:
                     )
                 except Exception: pass
             
-            # 3. Hybrid Fusion
+            # 3. 하이브리드 퓨전 (병합)
             if semantic_hits:
                 fused_hits = self._rrf_fusion(keyword_hits, semantic_hits)
                 meta["engine"] = "hybrid-rrf"
@@ -70,7 +97,7 @@ class SearchService:
 
         except EngineError: raise
         except Exception as exc:
-            # Fallback logic
+            # 엔진 에러 발생 시 폴백 로직 (L2 검색 등)
             fallback_hits = []
             fallback_meta: Dict[str, Any] = {
                 "partial": True,
@@ -85,6 +112,7 @@ class SearchService:
             return fallback_hits, fallback_meta
 
     def index_meta(self) -> Dict[str, Any]:
+        """인덱서의 상태 메타데이터를 반환합니다."""
         if self.indexer is None or not getattr(self.indexer, "status", None):
             return {}
         st = self.indexer.status

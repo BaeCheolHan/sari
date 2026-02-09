@@ -14,7 +14,10 @@ from sari.mcp.tools._util import (
 from sari.core.services.symbol_service import SymbolService
 
 def execute_get_implementations(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict[str, Any]:
-    """Find symbols that implement or extend a specific symbol using SymbolService."""
+    """
+    SymbolService를 사용하여 특정 심볼을 구현(implements)하거나 상속(extends)하는 심볼들을 찾습니다.
+    (Interface Implementation / Subclass Search)
+    """
     target_symbol = args.get("name", "").strip()
     target_sid = args.get("symbol_id", "").strip() or args.get("sid", "").strip()
     target_path = str(args.get("path", "")).strip()
@@ -28,7 +31,7 @@ def execute_get_implementations(args: Dict[str, Any], db: Any, roots: List[str])
             lambda: {"error": {"code": ErrorCode.INVALID_ARGS.value, "message": "Symbol name or symbol_id is required"}, "isError": True},
         )
 
-    # 1. Resolve effective scope
+    # 1. 유효 범위(Scope) 해결
     allowed_root_ids = resolve_root_ids(roots)
     req_root_ids = args.get("root_ids")
     if isinstance(req_root_ids, list) and req_root_ids:
@@ -42,7 +45,7 @@ def execute_get_implementations(args: Dict[str, Any], db: Any, roots: List[str])
         repo_set = set(repo_root_ids)
         effective_root_ids = [rid for rid in effective_root_ids if rid in repo_set] if effective_root_ids else list(repo_root_ids)
 
-    # 2. Delegate to Service Layer (Pure Business Logic)
+    # 2. 서비스 계층 위임 (순수 비즈니스 로직)
     service = SymbolService(db)
     results = service.get_implementations(
         target_name=target_symbol,

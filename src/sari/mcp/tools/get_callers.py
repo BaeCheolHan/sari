@@ -14,7 +14,10 @@ from sari.mcp.tools._util import (
 from sari.mcp.tools.call_graph import build_call_graph
 
 def execute_get_callers(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict[str, Any]:
-    """Find symbols that call a specific symbol with high accuracy."""
+    """
+    특정 심볼을 호출하는 다른 심볼들을 높은 정확도로 검색합니다.
+    (Symbol References / Usage Search)
+    """
     target_symbol = args.get("name", "").strip()
     target_sid = args.get("symbol_id", "").strip() or args.get("sid", "").strip()
     target_path = str(args.get("path", "")).strip()
@@ -28,7 +31,7 @@ def execute_get_callers(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict
             lambda: {"error": {"code": ErrorCode.INVALID_ARGS.value, "message": "Symbol name or symbol_id is required"}, "isError": True},
         )
 
-    # 1. Resolve effective scope
+    # 1. 유효 범위(Scope) 해결
     allowed_root_ids = resolve_root_ids(roots)
     req_root_ids = args.get("root_ids")
     if isinstance(req_root_ids, list) and req_root_ids:
@@ -42,18 +45,18 @@ def execute_get_callers(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict
         repo_set = set(repo_root_ids)
         effective_root_ids = [rid for rid in effective_root_ids if rid in repo_set] if effective_root_ids else list(repo_root_ids)
 
-    # 2. Build Query - Prioritize Symbol ID
+    # 2. 쿼리 생성 - 심볼 ID 우선
     params = []
     if target_sid:
         sql = "SELECT from_path, from_symbol, from_symbol_id, line, rel_type FROM symbol_relations WHERE to_symbol_id = ?"
         params.append(target_sid)
     else:
-        # If no SID, match by name but be flexible with to_path
+        # ID가 없으면 이름으로 매칭하되, 경로는 유연하게 처리
         sql = "SELECT from_path, from_symbol, from_symbol_id, line, rel_type FROM symbol_relations WHERE to_symbol = ?"
         params.append(target_symbol)
         
         if target_path:
-            # Allow matching if to_path is unknown or matches exactly
+            # 경로가 주어지면 정확히 일치하거나 경로 정보가 없는 경우 허용
             sql += " AND (to_path = ? OR to_path = '' OR to_path IS NULL)"
             params.append(target_path)
 
@@ -79,7 +82,7 @@ def execute_get_callers(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict
             })
     except Exception: pass
 
-    # 3. Fallback to Call Graph depth=1 if no direct relations found (Heuristic)
+    # 3. 직접적인 관계가 없을 경우 Call Graph(depth=1) 휴리스틱 사용 (Fallback)
     if not results:
         try:
             graph = build_call_graph(

@@ -1,3 +1,4 @@
+
 import os
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
@@ -30,6 +31,7 @@ import sari.mcp.tools.dry_run_diff as dry_run_diff_tool
 
 @dataclass
 class Tool:
+    """MCP 도구 정의 데이터 클래스"""
     name: str
     description: str
     input_schema: Dict[str, Any]
@@ -39,6 +41,7 @@ class Tool:
 
 @dataclass
 class ToolContext:
+    """도구 실행 시 제공되는 컨텍스트 정보"""
     db: Any
     engine: Any
     indexer: Any
@@ -47,20 +50,28 @@ class ToolContext:
     logger: Any
     workspace_root: str
     server_version: str
-    policy_engine: Optional[Any] = None  # Added for policy tracking
+    policy_engine: Optional[Any] = None  # 정책 추적용 추가 필드
 
 
 class ToolRegistry:
+    """도구를 등록하고 실행을 위임하는 레지스트리 클래스"""
+    
     def __init__(self) -> None:
         self._tools: Dict[str, Tool] = {}
 
     def register(self, tool: Tool) -> None:
+        """도구를 레지스트리에 등록합니다."""
         self._tools[tool.name] = tool
 
     def list_tools_raw(self) -> List[Tool]:
+        """등록된 원본 도구 객체 목록을 반환합니다."""
         return list(self._tools.values())
 
     def list_tools(self) -> List[Dict[str, Any]]:
+        """
+        MCP 프로토콜에 맞게 JSON 스키마를 포함한 도구 정의 목록을 반환합니다.
+        환경 변수에 따라 숨겨진 도구를 포함할 수 있습니다.
+        """
         expose_internal = os.environ.get("SARI_EXPOSE_INTERNAL_TOOLS", "").strip().lower() in {"1", "true", "yes", "on"}
         return [
             {
@@ -73,13 +84,17 @@ class ToolRegistry:
         ]
 
     def execute(self, name: str, ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        요청된 도구를 실행하고 결과를 반환합니다.
+        정책 엔진이 있는 경우, 주요 검색 액션에 대해 태깅을 수행합니다.
+        """
         tool = self._tools.get(name)
         if not tool:
             raise ValueError(f"Unknown tool: {name}")
             
         result = tool.handler(ctx, args)
         
-        # Post-execution policy hook: Mark search actions automatically
+        # 실행 정책 훅: 검색 액션 자동 마킹
         if ctx.policy_engine and not result.get("isError"):
             if name in {"search", "search_symbols", "grep_and_read"}:
                 ctx.policy_engine.mark_action(name)
@@ -88,8 +103,18 @@ class ToolRegistry:
 
 
 def build_default_registry() -> ToolRegistry:
+    """기본 도구 레지스트리를 생성하고 모든 도구 그룹을 등록합니다."""
     reg = ToolRegistry()
+    _register_core_tools(reg)      # 핵심 도구
+    _register_search_tools(reg)    # 검색 도구
+    _register_file_tools(reg)      # 파일 조작 도구
+    _register_symbol_tools(reg)    # 심볼 분석 도구
+    _register_knowledge_tools(reg) # 지식 저장 도구
+    return reg
 
+
+def _register_core_tools(reg: ToolRegistry):
+    """핵심 기능 관련 도구 등록 (가이드, 상태, 진단 등)"""
     reg.register(Tool(
         name="sari_guide",
         description="Usage guide. Call this if unsure; it enforces search-first workflow.",
@@ -97,6 +122,52 @@ def build_default_registry() -> ToolRegistry:
         handler=lambda ctx, args: guide_tool.execute_sari_guide(args),
     ))
 
+    reg.register(Tool(
+        name="status",
+        description="Get indexer status. Use details=true for per-repo stats.",
+        input_schema={"type": "object", "properties": {"details": {"type": "boolean", "default": False}}},
+        handler=lambda ctx, args: status_tool.execute_status(args, ctx.indexer, ctx.db, ctx.cfg, ctx.workspace_root, ctx.server_version, ctx.logger),
+    ))
+
+    reg.register(Tool(
+        name="rescan",
+        description="(Internal) Trigger an async rescan of the workspace index.",
+        input_schema={"type": "object", "properties": {}},
+        handler=lambda ctx, args: rescan_tool.execute_rescan(args, ctx.indexer),
+        hidden=True,
+    ))
+
+    reg.register(Tool(
+        name="scan_once",
+        description="(Internal) Run a synchronous scan once (blocking).",
+        input_schema={"type": "object", "properties": {}},
+        handler=lambda ctx, args: scan_once_tool.execute_scan_once(args, ctx.indexer, ctx.logger),
+        hidden=True,
+    ))
+
+    reg.register(Tool(
+        name="doctor",
+        description="Run health checks and return structured diagnostics.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "include_network": {"type": "boolean", "default": True},
+                "include_port": {"type": "boolean", "default": True},
+                "include_db": {"type": "boolean", "default": True},
+                "include_disk": {"type": "boolean", "default": True},
+                "include_daemon": {"type": "boolean", "default": True},
+                "include_venv": {"type": "boolean", "default": True},
+                "include_marker": {"type": "boolean", "default": False},
+                "port": {"type": "integer", "default": 47800},
+                "min_disk_gb": {"type": "number", "default": 1.0},
+            },
+        },
+        handler=lambda ctx, args: doctor_tool.execute_doctor(args),
+    ))
+
+
+def _register_search_tools(reg: ToolRegistry):
+    """검색 및 탐색 관련 도구 등록"""
     reg.register(Tool(
         name="search",
         description="SEARCH FIRST. MANDATORY before reading files. Use to locate relevant paths/symbols. Prevents token waste by narrowing scope.",
@@ -149,30 +220,7 @@ def build_default_registry() -> ToolRegistry:
         },
         handler=lambda ctx, args: grep_and_read_tool.execute_grep_and_read(args, ctx.db, ctx.roots),
     ))
-
-    reg.register(Tool(
-        name="status",
-        description="Get indexer status. Use details=true for per-repo stats.",
-        input_schema={"type": "object", "properties": {"details": {"type": "boolean", "default": False}}},
-        handler=lambda ctx, args: status_tool.execute_status(args, ctx.indexer, ctx.db, ctx.cfg, ctx.workspace_root, ctx.server_version, ctx.logger),
-    ))
-
-    reg.register(Tool(
-        name="rescan",
-        description="(Internal) Trigger an async rescan of the workspace index.",
-        input_schema={"type": "object", "properties": {}},
-        handler=lambda ctx, args: rescan_tool.execute_rescan(args, ctx.indexer),
-        hidden=True,
-    ))
-
-    reg.register(Tool(
-        name="scan_once",
-        description="(Internal) Run a synchronous scan once (blocking).",
-        input_schema={"type": "object", "properties": {}},
-        handler=lambda ctx, args: scan_once_tool.execute_scan_once(args, ctx.indexer, ctx.logger),
-        hidden=True,
-    ))
-
+    
     reg.register(Tool(
         name="repo_candidates",
         description="Suggest top repos for a query. Use before search if repo is unknown.",
@@ -180,6 +228,16 @@ def build_default_registry() -> ToolRegistry:
         handler=lambda ctx, args: repo_candidates_tool.execute_repo_candidates(args, ctx.db, ctx.logger, ctx.roots),
     ))
 
+    reg.register(Tool(
+        name="search_api_endpoints",
+        description="Search API endpoints by path pattern (search-first for APIs).",
+        input_schema={"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
+        handler=lambda ctx, args: search_api_endpoints_tool.execute_search_api_endpoints(args, ctx.db, ctx.roots),
+    ))
+
+
+def _register_file_tools(reg: ToolRegistry):
+    """파일 리스팅 및 읽기 관련 도구 등록"""
     reg.register(Tool(
         name="list_files",
         description="List indexed files with filters. If repo is omitted, returns repo summary only.",
@@ -199,6 +257,37 @@ def build_default_registry() -> ToolRegistry:
     ))
 
     reg.register(Tool(
+        name="read_file",
+        description="Read file content. DANGER: High token cost. Use ONLY after search/list_symbols. Prefer read_symbol or pagination (limit/offset) for large files.",
+        input_schema={"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
+        handler=lambda ctx, args: read_file_tool.execute_read_file(args, ctx.db, ctx.roots),
+    ))
+
+    reg.register(Tool(
+        name="index_file",
+        description="Force immediate re-indexing for a file path. Use when content seems stale.",
+        input_schema={"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
+        handler=lambda ctx, args: index_file_tool.execute_index_file(args, ctx.indexer, ctx.roots),
+    ))
+
+    reg.register(Tool(
+        name="dry_run_diff",
+        description="Preview diff and run lightweight syntax check before editing.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "content": {"type": "string"},
+            },
+            "required": ["path", "content"],
+        },
+        handler=lambda ctx, args: dry_run_diff_tool.execute_dry_run_diff(args, ctx.db, ctx.roots),
+    ))
+
+
+def _register_symbol_tools(reg: ToolRegistry):
+    """코드 구조 및 심볼 분석 관련 도구 등록"""
+    reg.register(Tool(
         name="list_symbols",
         description="List all symbols in a file in a hierarchical tree. STRONGLY RECOMMENDED before read_file to understand structure with 90% fewer tokens.",
         input_schema={
@@ -209,13 +298,6 @@ def build_default_registry() -> ToolRegistry:
             "required": ["path"],
         },
         handler=lambda ctx, args: list_symbols_tool.execute_list_symbols(args, ctx.db, ctx.roots),
-    ))
-
-    reg.register(Tool(
-        name="read_file",
-        description="Read file content. DANGER: High token cost. Use ONLY after search/list_symbols. Prefer read_symbol or pagination (limit/offset) for large files.",
-        input_schema={"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
-        handler=lambda ctx, args: read_file_tool.execute_read_file(args, ctx.db, ctx.roots),
     ))
 
     reg.register(Tool(
@@ -254,40 +336,6 @@ def build_default_registry() -> ToolRegistry:
             "description": "Provide name+path or symbol_id/sid.",
         },
         handler=lambda ctx, args: read_symbol_tool.execute_read_symbol(args, ctx.db, ctx.logger, ctx.roots),
-    ))
-
-    reg.register(Tool(
-        name="doctor",
-        description="Run health checks and return structured diagnostics.",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "include_network": {"type": "boolean", "default": True},
-                "include_port": {"type": "boolean", "default": True},
-                "include_db": {"type": "boolean", "default": True},
-                "include_disk": {"type": "boolean", "default": True},
-                "include_daemon": {"type": "boolean", "default": True},
-                "include_venv": {"type": "boolean", "default": True},
-                "include_marker": {"type": "boolean", "default": False},
-                "port": {"type": "integer", "default": 47800},
-                "min_disk_gb": {"type": "number", "default": 1.0},
-            },
-        },
-        handler=lambda ctx, args: doctor_tool.execute_doctor(args),
-    ))
-
-    reg.register(Tool(
-        name="search_api_endpoints",
-        description="Search API endpoints by path pattern (search-first for APIs).",
-        input_schema={"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
-        handler=lambda ctx, args: search_api_endpoints_tool.execute_search_api_endpoints(args, ctx.db, ctx.roots),
-    ))
-
-    reg.register(Tool(
-        name="index_file",
-        description="Force immediate re-indexing for a file path. Use when content seems stale.",
-        input_schema={"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
-        handler=lambda ctx, args: index_file_tool.execute_index_file(args, ctx.indexer, ctx.roots),
     ))
 
     reg.register(Tool(
@@ -363,6 +411,9 @@ def build_default_registry() -> ToolRegistry:
         handler=lambda ctx, args: call_graph_health_tool.execute_call_graph_health(args),
     ))
 
+
+def _register_knowledge_tools(reg: ToolRegistry):
+    """지식베이스 및 스니펫 저장 관련 도구 등록"""
     reg.register(Tool(
         name="save_snippet",
         description="Save code snippet with a tag.",
@@ -424,19 +475,3 @@ def build_default_registry() -> ToolRegistry:
         },
         handler=lambda ctx, args: get_context_tool.execute_get_context(args, ctx.db, ctx.roots),
     ))
-
-    reg.register(Tool(
-        name="dry_run_diff",
-        description="Preview diff and run lightweight syntax check before editing.",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "content": {"type": "string"},
-            },
-            "required": ["path", "content"],
-        },
-        handler=lambda ctx, args: dry_run_diff_tool.execute_dry_run_diff(args, ctx.db, ctx.roots),
-    ))
-
-    return reg

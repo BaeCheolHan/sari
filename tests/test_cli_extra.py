@@ -22,16 +22,16 @@ def test_cmd_doctor():
 
 def test_cmd_search():
     args = argparse.Namespace(query="test", limit=10, repo=None)
-    with patch('sari.mcp.cli._request_http', return_value={"results": []}):
-        with patch('sari.mcp.cli._get_http_host_port', return_value=("127.0.0.1", 47777)):
+    with patch('sari.mcp.cli.legacy_cli._request_http', return_value={"results": []}):
+        with patch('sari.mcp.cli.legacy_cli._get_http_host_port', return_value=("127.0.0.1", 47777)):
             ret = cmd_search(args)
             assert ret == 0
 
 def test_cmd_daemon_stop():
     args = argparse.Namespace()
-    with patch('sari.mcp.cli.read_pid', return_value=1234):
+    with patch('sari.mcp.cli.daemon.read_pid', return_value=1234):
         with patch('os.kill') as mock_kill:
-            with patch('sari.mcp.cli.ServerRegistry') as mock_registry_cls:
+            with patch('sari.mcp.cli.daemon.ServerRegistry') as mock_registry_cls:
                 mock_registry = MagicMock()
                 mock_registry._load.return_value = {
                     "daemons": {"b1": {"host": "127.0.0.1", "port": 47779, "pid": 1234}},
@@ -39,7 +39,7 @@ def test_cmd_daemon_stop():
                 }
                 mock_registry_cls.return_value = mock_registry
                 # First call: daemon is running, later calls: stopped
-                with patch('sari.mcp.cli.is_daemon_running', side_effect=[True, False, False]):
+                with patch('sari.mcp.cli.daemon.is_daemon_running', side_effect=[True, False, False]):
                     ret = cmd_daemon_stop(args)
                     assert ret == 0
                     # daemon + http kill path should execute

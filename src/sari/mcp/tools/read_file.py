@@ -4,56 +4,101 @@ from sari.mcp.tools._util import mcp_response, pack_error, ErrorCode, resolve_db
 
 def execute_read_file(args: Dict[str, Any], db: LocalSearchDB, roots: List[str]) -> Dict[str, Any]:
     """
-    Execute read_file tool with support for line-based pagination.
+    파일 내용을 읽어오는 도구입니다. 대용량 파일의 경우 페이지네이션을 지원합니다.
+    검색(search)이나 심볼 목록(list_symbols) 조회 후 사용하는 것이 좋습니다.
 
     Args:
-        args: {"path": str, "offset": int, "limit": int}
-        db: LocalSearchDB instance
+        args: {"path": str, "offset": int, "limit": int} 형태의 인자
+        db: LocalSearchDB 인스턴스
     """
-    path = args.get("path")
+    # 인자 검증 및 파싱
+    validation_result = _validate_read_file_args(args)
+    if validation_result:
+        return validation_result
+    
+    path = args["path"]
     offset = int(args.get("offset", 0))
-    limit = args.get("limit")
-    if limit is not None:
-        limit = int(limit)
+    limit = int(args["limit"]) if args.get("limit") is not None else None
+    
+    # DB 경로 변환 및 파일 읽기
+    db_path = resolve_db_path(path, roots)
+    if not db_path and db.has_legacy_paths():
+        db_path = path
+    
+    read_result = _read_file_content(db, db_path, path)
+    if read_result.get("error"):
+        return read_result["error"]
+    
+    content = read_result["content"]
+    
+    # 페이지네이션 적용 (부분 읽기)
+    pagination_result = _apply_pagination(content, offset, limit)
+    
+    # 효율성 지표를 위한 토큰 수 계산
+    token_count = _count_tokens(pagination_result["content"])
+    
+    # 응답 생성
+    return _build_read_file_response(
+        pagination_result["content"],
+        offset,
+        limit,
+        pagination_result["total_lines"],
+        pagination_result["is_truncated"],
+        pagination_result.get("next_offset"),
+        token_count
+    )
 
+
+def _validate_read_file_args(args: Dict[str, Any]) -> Dict[str, Any]:
+    """read_file 인자의 유효성을 검사합니다."""
+    path = args.get("path")
     if not path:
         return mcp_response(
             "read_file",
             lambda: pack_error("read_file", ErrorCode.INVALID_ARGS, "'path' is required"),
             lambda: {"error": {"code": ErrorCode.INVALID_ARGS.value, "message": "'path' is required"}, "isError": True},
         )
+    return None
 
-    db_path = resolve_db_path(path, roots)
-    if not db_path and db.has_legacy_paths():
-        db_path = path
+
+def _read_file_content(db: LocalSearchDB, db_path: str, original_path: str) -> Dict[str, Any]:
+    """데이터베이스에서 파일 내용을 읽어옵니다."""
     if not db_path:
-        return mcp_response(
-            "read_file",
-            lambda: pack_error("read_file", ErrorCode.ERR_ROOT_OUT_OF_SCOPE, f"Path out of scope: {path}", hints=["outside final_roots"]),
-            lambda: {"error": {"code": ErrorCode.ERR_ROOT_OUT_OF_SCOPE.value, "message": f"Path out of scope: {path}"}, "isError": True},
-        )
-
+        return {
+            "error": mcp_response(
+                "read_file",
+                lambda: pack_error("read_file", ErrorCode.ERR_ROOT_OUT_OF_SCOPE, f"Path out of scope: {original_path}", hints=["outside final_roots"]),
+                lambda: {"error": {"code": ErrorCode.ERR_ROOT_OUT_OF_SCOPE.value, "message": f"Path out of scope: {original_path}"}, "isError": True},
+            )
+        }
+    
     content = db.read_file(db_path)
     if content is None:
-        return mcp_response(
-            "read_file",
-            lambda: pack_error(
+        return {
+            "error": mcp_response(
                 "read_file",
-                ErrorCode.NOT_INDEXED,
-                f"File not found or not indexed: {db_path}",
-                hints=["run scan_once", "verify path with search"],
-            ),
-            lambda: {
-                "error": {
-                    "code": ErrorCode.NOT_INDEXED.value,
-                    "message": f"File not found or not indexed: {db_path}",
-                    "hint": "run scan_once | verify path with search",
+                lambda: pack_error(
+                    "read_file",
+                    ErrorCode.NOT_INDEXED,
+                    f"File not found or not indexed: {db_path}",
+                    hints=["run scan_once", "verify path with search"],
+                ),
+                lambda: {
+                    "error": {
+                        "code": ErrorCode.NOT_INDEXED.value,
+                        "message": f"File not found or not indexed: {db_path}",
+                        "hint": "run scan_once | verify path with search",
+                    },
+                    "isError": True,
                 },
-                "isError": True,
-            },
-        )
+            )
+        }
+    
+    return {"content": content}
 
-    # Line-based pagination logic
+
+def _apply_pagination(content: str, offset: int, limit: int = None) -> Dict[str, Any]:
+    """내용에 라인 기반 페이지네이션을 적용합니다."""
     lines = content.splitlines()
     total_lines = len(lines)
     
@@ -61,34 +106,53 @@ def execute_read_file(args: Dict[str, Any], db: LocalSearchDB, roots: List[str])
         end = offset + limit
         paged_lines = lines[offset:end]
         is_truncated = end < total_lines
-        content = "\n".join(paged_lines)
+        next_offset = offset + len(paged_lines) if is_truncated else None
     else:
         paged_lines = lines[offset:]
         is_truncated = False
-        content = "\n".join(paged_lines)
+        next_offset = None
+    
+    return {
+        "content": "\n".join(paged_lines),
+        "total_lines": total_lines,
+        "is_truncated": is_truncated,
+        "next_offset": next_offset
+    }
 
-    # Token counting logic (Serena-inspired efficiency metrics)
-    token_count = 0
+
+def _count_tokens(content: str) -> int:
+    """효율성 지표를 위해 텍스트의 토큰 수를 계산합니다 (근사치 사용 가능)."""
     try:
         import tiktoken
         enc = tiktoken.get_encoding("cl100k_base")
-        token_count = len(enc.encode(content))
+        return len(enc.encode(content))
     except Exception:
-        token_count = len(content) // 4 # Fallback approx
+        return len(content) // 4  # tiktoken 없을 시 글자 수 기반 근사치 사용
 
+
+def _build_read_file_response(
+    content: str,
+    offset: int,
+    limit: int,
+    total_lines: int,
+    is_truncated: bool,
+    next_offset: int,
+    token_count: int
+) -> Dict[str, Any]:
+    """메타데이터를 포함한 read_file 응답을 생성합니다."""
     def build_pack() -> str:
-        # Include pagination and token metadata in header
+        # 헤더에 페이지네이션 및 토큰 정보 포함
         kv = {"offset": offset, "total_lines": total_lines, "tokens": token_count}
         if limit is not None:
             kv["limit"] = limit
         if is_truncated:
             kv["truncated"] = "true"
-            kv["next_offset"] = offset + len(paged_lines)
+            kv["next_offset"] = next_offset
         if token_count > 2000:
             kv["warning"] = "High token usage. Consider using list_symbols or read_symbol."
 
         lines_out = [pack_header("read_file", kv, returned=1)]
-        # Use encoded text for consistency with other tools and test expectations
+        # 다른 도구 및 테스트와의 일관성을 위해 인코딩된 텍스트 사용
         lines_out.append(f"t:{pack_encode_text(content)}")
         return "\n".join(lines_out)
 

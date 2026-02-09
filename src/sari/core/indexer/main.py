@@ -17,7 +17,10 @@ from sari.core.workspace import WorkspaceManager
 from sari.core.models import IndexingResult
 
 def _scan_to_db(config: Config, db: LocalSearchDB, logger: logging.Logger) -> Dict[str, Any]:
-    """Core scanning logic that processes files and stores results in the database."""
+    """
+    파일 시스템을 스캔하여 변경된 파일을 감지하고 데이터베이스에 인덱싱합니다.
+    이 함수는 별도의 프로세스(Worker) 내에서 실행될 수 있으며, 결과를 Status 딕셔너리로 반환합니다.
+    """
     status = {
         "scan_started_ts": int(time.time()),
         "scan_finished_ts": 0,
@@ -33,7 +36,10 @@ def _scan_to_db(config: Config, db: LocalSearchDB, logger: logging.Logger) -> Di
     
     try:
         def _get_files_generator():
-            """Generator to yield files without loading everything into memory."""
+            """
+            모든 파일을 메모리에 로드하지 않고 하나씩 처리하기 위한 제너레이터입니다.
+            각 루트 디렉토리를 순회하며 인덱싱 대상 파일을 선별합니다.
+            """
             for root in config.workspace_roots:
                 rid = WorkspaceManager.root_id(root)
                 db.ensure_root(rid, str(root))
@@ -47,6 +53,7 @@ def _scan_to_db(config: Config, db: LocalSearchDB, logger: logging.Logger) -> Di
             status["scanned_files"] += 1
             try:
                 st = path.stat()
+                # 파일 처리 작업을 쓰레드 풀에 제출
                 futures.append(executor.submit(
                     worker.process_file_task,
                     root, path, st, now, st.st_mtime, True, root_id=rid
@@ -56,6 +63,8 @@ def _scan_to_db(config: Config, db: LocalSearchDB, logger: logging.Logger) -> Di
 
         file_rows = []
         all_symbols = []
+        
+        # 완료된 작업 결과 수집
         for future in concurrent.futures.as_completed(futures):
             try:
                 res: Optional[IndexingResult] = future.result()
@@ -70,7 +79,7 @@ def _scan_to_db(config: Config, db: LocalSearchDB, logger: logging.Logger) -> Di
                         root_id = res.root_id
                         for s in res.symbols:
                             if len(s) >= 11:
-                                # Standard Symbol Tuple Mapping:
+                                # 표준 심볼 튜플 매핑:
                                 # sid, path, root_id, name, kind, line, end, content, parent, meta, doc, qual
                                 all_symbols.append((
                                     s[10], # sid
@@ -92,15 +101,13 @@ def _scan_to_db(config: Config, db: LocalSearchDB, logger: logging.Logger) -> Di
                 if logger:
                     logger.error(f"Async result processing failed: {e}")
 
-        # Batch database updates
+        # 데이터베이스 일괄 업데이트 (Batch Update)
         if file_rows:
             db.upsert_files_turbo(file_rows)
         db.finalize_turbo_batch()
         
         if all_symbols:
-            # Deduplicate symbols before insertion to avoid UNIQUE constraint violations
-            # Symbol tuple: (sid, path, root_id, name, kind, line, ...)
-            # We use the full tuple as key for deduplication
+            # 중복 심볼 제거 및 트랜잭션 처리
             unique_symbols = list(OrderedDict.fromkeys(all_symbols))
             try:
                 db.upsert_symbols_tx(None, unique_symbols)
@@ -114,6 +121,7 @@ def _scan_to_db(config: Config, db: LocalSearchDB, logger: logging.Logger) -> Di
         executor.shutdown(wait=True, cancel_futures=True)
 
 def _worker_build_snapshot(config_dict: Dict[str, Any], snapshot_path: str, status_path: str, log_path: str) -> None:
+    """별도 프로세스에서 인덱싱을 수행하고 결과를 스냅샷 DB 및 상태 파일에 기록합니다."""
     logger = logging.getLogger("sari.indexer.worker")
     if log_path:
         try:
@@ -128,9 +136,11 @@ def _worker_build_snapshot(config_dict: Dict[str, Any], snapshot_path: str, stat
         db = LocalSearchDB(snapshot_path, logger=logger, journal_mode="delete")
         status = _scan_to_db(cfg, db, logger)
         db.close_all()
+        # 성공 상태 기록
         with open(status_path, "w", encoding="utf-8") as f:
             json.dump({"ok": True, "status": status, "snapshot_path": snapshot_path}, f)
     except Exception as e:
+        # 실패 상태 기록
         try:
             with open(status_path, "w", encoding="utf-8") as f:
                 json.dump({"ok": False, "error": str(e), "snapshot_path": snapshot_path}, f)
@@ -138,6 +148,11 @@ def _worker_build_snapshot(config_dict: Dict[str, Any], snapshot_path: str, stat
             pass
 
 class Indexer:
+    """
+    전체 인덱싱 작업을 관리하는 클래스입니다.
+    주기적인 스캔, 온디맨드 리스캔, 워커 프로세스 관리 등을 담당합니다.
+    """
+    
     def __init__(self, config: Config, db: LocalSearchDB, logger=None, **kwargs):
         self.config = config
         self.db = db
@@ -157,6 +172,7 @@ class Indexer:
         self._pending_rescan = False
 
     def scan_once(self):
+        """동기적으로 1회 스캔을 수행합니다. (블로킹)"""
         with self._scan_lock:
             self.status.index_ready = False
             snapshot_path = self._snapshot_path()
@@ -170,6 +186,7 @@ class Indexer:
                 except Exception:
                     pass
             try:
+                # 스냅샷 DB를 메인 DB로 교체 (Swap)
                 self.db.swap_db_file(snapshot_path)
                 self.status.scan_started_ts = status.get("scan_started_ts", 0)
                 self.status.scan_finished_ts = status.get("scan_finished_ts", 0)
@@ -186,6 +203,7 @@ class Indexer:
                     self.logger.error(f"Snapshot swap failed: {e}")
 
     def stop(self):
+        """인덱서 실행을 중단하고 리소스를 정리합니다."""
         self._stop_event.set()
         if self._worker_proc and self._worker_proc.is_alive():
             try:
@@ -198,6 +216,7 @@ class Indexer:
             self._executor = None
     
     def run_forever(self):
+        """백그라운드에서 주기적으로 인덱싱 작업을 수행하는 무한 루프입니다."""
         next_due = time.time()
         while not self._stop_event.is_set():
             self._finalize_worker_if_done()
@@ -209,15 +228,19 @@ class Indexer:
             time.sleep(0.2)
 
     def request_rescan(self):
+        """즉시 리스캔을 요청합니다."""
         self._rescan_event.set()
 
     def index_file(self, _path: str):
+        """특정 파일 변경 시 인덱싱을 요청합니다."""
         self.request_rescan()
 
     def _enqueue_fsevent(self, _evt: Any) -> None:
+        """파일 시스템 이벤트를 처리합니다."""
         self.request_rescan()
 
     def _snapshot_path(self) -> str:
+        """임시 스냅샷 DB 파일 경로를 생성합니다."""
         base = getattr(self.db, "db_path", "") or ""
         if base in ("", ":memory:"):
             tmp_dir = os.path.join(tempfile.gettempdir(), "sari_snapshots")
@@ -226,10 +249,12 @@ class Indexer:
         return f"{base}.snapshot.{int(time.time() * 1000)}"
 
     def _serialize_config(self) -> Dict[str, Any]:
+        """설정 객체를 직렬화하여 워커 프로세스에 전달합니다."""
         data = dict(self.config.__dict__)
         return data
 
     def _start_worker_scan(self) -> None:
+        """별도 프로세스에서 인덱싱 작업을 시작합니다."""
         if self._worker_proc and self._worker_proc.is_alive():
             self._pending_rescan = True
             return
@@ -248,6 +273,7 @@ class Indexer:
         self._worker_proc.start()
 
     def _finalize_worker_if_done(self) -> None:
+        """워커 프로세스가 완료되었는지 확인하고 결과를 반영합니다."""
         if not self._worker_proc:
             return
         if self._worker_proc.is_alive():
@@ -298,6 +324,8 @@ class Indexer:
             self._start_worker_scan()
 
 class IndexStatus:
+    """인덱싱 상태 정보를 저장하는 데이터 클래스입니다."""
+    
     def __init__(self):
         self.index_ready = False
         self.indexed_files = 0
@@ -310,6 +338,7 @@ class IndexStatus:
         self.last_error = ""
 
     def to_meta(self) -> dict:
+        """상태 정보를 딕셔너리로 변환하여 반환합니다."""
         return {
             "index_ready": bool(self.index_ready),
             "indexed_files": int(self.indexed_files or 0),

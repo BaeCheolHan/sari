@@ -27,25 +27,62 @@ try:
     from .workspace import WorkspaceManager
 except Exception:
     from workspace import WorkspaceManager
+try:
+    from .constants import (
+        WATCHER_DEBOUNCE_MIN_SECONDS,
+        WATCHER_DEBOUNCE_MAX_SECONDS,
+        WATCHER_TARGET_RPS,
+        WATCHER_RATE_WINDOW_SECONDS,
+        WATCHER_BUCKET_CAPACITY,
+        WATCHER_BUCKET_RATE,
+        WATCHER_BUCKET_FLUSH_SECONDS,
+        WATCHER_GIT_DEBOUNCE_SECONDS,
+        WATCHER_MONITOR_INTERVAL_SECONDS,
+        WATCHER_OBSERVER_TIMEOUT_SECONDS,
+        WATCHER_EVENT_QUEUE_MAXLEN,
+        WATCHER_RESTART_MAX_RETRIES,
+        WATCHER_RESTART_RETRY_DELAY_SECONDS,
+        WATCHER_OBSERVER_JOIN_TIMEOUT_SECONDS,
+        ENV_SARI_GIT_CHECKOUT_DEBOUNCE,
+        ENV_SARI_WATCHER_MONITOR_SECONDS,
+    )
+except Exception:
+    # Fallback for tests or when constants module is not available
+    WATCHER_DEBOUNCE_MIN_SECONDS = 0.1
+    WATCHER_DEBOUNCE_MAX_SECONDS = 1.0
+    WATCHER_TARGET_RPS = 50.0
+    WATCHER_RATE_WINDOW_SECONDS = 1.0
+    WATCHER_BUCKET_CAPACITY = 100.0
+    WATCHER_BUCKET_RATE = 50.0
+    WATCHER_BUCKET_FLUSH_SECONDS = 0.1
+    WATCHER_GIT_DEBOUNCE_SECONDS = 3.0
+    WATCHER_MONITOR_INTERVAL_SECONDS = 10.0
+    WATCHER_OBSERVER_TIMEOUT_SECONDS = 0.1
+    WATCHER_EVENT_QUEUE_MAXLEN = 200
+    WATCHER_RESTART_MAX_RETRIES = 3
+    WATCHER_RESTART_RETRY_DELAY_SECONDS = 1.0
+    WATCHER_OBSERVER_JOIN_TIMEOUT_SECONDS = 5.0
+    ENV_SARI_GIT_CHECKOUT_DEBOUNCE = "SARI_GIT_CHECKOUT_DEBOUNCE"
+    ENV_SARI_WATCHER_MONITOR_SECONDS = "SARI_WATCHER_MONITOR_SECONDS"
 
-
-
-def _log(logger, level: str, message: str) -> None:
-    if not logger:
-        return
-    # Support both TelemetryLogger (log_info/log_error/...) and stdlib logging.Logger (info/error/...)
-    method = getattr(logger, f"log_{level}", None)
-    if callable(method):
-        method(message)
-        return
-    method = getattr(logger, level, None)
-    if callable(method):
-        method(message)
-        return
-    # Last resort: try generic logger.log if present
-    method = getattr(logger, "log", None)
-    if callable(method):
-        method(message)
+try:
+    from .logging_utils import safe_log
+except Exception:
+    # Fallback for tests
+    def safe_log(logger, level: str, message: str) -> None:
+        if not logger:
+            return
+        method = getattr(logger, f"log_{level}", None)
+        if callable(method):
+            method(message)
+            return
+        method = getattr(logger, level, None)
+        if callable(method):
+            method(message)
+            return
+        method = getattr(logger, "log", None)
+        if callable(method):
+            method(message)
 
 def _is_git_event(path: str) -> bool:
     if not path:
@@ -64,10 +101,10 @@ class DebouncedEventHandler(FileSystemEventHandler):
     def __init__(
         self,
         callback: Callable[[str], None],
-        debounce_seconds: float = 0.1, # Lower default
+        debounce_seconds: float = WATCHER_DEBOUNCE_MIN_SECONDS,
         logger=None,
         git_callback: Optional[Callable[[str], None]] = None,
-        git_debounce_seconds: float = 3.0,
+        git_debounce_seconds: float = WATCHER_GIT_DEBOUNCE_SECONDS,
     ):
         self.callback = callback
         self.debounce_seconds = debounce_seconds
@@ -79,21 +116,21 @@ class DebouncedEventHandler(FileSystemEventHandler):
         self._pending_events: Dict[str, FsEvent] = {}
         self._git_timer: Optional[threading.Timer] = None
         self._git_last_path: str = ""
-        self._event_times = deque(maxlen=200)
+        self._event_times = deque(maxlen=WATCHER_EVENT_QUEUE_MAXLEN)
 
         # Adaptive debounce (ms) and rate window (sec)
         # LLM Freshness: 100ms minimum debounce is now standard.
-        self._debounce_min = 0.1
-        self._debounce_max = 1.0
-        self._debounce_target_rps = 50.0
-        self._rate_window = 1.0
+        self._debounce_min = WATCHER_DEBOUNCE_MIN_SECONDS
+        self._debounce_max = WATCHER_DEBOUNCE_MAX_SECONDS
+        self._debounce_target_rps = WATCHER_TARGET_RPS
+        self._rate_window = WATCHER_RATE_WINDOW_SECONDS
 
         # Token bucket for burst control
-        self._bucket_capacity = 100.0
-        self._bucket_rate = 50.0
+        self._bucket_capacity = WATCHER_BUCKET_CAPACITY
+        self._bucket_rate = WATCHER_BUCKET_RATE
         self._bucket_tokens = self._bucket_capacity
         self._bucket_last_ts = time.time()
-        self._bucket_flush_seconds = 0.1
+        self._bucket_flush_seconds = WATCHER_BUCKET_FLUSH_SECONDS
         self._bucket_timer: Optional[threading.Timer] = None
 
     def on_any_event(self, event):
@@ -133,7 +170,7 @@ class DebouncedEventHandler(FileSystemEventHandler):
                     self._git_timer = threading.Timer(self.git_debounce_seconds, self._trigger_git)
                     self._git_timer.start()
             if self.logger:
-                _log(self.logger, "info", "Git activity detected; deferring to rescan.")
+                safe_log(self.logger, "info", "Git activity detected; deferring to rescan.")
             return
         fs_event = FsEvent(kind=evt_kind, path=src_path,
                            root="", # Will be inferred in dispatch
@@ -171,7 +208,7 @@ class DebouncedEventHandler(FileSystemEventHandler):
            self.callback(fs_event)
         except Exception as e:
             if self.logger:
-                _log(self.logger, "error", f"Watcher callback failed for {path}: {e}")
+                safe_log(self.logger, "error", f"Watcher callback failed for {path}: {e}")
 
     def _update_debounce(self, now_ts: float) -> None:
         self._event_times.append(now_ts)
@@ -230,7 +267,7 @@ class DebouncedEventHandler(FileSystemEventHandler):
                 self.callback(evt)
             except Exception as e:
                 if self.logger:
-                    _log(self.logger, "error", f"Watcher callback failed for {evt.path}: {e}")
+                    safe_log(self.logger, "error", f"Watcher callback failed for {evt.path}: {e}")
 
     def _trigger_git(self):
         path = ""
@@ -242,7 +279,7 @@ class DebouncedEventHandler(FileSystemEventHandler):
                 self.git_callback(path or ".git")
         except Exception as e:
             if self.logger:
-                _log(self.logger, "error", f"Watcher git callback failed for {path}: {e}")
+                safe_log(self.logger, "error", f"Watcher git callback failed for {path}: {e}")
 
 class FileWatcher:
     def __init__(
@@ -266,18 +303,18 @@ class FileWatcher:
     def start(self):
         if not HAS_WATCHDOG:
             if self.logger:
-                _log(self.logger, "info", "Watchdog not installed. Skipping real-time monitoring.")
+                safe_log(self.logger, "info", "Watchdog not installed. Skipping real-time monitoring.")
             return
 
         if self._running:
             return
 
         # High-performance observer with low timeout (latency)
-        self.observer = Observer(timeout=0.1)
+        self.observer = Observer(timeout=WATCHER_OBSERVER_TIMEOUT_SECONDS)
         try:
-            git_debounce = float(os.environ.get("SARI_GIT_CHECKOUT_DEBOUNCE", "3") or 3)
+            git_debounce = float(os.environ.get(ENV_SARI_GIT_CHECKOUT_DEBOUNCE, str(WATCHER_GIT_DEBOUNCE_SECONDS)) or WATCHER_GIT_DEBOUNCE_SECONDS)
         except Exception:
-            git_debounce = 3.0
+            git_debounce = WATCHER_GIT_DEBOUNCE_SECONDS
         handler = DebouncedEventHandler(
             self._dispatch_event,
             logger=self.logger,
@@ -293,7 +330,7 @@ class FileWatcher:
                     started_any = True
                 except Exception as e:
                     if self.logger:
-                        _log(self.logger, "error", f"Failed to watch path {p}: {e}")
+                        safe_log(self.logger, "error", f"Failed to watch path {p}: {e}")
 
         if started_any:
             try:
@@ -301,10 +338,10 @@ class FileWatcher:
                 self._running = True
                 self._start_monitor()
                 if self.logger:
-                    _log(self.logger, "info", f"Watcher started on: {self.paths}")
+                    safe_log(self.logger, "info", f"Watcher started on: {self.paths}")
             except Exception as e:
                 if self.logger:
-                    _log(self.logger, "error", f"Failed to start observer: {e}")
+                    safe_log(self.logger, "error", f"Failed to start observer: {e}")
 
     def stop(self):
         self._stop_event.set()
@@ -323,35 +360,35 @@ class FileWatcher:
         self._monitor_thread.start()
 
     def _restart_observer(self):
-        max_retries = 3
+        max_retries = WATCHER_RESTART_MAX_RETRIES
         for attempt in range(max_retries):
             try:
                 if self.observer:
                     try:
                         self.observer.stop()
                         # 더 긴 타임아웃으로 완전 종료 대기
-                        self.observer.join(timeout=5.0)
+                        self.observer.join(timeout=WATCHER_OBSERVER_JOIN_TIMEOUT_SECONDS)
                         if self.observer.is_alive():
                             if self.logger:
-                                _log(self.logger, "warning", 
+                                safe_log(self.logger, "warning", 
                                     f"Observer still alive after stop (attempt {attempt+1}/{max_retries})"
                                 )
                             if attempt < max_retries - 1:
-                                time.sleep(1.0)
+                                time.sleep(WATCHER_RESTART_RETRY_DELAY_SECONDS)
                                 continue
                             else:
                                 if self.logger:
-                                    _log(self.logger, "error", "Observer forced restart after max retries")
+                                    safe_log(self.logger, "error", "Observer forced restart after max retries")
                     except Exception as e:
                         if self.logger:
-                            _log(self.logger, "error", f"Error stopping observer: {e}")
+                            safe_log(self.logger, "error", f"Error stopping observer: {e}")
                 
                 # 새 observer 생성
                 self.observer = Observer()
                 try:
-                    git_debounce = float(os.environ.get("SARI_GIT_CHECKOUT_DEBOUNCE", "3") or 3)
+                    git_debounce = float(os.environ.get(ENV_SARI_GIT_CHECKOUT_DEBOUNCE, str(WATCHER_GIT_DEBOUNCE_SECONDS)) or WATCHER_GIT_DEBOUNCE_SECONDS)
                 except Exception:
-                    git_debounce = 3.0
+                    git_debounce = WATCHER_GIT_DEBOUNCE_SECONDS
                 handler = DebouncedEventHandler(
                     self._dispatch_event,
                     logger=self.logger,
@@ -366,39 +403,39 @@ class FileWatcher:
                             started_any = True
                         except Exception as e:
                             if self.logger:
-                                _log(self.logger, "error", f"Failed to watch path {p}: {e}")
+                                safe_log(self.logger, "error", f"Failed to watch path {p}: {e}")
                 if started_any:
                     self.observer.start()
                     self._running = True
                     if self.logger:
-                        _log(self.logger, "info", "Watcher restarted successfully.")
+                        safe_log(self.logger, "info", "Watcher restarted successfully.")
                     break  # 성공
                 else:
                     if self.logger:
-                        _log(self.logger, "error", "Watcher restart failed: no valid paths.")
+                        safe_log(self.logger, "error", "Watcher restart failed: no valid paths.")
                     self._running = False
                     break
             except Exception as e:
                 if self.logger:
-                    _log(self.logger, "error", f"Watcher restart attempt {attempt+1}/{max_retries} failed: {e}")
+                    safe_log(self.logger, "error", f"Watcher restart attempt {attempt+1}/{max_retries} failed: {e}")
                 if attempt < max_retries - 1:
-                    time.sleep(1.0)
+                    time.sleep(WATCHER_RESTART_RETRY_DELAY_SECONDS)
                 else:
                     self._running = False
                     raise
 
     def _monitor_loop(self):
         try:
-            interval = float(os.environ.get("SARI_WATCHER_MONITOR_SECONDS", "10"))
+            interval = float(os.environ.get(ENV_SARI_WATCHER_MONITOR_SECONDS, str(WATCHER_MONITOR_INTERVAL_SECONDS)))
         except Exception:
-            interval = 10.0
+            interval = WATCHER_MONITOR_INTERVAL_SECONDS
         while not self._stop_event.is_set():
             time.sleep(max(1.0, interval))
             if self._stop_event.is_set():
                 break
             if self.observer and not self.observer.is_alive() and self._running:
                 if self.logger:
-                    _log(self.logger, "error", "Watcher observer died; restarting.")
+                    safe_log(self.logger, "error", "Watcher observer died; restarting.")
                 self._restart_observer()
 
     def _dispatch_event(self, evt: FsEvent):
@@ -427,7 +464,7 @@ class FileWatcher:
             self.callback(normalized_evt)
         except Exception as e:
             if self.logger:
-                _log(self.logger, "error", f"Watcher callback failed for {getattr(normalized_evt, 'path', '')}: {e}")
+                safe_log(self.logger, "error", f"Watcher callback failed for {getattr(normalized_evt, 'path', '')}: {e}")
 
     def _infer_root_for_path(self, event_path: str) -> str:
         if not event_path:

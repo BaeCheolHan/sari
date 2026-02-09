@@ -17,6 +17,7 @@ def test_cli_daemon_lifecycle_truth(tmp_path):
     env = os.environ.copy()
     env["SARI_WORKSPACE_ROOT"] = str(workspace)
     env["SARI_DAEMON_PORT"] = "48999"
+    env["PYTHONPATH"] = f"{os.getcwd()}/src:{env.get('PYTHONPATH', '')}"
     
     # 1. Start Daemon
     start_proc = subprocess.run(

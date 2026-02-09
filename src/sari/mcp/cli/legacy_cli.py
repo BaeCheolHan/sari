@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 
 # --- SELF-BOOTSTRAP: Ensure all new libraries are available ---
-SARI_ROOT = str(Path(__file__).resolve().parents[2])
+SARI_ROOT = str(Path(__file__).resolve().parents[3])
 if SARI_ROOT not in sys.path: sys.path.insert(0, SARI_ROOT)
 os.environ["PYTHONPATH"] = f"{SARI_ROOT}:{os.environ.get('PYTHONPATH', '')}"
 
@@ -36,7 +36,7 @@ from typing import Optional, Dict, Any, Tuple
 
 # Add project root to sys.path for absolute imports
 SCRIPT_DIR = Path(__file__).parent
-REPO_ROOT = SCRIPT_DIR.parent
+REPO_ROOT = SCRIPT_DIR.parent.parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -46,6 +46,15 @@ from sari.core.server_registry import ServerRegistry, get_registry_path
 from sari.core.config import Config
 from sari.core.db import LocalSearchDB
 from sari.core.daemon_resolver import resolve_daemon_address as get_daemon_address
+from sari.core.constants import (
+    DEFAULT_DAEMON_HOST,
+    DEFAULT_DAEMON_PORT,
+    DEFAULT_HTTP_HOST,
+    DEFAULT_HTTP_PORT,
+    HTTP_CHECK_TIMEOUT_SECONDS,
+    DAEMON_IDENTIFY_TIMEOUT_SECONDS,
+    DAEMON_PROBE_TIMEOUT_SECONDS,
+)
 from sari.mcp.tools.grep_and_read import execute_grep_and_read
 from sari.mcp.tools.archive_context import execute_archive_context
 from sari.mcp.tools.get_context import execute_get_context
@@ -55,11 +64,10 @@ from sari.mcp.tools.get_snippet import execute_get_snippet
 from sari.mcp.tools.dry_run_diff import execute_dry_run_diff
 
 
-DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 47779
+# Legacy constants for backward compatibility (now imported from constants module)
+DEFAULT_HOST = DEFAULT_DAEMON_HOST
+DEFAULT_PORT = DEFAULT_DAEMON_PORT
 PID_FILE = WorkspaceManager.get_global_data_dir() / "daemon.pid"
-DEFAULT_HTTP_HOST = "127.0.0.1"
-DEFAULT_HTTP_PORT = 47777
 
 def _arg(args: Any, name: str, default: Any = None) -> Any:
     return getattr(args, name, default)
@@ -183,7 +191,7 @@ def _request_http(path: str, params: dict, host: Optional[str] = None, port: Opt
         return json.loads(r.read().decode("utf-8"))
 
 
-def _is_http_running(host: str, port: int, timeout: float = 0.4) -> bool:
+def _is_http_running(host: str, port: int, timeout: float = HTTP_CHECK_TIMEOUT_SECONDS) -> bool:
     _enforce_loopback(host)
     try:
         url = f"http://{host}:{port}/health"
@@ -196,7 +204,7 @@ def _is_http_running(host: str, port: int, timeout: float = 0.4) -> bool:
         return False
 
 
-def _identify_sari_daemon(host: str, port: int, timeout: float = 1.0) -> Optional[Dict[str, Any]]:
+def _identify_sari_daemon(host: str, port: int, timeout: float = DAEMON_IDENTIFY_TIMEOUT_SECONDS) -> Optional[Dict[str, Any]]:
     """Return identify payload if the server speaks Sari MCP."""
     try:
         with socket.create_connection((host, port), timeout=timeout) as sock:
@@ -360,7 +368,7 @@ def _request_mcp_status(daemon_host: str, daemon_port: int, workspace_root: Opti
         return None
 
 
-def _probe_sari_daemon(host: str, port: int, timeout: float = 0.3) -> bool:
+def _probe_sari_daemon(host: str, port: int, timeout: float = DAEMON_PROBE_TIMEOUT_SECONDS) -> bool:
     """Verify the server speaks Sari MCP (framed JSON-RPC)."""
     return _identify_sari_daemon(host, port, timeout=timeout) is not None
 
@@ -482,245 +490,47 @@ def _ensure_daemon_running(
 
 def cmd_daemon_start(args):
     """Start the daemon."""
-    def _reap_child(proc: subprocess.Popen) -> None:
-        try:
-            proc.wait()
-        except Exception:
-            pass
-
-    explicit_port = bool(_arg(args, "daemon_port"))
-    force_start = (os.environ.get("SARI_DAEMON_FORCE_START") or "").strip().lower() in {"1", "true", "yes", "on"}
-    workspace_root = os.environ.get("SARI_WORKSPACE_ROOT") or WorkspaceManager.resolve_workspace_root()
-    registry = ServerRegistry()
-
-    if _arg(args, "daemon_host") or _arg(args, "daemon_port"):
-        host = _arg(args, "daemon_host") or DEFAULT_HOST
-        port = int(_arg(args, "daemon_port") or DEFAULT_PORT)
-    else:
-        inst = registry.resolve_workspace_daemon(str(workspace_root))
-        if inst and inst.get("port"):
-            host = inst.get("host") or DEFAULT_HOST
-            port = int(inst.get("port"))
-        else:
-            host, port = get_daemon_address()
-
-    identify = _identify_sari_daemon(host, port)
-    if identify:
-        if explicit_port:
-            ws_inst = registry.resolve_workspace_daemon(str(workspace_root))
-            same_instance = bool(ws_inst and int(ws_inst.get("port", 0)) == int(port))
-            if not same_instance:
-                # Requested explicit port is occupied by another daemon instance.
-                stop_args = argparse.Namespace(daemon_host=host, daemon_port=port)
-                cmd_daemon_stop(stop_args)
-                identify = _identify_sari_daemon(host, port)
-                if identify:
-                    print(f"❌ Port {port} is occupied by another running daemon.", file=sys.stderr)
-                    return 1
-
-        if not force_start and not _needs_upgrade_or_drain(identify):
-            pid = read_pid(host, port)
-            print(f"✅ Daemon already running on {host}:{port}")
-            if pid:
-                print(f"   PID: {pid}")
-            return 0
-        if explicit_port:
-            print(f"❌ Port {port} is already in use by a running Sari daemon.", file=sys.stderr)
-            return 1
-        port = registry.find_free_port(start_port=47790)
-        print(f"⚠️  Starting new daemon on free port {port} (upgrade/drain).")
-    elif _port_in_use(host, port):
-        if explicit_port:
-            print(f"❌ Port {port} is already in use by another process.", file=sys.stderr)
-            return 1
-        # Choose a free port to avoid collisions with other MCP daemons.
-        free_port = registry.find_free_port(start_port=47790)
-        print(f"⚠️  Port {port} is in use. Switching to free port {free_port}.")
-        port = free_port
-
-    # Go up 3 levels: sari/mcp/cli.py -> sari/mcp -> sari/ -> (repo root)
-    repo_root = Path(__file__).parent.parent.parent.resolve()
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(repo_root) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
-    env["SARI_DAEMON_AUTOSTART"] = "1"
-    env["SARI_WORKSPACE_ROOT"] = workspace_root
-    env["SARI_DAEMON_PORT"] = str(port)
-    if _arg(args, "daemon_host"):
-        env["SARI_DAEMON_HOST"] = _arg(args, "daemon_host")
-    if _arg(args, "daemon_port"):
-        env["SARI_DAEMON_PORT"] = str(_arg(args, "daemon_port"))
-    if _arg(args, "http_host"):
-        env["SARI_HTTP_API_HOST"] = _arg(args, "http_host")
-    if _arg(args, "http_port") is not None:
-        env["SARI_HTTP_API_PORT"] = str(_arg(args, "http_port"))
-
+    from .daemon import (
+        extract_daemon_start_params,
+        handle_existing_daemon,
+        check_port_availability,
+        prepare_daemon_environment,
+        start_daemon_in_background,
+        start_daemon_in_foreground,
+    )
+    
+    # Extract and validate parameters
+    params = extract_daemon_start_params(args)
+    
+    # Handle existing daemon instance
+    exit_code = handle_existing_daemon(params)
+    if exit_code is not None:
+        return exit_code
+    
+    # Check port availability
+    exit_code = check_port_availability(params)
+    if exit_code is not None:
+        return exit_code
+    
+    # Prepare environment
+    prepare_daemon_environment(params)
+    
+    # Start daemon in background or foreground
     if _arg(args, "daemonize"):
-        # Start in background
-        print(f"Starting daemon on {host}:{port} (background)...")
-        
-        # --- ENRICH ENVIRONMENT ---
-        sari_root = str(repo_root.parent)
-        env["PYTHONPATH"] = f"{sari_root}:{env.get('PYTHONPATH', '')}"
-
-        proc = subprocess.Popen(
-            [sys.executable, "-m", "sari.mcp.daemon"],
-            cwd=repo_root.parent,
-            start_new_session=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            env=env,
-        )
-        # Reap child when it exits to prevent zombie processes in long-lived callers.
-        threading.Thread(target=_reap_child, args=(proc,), daemon=True).start()
-
-        # PID file will be written by the daemon process itself
-
-        # Wait for startup
-        for _ in range(30):
-            if is_daemon_running(host, port):
-                print(f"✅ Daemon started (PID: {proc.pid})")
-                return 0
-            time.sleep(0.1)
-
-        print("❌ Daemon failed to start", file=sys.stderr)
-        return 1
+        return start_daemon_in_background(params)
     else:
-        # Start in foreground
-        print(f"Starting daemon on {host}:{port} (foreground, Ctrl+C to stop)...")
-
-        try:
-            # Import and run directly
-            os.environ["SARI_DAEMON_AUTOSTART"] = "1"
-            os.environ["SARI_WORKSPACE_ROOT"] = workspace_root
-            os.environ["PYTHONPATH"] = str(repo_root) + (os.pathsep + os.environ["PYTHONPATH"] if os.environ.get("PYTHONPATH") else "")
-            if _arg(args, "daemon_host"):
-                os.environ["SARI_DAEMON_HOST"] = _arg(args, "daemon_host")
-            if _arg(args, "daemon_port"):
-                os.environ["SARI_DAEMON_PORT"] = str(_arg(args, "daemon_port"))
-            if _arg(args, "http_host"):
-                os.environ["SARI_HTTP_API_HOST"] = _arg(args, "http_host")
-            if _arg(args, "http_port") is not None:
-                os.environ["SARI_HTTP_API_PORT"] = str(_arg(args, "http_port"))
-            from sari.mcp.daemon import main as daemon_main
-            import asyncio
-            asyncio.run(daemon_main())
-        except KeyboardInterrupt:
-            print("\nDaemon stopped.")
-
-        return 0
+        return start_daemon_in_foreground(params)
 
 
 def cmd_daemon_stop(args):
     """Stop the daemon."""
-    def _kill_pid_immediate(pid: int, label: str) -> bool:
-        if not pid:
-            return False
-        try:
-            if os.name == "nt":
-                subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True, check=False)
-                print(f"Executed taskkill for {label} PID {pid}")
-                return True
-            # User-requested fast stop path: no long graceful wait.
-            os.kill(pid, signal.SIGTERM)
-            time.sleep(0.15)
-            try:
-                os.kill(pid, 0)
-                os.kill(pid, signal.SIGKILL)
-                print(f"Sent SIGKILL to {label} PID {pid}")
-            except OSError:
-                print(f"Stopped {label} PID {pid}")
-            return True
-        except ProcessLookupError:
-            return True
-        except PermissionError:
-            print(f"Permission denied while stopping {label} PID {pid}")
-            return False
-
-    def _registry_targets(host: str, port: int, pid_hint: Optional[int]) -> Tuple[set[str], set[int]]:
-        boot_ids: set[str] = set()
-        http_pids: set[int] = set()
-        try:
-            reg = ServerRegistry()
-            data = reg._load()  # internal load is acceptable for stop-path recovery
-            daemons = data.get("daemons", {}) or {}
-            workspaces = data.get("workspaces", {}) or {}
-            for boot_id, info in daemons.items():
-                if str(info.get("host") or DEFAULT_HOST) != str(host):
-                    continue
-                if int(info.get("port") or 0) != int(port):
-                    continue
-                if pid_hint and int(info.get("pid") or 0) not in {0, int(pid_hint)}:
-                    continue
-                boot_ids.add(str(boot_id))
-            for ws_info in workspaces.values():
-                if str(ws_info.get("boot_id") or "") not in boot_ids:
-                    continue
-                http_pid = int(ws_info.get("http_pid") or 0)
-                if http_pid > 0:
-                    http_pids.add(http_pid)
-        except Exception:
-            pass
-        return boot_ids, http_pids
-
-    if _arg(args, "daemon_host") or _arg(args, "daemon_port"):
-        host = _arg(args, "daemon_host") or DEFAULT_HOST
-        port = int(_arg(args, "daemon_port") or DEFAULT_PORT)
-    else:
-        host, port = get_daemon_address()
-
-    if not is_daemon_running(host, port):
-        print("Daemon is not running")
-        remove_pid()
-        return 0
-
-    pid = read_pid(host, port)
-    if not pid:
-        try:
-            # Fallback: derive daemon pid from registry when pid file is stale/missing.
-            reg = ServerRegistry()
-            data = reg._load()
-            for info in (data.get("daemons") or {}).values():
-                if str(info.get("host") or DEFAULT_HOST) == str(host) and int(info.get("port") or 0) == int(port):
-                    pid = int(info.get("pid") or 0) or None
-                    if pid:
-                        break
-        except Exception:
-            pid = None
-
-    boot_ids, http_pids = _registry_targets(host, port, pid)
-    for http_pid in sorted(http_pids):
-        _kill_pid_immediate(http_pid, "http")
-
-    if pid:
-        try:
-            _kill_pid_immediate(pid, "daemon")
-            for _ in range(10):
-                if not is_daemon_running(host, port):
-                    break
-                time.sleep(0.1)
-            reg = ServerRegistry()
-            for boot_id in boot_ids:
-                reg.unregister_daemon(boot_id)
-            if is_daemon_running(host, port):
-                print("⚠️  Daemon port still responds after stop attempt.")
-            else:
-                print("✅ Daemon stopped")
-            return 0
-
-        except (ProcessLookupError, PermissionError):
-            print("PID not found or permission denied, daemon may have crashed or locked")
-            return 0
-    else:
-        # No PID available: at least clean stale registry mappings for this endpoint.
-        try:
-            reg = ServerRegistry()
-            for boot_id in boot_ids:
-                reg.unregister_daemon(boot_id)
-        except Exception:
-            pass
-        remove_pid()
-        print("No daemon PID resolved from registry. Cleaned matching registry entries.")
-        return 0
+    from .daemon import (
+        extract_daemon_stop_params,
+        stop_daemon_process,
+    )
+    
+    params = extract_daemon_stop_params(args)
+    return stop_daemon_process(params)
 
 
 def cmd_daemon_status(args):

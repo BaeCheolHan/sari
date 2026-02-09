@@ -13,7 +13,10 @@ from sari.mcp.tools._util import (
 from sari.core.services.symbol_service import SymbolService
 
 def execute_search_symbols(args: Dict[str, Any], db: Any, logger: Any, roots: List[str]) -> Dict[str, Any]:
-    """Search for code symbols (classes, functions, etc.) with smart ranking."""
+    """
+    스마트 랭킹을 적용한 코드 심볼(클래스, 함수 등) 검색 도구입니다.
+    쿼리에 일치하는 심볼을 찾아 중요도 순으로 정렬하여 반환합니다.
+    """
     query = args.get("query", "").strip()
     if not query:
         return mcp_response(
@@ -26,14 +29,15 @@ def execute_search_symbols(args: Dict[str, Any], db: Any, logger: Any, roots: Li
     repo = args.get("repo")
     kinds = args.get("kinds")
     
-    # 1. Scope resolution
+    # 1. 범위(Scope) 해석
     root_ids = resolve_root_ids(roots)
     req_root_ids = args.get("root_ids")
     if isinstance(req_root_ids, list) and req_root_ids:
+        # 요청된 root_id가 유효한 범위 내에 있는지 확인
         req_set = {str(x) for x in req_root_ids}
         root_ids = [rid for rid in root_ids if rid in req_set]
 
-    # 2. Execute via Service
+    # 2. 서비스 계층을 통한 검색 실행
     svc = SymbolService(db)
     results = svc.search(
         query=query,

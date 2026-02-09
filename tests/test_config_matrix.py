@@ -130,7 +130,8 @@ class TestConfigMatrix:
             mock_run.return_value = MagicMock(returncode=1) # Git fail
             res: IndexingResult = worker.process_file_task(root, f, f.stat(), int(time.time()), time.time(), False, root_id="root")
             assert res is not None
-            assert res.repo == "services"
+            # Was "services", but now we default to root name to avoid "src" being repo name
+            assert res.repo == "workspaceB"
 
     def test_repo_label_root_file_uses_workspace_name(self, mock_db, mock_cfg, tmp_path):
         from sari.core.settings import Settings

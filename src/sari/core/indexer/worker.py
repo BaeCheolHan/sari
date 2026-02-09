@@ -136,7 +136,7 @@ class IndexWorker:
 
         if git_root: return Path(git_root).name
         # Fallback using PathUtils to avoid separator issues
-        if "/" in rel_to_root: return rel_to_root.split("/", 1)[0]
+        # if "/" in rel_to_root: return rel_to_root.split("/", 1)[0]
         return Path(root).name or "root"
 
     def _skip_result(self, db_path, path, st, scan_ts, reason, root_id=None) -> IndexingResult:
