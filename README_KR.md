@@ -165,5 +165,46 @@ sari roots list
 
 ---
 
+
+
 ## 8. 트러블슈팅
+
 문제가 발생하면 `docs/TROUBLESHOOTING.md`를 확인하세요.
+
+
+
+---
+
+
+
+## 9. 관리 명령어
+
+
+
+### 업데이트
+
+- 로컬 소스에서 강제 업데이트:
+
+  ```bash
+
+  uv tool install . --force
+
+  ```
+
+- PyPI 최신 버전으로 업데이트:
+
+  ```bash
+
+  uv tool upgrade sari
+
+  ```
+
+
+
+### 삭제
+
+```bash
+
+uv tool uninstall sari
+
+```

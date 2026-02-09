@@ -1,5 +1,6 @@
 import re
 from typing import List, Tuple, Any, Dict, Optional
+from sari.core.models import ParserSymbol, ParserRelation
 
 class BaseParser:
     """
@@ -48,3 +49,11 @@ class BaseHandler:
         주어진 AST 노드를 분석하여 (심볼종류, 이름, 메타데이터, 유효여부)를 반환합니다.
         """
         return None, None, {}, False
+
+    def handle_relation(self, node: Any, context: Dict) -> List[ParserRelation]:
+        """
+        주어진 AST 노드에서 관계(Relation) 정보를 추출합니다.
+        Returns: List[ParserRelation]
+        Context: {parent_sid, parent_name, get_t, find_id, ...}
+        """
+        return []

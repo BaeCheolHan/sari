@@ -42,19 +42,19 @@ def top_func():
     symbols, relations = parser.extract("test.py", content)
     
     assert len(symbols) == 3
-    s_class = next(s for s in symbols if s[2] == "class")
-    assert s_class[1] == "MyClass"
-    assert s_class[8] == "Class doc"
+    s_class = next(s for s in symbols if s.kind == "class")
+    assert s_class.name == "MyClass"
+    assert s_class.doc == "Class doc"
     
     # Method
-    s_method = next(s for s in symbols if s[2] == "method")
-    assert s_method[1] == "my_method"
-    meta = json.loads(s_method[7])
+    s_method = next(s for s in symbols if s.kind == "method")
+    assert s_method.name == "my_method"
+    meta = s_method.meta
     assert "@my_decorator" in meta["decorators"]
     
     # Relations: check if other_func is called
-    assert any(rel[4] == "other_func" for rel in relations)
-    assert any(rel[4] == "print" for rel in relations)
+    assert any(rel.to_name == "other_func" for rel in relations)
+    assert any(rel.to_name == "print" for rel in relations)
 
     def test_python_parser_fallback():
 
@@ -64,6 +64,6 @@ def top_func():
 
         symbols, relations = parser.extract("test.py", content)
 
-        # Standard Format: index 3 is name
+        # Standard Format
 
-        assert any(s[1] == "MyClass" for s in symbols)
+        assert any(s.name == "MyClass" for s in symbols)

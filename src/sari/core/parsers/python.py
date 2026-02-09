@@ -3,23 +3,24 @@ import ast
 from typing import List, Tuple, Optional
 from .base import BaseParser
 from .common import _qualname, _symbol_id, _safe_compile
+from sari.core.models import ParserSymbol, ParserRelation
 
 class PythonParser(BaseParser):
     """
     Python 표준 라이브러리인 'ast' 모듈을 사용하여 Python 코드를 정밀하게 분석하는 파서입니다.
     클래스, 함수, 메서드 및 데코레이터를 통한 부가 정보(HTTP 엔드포인트 등)를 추출합니다.
     """
-    def extract(self, path: str, content: str) -> Tuple[List[Tuple], List[Tuple]]:
+    def extract(self, path: str, content: str) -> Tuple[List[ParserSymbol], List[ParserRelation]]:
         """
         Python 소스 코드를 파싱하여 심볼 목록과 호출 관계를 추출합니다.
-        AST 분석 실패 시 정규식 기반 파서로 폴백합니다.
         """
-        symbols, relations = [], []
+        symbols: List[ParserSymbol] = []
+        relations: List[ParserRelation] = []
         try:
             tree = ast.parse(content)
             lines = content.splitlines()
 
-            def _visit(node, parent_name="", parent_qual="", current_symbol=None, current_sid=None):
+            def _visit(node, parent_name="", parent_qual="", current_symbol_name=None, current_sid=None):
                 """AST 노드를 재귀적으로 방문하며 심볼과 관계(Call)를 추출하는 내부 함수입니다."""
                 for child in ast.iter_child_nodes(node):
                     if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -68,37 +69,28 @@ class PythonParser(BaseParser):
 
                         qual = _qualname(parent_qual, name)
                         sid = _symbol_id(path, kind, qual)
-                        symbols.append((
-                            path,
-                            name,
-                            kind,
-                            start,
-                            end,
-                            lines[start-1].strip() if 0 <= start-1 < len(lines) else "",
-                            parent_name,
-                            json.dumps(meta),
-                            doc,
-                            qual,
-                            sid,
-                        ))
+                        
+                        sym = ParserSymbol(
+                            sid=sid, path=path, name=name, kind=kind,
+                            line=start, end_line=end, content=lines[start-1].strip() if 0 <= start-1 < len(lines) else "",
+                            parent=parent_name, meta=meta, doc=doc, qualname=qual
+                        )
+                        symbols.append(sym)
                         _visit(child, name, qual, name, sid)
-                    elif isinstance(child, ast.Call) and current_symbol:
+                    elif isinstance(child, ast.Call) and current_symbol_name:
                         target = ""
                         if isinstance(child.func, ast.Name): target = child.func.id
                         elif isinstance(child.func, ast.Attribute): target = child.func.attr
                         if target:
-                            relations.append((
-                                path,
-                                current_symbol,
-                                current_sid or "",
-                                "",
-                                target,
-                                "",
-                                "calls",
-                                child.lineno,
+                            relations.append(ParserRelation(
+                                from_name=current_symbol_name,
+                                from_sid=current_sid or "",
+                                to_name=target,
+                                rel_type="calls",
+                                line=child.lineno
                             ))
-                        _visit(child, parent_name, parent_qual, current_symbol, current_sid)
-                    else: _visit(child, parent_name, parent_qual, current_symbol, current_sid)
+                        _visit(child, parent_name, parent_qual, current_symbol_name, current_sid)
+                    else: _visit(child, parent_name, parent_qual, current_symbol_name, current_sid)
             _visit(tree)
         except Exception:
             from .generic import GenericRegexParser

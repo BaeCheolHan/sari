@@ -20,17 +20,17 @@ def test_spring_data_jpa_integrity():
     symbols, _ = engine.extract_symbols("User.java", "java", code)
     
     # Check Entity
-    user_cls = next(s for s in symbols if s[1] == "User")
-    user_meta = json.loads(user_cls[7])
+    user_cls = next(s for s in symbols if s.name == "User")
+    user_meta = user_cls.meta
     assert "Entity" in user_meta["annotations"]
     
     # Check Repository
-    repo_iface = next(s for s in symbols if s[1] == "UserRepository")
-    repo_meta = json.loads(repo_iface[7])
+    repo_iface = next(s for s in symbols if s.name == "UserRepository")
+    repo_meta = repo_iface.meta
     assert repo_meta["framework_role"] == "Repository"
     assert any("JpaRepository" in h for h in repo_meta["extends"])
     
-    print(f"\nDEBUG: JPA SUCCESS. Repository found: {repo_iface[1]}")
+    print(f"\nDEBUG: JPA SUCCESS. Repository found: {repo_iface.name}")
 
 def test_spring_data_redis_and_caching():
     """
@@ -49,12 +49,12 @@ def test_spring_data_redis_and_caching():
     )
     symbols, _ = engine.extract_symbols("Redis.java", "java", code)
     
-    session_cls = next(s for s in symbols if s[1] == "UserSession")
-    assert "RedisHash" in json.loads(session_cls[7])["annotations"]
+    session_cls = next(s for s in symbols if s.name == "UserSession")
+    assert "RedisHash" in session_cls.meta["annotations"]
     
-    cache_method = next(s for s in symbols if s[1] == "findById")
-    assert "Cacheable" in json.loads(cache_method[7])["annotations"]
-    print(f"DEBUG: Redis/Caching SUCCESS. Found: {session_cls[1]}, {cache_method[1]}")
+    cache_method = next(s for s in symbols if s.name == "findById")
+    assert "Cacheable" in cache_method.meta["annotations"]
+    print(f"DEBUG: Redis/Caching SUCCESS. Found: {session_cls.name}, {cache_method.name}")
 
 def test_spring_webflux_reactive_truth():
     """
@@ -70,9 +70,9 @@ def test_spring_webflux_reactive_truth():
     )
     symbols, _ = engine.extract_symbols("Flux.java", "java", code)
     
-    hello_fn = next(s for s in symbols if s[1] == "getHello")
-    meta = json.loads(hello_fn[7])
+    hello_fn = next(s for s in symbols if s.name == "getHello")
+    meta = hello_fn.meta
     assert meta["reactive"] is True
     assert "Mono" in meta["return_type"]
     
-    print(f"DEBUG: WebFlux SUCCESS. Reactive method: {hello_fn[1]} ({meta['return_type']})")
+    print(f"DEBUG: WebFlux SUCCESS. Reactive method: {hello_fn.name} ({meta['return_type']})")

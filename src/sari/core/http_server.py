@@ -119,6 +119,9 @@ class Handler(BaseHTTPRequestHandler):
                 body { background-color: #0b0e14; color: #d8d9da; font-family: 'Inter', ui-sans-serif, system-ui; }
                 .grafana-card { background-color: #181b1f; border-left: 4px solid #3274d9; transition: transform 0.2s; }
                 .grafana-card:hover { transform: translateY(-2px); }
+                .card-warn { border-left-color: #f1c40f; }
+                .card-error { border-left-color: #e74c3c; }
+                .card-success { border-left-color: #2ecc71; }
                 .btn-primary { background-color: #3274d9; transition: all 0.2s; }
                 .btn-primary:hover { background-color: #1f60c4; }
                 .scan-pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
@@ -159,9 +162,14 @@ class Handler(BaseHTTPRequestHandler):
                     );
                 }
 
-                function StatCard({ icon, title, value, color }) {
+                function StatCard({ icon, title, value, color, status }) {
+                    let cardClass = "grafana-card rounded-lg p-6 shadow-xl";
+                    if (status === "error") cardClass += " card-error";
+                    else if (status === "warn") cardClass += " card-warn";
+                    else if (status === "success") cardClass += " card-success";
+
                     return (
-                        <div className="grafana-card rounded-lg p-6 shadow-xl">
+                        <div className={cardClass}>
                             <div className="flex justify-between items-start mb-4">
                                 <span className="text-[10px] font-black text-gray-500 uppercase tracking-widest">{title}</span>
                                 <div className={`w-8 h-8 rounded-full bg-gray-800/50 flex items-center justify-center ${color}`}>
@@ -179,7 +187,9 @@ class Handler(BaseHTTPRequestHandler):
         return """
                 function Dashboard() {
                     const [data, setData] = useState(null);
+                    const [health, setHealth] = useState(null);
                     const [loading, setLoading] = useState(true);
+                    const [rescanLoading, setRescanLoading] = useState(false);
 
                     const fetchData = async () => {
                         try {
@@ -190,20 +200,39 @@ class Handler(BaseHTTPRequestHandler):
                         } catch (e) { console.error(e); }
                     };
 
+                    const fetchHealth = async () => {
+                        try {
+                            const res = await fetch('/health-report');
+                            const json = await res.json();
+                            setHealth(json);
+                        } catch (e) { console.error(e); }
+                    };
+
                     const triggerRescan = async () => {
-                        await fetch('/rescan', { method: 'GET' });
-                        fetchData();
+                        setRescanLoading(true);
+                        try {
+                            await fetch('/rescan', { method: 'GET' });
+                            setTimeout(fetchData, 1000);
+                        } catch (e) {
+                            console.error(e);
+                        } finally {
+                            setRescanLoading(false);
+                        }
                     };
 
                     useEffect(() => {
                         fetchData();
+                        fetchHealth();
                         const interval = setInterval(fetchData, 2000);
-                        return () => clearInterval(interval);
+                        const healthInterval = setInterval(fetchHealth, 30000);
+                        return () => { clearInterval(interval); clearInterval(healthInterval); };
                     }, []);
 
                     if (!data) return <div className="flex items-center justify-center h-screen text-2xl animate-pulse text-blue-500 font-black">SARI LOADING...</div>;
 
                     const sys = data.system_metrics || {};
+                    const progress = data.scanned_files > 0 ? Math.round((data.indexed_files / data.scanned_files) * 100) : 0;
+                    const errorCount = data.errors || 0;
 
                     return (
                         <div className="max-w-7xl mx-auto">
@@ -219,57 +248,98 @@ class Handler(BaseHTTPRequestHandler):
                                         <HealthMetric label="CPU" percent={sys.process_cpu_percent || 0} color="bg-blue-500" />
                                         <HealthMetric label="RAM" percent={sys.memory_percent || 0} color="bg-emerald-500" />
                                     </div>
-                                    <button onClick={triggerRescan} className="btn-primary text-white px-6 py-2.5 rounded shadow-lg font-bold flex items-center uppercase text-sm tracking-wider">
-                                        <i className="fas fa-sync-alt mr-2"></i> Rescan
+                                    <button 
+                                        onClick={triggerRescan} 
+                                        disabled={rescanLoading}
+                                        className={`btn-primary text-white px-6 py-2.5 rounded shadow-lg font-bold flex items-center uppercase text-sm tracking-wider ${rescanLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                    >
+                                        <i className={`fas fa-sync-alt mr-2 ${rescanLoading ? 'fa-spin' : ''}`}></i> 
+                                        {rescanLoading ? 'Requesting...' : 'Rescan'}
                                     </button>
                                 </div>
                             </header>
 
-                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-10">
-                                <StatCard icon="fa-file-code" title="Indexed Files" value={data.indexed_files.toLocaleString()} color="text-blue-400" />
-                                <StatCard icon="fa-project-diagram" title="Total Symbols" value={(data.repo_stats ? Object.values(data.repo_stats).reduce((a,b)=>a+b, 0) : 0).toLocaleString()} color="text-emerald-400" />
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-6 mb-10">
+                                <StatCard icon="fa-binoculars" title="Scanned" value={data.scanned_files.toLocaleString()} color="text-yellow-400" />
+                                <StatCard icon="fa-file-code" title="Indexed" value={data.indexed_files.toLocaleString()} color="text-blue-400" />
+                                <StatCard icon="fa-project-diagram" title="Symbols" value={(data.repo_stats ? Object.values(data.repo_stats).reduce((a,b)=>a+b, 0) : 0).toLocaleString()} color="text-emerald-400" />
                                 <StatCard icon="fa-database" title="Storage" value={(sys.db_size / 1024 / 1024).toFixed(2) + " MB"} color="text-purple-400" />
                                 <StatCard icon="fa-clock" title="Uptime" value={Math.floor(sys.uptime / 60) + "m"} color="text-orange-400" />
+                                <StatCard 
+                                    icon="fa-exclamation-triangle" 
+                                    title="Errors" 
+                                    value={errorCount.toLocaleString()} 
+                                    color={errorCount > 0 ? "text-red-400" : "text-gray-400"} 
+                                    status={errorCount > 0 ? "error" : "success"}
+                                />
                             </div>
 
-                            <div className="grafana-card rounded-lg p-8 shadow-2xl">
-                                <h2 className="text-2xl font-bold mb-6 flex items-center text-white">
-                                    <i className="fas fa-server mr-3 text-blue-500"></i> Active Workspaces
-                                </h2>
-                                <div className="overflow-x-auto">
-                                    <table className="w-full text-left">
-                                        <thead className="text-gray-500 text-[10px] uppercase border-b border-gray-800 tracking-widest">
-                                            <tr>
-                                                <th className="pb-4 font-black">Workspace Root</th>
-                                                <th className="pb-4 font-black">Status</th>
-                                                <th className="pb-4 font-black">Last Sync</th>
-                                                <th className="pb-4 font-black text-right">Actions</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody className="divide-y divide-gray-800/50">
-                                            {data.roots.map((root, i) => (
-                                                <tr key={i} className="hover:bg-gray-800/30 transition-colors group">
-                                                    <td className="py-5">
-                                                        <div className="font-mono text-sm text-blue-300">{root.path}</div>
-                                                        <div className="text-[10px] text-gray-600 mt-1 uppercase font-bold">{root.root_id}</div>
-                                                    </td>
-                                                    <td className="py-5">
-                                                        <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest ${data.index_ready ? 'bg-green-900/30 text-green-400 border border-green-800/50' : 'bg-blue-900/30 text-blue-400 border border-blue-800/50 scan-pulse'}`}>
-                                                            {data.index_ready ? 'Synced' : 'Indexing'}
-                                                        </span>
-                                                    </td>
-                                                    <td className="py-5 text-gray-400 text-sm font-mono">
-                                                        {data.last_scan_ts > 0 ? new Date(data.last_scan_ts * 1000).toLocaleTimeString() : 'Pending...'}
-                                                    </td>
-                                                    <td className="py-5 text-right">
-                                                        <button onClick={triggerRescan} className="text-gray-600 hover:text-blue-400 transition-colors p-2 bg-gray-800/50 rounded-lg group-hover:scale-110 transform">
-                                                            <i className="fas fa-play-circle text-lg"></i>
-                                                        </button>
-                                                    </td>
-                                                </tr>
-                                            ))}
-                                        </tbody>
-                                    </table>
+                            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                                <div className="lg:col-span-2 space-y-8">
+                                    <div className="grafana-card rounded-lg p-8 shadow-2xl">
+                                        <h2 className="text-2xl font-bold mb-6 flex items-center text-white">
+                                            <i className="fas fa-server mr-3 text-blue-500"></i> Active Workspaces
+                                        </h2>
+                                        <div className="overflow-x-auto">
+                                            <table className="w-full text-left">
+                                                <thead className="text-gray-500 text-[10px] uppercase border-b border-gray-800 tracking-widest">
+                                                    <tr>
+                                                        <th className="pb-4 font-black">Workspace Root</th>
+                                                        <th className="pb-4 font-black">Status</th>
+                                                        <th className="pb-4 font-black">Last Sync</th>
+                                                        <th className="pb-4 font-black text-right">Actions</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody className="divide-y divide-gray-800/50">
+                                                    {data.roots.map((root, i) => (
+                                                        <tr key={i} className="hover:bg-gray-800/30 transition-colors group">
+                                                            <td className="py-5">
+                                                                <div className="font-mono text-sm text-blue-300">{root.path}</div>
+                                                                <div className="text-[10px] text-gray-600 mt-1 uppercase font-bold">{root.root_id}</div>
+                                                            </td>
+                                                            <td className="py-5">
+                                                                <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest ${data.index_ready ? 'bg-green-900/30 text-green-400 border border-green-800/50' : 'bg-blue-900/30 text-blue-400 border border-blue-800/50 scan-pulse'}`}>
+                                                                    {data.index_ready ? 'Synced' : `Indexing ${progress}%`}
+                                                                </span>
+                                                            </td>
+                                                            <td className="py-5 text-gray-400 text-sm font-mono">
+                                                                {data.last_scan_ts > 0 ? new Date(data.last_scan_ts * 1000).toLocaleTimeString() : 'Pending...'}
+                                                            </td>
+                                                            <td className="py-5 text-right">
+                                                                <button onClick={triggerRescan} className="text-gray-600 hover:text-blue-400 transition-colors p-2 bg-gray-800/50 rounded-lg group-hover:scale-110 transform">
+                                                                    <i className="fas fa-play-circle text-lg"></i>
+                                                                </button>
+                                                            </td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="space-y-8">
+                                    <div className="grafana-card rounded-lg p-8 shadow-2xl">
+                                        <h2 className="text-2xl font-bold mb-6 flex items-center text-white">
+                                            <i className="fas fa-heartbeat mr-3 text-blue-500"></i> System Health
+                                        </h2>
+                                        <div className="space-y-4">
+                                            {health ? health.results.map((r, i) => (
+                                                <div key={i} className="flex items-center justify-between border-b border-gray-800 pb-3 last:border-0">
+                                                    <div>
+                                                        <div className="text-sm font-bold text-gray-200">{r.name}</div>
+                                                        <div className="text-[10px] text-gray-500 truncate max-w-[200px]">{r.error || r.detail || 'Healthy'}</div>
+                                                    </div>
+                                                    <div>
+                                                        {r.passed ? 
+                                                            <i className="fas fa-check-circle text-emerald-500"></i> : 
+                                                            (r.warn ? <i className="fas fa-exclamation-circle text-yellow-500"></i> : <i className="fas fa-times-circle text-red-500"></i>)
+                                                        }
+                                                    </div>
+                                                </div>
+                                            )) : <div className="animate-pulse text-gray-600">Checking health...</div>}
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                             
@@ -315,6 +385,30 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_get(self, path, qs):
         if path == "/health":
             return {"ok": True}
+
+        if path == "/health-report":
+            try:
+                from sari.mcp.tools.doctor import execute_doctor
+                res = execute_doctor({}, roots=[self.indexer.cfg.workspace_roots[0]] if self.indexer.cfg.workspace_roots else None)
+                # execute_doctor returns a dict with 'content' which has 'text' (JSON string)
+                if isinstance(res, dict) and "content" in res:
+                    text = res["content"][0]["text"]
+                    # Skip the PACK1 header if it's there
+                    if text.startswith("PACK1"):
+                        lines = text.split("\n")
+                        for line in lines:
+                            if line.startswith("t:"):
+                                return json.loads(line[2:])
+                    return json.loads(text)
+            except Exception as e:
+                # Fallback to simple health check
+                try:
+                    from .health import SariDoctor
+                    doc = SariDoctor()
+                    doc.run_all()
+                    return doc.get_summary()
+                except:
+                    return {"ok": False, "error": str(e)}
 
         if path == "/status":
             st = self.indexer.status

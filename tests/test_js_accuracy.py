@@ -19,11 +19,10 @@ def test_javascript_react_component_extraction():
     
     engine = ASTEngine()
     
-    # symbols_list의 각 항목은 (path, name, kind, start, end, ...) 튜플임
+    # symbols_list의 각 항목은 ParserSymbol 객체임
     symbols, _ = engine.extract_symbols("test.js", "javascript", code)
     
-    # 튜플의 2번째 요소(index 1)가 name임 (ast_engine.py 225라인 확인)
-    names = [s[1] for s in symbols]
+    names = [s.name for s in symbols]
     print(f"\n[DEBUG TEST] Extracted Symbol Names: {names}")
     
     assert "MyComponent" in names
@@ -38,7 +37,7 @@ def test_javascript_lexical_variable_extraction():
     engine = ASTEngine()
     symbols, _ = engine.extract_symbols("test.js", "javascript", code)
     
-    names = [s[1] for s in symbols]
+    names = [s.name for s in symbols]
     print(f"[DEBUG TEST] Extracted Names: {names}")
     assert "helper" in names
     assert "api" in names

@@ -25,10 +25,10 @@ class UserController(private val userService: UserService) {
 }
 '''
         symbols, _ = engine.extract_symbols("UserController.kt", "kotlin", code)
-        names = [s[1] for s in symbols]
+        names = [s.name for s in symbols]
         
         assert "UserController" in names
-        assert "getUser" in names or len([s for s in symbols if s[2] == "function"]) > 0
+        assert "getUser" in names or len([s for s in symbols if s.kind == "function"]) > 0
     
     def test_kotlin_data_class(self):
         """Kotlin data class"""
@@ -52,7 +52,7 @@ object UserRepository {
 }
 '''
         symbols, _ = engine.extract_symbols("Models.kt", "kotlin", code)
-        names = [s[1] for s in symbols]
+        names = [s.name for s in symbols]
         
         # data class
         assert "User" in names
@@ -87,7 +87,7 @@ class UserController extends Controller {
 }
 '''
         symbols, _ = engine.extract_symbols("UserController.php", "php", code)
-        names = [s[1] for s in symbols]
+        names = [s.name for s in symbols]
         
         assert "UserController" in names
         assert "index" in names or "store" in names
@@ -111,8 +111,8 @@ class User extends Model {
 }
 '''
         symbols, _ = engine.extract_symbols("User.php", "php", code)
-        names = [s[1] for s in symbols]
-        kinds = [s[2] for s in symbols]
+        names = [s.name for s in symbols]
+        kinds = [s.kind for s in symbols]
         
         assert "User" in names
         assert "class" in kinds
@@ -141,7 +141,7 @@ class User < ApplicationRecord
 end
 '''
         symbols, _ = engine.extract_symbols("user.rb", "ruby", code)
-        names = [s[1] for s in symbols]
+        names = [s.name for s in symbols]
         
         assert "User" in names
         assert "full_name" in names
@@ -178,7 +178,7 @@ class UsersController < ApplicationController
 end
 '''
         symbols, _ = engine.extract_symbols("users_controller.rb", "ruby", code)
-        names = [s[1] for s in symbols]
+        names = [s.name for s in symbols]
         
         assert "UsersController" in names
         assert "index" in names or "create" in names
@@ -213,7 +213,7 @@ async def delete_user(user_id: int):
     return {"deleted": user_id}
 '''
         symbols, _ = engine.extract_symbols("main.py", "python", code)
-        names = [s[1] for s in symbols]
+        names = [s.name for s in symbols]
         
         # Pydantic model
         assert "UserCreate" in names
@@ -242,7 +242,7 @@ def list_categories():
     return jsonify([])
 '''
         symbols, _ = engine.extract_symbols("routes.py", "python", code)
-        names = [s[1] for s in symbols]
+        names = [s.name for s in symbols]
         
         # 최소한 하나의 라우트 핸들러가 감지되어야 함
         assert "list_items" in names or "create_item" in names
@@ -274,7 +274,7 @@ spec:
             - containerPort: 8080
 '''
         symbols, _ = engine.extract_symbols("deployment.yaml", "yaml", code)
-        names = [s[1] for s in symbols]
+        names = [s.name for s in symbols]
         
         # K8s 리소스 감지
         assert any("Deployment" in n for n in names) or any("user-service" in n for n in names)
@@ -296,6 +296,6 @@ spec:
   type: ClusterIP
 '''
         symbols, _ = engine.extract_symbols("service.yml", "yaml", code)
-        names = [s[1] for s in symbols]
+        names = [s.name for s in symbols]
         
         assert any("Service" in n for n in names) or any("user-svc" in n for n in names)

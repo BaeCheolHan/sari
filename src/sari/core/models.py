@@ -248,41 +248,151 @@ class IndexingResult(BaseModel):
         return tuple(data.get(col) for col in FILE_COLUMNS)
 
 class ContextDTO(BaseModel):
+
     id: Optional[int] = None
+
     topic: str
+
     content: str
+
     tags: List[str] = Field(default_factory=list)
+
     related_files: List[str] = Field(default_factory=list)
+
     source: str = ""
+
     valid_from: int = 0
+
     valid_until: int = 0
+
     deprecated: bool = False
+
     created_ts: int = 0
+
     updated_ts: int = 0
 
+
+
     @classmethod
+
     def from_row(cls, row: Union[Dict, Any]) -> "ContextDTO":
+
         d = _to_dict(row)
+
         
+
         def _parse_json_list(key):
+
             val = d.get(key)
+
             if not val: return []
+
             if isinstance(val, list): return val
+
             try: return json.loads(val)
+
             except Exception as e: 
+
                 logger.debug("ContextDTO json list parse error for %s: %s", key, e)
+
                 return []
 
+
+
         return cls(
+
             id=d.get("id"),
+
             topic=d.get("topic", ""),
+
             content=d.get("content", ""),
+
             tags=_parse_json_list("tags_json"),
+
             related_files=_parse_json_list("related_files_json"),
+
             source=d.get("source", ""),
+
             valid_from=int(d.get("valid_from", 0)),
+
             valid_until=int(d.get("valid_until", 0)),
+
             deprecated=bool(d.get("deprecated", 0)),
+
             created_ts=int(d.get("created_ts", 0)),
+
             updated_ts=int(d.get("updated_ts", 0))
+
         )
+
+
+
+# --- Parser Result Objects (to avoid messy tuple indexing) ---
+
+
+
+class ParserSymbol(BaseModel):
+
+
+
+    sid: str
+
+
+
+    path: str
+
+
+
+    name: str
+
+
+
+    kind: str
+
+
+
+    line: int
+
+
+
+    end_line: int
+
+
+
+    content: str
+
+
+
+    parent: str = ""
+
+
+
+    meta: Dict[str, Any] = Field(default_factory=dict)
+
+    qualname: str = ""
+
+    doc: str = ""
+
+
+class ParserRelation(BaseModel):
+
+    from_name: str
+
+    from_sid: str
+
+    to_name: str
+
+    to_sid: str = ""
+
+    rel_type: str
+
+    line: int
+
+    meta: Dict[str, Any] = Field(default_factory=dict)
+
+    to_path: str = ""
+
+
+
+
+

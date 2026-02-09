@@ -22,6 +22,7 @@ from sari.core.workspace import WorkspaceManager
 from sari.core.server_registry import ServerRegistry
 from sari.core.daemon_resolver import resolve_daemon_address as _resolve_daemon_target
 from sari.mcp.trace import trace
+from sari.mcp.cli.smart_daemon import ensure_smart_daemon
 
 try:
     import fcntl  # type: ignore
@@ -126,66 +127,9 @@ def _unlock_file(lock_file) -> None:
         pass
 
 def start_daemon_if_needed(host, port, workspace_root: str = ""):
-    """Checks if daemon is running, if not starts it."""
-    def _reap_child(proc: subprocess.Popen) -> None:
-        try:
-            proc.wait()
-        except Exception:
-            pass
-
-    if _identify_sari_daemon(host, port):
-        trace("proxy_daemon_already_running", host=host, port=port)
-        return True
-
-    if not workspace_root:
-        workspace_root = os.environ.get("SARI_WORKSPACE_ROOT") or WorkspaceManager.resolve_workspace_root()
-
-    safe_host = "".join(c for c in str(host) if c.isalnum() or c in ".-")
-    lock_path = os.path.join(tempfile.gettempdir(), f"sari-daemon-{safe_host}-{int(port)}.lock")
-    with open(lock_path, "w") as lock_file:
-        try:
-            # Acquire exclusive lock (blocking)
-            _lock_file(lock_file)
-
-            # Double-check if daemon started while waiting for lock
-            if _identify_sari_daemon(host, port):
-                return True
-
-            _log_info("Daemon not running, starting...")
-            trace("proxy_daemon_starting", host=host, port=port, workspace_root=workspace_root)
-
-            repo_root = Path(__file__).parent.parent.parent
-            env = os.environ.copy()
-            env["SARI_DAEMON_AUTOSTART"] = "1"
-            env["SARI_WORKSPACE_ROOT"] = workspace_root
-
-            proc = subprocess.Popen(
-                [sys.executable, "-m", "sari.mcp.cli", "daemon", "start", "-d"],
-                cwd=repo_root,
-                env=env,
-                start_new_session=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            # Reap helper process when it exits to prevent defunct children in proxy.
-            threading.Thread(target=_reap_child, args=(proc,), daemon=True).start()
-
-            # Wait for it to come up (Increase to 10s for cold start reliability)
-            for _ in range(100):
-                host, port = _resolve_daemon_target()
-                if _identify_sari_daemon(host, port):
-                    _log_info("Daemon started successfully.")
-                    trace("proxy_daemon_started", host=host, port=port)
-                    return True
-                time.sleep(0.1)
-
-            _log_error("Failed to start daemon.")
-            trace("proxy_daemon_start_failed", host=host, port=port)
-            return False
-
-        finally:
-            _unlock_file(lock_file)
-
+    """Ensures daemon is running using smart logic."""
+    ensure_smart_daemon(host, port, workspace_root)
+    return True
 def forward_socket_to_stdout(sock, state):
     try:
         f = sock.makefile("rb")

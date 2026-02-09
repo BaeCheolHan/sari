@@ -224,6 +224,12 @@ class LocalSearchDB:
         if cur is None: cur = self.db.connection().cursor()
         self._symbol_repo(cur).upsert_symbols_tx(cur, rows)
 
+    def upsert_relations_tx(self, cur, rows: List[tuple]):
+        """관계 정보를 트랜잭션 내에서 일괄 삽입합니다."""
+        if not rows: return
+        if cur is None: cur = self.db.connection().cursor()
+        self._symbol_repo(cur).upsert_relations_tx(cur, rows)
+
     def upsert_snippet_tx(self, cur, rows: List[tuple]):
         self._snippet_repo(cur).upsert_snippet_tx(cur, rows)
 

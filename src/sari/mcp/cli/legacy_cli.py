@@ -55,6 +55,7 @@ from sari.core.constants import (
     DAEMON_IDENTIFY_TIMEOUT_SECONDS,
     DAEMON_PROBE_TIMEOUT_SECONDS,
 )
+from .smart_daemon import ensure_smart_daemon
 from sari.mcp.tools.grep_and_read import execute_grep_and_read
 from sari.mcp.tools.archive_context import execute_archive_context
 from sari.mcp.tools.get_context import execute_get_context
@@ -471,23 +472,8 @@ def _ensure_daemon_running(
     http_port: Optional[int] = None,
     allow_upgrade: bool = False,
 ) -> Tuple[str, int, bool]:
-    identify = _identify_sari_daemon(daemon_host, daemon_port)
-    if identify and not (allow_upgrade and _needs_upgrade_or_drain(identify)):
-        return daemon_host, daemon_port, True
-
-    if allow_upgrade and identify and _needs_upgrade_or_drain(identify):
-        _start_daemon_background(daemon_host, daemon_port, http_host, http_port)
-        daemon_host, daemon_port = get_daemon_address()
-        return daemon_host, daemon_port, is_daemon_running(daemon_host, daemon_port)
-
-    if not is_daemon_running(daemon_host, daemon_port):
-        _start_daemon_background(daemon_host, daemon_port, http_host, http_port)
-        daemon_host, daemon_port = get_daemon_address()
-        return daemon_host, daemon_port, is_daemon_running(daemon_host, daemon_port)
-
-    return daemon_host, daemon_port, True
-
-
+    host, port = ensure_smart_daemon(daemon_host, daemon_port)
+    return host, port, True
 def cmd_daemon_start(args):
     """Start the daemon."""
     from .daemon import (

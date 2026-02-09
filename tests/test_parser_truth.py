@@ -14,6 +14,6 @@ def test_python_parser_pure_logic():
     
     print(f"\nDEBUG: Extracted symbols: {symbols}")
     
-    names = [s[1] for s in symbols]
+    names = [s.name for s in symbols]
     assert "MyTruth" in names
     assert "verify" in names

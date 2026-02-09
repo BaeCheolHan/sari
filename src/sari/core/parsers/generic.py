@@ -4,6 +4,7 @@ from typing import List, Tuple, Dict, Any, Optional
 from pathlib import Path
 from .base import BaseParser
 from .common import _qualname, _symbol_id, _safe_compile, NORMALIZE_KIND_BY_EXT
+from sari.core.models import ParserSymbol, ParserRelation
 
 class GenericRegexParser(BaseParser):
     """
@@ -23,8 +24,9 @@ class GenericRegexParser(BaseParser):
         line = re.sub(r"#.*$", "", line)
         return line
 
-    def extract(self, path: str, content: str) -> Tuple[List[Tuple], List[Tuple]]:
-        symbols, relations = [], []
+    def extract(self, path: str, content: str) -> Tuple[List[ParserSymbol], List[ParserRelation]]:
+        symbols: List[ParserSymbol] = []
+        relations: List[ParserRelation] = []
         # Strip block comments first to avoid finding fake symbols in them
         content = re.sub(r"/\*.*?\*/", "", content, flags=re.DOTALL)
         lines = content.splitlines()
@@ -50,11 +52,10 @@ class GenericRegexParser(BaseParser):
 
             for name, kind, _ in matches:
                 sid = _symbol_id(path, kind, name)
-                info = {"sid": sid, "path": path, "name": name, "kind": kind, "line": line_no, "meta": "{}", "raw": line.strip(), "qual": name}
+                info = {"sid": sid, "path": path, "name": name, "kind": kind, "line": line_no, "meta": {}, "raw": line.strip(), "qual": name}
                 active_scopes.append((cur_bal, info))
 
-            # Safer brace counting: ignore characters in strings
-            # Note: This is a heuristic for Generic Regex Parser
+            # Safer brace counting
             tmp_line = re.sub(r'"[^"\\]*(?:\\.[^"\\]*)*"', "", clean)
             tmp_line = re.sub(r"'[^'\\]*(?:\\.[^'\\]*)*'", "", tmp_line)
             op, cl = tmp_line.count("{"), tmp_line.count("}")
@@ -63,17 +64,27 @@ class GenericRegexParser(BaseParser):
             still_active = []
             for bal, info in active_scopes:
                 if cur_bal <= bal:
-                    # Format B: (path, name, kind, start, end, content, parent, meta, doc, qual, sid)
-                    symbols.append((info["path"], info["name"], info["kind"], info["line"], line_no, info["raw"], "", info["meta"], "", info["qual"], info["sid"]))
+                    symbols.append(ParserSymbol(
+                        sid=info["sid"], path=info["path"], name=info["name"], kind=info["kind"],
+                        line=info["line"], end_line=line_no, content=info["raw"],
+                        meta=info["meta"], qualname=info["qual"]
+                    ))
                 else: still_active.append((bal, info))
             active_scopes = still_active
 
         for _, info in active_scopes:
-            symbols.append((info["path"], info["name"], info["kind"], info["line"], len(lines), info["raw"], "", info["meta"], "", info["qual"], info["sid"]))
+            symbols.append(ParserSymbol(
+                sid=info["sid"], path=info["path"], name=info["name"], kind=info["kind"],
+                line=info["line"], end_line=len(lines), content=info["raw"],
+                meta=info["meta"], qualname=info["qual"]
+            ))
 
         if self.ext == ".vue":
             stem = Path(path).stem
-            symbols.append((path, stem, "class", 1, len(lines), stem, "", "{}", "", stem, _symbol_id(path, "class", stem)))
+            symbols.append(ParserSymbol(
+                sid=_symbol_id(path, "class", stem), path=path, name=stem, kind="class",
+                line=1, end_line=len(lines), content=stem, qualname=stem
+            ))
 
         return symbols, relations
 
@@ -84,15 +95,12 @@ class HCLRegexParser(GenericRegexParser):
     """
     def __init__(self, config: Dict[str, Any], ext: str):
         super().__init__(config, ext)
-        # HCL specific regex that explicitly captures type and name for resources
-        # Group 1: type (e.g. aws_vpc), Group 2: name (e.g. main)
         self.re_resource = _safe_compile(r'^resource\s+"([^"]+)"\s+"([^"]+)"')
-        # Group 1: block type (module, variable, etc), Group 2: name
         self.re_general = _safe_compile(r'^(module|variable|output|data)\s+"([^"]+)"')
 
-    def extract(self, path: str, content: str) -> Tuple[List[Tuple], List[Tuple]]:
-        symbols, relations = [], []
-        # Strip block comments first to avoid finding fake symbols in them
+    def extract(self, path: str, content: str) -> Tuple[List[ParserSymbol], List[ParserRelation]]:
+        symbols: List[ParserSymbol] = []
+        relations: List[ParserRelation] = []
         content = re.sub(r"/\*.*?\*/", "", content, flags=re.DOTALL)
         lines = content.splitlines()
         active_scopes = []
@@ -104,28 +112,21 @@ class HCLRegexParser(GenericRegexParser):
             if not clean.strip(): continue
 
             matches = []
-            
-            # 1. Try resource "type" "name" pattern
             for m in self.re_resource.finditer(clean):
-                # Name becomes "type.name" (e.g. aws_vpc.main) which satisfies tests looking for "aws_vpc"
                 rtype, rname = m.group(1), m.group(2)
                 name = f"{rtype}.{rname}"
                 matches.append((name, "resource", m.start()))
 
-            # 2. Try general block "name" pattern
             if not matches:
                 for m in self.re_general.finditer(clean):
                     btype, bname = m.group(1), m.group(2)
-                    # kind is the block type (module, variable, etc)
                     matches.append((bname, btype, m.start()))
 
             for name, kind, _ in matches:
                 sid = _symbol_id(path, kind, name)
-                # Use name as qual for HCL
-                info = {"sid": sid, "path": path, "name": name, "kind": kind, "line": line_no, "meta": "{}", "raw": line.strip(), "qual": name}
+                info = {"sid": sid, "path": path, "name": name, "kind": kind, "line": line_no, "meta": {}, "raw": line.strip(), "qual": name}
                 active_scopes.append((cur_bal, info))
 
-            # Safer brace counting: ignore characters in strings
             tmp_line = re.sub(r'"[^"\\]*(?:\\.[^"\\]*)*"', "", clean)
             tmp_line = re.sub(r"'[^'\\]*(?:\\.[^'\\]*)*'", "", tmp_line)
             op, cl = tmp_line.count("{"), tmp_line.count("}")
@@ -134,11 +135,19 @@ class HCLRegexParser(GenericRegexParser):
             still_active = []
             for bal, info in active_scopes:
                 if cur_bal <= bal:
-                    symbols.append((info["path"], info["name"], info["kind"], info["line"], line_no, info["raw"], "", info["meta"], "", info["qual"], info["sid"]))
+                    symbols.append(ParserSymbol(
+                        sid=info["sid"], path=info["path"], name=info["name"], kind=info["kind"],
+                        line=info["line"], end_line=line_no, content=info["raw"],
+                        meta=info["meta"], qualname=info["qual"]
+                    ))
                 else: still_active.append((bal, info))
             active_scopes = still_active
 
         for _, info in active_scopes:
-            symbols.append((info["path"], info["name"], info["kind"], info["line"], len(lines), info["raw"], "", info["meta"], "", info["qual"], info["sid"]))
+            symbols.append(ParserSymbol(
+                sid=info["sid"], path=info["path"], name=info["name"], kind=info["kind"],
+                line=info["line"], end_line=len(lines), content=info["raw"],
+                meta=info["meta"], qualname=info["qual"]
+            ))
 
         return symbols, relations
