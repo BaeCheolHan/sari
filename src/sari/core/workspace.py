@@ -17,6 +17,24 @@ class WorkspaceManager:
         WorkspaceManager.settings = settings_obj
 
     @staticmethod
+    def find_git_root(path: str) -> Optional[str]:
+        """Find the nearest directory containing .git, stopping at home or root."""
+        try:
+            curr = Path(PathUtils.normalize(path))
+            search_start = curr if curr.is_dir() else curr.parent
+            home = Path.home()
+            
+            for parent in [search_start] + list(search_start.parents):
+                if (parent / ".git").exists():
+                    return str(parent)
+                # Safety: Don't escape home directory or search root
+                if parent == home or parent == parent.parent:
+                    break
+            return None
+        except Exception:
+            return None
+
+    @staticmethod
     def find_project_root(path: str) -> str:
         """Find the nearest directory containing .sariroot."""
         try:
@@ -59,23 +77,46 @@ class WorkspaceManager:
 
     @staticmethod
     def resolve_workspace_roots(root_uri: Optional[str] = None, config_roots: Optional[List[str]] = None) -> List[str]:
-        roots = []
+        raw_roots = []
         if config_roots:
             for r in config_roots:
-                if r: roots.append(PathUtils.normalize(r))
+                if r: raw_roots.append(PathUtils.normalize(r))
+        
+        # If explicit root_uri is provided, we use it directly without expansion to respect caller's intent (e.g. tests)
         if root_uri:
             p = root_uri[7:] if root_uri.startswith("file://") else root_uri
-            roots.append(PathUtils.normalize(p))
+            return [PathUtils.normalize(p)]
+
         if WorkspaceManager.settings.WORKSPACE_ROOT:
-            roots.append(PathUtils.normalize(WorkspaceManager.settings.WORKSPACE_ROOT))
+            raw_roots.append(PathUtils.normalize(WorkspaceManager.settings.WORKSPACE_ROOT))
         
-        fallback = [PathUtils.normalize(os.getcwd())]
-        return list(dict.fromkeys(roots)) or fallback
+        if not raw_roots:
+            raw_roots = [PathUtils.normalize(os.getcwd())]
+
+        # Seamless Expansion: ONLY for default/CWD discovery
+        expanded = []
+        for r in raw_roots:
+            expanded.append(r)
+            git_r = WorkspaceManager.find_git_root(r)
+            if git_r:
+                expanded.append(PathUtils.normalize(git_r))
+        
+        return list(dict.fromkeys(expanded))
 
     @staticmethod
     def resolve_workspace_root(root_uri: Optional[str] = None) -> str:
+        """
+        Determine the primary workspace root. 
+        """
         roots = WorkspaceManager.resolve_workspace_roots(root_uri=root_uri)
-        return roots[0]
+        if root_uri and roots:
+            return roots[0]
+            
+        # For auto-discovery, prefer Git root if present
+        for r in roots:
+            if (Path(r) / ".git").exists():
+                return r
+        return roots[0] if roots else PathUtils.normalize(os.getcwd())
 
     @staticmethod
     def resolve_config_path(_repo_root: str) -> str:
@@ -121,7 +162,9 @@ class WorkspaceManager:
             if isinstance(data, dict):
                 preferred_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(legacy, preferred_path)
-        except Exception: pass
+        except Exception as e:
+            import logging
+            logging.getLogger("sari.workspace").debug("Failed to migrate legacy config: %s", e)
 
     @staticmethod
     def get_global_data_dir() -> Path:
@@ -183,4 +226,6 @@ class WorkspaceManager:
                 with gitignore.open("a", encoding="utf-8") as f:
                     if not text.endswith("\n"): f.write("\n")
                     f.write(entry + "\n")
-        except Exception: pass
+        except Exception as e:
+            import logging
+            logging.getLogger("sari.workspace").debug("Failed to update gitignore: %s", e)

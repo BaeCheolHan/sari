@@ -80,7 +80,9 @@ def execute_get_callers(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict
                 "line": r[3],
                 "rel_type": r[4]
             })
-    except Exception: pass
+    except Exception as e: 
+        import logging
+        logging.getLogger("sari.mcp.get_callers").debug("SQL query failed: %s", e)
 
     # 3. 직접적인 관계가 없을 경우 Call Graph(depth=1) 휴리스틱 사용 (Fallback)
     if not results:
@@ -99,7 +101,9 @@ def execute_get_callers(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict
                     "line": int(c.get("line", 0) or 0),
                     "rel_type": c.get("rel_type", "calls_heuristic"),
                 })
-        except Exception: pass
+        except Exception as e:
+            import logging
+            logging.getLogger("sari.mcp.get_callers").debug("Call graph fallback failed: %s", e)
 
     def build_pack() -> str:
         lines = [pack_header("get_callers", {"name": pack_encode_text(target_symbol), "sid": pack_encode_id(target_sid), "path": pack_encode_id(target_path), "repo": pack_encode_id(repo)}, returned=len(results))]

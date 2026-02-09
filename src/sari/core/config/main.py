@@ -22,7 +22,9 @@ def validate_config_file(path: str) -> Optional[str]:
 class Config:
     def __init__(self, **kwargs):
         self.workspace_root = kwargs.get("workspace_root", os.getcwd())
-        self.workspace_roots = kwargs.get("workspace_roots", [self.workspace_root])
+        raw_roots = kwargs.get("workspace_roots") or [self.workspace_root]
+        # Deduplicate while preserving order
+        self.workspace_roots = list(dict.fromkeys(raw_roots))
         self.include_ext = kwargs.get("include_ext", [".py", ".js", ".ts", ".java", ".go", ".rs", ".rb", ".php", ".xml", ".yml", ".yaml", ".md", ".cs", ".swift", ".vue", ".hcl", ".tf", ".sql", ".txt"])
         self.exclude_dirs = kwargs.get("exclude_dirs", [".git", "node_modules", "target", "build", "dist", ".pytest_cache", "__pycache__", ".sari", ".venv", "venv", ".virtualenv", "env"])
         self.exclude_globs = kwargs.get("exclude_globs", [".venv*", "venv*", "env*", "*.egg-info"])
@@ -96,6 +98,9 @@ class Config:
         if data:
             merged = defaults.copy()
             merged.update(data)
+            # Ensure workspace_roots from data and defaults are merged and deduplicated
+            all_roots = list(dict.fromkeys(defaults.get("workspace_roots", []) + data.get("workspace_roots", []) + data.get("roots", [])))
+            merged["workspace_roots"] = [r for r in all_roots if r]
             data = merged
         else:
             data = defaults
@@ -124,9 +129,16 @@ class Config:
     @classmethod
     def get_defaults(cls, root: str) -> Dict[str, Any]:
         from sari.core.workspace import WorkspaceManager
+        
+        # Seamless Root Expansion: Automatically include the Git root if we are inside one
+        roots = [root]
+        git_root = WorkspaceManager.find_git_root(root)
+        if git_root and git_root not in roots:
+            roots.append(git_root)
+
         return {
             "workspace_root": root,
-            "workspace_roots": [root],
+            "workspace_roots": roots,
             "include_ext": [".py", ".js", ".ts", ".java", ".go", ".rs", ".rb", ".php", ".xml", ".yml", ".yaml", ".md", ".cs", ".swift", ".vue", ".hcl", ".tf", ".sql", ".txt"],
             "exclude_dirs": [".git", "node_modules", "target", "build", "dist", ".pytest_cache", "__pycache__", ".sari", ".venv", "venv", ".virtualenv", "env"],
             "exclude_globs": [".venv*", "venv*", "env*", "*.egg-info"],

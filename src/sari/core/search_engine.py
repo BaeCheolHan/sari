@@ -78,7 +78,9 @@ class SearchEngine:
                             if h.path not in seen_paths:
                                 all_hits.append(h)
                                 seen_paths.add(h.path)
-                except Exception: pass
+                except Exception as te:
+                    import logging
+                    logging.getLogger("sari.search").debug("Tantivy search failed: %s", te)
 
             # 3. SQLite (Fallback/Secondary DB Search)
             if not all_hits or len(all_hits) < opts.limit:
@@ -105,7 +107,9 @@ class SearchEngine:
                                     all_hits.append(h)
                                     seen_paths.add(h.path)
                             is_fts = True
-                        except Exception: pass
+                        except Exception as fe:
+                            import logging
+                            logging.getLogger("sari.search").debug("FTS search failed: %s", fe)
                     
                     # Broad LIKE fallback if still no results or FTS skipped
                     if not all_hits or len(all_hits) < opts.limit:

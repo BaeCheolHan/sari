@@ -124,19 +124,40 @@ class IndexWorker:
             return None
 
     def _derive_repo_label(self, root: Path, file_path: Path, rel_to_root: str) -> str:
+        # Optimization: Check if we already found a repo for this workspace root
+        root_path = Path(root)
+        root_str = str(root_path.resolve())
+        if root_str in self._git_root_cache:
+            res = self._git_root_cache[root_str]
+            if res: return res
+
         parent = str(file_path.parent.resolve())
         if parent in self._git_root_cache:
             git_root = self._git_root_cache[parent]
         else:
             try:
-                proc = subprocess.run(["git", "-C", parent, "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=False, timeout=0.5)
-                git_root = proc.stdout.strip() if proc.returncode == 0 else None
+                # Fast path: check if .git exists in parent or its parents up to root
+                curr = Path(parent)
+                found_git = False
+                target_root = root_path.resolve()
+                while curr.parts and str(curr).startswith(str(target_root)):
+                    if (curr / ".git").is_dir():
+                        found_git = True
+                        git_root = str(curr)
+                        break
+                    curr = curr.parent
+                
+                if not found_git:
+                    # Fallback to git command for complex cases (e.g. submodule, worktree)
+                    proc = subprocess.run(["git", "-C", parent, "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=False, timeout=0.5)
+                    git_root = proc.stdout.strip() if proc.returncode == 0 else None
             except Exception: git_root = None
             self._git_root_cache[parent] = git_root
 
-        if git_root: return Path(git_root).name
-        # Fallback using PathUtils to avoid separator issues
-        # if "/" in rel_to_root: return rel_to_root.split("/", 1)[0]
+        if git_root: 
+            repo_name = Path(git_root).name
+            self._git_root_cache[root_str] = repo_name # Cache for this workspace root
+            return repo_name
         return Path(root).name or "root"
 
     def _skip_result(self, db_path, path, st, scan_ts, reason, root_id=None) -> IndexingResult:

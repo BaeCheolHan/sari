@@ -23,7 +23,7 @@ def init_schema(conn: sqlite3.Connection):
         # v2 마이그레이션: 중요도 점수(importance_score) 컬럼 추가
         if v < 2:
             try: cur.execute("ALTER TABLE symbols ADD COLUMN importance_score REAL DEFAULT 0.0")
-            except Exception: pass
+            except Exception as e: logger.debug("Migration v2 column already exists or failed: %s", e)
             
         # v3 마이그레이션: 통계 컬럼 및 메타 통계 테이블 추가
         if v < 3:
@@ -31,14 +31,16 @@ def init_schema(conn: sqlite3.Connection):
                 cur.execute("ALTER TABLE roots ADD COLUMN file_count INTEGER DEFAULT 0")
                 cur.execute("ALTER TABLE roots ADD COLUMN symbol_count INTEGER DEFAULT 0")
                 cur.execute("CREATE TABLE IF NOT EXISTS meta_stats (key TEXT PRIMARY KEY, value TEXT, updated_ts INTEGER)")
-            except Exception: pass
+            except Exception as e: logger.debug("Migration v3 failed: %s", e)
             
         # metadata_json 컬럼 존재 여부 강제 확인 (복구용)
         try:
             cur.execute("SELECT metadata_json FROM files LIMIT 1")
         except Exception:
-            try: cur.execute("ALTER TABLE files ADD COLUMN metadata_json TEXT DEFAULT '{}'")
-            except Exception: pass
+            try: 
+                cur.execute("ALTER TABLE files ADD COLUMN metadata_json TEXT DEFAULT '{}'")
+            except Exception as e:
+                logger.debug("Failed to add metadata_json column: %s", e)
             
         cur.execute("UPDATE schema_version SET version = ?", (CURRENT_SCHEMA_VERSION,))
     

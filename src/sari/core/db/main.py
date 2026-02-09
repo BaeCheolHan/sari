@@ -40,7 +40,7 @@ class LocalSearchDB:
                 'cache_size': -10000, # 약 10MB 페이지 캐시
                 'foreign_keys': 1,    # 외래 키 제약 조건 활성화
                 'ignore_check_constraints': 0,
-                'synchronous': 0,     # 쓰기 동기화 최소화 (속도 향상, 위험 감수)
+                'synchronous': 1,     # NORMAL (안전성과 성능의 균형)
                 'busy_timeout': 15000 # Lock 대기 시간
             })
             db_proxy.initialize(self.db)
@@ -216,7 +216,9 @@ class LocalSearchDB:
     def get_file_meta(self, path: str) -> Optional[Tuple[int, int, str]]:
         """파일의 메타데이터(크기, 수정시간, 해시)를 반환합니다."""
         try: return self._file_repo().get_file_meta(self._resolve_db_path(path))
-        except Exception: return None
+        except Exception as e:
+            self.logger.debug("Failed to get file meta for %s: %s", path, e)
+            return None
 
     def upsert_symbols_tx(self, cur, rows: List[tuple], root_id: str = "root"):
         """심볼 정보를 트랜잭션 내에서 일괄 삽입합니다."""
@@ -290,12 +292,14 @@ class LocalSearchDB:
                             cols = ", ".join(FILE_COLUMNS)
                             conn.execute(f"INSERT OR REPLACE INTO main.files({cols}) SELECT {cols} FROM snapshot.files")
                         else: conn.execute(f"INSERT OR REPLACE INTO main.{tbl} SELECT * FROM snapshot.{tbl}")
-                    except Exception: pass
+                    except Exception as te:
+                        self.logger.error("Failed to copy table %s from snapshot: %s", tbl, te)
             self.update_stats()
         except Exception as e: self.logger.error("Failed to swap DB file: %s", e, exc_info=True); raise
         finally:
             try: conn.execute("DETACH DATABASE snapshot")
-            except Exception: pass
+            except Exception as de:
+                self.logger.debug("Failed to detach snapshot: %s", de)
 
     def get_connection(self): return self.db.connection()
     def get_read_connection(self): 

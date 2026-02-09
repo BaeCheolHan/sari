@@ -2,7 +2,7 @@ from typing import Any, Dict, List
 
 from sari.core.services.index_service import IndexService
 
-from sari.mcp.tools._util import mcp_response, pack_error, ErrorCode, resolve_db_path, pack_header, pack_line, pack_encode_id
+from sari.mcp.tools._util import mcp_response, pack_error, ErrorCode, resolve_db_path, handle_db_path_error, pack_header, pack_line, pack_encode_id
 
 def execute_index_file(args: Dict[str, Any], indexer: Any, roots: List[str]) -> Dict[str, Any]:
     """
@@ -17,15 +17,12 @@ def execute_index_file(args: Dict[str, Any], indexer: Any, roots: List[str]) -> 
             lambda: {"error": {"code": ErrorCode.INVALID_ARGS.value, "message": "File path is required"}, "isError": True},
         )
 
+    db = getattr(indexer, "db", None)
     svc = IndexService(indexer)
 
-    db_path = resolve_db_path(path, roots)
+    db_path = resolve_db_path(path, roots, db=db)
     if not db_path:
-        return mcp_response(
-            "index_file",
-            lambda: pack_error("index_file", ErrorCode.ERR_ROOT_OUT_OF_SCOPE, f"Path out of scope: {path}", hints=["outside final_roots"]),
-            lambda: {"error": {"code": ErrorCode.ERR_ROOT_OUT_OF_SCOPE.value, "message": f"Path out of scope: {path}"}, "isError": True},
-        )
+        return handle_db_path_error("index_file", path, roots, db)
 
     try:
         fs_path = path

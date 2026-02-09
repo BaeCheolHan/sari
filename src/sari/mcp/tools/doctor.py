@@ -21,11 +21,27 @@ from sari.core.config import Config
 from sari.core.settings import settings
 from sari.core.workspace import WorkspaceManager
 from sari.core.server_registry import ServerRegistry, get_registry_path
-from sari.mcp.cli import get_daemon_address, is_daemon_running, read_pid, _get_http_host_port, _is_http_running, _identify_sari_daemon as _cli_identify
+from sari.mcp.cli.mcp_client import identify_sari_daemon, probe_sari_daemon, is_http_running as _is_http_running
+from sari.core.daemon_resolver import resolve_daemon_address as get_daemon_address
+
+def _read_pid(host: str, port: int) -> Optional[int]:
+    try:
+        reg = ServerRegistry()
+        inst = reg.resolve_daemon_by_endpoint(host, port)
+        return int(inst["pid"]) if inst and inst.get("pid") else None
+    except Exception: return None
+
+def _get_http_host_port(port_override: Optional[int] = None) -> Tuple[str, int]:
+    # Simplified logic for doctor to avoid cli dependency
+    from sari.core.constants import DEFAULT_HTTP_HOST, DEFAULT_HTTP_PORT
+    host = os.environ.get("SARI_HTTP_HOST") or DEFAULT_HTTP_HOST
+    port = port_override or int(os.environ.get("SARI_HTTP_PORT") or DEFAULT_HTTP_PORT)
+    return host, port
 
 def _identify_sari_daemon(host: str, port: int):
-    return _cli_identify(host, port)
+    return identify_sari_daemon(host, port)
 
+_cli_identify = _identify_sari_daemon
 
 def _result(name: str, passed: bool, error: str = "", warn: bool = False) -> dict[str, Any]:
     """진단 결과를 딕셔너리 형태로 반환합니다."""
@@ -467,14 +483,14 @@ def _check_process_resources(pid: int) -> dict[str, Any]:
 def _check_daemon() -> dict[str, Any]:
     """Sari 데몬 프로세스의 실행 여부와 상태를 점검합니다."""
     host, port = get_daemon_address()
-    identify = _identify_sari_daemon(host, port)
+    identify = identify_sari_daemon(host, port)
     running = identify is not None
     
     local_version = settings.VERSION
     details = {}
     
     if running:
-        pid = read_pid(host, port)
+        pid = _read_pid(host, port)
         remote_version = identify.get("version", "unknown")
         draining = identify.get("draining", False)
         
@@ -680,7 +696,7 @@ def _run_auto_fixes(ws_root: str, actions: list[dict[str, str]]) -> list[dict[st
                 
             elif act == "restart_daemon":
                 # 이전 데몬 중지 및 재시작 제안
-                from sari.mcp.cli import cmd_daemon_stop
+                from sari.mcp.cli.legacy_cli import cmd_daemon_stop
                 class Args:
                     daemon_host = ""
                     daemon_port = None
@@ -769,7 +785,7 @@ def execute_doctor(args: Dict[str, Any], db: Any = None, logger: Any = None, roo
 
     if include_port:
         daemon_host, daemon_port = get_daemon_address()
-        daemon_running = is_daemon_running(daemon_host, daemon_port)
+        daemon_running = probe_sari_daemon(daemon_host, daemon_port)
         if daemon_running:
             results.append(_result("Daemon Port", True, f"In use by running daemon {daemon_host}:{daemon_port}"))
         else:

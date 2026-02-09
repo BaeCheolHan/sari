@@ -8,7 +8,7 @@ def test_dockerfile_insight():
     """
     engine = ASTEngine()
     code = (
-        "FROM python:3.9-slim\n"
+        "FROM python:3.11-slim\n"
         "ENV SARI_HOME=/app\n"
         "EXPOSE 47800\n"
         "CMD [\"python\", \"-m\", \"sari\"]\n"
