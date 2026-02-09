@@ -7,6 +7,8 @@ class JavaScriptHandler(BaseHandler):
         n_type = node.type
         name = find_id(node)
         meta = {"vue_option": False, "arrow": False}
+        
+        # print(f"[DEBUG JS] Handling Node: {n_type}, Name: {name}")
 
         # Vue Options API
         if n_type in ("method_definition", "pair"):
@@ -32,7 +34,17 @@ class JavaScriptHandler(BaseHandler):
             kind = "class" if "class" in n_type or is_comp else "function"
             return kind, name, meta, True
 
-        # Arrow Function
+        # Lexical Declaration (const/let/var) & Arrow Functions
+        if n_type == "lexical_declaration":
+            # Drill down into variable_declarator to find the actual name
+            for child in node.children:
+                if child.type == "variable_declarator":
+                    d_name = find_id(child)
+                    if d_name:
+                        d_is_comp = d_name[0].isupper() and len(d_name) > 1
+                        kind = "class" if d_is_comp else "function"
+                        return kind, d_name, {"arrow": "=>" in get_t(child)}, True
+
         if n_type == "variable_declarator" and "=>" in get_t(node):
             kind = "class" if is_comp else "function"
             return kind, name, {"arrow": True}, True

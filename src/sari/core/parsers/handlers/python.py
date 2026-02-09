@@ -35,5 +35,6 @@ class PythonHandler(BaseHandler):
                             res["http_path"] = txt.split("(")[1].split(")")[0].strip("'\"")
                             if ".get" in txt: res["http_methods"] = ["GET"]
                             elif ".post" in txt: res["http_methods"] = ["POST"]
-                        except: pass
+                        except Exception: 
+                            pass # Still pass for minor parsing error but could log debug
         return res

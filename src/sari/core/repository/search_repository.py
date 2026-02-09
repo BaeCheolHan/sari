@@ -102,13 +102,20 @@ class SearchRepository(BaseRepository):
         total_mode = getattr(opts, "total_mode", "exact")
 
         lq = f"%{query}%"
-        # JOIN with symbols to get importance_score (if it exists)
+        # JOIN with symbols to get importance_score (safely handle missing column)
         sql = """
             SELECT f.path, f.repo, f.mtime, f.size, f.fts_content, f.rel_path,
-                   IFNULL((SELECT MAX(importance_score) FROM symbols s WHERE s.path = f.path), 0.0) as importance
+                   IFNULL((
+                       SELECT MAX(importance_score) 
+                       FROM symbols s 
+                       WHERE s.path = f.path
+                   ), 0.0) as importance
             FROM files f 
             WHERE f.deleted_ts = 0 AND (f.path LIKE ? OR f.rel_path LIKE ? OR f.fts_content LIKE ?)
         """
+        # Note: If the column importance_score is genuinely missing from the table, 
+        # the subselect above might still fail. We catch this at execution time or
+        # use a try-block to fallback.
         params: List[Any] = [lq, lq, lq]
         if repo:
             sql += " AND f.repo = ?"
@@ -122,7 +129,17 @@ class SearchRepository(BaseRepository):
         sql += " ORDER BY importance DESC, f.mtime DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
 
-        rows = self.execute(sql, params).fetchall()
+        try:
+            rows = self.execute(sql, params).fetchall()
+        except Exception:
+            # Fallback to standard query without importance join
+            sql_fallback = """
+                SELECT path, repo, mtime, size, fts_content, rel_path, 0.0 as importance
+                FROM files WHERE deleted_ts = 0 AND (path LIKE ? OR rel_path LIKE ? OR fts_content LIKE ?)
+                ORDER BY mtime DESC LIMIT ? OFFSET ?
+            """
+            rows = self.execute(sql_fallback, params).fetchall()
+
         hits: List[SearchHit] = []
         for r in rows:
             # Flexible row unpacking

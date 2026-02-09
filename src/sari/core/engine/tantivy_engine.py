@@ -70,15 +70,18 @@ class TantivyEngine:
         self.index_path.mkdir(parents=True, exist_ok=True)
         try:
             self._index = tantivy.Index(self._schema, path=str(self.index_path))
-            
-            # Priority 7: Register CJK Tokenizer (Optional but recommended)
-            # If lindera is available, we could register it here. 
-            # For now, we rely on dual-field (body + body_raw) for CJK resilience.
-        except:
+        except Exception as e:
+            if self.logger:
+                self.logger.warning(f"Failed to load Tantivy index at {self.index_path}, re-creating: {e}")
             # If corrupted, re-create
-            shutil.rmtree(self.index_path)
-            self.index_path.mkdir(parents=True, exist_ok=True)
-            self._index = tantivy.Index(self._schema, path=str(self.index_path))
+            try:
+                shutil.rmtree(self.index_path)
+                self.index_path.mkdir(parents=True, exist_ok=True)
+                self._index = tantivy.Index(self._schema, path=str(self.index_path))
+            except Exception as e2:
+                if self.logger:
+                    self.logger.error(f"Critical failure re-creating Tantivy index: {e2}")
+                raise
         
     def upsert_documents(self, docs: List[Dict[str, Any]]):
         if not tantivy or not self._index: return
@@ -157,14 +160,24 @@ class TantivyEngine:
         reload_interval = max(0, self.settings.ENGINE_RELOAD_MS) / 1000.0
         
         # Reader reload uses a separate lock to avoid multiple reloads in parallel
-        if reload_interval == 0 or (now - self._last_reload_ts) >= reload_interval:
-            with self._reload_lock:
-                # Re-check inside lock (double-checked locking pattern)
-                if reload_interval == 0 or (now - self._last_reload_ts) >= reload_interval:
-                    self._index.reload()
-                    self._last_reload_ts = now
+        try:
+            if reload_interval == 0 or (now - self._last_reload_ts) >= reload_interval:
+                with self._reload_lock:
+                    # Re-check inside lock (double-checked locking pattern)
+                    if reload_interval == 0 or (now - self._last_reload_ts) >= reload_interval:
+                        if hasattr(self._index, "reload"):
+                            self._index.reload()
+                        self._last_reload_ts = now
+        except Exception as e:
+            if self.logger:
+                self.logger.debug(f"Non-critical failure reloading Tantivy reader: {e}")
+            pass # Non-critical if reload fails once
 
-        searcher = self._index.searcher()
+        try:
+            searcher = self._index.searcher()
+        except Exception as e:
+            if self.logger: self.logger.error(f"Failed to acquire searcher: {e}")
+            return []
         
         # Build query: (body:query) AND (root_id:root_id)
         safe_q = self._escape_query(query or "")

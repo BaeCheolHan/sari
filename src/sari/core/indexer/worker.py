@@ -9,49 +9,25 @@ from sari.core.cjk import has_cjk as _has_cjk
 from sari.core.settings import settings
 from sari.core.parsers.factory import ParserFactory
 from sari.core.parsers.ast_engine import ASTEngine
+from sari.core.utils.path import PathUtils
 import hashlib
 import zlib
 from sari.core.utils import _redact, _sample_file, _printable_ratio, _is_minified, _normalize_engine_text
-
-def compute_hash(content: str) -> str:
-    """Compute SHA-1 hash for delta indexing."""
-    return hashlib.sha1(content.encode("utf-8", errors="ignore")).hexdigest()
-
-def compute_fast_signature(file_path: Path, size: int) -> str:
-    """Fast signature based on first/last chunks + size. O(1) read regardless of file size."""
-    try:
-        if size < 8192:
-            # Small file: just hash the whole thing
-            return compute_hash(file_path.read_text(encoding="utf-8", errors="ignore"))
-        
-        with open(file_path, "rb") as f:
-            header = f.read(4096)
-            f.seek(-4096, 2) # SEEK_END
-            footer = f.read(4096)
-            # Include size in hash to prevent collision on same content at different positions
-            return hashlib.sha1(header + footer + str(size).encode()).hexdigest()
-    except Exception:
-        return ""
-
 from sari.core.models import IndexingResult
 
 def compute_hash(content: str) -> str:
-    """Compute SHA-1 hash for delta indexing."""
     return hashlib.sha1(content.encode("utf-8", errors="ignore")).hexdigest()
 
 def compute_fast_signature(file_path: Path, size: int) -> str:
-    """Fast signature based on first/last chunks + size. O(1) read regardless of file size."""
     try:
         if size < 8192:
             return compute_hash(file_path.read_text(encoding="utf-8", errors="ignore"))
-        
         with open(file_path, "rb") as f:
             header = f.read(4096)
             f.seek(-4096, 2)
             footer = f.read(4096)
             return hashlib.sha1(header + footer + str(size).encode()).hexdigest()
-    except Exception:
-        return ""
+    except Exception: return ""
 
 class IndexWorker:
     def __init__(self, cfg, db, logger, extractor_cb, settings_obj=None):
@@ -68,7 +44,7 @@ class IndexWorker:
     def process_file_task(self, root: Path, file_path: Path, st: os.stat_result, scan_ts: int, now: float, excluded: bool, root_id: Optional[str] = None, force: bool = False) -> Optional[IndexingResult]:
         try:
             db_path = self._encode_db_path(root, file_path, root_id=root_id)
-            rel_to_root = str(file_path.relative_to(root))
+            rel_to_root = PathUtils.to_relative(str(file_path), str(root))
             
             # 1. Delta Check (Metadata)
             prev = self.db.get_file_meta(db_path)
@@ -143,7 +119,8 @@ class IndexWorker:
         except Exception as e:
             if isinstance(e, (FileNotFoundError, OSError)) and getattr(e, "errno", None) == 2:
                 return None
-            if self.logger: self.logger.error(f"Worker failure: {file_path} -> {e}")
+            if self.logger: 
+                self.logger.error(f"Worker failure: {file_path} -> {e}", exc_info=True)
             return None
 
     def _derive_repo_label(self, root: Path, file_path: Path, rel_to_root: str) -> str:
@@ -158,7 +135,8 @@ class IndexWorker:
             self._git_root_cache[parent] = git_root
 
         if git_root: return Path(git_root).name
-        if os.sep in rel_to_root: return rel_to_root.split(os.sep, 1)[0]
+        # Fallback using PathUtils to avoid separator issues
+        if "/" in rel_to_root: return rel_to_root.split("/", 1)[0]
         return Path(root).name or "root"
 
     def _skip_result(self, db_path, path, st, scan_ts, reason, root_id=None) -> IndexingResult:
@@ -185,34 +163,21 @@ class IndexWorker:
                 root_id = WorkspaceManager.root_id_for_workspace(str(root))
             except Exception:
                 root_id = "default_root"
-        try:
-            rel = file_path.relative_to(root).as_posix()
-        except ValueError:
-            rel = file_path.name # Fallback for non-relative paths during tests
+        
+        # Use PathUtils for safe relative calculation
+        rel = PathUtils.to_relative(str(file_path), str(root))
+        if not rel: rel = file_path.name
+        
         return f"{root_id}/{rel}"
 
-    def _merge_symbols(self, base: List[Tuple], extra: List[Tuple]) -> List[Tuple]:
-        seen = set()
-        out: List[Tuple] = []
-        # Index 3 is 'name', Index 5 is 'line' in standard format
-        for s in base + extra:
-            key = (s[3], s[5])
-            if key in seen: continue
-            seen.add(key)
-            out.append(s)
-        return out
-
     def _ast_cache_get(self, path: str):
-        if self._ast_cache_max <= 0:
-            return None
+        if self._ast_cache_max <= 0: return None
         tree = self._ast_cache.get(path)
-        if tree is not None:
-            self._ast_cache.move_to_end(path)
+        if tree is not None: self._ast_cache.move_to_end(path)
         return tree
 
     def _ast_cache_put(self, path: str, tree: Any) -> None:
-        if self._ast_cache_max <= 0:
-            return
+        if self._ast_cache_max <= 0: return
         self._ast_cache[path] = tree
         self._ast_cache.move_to_end(path)
         while len(self._ast_cache) > self._ast_cache_max:

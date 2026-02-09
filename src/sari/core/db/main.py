@@ -1,450 +1,313 @@
 import sqlite3
-import logging
 import time
+import logging
+import os
 import zlib
 import threading
-import os
-import json
-from typing import List, Dict, Any, Optional, Iterable, Tuple
-
-try:
-    from peewee import SqliteDatabase, fn, Proxy
-    from .models import db_proxy, Root, File, Symbol, Snippet, Context
-    HAS_PEEWEE = True
-except ImportError:
-    HAS_PEEWEE = False
-    db_proxy = None
-
+from typing import List, Dict, Any, Optional, Tuple, Iterable
+from peewee import SqliteDatabase, OperationalError, IntegrityError
+from .models import (
+    db_proxy, Root, File, Symbol, FileDTO, IndexingResult, 
+    SnippetDTO, ContextDTO, FILE_COLUMNS, _to_dict
+)
 from .schema import init_schema
-from sari.core.repository.extra_repository import SnippetRepository, ContextRepository
-from sari.core.repository.symbol_repository import SymbolRepository
-from sari.core.repository.search_repository import SearchRepository
-from sari.core.repository.failed_task_repository import FailedTaskRepository
+from ..utils.path import PathUtils
+
+logger = logging.getLogger("sari.db")
 
 class LocalSearchDB:
-    def __init__(self, db_path: str, logger=None, journal_mode: str = "wal"):
+    def __init__(self, db_path: str, logger_obj: Optional[logging.Logger] = None, **kwargs):
         self.db_path = db_path
-        self.logger = logger or logging.getLogger("sari.db")
-        self.settings = None
+        self.logger = logger_obj or logger
         self.engine = None
-        self._swap_in_progress = threading.Event()
-        if not HAS_PEEWEE: return
-        dir_path = os.path.dirname(self.db_path)
-        if self.db_path not in (":memory:", "") and dir_path:
-            os.makedirs(dir_path, exist_ok=True)
-        self.db = SqliteDatabase(self.db_path, pragmas={
-            'journal_mode': journal_mode, 'synchronous': 'normal',
-            'busy_timeout': 60000, 'foreign_keys': 1
-        }, check_same_thread=False)
-        self.db.connect(reuse_if_open=True)
-        db_proxy.initialize(self.db)
-        with self.db.atomic(): init_schema(self.db.connection())
-        self._init_mem_staging()
         self._lock = threading.Lock()
-
-    def _wait_for_swap(self, timeout: float = 2.0) -> None:
-        if not self._swap_in_progress.is_set():
-            return
-        start = time.time()
-        while self._swap_in_progress.is_set():
-            if time.time() - start >= timeout:
-                if self.logger:
-                    self.logger.warning("DB swap wait timeout; proceeding with risk of stale data.")
-                break
-            time.sleep(0.01)
-
-    def set_engine(self, engine): self.engine = engine
-    def set_settings(self, settings): self.settings = settings
-
-    @property
-    def fts_enabled(self) -> bool:
-        """Check if FTS5 is supported by the SQLite library."""
         try:
-            conn = self.db.connection()
-            res = conn.execute("PRAGMA compile_options").fetchall()
-            options = [r[0] for r in res]
-            return "ENABLE_FTS5" in options
-        except Exception:
-            return False
+            self.db = SqliteDatabase(db_path, pragmas={
+                'journal_mode': kwargs.get('journal_mode', 'wal'),
+                'cache_size': -10000,
+                'foreign_keys': 1,
+                'ignore_check_constraints': 0,
+                'synchronous': 0,
+                'busy_timeout': 15000
+            })
+            db_proxy.initialize(self.db)
+            self.db.connect()
+            init_schema(self.db.connection())
+            self._init_mem_staging()
+        except Exception as e:
+            self.logger.error("Failed to initialize database: %s", e, exc_info=True)
+            raise
 
-    def create_staging_table(self, cur=None): self._ensure_staging()
-
-    @property
-    def snippets(self) -> SnippetRepository:
-        """Domain repository for code snippets."""
-        return SnippetRepository(self._read)
-
-    @property
-    def contexts(self) -> ContextRepository:
-        """Domain repository for knowledge contexts."""
-        return ContextRepository(self._read)
-
-    @property
-    def symbols(self) -> SymbolRepository:
-        """Domain repository for symbol analysis."""
-        return SymbolRepository(self._read)
-
-    @property
-    def search_repo(self) -> SearchRepository:
-        """Domain repository for search operations."""
-        return SearchRepository(self._read)
-
-    @property
-    def tasks(self) -> FailedTaskRepository:
-        """Domain repository for task management."""
-        return FailedTaskRepository(self._read)
-
-    def _snippet_repo(self) -> "SnippetRepository": return self.snippets
-    def _context_repo(self) -> "ContextRepository": return self.contexts
-    def _symbol_repo(self) -> "SymbolRepository": return self.symbols
-    def _search_repo(self) -> "SearchRepository": return self.search_repo
-    def _failed_task_repo(self) -> "FailedTaskRepository": return self.tasks
-
-    def register_writer_thread(self, thread_id: int) -> None:
-        """Allow external callers to register the current writer thread.
-
-        Peewee's threadlocal handling can be sensitive in multi-threaded callers.
-        We only track the id for compatibility with MCP tools.
-        """
-        self._writer_thread_id = thread_id
-
-    def get_read_connection(self) -> sqlite3.Connection:
-        return self._read
-
-    def get_symbol_fan_in_stats(self, symbol_names: List[str]) -> Dict[str, int]:
-        """Proxy to SymbolRepository for entropy analysis."""
-        return self.symbols.get_symbol_fan_in_stats(symbol_names)
-
-    def count_failed_tasks(self) -> Tuple[int, int]:
-        """Return total failed tasks and those with high retry count."""
-        try:
-            return self._failed_task_repo().count_failed_tasks()
-        except Exception:
-            return 0, 0
-
-    def _init_mem_staging(self):
+    def _init_mem_staging(self, force=True):
         try:
             conn = self.db.connection()
             dbs = [row[1] for row in conn.execute("PRAGMA database_list").fetchall()]
             if "staging_mem" not in dbs:
                 conn.execute("ATTACH DATABASE ':memory:' AS staging_mem")
+            if force:
+                conn.execute("DROP TABLE IF EXISTS staging_mem.files_temp")
             conn.execute("CREATE TABLE IF NOT EXISTS staging_mem.files_temp AS SELECT * FROM main.files WHERE 0")
-        except Exception: pass
+        except Exception as e:
+            self.logger.error("Failed to init mem staging: %s", e, exc_info=True)
+            raise
 
-    def _ensure_staging(self): self._init_mem_staging()
+    def _ensure_staging(self): 
+        try: self._init_mem_staging(force=False)
+        except Exception: self._init_mem_staging(force=True)
+
+    def create_staging_table(self, cur=None):
+        self._init_mem_staging(force=True)
 
     def upsert_root(self, root_id: str, root_path: str, real_path: str, **kwargs):
         with self.db.atomic():
             Root.insert(
-                root_id=root_id, root_path=root_path, real_path=real_path,
-                label=kwargs.get("label", root_path.split("/")[-1]),
+                root_id=root_id, root_path=PathUtils.normalize(root_path), real_path=PathUtils.normalize(real_path),
+                label=kwargs.get("label", PathUtils.normalize(root_path).split("/")[-1]),
                 updated_ts=int(time.time()), created_ts=int(time.time())
             ).on_conflict_replace().execute()
 
     def ensure_root(self, root_id: str, path: str):
-        with self.db.atomic():
-            Root.insert(
-                root_id=root_id,
-                root_path=path,
-                real_path=path,
-                label=path.split("/")[-1]
-            ).on_conflict_ignore().execute()        # DB에 저장
-        self.db.commit()
-
-    def list_snippets_by_tag(self, tag: str) -> List[Dict[str, Any]]:
-        """Return snippet rows matching a tag (most recent first)."""
-        try:
-            return self._snippet_repo().list_snippets_by_tag(tag)
-        except Exception:
-            return []
-
-    def get_context_by_topic(self, topic: str) -> Optional[Dict[str, Any]]:
-        """Return a single context row for a topic."""
-        try:
-            return self._context_repo().get_context_by_topic(topic)
-        except Exception:
-            return None
-
-    def search_contexts(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
-        if not query:
-            return []
-        try:
-            return self._context_repo().search_contexts(query, limit=limit)
-        except Exception:
-            return []
-
-    def upsert_context_tx(self, cur: sqlite3.Cursor, rows: Iterable[tuple]) -> int:
-        return self._context_repo().upsert_context_tx(cur, rows)
-
-    def upsert_snippet_tx(self, cur: sqlite3.Cursor, rows: Iterable[tuple]) -> int:
-        return self._snippet_repo().upsert_snippet_tx(cur, rows)
-
-    def update_snippet_location_tx(self, cur: sqlite3.Cursor, snippet_id: int, start: int, end: int, content: str,
-                                   content_hash: str, anchor_before: str, anchor_after: str, updated_ts: int) -> None:
-        self._snippet_repo().update_snippet_location_tx(
-            cur,
-            snippet_id=snippet_id,
-            start=start,
-            end=end,
-            content=content,
-            content_hash=content_hash,
-            anchor_before=anchor_before,
-            anchor_after=anchor_after,
-            updated_ts=updated_ts,
-        )
-
-    def list_snippet_versions(self, snippet_id: int) -> List[Dict[str, Any]]:
-        try:
-            return self._snippet_repo().list_snippet_versions(snippet_id)
-        except Exception:
-            return []
-
-    def search_snippets(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
-        if not query:
-            return []
-        try:
-            return self._snippet_repo().search_snippets(query, limit=limit)
-        except Exception:
-            return []
-
-    def upsert_files_turbo(self, rows: Iterable[Any]):
-        """Efficiently staging files into memory database. Now supports IndexingResult objects and raw tuples."""
-        self._ensure_staging()
-        conn = self.db.connection()
-        mapped = []
-        for r in rows:
-            if not r: continue
-            
-            # Convert IndexingResult or similar objects to tuples
-            if hasattr(r, "to_file_row"):
-                raw = r.to_file_row()
-            elif isinstance(r, tuple):
-                raw = r
-            else:
-                continue
-
-            base = [None] * 20
-            for i in range(min(len(raw), 20)): base[i] = raw[i]
-            
-            # Fill NOT NULL defaults for resilience
-            if base[0] is None: continue # Primary key must exist
-            base[1] = base[1] or os.path.basename(str(base[0])) # rel_path
-            base[2] = base[2] or "root" # root_id
-            base[3] = base[3] or ""     # repo
-            base[4] = base[4] or 0      # mtime
-            base[5] = base[5] or 0      # size
-            
-            if base[6] is None: base[6] = b""
-            elif isinstance(base[6], str): base[6] = base[6].encode("utf-8", errors="ignore")
-            
-            base[9] = base[9] or 0 # last_seen_ts
-            base[10] = base[10] or 0 # deleted_ts
-            mapped.append(tuple(base))
-            
-        if not mapped: return
-        try: 
-            placeholders = ",".join(["?"] * 20)
-            conn.executemany(f"INSERT OR REPLACE INTO staging_mem.files_temp VALUES ({placeholders})", mapped)
-            if conn.in_transaction: conn.commit()
-        except Exception as e:
-            if self.logger: self.logger.error("upsert_files_turbo failed: %s", e, exc_info=True)
-            raise
+        self.upsert_root(root_id, path, path)
 
     def upsert_files_tx(self, cur, rows: List[tuple]):
-        """Direct write to main table for testing or small batches."""
-        placeholders = ",".join(["?"] * 20)
-        mapped = []
+        self._file_repo(cur).upsert_files_tx(cur, rows)
+
+    def upsert_files_staging(self, cur, rows: List[tuple]):
+        self._ensure_staging()
+        col_names = ", ".join(FILE_COLUMNS)
+        placeholders = ",".join(["?"] * len(FILE_COLUMNS))
+        cur.executemany(f"INSERT OR REPLACE INTO staging_mem.files_temp({col_names}) VALUES ({placeholders})", rows)
+
+    def upsert_files_turbo(self, rows: Iterable[Any]):
+        conn = self.db.connection()
+        mapped_tuples = []
+        now = int(time.time())
         for r in rows:
-            base = [None] * 20
-            for i in range(min(len(r), 20)): base[i] = r[i]
-            if isinstance(base[6], str): base[6] = base[6].encode("utf-8", errors="ignore")
-            mapped.append(tuple(base))
-        sql = f"INSERT OR REPLACE INTO files VALUES ({placeholders})"
-        if cur: cur.executemany(sql, mapped)
-        else:
-            with self.db.atomic(): self.db.execute_sql(sql, mapped)
+            if not r: continue
+            try:
+                if hasattr(r, "to_file_row"): row_tuple = list(r.to_file_row())
+                else: row_tuple = list(r)
+                while len(row_tuple) < len(FILE_COLUMNS): row_tuple.append(None)
+                data = dict(zip(FILE_COLUMNS, row_tuple))
+                path = data.get("path")
+                if not path: continue
+                processed = {
+                    "path": PathUtils.normalize(path),
+                    "rel_path": data.get("rel_path") or os.path.basename(str(path)),
+                    "root_id": data.get("root_id") or "root",
+                    "repo": data.get("repo") or "",
+                    "mtime": int(data.get("mtime") or now),
+                    "size": int(data.get("size") or 0),
+                    "content": data.get("content") or b"",
+                    "hash": data.get("hash") or "",
+                    "fts_content": data.get("fts_content") or "",
+                    "last_seen_ts": int(data.get("last_seen_ts") or now),
+                    "deleted_ts": int(data.get("deleted_ts") or 0),
+                    "status": data.get("status") or "ok",
+                    "error": data.get("error"),
+                    "parse_status": data.get("parse_status") or "ok",
+                    "parse_error": data.get("parse_error"),
+                    "ast_status": data.get("ast_status") or "none",
+                    "ast_reason": data.get("ast_reason") or "none",
+                    "is_binary": int(data.get("is_binary") or 0),
+                    "is_minified": int(data.get("is_minified") or 0),
+                    "metadata_json": data.get("metadata_json") or "{}"
+                }
+                mapped_tuples.append(tuple(processed[col] for col in FILE_COLUMNS))
+            except Exception as e:
+                self.logger.error("Failed to map turbo row: %s", e); continue
+
+        if not mapped_tuples: return
+        try: 
+            self.upsert_files_staging(conn, mapped_tuples)
+            conn.commit()
+        except Exception as e:
+            self.logger.error("upsert_files_turbo commit failed: %s", e, exc_info=True); raise
 
     def finalize_turbo_batch(self):
-        """Atomic merge staged memory data into the main persistent database."""
         conn = self.db.connection()
         try:
-            if conn.in_transaction: conn.commit()
-            self._ensure_staging()
             res = conn.execute("SELECT count(*) FROM staging_mem.files_temp").fetchone()
             count = res[0] if res else 0
             if count == 0: return
             try:
-                # Use IMMEDIATE to lock the database early and prevent busy-waits
                 conn.execute("BEGIN IMMEDIATE TRANSACTION")
-                conn.execute("INSERT OR REPLACE INTO main.files SELECT * FROM staging_mem.files_temp")
+                cols = ", ".join(FILE_COLUMNS)
+                conn.execute(f"INSERT OR REPLACE INTO main.files({cols}) SELECT {cols} FROM staging_mem.files_temp")
                 conn.execute("DELETE FROM staging_mem.files_temp")
                 conn.execute("COMMIT")
-                if self.logger: self.logger.debug("Finalized turbo batch: %d files merged.", count)
+                self.update_stats()
             except Exception as te:
-                if self.logger: self.logger.error("Database merge failed: %s", te)
+                self.logger.error("Database merge failed: %s", te, exc_info=True)
                 try: conn.execute("ROLLBACK")
-                except: pass
+                except Exception: pass
                 raise te
-            finally:
-                try: conn.execute("PRAGMA foreign_keys = ON")
-                except: pass
         except Exception as e:
-            if self.logger: self.logger.error("Critical error in finalize_turbo_batch: %s", e)
-            raise
-    def upsert_symbols_tx(self, cur, rows: List[tuple], root_id: str = "root"):
-        if not rows:
-            return
+            self.logger.error("Critical error in finalize_turbo_batch: %s", e); raise
+
+    def update_stats(self):
         try:
-            if cur is None:
-                cur = self._write.cursor()
-            self._symbol_repo().upsert_symbols_tx(cur, rows)
-        except Exception as e:
-            if self.logger:
-                self.logger.error(f"Failed to upsert symbols: {e}")
-            raise
+            conn = self.db.connection()
+            conn.execute("UPDATE roots SET file_count = (SELECT COUNT(1) FROM files WHERE files.root_id = roots.root_id AND deleted_ts = 0)")
+            conn.execute("UPDATE roots SET symbol_count = (SELECT COUNT(1) FROM symbols WHERE symbols.root_id = roots.root_id)")
+            conn.commit()
+        except Exception as e: self.logger.error("Failed to update statistics: %s", e)
 
-    def search_files(self, query: str, limit: int = 50) -> List[Dict]:
-        lq = f"%{query}%"
-        return list(File.select().where((File.path ** lq) | (File.rel_path ** lq) | (File.fts_content ** lq)).where(File.deleted_ts == 0).limit(limit).dicts())
-
-    def search_symbols(self, query: str, limit: int = 20, **kwargs) -> List[Dict]:
-        lq = f"%{query}%"
-        q = (Symbol.select(Symbol, File.repo).join(File, on=(Symbol.path == File.path)).where((Symbol.name ** lq) | (Symbol.qualname ** lq)))
-        if kwargs.get("kinds"): q = q.where(Symbol.kind << kwargs.get("kinds"))
-        elif kwargs.get("kind"): q = q.where(Symbol.kind == kwargs.get("kind"))
-        if kwargs.get("repo"): q = q.where(File.repo == kwargs.get("repo"))
-        if kwargs.get("root_ids"): q = q.where(Symbol.root_id << kwargs.get("root_ids"))
-        return list(q.limit(limit).dicts())
-
-    def repo_candidates(self, q: str, limit: int = 3, root_ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
-        if not q:
-            return []
+    def get_repo_stats(self, root_ids: Optional[List[str]] = None) -> Dict[str, int]:
         try:
-            if self.engine and hasattr(self.engine, "repo_candidates"):
-                return self.engine.repo_candidates(q, limit=limit, root_ids=root_ids)
-            return self._search_repo().repo_candidates(q, limit=limit, root_ids=root_ids)
-        except Exception:
-            return []
+            query = Root.select(Root.label, Root.file_count)
+            if root_ids: query = query.where(Root.root_id << root_ids)
+            return {r.label: r.file_count for r in query}
+        except Exception: return self._file_repo().get_repo_stats(root_ids=root_ids)
 
-    def get_symbol_block(self, path: str, symbol_name: str) -> Optional[str]:
-        try:
-            loc = self._symbol_repo().get_symbol_range(path, symbol_name)
-            if not loc:
-                return None
-            start, end = loc
-            content = self.read_file(path)
-            if not content:
-                return None
-            lines = content.splitlines()
-            if 1 <= start <= len(lines):
-                return "\n".join(lines[start - 1 : end])
-            return None
-        except Exception:
-            return None
-
-    def read_file_raw(self, path: str) -> Optional[str]:
-        # Return raw content as text for tools expecting string.
-        return self.read_file(path)
-
-    def search_v2(self, opts: Any):
-        if self.engine and hasattr(self.engine, "search_v2"):
-            return self.engine.search_v2(opts)
-        return self._search_repo().search_v2(opts)
     def read_file(self, path: str) -> Optional[str]:
-        row = File.select(File.content).where(File.path == path).first()
+        # Critical: let OperationalError (corruption) bubble up!
+        db_path = self._resolve_db_path(path)
+        row = File.select(File.content).where(File.path == db_path).first()
         if not row: return None
         content = row.content
         if isinstance(content, bytes) and content.startswith(b"ZLIB\0"):
             try: content = zlib.decompress(content[5:])
-            except: return None
+            except Exception as de:
+                self.logger.error("Decompression failed for %s: %s", db_path, de)
+                return None
         if isinstance(content, bytes): return content.decode("utf-8", errors="ignore")
         return str(content)
+
+    def search_files(self, query: str, limit: int = 50) -> List[Dict]:
+        lq = f"%{query}%"
+        # No try-except here! Let the engine errors be seen.
+        return list(File.select().where((File.path ** lq) | (File.rel_path ** lq) | (File.fts_content ** lq)).where(File.deleted_ts == 0).limit(limit).dicts())
 
     def list_files(self, limit: int = 50, repo: Optional[str] = None, root_ids: Optional[List[str]] = None) -> List[Dict]:
         return self._file_repo().list_files(limit=limit, repo=repo, root_ids=root_ids)
 
-    def has_legacy_paths(self) -> bool:
-        """Check if database uses legacy path format (pre-multi-workspace)."""
-        return False
+    def get_file_meta(self, path: str) -> Optional[Tuple[int, int, str]]:
+        try: return self._file_repo().get_file_meta(self._resolve_db_path(path))
+        except Exception: return None
 
-    def update_last_seen_tx(self, cur, paths: List[str], ts: int) -> None:
-        """Update last_seen timestamp for given paths."""
+    def upsert_symbols_tx(self, cur, rows: List[tuple], root_id: str = "root"):
+        if not rows: return
+        if cur is None: cur = self.db.connection().cursor()
+        self._symbol_repo(cur).upsert_symbols_tx(cur, rows)
+
+    def upsert_snippet_tx(self, cur, rows: List[tuple]):
+        self._snippet_repo(cur).upsert_snippet_tx(cur, rows)
+
+    def list_snippets_by_tag(self, tag: str) -> List[SnippetDTO]:
+        return self._snippet_repo().list_snippets_by_tag(tag)
+
+    def upsert_context_tx(self, cur, rows: List[tuple]):
+        self._context_repo(cur).upsert_context_tx(cur, rows)
+
+    def search_contexts(self, query: str, limit: int = 20) -> List[ContextDTO]:
+        return self._context_repo().search_contexts(query, limit=limit)
+
+    def prune_stale_data(self, root_id: str, active_paths: List[str]):
+        with self.db.atomic():
+            if active_paths: File.delete().where((File.root == root_id) & (File.path.not_in(active_paths))).execute()
+            else: File.delete().where(File.root == root_id).execute()
+
+    def delete_path_tx(self, cur, path: str):
+        self._file_repo(cur).delete_path_tx(cur, path)
+
+    def update_last_seen_tx(self, cur, paths: List[str], ts: int):
         self._file_repo(cur).update_last_seen_tx(cur, paths, ts)
 
-    def get_repo_stats(self, root_ids: Optional[List[str]] = None) -> Dict[str, int]:
-        return self._file_repo().get_repo_stats(root_ids=root_ids)
+    def search_symbols(self, query: str, limit: int = 20, **kwargs) -> List[Dict]:
+        return [s.model_dump() for s in self._symbol_repo().search_symbols(query, limit=limit, **kwargs)]
+
+    def search_v2(self, opts: Any):
+        if self.engine and hasattr(self.engine, "search_v2"): return self.engine.search_v2(opts)
+        return self._search_repo().search_v2(opts)
+
+    def repo_candidates(self, q: str, limit: int = 3, root_ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        if self.engine and hasattr(self.engine, "repo_candidates"): return self.engine.repo_candidates(q, limit=limit, root_ids=root_ids)
+        return self._search_repo().repo_candidates(q, limit=limit, root_ids=root_ids)
+
+    def get_symbol_fan_in_stats(self, symbol_names: List[str]) -> Dict[str, int]:
+        return self._symbol_repo().get_symbol_fan_in_stats(symbol_names)
+
+    def has_legacy_paths(self) -> bool: return False
+    def set_engine(self, engine): self.engine = engine
+    
+    def swap_db_file(self, new_path: str):
+        if not new_path or not os.path.exists(new_path): return
+        conn = self.db.connection()
+        try:
+            conn.execute("ATTACH DATABASE ? AS snapshot", (new_path,))
+            with self.db.atomic():
+                for tbl in ["roots", "files", "symbols", "symbol_relations", "snippets", "failed_tasks", "embeddings"]:
+                    try:
+                        if tbl == "files":
+                            cols = ", ".join(FILE_COLUMNS)
+                            conn.execute(f"INSERT OR REPLACE INTO main.files({cols}) SELECT {cols} FROM snapshot.files")
+                        else: conn.execute(f"INSERT OR REPLACE INTO main.{tbl} SELECT * FROM snapshot.{tbl}")
+                    except Exception: pass
+            self.update_stats()
+        except Exception as e: self.logger.error("Failed to swap DB file: %s", e, exc_info=True); raise
+        finally:
+            try: conn.execute("DETACH DATABASE snapshot")
+            except Exception: pass
+
+    def get_connection(self): return self.db.connection()
+    def get_read_connection(self): 
+        conn = self.db.connection(); conn.row_factory = sqlite3.Row; return conn
+
+    @property
+    def _write(self): return self.db.connection()
+    @property
+    def _read(self): return self.get_read_connection()
+    def _get_conn(self): return self.db.connection()
+
+    @property
+    def files(self): return self._file_repo()
+    @property
+    def symbols(self): return self._symbol_repo()
+    @property
+    def snippets(self): return self._snippet_repo()
+    @property
+    def search_repo(self): return self._search_repo()
+    @property
+    def tasks(self):
+        from sari.core.repository.failed_task_repository import FailedTaskRepository
+        return FailedTaskRepository(self.db.connection())
+
+    def _resolve_db_path(self, path: str) -> str:
+        if os.path.isabs(path):
+            from sari.core.workspace import WorkspaceManager
+            root = WorkspaceManager.find_root_for_path(path)
+            if root:
+                rid = WorkspaceManager.root_id(root)
+                rel = PathUtils.to_relative(path, root)
+                return f"{rid}/{rel}"
+        return path
 
     def _file_repo(self, cur=None) -> "FileRepository":
         from sari.core.repository.file_repository import FileRepository
-        conn = cur.connection if cur else self._read
-        return FileRepository(conn)
+        return FileRepository(self._get_real_conn(cur))
 
-    def get_file_meta(self, path: str) -> Optional[Tuple[int, int, str]]:
-        return self._file_repo().get_file_meta(path)
+    def _symbol_repo(self, cur=None):
+        from sari.core.repository.symbol_repository import SymbolRepository
+        return SymbolRepository(self._get_real_conn(cur))
+
+    def _search_repo(self, cur=None):
+        from sari.core.repository.search_repository import SearchRepository
+        return SearchRepository(self._get_real_conn(cur))
+
+    def _snippet_repo(self, cur=None):
+        from sari.core.repository.extra_repository import SnippetRepository
+        return SnippetRepository(self._get_real_conn(cur))
+
+    def _context_repo(self, cur=None):
+        from sari.core.repository.extra_repository import ContextRepository
+        return ContextRepository(self._get_real_conn(cur))
+
+    def _get_real_conn(self, cur):
+        if cur is not None:
+            if hasattr(cur, "connection"): return cur.connection
+            if hasattr(cur, "execute"): return cur
+        return self.db.connection()
 
     def close(self): self.db.close()
     def close_all(self): self.close()
-    @property
-    def _read(self):
-        self._wait_for_swap()
-        conn = self.db.connection(); conn.row_factory = sqlite3.Row
-        return conn
-    @property
-    def _write(self):
-        self._wait_for_swap()
-        return self.db.connection()
-    def _get_conn(self):
-        self._wait_for_swap()
-        return self._read
-    def has_table_columns(self, table: str, columns: Iterable[str]) -> Tuple[bool, List[str]]:
-        try:
-            cur = self._read.execute(f"PRAGMA table_info({table})")
-            existing = {row[1] for row in cur.fetchall() if row and len(row) > 1}
-            missing = [c for c in columns if c not in existing]
-            return len(missing) == 0, missing
-        except Exception:
-            return False, list(columns)
-    def prune_stale_data(self, root_id: str, active_paths: List[str]):
-        if not active_paths: return
-        File.update(deleted_ts=int(time.time())).where(File.root_id == root_id, File.path.not_in(active_paths)).execute()
-
-    def swap_db_file(self, snapshot_path: str) -> None:
-        if not snapshot_path or not os.path.exists(snapshot_path):
-            raise FileNotFoundError(f"snapshot db not found: {snapshot_path}")
-        with self._lock:
-            self._swap_in_progress.set()
-            try:
-                try:
-                    self.db.close()
-                except Exception:
-                    pass
-                # Cleanup stale WAL/SHM for target path (can cause I/O errors)
-                for suffix in ("-wal", "-shm"):
-                    try:
-                        os.remove(self.db_path + suffix)
-                    except FileNotFoundError:
-                        pass
-                # Cleanup snapshot WAL/SHM before swap
-                for suffix in ("-wal", "-shm"):
-                    try:
-                        os.remove(snapshot_path + suffix)
-                    except FileNotFoundError:
-                        pass
-                os.replace(snapshot_path, self.db_path)
-                try:
-                    self.db = SqliteDatabase(self.db_path, pragmas={
-                        'journal_mode': 'wal', 'synchronous': 'normal',
-                        'busy_timeout': 60000, 'foreign_keys': 1
-                    }, check_same_thread=False)
-                    self.db.connect(reuse_if_open=True)
-                except Exception:
-                    # Fallback to DELETE mode to avoid WAL-related I/O errors on some FS
-                    self.db = SqliteDatabase(self.db_path, pragmas={
-                        'journal_mode': 'delete', 'synchronous': 'normal',
-                        'busy_timeout': 60000, 'foreign_keys': 1
-                    }, check_same_thread=False)
-                    self.db.connect(reuse_if_open=True)
-                db_proxy.initialize(self.db)
-                self._init_mem_staging()
-            finally:
-                self._swap_in_progress.clear()

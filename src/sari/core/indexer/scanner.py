@@ -124,7 +124,7 @@ class Scanner:
             try:
                 p = Path(entry.path)
                 rel = str(p.absolute().relative_to(root))
-            except:
+            except (ValueError, RuntimeError):
                 continue
 
             if entry.is_dir(follow_symlinks=follow_symlinks):
@@ -167,8 +167,12 @@ class Scanner:
                             excluded = True
                             break
                 
-                try: st = entry.stat(follow_symlinks=follow_symlinks)
-                except: continue
+                try:
+                    st = entry.stat(follow_symlinks=follow_symlinks)
+                except (PermissionError, OSError) as e:
+                    import logging
+                    logging.getLogger("sari.indexer.scanner").debug(f"Failed to stat {entry.path}: {e}")
+                    continue
 
                 # Include filter
                 if not self.include_all:

@@ -2,6 +2,31 @@ from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional, Dict, Any, Union, Tuple
 import time
 import json
+import logging
+
+logger = logging.getLogger("sari.models")
+
+# --- Single Source of Truth for DB Column Ordering ---
+# These must match schema.py EXACTLY.
+FILE_COLUMNS = [
+    "path", "rel_path", "root_id", "repo", "mtime", "size", "content", "hash", "fts_content", 
+    "last_seen_ts", "deleted_ts", "status", "error", "parse_status", "parse_error", 
+    "ast_status", "ast_reason", "is_binary", "is_minified", "metadata_json"
+]
+
+def _to_dict(row: Any) -> Dict[str, Any]:
+    if isinstance(row, dict): return row
+    try:
+        if hasattr(row, "keys"):
+            return {k: row[k] for k in row.keys()}
+    except Exception as e:
+        logger.debug("Row to dict conversion failed: %s", e)
+    
+    if isinstance(row, (list, tuple)) and len(row) == len(FILE_COLUMNS):
+        return dict(zip(FILE_COLUMNS, row))
+        
+    if hasattr(row, "__dict__"): return row.__dict__
+    return {}
 
 class SearchOptions(BaseModel):
     model_config = ConfigDict(frozen=True)
@@ -61,18 +86,18 @@ class FileDTO(BaseModel):
     mtime: int = 0
     size: int = 0
     content: Optional[Union[str, bytes]] = None
-    content_hash: str = ""
+    hash: str = ""
     fts_content: str = ""
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
     @classmethod
     def from_row(cls, row: Union[Dict, Any]) -> "FileDTO":
-        """Factory method to create DTO from DB row (sqlite3.Row or dict)."""
-        d = dict(row) if not isinstance(row, dict) else row
+        d = _to_dict(row)
         meta = {}
-        if d.get("metadata_json"):
-            try: meta = json.loads(d["metadata_json"])
-            except: pass
+        m_key = "metadata_json" if "metadata_json" in d else "meta_json"
+        if d.get(m_key):
+            try: meta = json.loads(d[m_key])
+            except Exception as e: logger.debug("FileDTO meta parse error: %s", e)
         
         return cls(
             path=d.get("path", ""),
@@ -82,68 +107,50 @@ class FileDTO(BaseModel):
             mtime=int(d.get("mtime", 0)),
             size=int(d.get("size", 0)),
             content=d.get("content"),
-            content_hash=d.get("content_hash", ""),
+            hash=d.get("hash", d.get("content_hash", "")),
             fts_content=d.get("fts_content", ""),
             metadata=meta
         )
-
-    def to_dict(self) -> Dict[str, Any]:
-        return self.model_dump()
 
 class SymbolDTO(BaseModel):
     symbol_id: str = ""
     path: str
     root_id: str = ""
+    repo: str = ""
     name: str
     kind: str
     line: int
     end_line: int = 0
     content: str = ""
-    parent_name: str = ""
+    parent_name: Optional[str] = ""
     qualname: str = ""
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
     @classmethod
     def from_row(cls, row: Union[Dict, Any]) -> "SymbolDTO":
-        d = dict(row) if not isinstance(row, dict) else row
+        d = _to_dict(row)
         meta = {}
-        if d.get("metadata"):
+        m_key = "meta_json" if "meta_json" in d else "metadata"
+        if d.get(m_key):
             try: 
-                m = d["metadata"]
+                m = d[m_key]
                 meta = json.loads(m) if isinstance(m, str) else m
-            except: pass
+            except Exception as e: logger.debug("SymbolDTO meta parse error: %s", e)
             
         return cls(
-            symbol_id=d.get("symbol_id", ""),
+            symbol_id=d.get("symbol_id", d.get("sid", "")),
             path=d.get("path", ""),
             root_id=d.get("root_id", ""),
+            repo=d.get("repo", ""),
             name=d.get("name", ""),
             kind=d.get("kind", ""),
             line=int(d.get("line", 0)),
             end_line=int(d.get("end_line", 0)),
             content=d.get("content", ""),
-            parent_name=d.get("parent_name", ""),
+            parent_name=d.get("parent", d.get("parent_name", "")),
             qualname=d.get("qualname", ""),
             metadata=meta
         )
-
-    def to_dict(self) -> Dict[str, Any]:
-        return self.model_dump()
-
-class RepoStat(BaseModel):
-    repo: str
-    file_count: int
-    last_updated: int = Field(default_factory=lambda: int(time.time()))
-
-class SymbolModel(BaseModel):
-    # Deprecated in favor of SymbolDTO, keeping for transition
-    name: str = ""
-    kind: str = ""
-    line: int = 0
-    end_line: int = 0
-    path: str = ""
-    root_id: str = ""
-    qualname: Optional[str] = ""
 
 class SnippetDTO(BaseModel):
     id: Optional[int] = None
@@ -165,11 +172,12 @@ class SnippetDTO(BaseModel):
 
     @classmethod
     def from_row(cls, row: Union[Dict, Any]) -> "SnippetDTO":
-        d = dict(row) if not isinstance(row, dict) else row
+        d = _to_dict(row)
         meta = {}
-        if d.get("metadata_json"):
-            try: meta = json.loads(d["metadata_json"])
-            except: pass
+        m_key = "metadata_json" if "metadata_json" in d else "meta_json"
+        if d.get(m_key):
+            try: meta = json.loads(d[m_key])
+            except Exception as e: logger.debug("SnippetDTO meta parse error: %s", e)
         return cls(
             id=d.get("id"),
             tag=d.get("tag", ""),
@@ -190,8 +198,7 @@ class SnippetDTO(BaseModel):
         )
 
 class IndexingResult(BaseModel):
-    """Result of a single file processing task."""
-    type: str = "changed" # unchanged, changed, new, deleted, skipped
+    type: str = "changed"
     path: str
     rel: str
     root_id: str = "root"
@@ -215,29 +222,30 @@ class IndexingResult(BaseModel):
     engine_doc: Optional[Dict[str, Any]] = None
 
     def to_file_row(self) -> Tuple:
-        """Convert to a 20-column tuple matching the 'files' table schema."""
-        return (
-            self.path,
-            self.rel,
-            self.root_id,
-            self.repo,
-            self.mtime,
-            self.size,
-            self.content,
-            self.content_hash,
-            self.fts_content,
-            self.scan_ts,
-            0, # deleted_ts
-            self.parse_status,
-            self.parse_reason,
-            self.ast_status,
-            self.ast_reason,
-            self.is_binary,
-            self.is_minified,
-            0, # unused
-            self.content_bytes,
-            self.metadata_json
-        )
+        """Dynamically build the tuple using FILE_COLUMNS SSOT to eliminate magic numbers."""
+        data = {
+            "path": self.path,
+            "rel_path": self.rel,
+            "root_id": self.root_id,
+            "repo": self.repo,
+            "mtime": self.mtime,
+            "size": self.size,
+            "content": self.content,
+            "hash": self.content_hash,
+            "fts_content": self.fts_content,
+            "last_seen_ts": self.scan_ts,
+            "deleted_ts": 0,
+            "status": "ok",
+            "error": None,
+            "parse_status": self.parse_status,
+            "parse_error": self.parse_reason,
+            "ast_status": self.ast_status,
+            "ast_reason": self.ast_reason,
+            "is_binary": self.is_binary,
+            "is_minified": self.is_minified,
+            "metadata_json": self.metadata_json
+        }
+        return tuple(data.get(col) for col in FILE_COLUMNS)
 
 class ContextDTO(BaseModel):
     id: Optional[int] = None
@@ -254,14 +262,16 @@ class ContextDTO(BaseModel):
 
     @classmethod
     def from_row(cls, row: Union[Dict, Any]) -> "ContextDTO":
-        d = dict(row) if not isinstance(row, dict) else row
+        d = _to_dict(row)
         
         def _parse_json_list(key):
             val = d.get(key)
             if not val: return []
             if isinstance(val, list): return val
             try: return json.loads(val)
-            except: return []
+            except Exception as e: 
+                logger.debug("ContextDTO json list parse error for %s: %s", key, e)
+                return []
 
         return cls(
             id=d.get("id"),

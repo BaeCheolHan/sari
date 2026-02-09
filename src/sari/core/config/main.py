@@ -76,8 +76,10 @@ class Config:
                 with open(cfg_path, "r") as f:
                     data = json.load(f)
                     data["workspace_root"] = root
-            except:
-                pass
+            except (json.JSONDecodeError, OSError) as e:
+                import logging
+                logging.getLogger("sari.config").warning(f"Failed to load config from {cfg_path}: {e}")
+                data = {}
         
         # db_path 검증
         db_path = data.get("db_path", "")

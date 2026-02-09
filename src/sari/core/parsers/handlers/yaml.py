@@ -29,7 +29,8 @@ class YAMLHandler(BaseHandler):
                             if val_node:
                                 val = get_t(val_node).strip()
                                 return "variable", val, {}, True
-                except: pass
+                except Exception:
+                    pass # Normal for non-k8s YAMLs
 
             return "variable", key, {}, True
             

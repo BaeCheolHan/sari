@@ -40,7 +40,7 @@ def execute_search_api_endpoints(args: Dict[str, Any], db: Any, roots: List[str]
     results = []
     for r in rows:
         try:
-            meta = json.loads(r["metadata"])
+            meta = json.loads(r["metadata"] or "{}")
             http_path = meta.get("http_path", "")
             if path_query in http_path or path_query == http_path:
                 results.append({
@@ -53,7 +53,9 @@ def execute_search_api_endpoints(args: Dict[str, Any], db: Any, roots: List[str]
                     "annotations": meta.get("annotations", []),
                     "snippet": r["content"]
                 })
-        except:
+        except (json.JSONDecodeError, KeyError) as e:
+            import logging
+            logging.getLogger("sari.mcp.tools").debug(f"Failed to parse metadata for {r['path']}: {e}")
             continue
 
     def build_pack() -> str:
