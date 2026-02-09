@@ -6,6 +6,7 @@ import threading
 import multiprocessing
 import tempfile
 import concurrent.futures
+from collections import OrderedDict
 from typing import List, Optional, Dict, Any
 from pathlib import Path
 from sari.core.config.main import Config
@@ -13,7 +14,10 @@ from sari.core.db.main import LocalSearchDB
 from .worker import IndexWorker
 from sari.core.workspace import WorkspaceManager
 
+from sari.core.models import IndexingResult
+
 def _scan_to_db(config: Config, db: LocalSearchDB, logger: logging.Logger) -> Dict[str, Any]:
+    """Core scanning logic that processes files and stores results in the database."""
     status = {
         "scan_started_ts": int(time.time()),
         "scan_finished_ts": 0,
@@ -26,19 +30,21 @@ def _scan_to_db(config: Config, db: LocalSearchDB, logger: logging.Logger) -> Di
     worker = IndexWorker(config, db, logger, None)
     max_workers = os.cpu_count() or 4
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+    
     try:
-        all_files = []
-        for root in config.workspace_roots:
-            rid = WorkspaceManager.root_id(root)
-            db.ensure_root(rid, str(root))
-            for path in Path(root).rglob("*"):
-                if path.is_file() and config.should_index(str(path)):
-                    all_files.append((root, path, rid))
+        def _get_files_generator():
+            """Generator to yield files without loading everything into memory."""
+            for root in config.workspace_roots:
+                rid = WorkspaceManager.root_id(root)
+                db.ensure_root(rid, str(root))
+                for path in Path(root).rglob("*"):
+                    if path.is_file() and config.should_index(str(path)):
+                        yield root, path, rid
 
-        status["scanned_files"] = len(all_files)
         futures = []
         now = int(time.time())
-        for root, path, rid in all_files:
+        for root, path, rid in _get_files_generator():
+            status["scanned_files"] += 1
             try:
                 st = path.stat()
                 futures.append(executor.submit(
@@ -52,69 +58,55 @@ def _scan_to_db(config: Config, db: LocalSearchDB, logger: logging.Logger) -> Di
         all_symbols = []
         for future in concurrent.futures.as_completed(futures):
             try:
-                res = future.result()
-                if res and res.get("type") in ("changed", "new"):
+                res: Optional[IndexingResult] = future.result()
+                if not res:
+                    continue
+                
+                if res.type in ("changed", "new"):
                     status["indexed_files"] += 1
-                    file_row = (
-                        res.get("path", ""),
-                        res.get("rel", ""),
-                        res.get("root_id", "root"),
-                        res.get("repo", ""),
-                        res.get("mtime", 0),
-                        res.get("size", 0),
-                        res.get("content", ""),
-                        res.get("content_hash", ""),
-                        res.get("fts_content", ""),
-                        res.get("scan_ts", 0),
-                        0,
-                        res.get("parse_status", "ok"),
-                        res.get("parse_reason", ""),
-                        res.get("ast_status", "skipped"),
-                        res.get("ast_reason", ""),
-                        res.get("is_binary", 0),
-                        res.get("is_minified", 0),
-                        0,
-                        res.get("content_bytes", 0),
-                        res.get("metadata_json", "{}"),
-                    )
-                    file_rows.append(file_row)
+                    file_rows.append(res.to_file_row())
 
-                    symbols = res.get("symbols", [])
-                    if symbols:
-                        root_id = res.get("root_id", "root")
-                        augmented_symbols = []
-                        for s in symbols:
+                    if res.symbols:
+                        root_id = res.root_id
+                        for s in res.symbols:
                             if len(s) >= 11:
-                                augmented_symbols.append((
-                                    s[10],
-                                    s[0],
+                                # Standard Symbol Tuple Mapping:
+                                # sid, path, root_id, name, kind, line, end, content, parent, meta, doc, qual
+                                all_symbols.append((
+                                    s[10], # sid
+                                    s[0],  # path
                                     root_id,
-                                    s[1],
-                                    s[2],
-                                    s[3],
-                                    s[4],
-                                    s[5],
-                                    s[6],
-                                    s[7],
-                                    s[8],
-                                    s[9],
+                                    s[1],  # name
+                                    s[2],  # kind
+                                    s[3],  # line
+                                    s[4],  # end_line
+                                    s[5],  # content
+                                    s[6],  # parent_name
+                                    s[7],  # metadata_json
+                                    s[8],  # docstring
+                                    s[9],  # qualname
                                 ))
-                        all_symbols.extend(augmented_symbols)
-                        status["symbols_extracted"] += len(symbols)
+                        status["symbols_extracted"] += len(res.symbols)
             except Exception as e:
                 status["errors"] += 1
                 if logger:
-                    logger.error(f"Error processing future result: {e}")
+                    logger.error(f"Async result processing failed: {e}")
 
+        # Batch database updates
         if file_rows:
             db.upsert_files_turbo(file_rows)
         db.finalize_turbo_batch()
+        
         if all_symbols:
+            # Deduplicate symbols before insertion to avoid UNIQUE constraint violations
+            # Symbol tuple: (sid, path, root_id, name, kind, line, ...)
+            # We use the full tuple as key for deduplication
+            unique_symbols = list(OrderedDict.fromkeys(all_symbols))
             try:
-                db.upsert_symbols_tx(None, all_symbols)
+                db.upsert_symbols_tx(None, unique_symbols)
             except Exception as e:
-                if logger:
-                    logger.error(f"Error storing symbols: {e}")
+                if logger: logger.error(f"Failed to store extracted symbols: {e}")
+        
         status["scan_finished_ts"] = int(time.time())
         status["index_version"] = str(status["scan_finished_ts"])
         return status

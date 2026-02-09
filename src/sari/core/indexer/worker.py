@@ -33,6 +33,26 @@ def compute_fast_signature(file_path: Path, size: int) -> str:
     except Exception:
         return ""
 
+from sari.core.models import IndexingResult
+
+def compute_hash(content: str) -> str:
+    """Compute SHA-1 hash for delta indexing."""
+    return hashlib.sha1(content.encode("utf-8", errors="ignore")).hexdigest()
+
+def compute_fast_signature(file_path: Path, size: int) -> str:
+    """Fast signature based on first/last chunks + size. O(1) read regardless of file size."""
+    try:
+        if size < 8192:
+            return compute_hash(file_path.read_text(encoding="utf-8", errors="ignore"))
+        
+        with open(file_path, "rb") as f:
+            header = f.read(4096)
+            f.seek(-4096, 2)
+            footer = f.read(4096)
+            return hashlib.sha1(header + footer + str(size).encode()).hexdigest()
+    except Exception:
+        return ""
+
 class IndexWorker:
     def __init__(self, cfg, db, logger, extractor_cb, settings_obj=None):
         self.cfg = cfg
@@ -43,208 +63,110 @@ class IndexWorker:
         self.ast_engine = ASTEngine()
         self._ast_cache = OrderedDict()
         self._ast_cache_max = self.settings.AST_CACHE_ENTRIES
-        self._git_top_level_cache: Dict[str, Optional[str]] = {}
+        self._git_root_cache: Dict[str, Optional[str]] = {}
 
-    def process_file_task(self, root: Path, file_path: Path, st: os.stat_result, scan_ts: int, now: float, excluded: bool, root_id: Optional[str] = None, force: bool = False) -> Optional[dict]:
+    def process_file_task(self, root: Path, file_path: Path, st: os.stat_result, scan_ts: int, now: float, excluded: bool, root_id: Optional[str] = None, force: bool = False) -> Optional[IndexingResult]:
         try:
-            rel_to_root = str(file_path.relative_to(root))
             db_path = self._encode_db_path(root, file_path, root_id=root_id)
-            repo = self._derive_repo_label(root, file_path, rel_to_root)
-            ext = file_path.suffix.lower()
-
-            # 1. Fast Metadata Check
+            rel_to_root = str(file_path.relative_to(root))
+            
+            # 1. Delta Check (Metadata)
             prev = self.db.get_file_meta(db_path)
-            # prev: (mtime, size, content_hash)
             if not force and prev and int(st.st_mtime) == int(prev[0]) and int(st.st_size) == int(prev[1]):
-                return {"type": "unchanged", "rel": db_path}
+                return IndexingResult(type="unchanged", path=str(file_path), rel=db_path)
 
-            # 2. Signature Check (Fast Skip if content matches despite mtime change)
+            # 2. Fast Signature Check
             size = st.st_size
             if not force and prev and size == int(prev[1]):
                 sig = compute_fast_signature(file_path, size)
                 if sig and sig == prev[2]:
-                    return {"type": "unchanged", "rel": db_path}
+                    return IndexingResult(type="unchanged", path=str(file_path), rel=db_path)
 
-            # 3. Content-based Delta Check
             if size > self.settings.MAX_PARSE_BYTES:
-                return self._skip_result(db_path, repo, st, scan_ts, "too_large", root_id=root_id)
+                return self._skip_result(db_path, str(file_path), st, scan_ts, "too_large", root_id=root_id)
 
+            # 3. Content Reading & Redaction
             content = file_path.read_text(encoding="utf-8", errors="ignore")
             if not content:
-                return self._skip_result(db_path, repo, st, scan_ts, "empty", root_id=root_id)
+                return self._skip_result(db_path, str(file_path), st, scan_ts, "empty", root_id=root_id)
 
             current_hash = compute_hash(content)
             if prev and prev[2] == current_hash:
-                # Content hasn't changed despite mtime update
-                return {"type": "unchanged", "rel": db_path}
+                return IndexingResult(type="unchanged", path=str(file_path), rel=db_path)
 
-            # 3. Actual Processing (Changed or New)
-            # 3. Actual Processing (Changed or New)
+            repo = self._derive_repo_label(root, file_path, rel_to_root)
             if self.settings.get_bool("REDACT_ENABLED", True):
                 content = _redact(content)
             
+            # 4. FTS and AST Processing
             enable_fts = self.settings.get_bool("ENABLE_FTS", True)
-            
-            # Normalize only if needed (for FTS or External Engine)
-            # Assuming if one is asking for FTS, they pay the cost. 
-            # If external engine is used, it usually needs body_text.
-            # We can't easily know if external engine is enabled here without passing it in.
-            # But usually ENABLE_FTS is the main heavy switch for embedded.
-            
-            normalized = ""
-            fts_content = ""
-            
-            # Optimization: Skip normalization if FTS is disabled AND we assume no external engine 
-            # (or we accept external engine gets raw content? No, engine needs normalized usually)
-            # For robustness, we check if we strictly want 0-cost.
-            # Let's perform normalization if either FTS is on OR we suspect engine usage.
-            # A safe heuristic: If ENABLE_FTS is False, we typically want raw speed. 
-            # But if we have an external engine, we might break it.
-            # Compromise: We check a new setting or just ENABLE_FTS. 
-            # Given the prompt, "embedded mode... 0-cost". Embedded means no external engine.
-            # So if ENABLE_FTS is False, we assume 0-cost is desired.
-            
-            if enable_fts: 
-                normalized = _normalize_engine_text(content)
-                
-                # Truncate for FTS index stability
-                fts_max = self.settings.get_int("FTS_MAX_BYTES", 1000000)
-                fts_content = normalized[:fts_max] if normalized else ""
-            else:
-                # If FTS disabled, we still might need normalized for 'engine_doc' if using Tantivy.
-                # However, calculating it kills the "0-cost" goal.
-                # If the user uses Tantivy, they likely accept the cost or typically enable FTS too.
-                # Use raw content as fallback or empty? 
-                # Let's calculate normalized lazy if needed? No complex logic.
-                # We will perform normalization ONLY if FTS is enabled.
-                # If usage of external engine with FTS=False is common, we might need a separate flag.
-                pass
+            normalized = _normalize_engine_text(content) if enable_fts else ""
+            fts_content = normalized[:self.settings.get_int("FTS_MAX_BYTES", 1000000)] if normalized else ""
 
             symbols, relations = [], []
             ast_status, ast_reason = "skipped", "disabled"
-            parse_start = time.time()
-            if size <= self.settings.MAX_AST_BYTES:
-                if self.extractor_cb:
-                    try:
-                        res = self.extractor_cb(db_path, content)
-                        if isinstance(res, tuple) and len(res) >= 2:
-                            symbols, relations = res
-                    except Exception:
-                        pass
-                
-                if self.ast_engine.enabled:
-                    lang = ParserFactory.get_language(ext)
-                    if lang:
-                        old_tree = self._ast_cache_get(db_path)
-                        tree = self.ast_engine.parse(lang, content, old_tree)
-                        if tree:
-                            ast_status, ast_reason = "ok", "none"
-                            self._ast_cache_put(db_path, tree)
-                            try:
-                                ts_symbols, ts_rels = self.ast_engine.extract_symbols(db_path, lang, content, tree=tree)
-                                if ts_symbols:
-                                    symbols = self._merge_symbols(symbols, ts_symbols)
-                                if ts_rels:
-                                    relations = list(set(relations + ts_rels))
-                            except Exception:
-                                pass
-                        else:
-                            ast_status, ast_reason = "failed", "parse_error"
+            if size <= self.settings.MAX_AST_BYTES and self.ast_engine.enabled:
+                lang = ParserFactory.get_language(file_path.suffix.lower())
+                if lang:
+                    tree = self.ast_engine.parse(lang, content, self._ast_cache_get(db_path))
+                    if tree:
+                        ast_status, ast_reason = "ok", "none"
+                        self._ast_cache_put(db_path, tree)
+                        ts_syms, ts_rels = self.ast_engine.extract_symbols(db_path, lang, content, tree=tree)
+                        symbols = ts_syms or []
+                        relations = ts_rels or []
                     else:
-                        ast_status, ast_reason = "skipped", "unsupported"
-            else:
-                ast_status, ast_reason = "skipped", "too_large"
-            parse_elapsed = time.time() - parse_start
+                        ast_status, ast_reason = "failed", "parse_error"
 
+            # 5. Storage & Result Assembly
             store_content = getattr(self.cfg, "store_content", True)
             stored_content = content if store_content else ""
-            metadata_json = "{}"
-            content_bytes = len(stored_content)
-            if not store_content:
-                metadata_json = '{"stored":false}'
-            elif self.settings.STORE_CONTENT_COMPRESS and stored_content:
-                level = max(1, min(9, self.settings.STORE_CONTENT_COMPRESS_LEVEL))
-                raw_bytes = stored_content.encode("utf-8", errors="ignore")
-                comp = zlib.compress(raw_bytes, level)
-                stored_content = b"ZLIB\0" + comp
-                content_bytes = len(raw_bytes)
-                metadata_json = f'{{"compressed":"zlib","orig_bytes":{content_bytes}}}'
+            metadata = {"stored": store_content}
             
-            # Re-check FTS content just in case
-            if not enable_fts:
-                fts_content = ""
+            if store_content and self.settings.STORE_CONTENT_COMPRESS:
+                raw_bytes = stored_content.encode("utf-8", errors="ignore")
+                stored_content = b"ZLIB\0" + zlib.compress(raw_bytes, self.settings.STORE_CONTENT_COMPRESS_LEVEL)
+                metadata["compressed"] = "zlib"
+                metadata["orig_bytes"] = len(raw_bytes)
 
-            return {
-                "type": "changed", "path": str(file_path), "rel": db_path, "repo": repo, "mtime": int(st.st_mtime), "size": size,
-                "content": stored_content, "content_hash": current_hash, "scan_ts": scan_ts,
-                "fts_content": fts_content,
-                "content_bytes": content_bytes, "metadata_json": metadata_json,
-                "symbols": symbols, "relations": relations,
-                "parse_elapsed": parse_elapsed,
-                "parse_status": "ok", "parse_reason": "none",
-                "ast_status": ast_status, "ast_reason": ast_reason,
-                "is_binary": 0, "is_minified": 0,
-                "root_id": root_id,
-                # Note: engine_doc might be incomplete if normalized is empty, but acceptable for 0-cost mode
-                "engine_doc": self._build_engine_doc(db_path, repo, rel_to_root, normalized, int(st.st_mtime), size)
-            }
+            return IndexingResult(
+                type="changed", path=str(file_path), rel=db_path, repo=repo, 
+                mtime=int(st.st_mtime), size=size, content=stored_content, 
+                content_hash=current_hash, scan_ts=scan_ts, fts_content=fts_content,
+                content_bytes=len(stored_content) if isinstance(stored_content, bytes) else len(str(stored_content)),
+                metadata_json=json.dumps(metadata),
+                symbols=symbols, relations=relations,
+                parse_status="ok", ast_status=ast_status, ast_reason=ast_reason,
+                root_id=root_id or "root",
+                engine_doc=self._build_engine_doc(db_path, repo, rel_to_root, normalized, int(st.st_mtime), size)
+            )
         except Exception as e:
-            if isinstance(e, FileNotFoundError) or (isinstance(e, OSError) and getattr(e, "errno", None) == 2):
-                # File disappeared between stat and read; treat as a benign race.
-                if self.logger:
-                    self.logger.info(f"Worker skipped missing file: {file_path}")
+            if isinstance(e, (FileNotFoundError, OSError)) and getattr(e, "errno", None) == 2:
                 return None
-            if self.logger:
-                self.logger.error(f"Worker failed for {file_path}: {e}")
+            if self.logger: self.logger.error(f"Worker failure: {file_path} -> {e}")
             return None
 
     def _derive_repo_label(self, root: Path, file_path: Path, rel_to_root: str) -> str:
-        # 1) Prefer real git top-level repo name when available.
-        git_top = self._git_top_level_for_file(file_path)
-        if git_top:
-            name = Path(git_top).name
-            if name:
-                return name
+        parent = str(file_path.parent.resolve())
+        if parent in self._git_root_cache:
+            git_root = self._git_root_cache[parent]
+        else:
+            try:
+                proc = subprocess.run(["git", "-C", parent, "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=False, timeout=0.5)
+                git_root = proc.stdout.strip() if proc.returncode == 0 else None
+            except Exception: git_root = None
+            self._git_root_cache[parent] = git_root
 
-        # 2) Non-git fallback: first workspace-relative directory name.
-        # This heuristic is often wrong for standard project roots (e.g. returns 'src').
-        if os.sep in rel_to_root:
-            return rel_to_root.split(os.sep, 1)[0]
+        if git_root: return Path(git_root).name
+        if os.sep in rel_to_root: return rel_to_root.split(os.sep, 1)[0]
+        return Path(root).name or "root"
 
-        # 3) Workspace root-level file fallback: workspace directory name.
-        ws_name = Path(root).name
-        return ws_name or "__root__"
-
-    def _git_top_level_for_file(self, file_path: Path) -> Optional[str]:
-        parent_key = str(file_path.parent.resolve())
-        if parent_key in self._git_top_level_cache:
-            return self._git_top_level_cache[parent_key]
-        try:
-            proc = subprocess.run(
-                ["git", "-C", parent_key, "rev-parse", "--show-toplevel", "--"],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=1.0,
-            )
-            top = proc.stdout.strip() if proc.returncode == 0 else None
-            self._git_top_level_cache[parent_key] = top or None
-            return top or None
-        except Exception:
-            self._git_top_level_cache[parent_key] = None
-            return None
-
-    def _skip_result(self, db_path, repo, st, scan_ts, reason, root_id=None):
-        return {
-            "type": "changed", "rel": db_path, "repo": repo, "mtime": int(st.st_mtime), "size": st.st_size,
-            "content": "", "scan_ts": scan_ts, "symbols": [], "relations": [],
-            "parse_status": "skipped", "parse_reason": reason,
-            "ast_status": "skipped", "ast_reason": reason,
-            "is_binary": 1 if reason == "binary" else 0,
-            "is_minified": 0,
-            "root_id": root_id,
-            "engine_doc": None
-        }
+    def _skip_result(self, db_path, path, st, scan_ts, reason, root_id=None) -> IndexingResult:
+        return IndexingResult(
+            type="changed", path=path, rel=db_path, mtime=int(st.st_mtime), size=st.st_size,
+            scan_ts=scan_ts, parse_status="skipped", parse_reason=reason,
+            is_binary=1 if reason == "binary" else 0, root_id=root_id or "root"
+        )
 
     def _build_engine_doc(self, doc_id, repo, rel_to_root, normalized_content, mtime, size):
         norm = normalized_content or ""

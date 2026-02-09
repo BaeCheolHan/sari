@@ -95,6 +95,6 @@ def test_context_snippet_smoke(db):
     )
     db._write.commit()
     rows = db.search_contexts("alpha", limit=5)
-    assert rows and rows[0]["topic"] == "topic-a"
+    assert rows and rows[0].topic == "topic-a"
     snippets = db.list_snippets_by_tag("tag1")
-    assert snippets and snippets[0]["tag"] == "tag1"
+    assert snippets and snippets[0].tag == "tag1"

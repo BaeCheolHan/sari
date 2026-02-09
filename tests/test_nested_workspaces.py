@@ -58,15 +58,11 @@ class TestNestedWorkspaces:
                 with patch.object(dr_mod, "get_registry_path", return_value=reg_file):
                     with patch("sari.core.workspace.WorkspaceManager.resolve_workspace_root", return_value=parent_path):
                         res = execute_doctor({})
-                        # If SARI_FORMAT is json, execute_doctor returns json text in content
-                        text = res["content"][0]["text"]
-                        data = json.loads(text)
-                        
-                        overlap_res = next(r for r in data["results"] if r["name"] == "Workspace Overlap")
+                        overlap_res = next(r for r in res.get("results", []) if r["name"] == "Workspace Overlap")
                         assert not overlap_res["passed"]
                         assert "Nesting detected" in overlap_res["error"]
                         
-                        rec = next(r for r in data["recommendations"] if r["name"] == "Workspace Overlap")
+                        rec = next(r for r in res.get("recommendations", []) if r["name"] == "Workspace Overlap")
                         assert "Remove nested workspaces" in rec["action"]
 
     def test_nested_roots_auto_dedup_default(self, nested_env):

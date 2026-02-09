@@ -41,22 +41,21 @@ class AsyncLocalSearchMCPServer(LocalSearchMCPServer):
         self._async_stdout_lock = asyncio.Lock()
 
     async def run(self) -> None:
-        """Async main loop."""
+        """Async main loop with improved lifecycle management."""
         self._log_debug("Sari Async MCP Server starting...")
         
-        # 1. Setup Async Transport
         loop = asyncio.get_running_loop()
         
-        # Setup stdin reader
+        # 1. Setup Async Transport
+        # Use _original_stdout if injected (main.py), else default to sys.stdout
+        original_stdout = getattr(self, "_original_stdout", sys.stdout)
+        
+        # Reader pipe setup
         reader = asyncio.StreamReader()
         protocol = asyncio.StreamReaderProtocol(reader)
         await loop.connect_read_pipe(lambda: protocol, sys.stdin)
         
-        # Setup stdout writer
-        # Use _original_stdout if injected, else sys.stdout
-        # Note: In main.py, _original_stdout is injected.
-        original_stdout = getattr(self, "_original_stdout", sys.stdout)
-        
+        # Writer pipe setup with flow control
         w_transport, w_protocol = await loop.connect_write_pipe(
             asyncio.streams.FlowControlMixin, 
             original_stdout
@@ -67,28 +66,25 @@ class AsyncLocalSearchMCPServer(LocalSearchMCPServer):
         self._async_transport = AsyncMcpTransport(reader, writer, allow_jsonl=True)
         self._async_transport.default_mode = "jsonl" if wire_format == "json" else "content-length"
         
-        # Capture main task for cancellation
         main_task = asyncio.current_task()
         
-        def _signal_handler():
-            self._log_debug("Received termination signal")
+        def _request_stop():
+            self._log_debug("Termination signal received.")
             self._stop.set()
-            if main_task:
+            if main_task and not main_task.done():
                 main_task.cancel()
                 
-        # Register signal handlers for graceful shutdown (prevent zombies)
-        # Note: add_signal_handler is not available on Windows
         if os.name != "nt":
-            try:
-                loop.add_signal_handler(signal.SIGTERM, _signal_handler)
-                loop.add_signal_handler(signal.SIGINT, _signal_handler)
-            except NotImplementedError:
-                pass
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                try:
+                    loop.add_signal_handler(sig, _request_stop)
+                except (NotImplementedError, ValueError):
+                    pass
         
         # 2. Start Worker Task
         worker_task = asyncio.create_task(self._worker_loop())
         
-        # 3. Read Loop
+        # 3. Main Message Loop
         try:
             while not self._stop.is_set():
                 res = await self._async_transport.read_message()
@@ -100,46 +96,39 @@ class AsyncLocalSearchMCPServer(LocalSearchMCPServer):
                 req["_sari_framing_mode"] = mode
                 
                 try:
-                    # Async put with timeout not directly supported by Queue.put
-                    # But wait_for can do it.
-                    await asyncio.wait_for(self._req_queue.put(req), timeout=0.1)
+                    # Enforce queue limit with a small timeout to prevent blocking the main loop
+                    await asyncio.wait_for(self._req_queue.put(req), timeout=0.2)
                 except asyncio.TimeoutError:
-                    # Queue full
                     msg_id = req.get("id")
                     if msg_id is not None:
                         error_resp = {
                             "jsonrpc": "2.0", 
                             "id": msg_id, 
-                            "error": {"code": -32003, "message": "Server overloaded"}
+                            "error": {"code": -32003, "message": "Server overloaded (Queue Full)"}
                         }
                         await self._async_transport.write_message(error_resp, mode=mode)
-                    self._log_debug(f"CRITICAL: Async Queue full, dropped {msg_id}")
-                except Exception as e:
-                    self._log_debug(f"Error putting to queue: {e}")
+                    self._log_debug(f"Queue full: dropped request {msg_id}")
                     
+        except asyncio.CancelledError:
+            self._log_debug("Main loop cancelled.")
         except Exception as e:
-            self._log_debug(f"CRITICAL in async run loop: {e}")
+            self._log_debug(f"Critical error in async loop: {e}")
         finally:
             self._stop.set()
-            # Cancel worker
+            
+            # Graceful worker shutdown
             worker_task.cancel()
             try:
-                await worker_task
-            except asyncio.CancelledError:
+                await asyncio.wait_for(worker_task, timeout=1.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
             
-            # Flush pending?
-            # Creating a new task to flush might be too late if loop closes.
-            # Best effort.
+            self.shutdown() # Synchronous executor shutdown
             
-            self.shutdown() # calls executor shutdown
-            
-            # Close transport
+            # Final transport cleanup
             try:
-                if self._async_transport and hasattr(self._async_transport, "close"):
-                    res = self._async_transport.close()
-                    if inspect.isawaitable(res):
-                        await res
+                if self._async_transport:
+                    await self._async_transport.close()
                 writer.close()
                 await writer.wait_closed()
             except Exception:
@@ -148,18 +137,16 @@ class AsyncLocalSearchMCPServer(LocalSearchMCPServer):
             self._log_debug("Sari Async MCP Server stopped.")
 
     async def _worker_loop(self) -> None:
-        """Async worker loop consuming requests."""
+        """Optimized async worker loop."""
         loop = asyncio.get_running_loop()
         while not self._stop.is_set():
             try:
-                # Wait for request
                 req = await self._req_queue.get()
             except asyncio.CancelledError:
                 break
             
             try:
-                # Run sync logic in thread pool
-                # handle_request executes tools, which might use DB (blocking)
+                # Offload heavy sync/blocking logic to the executor
                 resp = await loop.run_in_executor(self._executor, self.handle_request, req)
                 
                 if resp:
@@ -170,6 +157,6 @@ class AsyncLocalSearchMCPServer(LocalSearchMCPServer):
                          if self._async_transport:
                              await self._async_transport.write_message(resp, mode=mode)
             except Exception as e:
-                self._log_debug(f"Error in async worker: {e}")
+                self._log_debug(f"Worker error: {e}")
             finally:
                 self._req_queue.task_done()

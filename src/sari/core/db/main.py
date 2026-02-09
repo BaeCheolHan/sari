@@ -188,34 +188,37 @@ class LocalSearchDB:
             return []
 
     def upsert_files_turbo(self, rows: Iterable[tuple]):
+        """Efficiently staging files into memory database for batch processing."""
         self._ensure_staging()
         conn = self.db.connection()
-        placeholders = ",".join(["?"] * 20)
         mapped = []
         for r in rows:
+            if not r or len(r) < 1: continue
             base = [None] * 20
             for i in range(min(len(r), 20)): base[i] = r[i]
             
             # Fill NOT NULL defaults for resilience
             if base[0] is None: continue # Primary key must exist
-            if base[1] is None: base[1] = os.path.basename(str(base[0])) # rel_path
-            if base[2] is None: base[2] = "root" # root_id
-            if base[3] is None: base[3] = "" # repo
-            if base[4] is None: base[4] = 0 # mtime
-            if base[5] is None: base[5] = 0 # size
-            if base[6] is None: base[6] = b"" # content
-            elif isinstance(base[6], str): base[6] = base[6].encode("utf-8", errors="ignore")
-            # Other defaults
-            if base[9] is None: base[9] = 0 # last_seen_ts
-            if base[10] is None: base[10] = 0 # deleted_ts
+            base[1] = base[1] or os.path.basename(str(base[0])) # rel_path
+            base[2] = base[2] or "root" # root_id
+            base[3] = base[3] or ""     # repo
+            base[4] = base[4] or 0      # mtime
+            base[5] = base[5] or 0      # size
             
+            if base[6] is None: base[6] = b""
+            elif isinstance(base[6], str): base[6] = base[6].encode("utf-8", errors="ignore")
+            
+            base[9] = base[9] or 0 # last_seen_ts
+            base[10] = base[10] or 0 # deleted_ts
             mapped.append(tuple(base))
+            
+        if not mapped: return
         try: 
+            placeholders = ",".join(["?"] * 20)
             conn.executemany(f"INSERT OR REPLACE INTO staging_mem.files_temp VALUES ({placeholders})", mapped)
             if conn.in_transaction: conn.commit()
         except Exception as e:
-            if self.logger:
-                self.logger.error("upsert_files_turbo failed: %s", e)
+            if self.logger: self.logger.error("upsert_files_turbo failed: %s", e, exc_info=True)
             raise
 
     def upsert_files_tx(self, cur, rows: List[tuple]):
@@ -233,27 +236,31 @@ class LocalSearchDB:
             with self.db.atomic(): self.db.execute_sql(sql, mapped)
 
     def finalize_turbo_batch(self):
+        """Atomic merge staged memory data into the main persistent database."""
         conn = self.db.connection()
         try:
             if conn.in_transaction: conn.commit()
             self._ensure_staging()
             res = conn.execute("SELECT count(*) FROM staging_mem.files_temp").fetchone()
-            cnt = res[0] if res else 0
-            if cnt == 0: return
+            count = res[0] if res else 0
+            if count == 0: return
             try:
+                # Use IMMEDIATE to lock the database early and prevent busy-waits
                 conn.execute("BEGIN IMMEDIATE TRANSACTION")
                 conn.execute("INSERT OR REPLACE INTO main.files SELECT * FROM staging_mem.files_temp")
                 conn.execute("DELETE FROM staging_mem.files_temp")
                 conn.execute("COMMIT")
+                if self.logger: self.logger.debug("Finalized turbo batch: %d files merged.", count)
             except Exception as te:
+                if self.logger: self.logger.error("Database merge failed: %s", te)
                 try: conn.execute("ROLLBACK")
                 except: pass
                 raise te
             finally:
-                conn.execute("PRAGMA foreign_keys = ON")
+                try: conn.execute("PRAGMA foreign_keys = ON")
+                except: pass
         except Exception as e:
-            if self.logger:
-                self.logger.error(f"Failed to finalize turbo batch: {e}")
+            if self.logger: self.logger.error("Critical error in finalize_turbo_batch: %s", e)
             raise
     def upsert_symbols_tx(self, cur, rows: List[tuple], root_id: str = "root"):
         if not rows:

@@ -46,16 +46,12 @@ class TestDoctorSelfHealing:
 
         with patch.dict("os.environ", doctor_env):
             res = execute_doctor({"auto_fix": False})
-            data = json.loads(res["content"][0]["text"])
-            
-            daemon_res = next(r for r in data["results"] if r["name"] == "Sari Daemon")
+            daemon_res = next(r for r in res.get("results", []) if r["name"] == "Sari Daemon")
             assert not daemon_res["passed"]
             assert "stale registry entry" in daemon_res["error"]
             
             res = execute_doctor({"auto_fix": True})
-            data = json.loads(res["content"][0]["text"])
-            
-            fix_res = next(r for r in data["auto_fix"] if "Sari Daemon" in r["name"])
+            fix_res = next(r for r in res.get("auto_fix", []) if "Sari Daemon" in r["name"])
             assert fix_res["passed"]
             assert "pruned" in fix_res["error"]
 
@@ -67,9 +63,7 @@ class TestDoctorSelfHealing:
         with patch("sari.core.server_registry.ServerRegistry._load", side_effect=Exception("Corrupt")):
             with patch.dict("os.environ", doctor_env):
                 res = execute_doctor({"auto_fix": True})
-                data = json.loads(res["content"][0]["text"])
-                
-                fix_res = next(r for r in data["auto_fix"] if "Registry" in r["name"])
+                fix_res = next(r for r in res.get("auto_fix", []) if "Registry" in r["name"])
                 assert fix_res["passed"]
 
     def test_doctor_detects_version_mismatch(self, doctor_env):
@@ -79,9 +73,7 @@ class TestDoctorSelfHealing:
                 
                 with patch.dict("os.environ", doctor_env):
                     res = execute_doctor({"auto_fix": False})
-                    data = json.loads(res["content"][0]["text"])
-                    
-                    daemon_res = next(r for r in data["results"] if r["name"] == "Sari Daemon")
+                    daemon_res = next(r for r in res.get("results", []) if r["name"] == "Sari Daemon")
                     assert not daemon_res["passed"]
                     assert "Version mismatch" in daemon_res["error"]
 

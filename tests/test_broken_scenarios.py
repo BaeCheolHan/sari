@@ -49,8 +49,7 @@ class TestBrokenScenarios:
             mock_usage.return_value = (1000, 1000, 0)
             with patch.dict("os.environ", env):
                 res = execute_doctor({"include_disk": True})
-                data = json.loads(res["content"][0]["text"])
-                disk_res = next(r for r in data["results"] if r["name"] == "Disk Space")
+                disk_res = next(r for r in res.get("results", []) if r["name"] == "Disk Space")
                 assert not disk_res["passed"]
 
     def test_scenario_missing_dependencies(self, env):
@@ -58,8 +57,7 @@ class TestBrokenScenarios:
         with patch.dict("sys.modules", {"tantivy": None}):
             with patch.dict("os.environ", env):
                 res = execute_doctor({"include_db": True})
-                data = json.loads(res["content"][0]["text"])
-                dep_res = next(r for r in data["results"] if "Embedded Engine Module" in r["name"])
+                dep_res = next(r for r in res.get("results", []) if "Embedded Engine Module" in r["name"])
                 assert not dep_res["passed"]
 
     def test_scenario_registry_migration_v1(self, env):

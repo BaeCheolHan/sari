@@ -26,8 +26,8 @@ def test_snippet_upsert_tool_row(db):
     db._write.commit()
     rows = db.list_snippets_by_tag("tag1")
     assert rows
-    assert rows[0]["root_id"] == "root"
-    assert rows[0]["path"] == "root/src/app.py"
+    assert rows[0].root_id == "root"
+    assert rows[0].path == "root/src/app.py"
 
 
 def test_context_search(db):
@@ -37,4 +37,4 @@ def test_context_search(db):
     db._write.commit()
     rows = db.search_contexts("alpha", limit=5)
     assert rows
-    assert rows[0]["topic"] == "topic-a"
+    assert rows[0].topic == "topic-a"

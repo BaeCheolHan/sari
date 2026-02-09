@@ -67,6 +67,34 @@ def require_db_schema(db: Any, tool: str, table: str, columns: List[str]):
         lambda: {"error": {"code": ErrorCode.DB_ERROR.value, "message": msg}, "isError": True},
     )
 
+def get_data_attr(obj: Any, attr: str, default: Any = None) -> Any:
+    """Safe helper to get attribute from dict, Pydantic model, or object."""
+    if obj is None:
+        return default
+    if isinstance(obj, dict):
+        return obj.get(attr, default)
+    # Pydantic v2 or standard object
+    return getattr(obj, attr, default)
+
+def _get_env_any(key: str, default: str = "") -> str:
+    """Read environment variable with multiple prefixes."""
+    prefixes = ["SARI_", "CODEX_", "GEMINI_", ""]
+    for p in prefixes:
+        val = os.environ.get(p + key)
+        if val is not None:
+            return val
+    return default
+
+def _get_format() -> str:
+    """Determine the response format (pack or json)."""
+    fmt = _get_env_any("FORMAT", "pack").lower()
+    return "pack" if fmt == "pack" else "json"
+
+def _compact_enabled() -> bool:
+    """Check if compact JSON output is enabled."""
+    val = _get_env_any("RESPONSE_COMPACT", "1")
+    return val.strip().lower() in ("1", "true", "yes", "on")
+
 # --- Format Selection ---
 
 def mcp_response(
@@ -91,24 +119,25 @@ def mcp_response(
         else:
             # JSON mode (Legacy/Debug)
             data = json_func()
-
-            if _compact_enabled():
-                json_text = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
-            else:
-                json_text = json.dumps(data, ensure_ascii=False, indent=2)
+            compact = _compact_enabled()
+            
+            # Ensure we return a proper MCP content structure
+            json_text = json.dumps(data, ensure_ascii=False, 
+                                   separators=(",", ":") if compact else None,
+                                   indent=None if compact else 2)
 
             res = {"content": [{"type": "text", "text": json_text}]}
+            # Lift metadata to top-level for easier client processing if it's a dict
             if isinstance(data, dict):
-                try:
-                    for k, v in data.items():
+                for k, v in data.items():
+                    if k not in res: # Don't overwrite MCP reserved keys
                         res[k] = v
-                except Exception:
-                    pass # Fallback to base response if merge fails
             return res
     except Exception as e:
         import traceback
-        err_msg = str(e)
+        err_msg = f"Internal Error in {tool_name}: {str(e)}"
         stack = traceback.format_exc()
+        logger.error(err_msg, exc_info=True)
 
         if fmt == "pack":
             return {
@@ -116,11 +145,11 @@ def mcp_response(
                 "isError": True
             }
         else:
-            err_obj = {
-                "error": {"code": ErrorCode.INTERNAL.value, "message": err_msg, "trace": stack},
-                "isError": True
+            return {
+                "content": [{"type": "text", "text": json.dumps({"error": err_msg, "trace": stack})}],
+                "isError": True,
+                "error": {"code": ErrorCode.INTERNAL.value, "message": err_msg}
             }
-            return mcp_json(err_obj)
 
 
 def mcp_json(obj):
@@ -247,38 +276,39 @@ def _is_safe_relative_path(rel: str) -> bool:
 
 def resolve_db_path(input_path: str, roots: List[str]) -> Optional[str]:
     """
-    Accepts either db-path (root-xxxx/rel) or filesystem path.
-    Returns normalized db-path if allowed, else None.
+    Converts a filesystem path to a Sari DB path (root_id/relative_path).
+    Supports absolute path root_ids and handles nested workspaces using Longest Prefix Match.
     """
-    if not input_path:
+    if not input_path or not roots or not WorkspaceManager:
         return None
-    if "/" in input_path and input_path.startswith("root-"):
-        root_id, rel = input_path.split("/", 1)
-        if not _is_safe_relative_path(rel):
-            return None
-        if root_id in resolve_root_ids(roots):
-            return input_path
-        return None
-    if not WorkspaceManager:
-        return None
-    if input_path.startswith("root-") and "/" not in input_path:
-        return None
-    val = _get_env_any("FOLLOW_SYMLINKS", "0")
-    follow_symlinks = (val.strip().lower() in ("1", "true", "yes", "on"))
+
     try:
-        # Use realpath to resolve macOS /var -> /private/var and symlinks
+        # Normalize target path
         p = Path(os.path.expanduser(input_path)).resolve()
     except Exception:
         return None
 
-    for root in roots:
+    # Resolve all roots once to avoid redundant I/O and ensure accurate sorting
+    resolved_roots = []
+    for r in roots:
         try:
-            root_path = Path(root).expanduser().resolve()
+            resolved_roots.append(Path(r).expanduser().resolve())
+        except Exception:
+            continue
+
+    # Sort roots by number of path components (depth) descending to ensure specific match first
+    sorted_roots = sorted(resolved_roots, key=lambda x: len(x.parts), reverse=True)
+    
+    for root_path in sorted_roots:
+        try:
+            # Check if target is inside this root
             if p == root_path or root_path in p.parents:
                 rel = p.relative_to(root_path).as_posix()
-                # Ensure we use the NEW root_id format
+                if not _is_safe_relative_path(rel) and p != root_path:
+                    continue
+                # The root_id is the normalized absolute path of the workspace
                 rid = WorkspaceManager.root_id_for_workspace(str(root_path))
-                return f"{rid}/{rel}"
+                return f"{rid}/{rel}" if rel != "." else rid
         except Exception:
             continue
     return None
@@ -286,28 +316,36 @@ def resolve_db_path(input_path: str, roots: List[str]) -> Optional[str]:
 
 def resolve_fs_path(db_path: str, roots: List[str]) -> Optional[str]:
     """
-    Resolve db-path (root-xxxx/rel) to filesystem path using roots.
-    Returns absolute path if in scope, else None.
+    Resolves a Sari DB path back to a real filesystem path.
+    Instead of simple splitting, it matches against known active roots.
     """
-    if not db_path or not db_path.startswith("root-") or "/" not in db_path:
+    if not db_path or not roots or not WorkspaceManager:
         return None
-    if not WorkspaceManager:
-        return None
-    root_id, rel = db_path.split("/", 1)
-    if not _is_safe_relative_path(rel):
-        return None
-    allow_legacy = str(os.environ.get("SARI_ALLOW_LEGACY", "")).strip().lower() in {"1", "true", "yes", "on"}
+
+    # Normalize all active root IDs
+    active_root_map = {}
     for r in roots:
         try:
-            rid_new = WorkspaceManager.root_id_for_workspace(r)
-            rid_legacy = WorkspaceManager.root_id(r) if allow_legacy else ""
+            rid = WorkspaceManager.root_id_for_workspace(r)
+            active_root_map[rid] = Path(r).expanduser().resolve()
         except Exception:
             continue
-        if root_id not in {rid_new, rid_legacy}:
-            continue
-        root_path = Path(r).expanduser().resolve()
-        candidate = (root_path / rel).resolve()
-        if candidate == root_path or root_path in candidate.parents:
-            return str(candidate)
-        return None
+
+    # Sort root IDs by length descending to match the most specific one first
+    sorted_rids = sorted(active_root_map.keys(), key=len, reverse=True)
+
+    for rid in sorted_rids:
+        if db_path.startswith(rid):
+            # rid might be the whole db_path or a prefix followed by a slash
+            if len(db_path) == len(rid):
+                return str(active_root_map[rid])
+            elif db_path[len(rid)] == "/":
+                rel = db_path[len(rid) + 1:]
+                if not _is_safe_relative_path(rel):
+                    continue
+                candidate = (active_root_map[rid] / rel).resolve()
+                # Final safety check: ensure the resulting path is still inside the root
+                if candidate == active_root_map[rid] or active_root_map[rid] in candidate.parents:
+                    return str(candidate)
+    
     return None

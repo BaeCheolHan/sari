@@ -76,7 +76,7 @@ class SymbolRepository(BaseRepository):
         cur.executemany("DELETE FROM symbols WHERE path = ? AND root_id = ?", list(paths))
         cur.executemany(
             """
-            INSERT INTO symbols(symbol_id, path, root_id, name, kind, line, end_line, content, parent_name, metadata, docstring, qualname)
+            INSERT OR REPLACE INTO symbols(symbol_id, path, root_id, name, kind, line, end_line, content, parent_name, metadata, docstring, qualname)
             VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             normalized,
@@ -131,7 +131,7 @@ class SymbolRepository(BaseRepository):
         cur.executemany("DELETE FROM symbol_relations WHERE from_path = ? AND from_root_id = ?", list(paths))
         cur.executemany(
             """
-            INSERT INTO symbol_relations(from_path, from_root_id, from_symbol, from_symbol_id, to_path, to_root_id, to_symbol, to_symbol_id, rel_type, line)
+            INSERT OR REPLACE INTO symbol_relations(from_path, from_root_id, from_symbol, from_symbol_id, to_path, to_root_id, to_symbol, to_symbol_id, rel_type, line)
             VALUES(?,?,?,?,?,?,?,?,?,?)
             """,
             normalized,

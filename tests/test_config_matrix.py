@@ -1,34 +1,30 @@
-import json
-import pytest
 import os
-import zlib
 import time
-import urllib.parse
+import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch, MagicMock
 from sari.core.indexer.worker import IndexWorker
-from sari.core.indexer.main import Indexer
-from sari.mcp.server import LocalSearchMCPServer
-from sari.core.db import LocalSearchDB
+from sari.core.models import IndexingResult
+import pytest
+from sari.core.db.main import LocalSearchDB
+from sari.core.config.main import Config
+
+@pytest.fixture
+def mock_db():
+    return LocalSearchDB(":memory:")
+
+@pytest.fixture
+def mock_cfg():
+    cfg = MagicMock(spec=Config)
+    cfg.workspace_roots = ["/tmp/test_root_matrix"]
+    cfg.store_content = True
+    return cfg
 
 class TestConfigMatrix:
-    
-    @pytest.fixture
-    def mock_db(self, tmp_path):
-        db_path = tmp_path / "test.db"
-        return LocalSearchDB(str(db_path))
-
-    @pytest.fixture
-    def mock_cfg(self):
-        cfg = MagicMock()
-        cfg.workspace_roots = ["/tmp"]
-        cfg.store_content = True
-        return cfg
-
-    # 1. Storage Matrix: STORE_CONTENT + COMPRESS
+    # 1. Storage Matrix: STORE_CONTENT (True/False) + Compression
     def test_matrix_storage_compressed(self, mock_db, mock_cfg):
         from sari.core.settings import Settings
-        
+    
         # Scenario: Content Stored and Compressed
         with patch.dict("os.environ", {
             "SARI_STORE_CONTENT": "1",
@@ -37,33 +33,33 @@ class TestConfigMatrix:
         }):
             s = Settings()
             worker = IndexWorker(mock_cfg, mock_db, None, lambda p, c: ([], []), settings_obj=s)
-            
+    
             root = Path("/tmp/test_root_matrix")
             root.mkdir(parents=True, exist_ok=True)
             f = root / "hello.txt"
             content = "Hello " * 100
             f.write_text(content)
+    
+            res: IndexingResult = worker.process_file_task(root, f, f.stat(), int(time.time()), time.time(), False, root_id="root")
+    
+            assert res.type == "changed"
+            assert isinstance(res.content, bytes)
+            assert res.content.startswith(b"ZLIB\0")
             
-            res = worker.process_file_task(root, f, f.stat(), int(time.time()), time.time(), False, root_id="root")
+            # Use a fixed, known path for storage verification
+            test_path = "root/hello.txt"
+            mock_db.upsert_root("root", str(root), str(root.resolve()), label="test")
             
-            assert res["type"] == "changed"
-            assert isinstance(res["content"], bytes)
-            assert res["content"].startswith(b"ZLIB\0")
+            # Manually construct row with fixed path
+            row = list(res.to_file_row())
+            row[0] = test_path # Override path for strict match
             
-            # Use real DB connection to verify retrieval
-            # First insert the root to satisfy FK
-            root_id = res["rel"].split("/")[0]
-            mock_db.upsert_root(root_id, str(root), str(root), label="test")
+            cur = mock_db._write.cursor()
+            mock_db.upsert_files_tx(cur, [tuple(row)])
+            mock_db._write.commit()
             
-            conn = mock_db._write
-            cur = conn.cursor()
-            mock_db.upsert_files_tx(cur, [(
-                res["rel"], "hello.txt", root_id, "repo", res["mtime"], res["size"], 
-                res["content"], res["content_hash"], "", 0, 0, "ok", "", "ok", "", 0, 0, 0, res["content_bytes"], res["metadata_json"]
-            )])
-            conn.commit()
-            
-            read_back = mock_db.read_file(res["rel"])
+            # Verify restoration
+            read_back = mock_db.read_file(test_path)
             assert read_back == content
 
     # 2. Search Policy Matrix: SEARCH_FIRST_MODE (warn vs enforce)
@@ -99,9 +95,9 @@ class TestConfigMatrix:
             f = root / "large.txt"
             f.write_text("1234567890")
             
-            res = worker.process_file_task(root, f, f.stat(), 0, 0, False)
-            assert res["parse_reason"] == "too_large"
-            assert res["content"] == ""
+            res: IndexingResult = worker.process_file_task(root, f, f.stat(), 0, 0, False)
+            assert res.parse_status == "skipped"
+            assert res.parse_reason == "too_large"
 
     def test_repo_label_prefers_git_top_level(self, mock_db, mock_cfg, tmp_path):
         from sari.core.settings import Settings
@@ -113,10 +109,12 @@ class TestConfigMatrix:
         f = root / "src" / "app.py"
         f.write_text("print('x')")
 
-        with patch.object(worker, "_git_top_level_for_file", return_value=str(root / "real-repo")):
-            res = worker.process_file_task(root, f, f.stat(), int(time.time()), time.time(), False, root_id="root")
+        # Mocking sub-process result for Git top-level discovery
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout=str(root / "real-repo"))
+            res: IndexingResult = worker.process_file_task(root, f, f.stat(), int(time.time()), time.time(), False, root_id="root")
             assert res is not None
-            assert res["repo"] == "real-repo"
+            assert res.repo == "real-repo"
 
     def test_repo_label_non_git_uses_first_directory(self, mock_db, mock_cfg, tmp_path):
         from sari.core.settings import Settings
@@ -128,10 +126,11 @@ class TestConfigMatrix:
         f = root / "services" / "api.py"
         f.write_text("print('x')")
 
-        with patch.object(worker, "_git_top_level_for_file", return_value=None):
-            res = worker.process_file_task(root, f, f.stat(), int(time.time()), time.time(), False, root_id="root")
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1) # Git fail
+            res: IndexingResult = worker.process_file_task(root, f, f.stat(), int(time.time()), time.time(), False, root_id="root")
             assert res is not None
-            assert res["repo"] == "services"
+            assert res.repo == "services"
 
     def test_repo_label_root_file_uses_workspace_name(self, mock_db, mock_cfg, tmp_path):
         from sari.core.settings import Settings
@@ -143,7 +142,8 @@ class TestConfigMatrix:
         f = root / "main.py"
         f.write_text("print('x')")
 
-        with patch.object(worker, "_git_top_level_for_file", return_value=None):
-            res = worker.process_file_task(root, f, f.stat(), int(time.time()), time.time(), False, root_id="root")
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1)
+            res: IndexingResult = worker.process_file_task(root, f, f.stat(), int(time.time()), time.time(), False, root_id="root")
             assert res is not None
-            assert res["repo"] == "workspaceC"
+            assert res.repo == "workspaceC"

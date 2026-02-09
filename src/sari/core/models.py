@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field, ConfigDict
-from typing import List, Optional, Dict, Any, Union
+from typing import List, Optional, Dict, Any, Union, Tuple
 import time
 import json
 
@@ -185,6 +185,56 @@ class SnippetDTO(BaseModel):
             created_ts=int(d.get("created_ts", 0)),
             updated_ts=int(d.get("updated_ts", 0)),
             metadata=meta
+        )
+
+class IndexingResult(BaseModel):
+    """Result of a single file processing task."""
+    type: str = "changed" # unchanged, changed, new, deleted, skipped
+    path: str
+    rel: str
+    root_id: str = "root"
+    repo: str = ""
+    mtime: int = 0
+    size: int = 0
+    content: Optional[Union[str, bytes]] = None
+    content_hash: str = ""
+    fts_content: str = ""
+    scan_ts: int = 0
+    parse_status: str = "ok"
+    parse_reason: str = "none"
+    ast_status: str = "skipped"
+    ast_reason: str = ""
+    is_binary: int = 0
+    is_minified: int = 0
+    content_bytes: int = 0
+    metadata_json: str = "{}"
+    symbols: List[Any] = Field(default_factory=list)
+    relations: List[Any] = Field(default_factory=list)
+    engine_doc: Optional[Dict[str, Any]] = None
+
+    def to_file_row(self) -> Tuple:
+        """Convert to a 20-column tuple matching the 'files' table schema."""
+        return (
+            self.path,
+            self.rel,
+            self.root_id,
+            self.repo,
+            self.mtime,
+            self.size,
+            self.content,
+            self.content_hash,
+            self.fts_content,
+            self.scan_ts,
+            0, # deleted_ts
+            self.parse_status,
+            self.parse_reason,
+            self.ast_status,
+            self.ast_reason,
+            self.is_binary,
+            self.is_minified,
+            0, # unused
+            self.content_bytes,
+            self.metadata_json
         )
 
 class ContextDTO(BaseModel):

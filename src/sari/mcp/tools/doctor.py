@@ -802,14 +802,14 @@ def execute_doctor(args: Dict[str, Any], db: Any = None, logger: Any = None, roo
         "auto_fix": auto_fix_results,
     }
 
-    compact = str(os.environ.get("SARI_RESPONSE_COMPACT") or "1").strip().lower() not in {"0", "false", "no", "off"}
-    payload = json.dumps(output, ensure_ascii=False, separators=(",", ":")) if compact else json.dumps(output, ensure_ascii=False, indent=2)
     try:
-        from sari.mcp.tools._util import mcp_response, pack_header, pack_line, pack_encode_text
+        from sari.mcp.tools._util import mcp_response, pack_header, pack_line
     except Exception:
-        from _util import mcp_response, pack_header, pack_line, pack_encode_text
+        from _util import mcp_response, pack_header, pack_line
 
     def build_pack() -> str:
+        compact = str(os.environ.get("SARI_RESPONSE_COMPACT") or "1").strip().lower() not in {"0", "false", "no", "off"}
+        payload = json.dumps(output, ensure_ascii=False, separators=(",", ":") if compact else None, indent=None if compact else 2)
         lines = [pack_header("doctor", {}, returned=1)]
         lines.append(pack_line("t", single_value=payload))
         return "\n".join(lines)
@@ -817,7 +817,7 @@ def execute_doctor(args: Dict[str, Any], db: Any = None, logger: Any = None, roo
     return mcp_response(
         "doctor",
         build_pack,
-        lambda: {"content": [{"type": "text", "text": payload}]},
+        lambda: output, # Return raw dict, let mcp_response handle formatting
     )
 
 
