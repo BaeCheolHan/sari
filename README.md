@@ -18,62 +18,50 @@ Sari is an MCP server built for fast, local indexing and search across large cod
 
 ## 2. 설치 / Installation
 
-### 2.1 (KR) 권장: venv 설치
-Sari는 venv 환경에서 설치/실행하는 방식을 권장합니다.
-
-```bash
-uv venv .venv
-source .venv/bin/activate
-uv pip install sari
-```
-
-업데이트:
-```bash
-source .venv/bin/activate
-uv pip install -U sari
-```
-
-### 2.1 (EN) Recommended: venv install
-We recommend installing and running Sari inside a venv.
-
-```bash
-uv venv .venv
-source .venv/bin/activate
-uv pip install sari
-```
-
-Update:
-```bash
-source .venv/bin/activate
-uv pip install -U sari
-```
-
----
-
-### 2.2 (KR) 편리한 전역 설치: uv tool (추천)
-가상환경을 수동으로 관리하기 번거롭다면 `uv tool`을 사용하세요. 실행 파일만 전역 경로에 연결해줍니다.
+### 2.1 (KR) 권장: uv tool 설치 (가장 추천)
+Sari는 공용 도구이므로 `uv tool`을 통한 전역 설치를 강력히 권장합니다. 격리된 환경을 유지하면서도 실행 경로를 하나로 고정하여 모든 워크스페이스에서 편리하게 사용할 수 있습니다.
 
 ```bash
 uv tool install sari
 ```
 
-설치 후 다음 명령어로 **절대 경로**를 확인하세요 (MCP 설정에 필요).
+설치 후 다음 명령어로 **절대 경로**를 확인하세요.
 ```bash
 which sari
 # 예시: /Users/yourname/.local/bin/sari
 ```
 
-### 2.2 (EN) Global-like: uv tool (Recommended)
-Use `uv tool` for automatic management of the execution environment.
+### 2.1 (EN) Recommended: uv tool (Best for MCP)
+Since Sari is a utility used across multiple projects, we strongly recommend `uv tool`. It provides a **stable binary path** while keeping dependencies isolated.
 
 ```bash
 uv tool install sari
 ```
 
-After installation, find the **absolute path** of the binary:
+After installation, find the **absolute path** for your settings:
 ```bash
 which sari
 # Example: /Users/yourname/.local/bin/sari
+```
+
+---
+
+### 2.2 (KR) 선택 사항: venv 설치
+특정 프로젝트에만 종속시키고 싶을 때 사용합니다. 워크스페이스마다 별도 설치가 필요하며 MCP 설정 경로를 매번 관리해야 합니다.
+
+```bash
+uv venv .venv
+source .venv/bin/activate
+uv pip install sari
+```
+
+### 2.2 (EN) Optional: venv install
+Use this only if you want to lock Sari to a specific project. Note that you must manage the MCP `command` path whenever you switch projects.
+
+```bash
+uv venv .venv
+source .venv/bin/activate
+uv pip install sari
 ```
 
 ---

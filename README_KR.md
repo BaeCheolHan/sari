@@ -16,26 +16,28 @@ Sari는 다음을 제공합니다.
 
 ## 1. 설치 / Installation
 
-### 1.1 권장: venv 설치 (격리된 환경)
-가장 권장되는 방식입니다. 프로젝트 디렉토리 내에 가상환경을 생성하여 의존성 충돌을 방지합니다.
+### 1.1 권장: uv tool 설치 (가장 추천)
+Sari는 MCP 서버 도구이므로, 컴퓨터에 한 번만 설치하여 모든 프로젝트에서 공용으로 사용하는 것이 가장 효율적입니다. `uv tool`은 격리된 환경을 유지하면서도 실행 경로를 하나로 고정해줍니다.
 
-```bash
-uv venv .venv
-source .venv/bin/activate
-uv pip install sari
-```
-
-### 1.2 편리한 전역 설치: uv tool (추천)
-가상환경을 수동으로 관리하기 번거롭다면 `uv tool`을 사용하세요. 내부적으로는 격리된 환경을 쓰면서 실행 파일만 전역 경로에 연결해줍니다.
+*   **장점**: 중복 설치 방지, MCP 설정 경로(`command`) 고정, 어디서든 `sari` 명령어 사용 가능.
 
 ```bash
 uv tool install sari
 ```
 
-설치 후 다음 명령어로 **절대 경로**를 확인하세요. (MCP 설정에 필요합니다)
+설치 후 다음 명령어로 **절대 경로**를 확인하여 MCP 설정에 사용하세요.
 ```bash
 which sari
 # 예시 결과: /Users/yourname/.local/bin/sari
+```
+
+### 1.2 선택 사항: venv 설치 (프로젝트별 격리)
+특정 프로젝트에만 Sari를 종속시키고 싶을 때 사용합니다. 워크스페이스마다 별도로 설치해야 하므로 디스크 용량을 차지하며, MCP 설정의 `command` 경로를 매번 수정해야 하는 번거로움이 있습니다.
+
+```bash
+uv venv .venv
+source .venv/bin/activate
+uv pip install sari
 ```
 
 ---
