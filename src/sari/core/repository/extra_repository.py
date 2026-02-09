@@ -125,6 +125,31 @@ class SnippetRepository(BaseRepository):
 
 
 class ContextRepository(BaseRepository):
+    def upsert(self, data: Any) -> ContextDTO:
+        """High-level upsert for a single context. Accepts DTO or dict."""
+        from ..models import ContextDTO
+        import time
+        import json
+        
+        if isinstance(data, ContextDTO):
+            obj = data
+        else:
+            obj = ContextDTO(**data)
+            
+        now = int(time.time())
+        row = (
+            obj.topic, obj.content, 
+            json.dumps(obj.tags, ensure_ascii=False), json.dumps(obj.related_files, ensure_ascii=False),
+            obj.source, obj.valid_from, obj.valid_until,
+            1 if obj.deprecated else 0,
+            obj.created_ts or now, now
+        )
+        
+        cur = self.conn.cursor()
+        self.upsert_context_tx(cur, [row])
+        self.conn.commit()
+        return obj
+
     def upsert_context_tx(self, cur: sqlite3.Cursor, rows: Iterable[tuple]) -> int:
         rows_list = [list(r) for r in rows]
         if not rows_list:
@@ -165,26 +190,34 @@ class ContextRepository(BaseRepository):
         )
         return len(normalized)
 
-    def get_context_by_topic(self, topic: str) -> Optional[ContextDTO]:
-        row = self.execute(
-            """
+    def get_context_by_topic(self, topic: str, as_of: int = 0) -> Optional[ContextDTO]:
+        sql = """
             SELECT id, topic, content, tags_json, related_files_json, source, valid_from, valid_until, deprecated, created_ts, updated_ts
             FROM contexts WHERE topic = ?
-            """,
-            (topic,),
-        ).fetchone()
+        """
+        params = [topic]
+        if as_of:
+            sql += " AND deprecated = 0 AND (valid_from = 0 OR valid_from <= ?) AND (valid_until = 0 OR valid_until >= ?)"
+            params.extend([as_of, as_of])
+            
+        row = self.execute(sql, params).fetchone()
         return ContextDTO.from_row(row) if row else None
 
-    def search_contexts(self, query: str, limit: int = 20) -> List[ContextDTO]:
+    def search_contexts(self, query: str, limit: int = 20, as_of: int = 0) -> List[ContextDTO]:
         if not query:
             return []
         lq = f"%{query}%"
-        rows = self.execute(
-            """
+        sql = """
             SELECT id, topic, content, tags_json, related_files_json, source, valid_from, valid_until, deprecated, created_ts, updated_ts
-            FROM contexts WHERE topic LIKE ? OR content LIKE ? OR tags_json LIKE ?
-            ORDER BY updated_ts DESC LIMIT ?
-            """,
-            (lq, lq, lq, int(limit)),
-        ).fetchall()
+            FROM contexts WHERE (topic LIKE ? OR content LIKE ? OR tags_json LIKE ?)
+        """
+        params = [lq, lq, lq]
+        if as_of:
+            sql += " AND deprecated = 0 AND (valid_from = 0 OR valid_from <= ?) AND (valid_until = 0 OR valid_until >= ?)"
+            params.extend([as_of, as_of])
+            
+        sql += " ORDER BY updated_ts DESC LIMIT ?"
+        params.append(int(limit))
+        
+        rows = self.execute(sql, params).fetchall()
         return [ContextDTO.from_row(r) for r in rows]

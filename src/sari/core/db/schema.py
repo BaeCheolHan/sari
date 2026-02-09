@@ -5,7 +5,7 @@ from sari.core.settings import settings
 
 logger = logging.getLogger("sari.db.schema")
 
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
 
 def init_schema(conn: sqlite3.Connection):
     """Initialize database schema according to docs/reference/DB_SCHEMA.md (Redesign)."""
@@ -13,15 +13,26 @@ def init_schema(conn: sqlite3.Connection):
     
     # Check if schema_version exists
     cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'")
-    if not cur.fetchone():
+    row = cur.fetchone()
+    if not row:
         _create_all_tables(cur)
         cur.execute("INSERT INTO schema_version (version, applied_ts) VALUES (?, ?)", 
                     (CURRENT_SCHEMA_VERSION, int(time.time())))
+    else:
+        # Check for migration to v2 (importance_score)
+        cur.execute("SELECT version FROM schema_version LIMIT 1")
+        v = cur.fetchone()[0]
+        if v < 2:
+            try:
+                cur.execute("ALTER TABLE symbols ADD COLUMN importance_score REAL DEFAULT 0.0")
+                cur.execute("UPDATE schema_version SET version = 2")
+            except Exception: pass # Column might already exist
     
     # FTS Initialization (Depends on files.rel_path)
     _init_fts(cur)
 
 def _create_all_tables(cur: sqlite3.Cursor):
+    # ... (existing code remains same, but add column to initial creation)
     # 0. Migration Tracking
     cur.execute("""
         CREATE TABLE IF NOT EXISTS schema_version (

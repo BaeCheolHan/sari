@@ -13,12 +13,15 @@ def test_execute_search_basic():
     engine = MagicMock()
     roots = ["/tmp/ws"]
     hit = SearchHit(repo="repo1", path="path1", score=1.0, snippet="hi")
-    engine.search_v2.return_value = ([hit], {"total": 1, "total_mode": "exact"})
-    engine.status.return_value = MagicMock(engine_mode="embedded", engine_ready=True, index_version="v1")
+    
+    # Mock db.search_v2 as the tool now calls it directly via Facade
+    db.search_v2.return_value = ([hit], {"total": 1, "total_mode": "exact", "engine": "embedded"})
+    
     args = {"query": "test", "limit": 10}
     resp = execute_search(args, db, logger, roots, engine=engine)
-    assert "PACK1 tool=search ok=true" in resp["content"][0]["text"]
-    assert "r:path=path1 repo=repo1" in resp["content"][0]["text"]
+    text = resp["content"][0]["text"]
+    assert "PACK1 tool=search ok=true" in text
+    assert "r:path=path1 repo=repo1" in text
 
 def test_execute_list_files_summary():
     db = MagicMock()

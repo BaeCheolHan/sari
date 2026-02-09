@@ -1,8 +1,9 @@
 name: CI Gates
 
-on: pull_request
-    push:
-        branches: [main]
+on:
+  pull_request:
+  push:
+    branches: [main]
 
 jobs:
   critical-gates:
@@ -10,31 +11,28 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
       
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
           
-      - name: Install dependencies (Forced)
+      - name: Set up Python
+        run: uv python install 3.12
+      
+      - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install tree-sitter==0.21.3 tree-sitter-languages==1.10.2 tantivy==0.22.0
-          pip install -e . pytest pytest-asyncio pydantic-settings peewee watchdog psutil aiohttp uvicorn fastapi
+          uv pip install -e ".[test]"
           
       - name: Runtime Diagnostics
         run: |
-          python -c "import tree_sitter; import tree_sitter_languages; import tantivy; print('✅ All binary libs loaded')"
-          pip list
+          uv run python -c "import tree_sitter; import tree_sitter_python; import tantivy; print('✅ Modern binary libs loaded successfully')"
+          uv pip list
           
       - name: Run core stability gates
         run: |
-          export PYTHONPATH=$(pwd)/src
-          pytest -v \
-            tests/test_business_logic_smoke.py \
-            tests/test_core_resilience_deep.py \
-            tests/test_ast_intelligence.py
+          # Use uv run to ensure the virtualenv is used correctly
+          uv run pytest -v \
+            tests/test_stability.py \
+            tests/test_architecture_modern.py \
+            tests/test_symbol_algorithms.py

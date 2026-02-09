@@ -47,16 +47,15 @@ def execute_get_callers(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict
     if target_sid:
         sql = "SELECT from_path, from_symbol, from_symbol_id, line, rel_type FROM symbol_relations WHERE to_symbol_id = ?"
         params.append(target_sid)
-    elif "." in target_symbol: # Qualified name
-        sql = "SELECT from_path, from_symbol, from_symbol_id, line, rel_type FROM symbol_relations WHERE to_symbol = ?"
-        params.append(target_symbol) # In relations, we often store qualname as symbol name
     else:
+        # If no SID, match by name but be flexible with to_path
         sql = "SELECT from_path, from_symbol, from_symbol_id, line, rel_type FROM symbol_relations WHERE to_symbol = ?"
         params.append(target_symbol)
-
-    if target_path:
-        sql += " AND (to_path = ? OR to_path = '' OR to_path IS NULL)"
-        params.append(target_path)
+        
+        if target_path:
+            # Allow matching if to_path is unknown or matches exactly
+            sql += " AND (to_path = ? OR to_path = '' OR to_path IS NULL)"
+            params.append(target_path)
 
     if effective_root_ids:
         root_clause = " OR ".join(["from_path LIKE ?"] * len(effective_root_ids))

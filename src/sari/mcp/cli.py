@@ -47,11 +47,12 @@ from sari.core.config import Config
 from sari.core.db import LocalSearchDB
 from sari.core.daemon_resolver import resolve_daemon_address as get_daemon_address
 from sari.mcp.tools.grep_and_read import execute_grep_and_read
-from sari.mcp.tools.save_snippet import build_save_snippet
-from sari.mcp.tools.get_snippet import build_get_snippet
-from sari.mcp.tools.archive_context import build_archive_context
-from sari.mcp.tools.get_context import build_get_context
-from sari.mcp.tools.dry_run_diff import build_dry_run_diff
+from sari.mcp.tools.archive_context import execute_archive_context
+from sari.mcp.tools.get_context import execute_get_context
+from sari.mcp.tools.search import execute_search
+from sari.mcp.tools.save_snippet import execute_save_snippet
+from sari.mcp.tools.get_snippet import execute_get_snippet
+from sari.mcp.tools.dry_run_diff import execute_dry_run_diff
 
 
 DEFAULT_HOST = "127.0.0.1"
@@ -1043,7 +1044,7 @@ def cmd_get_snippet(args):
 def cmd_archive_context(args):
     db, roots, _ = _load_local_db(args.workspace)
     try:
-        payload = build_archive_context(
+        resp = execute_archive_context(
             {
                 "topic": args.topic,
                 "content": args.content,
@@ -1055,8 +1056,9 @@ def cmd_archive_context(args):
                 "deprecated": args.deprecated,
             },
             db,
-            indexer=None,
+            roots,
         )
+        payload = resp.get("payload", {})
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
     finally:
@@ -1066,7 +1068,12 @@ def cmd_archive_context(args):
 def cmd_get_context(args):
     db, roots, _ = _load_local_db(args.workspace)
     try:
-        payload = build_get_context({"topic": args.topic or "", "query": args.query or "", "limit": args.limit, "as_of": args.as_of or ""}, db)
+        resp = execute_get_context(
+            {"topic": args.topic or "", "query": args.query or "", "limit": args.limit, "as_of": args.as_of or ""}, 
+            db,
+            roots
+        )
+        payload = resp.get("payload", {})
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
     finally:

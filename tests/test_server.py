@@ -92,8 +92,8 @@ def test_server_run_uses_original_stdout_stream(monkeypatch):
     monkeypatch.setattr(server_mod.sys, "stdout", _TextWithBuffer(fake_stdout_buf))
 
     server = LocalSearchMCPServer("/tmp/ws")
-    server._original_stdout = _TextWithBuffer(original_stdout_buf)
-    server.run()
+    # Pass stream directly to run() as per new architecture
+    server.run(original_stdout_buf)
 
     written_original = original_stdout_buf.getvalue()
     written_redirected = fake_stdout_buf.getvalue()

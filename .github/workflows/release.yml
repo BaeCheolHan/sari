@@ -15,14 +15,16 @@ jobs:
       - uses: actions/checkout@v4
       - name: Set up uv
         uses: astral-sh/setup-uv@v5
-      - name: Create virtualenv
-        run: uv venv .venv
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install 3.12
       - name: Install dependencies
-        run: uv pip install --python .venv/bin/python -e . pytest pytest-cov
+        run: uv pip install -e ".[test]"
       - name: Run tests
         run: |
-          uv run --python .venv/bin/python pytest -m gate
-          uv run --python .venv/bin/python pytest tests/test_stability.py tests/test_server.py
+          # Verify core stability and new architecture
+          uv run pytest tests/test_stability.py tests/test_architecture_modern.py tests/test_symbol_algorithms.py -v
 
   release:
     name: Create GitHub Release

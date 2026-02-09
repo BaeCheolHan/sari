@@ -157,12 +157,14 @@ class SearchEngine:
         import fnmatch
         hits: List[SearchHit] = []
         for r in rows:
-            # Legacy/normalized row: (path, root_id, repo, mtime, size, content)
-            # FTS row: (path, rel_path, root_id, repo, mtime, size, content)
+            # Flexible Unpacking for different row shapes
             if len(r) >= 7:
+                # FTS shape: (path, rel_path, root_id, repo, mtime, size, content)
                 path, rel_path, root_id, repo, mtime, size, content = r[0], r[1], r[2], r[3], r[4], r[5], r[6]
-            elif len(r) >= 6:
-                path, rel_path, root_id, repo, mtime, size, content = r[0], r[1], r[2], r[3], r[4], r[5], "" # Missing content
+            elif len(r) == 6:
+                # Legacy shape: (path, root_id, repo, mtime, size, content)
+                path, root_id, repo, mtime, size, content = r[0], r[1], r[2], r[3], r[4], r[5]
+                rel_path = path # Fallback
             else:
                 continue
             

@@ -355,6 +355,16 @@ def build_call_graph(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict[st
         scope_reason = f"root_ids={root_ids or 'any'}; repo={repo or 'any'}"
 
     matches = _resolve_symbol(db, name, path, symbol_id, root_ids, repo)
+    if not matches and name:
+        # Fuzzy Fallback: if exact match fails, try to find similar symbols
+        if hasattr(db, "symbols"):
+            fuzzy_candidates = db.symbols.fuzzy_search_symbols(name, limit=3)
+            if fuzzy_candidates:
+                # Use the best fuzzy candidate
+                target_cand = fuzzy_candidates[0]
+                matches = [target_cand.model_dump() if hasattr(target_cand, "model_dump") else target_cand]
+                scope_reason += f" (exact match failed, using fuzzy match for '{target_cand.name}')"
+
     if not matches:
         return {
             "symbol": name or "",

@@ -156,7 +156,7 @@ class SymbolRepository(BaseRepository):
 
     def search_symbols(self, query: str, limit: int = 20, **kwargs) -> List[SymbolDTO]:
         lq = f"%{query}%"
-        # Base query joining files to get repo information if needed (though not in DTO yet)
+        # Join with importance_score for better ranking
         sql = "SELECT * FROM symbols WHERE (name LIKE ? OR qualname LIKE ?)"
         params = [lq, lq]
         
@@ -175,11 +175,47 @@ class SymbolRepository(BaseRepository):
             sql += f" AND root_id IN ({placeholders})"
             params.extend(rs)
             
-        sql += " LIMIT ?"
+        sql += " ORDER BY importance_score DESC, name ASC LIMIT ?"
         params.append(limit)
         
         rows = self.execute(sql, params).fetchall()
         return [SymbolDTO.from_row(r) for r in rows]
+
+    def fuzzy_search_symbols(self, query: str, limit: int = 5, min_score: float = 0.6) -> List[SymbolDTO]:
+        """Typo-resilient search using SequenceMatcher."""
+        import difflib
+        # Get candidates from DB first (broad filter)
+        all_names = [r[0] for r in self.execute("SELECT name FROM symbols GROUP BY name").fetchall()]
+        
+        # Find close matches
+        matches = difflib.get_close_matches(query, all_names, n=limit, cutoff=min_score)
+        if not matches: return []
+        
+        placeholders = ",".join(["?"] * len(matches))
+        rows = self.execute(f"SELECT * FROM symbols WHERE name IN ({placeholders}) ORDER BY importance_score DESC", matches).fetchall()
+        return [SymbolDTO.from_row(r) for r in rows]
+
+    def recalculate_symbol_importance(self) -> int:
+        """Batch recalculates importance_score for all symbols based on Graph Density."""
+        # 1. Reset scores
+        self.execute("UPDATE symbols SET importance_score = 0.0")
+        
+        # 2. Degree Centrality: Simple count of incoming relations (Fan-in)
+        # We also boost symbols that are called from multiple different files
+        sql = """
+            UPDATE symbols 
+            SET importance_score = (
+                SELECT COUNT(DISTINCT r.from_path) * 1.5 + COUNT(r.from_symbol) 
+                FROM symbol_relations r 
+                WHERE r.to_symbol_id = symbols.symbol_id 
+                   OR (r.to_symbol = symbols.name AND (r.to_symbol_id IS NULL OR r.to_symbol_id = ''))
+            )
+        """
+        self.execute(sql)
+        self.conn.commit()
+        
+        # Return count of updated core symbols
+        return self.execute("SELECT COUNT(1) FROM symbols WHERE importance_score > 0").fetchone()[0]
 
     def get_symbol_fan_in_stats(self, symbol_names: List[str]) -> Dict[str, int]:
         """Calculates how many times each symbol is called across the codebase."""

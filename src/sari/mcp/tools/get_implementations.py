@@ -57,10 +57,10 @@ def execute_get_implementations(args: Dict[str, Any], db: Any, roots: List[str])
             else:
                 sql = "SELECT from_path, from_symbol, from_symbol_id, rel_type, line FROM symbol_relations WHERE to_symbol = ? AND (rel_type IN ('implements', 'extends', 'overrides'))"
                 params.append(target_symbol)
-            
-            if target_path:
-                sql += " AND (to_path = ? OR to_path = '' OR to_path IS NULL)"
-                params.append(target_path)
+                
+                if target_path:
+                    sql += " AND (to_path = ? OR to_path = '' OR to_path IS NULL)"
+                    params.append(target_path)
             
             sql += " ORDER BY from_path, line LIMIT ?"
             params.append(limit)

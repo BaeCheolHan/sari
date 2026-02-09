@@ -12,83 +12,63 @@ from sari.mcp.tools._util import (
 )
 
 
-def build_get_context(args: Dict[str, Any], db: Any) -> Dict[str, Any]:
-    topic = str(args.get("topic") or "").strip()
-    query = str(args.get("query") or "").strip()
-    limit = int(args.get("limit") or 20)
-    as_of_raw = args.get("as_of")
-    def _parse_ts(v):
-        if v is None or v == "":
-            return 0
-        if isinstance(v, (int, float)):
-            return int(v)
-        s = str(v).strip()
-        if s.isdigit():
-            return int(s)
-        try:
-            from datetime import datetime
-            return int(datetime.fromisoformat(s).timestamp())
-        except Exception:
-            return 0
-    as_of = _parse_ts(as_of_raw)
-
-    def _is_active(row):
-        if not row:
-            return False
-        if row.get("deprecated"):
-            return False
-        if as_of:
-            vf = int(row.get("valid_from") or 0)
-            vu = int(row.get("valid_until") or 0)
-            if vf and as_of < vf:
-                return False
-            if vu and as_of > vu:
-                return False
-        return True
-    if topic:
-        row = db.get_context_by_topic(topic)
-        if as_of and row and not _is_active(row):
-            row = None
-        return {"topic": topic, "results": [row] if row else []}
-    if query:
-        rows = db.search_contexts(query, limit=limit)
-        if as_of:
-            rows = [r for r in rows if _is_active(r)]
-        return {"query": query, "results": rows}
-    raise ValueError("topic or query is required")
-
+from sari.mcp.tools._util import (
+    mcp_response,
+    pack_header,
+    pack_line,
+    pack_encode_id,
+    pack_encode_text,
+    pack_error,
+    ErrorCode,
+    require_db_schema,
+    parse_timestamp,
+)
 
 def execute_get_context(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict[str, Any]:
-    guard = require_db_schema(
-        db,
-        "get_context",
-        "contexts",
-        ["topic", "content", "tags_json", "related_files_json", "created_ts", "updated_ts"],
-    )
-    if guard:
-        return guard
+    """Retrieve knowledge contexts using the modernized Facade."""
+    guard = require_db_schema(db, "get_context", "contexts", ["topic", "content"])
+    if guard: return guard
+
+    topic = str(args.get("topic") or "").strip()
+    query = str(args.get("query") or "").strip()
+    as_of = parse_timestamp(args.get("as_of"))
+    limit = int(args.get("limit") or 20)
+
     try:
-        payload = build_get_context(args, db)
-    except ValueError as e:
+        if topic:
+            row = db.contexts.get_context_by_topic(topic, as_of=as_of)
+            results = [row] if row else []
+        elif query:
+            results = db.contexts.search_contexts(query, limit=limit, as_of=as_of)
+        else:
+            return mcp_response(
+                "get_context",
+                lambda: pack_error("get_context", ErrorCode.INVALID_ARGS, "topic or query is required"),
+                lambda: {"error": {"code": ErrorCode.INVALID_ARGS.value, "message": "topic or query is required"}, "isError": True},
+            )
+    except Exception as e:
         return mcp_response(
             "get_context",
-            lambda: pack_error("get_context", ErrorCode.INVALID_ARGS, str(e)),
-            lambda: {"error": {"code": ErrorCode.INVALID_ARGS.value, "message": str(e)}, "isError": True},
+            lambda: pack_error("get_context", ErrorCode.DB_ERROR, str(e)),
+            lambda: {"error": {"code": ErrorCode.DB_ERROR.value, "message": str(e)}, "isError": True},
         )
 
+    def build_json() -> Dict[str, Any]:
+        return {
+            "topic": topic, "query": query,
+            "results": [r.model_dump() for r in results],
+            "count": len(results)
+        }
+
     def build_pack() -> str:
-        lines = [pack_header("get_context", {}, returned=len(payload.get("results", [])))]
-        for r in payload.get("results", []):
+        lines = [pack_header("get_context", {}, returned=len(results))]
+        for r in results:
             kv = {
-                "topic": pack_encode_id(r.get("topic", "")),
-                "updated_ts": str(r.get("updated_ts", 0)),
-                "deprecated": str(int(r.get("deprecated") or 0)),
+                "topic": pack_encode_id(r.topic),
+                "updated_ts": str(r.updated_ts),
+                "deprecated": str(int(r.deprecated)),
             }
             lines.append(pack_line("r", kv))
         return "\n".join(lines)
 
-    return mcp_response(
-        "get_context",
-        build_pack,
-        lambda: payload,
-    )
+    return mcp_response("get_context", build_pack, build_json)

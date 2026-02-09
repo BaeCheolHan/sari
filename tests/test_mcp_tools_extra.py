@@ -209,12 +209,12 @@ def test_get_callers_repo_filter_applied():
     class _Conn:
         def execute(self, _sql, params=None):
             class _Rows:
-                def __init__(self, rows):
-                    self._rows = rows
-                def fetchall(self_non):
-                    return self_non._rows
-            if params and any(isinstance(p, str) and p == f"{rid}/%" for p in params):
-                return _Rows([{"from_path": f"{rid}/A.java", "from_symbol": "a", "from_symbol_id": "sid-a", "line": 1, "rel_type": "calls"}])
+                def __init__(self, rows): self._rows = rows
+                def fetchall(self): return self._rows
+            # Correctly handle root_id filtering in mock
+            if params and any(isinstance(p, str) and p.startswith(rid) for p in params):
+                # Return tuples matching the tool's unpacking logic
+                return _Rows([(f"{rid}/A.java", "a", "sid-a", 1, "calls")])
             return _Rows([])
     class _DB:
         _read = _Conn()
@@ -227,18 +227,15 @@ def test_get_implementations_falls_back_to_file_content():
     class _Conn:
         def execute(self, sql, _params=None):
             class _Rows:
-                def __init__(self, rows):
-                    self._rows = rows
-                def fetchall(self_non):
-                    return self_non._rows
-                def fetchone(self_non):
-                    return self_non._rows[0] if self_non._rows else None
+                def __init__(self, rows): self._rows = rows
+                def fetchall(self): return self._rows
+                def fetchone(self): return self._rows[0] if self._rows else None
             if "FROM symbol_relations" in sql:
                 return _Rows([])
             if "SELECT path, content FROM files" in sql:
-                return _Rows([{"path": "root-x/a/Repo.java", "content": "public interface Repo extends JpaRepository<User,Long> {}"}])
+                return _Rows([("root-x/a/Repo.java", "public interface Repo extends JpaRepository<User,Long> {}")])
             if "SELECT symbol_id, name, line FROM symbols" in sql:
-                return _Rows([{"symbol_id": "sid-repo", "name": "Repo", "line": 1}])
+                return _Rows([("sid-repo", "Repo", 1)])
             return _Rows([])
 
     class _DB:
@@ -258,20 +255,17 @@ def test_get_implementations_repo_filter_applied():
     class _Conn:
         def execute(self, sql, params=None):
             class _Rows:
-                def __init__(self, rows):
-                    self._rows = rows
-                def fetchall(self_non):
-                    return self_non._rows
-                def fetchone(self_non):
-                    return self_non._rows[0] if self_non._rows else None
+                def __init__(self, rows): self._rows = rows
+                def fetchall(self): return self._rows
+                def fetchone(self): return self._rows[0] if self._rows else None
             if "FROM symbol_relations" in sql:
                 return _Rows([])
             if "SELECT path, content FROM files" in sql:
-                if params and any(isinstance(p, str) and p == f"{rid}/%" for p in params):
-                    return _Rows([{"path": f"{rid}/Repo.java", "content": "interface Repo extends JpaRepository<User,Long> {}"}])
+                if params and any(isinstance(p, str) and p.startswith(rid) for p in params):
+                    return _Rows([(f"{rid}/Repo.java", "interface Repo extends JpaRepository<User,Long> {}")])
                 return _Rows([])
             if "SELECT symbol_id, name, line FROM symbols" in sql:
-                return _Rows([{"symbol_id": "sid-repo", "name": "Repo", "line": 1}])
+                return _Rows([("sid-repo", "Repo", 1)])
             return _Rows([])
     class _DB:
         _read = _Conn()

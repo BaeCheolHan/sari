@@ -24,143 +24,95 @@ from sari.core.services.search_service import SearchService
 from sari.mcp.telemetry import TelemetryLogger
 
 
+from sari.mcp.tools._util import (
+    mcp_response,
+    pack_header,
+    pack_line,
+    pack_truncated,
+    pack_encode_id,
+    pack_encode_text,
+    pack_error,
+    ErrorCode,
+    parse_search_options,
+)
+
 def execute_search(
     args: Dict[str, Any],
-    db: LocalSearchDB,
-    logger: TelemetryLogger,
+    db: Any,
+    logger: Any,
     roots: List[str],
     engine: Any = None,
     indexer: Any = None,
 ) -> Dict[str, Any]:
+    """Execute hybrid search using the modernized Facade."""
     start_ts = time.time()
-    engine = engine or getattr(db, "engine", None)
+    
+    # 1. Standardized Options Parsing
+    try:
+        opts = parse_search_options(args, roots)
+    except Exception as e:
+        return mcp_response(
+            "search",
+            lambda: pack_error("search", ErrorCode.INVALID_ARGS, str(e)),
+            lambda: {"error": {"code": ErrorCode.INVALID_ARGS.value, "message": str(e)}, "isError": True},
+        )
 
-    root_ids = resolve_root_ids(roots)
-    req_root_ids = args.get("root_ids")
-    if isinstance(req_root_ids, list):
-        req_root_ids = [str(r) for r in req_root_ids if r]
-        if root_ids:
-            root_ids = [r for r in root_ids if r in req_root_ids]
-        else:
-            root_ids = list(req_root_ids)
-        if req_root_ids and not root_ids:
-            if db and db.has_legacy_paths():
-                root_ids = []
-            else:
-                return mcp_response(
-                    "search",
-                    lambda: pack_error("search", ErrorCode.ERR_ROOT_OUT_OF_SCOPE, "root_ids out of scope", hints=["outside final_roots"]),
-                    lambda: {"error": {"code": ErrorCode.ERR_ROOT_OUT_OF_SCOPE.value, "message": "root_ids out of scope"}, "isError": True},
-                )
-
-    query = (args.get("query") or "").strip()
-    if not query:
+    if not opts.query:
         return mcp_response(
             "search",
             lambda: pack_error("search", ErrorCode.INVALID_ARGS, "query is required"),
             lambda: {"error": {"code": ErrorCode.INVALID_ARGS.value, "message": "query is required"}, "isError": True},
         )
 
-    repo = args.get("scope") or args.get("repo")
-    if repo == "workspace":
-        repo = None
-
-    file_types = list(args.get("file_types", []))
-    search_type = args.get("type")
-    if search_type == "docs":
-        doc_exts = ["md", "txt", "pdf", "docx", "rst", "pdf"]
-        file_types.extend([e for e in doc_exts if e not in file_types])
-
+    # 2. Hybrid Search via DB Facade (Handles Tantivy vs SQLite automatically)
     try:
-        limit = int(args.get("limit", 8))
-    except (ValueError, TypeError):
-        limit = 8
-    limit = max(1, min(limit, 50))
-
-    try:
-        offset = max(int(args.get("offset", 0)), 0)
-    except (ValueError, TypeError):
-        offset = 0
-
-    try:
-        raw_lines = int(args.get("context_lines", 5))
-        snippet_lines = min(max(raw_lines, 1), 20)
-    except (ValueError, TypeError):
-        snippet_lines = 5
-
-    total_mode = str(args.get("total_mode") or "").strip().lower()
-    if total_mode not in {"exact", "approx"}:
-        total_mode = "exact"
-
-    engine_mode = "sqlite"
-    index_version = ""
-    if engine and hasattr(engine, "status"):
-        st = engine.status()
-        engine_mode = st.engine_mode
-        index_version = st.index_version
-        if engine_mode == "embedded" and not st.engine_ready:
-            if st.reason == "NOT_INSTALLED":
-                auto_install = (os.environ.get("SARI_ENGINE_AUTO_INSTALL", "1").strip().lower() not in {"0", "false", "no", "off"})
-                if not auto_install:
-                    engine = SqliteSearchEngineAdapter(db)
-                    st = engine.status()
-                    engine_mode = st.engine_mode
-                    index_version = st.index_version
-                if hasattr(engine, "install"):
-                    try:
-                        engine.install()
-                        st = engine.status()
-                        engine_mode = st.engine_mode
-                        index_version = st.index_version
-                    except EngineError as exc:
-                        engine = SqliteSearchEngineAdapter(db)
-                        st = engine.status()
-                        engine_mode = st.engine_mode
-                        index_version = st.index_version
-                    except Exception as exc:
-                        engine = SqliteSearchEngineAdapter(db)
-                        st = engine.status()
-                        engine_mode = st.engine_mode
-                        index_version = st.index_version
-            if engine_mode == "embedded" and not st.engine_ready:
-                engine = SqliteSearchEngineAdapter(db)
-                st = engine.status()
-                engine_mode = st.engine_mode
-                index_version = st.index_version
-    elif engine is None:
-        engine = SqliteSearchEngineAdapter(db)
-        st = engine.status()
-        engine_mode = st.engine_mode
-        index_version = st.index_version
-
-    opts = SearchOptions(
-        query=query,
-        repo=repo,
-        limit=limit,
-        offset=offset,
-        snippet_lines=snippet_lines,
-        file_types=file_types,
-        path_pattern=args.get("path_pattern"),
-        exclude_patterns=args.get("exclude_patterns", []),
-        recency_boost=bool(args.get("recency_boost", False)),
-        use_regex=bool(args.get("use_regex", False)),
-        case_sensitive=bool(args.get("case_sensitive", False)),
-        total_mode=total_mode,
-        root_ids=root_ids,
-    )
-
-    service = SearchService(db=db, engine=engine, indexer=indexer)
-    try:
-        hits, meta = service.search(opts)
-    except EngineError as exc:
-        code = getattr(ErrorCode, exc.code, ErrorCode.ERR_ENGINE_QUERY)
+        hits, meta = db.search_v2(opts)
+    except Exception as e:
         return mcp_response(
             "search",
-            lambda: pack_error("search", code, exc.message, hints=[exc.hint] if exc.hint else None),
-            lambda: {"error": {"code": code.value, "message": exc.message, "hint": exc.hint}, "isError": True},
+            lambda: pack_error("search", ErrorCode.ERR_ENGINE_QUERY, str(e)),
+            lambda: {"error": {"code": ErrorCode.ERR_ENGINE_QUERY.value, "message": str(e)}, "isError": True},
         )
-    except Exception as exc:
-        hits, meta = [], {"partial": True, "db_health": "error", "db_error": str(exc), "engine": "fallback"}
+
+    latency_ms = int((time.time() - start_ts) * 1000)
+    total = meta.get("total", len(hits))
+    
+    def build_json() -> Dict[str, Any]:
+        return {
+            "query": opts.query, "limit": opts.limit, "offset": opts.offset,
+            "results": [h.to_result_dict() if hasattr(h, "to_result_dict") else h for h in hits],
+            "meta": {**meta, "latency_ms": latency_ms}
+        }
+
+    def build_pack() -> str:
+        returned = len(hits)
+        header = pack_header("search", {"q": pack_encode_text(opts.query)}, returned=returned)
+        lines = [header]
+        lines.append(pack_line("m", {"total": str(total), "latency_ms": str(latency_ms), "engine": meta.get("engine", "unknown")}))
+        
+        for h in hits:
+            # Extract importance from hit_reason if possible for visual feedback
+            imp_tag = ""
+            if "importance=" in h.hit_reason:
+                try:
+                    imp_val = h.hit_reason.split("importance=")[1].split(")")[0]
+                    if float(imp_val) > 10.0: imp_tag = " [CORE]"
+                    elif float(imp_val) > 2.0: imp_tag = " [SIG]"
+                except: pass
+
+            lines.append(pack_line("r", {
+                "path": pack_encode_id(h.path),
+                "repo": pack_encode_id(h.repo),
+                "score": f"{h.score:.2f}",
+                "file_type": pack_encode_id(h.file_type),
+                "snippet": pack_encode_text(h.snippet),
+                "rank_info": pack_encode_text(h.hit_reason + imp_tag),
+            }))
+        if returned >= opts.limit:
+            lines.append(pack_truncated(opts.offset + opts.limit, opts.limit, "maybe"))
+        return "\n".join(lines)
+
+    return mcp_response("search", build_pack, build_json)
 
     latency_ms = int((time.time() - start_ts) * 1000)
     total = meta.get("total", -1)
