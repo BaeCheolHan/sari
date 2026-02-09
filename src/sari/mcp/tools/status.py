@@ -5,9 +5,12 @@ from sari.core.config import Config
 from sari.mcp.tools._util import pack_header
 
 def execute_status(args: Dict[str, Any], indexer: Optional[Indexer], db: Optional[LocalSearchDB], cfg: Optional[Config], workspace_root: str, server_version: str, logger=None) -> Dict[str, Any]:
-    """Modernized Status Tool: Uses direct Indexer/DB state with rich metadata."""
+    """
+    Sari 서버의 상태를 조회하는 현대화된 상태 도구입니다.
+    인덱서 및 DB의 실시간 상태와 풍부한 메타데이터를 제공합니다.
+    """
     
-    # Gather extra stats from DB if available
+    # DB 통계 정보 수집
     total_symbols = 0
     total_files = 0
     db_error = ""
@@ -16,9 +19,9 @@ def execute_status(args: Dict[str, Any], indexer: Optional[Indexer], db: Optiona
             total_files = db.db.execute_sql("SELECT COUNT(1) FROM files").fetchone()[0]
             total_symbols = db.db.execute_sql("SELECT COUNT(1) FROM symbols").fetchone()[0]
         except Exception:
-            db_error = "DB 접근 실패"
+            db_error = "DB access failed"
     else:
-        db_error = "DB 미연결"
+        db_error = "DB not connected"
 
     status_data = {
         "index_ready": indexer.status.index_ready if indexer else False,
@@ -36,7 +39,7 @@ def execute_status(args: Dict[str, Any], indexer: Optional[Indexer], db: Optiona
         "cfg_include_ext": ",".join(cfg.include_ext) if cfg and cfg.include_ext else "",
     }
     
-    # Build a rich PACK1 response
+    # 풍부한 정보를 담은 PACK1 응답 생성
     lines = [pack_header("status", {}, returned=len(status_data))]
     for k, v in status_data.items():
         val = str(v).lower() if isinstance(v, bool) else v

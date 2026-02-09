@@ -21,14 +21,25 @@ def _qualname(parent: str, name: str) -> str:
     return f"{parent}.{name}" if parent else name
 
 class ASTEngine:
+    """
+    Tree-sitter를 사용하여 소스 코드를 구문 분석하고 구조적 심볼 정보를 추출하는 핵심 엔진입니다.
+    지원되는 언어에 대해 AST(Abstract Syntax Tree) 기반의 정밀한 분석을 수행하며,
+    지원되지 않는 경우 정규식 기반의 폴백(Fallback) 메카니즘을 작동시킵니다.
+    """
     def __init__(self):
         self.logger = logging.getLogger("sari.ast")
         self.registry = HandlerRegistry()
     
     @property
-    def enabled(self) -> bool: return HAS_LIBS
+    def enabled(self) -> bool:
+        """Tree-sitter 라이브러리가 설치되어 실행 가능한지 여부를 반환합니다."""
+        return HAS_LIBS
     
     def _get_language(self, name: str) -> Any:
+        """
+        확장자 또는 언어 이름을 기반으로 Tree-sitter Language 객체를 로드합니다.
+        지원되지 않는 언어이거나 라이브러리 로드 실패 시 None을 반환합니다.
+        """
         if self.logger and self.logger.isEnabledFor(logging.DEBUG):
             self.logger.debug("AST engine lookup (HAS_LIBS=%s, name=%s)", HAS_LIBS, name)
         if not HAS_LIBS: return None
@@ -88,6 +99,10 @@ class ASTEngine:
         return None
 
     def parse(self, language: str, content: str, old_tree: Any = None) -> Optional[Any]:
+        """
+        주어진 언어와 소스 코드 내용을 AST Tree로 파싱합니다.
+        Incremental parsing(old_tree)을 지원하여 성능을 최적화할 수 있습니다.
+        """
         if not HAS_LIBS: return None
         lang_obj = self._get_language(language)
         if not lang_obj: return None
@@ -101,7 +116,12 @@ class ASTEngine:
         return parser.parse(encoded_content)
 
     def extract_symbols(self, path: str, language: str, content: str, tree: Any = None) -> Tuple[List[Tuple], List[Any]]:
-        """Extract symbols from source code using AST parsing."""
+        """
+        소스 코드에서 심볼(클래스, 함수, 메서드 등) 정보를 추출합니다.
+        1. 특수 파서(Dockerfile 등) 시도
+        2. AST 기반 정밀 파싱 시도
+        3. 실패 시 정규식 기반 범용 파서(fallback) 시도
+        """
         if not content:
             return [], []
         
@@ -199,28 +219,34 @@ class ASTEngine:
             return None
         
         def find_id(node, prefer_pure_identifier=False):
-            """Find identifier name in node."""
-            # 1. Pure identifier (standard)
+            """
+            AST 노드 내에서 심볼의 식별자(이름)를 찾아냅니다.
+            언어별 특성에 맞춰 identifier, name, type_identifier 등을 순차적으로 탐색합니다.
+            """
+            # 1. 순수 식별자 (표준)
             for c in node.children:
                 if c.type == "identifier":
                     return get_t(c)
-            # 2. Language specific identifiers
+            # 2. 언어 특화 식별자
             if not prefer_pure_identifier:
                 for c in node.children:
                     if c.type in ("name", "type_identifier", "constant", "simple_identifier", "variable_name", "property_identifier"):
                         return get_t(c)
-            # 3. Recursive fallback (shallow)
+            # 3. 재귀적 폴백 (얕은 탐색)
             if not prefer_pure_identifier:
                 for c in node.children:
                     if c.type in ("modifiers", "annotation", "parameter_list"):
                         continue
-                    res = find_id(c, True)  # Try pure identifier in children
+                    res = find_id(c, True)  # 자식 노드에서 순수 식별자 시도
                     if res:
                         return res
             return None
 
         def walk(node, p_name="", p_meta=None):
-            """Recursively walk AST and extract symbols."""
+            """
+            AST 트리를 재귀적으로 순회하며 심볼 정보를 수집합니다.
+            부모 컨텍스트를 유지하여 Qualname(계층 구조 이름)을 빌드합니다.
+            """
             kind, name, meta, is_valid = None, None, {"annotations": []}, False
             n_type = node.type
             

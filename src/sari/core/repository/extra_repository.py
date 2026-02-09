@@ -4,7 +4,12 @@ from .base import BaseRepository
 from ..models import SnippetDTO, ContextDTO
 
 class SnippetRepository(BaseRepository):
+    """
+    코드 스니펫(Snippet) 정보를 관리하는 저장소입니다.
+    사용자가 저장한 코드 조각의 위치, 내용, 태그 및 버전을 SQLite 'snippets' 테이블에 저장합니다.
+    """
     def upsert_snippet_tx(self, cur: sqlite3.Cursor, rows: Iterable[tuple]) -> int:
+        """스니펫 정보들을 트랜잭션 내에서 삽입하거나 업데이트합니다."""
         rows_list = [list(r) for r in rows]
         if not rows_list:
             return 0
@@ -125,8 +130,12 @@ class SnippetRepository(BaseRepository):
 
 
 class ContextRepository(BaseRepository):
+    """
+    인덱싱이나 분석 시 사용되는 맥락(Context) 정보를 관리하는 저장소입니다.
+    특정 주제(Topic)에 대한 설명, 관련 파일, 태그 및 유효 기간 정보를 SQLite 'contexts' 테이블에 저장합니다.
+    """
     def upsert(self, data: Any) -> ContextDTO:
-        """High-level upsert for a single context. Accepts DTO or dict."""
+        """단일 맥락 정보를 삽입하거나 업데이트하고 DTO 객체를 반환합니다."""
         from ..models import ContextDTO
         import time
         import json
@@ -191,6 +200,7 @@ class ContextRepository(BaseRepository):
         return len(normalized)
 
     def get_context_by_topic(self, topic: str, as_of: int = 0) -> Optional[ContextDTO]:
+        """주제(Topic) 이름을 기준으로 유효한 맥락 정보를 조회합니다."""
         sql = """
             SELECT id, topic, content, tags_json, related_files_json, source, valid_from, valid_until, deprecated, created_ts, updated_ts
             FROM contexts WHERE topic = ?

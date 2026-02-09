@@ -5,7 +5,10 @@ from sari.core.services.index_service import IndexService
 from sari.mcp.tools._util import mcp_response, pack_error, ErrorCode, resolve_db_path, pack_header, pack_line, pack_encode_id
 
 def execute_index_file(args: Dict[str, Any], indexer: Any, roots: List[str]) -> Dict[str, Any]:
-    """Force immediate re-indexing of a specific file."""
+    """
+    특정 파일의 강제 재인덱싱을 수행합니다.
+    (Force Re-indexing)
+    """
     path = args.get("path", "").strip()
     if not path:
         return mcp_response(

@@ -20,6 +20,7 @@ from sari.mcp.tools._util import (
 
 
 def _read_current(db: Any, db_path: str, roots: List[str]) -> str:
+    """DB 또는 파일 시스템으로부터 현재 파일의 전체 내용을 읽어옵니다."""
     fs_path = resolve_fs_path(db_path, roots)
     if fs_path:
         try:
@@ -32,6 +33,10 @@ def _read_current(db: Any, db_path: str, roots: List[str]) -> str:
 
 
 def _syntax_check(path: str, content: str) -> Dict[str, Any]:
+    """
+    제안된 수정 사항에 대해 가벼운 구문 체크(Syntax Check)를 수행합니다.
+    Python의 경우 AST 파싱을, JSON의 경우 json.loads를 시도합니다.
+    """
     import sys
     runtime = f"Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
     if path.endswith(".py"):
@@ -56,6 +61,10 @@ def _syntax_check(path: str, content: str) -> Dict[str, Any]:
     return {"syntax_ok": True, "runtime": runtime}
 
 def _maybe_lint(path: str, content: str) -> Dict[str, Any]:
+    """
+    설정된 경우 Ruff나 ESLint와 같은 외부 린터를 사용하여 제안된 수정을 검사합니다.
+    (SARI_DRYRUN_LINT 환경변수가 활성화된 경우)
+    """
     enabled = os.environ.get("SARI_DRYRUN_LINT", "").strip().lower() in {"1", "true", "yes", "on"}
     if not enabled:
         return {"lint_skipped": True, "lint_reason": "disabled"}
@@ -102,6 +111,7 @@ def _maybe_lint(path: str, content: str) -> Dict[str, Any]:
 
 
 def build_dry_run_diff(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict[str, Any]:
+    """드라이런 분석을 수행하고 차이점, 구문 상태, 린트 결과를 포함한 데이터 딕셔너리를 빌드합니다."""
     path = str(args.get("path") or "").strip()
     new_content = str(args.get("content") or "")
     if not path or new_content is None:
@@ -110,6 +120,8 @@ def build_dry_run_diff(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict[
     if not db_path:
         raise ValueError("path is out of workspace scope")
     current = _read_current(db, db_path, roots)
+    
+    # 1. 통합 차이(Unified Diff) 생성
     diff_lines = list(
         difflib.unified_diff(
             current.splitlines(),
@@ -120,8 +132,11 @@ def build_dry_run_diff(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict[
         )
     )
     diff_text = "\n".join(diff_lines)
+    
+    # 2. 구문 및 린트 검사
     syntax = _syntax_check(path, new_content)
     lint = _maybe_lint(path, new_content)
+    
     payload = {"path": db_path, "diff": diff_text}
     payload.update(syntax)
     payload.update(lint)
@@ -129,6 +144,10 @@ def build_dry_run_diff(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict[
 
 
 def execute_dry_run_diff(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict[str, Any]:
+    """
+    파일 수정 전, 변경 사항을 미리 보고(Dry-run) 구문 오류나 스타일 위반을 사전에 점검하는 도구입니다.
+    실제 파일 시스템에 영향을 주지 않고 안전하게 수정을 검증할 수 있습니다.
+    """
     try:
         payload = build_dry_run_diff(args, db, roots)
     except ValueError as e:
@@ -139,6 +158,7 @@ def execute_dry_run_diff(args: Dict[str, Any], db: Any, roots: List[str]) -> Dic
         )
 
     def build_pack() -> str:
+        """PACK1 형식의 응답을 생성합니다."""
         lines = [pack_header("dry_run_diff", {"path": pack_encode_id(payload["path"])}, returned=1)]
         lines.append(pack_line("m", {"syntax_ok": str(bool(payload.get("syntax_ok", True))).lower()}))
         if payload.get("runtime"):

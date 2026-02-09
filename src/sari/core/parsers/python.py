@@ -5,13 +5,22 @@ from .base import BaseParser
 from .common import _qualname, _symbol_id, _safe_compile
 
 class PythonParser(BaseParser):
+    """
+    Python 표준 라이브러리인 'ast' 모듈을 사용하여 Python 코드를 정밀하게 분석하는 파서입니다.
+    클래스, 함수, 메서드 및 데코레이터를 통한 부가 정보(HTTP 엔드포인트 등)를 추출합니다.
+    """
     def extract(self, path: str, content: str) -> Tuple[List[Tuple], List[Tuple]]:
+        """
+        Python 소스 코드를 파싱하여 심볼 목록과 호출 관계를 추출합니다.
+        AST 분석 실패 시 정규식 기반 파서로 폴백합니다.
+        """
         symbols, relations = [], []
         try:
             tree = ast.parse(content)
             lines = content.splitlines()
 
             def _visit(node, parent_name="", parent_qual="", current_symbol=None, current_sid=None):
+                """AST 노드를 재귀적으로 방문하며 심볼과 관계(Call)를 추출하는 내부 함수입니다."""
                 for child in ast.iter_child_nodes(node):
                     if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                         name = child.name

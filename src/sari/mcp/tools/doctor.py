@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Doctor tool for Local Search MCP Server.
-Returns structured diagnostics (no ANSI/prints).
+로컬 검색 MCP 서버를 위한 진단 도구 (Doctor).
+시스템 상태, 설정, DB 무결성 등을 검사하고 구조화된 진단 결과(JSON)를 반환합니다.
+ANSI 코드나 print 문을 사용하지 않고 순수 데이터 형태로 결과를 제공합니다.
 """
 import json
 import os
@@ -27,14 +28,16 @@ def _identify_sari_daemon(host: str, port: int):
 
 
 def _result(name: str, passed: bool, error: str = "", warn: bool = False) -> dict[str, Any]:
+    """진단 결과를 딕셔너리 형태로 반환합니다."""
     return {"name": name, "passed": passed, "error": error, "warn": warn}
 
 
 def _check_db(ws_root: str) -> list[dict[str, Any]]:
+    """데이터베이스 설정, 접근 권한, 스키마 등을 검사합니다."""
     results: list[dict[str, Any]] = []
     cfg_path = WorkspaceManager.resolve_config_path(ws_root)
     cfg = Config.load(cfg_path, workspace_root_override=ws_root)
-    # Auto-fix: persist db_path if missing in config file
+    # 자동 수정: 설정 파일에 db_path가 없으면 현재 설정값으로 저장
     try:
         if cfg_path and Path(cfg_path).exists():
             raw = json.loads(Path(cfg_path).read_text(encoding="utf-8"))
@@ -56,7 +59,7 @@ def _check_db(ws_root: str) -> list[dict[str, Any]]:
         results.append(_result("DB Access", False, str(e)))
         return results
 
-    # FTS5 check
+    # FTS5 모듈 지원 여부 확인
     fts_ok = False
     try:
         cursor = db.db.connection().execute("PRAGMA compile_options")
@@ -70,6 +73,8 @@ def _check_db(ws_root: str) -> list[dict[str, Any]]:
         def _cols(table: str) -> list[str]:
             row = db.db.connection().execute(f"PRAGMA table_info({table})")
             return [r[1] for r in row.fetchall()]
+        
+        # 주요 테이블 컬럼 존재 여부 확인 (스키마 검증)
         symbols_cols = _cols("symbols")
         if "end_line" in symbols_cols:
             results.append(_result("DB Schema", True))
@@ -102,6 +107,8 @@ def _check_db(ws_root: str) -> list[dict[str, Any]]:
             "SELECT name FROM sqlite_master WHERE type='table' AND name='failed_tasks'"
         ).fetchone()
         results.append(_result("DB Schema Failed Tasks", bool(row), "failed_tasks table missing" if not row else ""))
+        
+        # 실패한 작업(DLQ) 상태 확인
         if row:
             total_failed, high_failed = db.count_failed_tasks()
             if high_failed >= 3:
@@ -120,6 +127,7 @@ def _check_db(ws_root: str) -> list[dict[str, Any]]:
 
 
 def _platform_tokenizer_tag() -> str:
+    """현재 플랫폼에 맞는 토크나이저 태그를 반환합니다."""
     import platform
     plat = sys.platform
     arch = platform.machine().lower()
@@ -139,7 +147,7 @@ def _platform_tokenizer_tag() -> str:
 
 
 def _check_engine_tokenizer_data() -> dict[str, Any]:
-    """Check if tokenizer data (lindera) is installed as a package."""
+    """토크나이저 데이터(lindera 등)가 설치되어 있는지 확인합니다."""
     if lindera_available():
         uri = lindera_dict_uri() or "embedded://ipadic"
         return _result("CJK Tokenizer", True, f"active ({uri})")
@@ -147,14 +155,14 @@ def _check_engine_tokenizer_data() -> dict[str, Any]:
     return _result("CJK Tokenizer", False, f"{err} (package 'lindera-python-ipadic' optional)")
 
 def _check_tree_sitter() -> dict[str, Any]:
-    """Check if Tree-sitter and language parsers are installed."""
+    """Tree-sitter 패키지와 언어 파서가 설치되어 있는지 확인합니다."""
     try:
         from sari.core.parsers.ast_engine import ASTEngine
         engine = ASTEngine()
         if not engine.enabled:
              return _result("Tree-sitter Support", False, "core 'tree-sitter' package not installed (optional)")
         
-        # Check specific languages
+        # 주요 언어 파서 확인
         langs = ["python", "javascript", "typescript", "java", "go", "rust", "cpp"]
         installed = []
         for lang in langs:
@@ -169,7 +177,7 @@ def _check_tree_sitter() -> dict[str, Any]:
 
 
 def _check_embedded_engine_module() -> dict[str, Any]:
-    """Check if embedded engine dependency (tantivy) is importable."""
+    """내장 엔진 모듈(tantivy)이 임포트 가능한지 확인합니다."""
     try:
         import tantivy  # type: ignore
         ver = getattr(tantivy, "__version__", "unknown")
@@ -178,6 +186,7 @@ def _check_embedded_engine_module() -> dict[str, Any]:
         return _result("Embedded Engine Module", False, f"{type(e).__name__}: {e}")
 
 def _check_windows_write_lock_support() -> dict[str, Any]:
+    """Windows 환경에서 파일 쓰기 잠금(locking)이 지원되는지 확인합니다."""
     if os.name != "nt":
         return _result("Windows Write Lock", True, "non-windows platform")
     try:
@@ -190,10 +199,12 @@ def _check_windows_write_lock_support() -> dict[str, Any]:
         return _result("Windows Write Lock", False, f"{type(e).__name__}: {e}")
 
 def _check_db_migration_safety() -> dict[str, Any]:
+    """DB 마이그레이션 도구(peewee 등)의 안전성을 확인합니다."""
     # Legacy check removed as we moved to peewee + init_schema
     return _result("DB Migration Safety", True, "using peewee init_schema (idempotent)")
 
 def _check_engine_sync_dlq(ws_root: str) -> dict[str, Any]:
+    """엔진 동기화 실패 기록(DLQ)이 있는지 확인합니다."""
     try:
         cfg_path = WorkspaceManager.resolve_config_path(ws_root)
         cfg = Config.load(cfg_path, workspace_root_override=ws_root)
@@ -216,6 +227,7 @@ def _check_engine_sync_dlq(ws_root: str) -> dict[str, Any]:
         return _result("Engine Sync DLQ", False, str(e))
 
 def _check_writer_health(db: Any = None) -> dict[str, Any]:
+    """DB Writer 스레드의 상태를 확인합니다."""
     try:
         from sari.core.db.storage import GlobalStorageManager
         sm = getattr(GlobalStorageManager, "_instance", None)
@@ -243,6 +255,7 @@ def _check_writer_health(db: Any = None) -> dict[str, Any]:
         return _result("Writer Health", False, str(e))
 
 def _check_storage_switch_guard() -> dict[str, Any]:
+    """스토리지 전환이 차단되어 있는지 확인합니다."""
     try:
         from sari.core.db.storage import GlobalStorageManager
         reason = str(getattr(GlobalStorageManager, "_last_switch_block_reason", "") or "")
@@ -258,13 +271,14 @@ def _check_storage_switch_guard() -> dict[str, Any]:
         return _result("Storage Switch Guard", False, str(e))
 
 def _check_fts_rebuild_policy() -> dict[str, Any]:
+    """FTS 재구축 정책 설정을 확인합니다."""
     if settings.FTS_REBUILD_ON_START:
         return _result("FTS Rebuild Policy", True, "FTS_REBUILD_ON_START=true may increase startup latency", warn=True)
     return _result("FTS Rebuild Policy", True, "FTS_REBUILD_ON_START=false")
 
 
 def _check_engine_runtime(ws_root: str) -> dict[str, Any]:
-    """Check current runtime engine readiness from config + engine registry."""
+    """현재 실행 중인 검색 엔진의 상태를 확인합니다."""
     try:
         cfg_path = WorkspaceManager.resolve_config_path(ws_root)
         cfg = Config.load(cfg_path, workspace_root_override=ws_root)
@@ -312,6 +326,7 @@ def _check_lindera_dictionary() -> dict[str, Any]:
 
 
 def _check_port(port: int, label: str) -> dict[str, Any]:
+    """특정 포트의 가용성을 확인합니다."""
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         s.bind(("127.0.0.1", port))
@@ -326,6 +341,7 @@ def _check_port(port: int, label: str) -> dict[str, Any]:
 
 
 def _check_network() -> dict[str, Any]:
+    """외부 네트워크(Google DNS) 연결을 확인합니다."""
     try:
         socket.create_connection(("8.8.8.8", 53), timeout=3)
         return _result("Network Check", True)
@@ -334,6 +350,7 @@ def _check_network() -> dict[str, Any]:
 
 
 def _check_disk_space(ws_root: str, min_gb: float) -> dict[str, Any]:
+    """워크스페이스 경로의 디스크 여유 공간을 확인합니다."""
     try:
         total, used, free = shutil.disk_usage(ws_root)
         free_gb = free / (1024**3)
@@ -345,7 +362,7 @@ def _check_disk_space(ws_root: str, min_gb: float) -> dict[str, Any]:
 
 
 def _check_db_integrity(ws_root: str) -> dict[str, Any]:
-    """Perform a deep integrity check on the SQLite DB file."""
+    """SQLite DB 파일에 대해 깊은 무결성 검사를 수행합니다."""
     try:
         cfg_path = WorkspaceManager.resolve_config_path(ws_root)
         cfg = Config.load(cfg_path, workspace_root_override=ws_root)
@@ -367,7 +384,10 @@ def _check_db_integrity(ws_root: str) -> dict[str, Any]:
         return _result("DB Integrity", False, f"Check failed: {e}")
 
 def _check_log_errors() -> dict[str, Any]:
-    """Scan latest logs for ERROR/CRITICAL patterns without OOM risk."""
+    """
+    최근 로그 파일에서 ERROR 또는 CRITICAL 패턴을 스캔합니다.
+    OOM 방지를 위해 마지막 1MB만 읽고 최근 500줄만 검사합니다.
+    """
     try:
         env_log_dir = os.environ.get("SARI_LOG_DIR")
         log_dir = Path(env_log_dir).expanduser().resolve() if env_log_dir else WorkspaceManager.get_global_log_dir()
@@ -376,7 +396,7 @@ def _check_log_errors() -> dict[str, Any]:
             return _result("Log Health", True, "No log file yet")
             
         errors = []
-        # Safety: Read only the last 1MB of log to avoid OOM
+        # 안전 장치: 파일의 마지막 1MB만 읽음
         file_size = log_file.stat().st_size
         read_size = min(file_size, 1024 * 1024) # 1MB
         
@@ -385,7 +405,7 @@ def _check_log_errors() -> dict[str, Any]:
                 f.seek(file_size - read_size)
             chunk = f.read().decode("utf-8", errors="ignore")
             lines = chunk.splitlines()
-            # Only look at errors in the last 500 lines of the 1MB chunk
+            # 마지막 500줄에서만 에러 검색
             for line in lines[-500:]:
                 line_upper = line.upper()
                 if "ERROR" in line_upper or "CRITICAL" in line_upper:
@@ -394,7 +414,7 @@ def _check_log_errors() -> dict[str, Any]:
         if not errors:
             return _result("Log Health", True, "No recent errors")
         
-        # Extract unique symptoms
+        # 중복 에러 메시지 제거 (증상 요약)
         unique_errs = []
         for e in errors:
             msg = e.split(" - ")[-1] if " - " in e else e
@@ -408,19 +428,20 @@ def _check_log_errors() -> dict[str, Any]:
         return _result("Log Health", True, f"Scan skipped: {e}", warn=True)
 
 def _check_system_env() -> list[dict[str, Any]]:
+    """시스템 환경 정보(플랫폼, Python 버전, 주요 환경변수)를 확인합니다."""
     import platform
     results = []
     results.append(_result("Platform", True, f"{platform.system()} {platform.release()} ({platform.machine()})"))
     results.append(_result("Python", True, sys.version.split()[0]))
     
-    # Check for critical env vars
+    # 중요 환경변수 확인
     roots = os.environ.get("SARI_WORKSPACE_ROOT")
     results.append(_result("Env: SARI_WORKSPACE_ROOT", bool(roots), roots or "Not set"))
     
     try:
         reg_path = str(get_registry_path())
         results.append(_result("Registry Path", True, reg_path))
-        # Check if writable
+        # 쓰기 권한 확인
         if os.path.exists(reg_path):
             if not os.access(reg_path, os.W_OK):
                 results.append(_result("Registry Access", False, "Registry file is read-only"))
@@ -432,6 +453,7 @@ def _check_system_env() -> list[dict[str, Any]]:
     return results
 
 def _check_process_resources(pid: int) -> dict[str, Any]:
+    """특정 프로세스의 리소스 사용량(메모리, CPU)을 확인합니다."""
     try:
         import psutil
         proc = psutil.Process(pid)
@@ -443,6 +465,7 @@ def _check_process_resources(pid: int) -> dict[str, Any]:
         return {}
 
 def _check_daemon() -> dict[str, Any]:
+    """Sari 데몬 프로세스의 실행 여부와 상태를 점검합니다."""
     host, port = get_daemon_address()
     identify = _identify_sari_daemon(host, port)
     running = identify is not None
@@ -491,6 +514,7 @@ def _check_daemon() -> dict[str, Any]:
 
 
 def _check_http_service(host: str, port: int) -> dict[str, Any]:
+    """HTTP API 서버의 실행 여부를 확인합니다."""
     running = _is_http_running(host, port)
     if running:
         return _result("HTTP API", True, f"Running on {host}:{port}")
@@ -498,6 +522,7 @@ def _check_http_service(host: str, port: int) -> dict[str, Any]:
 
 
 def _check_search_first_usage(usage: Dict[str, Any], mode: str) -> dict[str, Any]:
+    """검색 우선(Search-First) 정책 준수 여부를 확인합니다."""
     violations = int(usage.get("read_without_search", 0))
     searches = int(usage.get("search", 0))
     symbol_searches = int(usage.get("search_symbols", 0))
@@ -511,6 +536,7 @@ def _check_search_first_usage(usage: Dict[str, Any], mode: str) -> dict[str, Any
     return _result("Search-First Usage", False, error)
 
 def _check_callgraph_plugin() -> dict[str, Any]:
+    """콜 그래프 플러그인 로드 상태를 확인합니다."""
     mod_path = os.environ.get("SARI_CALLGRAPH_PLUGIN", "").strip()
     if not mod_path:
         return _result("CallGraph Plugin", True, "not configured")
@@ -536,6 +562,7 @@ def _check_callgraph_plugin() -> dict[str, Any]:
     return _result("CallGraph Plugin", True, detail)
 
 def _recommendations(results: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """진단 결과에 따른 한국어 권장 조치 사항을 생성합니다."""
     recs: list[dict[str, str]] = []
     for r in results:
         if r.get("passed"):
@@ -544,7 +571,7 @@ def _recommendations(results: list[dict[str, Any]]) -> list[dict[str, str]]:
         if name == "DB Existence":
             recs.append({"name": name, "action": "Run `sari init` to create config, then start daemon or run a full scan."})
         elif name == "DB Access":
-            recs.append({"name": name, "action": "Check file permissions and ensure no other process locks the DB."})
+            recs.append({"name": name, "action": "Check file permissions and ensure no other process is locking the DB."})
         elif name in {
             "DB Schema Symbol IDs",
             "DB Schema Relations IDs",
@@ -552,7 +579,7 @@ def _recommendations(results: list[dict[str, Any]]) -> list[dict[str, str]]:
             "DB Schema Context Validity",
             "DB Schema Snippet Versions",
         }:
-            recs.append({"name": name, "action": "Upgrade to latest code, then run a full rescan (or remove old DB to rebuild)."})
+            recs.append({"name": name, "action": "Upgrade to latest code and run a full rescan."})
         elif name == "Engine Tokenizer Data":
             recs.append({"name": name, "action": "Install CJK support: pip install 'sari[cjk]'"})
         elif name == "Lindera Dictionary":
@@ -564,28 +591,29 @@ def _recommendations(results: list[dict[str, Any]]) -> list[dict[str, str]]:
         elif name.startswith("Daemon Port") or name.startswith("HTTP Port"):
             recs.append({"name": name, "action": "Change port or stop the conflicting process."})
         elif name == "Sari Daemon":
-            recs.append({"name": name, "action": "Start daemon with `sari daemon start`."})
+            recs.append({"name": name, "action": "Start the daemon using `sari daemon start`."})
         elif name == "Network Check":
-            recs.append({"name": name, "action": "If offline, rerun doctor with include_network=false or check firewall."})
+            recs.append({"name": name, "action": "Ensure internet access or use include_network=false if offline."})
         elif name == "Disk Space":
-            recs.append({"name": name, "action": "Free disk space or move workspace to a larger volume."})
+            recs.append({"name": name, "action": "Free up space or move the workspace to a larger volume."})
         elif name == "Search-First Usage":
-            recs.append({"name": name, "action": "Enable search-first or update client to respect search-before-read."})
+            recs.append({"name": name, "action": "Enable search-first enforcement or ensure client searches before reading."})
         elif name == "Workspace Overlap":
-            recs.append({"name": name, "action": "Remove nested workspaces from MCP settings. Keep only the top-level root or the specific project roots."})
+            recs.append({"name": name, "action": "Remove nested workspaces from MCP settings. Keep only the top-level root or individual project roots."})
         elif name == "Windows Write Lock":
-            recs.append({"name": name, "action": "On Windows, ensure msvcrt.locking is available and use a supported Python runtime."})
+            recs.append({"name": name, "action": "msvcrt.locking is required on Windows. Use a supported Python runtime."})
         elif name == "DB Migration Safety":
-            recs.append({"name": name, "action": "Disable destructive migration paths; keep additive schema init/migrate strategy."})
+            recs.append({"name": name, "action": "Disable destructive migration paths and keep additive schema initialization strategy."})
         elif name == "Engine Sync DLQ":
-            recs.append({"name": name, "action": "Run rescan/retry and verify engine is healthy until pending engine_sync_error tasks are cleared."})
+            recs.append({"name": name, "action": "Run rescan/retry and check engine status until pending sync-error tasks are cleared."})
         elif name == "Writer Health":
-            recs.append({"name": name, "action": "If writer thread is dead, restart daemon and inspect DB/engine logs for the first failure."})
+            recs.append({"name": name, "action": "Restart daemon if writer thread is dead and check DB/engine logs for the root error."})
         elif name == "Storage Switch Guard":
-            recs.append({"name": name, "action": "Restart process to clear blocked storage switch, then verify clean shutdown behavior."})
+            recs.append({"name": name, "action": "Restart process to clear blocked storage switch state and check shutdown behavior."})
     return recs
 
 def _auto_fixable(results: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """자동 수정 가능한 항목들을 식별하여 액션 목록을 반환합니다."""
     actions: list[dict[str, str]] = []
     for r in results:
         if r.get("passed"):
@@ -608,7 +636,7 @@ def _auto_fixable(results: list[dict[str, Any]]) -> list[dict[str, str]]:
         elif name == "Sari Daemon" and "Version mismatch" in error:
             actions.append({"name": name, "action": "restart_daemon"})
     
-    # Check for corrupted registry (SSOT Check)
+    # 레지스트리 손상 확인 (SSOT Check)
     try:
         from sari.core.server_registry import ServerRegistry
         reg = ServerRegistry()
@@ -621,6 +649,7 @@ def _auto_fixable(results: list[dict[str, Any]]) -> list[dict[str, str]]:
     return actions
 
 def _run_auto_fixes(ws_root: str, actions: list[dict[str, str]]) -> list[dict[str, Any]]:
+    """식별된 자동 수정 액션들을 실행합니다."""
     if not actions:
         return []
     results: list[dict[str, Any]] = []
@@ -650,7 +679,7 @@ def _run_auto_fixes(ws_root: str, actions: list[dict[str, str]]) -> list[dict[st
                 results.append(_result(f"Auto Fix {name}", True, "Corrupted registry file reset"))
                 
             elif act == "restart_daemon":
-                # Stop old one and suggest restart
+                # 이전 데몬 중지 및 재시작 제안
                 from sari.mcp.cli import cmd_daemon_stop
                 class Args:
                     daemon_host = ""
@@ -664,6 +693,7 @@ def _run_auto_fixes(ws_root: str, actions: list[dict[str, str]]) -> list[dict[st
     return results
 
 def _run_rescan(ws_root: str) -> list[dict[str, Any]]:
+    """자동 수정 후 재스캔(Rescan)을 실행합니다."""
     results: list[dict[str, Any]] = []
     results.append(_result("Auto Fix Rescan Start", True, "scan_once starting"))
     try:
@@ -681,7 +711,7 @@ def _run_rescan(ws_root: str) -> list[dict[str, Any]]:
 
 
 def _check_workspace_overlaps(ws_root: str) -> list[dict[str, Any]]:
-    """Detect if multiple registered workspaces overlap, causing duplicate indexing."""
+    """등록된 여러 워크스페이스 간의 중첩(Overlap)을 감지하여 중복 인덱싱을 방지합니다."""
     results = []
     try:
         from sari.core.server_registry import ServerRegistry
@@ -695,7 +725,7 @@ def _check_workspace_overlaps(ws_root: str) -> list[dict[str, Any]]:
             norm_ws = WorkspaceManager.normalize_path(ws)
             if norm_ws == current: continue
             
-            # Check if current is parent of ws or vice versa
+            # 부모-자식 관계 확인
             if current.startswith(norm_ws + os.sep) or norm_ws.startswith(current + os.sep):
                 overlaps.append(norm_ws)
         
@@ -712,6 +742,7 @@ def _check_workspace_overlaps(ws_root: str) -> list[dict[str, Any]]:
     return results
 
 def execute_doctor(args: Dict[str, Any], db: Any = None, logger: Any = None, roots: List[str] = None) -> Dict[str, Any]:
+    """Doctor 도구 실행 핸들러."""
     ws_root = roots[0] if roots else WorkspaceManager.resolve_workspace_root()
 
     include_network = bool(args.get("include_network", True))

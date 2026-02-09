@@ -14,9 +14,15 @@ SYMBOL_COLUMNS = [
 ]
 
 class SymbolRepository(BaseRepository):
+    """
+    소스 코드 내의 심볼(클래스, 함수 등)과 심볼 간의 관계 정보를 관리하는 저장소입니다.
+    심볼의 위치, 내용, 계층 구조 및 중요도 점수를 SQLite 'symbols' 테이블에 저장합니다.
+    """
     def upsert_symbols_tx(self, cur: sqlite3.Cursor, symbols: Iterable[Any]) -> int:
         """
-        Robustly upsert symbols using named mapping to avoid index hell.
+        심볼 정보들을 트랜잭션 내에서 삽입하거나 업데이트합니다.
+        입력 데이터 형식(DTO, Dict, Tuple)을 자동으로 감지하여 정형화된 형태로 저장합니다.
+        기존에 존재하던 같은 경로의 심볼들은 삭제 후 새로 삽입됩니다.
         """
         symbols_list = list(symbols)
         if not symbols_list:
@@ -86,6 +92,9 @@ class SymbolRepository(BaseRepository):
         return len(normalized)
 
     def upsert_relations_tx(self, cur: sqlite3.Cursor, relations: Iterable[tuple]) -> int:
+        """
+        심볼 간의 호출 관계, 구현 관계 등을 트랜잭션 내에서 저장합니다.
+        """
         rels_list = list(relations)
         if not rels_list: return 0
 
@@ -135,6 +144,10 @@ class SymbolRepository(BaseRepository):
         )
 
     def search_symbols(self, query: str, limit: int = 20, **kwargs) -> List[SymbolDTO]:
+        """
+        이름 또는 정규화된 이름(qualname)을 기반으로 심볼을 검색합니다.
+        종류(kind), 루트 ID, 장소(repo) 등으로 필터링이 가능하며 중요도 순으로 정렬됩니다.
+        """
         lq = f"%{query}%"
         sql = "SELECT s.*, f.repo FROM symbols s LEFT JOIN files f ON s.path = f.path WHERE (s.name LIKE ? OR s.qualname LIKE ?)"
         params = [lq, lq]
@@ -169,6 +182,10 @@ class SymbolRepository(BaseRepository):
         return [self._to_dto(r) for r in rows]
 
     def recalculate_symbol_importance(self) -> int:
+        """
+        심볼 간의 관계(relations)를 분석하여 각 심볼의 중요도 점수(fan-in 기반)를 다시 계산합니다.
+        참조가 많이 되는 심볼일수록 높은 중요도 점수를 가집니다.
+        """
         self.execute("UPDATE symbols SET importance_score = 0.0")
         sql = """
             UPDATE symbols 

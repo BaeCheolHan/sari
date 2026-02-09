@@ -6,6 +6,10 @@ from .base import BaseParser
 from .common import _qualname, _symbol_id, _safe_compile, NORMALIZE_KIND_BY_EXT
 
 class GenericRegexParser(BaseParser):
+    """
+    Tree-sitter 라이브러리가 없거나 해당 언어를 지원하지 않을 때 사용하는 범용 정규식 파서입니다.
+    미리 정의된 정규식 패턴을 사용하여 클래스와 메서드 구조를 휴리스틱하게 추출합니다.
+    """
     def __init__(self, config: Dict[str, Any], ext: str):
         self.ext = ext.lower()
         self.re_class = config["re_class"]
@@ -74,6 +78,10 @@ class GenericRegexParser(BaseParser):
         return symbols, relations
 
 class HCLRegexParser(GenericRegexParser):
+    """
+    Terraform(HCL) 파일을 처리하기 위한 특화된 정규식 파서입니다.
+    resource, module, variable 등 HCL 특유의 블록 구조를 처리합니다.
+    """
     def __init__(self, config: Dict[str, Any], ext: str):
         super().__init__(config, ext)
         # HCL specific regex that explicitly captures type and name for resources

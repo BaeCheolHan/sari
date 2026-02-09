@@ -4,7 +4,10 @@ from typing import Any, Dict, List
 from sari.mcp.tools._util import mcp_response, pack_header, pack_line, pack_encode_id, pack_encode_text, resolve_root_ids, pack_error, ErrorCode
 
 def execute_search_api_endpoints(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict[str, Any]:
-    """Search for API endpoints by URL path pattern."""
+    """
+    URL 경로 패턴을 기반으로 관련 API 엔드포인트(함수, 메서드)를 검색하는 도구입니다.
+    코드 내 메타데이터에 기록된 `http_path` 정보를 활용하여 탐색합니다.
+    """
     path_query = args.get("path", "").strip()
     if not path_query:
         return mcp_response(
@@ -15,15 +18,15 @@ def execute_search_api_endpoints(args: Dict[str, Any], db: Any, roots: List[str]
 
     repo = args.get("repo")
 
-    # Search in symbols where metadata contains the path
-    # SQLite JSON support is limited in older versions, so we use LIKE on metadata TEXT
+    # 메타데이터에 경로가 포함된 심볼 검색
+    # SQLite JSON 지원 버전의 한계로 인해, metadata 텍스트에 대해 LIKE 검색을 수행한 후 Python에서 필터링합니다.
     sql = """
         SELECT s.path, s.name, s.kind, s.line, s.metadata, s.content, f.repo
         FROM symbols s
         JOIN files f ON s.path = f.path
         WHERE s.metadata LIKE ? AND (s.kind = 'method' OR s.kind = 'function' OR s.kind = 'class')
     """
-    # Look for partial matches in metadata (looser LIKE, filter in Python)
+    # 메타데이터에서 부분 일치 검색 (느슨한 LIKE 검색)
     params = [f'%{path_query}%']
     root_ids = resolve_root_ids(roots)
     if root_ids:
@@ -42,6 +45,7 @@ def execute_search_api_endpoints(args: Dict[str, Any], db: Any, roots: List[str]
         try:
             meta = json.loads(r["metadata"] or "{}")
             http_path = meta.get("http_path", "")
+            # 쿼리가 http_path에 포함되는지 확인
             if path_query in http_path or path_query == http_path:
                 results.append({
                     "path": r["path"],
@@ -59,9 +63,10 @@ def execute_search_api_endpoints(args: Dict[str, Any], db: Any, roots: List[str]
             continue
 
     def build_pack() -> str:
+        """PACK1 형식의 응답을 생성합니다."""
         lines = [pack_header("search_api_endpoints", {"q": pack_encode_text(path_query)}, returned=len(results))]
         if not repo:
-            lines.append(pack_line("m", {"hint": pack_encode_text("repo 또는 root_ids로 스코프를 고정하세요")}))
+            lines.append(pack_line("m", {"hint": pack_encode_text("Narrow scope using repo or root_ids")}))
         for r in results:
             kv = {
                 "path": pack_encode_id(r["path"]),
@@ -77,5 +82,5 @@ def execute_search_api_endpoints(args: Dict[str, Any], db: Any, roots: List[str]
     return mcp_response(
         "search_api_endpoints",
         build_pack,
-        lambda: {"query": path_query, "repo": repo or "", "results": results, "count": len(results), "meta": {"hint": "repo 또는 root_ids로 스코프를 고정하세요" if not repo else ""}},
+        lambda: {"query": path_query, "repo": repo or "", "results": results, "count": len(results), "meta": {"hint": "Narrow scope using repo or root_ids" if not repo else ""}},
     )

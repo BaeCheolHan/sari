@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Repo candidates tool for Sari MCP Server.
+Sari MCP 서버를 위한 저장소 후보 추천 도구.
+검색 쿼리와 가장 관련성이 높은 저장소(Repo)들을 찾아 추천 이유와 함께 반환합니다.
 """
 import json
 from typing import Any, Dict, List
@@ -11,7 +12,10 @@ from sari.mcp.telemetry import TelemetryLogger
 
 
 def execute_repo_candidates(args: Dict[str, Any], db: LocalSearchDB, logger: TelemetryLogger = None, roots: List[str] = None) -> Dict[str, Any]:
-    """Execute repo_candidates tool."""
+    """
+    쿼리와 일치하는 파일이 많은 리포지토리를 찾아 후보군을 제안합니다.
+    어떤 리포지토리에서 작업을 시작해야 할지 모를 때 유용합니다.
+    """
     guard = require_db_schema(
         db,
         "repo_candidates",
@@ -20,6 +24,7 @@ def execute_repo_candidates(args: Dict[str, Any], db: LocalSearchDB, logger: Tel
     )
     if guard:
         return guard
+        
     query = args.get("query", "")
     try:
         limit_arg = min(int(args.get("limit", 3)), 5)
@@ -34,6 +39,7 @@ def execute_repo_candidates(args: Dict[str, Any], db: LocalSearchDB, logger: Tel
         )
 
     def get_candidates():
+        """관련 리포지토리 후보군을 계산하고 추천 이유를 생성합니다."""
         root_ids = resolve_root_ids(list(roots or []))
         candidates = db.repo_candidates(q=query, limit=limit_arg, root_ids=root_ids)
         for candidate in candidates:
@@ -41,7 +47,7 @@ def execute_repo_candidates(args: Dict[str, Any], db: LocalSearchDB, logger: Tel
             if score >= 10:
                 reason = f"High match ({score} files contain '{query}')"
             elif score >= 5:
-                reason = f"Moderate match ({score} files)"
+                reason = f"Medium match ({score} files)"
             else:
                 reason = f"Low match ({score} files)"
             candidate["reason"] = reason
@@ -49,24 +55,26 @@ def execute_repo_candidates(args: Dict[str, Any], db: LocalSearchDB, logger: Tel
 
     # --- JSON Builder ---
     def build_json() -> Dict[str, Any]:
+        """JSON 형식의 응답을 생성합니다."""
         candidates = get_candidates()
         return {
             "query": query,
             "candidates": candidates,
-            "hint": "Use 'repo' parameter in search to narrow down scope after selection",
+            "hint": "After selecting, use the 'repo' parameter in search tools to narrow down.",
         }
 
     # --- PACK1 Builder ---
     def build_pack() -> str:
+        """PACK1 형식의 응답을 생성합니다."""
         candidates = get_candidates()
 
-        # Header
+        # 헤더 생성
         kv = {"q": pack_encode_text(query), "limit": limit_arg}
         lines = [
             pack_header("repo_candidates", kv, returned=len(candidates))
         ]
 
-        # Records
+        # 개별 레코드 행 생성
         for c in candidates:
             # r:repo=<repo> score=<score> reason=<reason>
             kv_line = {

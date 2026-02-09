@@ -6,7 +6,15 @@ from ..utils.compression import _compress
 from ..models import FILE_COLUMNS
 
 class FileRepository(BaseRepository):
+    """
+    파일 시스템 메타데이터와 파일 내용을 관리하는 저장소입니다.
+    파일의 경로, 수정 시간(mtime), 크기, 압축된 내용 및 상태 정보를 SQLite 'files' 테이블에 저장합니다.
+    """
     def upsert_files_tx(self, cur: sqlite3.Cursor, rows: Iterable[tuple]) -> int:
+        """
+        파일 정보들을 트랜잭션 내에서 한꺼번에 삽입하거나 업데이트(Upsert)합니다.
+        mtime이 기존보다 크거나 같은 경우에만 업데이트하며, 관련 심볼 정보를 초기화합니다.
+        """
         processed_rows = []
         now = int(time.time()) if 'time' in globals() else 0
         try:
@@ -62,6 +70,7 @@ class FileRepository(BaseRepository):
         return len(processed_rows)
 
     def delete_path_tx(self, cur: sqlite3.Cursor, path: str) -> None:
+        """파일 정보와 그에 딸린 심볼, 관계 정보를 트랜잭션 내에서 모두 삭제합니다."""
         cur.execute("DELETE FROM files WHERE path = ?", (path,))
         cur.execute("DELETE FROM symbols WHERE path = ?", (path,))
         cur.execute("DELETE FROM symbol_relations WHERE from_path = ? OR to_path = ?", (path, path))
@@ -71,6 +80,7 @@ class FileRepository(BaseRepository):
         cur.executemany("UPDATE files SET last_seen_ts = ? WHERE path = ?", [(ts, p) for p in paths])
 
     def get_file_meta(self, path: str) -> Optional[Tuple[int, int, str]]:
+        """특정 경로 파일의 mtime, 크기, 그리고 메타데이터에 저장된 내용 해시값을 반환합니다."""
         try:
             row = self.execute("SELECT mtime, size, metadata_json FROM files WHERE path = ?", (path,)).fetchone()
             if not row: return None

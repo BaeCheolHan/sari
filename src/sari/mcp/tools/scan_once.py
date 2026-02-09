@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Scan-once tool for Local Search MCP Server.
+로컬 검색 MCP 서버를 위한 Scan-Once 도구.
+동기적으로(synchronously) 한 번의 스캔 작업을 즉시 실행합니다.
 """
 from typing import Any, Dict
 from sari.mcp.tools._util import mcp_response, pack_header, pack_line, pack_error, ErrorCode
@@ -9,7 +10,10 @@ from sari.core.services.index_service import IndexService
 
 
 def execute_scan_once(args: Dict[str, Any], indexer: Indexer, logger: Any) -> Dict[str, Any]:
-    """Run a synchronous scan once."""
+    """
+    동기적(synchronous) 스캔 작업을 1회 실행하고 결과를 반환합니다.
+    (One-off Scan Execution)
+    """
     svc = IndexService(indexer)
     result = svc.scan_once()
     if not result.get("ok"):

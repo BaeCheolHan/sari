@@ -14,16 +14,20 @@ from ._util import (
 from sari.core.services.call_graph.service import CallGraphService
 
 def build_call_graph(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict[str, Any]:
-    """Legacy entry point, redirects to CallGraphService."""
+    """레거시 진입점이며, 내부적으로 CallGraphService를 사용하여 그래프를 생성합니다."""
     svc = CallGraphService(db, roots)
     return svc.build(args)
 
 def execute_call_graph(args: Dict[str, Any], db: Any, logger: Any = None, roots: List[str] = None) -> Dict[str, Any]:
-    """MCP tool execution entry point."""
+    """
+    특정 심볼의 호출 그래프(Call Graph)를 생성하는 도구입니다.
+    심볼의 상위(Upstream) 및 하위(Downstream) 호출 관계를 계층 구조로 시각화합니다.
+    """
     if roots is None and isinstance(logger, list):
         roots, logger = logger, None
     
     def build_pack(payload: Dict[str, Any]) -> str:
+        """PACK1 형식의 응답을 생성합니다."""
         d = str(int(args.get("depth") or 2))
         header = pack_header("call_graph", {
             "symbol": pack_encode_text(payload.get("symbol", "")),
@@ -41,6 +45,7 @@ def execute_call_graph(args: Dict[str, Any], db: Any, logger: Any = None, roots:
         return "\n".join(lines)
 
     try:
+        # CallGraphService를 통한 그래프 빌드
         svc = CallGraphService(db, roots or [])
         payload = svc.build(args)
         return mcp_response("call_graph", lambda: build_pack(payload), lambda: payload)

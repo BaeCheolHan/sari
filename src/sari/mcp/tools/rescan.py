@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Rescan tool for Local Search MCP Server.
+로컬 검색 MCP 서버를 위한 재스캔(Rescan) 도구.
+인덱싱 프로세스를 비동기로 트리거합니다.
 """
 from typing import Any, Dict
 from sari.mcp.tools._util import mcp_response, pack_header, pack_line, pack_error, ErrorCode
@@ -9,7 +10,10 @@ from sari.core.services.index_service import IndexService
 
 
 def execute_rescan(args: Dict[str, Any], indexer: Indexer) -> Dict[str, Any]:
-    """Trigger async rescan on indexer."""
+    """
+    Indexer에게 비동기 재스캔(Rescan) 작업을 요청합니다.
+    작업은 백그라운드에서 수행됩니다.
+    """
     svc = IndexService(indexer)
     result = svc.rescan()
     if not result.get("ok"):

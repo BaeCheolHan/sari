@@ -5,6 +5,11 @@ from .generic import GenericRegexParser
 from .common import _safe_compile
 
 class ParserFactory:
+    """
+    파일 확장자에 따라 적절한 파서 객체를 생성하고 캐싱하는 팩토리 클래스입니다.
+    Python, HCL 등 전용 파서가 있는 경우 이를 우선 사용하며,
+    그 외의 경우 정규식 기반의 Generic 파서를 구성하여 반환합니다.
+    """
     _parsers: Dict[str, BaseParser] = {}
     _lang_cache: Dict[str, Optional[str]] = {}
     _lang_map: Dict[str, str] = {
@@ -33,6 +38,10 @@ class ParserFactory:
 
     @classmethod
     def get_parser(cls, ext: str) -> Optional[BaseParser]:
+        """
+        확장자에 맞는 파서 인스턴스를 반환합니다.
+        이미 생성된 파서는 재사용(Singleton 패턴)하여 성능을 최적화합니다.
+        """
         ext = (ext or "").lower()
         if ext == ".py":
             key = "python"
@@ -90,6 +99,9 @@ class ParserFactory:
 
     @classmethod
     def get_language(cls, ext: str) -> Optional[str]:
+        """
+        파일 확장자를 Tree-sitter에서 사용하는 언어 식별자로 변환합니다.
+        """
         key = (ext or "").lower()
         if key in cls._lang_cache:
             return cls._lang_cache[key]

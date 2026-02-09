@@ -20,6 +20,7 @@ from sari.core.queue_pipeline import DbTask
 
 
 def _parse_path_range(path: str, start_line: Optional[int], end_line: Optional[int]) -> tuple[str, Optional[int], Optional[int]]:
+    """'path:start-end' 형식의 문자열로부터 경로와 라인 범위를 파싱합니다."""
     if ":" in path and (start_line is None and end_line is None):
         base, rng = path.rsplit(":", 1)
         if "-" in rng:
@@ -32,6 +33,7 @@ def _parse_path_range(path: str, start_line: Optional[int], end_line: Optional[i
 
 
 def _read_lines(db: Any, db_path: str, roots: List[str]) -> List[str]:
+    """DB 또는 파일 시스템에서 파일의 모든 라인을 읽어옵니다."""
     fs_path = resolve_fs_path(db_path, roots)
     if fs_path:
         try:
@@ -44,17 +46,17 @@ def _read_lines(db: Any, db_path: str, roots: List[str]) -> List[str]:
 
 
 def _enqueue_or_write(db: Any, indexer: Any, row: tuple) -> None:
+    """인덱서가 활성화된 경우 작업을 큐에 넣고, 그렇지 않으면 DB에 직접 씁니다."""
     writer = getattr(indexer, "_db_writer", None) if indexer else None
     if writer and DbTask:
         writer.enqueue(DbTask(kind="upsert_snippets", snippet_rows=[row]))
         return
-    # Direct write (CLI or no indexer)
+    # 직접 쓰기 (CLI 또는 인덱서 미사용 시)
     prev = getattr(db, "_writer_thread_id", None)
     db.register_writer_thread(threading.get_ident())
     try:
         with db._lock:
             cur = db._write.cursor()
-            # cur.execute("BEGIN")  <-- Removed
             db.upsert_snippet_tx(cur, [row])
             db._write.commit()
     finally:
@@ -62,12 +64,14 @@ def _enqueue_or_write(db: Any, indexer: Any, row: tuple) -> None:
 
 
 def build_save_snippet(args: Dict[str, Any], db: Any, roots: List[str], indexer: Any = None) -> Dict[str, Any]:
+    """스니펫 저장을 위한 비즈니스 로직을 수행하고 결과 페이로드를 생성합니다."""
     path = str(args.get("path") or "").strip()
     tag = str(args.get("tag") or "").strip()
     start_line = args.get("start_line")
     end_line = args.get("end_line")
     note = str(args.get("note") or "").strip()
     commit_hash = str(args.get("commit") or "").strip()
+    
     if not path or not tag:
         raise ValueError("path and tag are required")
 
@@ -79,6 +83,7 @@ def build_save_snippet(args: Dict[str, Any], db: Any, roots: List[str], indexer:
     if start_line is None or end_line is None:
         raise ValueError("start_line and end_line are required")
 
+    # 스니펫 내용 획득 및 앵커(Anchor) 추출
     lines = _read_lines(db, db_path, roots)
     start = max(1, int(start_line))
     end = max(start, int(end_line))
@@ -125,6 +130,10 @@ def build_save_snippet(args: Dict[str, Any], db: Any, roots: List[str], indexer:
 
 
 def execute_save_snippet(args: Dict[str, Any], db: Any, roots: List[str], indexer: Any = None) -> Dict[str, Any]:
+    """
+    코드 스니펫을 태그와 함께 저장하는 도구입니다.
+    파일 변경 시 위치를 복구할 수 있도록 전/후 앵커 텍스트를 함께 저장합니다.
+    """
     try:
         payload = build_save_snippet(args, db, roots, indexer=indexer)
     except ValueError as e:

@@ -12,24 +12,16 @@ from sari.mcp.tools._util import (
     pack_encode_text,
     pack_error,
     ErrorCode,
+    parse_timestamp,
 )
 
 from sari.core.queue_pipeline import DbTask
 
-
-from sari.mcp.tools._util import (
-    mcp_response,
-    pack_header,
-    pack_line,
-    pack_encode_id,
-    pack_encode_text,
-    pack_error,
-    ErrorCode,
-    parse_timestamp,
-)
-
 def execute_archive_context(args: Dict[str, Any], db: Any, roots: List[str], indexer: Any = None) -> Dict[str, Any]:
-    """Archive knowledge context using the modernized Facade."""
+    """
+    도메인 지식이나 작업 컨텍스트를 보관(Archive)하는 도구입니다.
+    Facade 패턴을 사용하여 지식 컨텍스트를 DB에 안전하게 저장합니다.
+    """
     topic = str(args.get("topic") or "").strip()
     content = str(args.get("content") or "").strip()
     
@@ -40,7 +32,7 @@ def execute_archive_context(args: Dict[str, Any], db: Any, roots: List[str], ind
             lambda: {"error": {"code": ErrorCode.INVALID_ARGS.value, "message": "topic and content are required"}, "isError": True},
         )
 
-    # Prepare data for DTO-based upsert
+    # DTO 기반 업서트를 위한 데이터 준비
     data = {
         "topic": topic,
         "content": content,
@@ -53,7 +45,7 @@ def execute_archive_context(args: Dict[str, Any], db: Any, roots: List[str], ind
     }
 
     try:
-        # Use Facade: db.contexts handles all the internal details
+        # Facade 사용: db.contexts가 모든 내부 세부 사항을 처리합니다.
         payload = db.contexts.upsert(data)
     except Exception as e:
         return mcp_response(
@@ -63,6 +55,7 @@ def execute_archive_context(args: Dict[str, Any], db: Any, roots: List[str], ind
         )
 
     def build_pack() -> str:
+        """PACK1 형식의 응답을 생성합니다."""
         lines = [pack_header("archive_context", {"topic": pack_encode_text(payload.topic)}, returned=1)]
         kv = {
             "topic": pack_encode_id(payload.topic),

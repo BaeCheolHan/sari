@@ -16,10 +16,12 @@ from sari.mcp.tools._util import (
 
 
 def _normalize_query(q: Any) -> str:
+    """쿼리 문자열을 정규화합니다."""
     return str(q or "").strip()
 
 
 def _coerce_int(val: Any, default: int) -> int:
+    """값을 정수형으로 변환하며, 실패 시 기본값을 반환합니다."""
     try:
         return int(val)
     except (TypeError, ValueError):
@@ -28,7 +30,8 @@ def _coerce_int(val: Any, default: int) -> int:
 
 def execute_grep_and_read(args: Dict[str, Any], db: LocalSearchDB, roots: List[str]) -> Dict[str, Any]:
     """
-    Composite tool: search then read top results.
+    복합 도구: 하이브리드 검색을 먼저 수행한 후, 최상위 결과 파일들의 전체 내용을 함께 읽어옵니다.
+    (Search then Read top results)
     """
     guard = require_db_schema(
         db,
@@ -94,6 +97,7 @@ def execute_grep_and_read(args: Dict[str, Any], db: LocalSearchDB, roots: List[s
     )
 
     try:
+        # 1. 하이브리드 검색 실행
         hits, meta = db.search_v2(opts)
     except Exception as exc:
         return mcp_response(
@@ -114,6 +118,7 @@ def execute_grep_and_read(args: Dict[str, Any], db: LocalSearchDB, roots: List[s
             },
         )
 
+    # 2. 검색 결과 중 상위 N개 파일의 실제 내용 읽기
     read_results: List[Dict[str, Any]] = []
     read_errors: List[Dict[str, Any]] = []
     for h in hits[:read_limit]:

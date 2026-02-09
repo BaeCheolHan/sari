@@ -5,19 +5,6 @@ from sari.mcp.tools._util import (
     pack_header,
     pack_line,
     pack_encode_id,
-    pack_encode_text,
-    pack_error,
-    ErrorCode,
-    require_db_schema,
-)
-
-
-from sari.mcp.tools._util import (
-    mcp_response,
-    pack_header,
-    pack_line,
-    pack_encode_id,
-    pack_encode_text,
     pack_error,
     ErrorCode,
     require_db_schema,
@@ -25,7 +12,10 @@ from sari.mcp.tools._util import (
 )
 
 def execute_get_context(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict[str, Any]:
-    """Retrieve knowledge contexts using the modernized Facade."""
+    """
+    저장된 도메인 지식이나 작업 컨텍스트를 조회하는 도구입니다.
+    특정 주제(Topic)로 직접 조회하거나 검색 쿼리를 통한 전문 검색을 지원합니다.
+    """
     guard = require_db_schema(db, "get_context", "contexts", ["topic", "content"])
     if guard: return guard
 
@@ -36,9 +26,11 @@ def execute_get_context(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict
 
     try:
         if topic:
+            # 주제별 직접 조회
             row = db.contexts.get_context_by_topic(topic, as_of=as_of)
             results = [row] if row else []
         elif query:
+            # 검색 쿼리를 통한 조회
             results = db.contexts.search_contexts(query, limit=limit, as_of=as_of)
         else:
             return mcp_response(
@@ -54,6 +46,7 @@ def execute_get_context(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict
         )
 
     def build_json() -> Dict[str, Any]:
+        """JSON 형식의 응답을 생성합니다."""
         return {
             "topic": topic, "query": query,
             "results": [r.model_dump() for r in results],
@@ -61,6 +54,7 @@ def execute_get_context(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict
         }
 
     def build_pack() -> str:
+        """PACK1 형식의 응답을 생성합니다."""
         lines = [pack_header("get_context", {}, returned=len(results))]
         for r in results:
             kv = {

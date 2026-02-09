@@ -7,7 +7,14 @@ from .base import BaseRepository
 
 
 class SearchRepository(BaseRepository):
+    """
+    파일 및 심볼에 대한 고도화된 검색 기능을 제공하는 저장소입니다.
+    키워드 검색, 시맨틱(벡터) 검색, 그리고 저장소 후보 탐색 기능을 포함합니다.
+    """
     def repo_candidates(self, q: str, limit: int = 3, root_ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        """
+        사용자의 쿼리에 가장 부합하는(매칭되는 내용이 많은) 상위 N개의 저장소(repo) 후보를 반환합니다.
+        """
         if not q:
             return []
         lq = f"%{q}%"
@@ -23,7 +30,10 @@ class SearchRepository(BaseRepository):
         return [{"repo": r[0], "score": int(r[1])} for r in rows]
 
     def search_semantic(self, query_vector: List[float], limit: int = 10, **kwargs) -> List[SearchHit]:
-        """Find meaningful code blocks using Optimized Vector Cosine Similarity."""
+        """
+        입력된 쿼리 벡터와 DB에 저장된 벡터 간의 코사인 유사도를 계산하여 시맨틱 검색을 수행합니다.
+        최적화를 위해 numpy가 있는 경우 활용하며, 유사도가 높은 순으로 결과를 반환합니다.
+        """
         import struct
         import math
         
@@ -91,7 +101,9 @@ class SearchRepository(BaseRepository):
         return results
 
     def search_v2(self, opts: Any) -> Tuple[List[SearchHit], Dict[str, Any]]:
-        """Execute search with importance scoring and pagination."""
+        """
+        키워드 검색, 중요도 가점, 페이지네이션을 결합한 통합 검색(v2)을 실행합니다.
+        """
         query = str(getattr(opts, "query", "") or "").strip()
         if not query:
             return [], {"total": 0, "total_mode": getattr(opts, "total_mode", "exact")}

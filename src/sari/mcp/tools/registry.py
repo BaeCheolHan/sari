@@ -31,7 +31,10 @@ import sari.mcp.tools.dry_run_diff as dry_run_diff_tool
 
 @dataclass
 class Tool:
-    """MCP 도구 정의 데이터 클래스"""
+    """
+    MCP 도구 정의 데이터 클래스.
+    이름, 설명, 입력 스키마 및 실행 핸들러 정보를 포함합니다.
+    """
     name: str
     description: str
     input_schema: Dict[str, Any]
@@ -41,7 +44,10 @@ class Tool:
 
 @dataclass
 class ToolContext:
-    """도구 실행 시 제공되는 컨텍스트 정보"""
+    """
+    도구 실행 시 제공되는 컨텍스트 정보.
+    DB 접근 주체, 인덱서, 설정 및 환경 정보를 캡슐화합니다.
+    """
     db: Any
     engine: Any
     indexer: Any
@@ -54,7 +60,9 @@ class ToolContext:
 
 
 class ToolRegistry:
-    """도구를 등록하고 실행을 위임하는 레지스트리 클래스"""
+    """
+    Sari MCP 도구들을 등록하고 관리하며 실행을 위임하는 레지스트리 클래스입니다.
+    """
     
     def __init__(self) -> None:
         self._tools: Dict[str, Tool] = {}
@@ -69,8 +77,8 @@ class ToolRegistry:
 
     def list_tools(self) -> List[Dict[str, Any]]:
         """
-        MCP 프로토콜에 맞게 JSON 스키마를 포함한 도구 정의 목록을 반환합니다.
-        환경 변수에 따라 숨겨진 도구를 포함할 수 있습니다.
+        MCP 프로토콜 규격에 맞게 도구 정의(JSON Schema 포함) 목록을 반환합니다.
+        `SARI_EXPOSE_INTERNAL_TOOLS` 설정에 따라 숨겨진 도구 노출 여부를 결정합니다.
         """
         expose_internal = os.environ.get("SARI_EXPOSE_INTERNAL_TOOLS", "").strip().lower() in {"1", "true", "yes", "on"}
         return [
@@ -85,8 +93,8 @@ class ToolRegistry:
 
     def execute(self, name: str, ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
         """
-        요청된 도구를 실행하고 결과를 반환합니다.
-        정책 엔진이 있는 경우, 주요 검색 액션에 대해 태깅을 수행합니다.
+        요청된 도구를 찾아 실행하고 결과를 반환합니다.
+        정책 엔진(Policy Engine)이 활성화된 경우 실행 이력을 마킹합니다.
         """
         tool = self._tools.get(name)
         if not tool:
@@ -103,7 +111,7 @@ class ToolRegistry:
 
 
 def build_default_registry() -> ToolRegistry:
-    """기본 도구 레지스트리를 생성하고 모든 도구 그룹을 등록합니다."""
+    """기본 도구 레지스트리를 생성하고 모든 도구 그룹을 등록하여 반환합니다."""
     reg = ToolRegistry()
     _register_core_tools(reg)      # 핵심 도구
     _register_search_tools(reg)    # 검색 도구

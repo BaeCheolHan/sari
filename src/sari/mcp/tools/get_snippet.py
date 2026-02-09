@@ -18,6 +18,7 @@ from sari.mcp.tools._util import (
 )
 
 def _read_lines(db: Any, db_path: str, roots: List[str]) -> List[str]:
+    """DB 또는 파일 시스템에서 파일의 모든 라인을 읽어옵니다."""
     fs_path = resolve_fs_path(db_path, roots)
     if fs_path:
         try:
@@ -29,15 +30,23 @@ def _read_lines(db: Any, db_path: str, roots: List[str]) -> List[str]:
     return (raw or "").splitlines()
 
 def _remap_snippet(lines: List[str], stored: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    저장된 스니펫이 파일의 변경으로 인해 위치가 어긋난 경우, 
+    앵커(Anchor)나 내용 매칭을 통해 현재 파일에서의 새로운 위치를 찾습니다.
+    (Self-healing Location Remapping)
+    """
     start = int(stored.get("start_line") or 0)
     end = int(stored.get("end_line") or 0)
     content = str(stored.get("content") or "")
     stored_lines = content.splitlines()
+    
+    # 1. 원래 위치 확인
     if start > 0 and end >= start and end <= len(lines):
         current = "\n".join(lines[start - 1 : end])
         if current == content:
             return {"start": start, "end": end, "content": current, "remapped": False, "diff": ""}
-    # Try exact content match
+            
+    # 2. 내용 완전 일치 매칭 시도
     if stored_lines:
         for i in range(0, len(lines) - len(stored_lines) + 1):
             if lines[i : i + len(stored_lines)] == stored_lines:
@@ -49,6 +58,8 @@ def _remap_snippet(lines: List[str], stored: Dict[str, Any]) -> Dict[str, Any]:
                     "reason": "content_match",
                     "diff": _diff_snippet(content, "\n".join(stored_lines)),
                 }
+                
+    # 3. 앵커(전/후 라인 텍스트) 매칭 시도
     anchor_before = (stored.get("anchor_before") or "").strip()
     anchor_after = (stored.get("anchor_after") or "").strip()
     if anchor_before:
@@ -91,6 +102,7 @@ def _remap_snippet(lines: List[str], stored: Dict[str, Any]) -> Dict[str, Any]:
     return {"start": start, "end": end, "content": content, "remapped": False, "reason": "no_match", "diff": ""}
 
 def _diff_snippet(old: str, new: str, max_lines: int = 200, max_chars: int = 8000) -> str:
+    """기존 스니펫과 현재 파일 스니펫 간의 차이(Diff)를 생성합니다."""
     if old == new:
         return ""
     diff_lines = list(
@@ -110,6 +122,7 @@ def _diff_snippet(old: str, new: str, max_lines: int = 200, max_chars: int = 800
     return diff_text
 
 def _update_snippet_record(db: Any, row: Dict[str, Any], mapped: Dict[str, Any]) -> None:
+    """리매핑된 정보를 DB에 업데이트하여 위치 정보를 동기화합니다."""
     if not hasattr(db, "update_snippet_location_tx"):
         return
     snippet_id = int(row.get("id") or 0)
@@ -124,7 +137,7 @@ def _update_snippet_record(db: Any, row: Dict[str, Any], mapped: Dict[str, Any])
         content_hash = ""
     start = int(mapped.get("start") or 0)
     end = int(mapped.get("end") or 0)
-    # Recompute anchors from current file lines if possible
+    # 현재 파일 상태를 바탕으로 앵커 재계산
     anchors = {
         "before": "",
         "after": "",
@@ -160,6 +173,7 @@ def _update_snippet_record(db: Any, row: Dict[str, Any], mapped: Dict[str, Any])
         db.register_writer_thread(prev)
 
 def _should_update(mapped: Dict[str, Any]) -> tuple[bool, str]:
+    """리매핑된 정보가 유효하여 업데이트를 수행해야 하는지 결정합니다."""
     start = int(mapped.get("start") or 0)
     end = int(mapped.get("end") or 0)
     content = str(mapped.get("content") or "")
@@ -172,6 +186,7 @@ def _should_update(mapped: Dict[str, Any]) -> tuple[bool, str]:
     return True, ""
 
 def _write_diff_file(diff_path: str, row: Dict[str, Any], mapped: Dict[str, Any]) -> None:
+    """디버깅을 위해 Diff 정보를 파일로 기록합니다."""
     try:
         base = diff_path
         if not base:
@@ -186,13 +201,14 @@ def _write_diff_file(diff_path: str, row: Dict[str, Any], mapped: Dict[str, Any]
         pass
 
 def _write_snapshot_files(diff_path: str, row: Dict[str, Any], mapped: Dict[str, Any]) -> None:
+    """변경 전/후의 스토어드 텍스트를 각각 스냅샷 파일로 기록합니다."""
     try:
         base = diff_path
         if not base:
             tag = str(row.get("tag", "snippet"))
             base = f"~/.cache/sari/snippet-diffs/{tag}.diff"
-        base_path = Path(base).expanduser().resolve()
-        dir_path = base_path.parent
+        path = Path(base).expanduser().resolve()
+        dir_path = path.parent
         dir_path.mkdir(parents=True, exist_ok=True)
         ts = int(time.time())
         prefix = f"{row.get('tag','snippet')}_{row.get('id','')}_{ts}"
@@ -207,6 +223,7 @@ def _write_snapshot_files(diff_path: str, row: Dict[str, Any], mapped: Dict[str,
 
 
 def build_get_snippet(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict[str, Any]:
+    """스니펫 조회 및 위치 리매핑 비즈니스 로직을 수행합니다."""
     tag = str(args.get("tag") or "").strip()
     query = str(args.get("query") or "").strip()
     limit = int(args.get("limit") or 20)
@@ -214,6 +231,7 @@ def build_get_snippet(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict[s
     update = str(args.get("update") or "0").strip().lower() in {"1", "true", "yes", "on"}
     diff_path = str(args.get("diff_path") or "").strip()
     history = str(args.get("history") or "").strip().lower() in {"1", "true", "yes", "on"}
+    
     if tag:
         rows = db.list_snippets_by_tag(tag)
         if remap:
@@ -240,6 +258,7 @@ def build_get_snippet(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict[s
                 if history and r.get("id"):
                     r["versions"] = db.list_snippet_versions(int(r["id"]))
         return {"tag": tag, "results": rows}
+    
     if query:
         rows = db.search_snippets(query, limit=limit)
         if remap:
@@ -270,6 +289,10 @@ def build_get_snippet(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict[s
 
 
 def execute_get_snippet(args: Dict[str, Any], db: Any, logger: Any = None, roots: List[str] = None) -> Dict[str, Any]:
+    """
+    저장된 코드 스니펫을 조회하는 도구입니다.
+    파일이 변경된 경우 자동으로 현재 위치를 찾는 셀프 힐링(Self-healing) 기능을 지원합니다.
+    """
     guard = require_db_schema(
         db,
         "get_snippet",

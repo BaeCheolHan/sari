@@ -1,32 +1,37 @@
 #!/usr/bin/env python3
 """
-Sari guidance tool for LLMs.
-Returns a short usage guide to encourage search-first behavior.
+LLM을 위한 Sari 가이드 도구.
+Sari의 효율적인 활용을 위한 핵심 원칙과 권장 워크플로우를 한국어로 제공합니다.
 """
 from typing import Any, Dict
 from sari.mcp.tools._util import mcp_response, pack_header, pack_line, pack_encode_text
 
 
 def execute_sari_guide(args: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Sari의 고급 분석 도구를 활용하여 토큰을 절약하고 코드 이해도를 높이기 위한 가이드를 반환합니다.
+    (Search-first behavior enforcement)
+    """
     text = (
         "Sari Agentic Workflow Guide (Expert Edition)\n\n"
-        "[핵심 원칙: 도구의 급 나누기]\n"
-        "- **Simple (초급)**: `search`, `read_file` -> 단순 텍스트 탐색 및 확인용.\n"
-        "- **Advanced (중급)**: `search_symbols`, `list_symbols`, `read_symbol` -> 구조적 탐색.\n"
-        "- **Expert (고급)**: `get_callers`, `call_graph`, `get_implementations` -> **코드 이해의 치트키.**\n\n"
-        "[토큰 효율의 정점: 분석 도구 활용]\n"
-        "LLM이 가장 많이 실수하는 것은 '코드를 직접 읽어서 흐름을 파악하려는 행위'입니다. 아래 상황에서는 반드시 전용 분석 도구를 사용하세요:\n"
-        "1) **\"이 함수 어디서 쓰여?\"**: `search` 금지. 반드시 `get_callers` 사용 (토큰 90% 절약).\n"
-        "2) **\"시스템 전체 흐름이 뭐야?\"**: 여러 파일 `read_file` 금지. 반드시 `call_graph` 사용.\n"
-        "3) **\"인터페이스의 실제 로직이 어디야?\"**: `get_implementations` 사용.\n"
-        "4) **\"API 엔드포인트 찾기\"**: `search_api_endpoints` 사용.\n\n"
-        "[고급 워크플로우 예시]\n"
-        "- **영향도 분석**: `search_symbols` -> `get_callers` -> `call_graph` (코드를 거의 읽지 않고도 영향 파악 가능)\n"
-        "- **신규 기능 파악**: `repo_candidates` -> `search_api_endpoints` -> `call_graph` -> `read_symbol`\n\n"
-        "[사용 주의]\n"
-        "- `read_file`은 분석의 **마지막 단계**에서만 사용하세요. 그 전단계는 모두 고급 분석 도구로 대체 가능합니다."
+        "[Core Principle: Tool Tiers]\n"
+        "- **Simple (Starter)**: `search`, `read_file` -> Basic text matching and verification.\n"
+        "- **Advanced (Standard)**: `search_symbols`, `list_symbols`, `read_symbol` -> Structural exploration.\n"
+        "- **Expert (Pro)**: `get_callers`, `call_graph`, `get_implementations` -> **The Understanding Shortcut.**\n\n"
+        "[Peak Efficiency: Use Analysis Tools]\n"
+        "The most common mistake by LLMs is 'reading files to understand flow'. ALWAYS use specialized tools:\n"
+        "1) **\"Where is this used?\"**: DO NOT skip `search`. Use `get_callers` (saves 90% tokens).\n"
+        "2) **\"What is the overall architecture?\"**: DO NOT read multiple files. Use `call_graph`.\n"
+        "3) **\"Where is the logic for this interface?\"**: Use `get_implementations`.\n"
+        "4) **\"Look for API routes\"**: Use `search_api_endpoints`.\n\n"
+        "[Expert Workflow Examples]\n"
+        "- **Impact Analysis**: `search_symbols` -> `get_callers` -> `call_graph` (identify impact without reading much code)\n"
+        "- **Understanding New Feature**: `repo_candidates` -> `search_api_endpoints` -> `call_graph` -> `read_symbol`\n\n"
+        "[Pro Tip]\n"
+        "- `read_file` should be your **last step**. Every preceding stage can and should be done via advanced analysis tools."
     )
     def build_pack() -> str:
+        """PACK1 형식의 응답을 생성합니다."""
         lines = [pack_header("sari_guide", {}, returned=1)]
         lines.append(pack_line("t", single_value=pack_encode_text(text)))
         return "\n".join(lines)
