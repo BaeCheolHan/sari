@@ -14,12 +14,13 @@ from sari.mcp.tools._util import (
 from sari.mcp.tools.call_graph import build_call_graph
 
 def execute_get_callers(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict[str, Any]:
-    """Find symbols that call a specific symbol."""
+    """Find symbols that call a specific symbol with high accuracy."""
     target_symbol = args.get("name", "").strip()
     target_sid = args.get("symbol_id", "").strip() or args.get("sid", "").strip()
     target_path = str(args.get("path", "")).strip()
     repo = str(args.get("repo", "")).strip()
     limit = max(1, min(int(args.get("limit", 100) or 100), 500))
+    
     if not target_symbol and not target_sid:
         return mcp_response(
             "get_callers",
@@ -27,24 +28,7 @@ def execute_get_callers(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict
             lambda: {"error": {"code": ErrorCode.INVALID_ARGS.value, "message": "Symbol name or symbol_id is required"}, "isError": True},
         )
 
-    # Search in symbol_relations table
-    params = []
-    if target_sid:
-        sql = """
-            SELECT from_path, from_symbol, from_symbol_id, line, rel_type
-            FROM symbol_relations
-            WHERE to_symbol_id = ?
-            ORDER BY from_path, line
-        """
-        params.append(target_sid)
-    else:
-        sql = """
-            SELECT from_path, from_symbol, from_symbol_id, line, rel_type
-            FROM symbol_relations
-            WHERE to_symbol = ?
-            ORDER BY from_path, line
-        """
-        params.append(target_symbol)
+    # 1. Resolve effective scope
     allowed_root_ids = resolve_root_ids(roots)
     req_root_ids = args.get("root_ids")
     if isinstance(req_root_ids, list) and req_root_ids:
@@ -58,75 +42,62 @@ def execute_get_callers(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict
         repo_set = set(repo_root_ids)
         effective_root_ids = [rid for rid in effective_root_ids if rid in repo_set] if effective_root_ids else list(repo_root_ids)
 
+    # 2. Build Query - Prioritize Symbol ID
+    params = []
+    if target_sid:
+        sql = "SELECT from_path, from_symbol, from_symbol_id, line, rel_type FROM symbol_relations WHERE to_symbol_id = ?"
+        params.append(target_sid)
+    elif "." in target_symbol: # Qualified name
+        sql = "SELECT from_path, from_symbol, from_symbol_id, line, rel_type FROM symbol_relations WHERE to_symbol = ?"
+        params.append(target_symbol) # In relations, we often store qualname as symbol name
+    else:
+        sql = "SELECT from_path, from_symbol, from_symbol_id, line, rel_type FROM symbol_relations WHERE to_symbol = ?"
+        params.append(target_symbol)
+
+    if target_path:
+        sql += " AND (to_path = ? OR to_path = '' OR to_path IS NULL)"
+        params.append(target_path)
+
     if effective_root_ids:
         root_clause = " OR ".join(["from_path LIKE ?"] * len(effective_root_ids))
-        sql = sql.replace("ORDER BY", f"AND ({root_clause}) ORDER BY")
+        sql += f" AND ({root_clause})"
         params.extend([f"{rid}/%" for rid in effective_root_ids])
-    if target_path:
-        sql = sql.replace("ORDER BY", "AND (to_path = ? OR to_path = '' OR to_path IS NULL) ORDER BY")
-        params.append(target_path)
-    sql += " LIMIT ?"
+
+    sql += " ORDER BY from_path, line LIMIT ?"
     params.append(limit)
 
     conn = db.get_read_connection() if hasattr(db, "get_read_connection") else db._read
+    results = []
     try:
         rows = conn.execute(sql, params).fetchall()
-    except Exception:
-        # Fallback for legacy schema without symbol_id columns
-        sql = """
-            SELECT from_path, from_symbol, line, rel_type
-            FROM symbol_relations
-            WHERE to_symbol = ?
-            ORDER BY from_path, line
-        """
-        params = [target_symbol]
-        if effective_root_ids:
-            root_clause = " OR ".join(["from_path LIKE ?"] * len(effective_root_ids))
-            sql = sql.replace("ORDER BY", f"AND ({root_clause}) ORDER BY")
-            params.extend([f"{rid}/%" for rid in effective_root_ids])
-        if target_path:
-            sql = sql.replace("ORDER BY", "AND (to_path = ? OR to_path = '' OR to_path IS NULL) ORDER BY")
-            params.append(target_path)
-        sql += " LIMIT ?"
-        params.append(limit)
-        rows = conn.execute(sql, params).fetchall()
+        for r in rows:
+            results.append({
+                "caller_path": r[0],
+                "caller_symbol": r[1],
+                "caller_symbol_id": r[2] or "",
+                "line": r[3],
+                "rel_type": r[4]
+            })
+    except Exception: pass
 
-    results = []
-    for r in rows:
-        caller_sid = ""
-        try:
-            if hasattr(r, "keys") and "from_symbol_id" in r.keys():
-                caller_sid = r["from_symbol_id"]
-        except Exception:
-            caller_sid = ""
-        results.append({
-            "caller_path": r["from_path"],
-            "caller_symbol": r["from_symbol"],
-            "caller_symbol_id": caller_sid,
-            "line": r["line"],
-            "rel_type": r["rel_type"]
-        })
-
+    # 3. Fallback to Call Graph depth=1 if no direct relations found (Heuristic)
     if not results:
         try:
             graph = build_call_graph(
-                {"symbol": target_symbol, "symbol_id": target_sid, "path": target_path, "depth": 1, "include_paths": [f"/{repo}/"] if repo else []},
+                {"symbol": target_symbol, "symbol_id": target_sid, "path": target_path, "depth": 1},
                 db,
                 roots,
             )
             children = ((graph.get("upstream") or {}).get("children") or [])[:limit]
             for c in children:
-                results.append(
-                    {
-                        "caller_path": c.get("path", ""),
-                        "caller_symbol": c.get("name", ""),
-                        "caller_symbol_id": c.get("symbol_id", ""),
-                        "line": int(c.get("line", 0) or 0),
-                        "rel_type": c.get("rel_type", "calls_heuristic"),
-                    }
-                )
-        except Exception:
-            pass
+                results.append({
+                    "caller_path": c.get("path", ""),
+                    "caller_symbol": c.get("name", ""),
+                    "caller_symbol_id": c.get("symbol_id", ""),
+                    "line": int(c.get("line", 0) or 0),
+                    "rel_type": c.get("rel_type", "calls_heuristic"),
+                })
+        except Exception: pass
 
     def build_pack() -> str:
         lines = [pack_header("get_callers", {"name": pack_encode_text(target_symbol), "sid": pack_encode_id(target_sid), "path": pack_encode_id(target_path), "repo": pack_encode_id(repo)}, returned=len(results))]

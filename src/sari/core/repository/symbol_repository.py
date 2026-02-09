@@ -1,5 +1,5 @@
 import sqlite3
-from typing import Iterable, List, Optional, Tuple, Dict
+from typing import Iterable, List, Optional, Tuple, Dict, Any
 from .base import BaseRepository
 from ..parsers.common import _symbol_id
 from ..models import SymbolDTO
@@ -180,3 +180,45 @@ class SymbolRepository(BaseRepository):
         
         rows = self.execute(sql, params).fetchall()
         return [SymbolDTO.from_row(r) for r in rows]
+
+    def get_symbol_fan_in_stats(self, symbol_names: List[str]) -> Dict[str, int]:
+        """Calculates how many times each symbol is called across the codebase."""
+        if not symbol_names: return {}
+        placeholders = ",".join(["?"] * len(symbol_names))
+        sql = f"SELECT to_symbol, COUNT(1) FROM symbol_relations WHERE to_symbol IN ({placeholders}) GROUP BY to_symbol"
+        rows = self.execute(sql, symbol_names).fetchall()
+        return {r[0]: r[1] for r in rows}
+
+    def get_transitive_implementations(self, target_sid: str, target_name: str, limit: int = 100) -> List[Dict[str, Any]]:
+        """Uses a Recursive CTE to find all direct and indirect implementers/descendants."""
+        sql = """
+        WITH RECURSIVE inheritance_tree AS (
+            -- Base case: direct implementers
+            SELECT from_path, from_symbol, from_symbol_id, rel_type, line, 1 as depth
+            FROM symbol_relations
+            WHERE (to_symbol_id = ? OR (to_symbol = ? AND (to_symbol_id IS NULL OR to_symbol_id = '')))
+              AND (rel_type = 'implements' OR rel_type = 'extends' OR rel_type = 'overrides')
+            
+            UNION ALL
+            
+            -- Recursive step: implementers of implementers
+            SELECT r.from_path, r.from_symbol, r.from_symbol_id, r.rel_type, r.line, it.depth + 1
+            FROM symbol_relations r
+            JOIN inheritance_tree it ON r.to_symbol_id = it.from_symbol_id
+            WHERE (r.rel_type = 'implements' OR r.rel_type = 'extends' OR r.rel_type = 'overrides')
+              AND it.depth < 5 -- Safety limit for recursion depth
+        )
+        SELECT DISTINCT from_path, from_symbol, from_symbol_id, rel_type, line 
+        FROM inheritance_tree 
+        LIMIT ?
+        """
+        rows = self.execute(sql, (target_sid, target_name, limit)).fetchall()
+        return [
+            {
+                "implementer_path": r[0],
+                "implementer_symbol": r[1],
+                "implementer_symbol_id": r[2],
+                "rel_type": r[3],
+                "line": r[4]
+            } for r in rows
+        ]

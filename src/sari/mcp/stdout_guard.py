@@ -13,61 +13,51 @@ class StdoutGuard:
     """
     MCP 프로토콜 보호용 stdout 래퍼.
     
-    - JSON-RPC 메시지 ({"jsonrpc"...)만 실제 stdout으로 전달
-    - Content-Length 헤더도 허용
-    - 나머지 모든 출력은 stderr로 리다이렉트
+    - Sari의 공식 Transport 레이어는 get_real_stdout()을 통해 
+      이 가드를 직접 우회하여 원본 stdout으로 통신합니다.
+    - 따라서 이 가드로 들어오는 데이터는 대부분 '비공식 출력(Noise)'이며,
+      매우 확실한 프로토콜 메시지(Content-Length 등)가 아니면 모두 stderr로 격리합니다.
     """
     
     def __init__(self, real_stdout: TextIO, fallback: TextIO = None):
         self._real = real_stdout
         self._fallback = fallback or sys.stderr
         self._lock = threading.Lock()
-        self._buffer = ""
 
-        # Binary-safe passthrough for code paths that write to stdout.buffer
+        # Binary-safe passthrough
         self.buffer = getattr(real_stdout, "buffer", None)
-        
-        # 원본 stdout의 속성 복사
         self.encoding = getattr(real_stdout, 'encoding', 'utf-8')
         self.errors = getattr(real_stdout, 'errors', 'strict')
-        self.newlines = getattr(real_stdout, 'newlines', None)
         self.mode = getattr(real_stdout, 'mode', 'w')
     
     def write(self, data: str) -> int:
-        """
-        데이터를 적절한 스트림으로 라우팅합니다.
-        
-        MCP 메시지 감지:
-        - JSON-RPC: {"jsonrpc"... 로 시작
-        - Content-Length 헤더
-        """
         if not data:
             return 0
 
-        # bytes 입력도 허용 (일부 경로는 바이너리 쓰기)
+        # bytes 입력 허용
         if isinstance(data, (bytes, bytearray)):
             with self._lock:
                 if self.buffer is not None:
                     return self.buffer.write(data)
-                # buffer가 없으면 텍스트로 디코딩 후 처리
                 try:
                     data = data.decode(self.encoding or "utf-8", errors=self.errors or "strict")
                 except Exception:
                     data = data.decode("utf-8", errors="replace")
         
-        # MCP 프로토콜 메시지 감지
-        stripped = data.lstrip()
+        stripped = data.strip()
+        
+        # 매우 엄격한 프로토콜 감지 (실수로 print된 데이터 차단용)
+        # 공식 채널은 이 로직을 타지 않으므로 여기서의 엄격함은 통신 안정성에 도움이 됨
         is_mcp_message = (
-            stripped.startswith('{"jsonrpc"') or
-            stripped.startswith('Content-Length:') or
-            stripped.startswith('content-length:')
+            stripped.lower().startswith("content-length:") or
+            (stripped.startswith('{"jsonrpc":"2.0"') and stripped.endswith('}'))
         )
         
         if is_mcp_message:
             with self._lock:
                 return self._real.write(data)
         
-        # 비-MCP 메시지는 stderr로
+        # 나머지는 모두 stderr로 (CLI가 프로토콜 에러를 내지 않도록 보호)
         return self._fallback.write(data)
     
     def flush(self) -> None:

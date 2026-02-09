@@ -154,26 +154,35 @@ class SearchEngine:
                 self.db.coordinator.notify_search_end()
 
     def _process_sqlite_rows(self, rows: list, opts: SearchOptions) -> List[SearchHit]:
+        import fnmatch
         hits: List[SearchHit] = []
         for r in rows:
             # Legacy/normalized row: (path, root_id, repo, mtime, size, content)
             # FTS row: (path, rel_path, root_id, repo, mtime, size, content)
             if len(r) >= 7:
-                path = r[0]
-                repo = r[3]
-                mtime = r[4]
-                size = r[5]
-                content = r[6]
+                path, rel_path, root_id, repo, mtime, size, content = r[0], r[1], r[2], r[3], r[4], r[5], r[6]
             elif len(r) >= 6:
-                path = r[0]
-                repo = r[2]
-                mtime = r[3]
-                size = r[4]
-                content = r[5]
+                path, rel_path, root_id, repo, mtime, size, content = r[0], r[1], r[2], r[3], r[4], r[5], "" # Missing content
             else:
                 continue
-            if opts.repo and repo != opts.repo:
-                continue
+            
+            # Strict Filtering
+            if opts.repo and repo != opts.repo: continue
+            
+            # File Type Filter
+            if opts.file_types:
+                ext = get_file_extension(path).lower().lstrip(".")
+                allowed = [t.lower().lstrip(".") for t in opts.file_types]
+                if ext not in allowed:
+                    continue
+            
+            # Path Pattern Filter (Glob)
+            if opts.path_pattern:
+                pat = opts.path_pattern
+                # Match against rel_path or path
+                if not fnmatch.fnmatch(rel_path, pat) and not fnmatch.fnmatch(path, pat):
+                    continue
+
             hits.append(SearchHit(
                 repo=repo,
                 path=path,
@@ -188,11 +197,27 @@ class SearchEngine:
         return hits
 
     def _process_tantivy_hits(self, hits: list, opts: SearchOptions) -> List[SearchHit]:
+        import fnmatch
         results: List[SearchHit] = []
         for h in hits:
             path = h.get("path", "")
-            if opts.repo and h.get("repo", "") != opts.repo:
-                continue
+            repo = h.get("repo", "")
+            rel_path = h.get("rel_path", path)
+            
+            # Strict Filtering
+            if opts.repo and repo != opts.repo: continue
+
+            # File Type Filter
+            if opts.file_types:
+                ext = get_file_extension(path).lower()
+                if ext not in [t.lower().lstrip(".") for t in opts.file_types]:
+                    continue
+            
+            # Path Pattern Filter
+            if opts.path_pattern:
+                if not fnmatch.fnmatch(rel_path, opts.path_pattern) and not fnmatch.fnmatch(path, opts.path_pattern):
+                    continue
+
             # Double check with DB to filter out deleted files not yet purged from Tantivy
             is_deleted = False
             try:

@@ -69,20 +69,36 @@ class LocalSearchDB:
 
     def create_staging_table(self, cur=None): self._ensure_staging()
 
-    def _snippet_repo(self) -> "SnippetRepository":
+    @property
+    def snippets(self) -> SnippetRepository:
+        """Domain repository for code snippets."""
         return SnippetRepository(self._read)
 
-    def _context_repo(self) -> "ContextRepository":
+    @property
+    def contexts(self) -> ContextRepository:
+        """Domain repository for knowledge contexts."""
         return ContextRepository(self._read)
 
-    def _symbol_repo(self) -> "SymbolRepository":
+    @property
+    def symbols(self) -> SymbolRepository:
+        """Domain repository for symbol analysis."""
         return SymbolRepository(self._read)
 
-    def _search_repo(self) -> "SearchRepository":
+    @property
+    def search_repo(self) -> SearchRepository:
+        """Domain repository for search operations."""
         return SearchRepository(self._read)
 
-    def _failed_task_repo(self) -> "FailedTaskRepository":
+    @property
+    def tasks(self) -> FailedTaskRepository:
+        """Domain repository for task management."""
         return FailedTaskRepository(self._read)
+
+    def _snippet_repo(self) -> "SnippetRepository": return self.snippets
+    def _context_repo(self) -> "ContextRepository": return self.contexts
+    def _symbol_repo(self) -> "SymbolRepository": return self.symbols
+    def _search_repo(self) -> "SearchRepository": return self.search_repo
+    def _failed_task_repo(self) -> "FailedTaskRepository": return self.tasks
 
     def register_writer_thread(self, thread_id: int) -> None:
         """Allow external callers to register the current writer thread.
@@ -94,6 +110,10 @@ class LocalSearchDB:
 
     def get_read_connection(self) -> sqlite3.Connection:
         return self._read
+
+    def get_symbol_fan_in_stats(self, symbol_names: List[str]) -> Dict[str, int]:
+        """Proxy to SymbolRepository for entropy analysis."""
+        return self.symbols.get_symbol_fan_in_stats(symbol_names)
 
     def count_failed_tasks(self) -> Tuple[int, int]:
         """Return total failed tasks and those with high retry count."""
@@ -187,15 +207,24 @@ class LocalSearchDB:
         except Exception:
             return []
 
-    def upsert_files_turbo(self, rows: Iterable[tuple]):
-        """Efficiently staging files into memory database for batch processing."""
+    def upsert_files_turbo(self, rows: Iterable[Any]):
+        """Efficiently staging files into memory database. Now supports IndexingResult objects and raw tuples."""
         self._ensure_staging()
         conn = self.db.connection()
         mapped = []
         for r in rows:
-            if not r or len(r) < 1: continue
+            if not r: continue
+            
+            # Convert IndexingResult or similar objects to tuples
+            if hasattr(r, "to_file_row"):
+                raw = r.to_file_row()
+            elif isinstance(r, tuple):
+                raw = r
+            else:
+                continue
+
             base = [None] * 20
-            for i in range(min(len(r), 20)): base[i] = r[i]
+            for i in range(min(len(raw), 20)): base[i] = raw[i]
             
             # Fill NOT NULL defaults for resilience
             if base[0] is None: continue # Primary key must exist

@@ -73,9 +73,13 @@ def _resolve_symbol(db: Any, name: str, path: Optional[str], symbol_id: Optional
     if symbol_id:
         sql = "SELECT path, name, kind, line, end_line, qualname, symbol_id FROM symbols WHERE symbol_id = ?"
         params.append(symbol_id)
+    elif "." in name: # Handle qualified names
+        sql = "SELECT path, name, kind, line, end_line, qualname, symbol_id FROM symbols WHERE qualname = ?"
+        params.append(name)
     else:
         sql = "SELECT path, name, kind, line, end_line, qualname, symbol_id FROM symbols WHERE name = ?"
         params.append(name)
+    
     if path:
         sql += " AND path = ?"
         params.append(path)
@@ -86,11 +90,13 @@ def _resolve_symbol(db: Any, name: str, path: Optional[str], symbol_id: Optional
     if repo:
         sql += " AND path IN (SELECT path FROM files WHERE repo = ?)"
         params.append(repo)
-    sql += " ORDER BY path, line LIMIT 50"
+    
+    sql += " ORDER BY CASE WHEN qualname = ? THEN 0 ELSE 1 END, path, line LIMIT 50"
+    params.append(name)
+    
     conn = db.get_read_connection() if hasattr(db, "get_read_connection") else db._read
     rows = conn.execute(sql, params).fetchall()
     
-    # Priority Fix: Manually map rows to dictionaries to avoid 'dict(r)' failures with non-Row objects
     results = []
     for r in rows:
         results.append({
@@ -101,37 +107,53 @@ def _resolve_symbol(db: Any, name: str, path: Optional[str], symbol_id: Optional
 
 def _callers_for(db: Any, name: str, path: Optional[str], symbol_id: Optional[str], root_ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
     conn = db.get_read_connection() if hasattr(db, "get_read_connection") else db._read
-    params = [name]
-    sql = "SELECT from_path, from_symbol, from_symbol_id, line, rel_type FROM symbol_relations WHERE to_symbol = ?"
-    if path:
-        sql += " AND (to_path = ? OR to_path = '' OR to_path IS NULL)"
-        params.append(path)
+    params = []
+    
+    if symbol_id:
+        sql = "SELECT from_path, from_symbol, from_symbol_id, line, rel_type FROM symbol_relations WHERE to_symbol_id = ?"
+        params.append(symbol_id)
+    else:
+        sql = "SELECT from_path, from_symbol, from_symbol_id, line, rel_type FROM symbol_relations WHERE to_symbol = ?"
+        params.append(name)
+        if path:
+            sql += " AND (to_path = ? OR to_path = '' OR to_path IS NULL)"
+            params.append(path)
+
     if root_ids:
         placeholders = ",".join(["?"] * len(root_ids))
         sql += f" AND from_root_id IN ({placeholders})"
         params.extend(root_ids)
+    
     sql += " ORDER BY from_path, line"
     try:
         rows = conn.execute(sql, params).fetchall()
         return [{"from_path": r[0], "from_symbol": r[1], "from_symbol_id": r[2], "line": r[3], "rel_type": r[4]} for r in rows]
-    except: return []
+    except Exception: return []
 
 def _callees_for(db: Any, name: str, path: Optional[str], symbol_id: Optional[str], root_ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
     conn = db.get_read_connection() if hasattr(db, "get_read_connection") else db._read
-    params = [name]
-    sql = "SELECT to_path, to_symbol, to_symbol_id, line, rel_type FROM symbol_relations WHERE from_symbol = ?"
-    if path:
-        sql += " AND from_path = ?"
-        params.append(path)
+    params = []
+    
+    if symbol_id:
+        sql = "SELECT to_path, to_symbol, to_symbol_id, line, rel_type FROM symbol_relations WHERE from_symbol_id = ?"
+        params.append(symbol_id)
+    else:
+        sql = "SELECT to_path, to_symbol, to_symbol_id, line, rel_type FROM symbol_relations WHERE from_symbol = ?"
+        params.append(name)
+        if path:
+            sql += " AND from_path = ?"
+            params.append(path)
+
     if root_ids:
         placeholders = ",".join(["?"] * len(root_ids))
         sql += f" AND to_root_id IN ({placeholders})"
         params.extend(root_ids)
+    
     sql += " ORDER BY to_path, line"
     try:
         rows = conn.execute(sql, params).fetchall()
         return [{"to_path": r[0], "to_symbol": r[1], "to_symbol_id": r[2], "line": r[3], "rel_type": r[4]} for r in rows]
-    except: return []
+    except Exception: return []
 
 def _path_matches_repo(db: Any, path: str, repo: str, cache: Dict[str, str]) -> bool:
     if not path:
@@ -149,6 +171,27 @@ def _path_matches_repo(db: Any, path: str, repo: str, cache: Dict[str, str]) -> 
     except Exception:
         return False
 
+
+def _calculate_confidence(from_path: str, to_path: str, fan_in: int = 0) -> float:
+    """Calculates a confidence score (0.0 to 1.0) for a relationship."""
+    score = 0.5 # Base score
+    
+    # 1. Proximity Scoring (Spatial)
+    if from_path and to_path:
+        p1, p2 = from_path.split("/"), to_path.split("/")
+        common = 0
+        for i in range(min(len(p1), len(p2))):
+            if p1[i] == p2[i]: common += 1
+            else: break
+        # Higher common prefix = higher score (Max bonus reduced to +0.15)
+        score += (common / max(len(p1), len(p2))) * 0.15
+        
+    # 2. Entropy Suppression (Utility Noise) - EXTREME PENALTY
+    if fan_in > 50:
+        # Ubiquitous symbols like 'log' get extreme penalty to ensure they stay at the bottom
+        score -= 0.8
+    
+    return min(1.0, max(0.1, score))
 
 def _build_tree(
     db: Any,
@@ -173,14 +216,35 @@ def _build_tree(
         return node
 
     neighbors = _callers_for(db, name, path, symbol_id, root_ids) if direction == "up" else _callees_for(db, name, path, symbol_id, root_ids)
+    
+    # Fetch Fan-in stats for noise suppression
+    neighbor_names = list(set([n.get("from_symbol" if direction == "up" else "to_symbol") for n in neighbors]))
+    fan_in_map = {}
+    if hasattr(db, "get_symbol_fan_in_stats"):
+        fan_in_map = db.get_symbol_fan_in_stats(neighbor_names)
+
+    # Rank neighbors by algorithm (Confidence)
+    for n in neighbors:
+        n_name = n.get("from_symbol" if direction == "up" else "to_symbol") or ""
+        n_path = n.get("from_path" if direction == "up" else "to_path") or ""
+        n["confidence"] = _calculate_confidence(path or "", n_path, fan_in_map.get(n_name, 0))
+
+    # Sort by confidence DESC, then by original sort_by
     if sort_by == "name":
-        neighbors.sort(key=lambda r: (r.get("from_symbol" if direction == "up" else "to_symbol") or "", r.get("from_path" if direction == "up" else "to_path") or "", int(r.get("line") or 0)))
+        neighbors.sort(key=lambda r: (-r["confidence"], r.get("from_symbol" if direction == "up" else "to_symbol") or "", int(r.get("line") or 0)))
     else:
-        neighbors.sort(key=lambda r: (r.get("from_path" if direction == "up" else "to_path") or "", int(r.get("line") or 0), r.get("from_symbol" if direction == "up" else "to_symbol") or ""))
+        neighbors.sort(key=lambda r: (-r["confidence"], r.get("from_path" if direction == "up" else "to_path") or "", int(r.get("line") or 0)))
 
     for n in neighbors:
+        c_name = n.get("from_symbol" if direction == "up" else "to_symbol") or ""
         c_path = n.get("from_path" if direction == "up" else "to_path") or ""
+        conf = n.get("confidence", 0.5)
+        
+        # Hard Filter Threshold - Set to 0.05 to allow showing even high-noise nodes (but at the bottom)
+        if conf < 0.05: continue 
+        
         if allow and not allow(c_path): continue
+        
         if not budget.can_add_edge():
             break
         budget.bump_edge()
@@ -189,7 +253,7 @@ def _build_tree(
         budget.bump_node()
         child = _build_tree(
             db,
-            n.get("from_symbol" if direction == "up" else "to_symbol") or "",
+            c_name,
             c_path,
             n.get("from_symbol_id" if direction == "up" else "to_symbol_id") or "",
             depth - 1,
@@ -202,27 +266,53 @@ def _build_tree(
         )
         child["line"] = int(n.get("line") or 0)
         child["rel_type"] = n.get("rel_type") or ""
+        child["confidence"] = conf # Expose score to caller
         node["children"].append(child)
     return node
 
 def _render_tree(node: Dict[str, Any], depth: int, max_lines: int = 200) -> str:
     lines: List[str] = []
+    
     def _walk(n: Dict[str, Any], d: int, prefix: str) -> None:
-        if len(lines) >= max_lines:
-            return
-        label = n.get("name") or "(unknown)"
+        if len(lines) >= max_lines: return
+        
+        name = n.get("name") or "(unknown)"
         path = n.get("path") or ""
         line = n.get("line") or 0
-        meta = f" [{path}:{line}]" if path else ""
-        lines.append(f"{prefix}{label}{meta}")
-        if d <= 0:
-            return
+        
+        # Deduplicate multiple calls to the same target from the same path
         children = n.get("children") or []
-        for i, c in enumerate(children):
-            if len(lines) >= max_lines:
-                return
-            branch = "└─ " if i == len(children) - 1 else "├─ "
+        grouped_children = []
+        seen = {} # (name, path) -> index
+        
+        for c in children:
+            key = (c.get("name"), c.get("path"))
+            if key in seen:
+                idx = seen[key]
+                if "extra_lines" not in grouped_children[idx]:
+                    grouped_children[idx]["extra_lines"] = []
+                grouped_children[idx]["extra_lines"].append(c.get("line"))
+            else:
+                seen[key] = len(grouped_children)
+                grouped_children.append(c)
+
+        label = name
+        meta = f" [{path}:{line}]" if path else ""
+        
+        # Add call count if deduplicated
+        if n.get("extra_lines"):
+            count = len(n["extra_lines"]) + 1
+            label = f"{label} (x{count})"
+            
+        lines.append(f"{prefix}{label}{meta}")
+        
+        if d <= 0: return
+        
+        for i, c in enumerate(grouped_children):
+            if len(lines) >= max_lines: return
+            branch = "└─ " if i == len(grouped_children) - 1 else "├─ "
             _walk(c, d - 1, prefix + branch)
+
     _walk(node, depth, "")
     return "\n".join(lines)
 

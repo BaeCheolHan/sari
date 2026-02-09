@@ -468,20 +468,20 @@ class LocalSearchMCPServer:
         trace("daemon_socket_received", msg_id=request.get("id"), bytes=content_length)
         return resp
 
-    def run(self) -> None:
+    def run(self, output_stream: Optional[Any] = None) -> None:
         """Standard MCP JSON-RPC loop with encapsulated transport."""
         self._log_debug("Sari MCP Server starting run loop...")
         trace("run_loop_start", workspace_root=self.workspace_root)
         
         if not self.transport:
             input_stream = getattr(sys.stdin, "buffer", sys.stdin)
-            original_stdout = getattr(self, "_original_stdout", None)
-            output_stream = getattr(original_stdout, "buffer", None) if original_stdout is not None else None
-            if output_stream is None:
-                output_stream = getattr(sys.stdout, "buffer", sys.stdout)
+            
+            # Use injected stream, or fallback to server property, or finally sys.stdout.buffer
+            target_out = output_stream or getattr(self, "_original_stdout", None) or getattr(sys.stdout, "buffer", sys.stdout)
+            
             wire_format = (os.environ.get("SARI_FORMAT") or "pack").strip().lower()
             # Accept JSONL input for compatibility, but default to Content-Length framing unless explicitly configured.
-            self.transport = McpTransport(input_stream, output_stream, allow_jsonl=True)
+            self.transport = McpTransport(input_stream, target_out, allow_jsonl=True)
             if wire_format == "json":
                 self.transport.default_mode = "jsonl"
             else:
@@ -702,12 +702,18 @@ class LocalSearchMCPServer:
         self.struct_logger.debug("mcp_response", **summary)
 
 def main(original_stdout: Any = None) -> None:
-    # Use provided stdout or fallback to current sys.stdout
-    clean_stdout = original_stdout or sys.stdout
+    # 1. Capture the pure, untouched stdout for MCP communication
+    mcp_out = original_stdout or sys.stdout.buffer
+    
+    # 2. Immediately redirect global sys.stdout to sys.stderr to isolate side-effects
+    # This ensures that even accidental 'print()' calls go to logs, not the protocol.
+    import io
+    sys.stdout = sys.stderr 
+    
     server = LocalSearchMCPServer(WorkspaceManager.resolve_workspace_root())
-    # Ensure the worker loop uses the correct output stream
-    server._original_stdout = clean_stdout
-    server.run()
+    
+    # 3. Pass only the preserved stream to the server's run loop
+    server.run(mcp_out)
 
 if __name__ == "__main__":
     main()

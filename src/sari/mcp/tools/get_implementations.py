@@ -14,12 +14,13 @@ from sari.mcp.tools._util import (
 )
 
 def execute_get_implementations(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict[str, Any]:
-    """Find symbols that implement or extend a specific symbol."""
+    """Find symbols that implement or extend a specific symbol with high accuracy."""
     target_symbol = args.get("name", "").strip()
     target_sid = args.get("symbol_id", "").strip() or args.get("sid", "").strip()
     target_path = str(args.get("path", "")).strip()
     repo = str(args.get("repo", "")).strip()
     limit = max(1, min(int(args.get("limit", 100) or 100), 500))
+    
     if not target_symbol and not target_sid:
         return mcp_response(
             "get_implementations",
@@ -27,24 +28,7 @@ def execute_get_implementations(args: Dict[str, Any], db: Any, roots: List[str])
             lambda: {"error": {"code": ErrorCode.INVALID_ARGS.value, "message": "Symbol name or symbol_id is required"}, "isError": True},
         )
 
-    # Search in symbol_relations table
-    if target_sid:
-        sql = """
-            SELECT from_path, from_symbol, from_symbol_id, rel_type, line
-            FROM symbol_relations
-            WHERE to_symbol_id = ? AND (rel_type = 'implements' OR rel_type = 'extends')
-            ORDER BY from_path, line
-        """
-        params = [target_sid]
-    else:
-        sql = """
-            SELECT from_path, from_symbol, from_symbol_id, rel_type, line
-            FROM symbol_relations
-            WHERE to_symbol = ? AND (rel_type = 'implements' OR rel_type = 'extends')
-            ORDER BY from_path, line
-        """
-        params = [target_symbol]
-    
+    # 1. Resolve effective scope
     allowed_root_ids = resolve_root_ids(roots)
     req_root_ids = args.get("root_ids")
     if isinstance(req_root_ids, list) and req_root_ids:
@@ -58,88 +42,74 @@ def execute_get_implementations(args: Dict[str, Any], db: Any, roots: List[str])
         repo_set = set(repo_root_ids)
         effective_root_ids = [rid for rid in effective_root_ids if rid in repo_set] if effective_root_ids else list(repo_root_ids)
 
-    if effective_root_ids:
-        root_clause = " OR ".join(["from_path LIKE ?"] * len(effective_root_ids))
-        sql = sql.replace("ORDER BY", f"AND ({root_clause}) ORDER BY")
-        params.extend([f"{rid}/%" for rid in effective_root_ids])
-    if target_path:
-        sql = sql.replace("ORDER BY", "AND (to_path = ? OR to_path = '' OR to_path IS NULL) ORDER BY")
-        params.append(target_path)
-    sql += " LIMIT ?"
-    params.append(limit)
-
-    conn = db.get_read_connection() if hasattr(db, "get_read_connection") else db._read
-    try:
-        rows = conn.execute(sql, params).fetchall()
-    except Exception:
-        # Fallback without from_symbol_id
-        sql = """
-            SELECT from_path, from_symbol, rel_type, line
-            FROM symbol_relations
-            WHERE to_symbol = ? AND (rel_type = 'implements' OR rel_type = 'extends')
-            ORDER BY from_path, line
-        """
-        params = [target_symbol]
-        if effective_root_ids:
-            root_clause = " OR ".join(["from_path LIKE ?"] * len(effective_root_ids))
-            sql = sql.replace("ORDER BY", f"AND ({root_clause}) ORDER BY")
-            params.extend([f"{rid}/%" for rid in effective_root_ids])
-        if target_path:
-            sql = sql.replace("ORDER BY", "AND (to_path = ? OR to_path = '' OR to_path IS NULL) ORDER BY")
-            params.append(target_path)
-        sql += " LIMIT ?"
-        params.append(limit)
-        rows = conn.execute(sql, params).fetchall()
-
+    # 2. Build Query - Use Transitive Reachability Algorithm
     results = []
-    for r in rows:
-        impl_sid = ""
-        try:
-            if hasattr(r, "keys") and "from_symbol_id" in r.keys():
-                impl_sid = r["from_symbol_id"]
-        except Exception:
-            impl_sid = ""
-        results.append({
-            "implementer_path": r["from_path"],
-            "implementer_symbol": r["from_symbol"],
-            "implementer_symbol_id": impl_sid,
-            "rel_type": r["rel_type"],
-            "line": r["line"]
-        })
+    try:
+        # Check if the repository supports recursive implementations
+        if hasattr(db, "get_transitive_implementations"):
+            results = db.get_transitive_implementations(target_sid, target_symbol, limit=limit)
+        else:
+            # Legacy fallback
+            params = []
+            if target_sid:
+                sql = "SELECT from_path, from_symbol, from_symbol_id, rel_type, line FROM symbol_relations WHERE to_symbol_id = ? AND (rel_type IN ('implements', 'extends', 'overrides'))"
+                params.append(target_sid)
+            else:
+                sql = "SELECT from_path, from_symbol, from_symbol_id, rel_type, line FROM symbol_relations WHERE to_symbol = ? AND (rel_type IN ('implements', 'extends', 'overrides'))"
+                params.append(target_symbol)
+            
+            if target_path:
+                sql += " AND (to_path = ? OR to_path = '' OR to_path IS NULL)"
+                params.append(target_path)
+            
+            sql += " ORDER BY from_path, line LIMIT ?"
+            params.append(limit)
+            
+            conn = db.get_read_connection() if hasattr(db, "get_read_connection") else db._read
+            rows = conn.execute(sql, params).fetchall()
+            for r in rows:
+                results.append({
+                    "implementer_path": r[0], "implementer_symbol": r[1],
+                    "implementer_symbol_id": r[2] or "", "rel_type": r[3], "line": r[4]
+                })
+    except Exception: pass
 
-    # Fallback: search file contents if no results
+    # 3. Smart Fallback: Text search with refined regex if no direct relations
     if not results and target_symbol:
-        like_patterns = [f"%implements {target_symbol}%", f"%extends {target_symbol}%"]
+        pattern = rf"\b(class|interface|type)\s+\w+.*?\b(implements|extends|from)\s+{re.escape(target_symbol)}\b"
         h_sql = "SELECT path, content FROM files WHERE (content LIKE ? OR content LIKE ?)"
-        h_params: List[Any] = [like_patterns[0], like_patterns[1]]
+        h_params = [f"%implements {target_symbol}%", f"%extends {target_symbol}%"]
+        
         if effective_root_ids:
             h_sql += " AND (" + " OR ".join(["path LIKE ?"] * len(effective_root_ids)) + ")"
             h_params.extend([f"{rid}/%" for rid in effective_root_ids])
-        h_sql += " ORDER BY path LIMIT ?"
+        
+        h_sql += " LIMIT ?"
         h_params.append(limit)
+        
         try:
             h_rows = conn.execute(h_sql, h_params).fetchall()
             for r in h_rows:
-                file_path = r["path"]
-                text = r["content"] or ""
-                if isinstance(text, bytes):
-                    text = text.decode("utf-8", errors="ignore")
-                rel_type = "implements" if re.search(rf"\bimplements\s+{re.escape(target_symbol)}\b", text) else "extends"
-                m = re.search(rf"\b(implements|extends)\s+{re.escape(target_symbol)}\b", text)
-                line = text.count("\n", 0, m.start()) + 1 if m else 0
-                sym = conn.execute(
-                    "SELECT symbol_id, name, line FROM symbols WHERE path = ? ORDER BY line LIMIT 1",
-                    (file_path,),
-                ).fetchone()
-                results.append({
-                    "implementer_path": file_path,
-                    "implementer_symbol": (sym["name"] if sym else "__file__"),
-                    "implementer_symbol_id": (sym["symbol_id"] if sym else ""),
-                    "rel_type": rel_type,
-                    "line": int(line or (sym["line"] if sym else 0) or 0),
-                })
-        except Exception:
-            pass
+                file_path, text = r[0], r[1] or ""
+                if isinstance(text, bytes): text = text.decode("utf-8", errors="ignore")
+                
+                match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+                if match:
+                    line = text.count("\n", 0, match.start()) + 1
+                    # Try to find the closest symbol in that file
+                    sym = conn.execute(
+                        "SELECT symbol_id, name, line FROM symbols WHERE path = ? AND line <= ? ORDER BY line DESC LIMIT 1",
+                        (file_path, line),
+                    ).fetchone()
+                    
+                    results.append({
+                        "implementer_path": file_path,
+                        "implementer_symbol": (sym[1] if sym else "__file__"),
+                        "implementer_symbol_id": (sym[0] if sym else ""),
+                        "rel_type": match.group(2).lower(),
+                        "line": line,
+                    })
+        except Exception: pass
 
     def build_pack() -> str:
         lines = [pack_header("get_implementations", {"name": pack_encode_text(target_symbol), "sid": pack_encode_id(target_sid), "path": pack_encode_id(target_path), "repo": pack_encode_id(repo)}, returned=len(results))]

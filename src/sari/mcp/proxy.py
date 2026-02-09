@@ -272,54 +272,47 @@ def forward_socket_to_stdout(sock, state):
             pass
 
 def _read_mcp_message(stdin):
-    """Read one MCP framed message (Content-Length) or JSONL fallback."""
-    line = stdin.readline()
-    if not line:
-        return None
-    while line in (b"\n", b"\r\n"):
-        line = stdin.readline()
-        if not line:
-            return None
-
-    # Compatibility mode: accept JSONL fallback as well as Content-Length framing.
-    if line.lstrip().startswith((b"{", b"[")):
-        return line.rstrip(b"\r\n"), _MODE_JSONL
-
-    headers = [line]
+    """Robustly reads one MCP message, skipping noise or leading logs."""
     while True:
-        h = stdin.readline()
-        if not h:
-            return None
-        if h in (b"\n", b"\r\n"):
-            break
-        headers.append(h)
+        line = stdin.readline()
+        if not line: return None
+        
+        stripped = line.strip()
+        if not stripped: continue
 
-    content_length = None
-    for h in headers:
-        parts = h.decode("utf-8", errors="ignore").split(":", 1)
-        if len(parts) != 2:
-            continue
-        key = parts[0].strip().lower()
-        if key == "content-length":
+        # 1. JSONL fallback (starts with '{')
+        if stripped.startswith(b"{"):
+            return stripped, _MODE_JSONL
+
+        # 2. Content-Length framing
+        if stripped.lower().startswith(b"content-length:"):
             try:
-                content_length = int(parts[1].strip())
-            except ValueError:
-                pass
-            break
-
-    if content_length is None or content_length <= 0 or content_length > MAX_MESSAGE_SIZE:
-        return None
-
-    body = b""
-    while len(body) < content_length:
-        chunk = stdin.read(content_length - len(body))
-        if not chunk:
-            break
-        body += chunk
-
-    if len(body) < content_length:
-        return None
-    return body, _MODE_FRAMED
+                # Re-parse headers fully
+                content_length = None
+                headers = [line]
+                while True:
+                    h = stdin.readline()
+                    if not h or h in (b"\n", b"\r\n"): break
+                    headers.append(h)
+                
+                for h in headers:
+                    if h.lower().startswith(b"content-length:"):
+                        content_length = int(h.split(b":", 1)[1].strip())
+                        break
+                
+                if content_length and 0 < content_length <= MAX_MESSAGE_SIZE:
+                    body = b""
+                    while len(body) < content_length:
+                        chunk = stdin.read(content_length - len(body))
+                        if not chunk: break
+                        body += chunk
+                    if len(body) == content_length:
+                        return body, _MODE_FRAMED
+            except Exception:
+                continue # Malformed frame, keep looking
+        
+        # 3. If noise, keep looping
+        continue
 
 
 def _send_payload(state, payload: bytes, mode: str) -> None:
@@ -460,6 +453,17 @@ def forward_stdin_to_socket(state):
         except Exception:
             pass
 
+def _write_error_to_client(message: str, code: int = -32002):
+    """Sends a formal JSON-RPC error directly to stdout."""
+    resp = {
+        "jsonrpc": "2.0",
+        "error": {"code": code, "message": message}
+    }
+    payload = json.dumps(resp).encode("utf-8")
+    header = f"Content-Length: {len(payload)}\r\n\r\n".encode("ascii")
+    sys.stdout.buffer.write(header + payload)
+    sys.stdout.buffer.flush()
+
 def main():
     # Log startup context for diagnostics
     _log_info(
@@ -476,14 +480,17 @@ def main():
     host, port = _resolve_daemon_target()
 
     if not start_daemon_if_needed(host, port, workspace_root=workspace_root):
+        _write_error_to_client("Sari Daemon failed to start. Run 'sari doctor' for diagnostics.")
         sys.exit(1)
 
     try:
         host, port = _resolve_daemon_target()
         sock = socket.create_connection((host, port))
     except Exception as e:
-        _log_error(f"Could not connect to daemon: {e}")
+        err_msg = f"Could not connect to daemon at {host}:{port}: {e}"
+        _log_error(err_msg)
         trace("proxy_connect_error", error=str(e))
+        _write_error_to_client(err_msg)
         sys.exit(1)
 
     # Start threads for bidirectional forwarding

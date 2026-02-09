@@ -11,6 +11,8 @@ class SearchOptions(BaseModel):
     use_regex: bool = False
     include_content: bool = False
     repo: Optional[str] = None
+    file_types: Optional[List[str]] = None
+    path_pattern: Optional[str] = None
     snippet_lines: int = 3
     total_mode: str = "exact"
 
