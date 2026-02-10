@@ -24,6 +24,19 @@ SYMBOL_COLUMNS = [
     "importance_score"]
 
 
+def _row_get(row: Any, key: str, index: int, default: Any = None) -> Any:
+    if row is None:
+        return default
+    try:
+        if hasattr(row, "keys"):
+            return row[key]
+    except Exception:
+        pass
+    if isinstance(row, (list, tuple)) and len(row) > index:
+        return row[index]
+    return default
+
+
 class SymbolRepository(BaseRepository):
     """
     소스 코드 내의 심볼(클래스, 함수 등)과 심볼 간의 관계 정보를 관리하는 저장소입니다.
@@ -43,7 +56,7 @@ class SymbolRepository(BaseRepository):
         if not symbols_list:
             return 0
 
-        normalized = []
+        normalized_rows: List[Dict[str, Any]] = []
         int(time.time())
 
         for s in symbols_list:
@@ -61,20 +74,34 @@ class SymbolRepository(BaseRepository):
                     if len(vals) >= 12:  # New format
                         data = dict(zip(SYMBOL_COLUMNS, vals))
                     else:  # Old format fallback
+                        while len(vals) < 12:
+                            vals.append("")
+                        legacy_path = str(vals[0] or "")
+                        legacy_name = str(vals[1] or "")
+                        legacy_kind = str(vals[2] or "")
+                        legacy_line = int(vals[3] or 0)
+                        legacy_end_line = int(vals[4] or 0)
+                        legacy_content = str(vals[5] or "")
+                        legacy_parent = str(vals[6] or "")
+                        legacy_meta_json = str(vals[7] or "{}")
+                        legacy_doc_comment = str(vals[8] or "")
+                        legacy_qualname = str(vals[9] or "")
+                        legacy_symbol_id = str(vals[10] or "")
+                        legacy_root_id = str(vals[11] or "root")
                         data = {
-                            "path": str(
-                                vals[0]), "name": str(
-                                vals[1]), "kind": str(
-                                vals[2]), "line": int(
-                                vals[3] or 0), "end_line": int(
-                                vals[4] or 0), "content": str(
-                                vals[5]), "parent": str(
-                                vals[6]), "meta_json": str(
-                                    vals[7] or "{}"), "doc_comment": str(
-                                        vals[8] or ""), "qualname": str(
-                                            vals[9] or ""), "symbol_id": str(
-                                                vals[10] or ""), "root_id": str(
-                                                    vals[11]) if len(vals) > 11 else "root"}
+                            "path": legacy_path,
+                            "name": legacy_name,
+                            "kind": legacy_kind,
+                            "line": legacy_line,
+                            "end_line": legacy_end_line,
+                            "content": legacy_content,
+                            "parent": legacy_parent,
+                            "meta_json": legacy_meta_json,
+                            "doc_comment": legacy_doc_comment,
+                            "qualname": legacy_qualname,
+                            "symbol_id": legacy_symbol_id,
+                            "root_id": legacy_root_id,
+                        }
             except Exception:
                 continue
 
@@ -87,7 +114,7 @@ class SymbolRepository(BaseRepository):
             path = str(data.get("path") or "")
             kind = str(data.get("kind") or "unknown")
 
-            row = {
+            normalized_rows.append({
                 "symbol_id": str(data.get("symbol_id") or _symbol_id(path, kind, qualname)),
                 "path": path,
                 "root_id": str(data.get("root_id") or "root"),
@@ -101,20 +128,20 @@ class SymbolRepository(BaseRepository):
                 "doc_comment": str(data.get("doc_comment") or ""),
                 "qualname": qualname,
                 "importance_score": float(data.get("importance_score") or 0.0)
-            }
-            normalized.append(tuple(row[col] for col in SYMBOL_COLUMNS))
+            })
 
-        if not normalized:
+        if not normalized_rows:
             return 0
 
         # Group by path/root to clean up old symbols before insertion
-        paths = {(r[1], r[2]) for r in normalized}
+        paths = {(r["path"], r["root_id"]) for r in normalized_rows}
         for p, rid in paths:
             cur.execute(
                 "DELETE FROM symbols WHERE path = ? AND root_id = ?", (p, rid))
 
         col_names = ", ".join(SYMBOL_COLUMNS)
         placeholders = ",".join(["?"] * len(SYMBOL_COLUMNS))
+        normalized = [tuple(r[col] for col in SYMBOL_COLUMNS) for r in normalized_rows]
         cur.executemany(
             f"INSERT OR REPLACE INTO symbols({col_names}) VALUES({placeholders})",
             normalized)
@@ -224,7 +251,7 @@ class SymbolRepository(BaseRepository):
         # 1. SQL level pre-filtering: Get all unique names
         # For performance in large DBs, we'd use a trigram index or similar,
         # but here we fetch candidates that share some characters.
-        all_names = [r[0] for r in self.execute(
+        all_names = [str(_row_get(r, "name", 0, "") or "") for r in self.execute(
             "SELECT name FROM symbols GROUP BY name").fetchall()]
 
         # 2. difflib refined matching
@@ -256,7 +283,7 @@ class SymbolRepository(BaseRepository):
         self.execute(sql)
         res = self.execute(
             "SELECT COUNT(1) FROM symbols WHERE importance_score > 0").fetchone()
-        return res[0] if res else 0
+        return int(_row_get(res, "COUNT(1)", 0, 0) or 0)
 
     def get_symbol_fan_in_stats(
             self, symbol_names: List[str]) -> Dict[str, int]:
@@ -265,4 +292,8 @@ class SymbolRepository(BaseRepository):
         placeholders = ",".join(["?"] * len(symbol_names))
         sql = f"SELECT to_symbol, COUNT(1) FROM symbol_relations WHERE to_symbol IN ({placeholders}) GROUP BY to_symbol"
         rows = self.execute(sql, symbol_names).fetchall()
-        return {r["to_symbol"]: r[1] for r in rows}
+        return {
+            str(_row_get(r, "to_symbol", 0, "") or ""):
+            int(_row_get(r, "COUNT(1)", 1, 0) or 0)
+            for r in rows
+        }

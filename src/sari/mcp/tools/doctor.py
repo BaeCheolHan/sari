@@ -63,6 +63,19 @@ def _result(name: str, passed: bool, error: str = "",
     return {"name": name, "passed": passed, "error": error, "warn": warn}
 
 
+def _row_get(row: Any, key: str, index: int, default: Any = None) -> Any:
+    if row is None:
+        return default
+    try:
+        if hasattr(row, "keys"):
+            return row[key]
+    except Exception:
+        pass
+    if isinstance(row, (list, tuple)) and len(row) > index:
+        return row[index]
+    return default
+
+
 def _check_db(ws_root: str) -> list[dict[str, Any]]:
     """데이터베이스 설정, 접근 권한, 스키마 등을 검사합니다."""
     results: list[dict[str, Any]] = []
@@ -108,7 +121,7 @@ def _check_db(ws_root: str) -> list[dict[str, Any]]:
     fts_ok = False
     try:
         cursor = db.db.connection().execute("PRAGMA compile_options")
-        options = [r[0] for r in cursor.fetchall()]
+        options = [str(_row_get(r, "compile_options", 0, "") or "") for r in cursor.fetchall()]
         fts_ok = "ENABLE_FTS5" in options
     except Exception:
         fts_ok = False
@@ -121,7 +134,7 @@ def _check_db(ws_root: str) -> list[dict[str, Any]]:
     try:
         def _cols(table: str) -> list[str]:
             row = db.db.connection().execute(f"PRAGMA table_info({table})")
-            return [r[1] for r in row.fetchall()]
+            return [str(_row_get(r, "name", 1, "") or "") for r in row.fetchall()]
 
         # 주요 테이블 컬럼 존재 여부 확인 (스키마 검증)
         symbols_cols = _cols("symbols")
@@ -338,8 +351,8 @@ def _check_engine_sync_dlq(ws_root: str) -> dict[str, Any]:
             row = db.db.connection().execute(
                 "SELECT COUNT(*), COALESCE(MAX(attempts),0) FROM failed_tasks WHERE error LIKE 'engine_sync_error:%'"
             ).fetchone()
-            count = int(row[0]) if row else 0
-            max_attempts = int(row[1]) if row else 0
+            count = int(_row_get(row, "COUNT(*)", 0, 0) or 0)
+            max_attempts = int(_row_get(row, "COALESCE(MAX(attempts),0)", 1, 0) or 0)
             if count == 0:
                 return _result(
                     "Engine Sync DLQ",
@@ -545,7 +558,8 @@ def _check_db_integrity(ws_root: str) -> dict[str, Any]:
         import sqlite3
         with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
             cursor = conn.execute("PRAGMA integrity_check(10)")
-            res = cursor.fetchone()[0]
+            row = cursor.fetchone()
+            res = str(next(iter(row), "")) if row else ""
             if res == "ok":
                 return _result("DB Integrity", True, "SQLite format ok")
             return _result(

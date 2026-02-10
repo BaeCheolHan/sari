@@ -55,6 +55,35 @@ def parse_timestamp(v: Any) -> int:
         return 0
 
 
+def invalid_args_response(tool: str, message: str) -> Dict[str, Any]:
+    return mcp_response(
+        tool,
+        lambda: pack_error(tool, ErrorCode.INVALID_ARGS, message),
+        lambda: {"error": {"code": ErrorCode.INVALID_ARGS.value, "message": message}, "isError": True},
+    )
+
+
+def parse_int_arg(
+    args: Dict[str, Any],
+    key: str,
+    default: int,
+    tool: str,
+    *,
+    min_value: int | None = None,
+    max_value: int | None = None,
+):
+    raw = args.get(key, default)
+    try:
+        value = int(raw if raw is not None else default)
+    except (TypeError, ValueError):
+        return None, invalid_args_response(tool, f"'{key}' must be an integer")
+    if min_value is not None and value < min_value:
+        return None, invalid_args_response(tool, f"'{key}' must be >= {min_value}")
+    if max_value is not None and value > max_value:
+        return None, invalid_args_response(tool, f"'{key}' must be <= {max_value}")
+    return value, None
+
+
 def _intersect_preserve_order(base: List[str], rhs: List[str]) -> List[str]:
     rhs_set = set(rhs)
     return [x for x in base if x in rhs_set]
@@ -95,6 +124,8 @@ __all__ = [
     "pack_encode_text",
     "pack_encode_id",
     "pack_truncated",
+    "invalid_args_response",
+    "parse_int_arg",
     "resolve_root_ids",
     "resolve_db_path",
     "resolve_fs_path",

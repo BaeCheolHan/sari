@@ -1,9 +1,9 @@
 import re
-from typing import List, Tuple, Dict, Any
+from typing import List, Dict, Any
 from pathlib import Path
 from .base import BaseParser
 from .common import _symbol_id, _safe_compile, NORMALIZE_KIND_BY_EXT
-from sari.core.models import ParserSymbol, ParserRelation
+from sari.core.models import ParserSymbol, ParserRelation, ParseResult
 
 
 class GenericRegexParser(BaseParser):
@@ -27,8 +27,7 @@ class GenericRegexParser(BaseParser):
 
     def extract(self,
                 path: str,
-                content: str) -> Tuple[List[ParserSymbol],
-                                       List[ParserRelation]]:
+                content: str) -> ParseResult:
         symbols: List[ParserSymbol] = []
         relations: List[ParserRelation] = []
         # Strip block comments first to avoid finding fake symbols in them
@@ -121,7 +120,7 @@ class GenericRegexParser(BaseParser):
                     content=stem,
                     qualname=stem))
 
-        return symbols, relations
+        return ParseResult(symbols=symbols, relations=relations)
 
 
 class HCLRegexParser(GenericRegexParser):
@@ -138,8 +137,7 @@ class HCLRegexParser(GenericRegexParser):
 
     def extract(self,
                 path: str,
-                content: str) -> Tuple[List[ParserSymbol],
-                                       List[ParserRelation]]:
+                content: str) -> ParseResult:
         symbols: List[ParserSymbol] = []
         relations: List[ParserRelation] = []
         content = re.sub(r"/\*.*?\*/", "", content, flags=re.DOTALL)
@@ -213,4 +211,4 @@ class HCLRegexParser(GenericRegexParser):
                     meta=info["meta"],
                     qualname=info["qual"]))
 
-        return symbols, relations
+        return ParseResult(symbols=symbols, relations=relations)

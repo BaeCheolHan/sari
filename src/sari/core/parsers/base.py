@@ -1,6 +1,6 @@
 import re
-from typing import List, Tuple, Any, Dict, Optional
-from sari.core.models import ParserRelation
+from typing import List, Tuple, Dict, Optional
+from sari.core.models import ParserRelation, ParseResult
 
 
 class BaseParser:
@@ -44,8 +44,7 @@ class BaseParser:
 
     def extract(self,
                 path: str,
-                content: str) -> Tuple[List[Tuple],
-                                       List[Tuple]]:
+                content: str) -> ParseResult:
         """
         소스 코드에서 심볼(클래스, 함수 등)과 관계를 추출합니다.
         자식 클래스에서 반드시 구현해야 합니다.
@@ -60,7 +59,7 @@ class BaseHandler:
     """
 
     def handle_node(self,
-                    node: Any,
+                    node: object,
                     get_t: callable,
                     find_id: callable,
                     ext: str,
@@ -75,7 +74,7 @@ class BaseHandler:
 
     def handle_relation(
             self,
-            node: Any,
+            node: object,
             context: Dict) -> List[ParserRelation]:
         """
         주어진 AST 노드에서 관계(Relation) 정보를 추출합니다.

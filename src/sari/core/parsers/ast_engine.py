@@ -1,10 +1,10 @@
 import logging
 import re
-from typing import List, Tuple, Optional, Any
+from typing import List, Tuple, Optional
 from .handlers import HandlerRegistry
 from .special_parsers import SpecialParser
 import hashlib
-from sari.core.models import ParserSymbol, ParserRelation
+from sari.core.models import ParseResult, ParserSymbol, ParserRelation
 
 try:
     from tree_sitter import Parser, Language
@@ -38,7 +38,7 @@ class ASTEngine:
         """Tree-sitter 라이브러리가 설치되어 실행 가능한지 여부를 반환합니다."""
         return HAS_LIBS
 
-    def _get_language(self, name: str) -> Any:
+    def _get_language(self, name: str) -> object:
         """
         확장자 또는 언어 이름을 기반으로 Tree-sitter Language 객체를 로드합니다.
         지원되지 않는 언어이거나 라이브러리 로드 실패 시 None을 반환합니다.
@@ -123,7 +123,7 @@ class ASTEngine:
         return None
 
     def parse(self, language: str, content: str,
-              old_tree: Any = None) -> Optional[Any]:
+              old_tree: object = None) -> Optional[object]:
         """
         주어진 언어와 소스 코드 내용을 AST Tree로 파싱합니다.
         Incremental parsing(old_tree)을 지원하여 성능을 최적화할 수 있습니다.
@@ -146,8 +146,7 @@ class ASTEngine:
                         path: str,
                         language: str,
                         content: str,
-                        tree: Any = None) -> Tuple[List[Tuple],
-                                                   List[Any]]:
+                        tree: object = None) -> ParseResult:
         """
         소스 코드에서 심볼(클래스, 함수, 메서드 등) 정보를 추출합니다.
         1. 특수 파서(Dockerfile 등) 시도
@@ -155,7 +154,7 @@ class ASTEngine:
         3. 실패 시 정규식 기반 범용 파서(fallback) 시도
         """
         if not content:
-            return [], []
+            return ParseResult()
 
         ext = path.split(".")[-1].lower() if "." in path else language.lower()
 
@@ -176,25 +175,34 @@ class ASTEngine:
         if tree is None:
             tree = self.parse(ext, content)
         if not tree:
-            return [], []
+            return ParseResult()
 
         # Extract symbols from tree
         return self._extract_from_tree(path, content, tree, handler, ext)
 
     def _try_special_parsers(self, path: str, ext: str,
-                             content: str) -> Optional[Tuple[List[Tuple], List[Any]]]:
+                             content: str) -> Optional[ParseResult]:
         """Try special parsers for non-AST languages."""
         # Dockerfile
         if ext in ("dockerfile", "docker") or path.lower() == "dockerfile":
-            return SpecialParser.parse_dockerfile(path, content), []
+            return ParseResult(
+                symbols=SpecialParser.parse_dockerfile(path, content),
+                relations=[],
+            )
 
         # MyBatis XML
         if ext == "xml" and ("<mapper" in content or "<sqlMap" in content):
-            return SpecialParser.parse_mybatis(path, content), []
+            return ParseResult(
+                symbols=SpecialParser.parse_mybatis(path, content),
+                relations=[],
+            )
 
         # Markdown
         if ext in ("md", "markdown"):
-            return SpecialParser.parse_markdown(path, content), []
+            return ParseResult(
+                symbols=SpecialParser.parse_markdown(path, content),
+                relations=[],
+            )
 
         # Vue (extract script section and parse as JavaScript)
         if ext == "vue":
@@ -204,27 +212,26 @@ class ASTEngine:
 
     def _parse_vue_file(self,
                         path: str,
-                        content: str) -> Tuple[List[ParserSymbol],
-                                               List[ParserRelation]]:
+                        content: str) -> ParseResult:
         """Extract and parse script section from Vue file."""
         m = re.search(r"<script[^>]*>\s*(.*?)\s*</script>", content, re.DOTALL)
         script_content = m.group(1) if m else ""
         if script_content:
             # Delegate to JS parser but keep original path context
-            js_syms, js_rels = self.extract_symbols(
+            parse_result = self.extract_symbols(
                 path.replace(".vue", ".js"), "javascript", script_content)
             # Fix paths back to original .vue path
-            for s in js_syms:
+            for s in parse_result.symbols:
                 s.path = path
-            for r in js_rels:
+            for r in parse_result.relations:
                 # to_path is empty by default, but if it was set, we don't know where it points.
                 # However, for internal relations, we might need to fix them.
                 pass
-            return js_syms, js_rels
-        return [], []
+            return parse_result
+        return ParseResult()
 
     def _try_generic_fallback(
-            self, path: str, ext: str, content: str) -> Tuple[List[Tuple], List[Any]]:
+            self, path: str, ext: str, content: str) -> ParseResult:
         """Fallback to GenericRegexParser if AST not available."""
         try:
             from .factory import ParserFactory
@@ -244,15 +251,14 @@ class ASTEngine:
         except ImportError:
             if self.logger and self.logger.isEnabledFor(logging.DEBUG):
                 self.logger.debug("AST fallback import error")
-        return [], []
+        return ParseResult()
 
     def _extract_from_tree(self,
                            path: str,
                            content: str,
-                           tree: Any,
-                           handler: Any,
-                           ext: str) -> Tuple[List[ParserSymbol],
-                                              List[ParserRelation]]:
+                           tree: object,
+                           handler: object,
+                           ext: str) -> ParseResult:
         """Extract symbols by walking the AST tree."""
         data = content.encode("utf-8", errors="ignore")
         lines = content.splitlines()
@@ -326,7 +332,7 @@ class ASTEngine:
                 stack.pop()
 
         walk(tree.root_node, p_meta={})
-        return symbols, relations
+        return ParseResult(symbols=symbols, relations=relations)
 
     def _extract_symbol_from_node(self,
                                   node,

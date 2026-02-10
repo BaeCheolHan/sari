@@ -4,10 +4,10 @@ import logging
 import os
 import zlib
 import threading
-from typing import List, Dict, Any, Optional, Tuple, Iterable
+from typing import Dict, Iterable, List, Optional, Tuple
 from peewee import SqliteDatabase
 from .models import db_proxy, Root, File
-from ..models import SnippetDTO, ContextDTO, FILE_COLUMNS
+from ..models import ContextDTO, FILE_COLUMNS, SearchOptions, SnippetDTO
 from .schema import init_schema
 from ..utils.path import PathUtils
 
@@ -65,8 +65,7 @@ class LocalSearchDB:
         """
         try:
             conn = self.db.connection()
-            dbs = [row[1]
-                   for row in conn.execute("PRAGMA database_list").fetchall()]
+            dbs = [name for _, name, *_ in conn.execute("PRAGMA database_list").fetchall()]
             if "staging_mem" not in dbs:
                 conn.execute("ATTACH DATABASE ':memory:' AS staging_mem")
             if force:
@@ -106,11 +105,11 @@ class LocalSearchDB:
     def ensure_root(self, root_id: str, path: str):
         self.upsert_root(root_id, path, path)
 
-    def upsert_files_tx(self, cur, rows: List[tuple]):
+    def upsert_files_tx(self, cur, rows: List[object]):
         """파일 정보를 트랜잭션 내에서 일괄 삽입합니다 (기본 방식)."""
         self._file_repo(cur).upsert_files_tx(cur, rows)
 
-    def upsert_files_staging(self, cur, rows: List[tuple]):
+    def upsert_files_staging(self, cur, rows: List[object]):
         """파일 정보를 메모리 스테이징 테이블에 삽입합니다."""
         self._ensure_staging()
         col_names = ", ".join(FILE_COLUMNS)
@@ -119,7 +118,7 @@ class LocalSearchDB:
             f"INSERT OR REPLACE INTO staging_mem.files_temp({col_names}) VALUES ({placeholders})",
             rows)
 
-    def upsert_files_turbo(self, rows: Iterable[Any]):
+    def upsert_files_turbo(self, rows: Iterable[object]):
         """
         대량의 파일 정보를 고속으로 처리합니다 (Turbo Mode).
         데이터를 튜플로 매핑하고 메모리 스테이징 테이블에 기록합니다.
@@ -188,7 +187,7 @@ class LocalSearchDB:
         try:
             res = conn.execute(
                 "SELECT count(*) FROM staging_mem.files_temp").fetchone()
-            count = res[0] if res else 0
+            count = int(next(iter(res), 0)) if res else 0
             if count == 0:
                 return
             try:
@@ -275,7 +274,7 @@ class LocalSearchDB:
             self.logger.debug("Failed to get file meta for %s: %s", path, e)
             return None
 
-    def upsert_symbols_tx(self, cur, rows: List[tuple], root_id: str = "root"):
+    def upsert_symbols_tx(self, cur, rows: List[object], root_id: str = "root"):
         """심볼 정보를 트랜잭션 내에서 일괄 삽입합니다."""
         if not rows:
             return
@@ -283,7 +282,7 @@ class LocalSearchDB:
             cur = self.db.connection().cursor()
         self._symbol_repo(cur).upsert_symbols_tx(cur, rows)
 
-    def upsert_relations_tx(self, cur, rows: List[tuple]):
+    def upsert_relations_tx(self, cur, rows: List[object]):
         """관계 정보를 트랜잭션 내에서 일괄 삽입합니다."""
         if not rows:
             return
@@ -291,7 +290,7 @@ class LocalSearchDB:
             cur = self.db.connection().cursor()
         self._symbol_repo(cur).upsert_relations_tx(cur, rows)
 
-    def upsert_snippet_tx(self, cur, rows: List[tuple]):
+    def upsert_snippet_tx(self, cur, rows: List[object]):
         self._snippet_repo(cur).upsert_snippet_tx(cur, rows)
 
     def list_snippets_by_tag(
@@ -303,7 +302,7 @@ class LocalSearchDB:
     def search_snippets(self, query: str, limit: int = 20) -> List[SnippetDTO]:
         return self._snippet_repo().search_snippets(query, limit=limit)
 
-    def list_snippet_versions(self, snippet_id: int) -> List[Dict[str, Any]]:
+    def list_snippet_versions(self, snippet_id: int) -> List[Dict[str, object]]:
         return self._snippet_repo().list_snippet_versions(snippet_id)
 
     def update_snippet_location_tx(
@@ -330,7 +329,7 @@ class LocalSearchDB:
             updated_ts,
         )
 
-    def upsert_context_tx(self, cur, rows: List[tuple]):
+    def upsert_context_tx(self, cur, rows: List[object]):
         self._context_repo(cur).upsert_context_tx(cur, rows)
 
     def search_contexts(self, query: str, limit: int = 20) -> List[ContextDTO]:
@@ -362,35 +361,35 @@ class LocalSearchDB:
             s.model_dump() for s in self._symbol_repo().search_symbols(
                 query, limit=limit, **kwargs)]
 
-    def search_v2(self, opts: Any):
+    def search_v2(self, opts: SearchOptions):
         """V2 검색 인터페이스 (엔진 위임 또는 저장소 직접 검색)."""
         if self.engine and hasattr(self.engine, "search_v2"):
             return self.engine.search_v2(opts)
         return self._search_repo().search_v2(opts)
 
     def repo_candidates(self, q: str, limit: int = 3,
-                        root_ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+                        root_ids: Optional[List[str]] = None) -> List[Dict[str, object]]:
         if self.engine and hasattr(self.engine, "repo_candidates"):
             return self.engine.repo_candidates(
                 q, limit=limit, root_ids=root_ids)
         return self._search_repo().repo_candidates(q, limit=limit, root_ids=root_ids)
 
-    def search_sqlite_v2(self, opts: Any):
+    def search_sqlite_v2(self, opts: SearchOptions):
         """SQLite-only fallback search path (engine bypass)."""
         return self._search_repo().search_v2(opts)
 
     def repo_candidates_sqlite(self, q: str, limit: int = 3,
-                               root_ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+                               root_ids: Optional[List[str]] = None) -> List[Dict[str, object]]:
         """SQLite-only repo candidate path (engine bypass)."""
         return self._search_repo().repo_candidates(q, limit=limit, root_ids=root_ids)
 
     def apply_root_filter(
-            self, sql: str, root_id: Optional[str]) -> Tuple[str, List[Any]]:
+            self, sql: str, root_id: Optional[str]) -> Tuple[str, List[object]]:
         sql = str(sql or "").strip()
         if not sql:
             return sql, []
         has_where = " where " in sql.lower()
-        params: List[Any] = []
+        params: List[object] = []
         if root_id:
             if has_where:
                 sql += " AND root_id = ?"

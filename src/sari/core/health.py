@@ -2,22 +2,43 @@ import sys
 import socket
 import shutil
 import sqlite3
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Optional
 
 from .db import LocalSearchDB
 from .workspace import WorkspaceManager
 
+
+def _row_get(row: object, key: str, index: int, default: object = None) -> object:
+    if row is None:
+        return default
+    try:
+        if hasattr(row, "keys"):
+            return row[key]
+    except Exception:
+        pass
+    if isinstance(row, (list, tuple)) and len(row) > index:
+        return row[index]
+    return default
+
+
 class SariDoctor:
     def __init__(self, workspace_root: Optional[str] = None):
         self.workspace_root = workspace_root or WorkspaceManager.resolve_workspace_root()
-        self.results: List[Dict[str, Any]] = []
+        self.results: List[Dict[str, object]] = []
         self.common_issues = [
             {"issue": "Permission Denied", "solution": "Check if Sari has read/write access to ~/.local/share/sari and the workspace root."},
             {"issue": "Port Conflict", "solution": "Run 'sari daemon stop' then start with a different port using SARI_DAEMON_PORT=47790."},
             {"issue": "Workspace Not Initialized", "solution": "Run 'sari init' in the workspace root to create the necessary config files."}
         ]
 
-    def _add_result(self, name: str, passed: bool, error: str = "", warn: bool = False, details: Optional[Dict[str, Any]] = None):
+    def _add_result(
+        self,
+        name: str,
+        passed: bool,
+        error: str = "",
+        warn: bool = False,
+        details: Optional[Dict[str, object]] = None,
+    ) -> None:
         self.results.append({
             "name": name,
             "passed": passed,
@@ -37,7 +58,7 @@ class SariDoctor:
             # Check FTS5
             try:
                 cursor = db.db.connection().execute("PRAGMA compile_options")
-                options = [r[0] for r in cursor.fetchall()]
+                options = [str(_row_get(r, "compile_options", 0, "") or "") for r in cursor.fetchall()]
                 if "ENABLE_FTS5" in options:
                     self._add_result("DB FTS5 Support", True)
                 else:
@@ -172,7 +193,7 @@ class SariDoctor:
         self.check_db()
         self.check_disk_space()
 
-    def get_summary(self) -> Dict[str, Any]:
+    def get_summary(self) -> Dict[str, object]:
         passed_count = sum(1 for r in self.results if r["passed"] or r["warn"])
         total_count = len(self.results)
         return {

@@ -28,8 +28,11 @@ def test_cmd_doctor():
 
 def test_cmd_search():
     args = argparse.Namespace(query="test", limit=10, repo=None)
-    with patch('sari.mcp.cli.commands.status_commands._request_http', return_value={"results": []}):
-        with patch('sari.mcp.cli.commands.status_commands._get_http_host_port', return_value=("127.0.0.1", 47777)):
+    with patch(
+        "sari.mcp.cli.commands.status_commands._prepare_http_service",
+        return_value=("127.0.0.1", 47777, None),
+    ):
+        with patch("sari.mcp.cli.commands.status_commands._request_http", return_value={"results": []}):
             ret = cmd_search(args)
             assert ret == 0
 

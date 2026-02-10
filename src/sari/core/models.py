@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field, ConfigDict
-from typing import List, Optional, Dict, Any, Union, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 import json
 import logging
 
@@ -30,7 +30,7 @@ FILE_COLUMNS = [
     "metadata_json"]
 
 
-def _to_dict(row: Any) -> Dict[str, Any]:
+def _to_dict(row: object) -> Dict[str, object]:
     if isinstance(row, dict):
         return row
     try:
@@ -45,6 +45,14 @@ def _to_dict(row: Any) -> Dict[str, Any]:
     if hasattr(row, "__dict__"):
         return row.__dict__
     return {}
+
+
+def _sequence_to_dict(row: object, columns: List[str]) -> Dict[str, object]:
+    if not isinstance(row, (list, tuple)):
+        return {}
+    values = list(row)
+    padded = values + [None] * max(0, len(columns) - len(values))
+    return dict(zip(columns, padded))
 
 
 class SearchOptions(BaseModel):
@@ -78,13 +86,13 @@ class SearchHit(BaseModel):
     scope_reason: str = ""
     context_symbol: str = ""
     docstring: str = ""
-    metadata: Dict[str, Any] = Field(default_factory=dict)
+    metadata: Dict[str, object] = Field(default_factory=dict)
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "SearchHit":
+    def from_dict(cls, data: Dict[str, object]) -> "SearchHit":
         return cls(**data)
 
-    def to_result_dict(self) -> Dict[str, Any]:
+    def to_result_dict(self) -> Dict[str, object]:
         return {
             "doc_id": self.path,
             "repo": self.repo,
@@ -113,10 +121,10 @@ class FileDTO(BaseModel):
     content: Optional[Union[str, bytes]] = None
     hash: str = ""
     fts_content: str = ""
-    metadata: Dict[str, Any] = Field(default_factory=dict)
+    metadata: Dict[str, object] = Field(default_factory=dict)
 
     @classmethod
-    def from_row(cls, row: Union[Dict, Any]) -> "FileDTO":
+    def from_row(cls, row: Union[Dict[str, object], object]) -> "FileDTO":
         d = _to_dict(row)
         meta = {}
         m_key = "metadata_json" if "metadata_json" in d else "meta_json"
@@ -152,10 +160,10 @@ class SymbolDTO(BaseModel):
     content: str = ""
     parent_name: Optional[str] = ""
     qualname: str = ""
-    metadata: Dict[str, Any] = Field(default_factory=dict)
+    metadata: Dict[str, object] = Field(default_factory=dict)
 
     @classmethod
-    def from_row(cls, row: Union[Dict, Any]) -> "SymbolDTO":
+    def from_row(cls, row: Union[Dict[str, object], object]) -> "SymbolDTO":
         d = _to_dict(row)
         meta = {}
         m_key = "meta_json" if "meta_json" in d else "metadata"
@@ -198,10 +206,10 @@ class SnippetDTO(BaseModel):
     commit_hash: str = ""
     created_ts: int = 0
     updated_ts: int = 0
-    metadata: Dict[str, Any] = Field(default_factory=dict)
+    metadata: Dict[str, object] = Field(default_factory=dict)
 
     @classmethod
-    def from_row(cls, row: Union[Dict, Any]) -> "SnippetDTO":
+    def from_row(cls, row: Union[Dict[str, object], object]) -> "SnippetDTO":
         d = _to_dict(row)
         meta = {}
         m_key = "metadata_json" if "metadata_json" in d else "meta_json"
@@ -250,9 +258,9 @@ class IndexingResult(BaseModel):
     is_minified: int = 0
     content_bytes: int = 0
     metadata_json: str = "{}"
-    symbols: List[Any] = Field(default_factory=list)
-    relations: List[Any] = Field(default_factory=list)
-    engine_doc: Optional[Dict[str, Any]] = None
+    symbols: List["ParserSymbol"] = Field(default_factory=list)
+    relations: List["ParserRelation"] = Field(default_factory=list)
+    engine_doc: Optional[Dict[str, object]] = None
 
     def to_file_row(self) -> Tuple:
         """Dynamically build the tuple using FILE_COLUMNS SSOT to eliminate magic numbers."""
@@ -306,7 +314,7 @@ class ContextDTO(BaseModel):
     updated_ts: int = 0
 
     @classmethod
-    def from_row(cls, row: Union[Dict, Any]) -> "ContextDTO":
+    def from_row(cls, row: Union[Dict[str, object], object]) -> "ContextDTO":
 
         d = _to_dict(row)
 
@@ -357,6 +365,82 @@ class ContextDTO(BaseModel):
         )
 
 
+class CallerHitDTO(BaseModel):
+
+    caller_path: str = ""
+
+    caller_symbol: str = ""
+
+    caller_symbol_id: str = ""
+
+    line: int = 0
+
+    rel_type: str = ""
+
+    @classmethod
+    def from_row(cls, row: Union[Dict[str, object], object]) -> "CallerHitDTO":
+        d = _to_dict(row)
+        if d:
+            return cls(
+                caller_path=str(d.get("from_path", d.get("caller_path", ""))),
+                caller_symbol=str(d.get("from_symbol", d.get("caller_symbol", ""))),
+                caller_symbol_id=str(d.get("from_symbol_id", d.get("caller_symbol_id", "")) or ""),
+                line=int(d.get("line", 0) or 0),
+                rel_type=str(d.get("rel_type", "")),
+            )
+        if isinstance(row, (list, tuple)):
+            seq = _sequence_to_dict(
+                row,
+                ["caller_path", "caller_symbol", "caller_symbol_id", "line", "rel_type"],
+            )
+            return cls(
+                caller_path=str(seq.get("caller_path") or ""),
+                caller_symbol=str(seq.get("caller_symbol") or ""),
+                caller_symbol_id=str(seq.get("caller_symbol_id") or ""),
+                line=int(seq.get("line") or 0),
+                rel_type=str(seq.get("rel_type") or ""),
+            )
+        return cls()
+
+
+class ImplementationHitDTO(BaseModel):
+
+    implementer_path: str = ""
+
+    implementer_symbol: str = ""
+
+    implementer_sid: str = ""
+
+    rel_type: str = ""
+
+    line: int = 0
+
+    @classmethod
+    def from_row(cls, row: Union[Dict[str, object], object]) -> "ImplementationHitDTO":
+        d = _to_dict(row)
+        if d:
+            return cls(
+                implementer_path=str(d.get("from_path", d.get("implementer_path", ""))),
+                implementer_symbol=str(d.get("from_symbol", d.get("implementer_symbol", ""))),
+                implementer_sid=str(d.get("from_symbol_id", d.get("implementer_sid", "")) or ""),
+                rel_type=str(d.get("rel_type", "")),
+                line=int(d.get("line", 0) or 0),
+            )
+        if isinstance(row, (list, tuple)):
+            seq = _sequence_to_dict(
+                row,
+                ["implementer_path", "implementer_symbol", "implementer_sid", "rel_type", "line"],
+            )
+            return cls(
+                implementer_path=str(seq.get("implementer_path") or ""),
+                implementer_symbol=str(seq.get("implementer_symbol") or ""),
+                implementer_sid=str(seq.get("implementer_sid") or ""),
+                rel_type=str(seq.get("rel_type") or ""),
+                line=int(seq.get("line") or 0),
+            )
+        return cls()
+
+
 # --- Parser Result Objects (to avoid messy tuple indexing) ---
 
 
@@ -378,7 +462,7 @@ class ParserSymbol(BaseModel):
 
     parent: str = ""
 
-    meta: Dict[str, Any] = Field(default_factory=dict)
+    meta: Dict[str, object] = Field(default_factory=dict)
 
     qualname: str = ""
 
@@ -399,6 +483,18 @@ class ParserRelation(BaseModel):
 
     line: int
 
-    meta: Dict[str, Any] = Field(default_factory=dict)
+    meta: Dict[str, object] = Field(default_factory=dict)
 
     to_path: str = ""
+
+
+class ParseResult(BaseModel):
+
+    symbols: List[ParserSymbol] = Field(default_factory=list)
+
+    relations: List[ParserRelation] = Field(default_factory=list)
+
+    def __iter__(self):
+        # Backward compatibility: allow `symbols, relations = result`.
+        yield self.symbols
+        yield self.relations

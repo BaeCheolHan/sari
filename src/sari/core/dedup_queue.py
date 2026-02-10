@@ -1,20 +1,23 @@
 import queue
 import threading
-from typing import Any, List, Optional, Set
+from typing import Generic, Hashable, List, Optional, Set, TypeVar
 from sari.core.settings import settings
 
-class DedupQueue:
+T = TypeVar("T", bound=Hashable)
+
+
+class DedupQueue(Generic[T]):
     """
     A thread-safe queue that ignores duplicate items currently pending control.
     """
     def __init__(self, maxsize: Optional[int] = None):
         # Default to 5000 if not provided
         self.maxsize = maxsize or settings.get_int("INDEX_QUEUE_SIZE", 5000)
-        self.q: queue.Queue = queue.Queue(maxsize=self.maxsize)
-        self.pending: Set[Any] = set()
+        self.q: "queue.Queue[T]" = queue.Queue(maxsize=self.maxsize)
+        self.pending: Set[T] = set()
         self.lock = threading.Lock()
 
-    def put(self, item: Any) -> bool:
+    def put(self, item: T) -> bool:
         """
         Put item into queue. Returns True if added, False if already pending.
         """
@@ -25,14 +28,14 @@ class DedupQueue:
             self.q.put(item)
             return True
 
-    def get(self, block: bool = True, timeout: Optional[float] = None) -> Any:
+    def get(self, block: bool = True, timeout: Optional[float] = None) -> T:
         try:
             item = self.q.get(block=block, timeout=timeout)
             return item
         except queue.Empty:
             raise
 
-    def task_done(self, item: Any) -> None:
+    def task_done(self, item: T) -> None:
         """
         Mark item as processed, removing it from pending set.
         """
@@ -40,7 +43,7 @@ class DedupQueue:
             self.pending.discard(item)
         self.q.task_done()
 
-    def get_batch(self, max_size: int = 50, timeout: float = 0.1) -> List[Any]:
+    def get_batch(self, max_size: int = 50, timeout: float = 0.1) -> List[T]:
         """
         Get up to max_size items.
         Note: You must assume ownership of these items.

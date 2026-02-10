@@ -1,7 +1,6 @@
 import time
 from typing import Any, Dict
 
-from sari.mcp.tools._util import ErrorCode
 from sari.core.queue_pipeline import FsEvent, FsEventKind
 
 
@@ -10,6 +9,8 @@ class IndexService:
         self.indexer = indexer
 
     def _ensure_available(self) -> Dict[str, Any]:
+        from sari.mcp.tools.protocol import ErrorCode
+
         if not self.indexer:
             return {"ok": False, "code": ErrorCode.INTERNAL, "message": "indexer not available"}
         if not getattr(self.indexer, "indexing_enabled", True):
@@ -61,6 +62,8 @@ class IndexService:
         return {"ok": True, "scanned_files": scanned, "indexed_files": indexed}
 
     def rescan(self) -> Dict[str, Any]:
+        from sari.mcp.tools.protocol import ErrorCode
+
         chk = self._ensure_available()
         if not chk.get("ok"):
             return chk
@@ -75,6 +78,8 @@ class IndexService:
         return {"ok": True}
 
     def index_file(self, fs_path: str) -> Dict[str, Any]:
+        from sari.mcp.tools.protocol import ErrorCode
+
         chk = self._ensure_available()
         if not chk.get("ok"):
             return chk

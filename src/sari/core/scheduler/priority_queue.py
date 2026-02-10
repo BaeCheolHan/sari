@@ -33,7 +33,7 @@ class AgingPriorityQueue:
             )
             heapq.heappush(self._queue, task)
 
-    def get(self) -> Optional[tuple]:
+    def get(self) -> Optional[PrioritizedTask]:
         with self._lock:
             if not self._queue:
                 return None
@@ -42,8 +42,7 @@ class AgingPriorityQueue:
             # For simplicity in this local tool, we update on every get if needed
             self._apply_aging()
             
-            task = heapq.heappop(self._queue)
-            return task.root_id, task.payload
+            return heapq.heappop(self._queue)
 
     def _apply_aging(self):
         """Adjust priorities based on wait time."""

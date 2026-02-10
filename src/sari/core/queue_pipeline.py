@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 
 class FsEventKind(str, Enum):
@@ -38,18 +38,18 @@ class CoalesceTask:
 @dataclass
 class DbTask:
     kind: str
-    rows: Optional[List[tuple]] = None
+    rows: Optional[List[object]] = None
     path: Optional[str] = None
     paths: Optional[List[str]] = None
     ts: Optional[int] = None
     repo_meta: Optional[dict] = None
     engine_docs: Optional[List[dict]] = None
     engine_deletes: Optional[List[str]] = None
-    snippet_rows: Optional[List[tuple]] = None
-    context_rows: Optional[List[tuple]] = None
-    failed_rows: Optional[List[tuple]] = None
+    snippet_rows: Optional[List[object]] = None
+    context_rows: Optional[List[object]] = None
+    failed_rows: Optional[List[object]] = None
     failed_paths: Optional[List[str]] = None
-    failed_updates: Optional[List[tuple]] = None
+    failed_updates: Optional[List[object]] = None
 
 
 def coalesce_action(existing: Optional[TaskAction], incoming: TaskAction) -> TaskAction:
@@ -60,12 +60,12 @@ def coalesce_action(existing: Optional[TaskAction], incoming: TaskAction) -> Tas
     return TaskAction.INDEX
 
 
-def split_moved_event(event: FsEvent) -> List[Tuple[TaskAction, str]]:
+def split_moved_event(event: FsEvent) -> List[CoalesceTask]:
     if event.kind != FsEventKind.MOVED:
         return []
-    actions: List[Tuple[TaskAction, str]] = []
+    actions: List[CoalesceTask] = []
     if event.path:
-        actions.append((TaskAction.DELETE, event.path))
+        actions.append(CoalesceTask(action=TaskAction.DELETE, path=event.path))
     if event.dest_path:
-        actions.append((TaskAction.INDEX, event.dest_path))
+        actions.append(CoalesceTask(action=TaskAction.INDEX, path=event.dest_path))
     return actions

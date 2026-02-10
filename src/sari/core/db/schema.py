@@ -6,6 +6,19 @@ CURRENT_SCHEMA_VERSION = 4
 logger = logging.getLogger("sari.db.schema")
 
 
+def _row_get(row, key: str, index: int, default=None):
+    if row is None:
+        return default
+    try:
+        if hasattr(row, "keys"):
+            return row[key]
+    except Exception:
+        pass
+    if isinstance(row, (list, tuple)) and len(row) > index:
+        return row[index]
+    return default
+
+
 def init_schema(conn: sqlite3.Connection):
     """Sari의 데이터베이스 스키마를 최신 표준에 맞게 초기화하고 마이그레이션을 관리합니다."""
     cur = conn.cursor()
@@ -20,7 +33,7 @@ def init_schema(conn: sqlite3.Connection):
     else:
         cur.execute("SELECT version FROM schema_version LIMIT 1")
         row = cur.fetchone()
-        v = row[0] if row and isinstance(row[0], int) else 1
+        v = int(_row_get(row, "version", 0, 1) or 1)
 
         # v2 마이그레이션: 중요도 점수(importance_score) 컬럼 추가
         if v < 2:

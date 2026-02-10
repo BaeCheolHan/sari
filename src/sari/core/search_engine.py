@@ -1,7 +1,7 @@
 import sqlite3
 import re
 import fnmatch
-from typing import List, Tuple, Optional, Any, Dict
+from typing import Dict, List, Optional, Tuple
 from .models import SearchHit, SearchOptions
 from .ranking import snippet_around, get_file_extension
 from .scoring import ScoringPolicy
@@ -16,23 +16,24 @@ class SearchEngine:
         self.db = db
         self.scoring_policy = scoring_policy or ScoringPolicy()
         self.tantivy_engine = tantivy_engine
-        self._snippet_cache: Dict[tuple, str] = {}
-        self._snippet_lru: List[tuple] = []
+        self._snippet_cache: Dict[str, str] = {}
+        self._snippet_lru: List[str] = []
         self.storage = GlobalStorageManager.get_instance(db)
 
     def search_l2_only(
-            self, opts: SearchOptions) -> Tuple[List[SearchHit], Dict[str, Any]]:
+            self, opts: SearchOptions) -> Tuple[List[SearchHit], Dict[str, object]]:
         q = (opts.query or "").strip()
         if not q:
             return [], {"total": 0, "engine": "l2", "partial": True}
         from .workspace import WorkspaceManager
         root_id = WorkspaceManager.normalize_path(
             list(opts.root_ids)[0]) if opts.root_ids else None
-        meta: Dict[str,
-                   Any] = {"engine": "l2",
-                           "partial": True,
-                           "db_health": "error",
-                           "coverage": "l2-only"}
+        meta: Dict[str, object] = {
+            "engine": "l2",
+            "partial": True,
+            "db_health": "error",
+            "coverage": "l2-only",
+        }
         try:
             recent_rows = self.storage.get_recent_files(
                 q, root_id=root_id, limit=opts.limit)
@@ -46,7 +47,7 @@ class SearchEngine:
             return [], meta
 
     def search_v2(
-            self, opts: SearchOptions) -> Tuple[List[SearchHit], Dict[str, Any]]:
+            self, opts: SearchOptions) -> Tuple[List[SearchHit], Dict[str, object]]:
         """Enhanced search with Score Normalization and Merged Results."""
         if hasattr(self.db, "coordinator") and self.db.coordinator:
             self.db.coordinator.notify_search_start()
@@ -59,11 +60,12 @@ class SearchEngine:
             from .workspace import WorkspaceManager
             root_id = WorkspaceManager.normalize_path(
                 list(opts.root_ids)[0]) if opts.root_ids else None
-            meta: Dict[str,
-                       Any] = {"engine": "hybrid",
-                               "partial": False,
-                               "db_health": "ok",
-                               "db_error": ""}
+            meta: Dict[str, object] = {
+                "engine": "hybrid",
+                "partial": False,
+                "db_health": "ok",
+                "db_error": "",
+            }
 
             # 1. L2 Cache (Recent) - 최상위 우선순위
             try:
@@ -165,23 +167,30 @@ class SearchEngine:
 
     def _process_sqlite_rows(
             self,
-            rows: list,
+            rows: List[object],
             opts: SearchOptions) -> List[SearchHit]:
         import fnmatch
         hits: List[SearchHit] = []
         for r in rows:
-            # Flexible Unpacking for different row shapes
-            if len(r) >= 7:
-                # FTS shape: (path, rel_path, root_id, repo, mtime, size,
-                # content)
-                path, rel_path, _root_id, repo, mtime, size, content = r[
-                    0], r[1], r[2], r[3], r[4], r[5], r[6]
-            elif len(r) == 6:
-                # Legacy shape: (path, root_id, repo, mtime, size, content)
-                path, _root_id, repo, mtime, size, content = r[0], r[1], r[2], r[3], r[4], r[5]
-                rel_path = path  # Fallback
+            row = self._row_to_mapping(r)
+            if row:
+                path = str(row.get("path", ""))
+                rel_path = str(row.get("rel_path", path))
+                repo = str(row.get("repo", ""))
+                mtime = int(row.get("mtime", 0) or 0)
+                size = int(row.get("size", 0) or 0)
+                content = row.get("content", "")
             else:
-                continue
+                # Flexible tuple unpacking fallback
+                if isinstance(r, (list, tuple)) and len(r) >= 7:
+                    # FTS shape: (path, rel_path, root_id, repo, mtime, size, content)
+                    path, rel_path, _, repo, mtime, size, content, *_ = r
+                elif isinstance(r, (list, tuple)) and len(r) == 6:
+                    # Legacy shape: (path, root_id, repo, mtime, size, content)
+                    path, _, repo, mtime, size, content = r
+                    rel_path = path
+                else:
+                    continue
 
             # Strict Filtering
             if opts.repo and repo != opts.repo:
@@ -220,7 +229,7 @@ class SearchEngine:
 
     def _process_tantivy_hits(
             self,
-            hits: list,
+            hits: List[Dict[str, object]],
             opts: SearchOptions) -> List[SearchHit]:
         import fnmatch
         results: List[SearchHit] = []
@@ -254,7 +263,7 @@ class SearchEngine:
             try:
                 row = self.db._get_conn().execute(
                     "SELECT deleted_ts FROM files WHERE path=?", (path,)).fetchone()
-                if row and row[0] > 0:
+                if int(self._row_get(row, "deleted_ts", 0, 0) or 0) > 0:
                     is_deleted = True
             except Exception:
                 pass
@@ -309,7 +318,7 @@ class SearchEngine:
         return " ".join(out)
 
     def _snippet_for(self, path: str, query: str, content: str) -> str:
-        cache_key = (path, query)
+        cache_key = f"{path}\0{query}"
         cached = self._snippet_cache.get(cache_key)
         if cached is not None:
             return cached
@@ -344,8 +353,32 @@ class SearchEngine:
                 self._snippet_cache.pop(old, None)
         return snippet
 
+    @staticmethod
+    def _row_to_mapping(row: object) -> Optional[Dict[str, object]]:
+        if row is None:
+            return None
+        try:
+            if hasattr(row, "keys"):
+                return {k: row[k] for k in row.keys()}
+        except Exception:
+            return None
+        return None
+
+    @staticmethod
+    def _row_get(row: object, key: str, index: int, default: object = None) -> object:
+        if row is None:
+            return default
+        try:
+            if hasattr(row, "keys"):
+                return row[key]
+        except Exception:
+            pass
+        if isinstance(row, (list, tuple)) and len(row) > index:
+            return row[index]
+        return default
+
     def repo_candidates(self, q: str, limit: int = 3,
-                        root_ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+                        root_ids: Optional[List[str]] = None) -> List[Dict[str, object]]:
         q = (q or "").strip()
         if not q:
             return []

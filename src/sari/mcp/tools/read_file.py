@@ -2,7 +2,15 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List
 from sari.core.db import LocalSearchDB
-from sari.mcp.tools._util import mcp_response, pack_error, ErrorCode, resolve_db_path, pack_header, pack_encode_text
+from sari.mcp.tools._util import (
+    mcp_response,
+    pack_error,
+    ErrorCode,
+    resolve_db_path,
+    pack_header,
+    pack_encode_text,
+    parse_int_arg,
+)
 
 def execute_read_file(args: Dict[str, Any], db: LocalSearchDB, roots: List[str]) -> Dict[str, Any]:
     """
@@ -19,8 +27,15 @@ def execute_read_file(args: Dict[str, Any], db: LocalSearchDB, roots: List[str])
         return validation_result
     
     path = args["path"]
-    offset = int(args.get("offset", 0))
-    limit = int(args["limit"]) if args.get("limit") is not None else None
+    offset, err = parse_int_arg(args, "offset", 0, "read_file", min_value=0)
+    if err:
+        return err
+    if args.get("limit") is not None:
+        limit, err = parse_int_arg(args, "limit", 0, "read_file", min_value=1)
+        if err:
+            return err
+    else:
+        limit = None
     
     # DB 경로 변환 및 파일 읽기
     # 정책 업데이트: 이제 resolve_db_path는 DB를 직접 조회하여 더 넓은 범위를 허용합니다.

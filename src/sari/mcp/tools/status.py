@@ -4,6 +4,19 @@ from sari.core.indexer.main import Indexer
 from sari.core.config import Config
 from sari.mcp.tools._util import pack_header
 
+
+def _row_get(row: Any, key: str, index: int, default: Any = 0) -> Any:
+    if row is None:
+        return default
+    try:
+        if hasattr(row, "keys"):
+            return row[key]
+    except Exception:
+        pass
+    if isinstance(row, (list, tuple)) and len(row) > index:
+        return row[index]
+    return default
+
 def execute_status(args: Dict[str, Any], indexer: Optional[Indexer], db: Optional[LocalSearchDB], cfg: Optional[Config], workspace_root: str, server_version: str, logger=None) -> Dict[str, Any]:
     """
     Sari 서버의 상태를 조회하는 현대화된 상태 도구입니다.
@@ -16,8 +29,10 @@ def execute_status(args: Dict[str, Any], indexer: Optional[Indexer], db: Optiona
     db_error = ""
     if db:
         try:
-            total_files = db.db.execute_sql("SELECT COUNT(1) FROM files").fetchone()[0]
-            total_symbols = db.db.execute_sql("SELECT COUNT(1) FROM symbols").fetchone()[0]
+            files_row = db.db.execute_sql("SELECT COUNT(1) AS count_files FROM files").fetchone()
+            symbols_row = db.db.execute_sql("SELECT COUNT(1) AS count_symbols FROM symbols").fetchone()
+            total_files = int(_row_get(files_row, "count_files", 0, 0) or 0)
+            total_symbols = int(_row_get(symbols_row, "count_symbols", 0, 0) or 0)
         except Exception:
             db_error = "DB access failed"
     else:

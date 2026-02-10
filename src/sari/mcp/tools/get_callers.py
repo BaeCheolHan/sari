@@ -9,19 +9,23 @@ from sari.mcp.tools._util import (
     resolve_repo_scope,
     pack_error,
     ErrorCode,
+    parse_int_arg,
 )
 from sari.mcp.tools.call_graph import build_call_graph
+from sari.core.models import CallerHitDTO
 
 def execute_get_callers(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict[str, Any]:
     """
     특정 심볼을 호출하는 다른 심볼들을 높은 정확도로 검색합니다.
     (Symbol References / Usage Search)
     """
-    target_symbol = args.get("name", "").strip()
-    target_sid = args.get("symbol_id", "").strip() or args.get("sid", "").strip()
+    target_symbol = str(args.get("name", "") or "").strip()
+    target_sid = str(args.get("symbol_id", "") or "").strip() or str(args.get("sid", "") or "").strip()
     target_path = str(args.get("path", "")).strip()
     repo = str(args.get("repo", "")).strip()
-    limit = max(1, min(int(args.get("limit", 100) or 100), 500))
+    limit, err = parse_int_arg(args, "limit", 100, "get_callers", min_value=1, max_value=500)
+    if err:
+        return err
     
     if not target_symbol and not target_sid:
         return mcp_response(
@@ -72,13 +76,7 @@ def execute_get_callers(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict
     try:
         rows = conn.execute(sql, params).fetchall()
         for r in rows:
-            results.append({
-                "caller_path": r[0],
-                "caller_symbol": r[1],
-                "caller_symbol_id": r[2] or "",
-                "line": r[3],
-                "rel_type": r[4]
-            })
+            results.append(CallerHitDTO.from_row(r).model_dump())
     except Exception as e: 
         import logging
         logging.getLogger("sari.mcp.get_callers").debug("SQL query failed: %s", e)

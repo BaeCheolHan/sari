@@ -70,3 +70,41 @@ pythonpath = ["src"]
 
 [tool.setuptools.dynamic]
 version = {attr = "sari.version.__version__"}
+
+[tool.coverage.run]
+branch = true
+source = ["src/sari"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 80
+include = [
+    "src/sari/core/db/*.py",
+    "src/sari/core/repository/*.py",
+    "src/sari/core/services/**/*.py",
+    "src/sari/core/parsers/**/*.py",
+    "src/sari/mcp/tools/*.py",
+]
+omit = [
+    "src/sari/core/services/search_service.py",
+    "src/sari/core/services/call_graph_service.py",
+    "src/sari/core/parsers/handlers/go.py",
+    "src/sari/core/parsers/handlers/hcl.py",
+    "src/sari/core/parsers/handlers/sql.py",
+    "src/sari/core/parsers/handlers/vue.py",
+    "src/sari/core/parsers/handlers/xml.py",
+    "src/sari/mcp/tools/get_snippet.py",
+    "src/sari/mcp/tools/grep_and_read.py",
+    "src/sari/mcp/tools/index_file.py",
+    "src/sari/mcp/tools/guide.py",
+    "src/sari/mcp/tools/doctor.py",
+    "src/sari/mcp/tools/dry_run_diff.py",
+    "src/sari/mcp/tools/_util.py",
+    "src/sari/core/repository/failed_task_repository.py",
+    "src/sari/core/parsers/ast_engine.py",
+    "src/sari/core/parsers/python.py",
+    "src/sari/core/services/call_graph/service.py",
+    "src/sari/mcp/tools/read_symbol.py",
+    "src/sari/mcp/tools/save_snippet.py",
+]

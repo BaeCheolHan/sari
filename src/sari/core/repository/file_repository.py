@@ -16,7 +16,7 @@ class FileRepository(BaseRepository):
     def upsert_files_tx(
             self,
             cur: sqlite3.Cursor,
-            rows: Iterable[tuple]) -> int:
+            rows: Iterable[Any]) -> int:
         """
         파일 정보들을 트랜잭션 내에서 한꺼번에 삽입하거나 업데이트(Upsert)합니다.
         mtime이 기존보다 크거나 같은 경우에만 업데이트하며, 관련 심볼 정보를 초기화합니다.
@@ -75,7 +75,11 @@ class FileRepository(BaseRepository):
         cur.executemany(sql, processed_rows)
         cur.executemany(
             "DELETE FROM symbols WHERE path = ?", [
-                (r[0],) for r in processed_rows])
+                (row_dict["path"],) for row_dict in (
+                    dict(zip(FILE_COLUMNS, row_vals)) for row_vals in processed_rows
+                )
+            ],
+        )
         return len(processed_rows)
 
     def delete_path_tx(self, cur: sqlite3.Cursor, path: str) -> None:

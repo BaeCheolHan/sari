@@ -124,10 +124,10 @@ class IndexWorker:
                     if tree:
                         ast_status, ast_reason = "ok", "none"
                         self._ast_cache_put(db_path, tree)
-                        ts_syms, ts_rels = self.ast_engine.extract_symbols(
+                        parse_result = self.ast_engine.extract_symbols(
                             db_path, lang, content, tree=tree)
-                        symbols = ts_syms or []
-                        relations = ts_rels or []
+                        symbols = parse_result.symbols or []
+                        relations = parse_result.relations or []
                     else:
                         ast_status, ast_reason = "failed", "parse_error"
 

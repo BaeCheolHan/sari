@@ -1,8 +1,8 @@
 import ast
-from typing import List, Tuple
+from typing import List
 from .base import BaseParser
 from .common import _qualname, _symbol_id, _safe_compile
-from sari.core.models import ParserSymbol, ParserRelation
+from sari.core.models import ParserSymbol, ParserRelation, ParseResult
 
 
 class PythonParser(BaseParser):
@@ -13,8 +13,7 @@ class PythonParser(BaseParser):
 
     def extract(self,
                 path: str,
-                content: str) -> Tuple[List[ParserSymbol],
-                                       List[ParserRelation]]:
+                content: str) -> ParseResult:
         """
         Python 소스 코드를 파싱하여 심볼 목록과 호출 관계를 추출합니다.
         """
@@ -139,4 +138,4 @@ class PythonParser(BaseParser):
             }
             gen = GenericRegexParser(config, ".py")
             return gen.extract(path, content)
-        return symbols, relations
+        return ParseResult(symbols=symbols, relations=relations)

@@ -1,10 +1,14 @@
 import os
-from typing import Any, Dict, List, Optional, Tuple
+import sqlite3
+import logging
+from typing import Dict, List, Optional, Tuple
 
-from sari.core.models import SearchHit
+from sari.core.models import SearchHit, SearchOptions
 from sari.core.ranking import glob_to_like
 
 from .base import BaseRepository
+
+logger = logging.getLogger("sari.repository.search")
 
 
 class SearchRepository(BaseRepository):
@@ -14,7 +18,7 @@ class SearchRepository(BaseRepository):
     """
 
     def repo_candidates(self, q: str, limit: int = 3,
-                        root_ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+                        root_ids: Optional[List[str]] = None) -> List[Dict[str, object]]:
         """
         사용자의 쿼리에 가장 부합하는(매칭되는 내용이 많은) 상위 N개의 저장소(repo) 후보를 반환합니다.
         """
@@ -22,7 +26,7 @@ class SearchRepository(BaseRepository):
             return []
         lq = f"%{q}%"
         sql = "SELECT repo, COUNT(*) AS score FROM files WHERE deleted_ts = 0 AND (path LIKE ? OR rel_path LIKE ? OR fts_content LIKE ?)"
-        params: List[Any] = [lq, lq, lq]
+        params: List[object] = [lq, lq, lq]
         if root_ids:
             placeholders = ",".join(["?"] * len(root_ids))
             sql += f" AND root_id IN ({placeholders})"
@@ -30,7 +34,7 @@ class SearchRepository(BaseRepository):
         sql += " GROUP BY repo ORDER BY score DESC LIMIT ?"
         params.append(int(limit))
         rows = self.execute(sql, params).fetchall()
-        return [{"repo": r[0], "score": int(r[1])} for r in rows]
+        return [{"repo": self._row_val(r, "repo", 0, ""), "score": int(self._row_val(r, "score", 1, 0) or 0)} for r in rows]
 
     def search_semantic(
             self,
@@ -112,7 +116,7 @@ class SearchRepository(BaseRepository):
             ))
         return results
 
-    def search_v2(self, opts: Any) -> Tuple[List[SearchHit], Dict[str, Any]]:
+    def search_v2(self, opts: SearchOptions) -> Tuple[List[SearchHit], Dict[str, object]]:
         """
         키워드 검색, 중요도 가점, 페이지네이션을 결합한 통합 검색(v2)을 실행합니다.
         """
@@ -136,7 +140,7 @@ class SearchRepository(BaseRepository):
 
         return hits, {"total": total, "total_mode": params["total_mode"]}
 
-    def _extract_search_params(self, opts: Any, query: str) -> Dict[str, Any]:
+    def _extract_search_params(self, opts: SearchOptions, query: str) -> Dict[str, object]:
         """Extract and validate search parameters from options."""
         raw_file_types = getattr(opts, "file_types", None) or []
         file_types = [str(value).strip().lower().lstrip(".")
@@ -158,12 +162,12 @@ class SearchRepository(BaseRepository):
         }
 
     def _build_where_clause(
-            self, params: Dict[str, Any]) -> Tuple[str, List[Any]]:
+            self, params: Dict[str, object]) -> Tuple[str, List[object]]:
         conditions: List[str] = [
             "f.deleted_ts = 0",
             "(f.path LIKE ? OR f.rel_path LIKE ? OR f.fts_content LIKE ?)",
         ]
-        sql_params: List[Any] = [
+        sql_params: List[object] = [
             params["like_query"],
             params["like_query"],
             params["like_query"]]
@@ -198,7 +202,7 @@ class SearchRepository(BaseRepository):
 
         return " AND ".join(conditions), sql_params
 
-    def _execute_search_query(self, params: Dict[str, Any]) -> List[Tuple]:
+    def _execute_search_query(self, params: Dict[str, object]) -> List[Tuple]:
         """Build and execute search SQL query with importance scoring."""
         where_clause, sql_params = self._build_where_clause(params)
         select_sql = """
@@ -214,7 +218,10 @@ class SearchRepository(BaseRepository):
         sql = f"{select_sql} WHERE {where_clause} ORDER BY importance DESC, f.mtime DESC LIMIT ? OFFSET ?"
         try:
             return self.execute(sql, sql_params + paging_params).fetchall()
-        except Exception:
+        except sqlite3.OperationalError as e:
+            if not self._can_fallback_to_simple_query(e):
+                raise
+            logger.debug("Falling back to non-importance query due to operational error: %s", e)
             fallback_sql = (
                 "SELECT f.path, f.repo, f.mtime, f.size, f.fts_content, f.rel_path, 0.0 as importance "
                 "FROM files f "
@@ -233,9 +240,12 @@ class SearchRepository(BaseRepository):
         hits: List[SearchHit] = []
 
         for r in rows:
-            # Flexible row unpacking
-            path, repo_name, mtime, size, fts_content, _rel_path, importance = r[
-                0], r[1], r[2], r[3], r[4], r[5], r[6]
+            path = self._row_val(r, "path", 0, "")
+            repo_name = self._row_val(r, "repo", 1, "")
+            mtime = self._row_val(r, "mtime", 2, 0)
+            size = self._row_val(r, "size", 3, 0)
+            fts_content = self._row_val(r, "fts_content", 4, "")
+            importance = self._row_val(r, "importance", 6, 0.0)
 
             # Extract snippet and count matches
             snippet, match_count = self._extract_snippet(fts_content, query)
@@ -280,7 +290,7 @@ class SearchRepository(BaseRepository):
         return snippet, match_count
 
     def _calculate_total_count(
-            self, params: Dict[str, Any], hits: List[SearchHit]) -> int:
+            self, params: Dict[str, object], hits: List[SearchHit]) -> int:
         """Calculate total result count based on total_mode."""
         total = len(hits)
 
@@ -288,11 +298,26 @@ class SearchRepository(BaseRepository):
             try:
                 where_clause, count_params = self._build_where_clause(params)
                 count_sql = f"SELECT COUNT(1) FROM files f WHERE {where_clause}"
-                total = int(
-                    self.execute(
-                        count_sql,
-                        count_params).fetchone()[0])
+                count_row = self.execute(count_sql, count_params).fetchone()
+                total = int(self._row_val(count_row, "COUNT(1)", 0, 0) if count_row else 0)
             except Exception:
                 total = len(hits)
 
         return total
+
+    def _can_fallback_to_simple_query(self, exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return "no such table: symbols" in msg or "no such column:" in msg
+
+    @staticmethod
+    def _row_val(row: object, key: str, index: int, default: object = None) -> object:
+        if row is None:
+            return default
+        try:
+            if hasattr(row, "keys"):
+                return row[key]
+        except Exception:
+            pass
+        if isinstance(row, (list, tuple)) and len(row) > index:
+            return row[index]
+        return default

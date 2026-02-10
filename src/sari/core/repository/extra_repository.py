@@ -1,61 +1,37 @@
 import sqlite3
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Mapping, Optional, Sequence
 from .base import BaseRepository
 from ..models import SnippetDTO, ContextDTO
+
+
+def _coerce_int(value: object, default: int = 0) -> int:
+    try:
+        return int(value or default)
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _row_to_named_dict(row: object, columns: List[str], fill: object = "") -> Dict[str, object]:
+    if isinstance(row, Mapping):
+        return {col: row.get(col, fill) for col in columns}
+    values = list(row) if isinstance(row, Sequence) and not isinstance(row, (str, bytes, bytearray)) else []
+    padded = values + [fill] * max(0, len(columns) - len(values))
+    return dict(zip(columns, padded))
+
 
 class SnippetRepository(BaseRepository):
     """
     코드 스니펫(Snippet) 정보를 관리하는 저장소입니다.
     사용자가 저장한 코드 조각의 위치, 내용, 태그 및 버전을 SQLite 'snippets' 테이블에 저장합니다.
     """
-    def upsert_snippet_tx(self, cur: sqlite3.Cursor, rows: Iterable[tuple]) -> int:
+    def upsert_snippet_tx(self, cur: sqlite3.Cursor, rows: Iterable[object]) -> int:
         """스니펫 정보들을 트랜잭션 내에서 삽입하거나 업데이트합니다."""
-        rows_list = [list(r) for r in rows]
+        rows_list = list(rows)
         if not rows_list:
             return 0
-        normalized: List[tuple] = []
+        normalized: List[object] = []
         for r in rows_list:
-            while len(r) < 15:
-                r.append("")
-            if isinstance(r[2], (int, float)) and isinstance(r[3], (int, float)):
-                # Tool format: (tag, path, start, end, content, content_hash, anchor_before, anchor_after, repo, root_id, note, commit, created_ts, updated_ts, metadata_json)
-                mapped = (
-                    str(r[0]),  # tag
-                    str(r[1]),  # path
-                    str(r[9]),  # root_id
-                    int(r[2]),
-                    int(r[3]),
-                    str(r[4]),
-                    str(r[5]),
-                    str(r[6]),
-                    str(r[7]),
-                    str(r[8]),
-                    str(r[10]),
-                    str(r[11]),
-                    int(r[12] or 0),
-                    int(r[13] or 0),
-                    str(r[14] or "{}"),
-                )
-            else:
-                # Schema format: (tag, path, root_id, start_line, end_line, content, content_hash, anchor_before, anchor_after, repo, note, commit_hash, created_ts, updated_ts, metadata_json)
-                mapped = (
-                    str(r[0]),
-                    str(r[1]),
-                    str(r[2]),
-                    int(r[3] or 0),
-                    int(r[4] or 0),
-                    str(r[5]),
-                    str(r[6]),
-                    str(r[7]),
-                    str(r[8]),
-                    str(r[9]),
-                    str(r[10]),
-                    str(r[11]),
-                    int(r[12] or 0),
-                    int(r[13] or 0),
-                    str(r[14] or "{}"),
-                )
-            normalized.append(mapped)
+            normalized.append(self._normalize_snippet_row(r))
         cur.executemany(
             """
             INSERT INTO snippets(tag, path, root_id, start_line, end_line, content, content_hash, anchor_before, anchor_after, repo, note, commit_hash, created_ts, updated_ts, metadata_json)
@@ -74,6 +50,86 @@ class SnippetRepository(BaseRepository):
             normalized,
         )
         return len(normalized)
+
+    def _normalize_snippet_row(self, row: object) -> tuple:
+        tool_cols = [
+            "tag",
+            "path",
+            "start",
+            "end",
+            "content",
+            "content_hash",
+            "anchor_before",
+            "anchor_after",
+            "repo",
+            "root_id",
+            "note",
+            "commit_hash",
+            "created_ts",
+            "updated_ts",
+            "metadata_json",
+        ]
+        schema_cols = [
+            "tag",
+            "path",
+            "root_id",
+            "start_line",
+            "end_line",
+            "content",
+            "content_hash",
+            "anchor_before",
+            "anchor_after",
+            "repo",
+            "note",
+            "commit_hash",
+            "created_ts",
+            "updated_ts",
+            "metadata_json",
+        ]
+        tool_data = _row_to_named_dict(row, tool_cols, fill="")
+        schema_data = _row_to_named_dict(row, schema_cols, fill="")
+
+        if isinstance(tool_data.get("start"), (int, float)) and isinstance(tool_data.get("end"), (int, float)):
+            # Tool format:
+            # (tag, path, start, end, content, content_hash, anchor_before, anchor_after, repo, root_id, note, commit, created_ts, updated_ts, metadata_json)
+            source = tool_data
+            return (
+                str(source.get("tag", "")),
+                str(source.get("path", "")),
+                str(source.get("root_id", "")),
+                _coerce_int(source.get("start")),
+                _coerce_int(source.get("end")),
+                str(source.get("content", "")),
+                str(source.get("content_hash", "")),
+                str(source.get("anchor_before", "")),
+                str(source.get("anchor_after", "")),
+                str(source.get("repo", "")),
+                str(source.get("note", "")),
+                str(source.get("commit_hash", "")),
+                _coerce_int(source.get("created_ts")),
+                _coerce_int(source.get("updated_ts")),
+                str(source.get("metadata_json") or "{}"),
+            )
+        # Schema format:
+        # (tag, path, root_id, start_line, end_line, content, content_hash, anchor_before, anchor_after, repo, note, commit_hash, created_ts, updated_ts, metadata_json)
+        source = schema_data
+        return (
+            str(source.get("tag", "")),
+            str(source.get("path", "")),
+            str(source.get("root_id", "")),
+            _coerce_int(source.get("start_line")),
+            _coerce_int(source.get("end_line")),
+            str(source.get("content", "")),
+            str(source.get("content_hash", "")),
+            str(source.get("anchor_before", "")),
+            str(source.get("anchor_after", "")),
+            str(source.get("repo", "")),
+            str(source.get("note", "")),
+            str(source.get("commit_hash", "")),
+            _coerce_int(source.get("created_ts")),
+            _coerce_int(source.get("updated_ts")),
+            str(source.get("metadata_json") or "{}"),
+        )
 
     def update_snippet_location_tx(
         self,
@@ -96,7 +152,7 @@ class SnippetRepository(BaseRepository):
             (int(start), int(end), str(content), str(content_hash), str(anchor_before), str(anchor_after), int(updated_ts), int(snippet_id)),
         )
 
-    def list_snippet_versions(self, snippet_id: int) -> List[Dict[str, Any]]:
+    def list_snippet_versions(self, snippet_id: int) -> List[Dict[str, object]]:
         # This keeps raw dict for internal version history, but we could DTO-ize if needed
         rows = self.execute(
             "SELECT id, content, content_hash, created_ts FROM snippet_versions WHERE snippet_id = ? ORDER BY created_ts DESC",
@@ -134,7 +190,7 @@ class ContextRepository(BaseRepository):
     인덱싱이나 분석 시 사용되는 맥락(Context) 정보를 관리하는 저장소입니다.
     특정 주제(Topic)에 대한 설명, 관련 파일, 태그 및 유효 기간 정보를 SQLite 'contexts' 테이블에 저장합니다.
     """
-    def upsert(self, data: Any) -> ContextDTO:
+    def upsert(self, data: object) -> ContextDTO:
         """단일 맥락 정보를 삽입하거나 업데이트하고 DTO 객체를 반환합니다."""
         from ..models import ContextDTO
         import time
@@ -143,6 +199,8 @@ class ContextRepository(BaseRepository):
         if isinstance(data, ContextDTO):
             obj = data
         else:
+            if not isinstance(data, Mapping):
+                raise TypeError("Context upsert data must be ContextDTO or mapping")
             obj = ContextDTO(**data)
             
         now = int(time.time())
@@ -154,33 +212,16 @@ class ContextRepository(BaseRepository):
             obj.created_ts or now, now
         )
         
-        cur = self.conn.cursor()
+        cur = self.connection.cursor()
         self.upsert_context_tx(cur, [row])
-        self.conn.commit()
+        self.connection.commit()
         return obj
 
-    def upsert_context_tx(self, cur: sqlite3.Cursor, rows: Iterable[tuple]) -> int:
-        rows_list = [list(r) for r in rows]
+    def upsert_context_tx(self, cur: sqlite3.Cursor, rows: Iterable[object]) -> int:
+        rows_list = list(rows)
         if not rows_list:
             return 0
-        normalized = []
-        for r in rows_list:
-            while len(r) < 10:
-                r.append(0)
-            normalized.append(
-                (
-                    str(r[0]),
-                    str(r[1]),
-                    str(r[2]),
-                    str(r[3]),
-                    str(r[4]),
-                    int(r[5] or 0),
-                    int(r[6] or 0),
-                    int(r[7] or 0),
-                    int(r[8] or 0),
-                    int(r[9] or 0),
-                )
-            )
+        normalized = [self._normalize_context_row(r) for r in rows_list]
         cur.executemany(
             """
             INSERT INTO contexts(topic, content, tags_json, related_files_json, source, valid_from, valid_until, deprecated, created_ts, updated_ts)
@@ -198,6 +239,36 @@ class ContextRepository(BaseRepository):
             normalized,
         )
         return len(normalized)
+
+    def _normalize_context_row(self, row: object) -> tuple:
+        data = _row_to_named_dict(
+            row,
+            [
+                "topic",
+                "content",
+                "tags_json",
+                "related_files_json",
+                "source",
+                "valid_from",
+                "valid_until",
+                "deprecated",
+                "created_ts",
+                "updated_ts",
+            ],
+            fill=0,
+        )
+        return (
+            str(data.get("topic", "")),
+            str(data.get("content", "")),
+            str(data.get("tags_json", "")),
+            str(data.get("related_files_json", "")),
+            str(data.get("source", "")),
+            _coerce_int(data.get("valid_from")),
+            _coerce_int(data.get("valid_until")),
+            _coerce_int(data.get("deprecated")),
+            _coerce_int(data.get("created_ts")),
+            _coerce_int(data.get("updated_ts")),
+        )
 
     def get_context_by_topic(self, topic: str, as_of: int = 0) -> Optional[ContextDTO]:
         """주제(Topic) 이름을 기준으로 유효한 맥락 정보를 조회합니다."""

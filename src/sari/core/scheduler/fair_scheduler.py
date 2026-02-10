@@ -44,7 +44,7 @@ class WeightedFairQueue:
             )
             heapq.heappush(self._queues[root_id], stask)
 
-    def get(self) -> Optional[tuple]:
+    def get(self) -> Optional[ScheduledTask]:
         """Weighted Round-Robin + Internal Aging."""
         with self._lock:
             if not self._active_roots:
@@ -67,7 +67,7 @@ class WeightedFairQueue:
                     task = heapq.heappop(q)
                     self._current_idx = (
                         self._current_idx + 1) % len(self._active_roots)
-                    return root_id, task.payload
+                    return task
 
                 self._current_idx = (self._current_idx +
                                      1) % len(self._active_roots)

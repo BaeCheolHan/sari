@@ -204,23 +204,11 @@ class CallGraphService:
 
         try:
             rows = self.db.get_read_connection().execute(sql, params).fetchall()
-            return [{"path": r[0],
-                     "name": r[1],
-                     "kind": r[2],
-                     "line": r[3],
-                     "end_line": r[4],
-                     "qualname": r[5],
-                     "symbol_id": r[6]} for r in rows]
+            return [self._symbol_row_to_dict(r) for r in rows]
         except Exception:
             if hasattr(self.db, "execute"):
                 rows = self.db.execute(sql, params).fetchall()
-                return [{"path": r[0],
-                         "name": r[1],
-                         "kind": r[2],
-                         "line": r[3],
-                         "end_line": r[4],
-                         "qualname": r[5],
-                         "symbol_id": r[6]} for r in rows]
+                return [self._symbol_row_to_dict(r) for r in rows]
             return []
 
     def _build_tree(
@@ -348,8 +336,7 @@ class CallGraphService:
             key_p, key_s, key_sid = (
                 "from_path", "from_symbol", "from_symbol_id") if direction == "up" else (
                 "to_path", "to_symbol", "to_symbol_id")
-            return [{key_p: r[0], key_s: r[1], key_sid: r[2],
-                     "line": r[3], "rel_type": r[4]} for r in rows]
+            return [self._relation_row_to_dict(r, key_p, key_s, key_sid) for r in rows]
         except Exception:
             return []
 
@@ -383,10 +370,43 @@ class CallGraphService:
             conn = getattr(self.db, "_read", getattr(self.db, "db", self.db))
             row = conn.execute(
                 "SELECT repo FROM files WHERE path = ? LIMIT 1", (path,)).fetchone()
-            self._repo_cache[path] = row[0] or "" if row else ""
+            self._repo_cache[path] = str(self._row_get(row, "repo", 0, "") or "")
             return self._repo_cache[path] == repo
         except Exception:
             return False
+
+    def _symbol_row_to_dict(self, row: Any) -> Dict[str, Any]:
+        return {
+            "path": str(self._row_get(row, "path", 0, "") or ""),
+            "name": str(self._row_get(row, "name", 1, "") or ""),
+            "kind": str(self._row_get(row, "kind", 2, "") or ""),
+            "line": int(self._row_get(row, "line", 3, 0) or 0),
+            "end_line": int(self._row_get(row, "end_line", 4, 0) or 0),
+            "qualname": str(self._row_get(row, "qualname", 5, "") or ""),
+            "symbol_id": str(self._row_get(row, "symbol_id", 6, "") or ""),
+        }
+
+    def _relation_row_to_dict(self, row: Any, key_p: str, key_s: str, key_sid: str) -> Dict[str, Any]:
+        return {
+            key_p: str(self._row_get(row, key_p, 0, "") or ""),
+            key_s: str(self._row_get(row, key_s, 1, "") or ""),
+            key_sid: str(self._row_get(row, key_sid, 2, "") or ""),
+            "line": int(self._row_get(row, "line", 3, 0) or 0),
+            "rel_type": str(self._row_get(row, "rel_type", 4, "") or ""),
+        }
+
+    @staticmethod
+    def _row_get(row: Any, key: str, index: int, default: Any = None) -> Any:
+        if row is None:
+            return default
+        try:
+            if hasattr(row, "keys"):
+                return row[key]
+        except Exception:
+            pass
+        if isinstance(row, (list, tuple)) and len(row) > index:
+            return row[index]
+        return default
 
     def _assemble_result(
             self,

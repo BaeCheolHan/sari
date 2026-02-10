@@ -1,5 +1,12 @@
 from typing import Any, Dict, List
-from sari.mcp.tools._util import resolve_root_ids, mcp_response, pack_header, pack_line, get_data_attr
+from sari.mcp.tools._util import (
+    resolve_root_ids,
+    mcp_response,
+    pack_header,
+    pack_line,
+    get_data_attr,
+    parse_int_arg,
+)
 
 def execute_list_files(args: Dict[str, Any], db: Any, logger=None, roots: List[str] = None) -> Dict[str, Any]:
     """
@@ -9,7 +16,9 @@ def execute_list_files(args: Dict[str, Any], db: Any, logger=None, roots: List[s
     repo 인자가 없으면 저장소별 파일 수 요약 정보를 반환하고,
     repo 인자가 있으면 해당 저장소의 파일 상세 목록을 반환합니다.
     """
-    limit = int(args.get("limit", 50))
+    limit, err = parse_int_arg(args, "limit", 50, "list_files", min_value=1)
+    if err:
+        return err
     repo = args.get("repo")
     root_ids = resolve_root_ids(roots or [])
 

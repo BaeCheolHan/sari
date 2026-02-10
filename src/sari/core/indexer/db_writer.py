@@ -4,7 +4,7 @@ import queue
 import os
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Protocol, Dict, List, Optional
 
 try:
     import fcntl  # type: ignore
@@ -55,18 +55,33 @@ class _WriteGate:
 class DbTask:
     kind: str
     path: Optional[str] = None
-    rows: Optional[List[tuple]] = None
+    rows: Optional[List[object]] = None
     paths: Optional[List[str]] = None
-    repo_meta: Optional[Dict[str, Any]] = None
-    engine_docs: Optional[List[dict]] = None
+    repo_meta: Optional[Dict[str, object]] = None
+    engine_docs: Optional[List[dict[str, object]]] = None
     engine_deletes: Optional[List[str]] = None
     ts: float = field(default_factory=time.time)
+
+
+class _EngineProtocol(Protocol):
+    def upsert_documents(self, docs: List[dict[str, object]]) -> None: ...
+    def delete_documents(self, doc_ids: List[str]) -> None: ...
+
+
+class _DBProtocol(Protocol):
+    engine: Optional[_EngineProtocol]
+
+    def upsert_files_tx(self, cur: object, rows: List[object]) -> None: ...
+    def upsert_files_staging(self, cur: object, rows: List[object]) -> None: ...
+    def finalize_turbo_batch(self) -> None: ...
+    def update_last_seen_tx(self, cur: object, paths: Optional[List[str]], ts: int) -> None: ...
+    def delete_path_tx(self, cur: object, path: str) -> None: ...
 
 
 class DBWriter:
     def __init__(
             self,
-            db: Any,
+            db: _DBProtocol,
             logger=None,
             max_batch: int = 100,
             max_wait: float = 0.1,
@@ -127,8 +142,8 @@ class DBWriter:
             finally:
                 self._mark_tasks_done(tasks)
 
-    def _drain_batch(self, limit):
-        tasks = []
+    def _drain_batch(self, limit: int) -> List[DbTask]:
+        tasks: List[DbTask] = []
         try:
             tasks.append(self.queue.get(timeout=self.max_wait))
         except queue.Empty:
@@ -156,7 +171,7 @@ class DBWriter:
         with self._in_flight_lock:
             self._in_flight = max(0, self._in_flight - len(tasks))
 
-    def _process_batch(self, cur, tasks):
+    def _process_batch(self, cur: object, tasks: List[DbTask]) -> None:
         for t in tasks:
             if t.kind == "upsert_files" and t.rows:
                 self.db.upsert_files_tx(cur, t.rows)
@@ -175,8 +190,8 @@ class DBWriter:
                         self.db, "engine") and self.db.engine:
                     self.db.engine.delete_documents(t.engine_deletes)
 
-    def get_performance_metrics(self) -> Dict[str, Any]:
+    def get_performance_metrics(self) -> Dict[str, float]:
         return {
             "throughput_docs_sec": 0.0,
             "latency_p95": 0.0,
-            "queue_depth": self.qsize()}
+            "queue_depth": float(self.qsize())}

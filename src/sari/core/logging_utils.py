@@ -5,10 +5,30 @@ This module provides utilities to eliminate duplicate logging patterns
 and provide consistent logging across all modules.
 """
 
-from typing import Optional, Any
+from typing import Optional, Protocol, runtime_checkable
 
 
-def safe_log(logger: Optional[Any], level: str, message: str) -> None:
+@runtime_checkable
+class LoggerProtocol(Protocol):
+    def info(self, message: str) -> None: ...
+    def error(self, message: str) -> None: ...
+    def warning(self, message: str) -> None: ...
+    def debug(self, message: str) -> None: ...
+
+
+@runtime_checkable
+class TelemetryLoggerProtocol(Protocol):
+    def log_info(self, message: str) -> None: ...
+    def log_error(self, message: str) -> None: ...
+    def log_warning(self, message: str) -> None: ...
+    def log_debug(self, message: str) -> None: ...
+
+
+def safe_log(
+    logger: Optional[object],
+    level: str,
+    message: str,
+) -> None:
     """
     Safely log a message with fallback support for different logger types.
     
@@ -75,7 +95,7 @@ class LoggerMixin:
         logger: Optional logger instance (must be set by the class)
     """
     
-    logger: Optional[Any] = None
+    logger: Optional[object] = None
     
     def log_info(self, message: str) -> None:
         """Log an info message."""
@@ -147,7 +167,7 @@ class LogContext:
     
     def __init__(
         self,
-        logger: Optional[Any],
+        logger: Optional[object],
         operation: str,
         log_start: bool = True,
         log_end: bool = True,

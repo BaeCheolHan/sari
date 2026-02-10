@@ -40,9 +40,9 @@ def test_storage_overlay_mtime_respects_newer_rows():
 
     storage.upsert_files([row_new])
     storage.upsert_files([row_old])
-    assert storage._overlay_files[path][3] == 100
-    assert storage._overlay_files[path][5] == "snippet-new"
+    assert storage._overlay_files[path]["mtime"] == 100
+    assert storage._overlay_files[path]["snippet"] == "snippet-new"
 
     storage.upsert_files([row_newer])
-    assert storage._overlay_files[path][3] == 110
-    assert storage._overlay_files[path][5] == "snippet-newer"
+    assert storage._overlay_files[path]["mtime"] == 110
+    assert storage._overlay_files[path]["snippet"] == "snippet-newer"
