@@ -1,5 +1,4 @@
 import pytest
-import time
 from unittest.mock import MagicMock, patch
 from sari.core.watcher import DebouncedEventHandler, _is_git_event, FileWatcher
 from sari.core.queue_pipeline import FsEvent, FsEventKind
@@ -9,7 +8,6 @@ def test_is_git_event():
     assert _is_git_event("src/main.py") is False
 
 def test_debounced_event_handler_direct():
-    print(f"DEBUG: time.time is {time.time}")
     callback = MagicMock()
     handler = DebouncedEventHandler(callback, debounce_seconds=0.01)
     handler._bucket_tokens = 100.0
@@ -21,6 +19,7 @@ def test_debounced_event_handler_direct():
     handler._pending_events["test.txt"] = MagicMock()
     handler._trigger("test.txt")
     callback.assert_called_once()
+    assert callback.call_count == 1
 
 def test_debounced_event_handler_on_any_event():
     callback = MagicMock()

@@ -19,12 +19,12 @@ def execute_search_api_endpoints(args: Dict[str, Any], db: Any, roots: List[str]
     repo = args.get("repo")
 
     # 메타데이터에 경로가 포함된 심볼 검색
-    # SQLite JSON 지원 버전의 한계로 인해, metadata 텍스트에 대해 LIKE 검색을 수행한 후 Python에서 필터링합니다.
+    # SQLite JSON 지원 버전의 한계로 인해, 메타데이터 텍스트에 대해 LIKE 검색을 수행한 후 Python에서 필터링합니다.
     sql = """
-        SELECT s.path, s.name, s.kind, s.line, s.metadata, s.content, f.repo
+        SELECT s.path, s.name, s.kind, s.line, s.meta_json AS metadata, s.content, f.repo
         FROM symbols s
         JOIN files f ON s.path = f.path
-        WHERE s.metadata LIKE ? AND (s.kind = 'method' OR s.kind = 'function' OR s.kind = 'class')
+        WHERE s.meta_json LIKE ? AND (s.kind = 'method' OR s.kind = 'function' OR s.kind = 'class')
     """
     # 메타데이터에서 부분 일치 검색 (느슨한 LIKE 검색)
     params = [f'%{path_query}%']

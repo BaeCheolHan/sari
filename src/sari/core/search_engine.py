@@ -1,6 +1,7 @@
 import sqlite3
 import re
 import time
+import fnmatch
 from typing import List, Tuple, Optional, Any, Dict
 from .models import SearchHit, SearchOptions
 from .ranking import snippet_around, get_file_extension
@@ -82,59 +83,37 @@ class SearchEngine:
                     import logging
                     logging.getLogger("sari.search").debug("Tantivy search failed: %s", te)
 
-            # 3. SQLite (Fallback/Secondary DB Search)
-            if not all_hits or len(all_hits) < opts.limit:
+            # 3. SQLite fallback through DB facade (engine boundary kept in db/repository layer)
+            if (not all_hits or len(all_hits) < opts.limit) and hasattr(self.db, "search_sqlite_v2"):
                 try:
-                    cur = self.db._get_conn().cursor()
-                    # Try FTS first
-                    is_fts = False
-                    if getattr(self.db, "settings", None) and getattr(self.db.settings, "ENABLE_FTS", False):
-                        try:
-                            fts_q = self._fts_query(q)
-                            sql = ("SELECT f.path, f.rel_path, f.root_id, f.repo, f.mtime, f.size, f.content "
-                                   "FROM files_fts JOIN files f ON files_fts.rowid = f.rowid "
-                                   "WHERE files_fts MATCH ? AND f.deleted_ts = 0")
-                            params = [fts_q]
-                            if root_id: sql += " AND f.root_id = ?"; params.append(root_id)
-                            if opts.repo: sql += " AND f.repo = ?"; params.append(opts.repo)
-                            sql += " LIMIT ?"
-                            params.append(opts.limit)
-                            cur.execute(sql, params)
-                            db_hits = self._process_sqlite_rows(cur.fetchall(), opts)
-                            for h in db_hits:
-                                h.score = 5.0
-                                if h.path not in seen_paths:
-                                    all_hits.append(h)
-                                    seen_paths.add(h.path)
-                            is_fts = True
-                        except Exception as fe:
-                            import logging
-                            logging.getLogger("sari.search").debug("FTS search failed: %s", fe)
-                    
-                    # Broad LIKE fallback if still no results or FTS skipped
-                    if not all_hits or len(all_hits) < opts.limit:
-                        like_q = f"%{q}%"
-                        sql = (
-                            "SELECT path, rel_path, root_id, repo, mtime, size, content FROM files "
-                            "WHERE (path LIKE ? OR rel_path LIKE ? OR fts_content LIKE ?) AND deleted_ts = 0"
-                        )
-                        params = [like_q, like_q, like_q]
-                        if root_id:
-                            sql += " AND root_id = ?"
-                            params.append(root_id)
-                        if opts.repo:
-                            sql += " AND repo = ?"
-                            params.append(opts.repo)
-                        sql += " LIMIT ?"
-                        params.append(opts.limit)
-                        cur.execute(sql, params)
-                        db_hits = self._process_sqlite_rows(cur.fetchall(), opts)
-                        for h in db_hits:
-                            h.score = 4.0
-                            if h.path not in seen_paths:
-                                all_hits.append(h)
-                                seen_paths.add(h.path)
+                    sqlite_hits, sqlite_meta = self.db.search_sqlite_v2(opts)
+                    if isinstance(sqlite_meta, dict):
+                        if "total" in sqlite_meta:
+                            meta["sqlite_total"] = sqlite_meta.get("total")
+                        if "total_mode" in sqlite_meta:
+                            meta["sqlite_total_mode"] = sqlite_meta.get("total_mode")
+                    for sqlite_hit in sqlite_hits:
+                        if opts.file_types:
+                            allowed_types = {
+                                str(file_type).lower().lstrip(".")
+                                for file_type in (opts.file_types or [])
+                            }
+                            hit_type = get_file_extension(sqlite_hit.path).lower().lstrip(".")
+                            if hit_type not in allowed_types:
+                                continue
+                        if opts.path_pattern:
+                            rel_path = sqlite_hit.path.split("/", 1)[1] if "/" in sqlite_hit.path else sqlite_hit.path
+                            if not fnmatch.fnmatch(sqlite_hit.path, opts.path_pattern) and not fnmatch.fnmatch(rel_path, opts.path_pattern):
+                                continue
+                        if sqlite_hit.path in seen_paths:
+                            continue
+                        all_hits.append(sqlite_hit)
+                        seen_paths.add(sqlite_hit.path)
                 except sqlite3.Error as e:
+                    meta["db_health"] = "error"
+                    meta["db_error"] = str(e)
+                    meta["partial"] = True
+                except Exception as e:
                     meta["db_health"] = "error"
                     meta["db_error"] = str(e)
                     meta["partial"] = True
@@ -311,13 +290,14 @@ class SearchEngine:
         q = (q or "").strip()
         if not q:
             return []
-        root_id = list(root_ids)[0] if root_ids else None
-        sql = "SELECT repo, COUNT(1) as c FROM files"
-        sql, params = self.db.apply_root_filter(sql, root_id)
-        sql += " AND (path LIKE ? OR rel_path LIKE ?)"
-        params.extend([f"%{q}%", f"%{q}%"])
-        sql += " GROUP BY repo ORDER BY c DESC LIMIT ?"
-        params.append(limit)
-        cur = self.db._get_conn().cursor()
-        cur.execute(sql, params)
-        return [{"repo": r[0], "score": int(r[1]), "evidence": ""} for r in cur.fetchall()]
+        if hasattr(self.db, "repo_candidates_sqlite"):
+            rows = self.db.repo_candidates_sqlite(q, limit=limit, root_ids=root_ids)
+            return [
+                {
+                    "repo": row.get("repo", ""),
+                    "score": int(row.get("score", 0)),
+                    "evidence": row.get("evidence", ""),
+                }
+                for row in rows
+            ]
+        return []

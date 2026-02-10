@@ -160,6 +160,8 @@ def test_shutdown_closes_transport_and_logger():
     server.shutdown()
     transport.close.assert_called_once()
     logger.stop.assert_called_once()
+    assert transport.close.called
+    assert logger.stop.called
 
 
 def test_policy_uses_single_global_db_path():

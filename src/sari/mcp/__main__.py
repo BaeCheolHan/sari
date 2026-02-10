@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """
-Entry point for `python -m mcp` execution.
+Single MCP entrypoint shim.
 
-Routes to either:
-- CLI mode (sari daemon/proxy commands)
-- Legacy server mode (for backward compatibility)
+All runtime modes are routed through `sari.main` so startup behavior is defined
+in one place.
 """
 import sys
 
+
+def main() -> int:
+    from sari.main import main as sari_main
+
+    # Preserve argv semantics while centralizing runtime dispatch.
+    return int(sari_main(sys.argv[1:]))
+
+
 if __name__ == "__main__":
-    # Check if running as CLI
-    if len(sys.argv) > 1 and sys.argv[1] in ("daemon", "proxy"):
-        from .cli import main
-        sys.exit(main())
-    else:
-        # Legacy: Run as stdio MCP server
-        from .server import main
-        main()
+    raise SystemExit(main())

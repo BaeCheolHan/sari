@@ -1,25 +1,45 @@
 import pytest
-from sari.core.db.main import LocalSearchDB
+from sari.core.models import IndexingResult
 
 def test_db_empty_batch_resilience(db):
     """
     Verify that finalize_turbo_batch doesn't crash on an empty staging table.
     """
-    # Simply call it without any data
+    before = db.db.connection().execute("SELECT COUNT(*) FROM files").fetchone()
+    before_count = int(next(iter(before))) if before else 0
     db.finalize_turbo_batch()
-    # If we reached here, it's resilient.
+    after = db.db.connection().execute("SELECT COUNT(*) FROM files").fetchone()
+    after_count = int(next(iter(after))) if after else 0
+    assert after_count == before_count
 
 def test_db_malformed_row_isolation(db):
     """
     Verify that one bad row doesn't corrupt the entire DB.
     """
-    # Staging table should be isolated
-    # Ensure root exists for FK constraint
     db.ensure_root("root", "root")
-    bad_row = ("p1",) # Too short, should cause SQL error
+    bad_row = ("p1",)
     try:
         db.upsert_files_turbo([bad_row])
-    except: pass
-    
-    # DB should still be functional
+    except Exception:
+        pass
+
     db.finalize_turbo_batch()
+    good = IndexingResult(
+        path="root/app.py",
+        rel="app.py",
+        root_id="root",
+        repo="repo",
+        type="new",
+        content="print('ok')",
+        fts_content="print ok",
+        content_hash="h",
+        mtime=1,
+        size=10,
+        scan_ts=1,
+        metadata_json="{}",
+    )
+    db.upsert_files_turbo([good])
+    db.finalize_turbo_batch()
+    row = db.db.connection().execute("SELECT COUNT(*) FROM files WHERE path = ?", ("root/app.py",)).fetchone()
+    good_count = int(next(iter(row))) if row else 0
+    assert good_count == 1

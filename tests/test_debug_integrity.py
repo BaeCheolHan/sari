@@ -1,6 +1,3 @@
-import pytest
-import sys
-import os
 from sari.core.indexer.main import Indexer
 from sari.core.db.main import LocalSearchDB
 from sari.core.config import Config
@@ -18,14 +15,10 @@ def test_debug_symbol_extraction(tmp_path):
     # Run scan
     indexer.scan_once()
     
-    # Examine DB
+    # Verify DB state with concrete assertions.
     conn = db.db.connection()
     all_symbols = conn.execute("SELECT * FROM symbols").fetchall()
-    print(f"\nDEBUG: Total symbols in DB: {len(all_symbols)}")
-    for s in all_symbols:
-        print(f"DEBUG: Symbol row: {s}")
-        
+    assert all_symbols
+
     all_files = conn.execute("SELECT path FROM files").fetchall()
-    print(f"DEBUG: Total files in DB: {len(all_files)}")
-    for f in all_files:
-        print(f"DEBUG: File path: {f[0]}")
+    assert all_files

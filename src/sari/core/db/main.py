@@ -33,6 +33,7 @@ class LocalSearchDB:
         self.logger = logger_obj or logger
         self.engine = None
         self._lock = threading.Lock()
+        self._writer_thread_id: Optional[int] = None
         try:
             # SQLite 최적화 설정
             self.db = SqliteDatabase(db_path, pragmas={
@@ -235,8 +236,38 @@ class LocalSearchDB:
     def upsert_snippet_tx(self, cur, rows: List[tuple]):
         self._snippet_repo(cur).upsert_snippet_tx(cur, rows)
 
-    def list_snippets_by_tag(self, tag: str) -> List[SnippetDTO]:
-        return self._snippet_repo().list_snippets_by_tag(tag)
+    def list_snippets_by_tag(self, tag: str, limit: int = 20) -> List[SnippetDTO]:
+        return self._snippet_repo().list_snippets_by_tag(tag, limit=limit)
+
+    def search_snippets(self, query: str, limit: int = 20) -> List[SnippetDTO]:
+        return self._snippet_repo().search_snippets(query, limit=limit)
+
+    def list_snippet_versions(self, snippet_id: int) -> List[Dict[str, Any]]:
+        return self._snippet_repo().list_snippet_versions(snippet_id)
+
+    def update_snippet_location_tx(
+        self,
+        cur,
+        snippet_id: int,
+        start: int,
+        end: int,
+        content: str,
+        content_hash: str,
+        anchor_before: str,
+        anchor_after: str,
+        updated_ts: int,
+    ) -> None:
+        self._snippet_repo(cur).update_snippet_location_tx(
+            cur,
+            snippet_id,
+            start,
+            end,
+            content,
+            content_hash,
+            anchor_before,
+            anchor_after,
+            updated_ts,
+        )
 
     def upsert_context_tx(self, cur, rows: List[tuple]):
         self._context_repo(cur).upsert_context_tx(cur, rows)
@@ -268,6 +299,36 @@ class LocalSearchDB:
     def repo_candidates(self, q: str, limit: int = 3, root_ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         if self.engine and hasattr(self.engine, "repo_candidates"): return self.engine.repo_candidates(q, limit=limit, root_ids=root_ids)
         return self._search_repo().repo_candidates(q, limit=limit, root_ids=root_ids)
+
+    def search_sqlite_v2(self, opts: Any):
+        """SQLite-only fallback search path (engine bypass)."""
+        return self._search_repo().search_v2(opts)
+
+    def repo_candidates_sqlite(self, q: str, limit: int = 3, root_ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        """SQLite-only repo candidate path (engine bypass)."""
+        return self._search_repo().repo_candidates(q, limit=limit, root_ids=root_ids)
+
+    def apply_root_filter(self, sql: str, root_id: Optional[str]) -> Tuple[str, List[Any]]:
+        sql = str(sql or "").strip()
+        if not sql:
+            return sql, []
+        has_where = " where " in sql.lower()
+        params: List[Any] = []
+        if root_id:
+            if has_where:
+                sql += " AND root_id = ?"
+            else:
+                sql += " WHERE root_id = ?"
+            params.append(str(root_id))
+        elif not has_where:
+            sql += " WHERE 1=1"
+        return sql, params
+
+    def count_failed_tasks(self) -> Tuple[int, int]:
+        return self.tasks.count_failed_tasks()
+
+    def register_writer_thread(self, thread_id: Optional[int]) -> None:
+        self._writer_thread_id = int(thread_id) if thread_id is not None else None
 
     def get_symbol_fan_in_stats(self, symbol_names: List[str]) -> Dict[str, int]:
         """심볼의 참조 횟수(Fan-in) 통계를 반환합니다."""
@@ -324,6 +385,9 @@ class LocalSearchDB:
     def tasks(self):
         from sari.core.repository.failed_task_repository import FailedTaskRepository
         return FailedTaskRepository(self.db.connection())
+    @property
+    def contexts(self):
+        return self._context_repo()
 
     def _resolve_db_path(self, path: str) -> str:
         """절대 경로를 DB 내부의 상대 경로(root_id/rel_path)로 변환합니다."""

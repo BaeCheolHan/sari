@@ -1,4 +1,4 @@
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 from sari.core.db.main import LocalSearchDB
 from sari.mcp.tools._util import (
     ErrorCode,
@@ -30,21 +30,21 @@ def execute_list_symbols(args: Dict[str, Any], db: LocalSearchDB, roots: List[st
 
     # 해당 파일의 모든 심볼 조회
     # 성능과 신뢰성을 위해 ORM 대신 Raw SQL 사용
-    cursor = db.db.execute_sql(
-        "SELECT name, kind, line, end_line, parent_name, qualname FROM symbols WHERE path = ? ORDER BY line ASC",
-        (db_path,)
-    )
-    rows = cursor.fetchall()
+    conn = db.get_read_connection() if hasattr(db, "get_read_connection") else db._read
+    rows = conn.execute(
+        "SELECT name, kind, line, end_line, parent, qualname FROM symbols WHERE path = ? ORDER BY line ASC",
+        (db_path,),
+    ).fetchall()
     
     symbols = []
-    for r in rows:
+    for row in rows:
         symbols.append({
-            "name": r[0],
-            "kind": r[1],
-            "line": r[2],
-            "end_line": r[3],
-            "parent": r[4],
-            "qual": r[5]
+            "name": row["name"],
+            "kind": row["kind"],
+            "line": row["line"],
+            "end_line": row["end_line"],
+            "parent": row["parent"],
+            "qual": row["qualname"],
         })
 
     def build_tree(nodes, parent="", depth=0):

@@ -43,7 +43,7 @@ async def test_daemon_clean_start_allowed():
     
     # Mock start_server to return a mock server that doesn't hang
     mock_server = AsyncMock()
-    mock_server.serve_forever = AsyncMock()
+    mock_server.serve_forever = AsyncMock(return_value=None)
     mock_server.sockets = [MagicMock()]
     mock_server.sockets[0].getsockname.return_value = (host, port)
     
@@ -58,14 +58,10 @@ async def test_daemon_clean_start_allowed():
         # We need to stop the server from serving forever in the test
         # So we mock serve_forever to return immediately
         mock_server.serve_forever.side_effect = None 
-        
-        # Use a task to run it and cancel if it hangs, but with our mocks it shouldn't
-        try:
-            await asyncio.wait_for(daemon.start_async(), timeout=1.0)
-        except asyncio.TimeoutError:
-            pytest.fail("daemon.start_async() hung unexpectedly")
-        except Exception as e:
-            # If it's not a TimeoutError, it's fine as long as it passed the registry check
-            pass
 
+        await asyncio.wait_for(daemon.start_async(), timeout=1.0)
         mock_registry.resolve_daemon_by_endpoint.assert_called_with(host, port)
+        daemon._register_daemon.assert_called_once()
+        daemon._autostart_workspace.assert_called_once()
+        daemon._start_heartbeat.assert_called_once()
+        assert mock_registry.resolve_daemon_by_endpoint.call_count == 1

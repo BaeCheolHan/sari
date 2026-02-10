@@ -111,11 +111,21 @@ class WorkspaceManager:
         roots = WorkspaceManager.resolve_workspace_roots(root_uri=root_uri)
         if root_uri and roots:
             return roots[0]
-            
-        # For auto-discovery, prefer Git root if present
-        for r in roots:
-            if (Path(r) / ".git").exists():
-                return r
+
+        # For auto-discovery, prefer the canonical git root of the primary candidate.
+        if roots:
+            primary = PathUtils.normalize(roots[0])
+            git_root = WorkspaceManager.find_git_root(primary)
+            if git_root:
+                normalized_git_root = PathUtils.normalize(git_root)
+                for candidate in roots:
+                    if PathUtils.normalize(candidate) == normalized_git_root:
+                        return normalized_git_root
+
+        # Fallback: prefer explicit root entries that look like git boundaries.
+        for candidate in roots:
+            if (Path(candidate) / ".git").exists():
+                return candidate
         return roots[0] if roots else PathUtils.normalize(os.getcwd())
 
     @staticmethod

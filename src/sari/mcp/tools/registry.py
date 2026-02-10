@@ -416,7 +416,7 @@ def _register_symbol_tools(reg: ToolRegistry):
         name="call_graph_health",
         description="Check call-graph plugin health and API compatibility.",
         input_schema={"type": "object", "properties": {}},
-        handler=lambda ctx, args: call_graph_health_tool.execute_call_graph_health(args),
+        handler=lambda ctx, args: call_graph_health_tool.execute_call_graph_health(args, ctx.db, ctx.logger, ctx.roots),
     ))
 
 

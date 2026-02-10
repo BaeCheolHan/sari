@@ -27,11 +27,9 @@ def test_get_logger():
     assert hasattr(logger, "error")
 
 def test_configure_logging():
-    # This calls structlog.configure
-    try:
-        configure_logging()
-    except Exception as e:
-        pytest.fail(f"configure_logging raised exception: {e}")
+    configure_logging()
+    root_logger = logging.getLogger()
+    assert isinstance(root_logger.handlers, list)
 
 
 def test_workspace_normalize_path_never_returns_empty_for_root():

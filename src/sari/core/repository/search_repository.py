@@ -2,6 +2,7 @@ import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from sari.core.models import SearchHit
+from sari.core.ranking import glob_to_like
 
 from .base import BaseRepository
 
@@ -124,6 +125,10 @@ class SearchRepository(BaseRepository):
 
     def _extract_search_params(self, opts: Any, query: str) -> Dict[str, Any]:
         """Extract and validate search parameters from options."""
+        raw_file_types = getattr(opts, "file_types", None) or []
+        file_types = [str(value).strip().lower().lstrip(".") for value in raw_file_types if str(value).strip()]
+        raw_excludes = getattr(opts, "exclude_patterns", None) or []
+        exclude_patterns = [str(value).strip() for value in raw_excludes if str(value).strip()]
         return {
             "query": query,
             "like_query": f"%{query}%",
@@ -131,49 +136,73 @@ class SearchRepository(BaseRepository):
             "offset": int(getattr(opts, "offset", 0) or 0),
             "repo": getattr(opts, "repo", None),
             "root_ids": getattr(opts, "root_ids", None) or [],
+            "file_types": file_types,
+            "path_pattern": str(getattr(opts, "path_pattern", "") or "").strip(),
+            "exclude_patterns": exclude_patterns,
             "total_mode": getattr(opts, "total_mode", "exact"),
         }
 
-    def _execute_search_query(self, params: Dict[str, Any]) -> List[Tuple]:
-        """Build and execute search SQL query with importance scoring."""
-        lq = params["like_query"]
-        
-        # JOIN with symbols to get importance_score (safely handle missing column)
-        sql = """
-            SELECT f.path, f.repo, f.mtime, f.size, f.fts_content, f.rel_path,
-                   IFNULL((
-                       SELECT MAX(importance_score) 
-                       FROM symbols s 
-                       WHERE s.path = f.path
-                   ), 0.0) as importance
-            FROM files f 
-            WHERE f.deleted_ts = 0 AND (f.path LIKE ? OR f.rel_path LIKE ? OR f.fts_content LIKE ?)
-        """
-        sql_params: List[Any] = [lq, lq, lq]
-        
+    def _build_where_clause(self, params: Dict[str, Any]) -> Tuple[str, List[Any]]:
+        conditions: List[str] = [
+            "f.deleted_ts = 0",
+            "(f.path LIKE ? OR f.rel_path LIKE ? OR f.fts_content LIKE ?)",
+        ]
+        sql_params: List[Any] = [params["like_query"], params["like_query"], params["like_query"]]
+
         if params["repo"]:
-            sql += " AND f.repo = ?"
+            conditions.append("f.repo = ?")
             sql_params.append(params["repo"])
-        
+
         if params["root_ids"]:
             placeholders = ",".join(["?"] * len(params["root_ids"]))
-            sql += f" AND f.root_id IN ({placeholders})"
+            conditions.append(f"f.root_id IN ({placeholders})")
             sql_params.extend(params["root_ids"])
-        
-        # Order by Importance DESC first, then by recency
-        sql += " ORDER BY importance DESC, f.mtime DESC LIMIT ? OFFSET ?"
-        sql_params.extend([params["limit"], params["offset"]])
 
+        if params["file_types"]:
+            type_clauses: List[str] = []
+            for file_type in params["file_types"]:
+                type_clauses.append("LOWER(f.path) LIKE ?")
+                sql_params.append(f"%.{file_type}")
+            conditions.append("(" + " OR ".join(type_clauses) + ")")
+
+        if params["path_pattern"]:
+            like_pattern = glob_to_like(params["path_pattern"])
+            conditions.append("(f.rel_path LIKE ? OR f.path LIKE ?)")
+            sql_params.extend([like_pattern, like_pattern])
+
+        if params["exclude_patterns"]:
+            for pattern in params["exclude_patterns"]:
+                excluded = glob_to_like(pattern)
+                conditions.append("f.rel_path NOT LIKE ?")
+                conditions.append("f.path NOT LIKE ?")
+                sql_params.extend([excluded, excluded])
+
+        return " AND ".join(conditions), sql_params
+
+    def _execute_search_query(self, params: Dict[str, Any]) -> List[Tuple]:
+        """Build and execute search SQL query with importance scoring."""
+        where_clause, sql_params = self._build_where_clause(params)
+        select_sql = """
+            SELECT f.path, f.repo, f.mtime, f.size, f.fts_content, f.rel_path,
+                   IFNULL((
+                       SELECT MAX(importance_score)
+                       FROM symbols s
+                       WHERE s.path = f.path
+                   ), 0.0) as importance
+            FROM files f
+        """
+        paging_params = [params["limit"], params["offset"]]
+        sql = f"{select_sql} WHERE {where_clause} ORDER BY importance DESC, f.mtime DESC LIMIT ? OFFSET ?"
         try:
-            return self.execute(sql, sql_params).fetchall()
+            return self.execute(sql, sql_params + paging_params).fetchall()
         except Exception:
-            # Fallback to standard query without importance join
-            sql_fallback = """
-                SELECT path, repo, mtime, size, fts_content, rel_path, 0.0 as importance
-                FROM files WHERE deleted_ts = 0 AND (path LIKE ? OR rel_path LIKE ? OR fts_content LIKE ?)
-                ORDER BY mtime DESC LIMIT ? OFFSET ?
-            """
-            return self.execute(sql_fallback, sql_params).fetchall()
+            fallback_sql = (
+                "SELECT f.path, f.repo, f.mtime, f.size, f.fts_content, f.rel_path, 0.0 as importance "
+                "FROM files f "
+                f"WHERE {where_clause} "
+                "ORDER BY f.mtime DESC LIMIT ? OFFSET ?"
+            )
+            return self.execute(fallback_sql, sql_params + paging_params).fetchall()
 
     def _process_search_results(self, rows: List[Tuple], query: str) -> List[SearchHit]:
         """Process database rows into SearchHit objects with snippets."""
@@ -229,21 +258,8 @@ class SearchRepository(BaseRepository):
         
         if params["total_mode"] == "exact":
             try:
-                lq = params["like_query"]
-                count_sql = (
-                    "SELECT COUNT(1) FROM files WHERE deleted_ts = 0 AND (path LIKE ? OR rel_path LIKE ? OR fts_content LIKE ?)"
-                )
-                count_params: List[Any] = [lq, lq, lq]
-                
-                if params["repo"]:
-                    count_sql += " AND repo = ?"
-                    count_params.append(params["repo"])
-                
-                if params["root_ids"]:
-                    placeholders = ",".join(["?"] * len(params["root_ids"]))
-                    count_sql += f" AND root_id IN ({placeholders})"
-                    count_params.extend(params["root_ids"])
-                
+                where_clause, count_params = self._build_where_clause(params)
+                count_sql = f"SELECT COUNT(1) FROM files f WHERE {where_clause}"
                 total = int(self.execute(count_sql, count_params).fetchone()[0])
             except Exception:
                 total = len(hits)

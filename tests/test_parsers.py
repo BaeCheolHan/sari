@@ -56,14 +56,8 @@ def top_func():
     assert any(rel.to_name == "other_func" for rel in relations)
     assert any(rel.to_name == "print" for rel in relations)
 
-    def test_python_parser_fallback():
-
-        parser = PythonParser()
-
-        content = "class MyClass: def invalid( syntax"
-
-        symbols, relations = parser.extract("test.py", content)
-
-        # Standard Format
-
-        assert any(s.name == "MyClass" for s in symbols)
+def test_python_parser_fallback():
+    parser = PythonParser()
+    content = "class MyClass: def invalid( syntax"
+    symbols, relations = parser.extract("test.py", content)
+    assert any(s.name == "MyClass" for s in symbols)

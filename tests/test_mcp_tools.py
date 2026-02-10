@@ -23,6 +23,47 @@ def test_execute_search_basic():
     assert "PACK1 tool=search ok=true" in text
     assert "r:path=path1 repo=repo1" in text
 
+
+def test_execute_search_respects_result_and_snippet_caps():
+    db = MagicMock()
+    logger = MagicMock()
+    roots = ["/tmp/ws"]
+    long_snippet = "A" * 300
+    hits = [
+        SearchHit(repo="repo1", path="path1", score=1.0, snippet=long_snippet),
+        SearchHit(repo="repo1", path="path2", score=0.9, snippet=long_snippet),
+    ]
+    db.search_v2.return_value = (hits, {"total": 2, "total_mode": "exact", "engine": "embedded"})
+
+    args = {"query": "test", "limit": 10, "max_results": 1, "snippet_max_chars": 80}
+    resp = execute_search(args, db, logger, roots)
+    text = resp["content"][0]["text"]
+    row_lines = [line for line in text.splitlines() if line.startswith("r:")]
+
+    assert len(row_lines) == 1
+    assert "path=path1" in row_lines[0]
+    assert "A" * 100 not in row_lines[0]
+
+
+def test_execute_search_respects_pack_budget():
+    db = MagicMock()
+    logger = MagicMock()
+    roots = ["/tmp/ws"]
+    big_snippet = "B" * 2000
+    hits = [
+        SearchHit(repo="repo1", path=f"path{i}", score=1.0, snippet=big_snippet)
+        for i in range(10)
+    ]
+    db.search_v2.return_value = (hits, {"total": 10, "total_mode": "exact", "engine": "embedded"})
+
+    args = {"query": "test", "limit": 10, "max_pack_bytes": 4096}
+    resp = execute_search(args, db, logger, roots)
+    text = resp["content"][0]["text"]
+
+    assert "m:budget_bytes=4096" in text
+    assert "m:truncated=maybe" in text
+
+
 def test_execute_list_files_summary():
     db = MagicMock()
     logger = MagicMock()

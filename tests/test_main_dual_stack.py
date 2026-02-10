@@ -12,3 +12,40 @@ def test_main_stdio_uses_proxy(monkeypatch):
                     assert rc == 0
                     proxy_main.assert_called_once()
                     server_cls.assert_not_called()
+
+
+def test_main_http_transport_routes_http_server():
+    with patch.object(main_mod, "validate_config_file", return_value=None):
+        with patch.object(main_mod.WorkspaceManager, "resolve_config_path", return_value="/tmp/fake-config.json"):
+            with patch.object(main_mod, "_run_http_server", return_value=17) as run_http:
+                with patch.object(main_mod, "_should_http_daemon", return_value=False):
+                    rc = main_mod.main(["--transport", "http"])
+                    assert rc == 17
+                    run_http.assert_called_once()
+
+
+def test_main_http_daemon_routes_spawn():
+    with patch.object(main_mod, "validate_config_file", return_value=None):
+        with patch.object(main_mod.WorkspaceManager, "resolve_config_path", return_value="/tmp/fake-config.json"):
+            with patch.object(main_mod, "_spawn_http_daemon", return_value=23) as spawn_http:
+                with patch.object(main_mod, "_should_http_daemon", return_value=True):
+                    rc = main_mod.main(["--transport", "http", "--http-daemon"])
+                    assert rc == 23
+                    spawn_http.assert_called_once()
+
+
+def test_mcp_entrypoint_delegates_to_sari_main(monkeypatch):
+    import sari.mcp.__main__ as mcp_main
+
+    captured = {}
+
+    def _fake_sari_main(argv=None, original_stdout=None):
+        captured["argv"] = list(argv or [])
+        return 31
+
+    monkeypatch.setattr("sys.argv", ["sari.mcp", "--transport", "http"])
+    monkeypatch.setattr("sari.main.main", _fake_sari_main)
+
+    rc = mcp_main.main()
+    assert rc == 31
+    assert captured["argv"] == ["--transport", "http"]

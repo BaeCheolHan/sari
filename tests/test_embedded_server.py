@@ -20,7 +20,9 @@ class TestEmbeddedServer:
     def test_env(self, tmp_path):
         env = os.environ.copy()
         env["SARI_REGISTRY_FILE"] = str(tmp_path / "registry.json")
-        env["PYTHONPATH"] = os.getcwd() + ":" + env.get("PYTHONPATH", "")
+        src_root = str((Path(os.getcwd()) / "src").resolve())
+        existing = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = src_root + (":" + existing if existing else "")
         return env
 
     def test_http_server_lifecycle(self, workspace, test_env):

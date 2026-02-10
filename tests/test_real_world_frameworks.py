@@ -57,6 +57,5 @@ def test_jsp_basic_understanding():
     )
     # Generic extraction for JSP (fallback to text or simple mock tree)
     symbols, _ = engine.extract_symbols("hello.jsp", "jsp", code)
-    # If no symbols found, at least it shouldn't crash. 
-    # Standardizing expectations for non-AST languages.
-    pass
+    # Non-AST language fallback contract: must return a collection, even if empty.
+    assert isinstance(symbols, list)

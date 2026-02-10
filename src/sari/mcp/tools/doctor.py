@@ -26,6 +26,14 @@ from sari.core.daemon_resolver import resolve_daemon_address as get_daemon_addre
 
 def _read_pid(host: str, port: int) -> Optional[int]:
     try:
+        # Prefer CLI helper first for compatibility with tests/legacy behavior.
+        from sari.mcp.cli import read_pid as cli_read_pid
+        pid = cli_read_pid(host, port)
+        if pid:
+            return int(pid)
+    except Exception:
+        pass
+    try:
         reg = ServerRegistry()
         inst = reg.resolve_daemon_by_endpoint(host, port)
         return int(inst["pid"]) if inst and inst.get("pid") else None
@@ -483,7 +491,7 @@ def _check_process_resources(pid: int) -> dict[str, Any]:
 def _check_daemon() -> dict[str, Any]:
     """Sari 데몬 프로세스의 실행 여부와 상태를 점검합니다."""
     host, port = get_daemon_address()
-    identify = identify_sari_daemon(host, port)
+    identify = _identify_sari_daemon(host, port)
     running = identify is not None
     
     local_version = settings.VERSION

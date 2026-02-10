@@ -14,6 +14,7 @@ from sari.mcp.tools._util import (
     ErrorCode,
     resolve_db_path,
     resolve_fs_path,
+    resolve_root_ids,
 )
 
 from sari.core.queue_pipeline import DbTask
@@ -43,6 +44,20 @@ def _read_lines(db: Any, db_path: str, roots: List[str]) -> List[str]:
             pass
     raw = db.read_file_raw(db_path) if hasattr(db, "read_file_raw") else db.read_file(db_path)
     return (raw or "").splitlines()
+
+
+def _split_db_path_with_roots(db_path: str, roots: List[str]) -> tuple[str, str]:
+    """Resolve (root_id, rel_path) even when root_id itself contains slashes."""
+    for root_id in sorted(resolve_root_ids(roots), key=len, reverse=True):
+        prefix = f"{root_id}/"
+        if db_path == root_id:
+            return root_id, ""
+        if db_path.startswith(prefix):
+            return root_id, db_path[len(prefix) :]
+    if "/" in db_path:
+        root_id, rel = db_path.split("/", 1)
+        return root_id, rel
+    return "", db_path
 
 
 def _enqueue_or_write(db: Any, indexer: Any, row: tuple) -> None:
@@ -92,8 +107,11 @@ def build_save_snippet(args: Dict[str, Any], db: Any, roots: List[str], indexer:
     anchor_before = lines[start - 2].strip() if start > 1 and len(lines) >= start - 1 else ""
     anchor_after = lines[end].strip() if end < len(lines) else ""
 
-    root_id, rel = db_path.split("/", 1)
-    repo = rel.split("/", 1)[0] if "/" in rel else "__root__"
+    root_id, rel = _split_db_path_with_roots(db_path, roots)
+    if not root_id:
+        raise ValueError("failed to resolve root_id from path")
+    repo_head, _, _ = rel.partition("/")
+    repo = repo_head or "__root__"
     now = int(time.time())
     metadata_json = "{}"
 

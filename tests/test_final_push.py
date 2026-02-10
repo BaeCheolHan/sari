@@ -64,6 +64,9 @@ def test_indexer_advanced(tmp_path):
     with patch('sari.core.db.storage.GlobalStorageManager.get_instance'):
         indexer = Indexer(cfg, db, settings_obj=mock_settings)
         indexer.scan_once()
+        assert indexer is not None
+        assert hasattr(indexer, "scan_once")
+        assert indexer.db is db
         # Call some internal methods for coverage
         # indexer._retry_failed_tasks() # Removed in V26
         # indexer.get_queue_depths() # Removed

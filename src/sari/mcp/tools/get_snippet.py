@@ -17,6 +17,36 @@ from sari.mcp.tools._util import (
     require_db_schema,
 )
 
+def _as_row_dict(row: Any) -> Dict[str, Any]:
+    if isinstance(row, dict):
+        return dict(row)
+    if hasattr(row, "model_dump"):
+        try:
+            return row.model_dump()
+        except Exception:
+            pass
+    out: Dict[str, Any] = {}
+    for k in (
+        "id",
+        "tag",
+        "path",
+        "root_id",
+        "start_line",
+        "end_line",
+        "content",
+        "content_hash",
+        "anchor_before",
+        "anchor_after",
+        "repo",
+        "note",
+        "commit_hash",
+        "created_ts",
+        "updated_ts",
+    ):
+        if hasattr(row, k):
+            out[k] = getattr(row, k)
+    return out
+
 def _read_lines(db: Any, db_path: str, roots: List[str]) -> List[str]:
     """DB 또는 파일 시스템에서 파일의 모든 라인을 읽어옵니다."""
     fs_path = resolve_fs_path(db_path, roots)
@@ -233,7 +263,7 @@ def build_get_snippet(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict[s
     history = str(args.get("history") or "").strip().lower() in {"1", "true", "yes", "on"}
     
     if tag:
-        rows = db.list_snippets_by_tag(tag)
+        rows = [_as_row_dict(r) for r in db.list_snippets_by_tag(tag)]
         if remap:
             for r in rows:
                 if r.get("path"):
@@ -260,7 +290,7 @@ def build_get_snippet(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict[s
         return {"tag": tag, "results": rows}
     
     if query:
-        rows = db.search_snippets(query, limit=limit)
+        rows = [_as_row_dict(r) for r in db.search_snippets(query, limit=limit)]
         if remap:
             for r in rows:
                 if r.get("path"):

@@ -32,11 +32,15 @@ class SearchOptions(BaseModel):
     model_config = ConfigDict(frozen=True)
     query: str
     limit: int = 50
+    offset: int = 0
     root_ids: Optional[List[str]] = None
     use_regex: bool = False
+    case_sensitive: bool = False
+    recency_boost: bool = False
     include_content: bool = False
     repo: Optional[str] = None
     file_types: Optional[List[str]] = None
+    exclude_patterns: Optional[List[str]] = None
     path_pattern: Optional[str] = None
     snippet_lines: int = 3
     total_mode: str = "exact"
@@ -391,7 +395,6 @@ class ParserRelation(BaseModel):
     meta: Dict[str, Any] = Field(default_factory=dict)
 
     to_path: str = ""
-
 
 
 

@@ -2,7 +2,7 @@ import sqlite3
 import time
 import logging
 
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
 logger = logging.getLogger("sari.db.schema")
 
 def init_schema(conn: sqlite3.Connection):
@@ -32,6 +32,13 @@ def init_schema(conn: sqlite3.Connection):
                 cur.execute("ALTER TABLE roots ADD COLUMN symbol_count INTEGER DEFAULT 0")
                 cur.execute("CREATE TABLE IF NOT EXISTS meta_stats (key TEXT PRIMARY KEY, value TEXT, updated_ts INTEGER)")
             except Exception as e: logger.debug("Migration v3 failed: %s", e)
+
+        # v4 마이그레이션: snippet_versions 테이블 추가
+        if v < 4:
+            try:
+                _create_snippet_versions_table(cur)
+            except Exception as e:
+                logger.debug("Migration v4 failed: %s", e)
             
         # metadata_json 컬럼 존재 여부 강제 확인 (복구용)
         try:
@@ -41,6 +48,15 @@ def init_schema(conn: sqlite3.Connection):
                 cur.execute("ALTER TABLE files ADD COLUMN metadata_json TEXT DEFAULT '{}'")
             except Exception as e:
                 logger.debug("Failed to add metadata_json column: %s", e)
+
+        # snippet_versions 테이블 존재 여부 강제 확인 (복구용)
+        try:
+            cur.execute("SELECT id FROM snippet_versions LIMIT 1")
+        except Exception:
+            try:
+                _create_snippet_versions_table(cur)
+            except Exception as e:
+                logger.debug("Failed to create snippet_versions table: %s", e)
             
         cur.execute("UPDATE schema_version SET version = ?", (CURRENT_SCHEMA_VERSION,))
     
@@ -57,6 +73,7 @@ def _create_all_tables(cur: sqlite3.Cursor):
     _create_symbol_relations_table(cur)
     _create_contexts_table(cur)
     _create_snippets_table(cur)
+    _create_snippet_versions_table(cur)
     _create_failed_tasks_table(cur)
     _create_embeddings_table(cur)
     _create_meta_stats_table(cur)
@@ -198,6 +215,20 @@ def _create_snippets_table(cur: sqlite3.Cursor):
             UNIQUE(tag, root_id, path, start_line, end_line)
         );
     """)
+
+def _create_snippet_versions_table(cur: sqlite3.Cursor):
+    """스니펫 이력 관리를 위한 'snippet_versions' 테이블을 생성합니다."""
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS snippet_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            snippet_id INTEGER NOT NULL,
+            content TEXT NOT NULL,
+            content_hash TEXT,
+            created_ts INTEGER NOT NULL,
+            FOREIGN KEY(snippet_id) REFERENCES snippets(id) ON DELETE CASCADE
+        );
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_snippet_versions_snippet_id ON snippet_versions(snippet_id);")
 
 
 def _create_failed_tasks_table(cur: sqlite3.Cursor):

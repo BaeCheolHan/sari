@@ -1,28 +1,14 @@
 import pytest
-import os
-import json
 from sari.core.parsers.ast_engine import ASTEngine
 
-def test_investigate_kotlin_ast_nodes():
-    """
-    INVESTIGATION: Print all node types in a Kotlin file to find the real names.
-    """
-    engine = ASTEngine()
-    lang_obj = engine._get_language("kotlin")
-    from tree_sitter import Parser
-    parser = Parser(lang_obj)
-    
-    code = "@RestController class MyClass { fun myFun() {} }"
-    tree = parser.parse(code.encode())
-    
-    print("\nDEBUG: Kotlin AST Node types found:")
-    def walk(node):
-        print(f"DEBUG: Node type: {node.type}")
-        for child in node.children:
-            walk(child)
-            
-    walk(tree.root_node)
 
 def test_kotlin_support_verification():
-    # Existing test logic...
-    pass
+    engine = ASTEngine()
+    lang_obj = engine._get_language("kotlin")
+    if lang_obj is None:
+        pytest.skip("kotlin parser is not available in this runtime")
+
+    code = "@RestController class MyClass { fun myFun() {} }"
+    symbols, relations = engine.extract_symbols("main.kt", "kotlin", code)
+    assert isinstance(symbols, list)
+    assert isinstance(relations, list)

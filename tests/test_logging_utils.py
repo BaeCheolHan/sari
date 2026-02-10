@@ -77,8 +77,8 @@ def test_safe_log_with_stdlib_logger():
 
 def test_safe_log_with_none_logger():
     """Test safe_log with None logger (should not crash)."""
-    safe_log(None, "info", "This should be silently ignored")
-    # No assertion needed - just verify it doesn't crash
+    result = safe_log(None, "info", "This should be silently ignored")
+    assert result is None
 
 
 def test_logger_mixin():
@@ -110,8 +110,8 @@ def test_logger_mixin_without_logger():
         pass
     
     obj = TestClass()
-    obj.log_info("This should be silently ignored")
-    # No assertion needed - just verify it doesn't crash
+    result = obj.log_info("This should be silently ignored")
+    assert result is None
 
 
 def test_create_error_context():
@@ -182,5 +182,5 @@ def test_log_context_no_end_log():
 def test_log_context_with_none_logger():
     """Test LogContext with None logger (should not crash)."""
     with LogContext(None, "test operation"):
-        pass
-    # No assertion needed - just verify it doesn't crash
+        marker = True
+    assert marker is True

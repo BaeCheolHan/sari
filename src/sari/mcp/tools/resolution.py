@@ -3,6 +3,16 @@ from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
 from sari.core.workspace import WorkspaceManager
 
+def _first_value(row: Any) -> Any:
+    if row is None:
+        return None
+    if isinstance(row, dict):
+        return next(iter(row.values()), None)
+    try:
+        return next(iter(row))
+    except Exception:
+        return None
+
 def _is_safe_relative_path(rel: str) -> bool:
     if not rel or not rel.strip(): return False
     p = Path(rel.strip())
@@ -38,7 +48,9 @@ def resolve_db_path(input_path: str, roots: List[str], db: Optional[Any] = None)
             conn = getattr(db, "_read", None) or (db.get_read_connection() if hasattr(db, "get_read_connection") else None)
             if conn:
                 row = conn.execute("SELECT path FROM files WHERE path = ? LIMIT 1", (p_abs,)).fetchone()
-                if row: return row[0]
+                path_val = _first_value(row)
+                if path_val:
+                    return str(path_val)
         except Exception: pass
 
     # 2. Roots Fallback
@@ -88,12 +100,13 @@ def resolve_repo_scope(repo: Optional[str], roots: List[str], db: Optional[Any] 
     if not repo_raw: return None, allowed_root_ids
 
     q = repo_raw.lower()
-    matched_root_ids: List[str] = []
+    matched_by_ws_name: List[str] = []
+    matched_by_repo_bucket: List[str] = []
     for r in roots or []:
         try:
             rp = Path(r).expanduser().resolve()
             if q == rp.name.lower() or q == str(rp).lower() or (q and q in rp.name.lower()):
-                matched_root_ids.append(WorkspaceManager.root_id_for_workspace(str(rp)))
+                matched_by_ws_name.append(WorkspaceManager.root_id_for_workspace(str(rp)))
         except Exception: continue
 
     if db is not None:
@@ -101,12 +114,21 @@ def resolve_repo_scope(repo: Optional[str], roots: List[str], db: Optional[Any] 
             conn = getattr(db, "_read", None) or (db.get_read_connection() if hasattr(db, "get_read_connection") else None)
             if conn:
                 rows = conn.execute("SELECT DISTINCT root_id FROM files WHERE LOWER(COALESCE(repo, '')) = LOWER(?)", (repo_raw,)).fetchall()
-                matched_root_ids.extend([str(r[0]) for r in rows if r and r[0]])
+                for row in rows:
+                    root_id = _first_value(row)
+                    if root_id:
+                        matched_by_repo_bucket.append(str(root_id))
         except Exception: pass
 
-    if matched_root_ids:
-        ids = list(dict.fromkeys(matched_root_ids))
+    if matched_by_ws_name:
+        ids = list(dict.fromkeys(matched_by_ws_name))
         effective_ids = _intersect_preserve_order(allowed_root_ids, ids) if allowed_root_ids else ids
-        # If matched by name, return None for repo filter per test expectation
+        # If matched by workspace name/path, convert scope into root filter.
         return None, effective_ids
+
+    if matched_by_repo_bucket:
+        ids = list(dict.fromkeys(matched_by_repo_bucket))
+        effective_ids = _intersect_preserve_order(allowed_root_ids, ids) if allowed_root_ids else ids
+        # Repo bucket match keeps explicit repo filter.
+        return repo_raw, effective_ids
     return repo_raw, allowed_root_ids
