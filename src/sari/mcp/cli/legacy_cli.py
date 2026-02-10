@@ -118,69 +118,13 @@ def _ensure_daemon_running(h, p, **kwargs):
     res_h, res_p = ensure_smart_daemon(h, p)
     return res_h, res_p, True
 
-def cmd_daemon_start(args):
-    from .daemon import extract_daemon_start_params, handle_existing_daemon, check_port_availability, prepare_daemon_environment, start_daemon_in_background, start_daemon_in_foreground
-    params = extract_daemon_start_params(args)
-    if (res := handle_existing_daemon(params)) is not None: return res
-    if (res := check_port_availability(params)) is not None: return res
-    prepare_daemon_environment(params)
-    return start_daemon_in_background(params) if _arg(args, "daemonize") else start_daemon_in_foreground(params)
-
-def cmd_daemon_stop(args):
-    from .daemon import extract_daemon_stop_params, stop_daemon_process
-    return stop_daemon_process(extract_daemon_stop_params(args))
-
-def cmd_daemon_status(args):
-    explicit = bool(_arg(args, "daemon_host") or _arg(args, "daemon_port"))
-    if explicit:
-        host = _arg(args, "daemon_host") or DEFAULT_DAEMON_HOST
-        port = int(_arg(args, "daemon_port") or DEFAULT_DAEMON_PORT)
-        running = is_daemon_running(host, port)
-        identity = identify_sari_daemon(host, port) if running else None
-        print(f"Host: {host}\nPort: {port}\nStatus: {'🟢 Running' if running else '⚫ Stopped'}")
-        if identity and (root := identity.get("workspaceRoot")): print(f"Workspace Root: {root}")
-        if identity and (pid := identity.get("pid")): print(f"PID: {pid}")
-        return 0 if running else 1
-
-    from .daemon import list_registry_daemons
-    active_host, active_port = get_daemon_address()
-    daemons = list_registry_daemons()
-    print(f"Resolved Target: {active_host}:{active_port}")
-    if not daemons:
-        print("Status: ⚫ Stopped")
-        return 1
-
-    print(f"Status: 🟢 Running ({len(daemons)} instance(s))")
-    for d in daemons:
-        host = str(d.get("host") or DEFAULT_DAEMON_HOST)
-        port = int(d.get("port") or 0)
-        pid = int(d.get("pid") or 0)
-        ver = str(d.get("version") or "")
-        marker = "*" if (host == active_host and port == active_port) else "-"
-        print(f"{marker} {host}:{port} PID={pid} VERSION={ver}")
-    return 0
-
-def cmd_daemon_ensure(args):
-    host, port = (_arg(args, "daemon_host") or DEFAULT_DAEMON_HOST, int(_arg(args, "daemon_port") or DEFAULT_DAEMON_PORT)) if _arg(args, "daemon_host") or _arg(args, "daemon_port") else get_daemon_address()
-    h, p, _ = _ensure_daemon_running(host, port)
-    if probe_sari_daemon(h, p):
-        if ensure_workspace_http(h, p): return 0
-    print("❌ Failed to ensure daemon services.")
-    return 1
-
-def cmd_daemon_refresh(args):
-    stop_args = argparse.Namespace(daemon_host=None, daemon_port=None)
-    stop_rc = cmd_daemon_stop(stop_args)
-    if stop_rc != 0:
-        return stop_rc
-    start_args = argparse.Namespace(
-        daemonize=True,
-        daemon_host=_arg(args, "daemon_host", "") or "",
-        daemon_port=_arg(args, "daemon_port"),
-        http_host="",
-        http_port=None,
-    )
-    return cmd_daemon_start(start_args)
+from .commands.daemon_commands import (
+    cmd_daemon_start,
+    cmd_daemon_stop,
+    cmd_daemon_status,
+    cmd_daemon_ensure,
+    cmd_daemon_refresh,
+)
 
 def cmd_proxy(args):
     from sari.mcp.proxy import main as proxy_main

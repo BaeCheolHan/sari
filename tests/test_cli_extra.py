@@ -58,9 +58,20 @@ def test_uninstall():
 
 def test_cmd_daemon_refresh_stops_all_then_starts():
     args = argparse.Namespace(daemon_host="127.0.0.1", daemon_port=47779)
-    with patch("sari.mcp.cli.legacy_cli.cmd_daemon_stop", return_value=0) as mock_stop:
-        with patch("sari.mcp.cli.legacy_cli.cmd_daemon_start", return_value=0) as mock_start:
+    with patch("sari.mcp.cli.commands.daemon_commands.cmd_daemon_stop", return_value=0) as mock_stop:
+        with patch("sari.mcp.cli.commands.daemon_commands.cmd_daemon_start", return_value=0) as mock_start:
             rc = cmd_daemon_refresh(args)
             assert rc == 0
             mock_stop.assert_called_once()
             mock_start.assert_called_once()
+
+
+def test_legacy_daemon_commands_reexported_from_commands_module():
+    from sari.mcp.cli.commands import daemon_commands
+    import sari.mcp.cli.legacy_cli as legacy_cli
+
+    assert legacy_cli.cmd_daemon_start is daemon_commands.cmd_daemon_start
+    assert legacy_cli.cmd_daemon_stop is daemon_commands.cmd_daemon_stop
+    assert legacy_cli.cmd_daemon_status is daemon_commands.cmd_daemon_status
+    assert legacy_cli.cmd_daemon_ensure is daemon_commands.cmd_daemon_ensure
+    assert legacy_cli.cmd_daemon_refresh is daemon_commands.cmd_daemon_refresh
