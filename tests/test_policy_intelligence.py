@@ -1,7 +1,4 @@
-import os
-import pytest
 import urllib.parse
-from pathlib import Path
 from sari.mcp.tools.read_file import execute_read_file
 from sari.core.db import LocalSearchDB
 from sari.core.workspace import WorkspaceManager

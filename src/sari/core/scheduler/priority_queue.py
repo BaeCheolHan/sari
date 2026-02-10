@@ -1,7 +1,7 @@
 import heapq
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional
 
 @dataclass(order=True)
 class PrioritizedTask:

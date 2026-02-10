@@ -1,5 +1,7 @@
 import json
 import os
+import tempfile
+from unittest.mock import MagicMock
 
 from sari.core.config import Config
 from sari.core.db.main import LocalSearchDB
@@ -145,3 +147,14 @@ def test_cleanup_stale_snapshot_artifacts_removes_old_files(tmp_path):
 
     assert not os.path.exists(old_snapshot)
     assert os.path.exists(fresh_snapshot)
+
+
+def test_snapshot_path_falls_back_when_db_path_is_not_string():
+    cfg = MagicMock()
+    cfg.scan_interval_seconds = 10
+    db = MagicMock()
+    indexer = Indexer(cfg, db)
+
+    snapshot_path = indexer._snapshot_path()
+    expected_base = os.path.join(tempfile.gettempdir(), "sari_snapshots", "index.db")
+    assert snapshot_path.startswith(expected_base + ".snapshot.")

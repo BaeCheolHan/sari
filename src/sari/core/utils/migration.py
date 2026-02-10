@@ -1,4 +1,3 @@
-import os
 import shutil
 import pathlib
 from sari.core.settings import settings

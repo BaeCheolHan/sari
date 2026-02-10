@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import os
+from importlib.util import find_spec
 from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple
 
 from sari.core.models import SearchHit, SearchOptions
 from sari.core.engine_runtime import EmbeddedEngine, SqliteSearchEngineAdapter
-from sari.core.settings import settings
 
 
 class SearchEngineInterface(Protocol):
@@ -44,11 +43,7 @@ def get_registry() -> EngineRegistry:
 
 def default_engine_name(cfg: Any = None) -> str:
     # Priority 11: Auto-detect best engine based on installed libs
-    try:
-        import tantivy
-        HAS_TANTIVY = True
-    except ImportError:
-        HAS_TANTIVY = False
+    HAS_TANTIVY = find_spec("tantivy") is not None
 
     if cfg is not None:
         mode = (getattr(cfg, "engine_mode", "") or "").strip().lower()

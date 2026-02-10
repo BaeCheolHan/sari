@@ -3,8 +3,6 @@ import os
 import threading
 import mimetypes
 import time
-import zlib
-from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 from sari.version import __version__
@@ -15,13 +13,13 @@ try:
     from .indexer import Indexer  # type: ignore
     from .models import SearchOptions  # type: ignore
     from .http_middleware import run_http_middlewares, default_http_middlewares  # type: ignore
-    from .utils.system import get_system_metrics # type: ignore
+    from .utils.system import get_system_metrics  # type: ignore
 except ImportError:
     from db import LocalSearchDB  # type: ignore
     from indexer import Indexer  # type: ignore
     from models import SearchOptions  # type: ignore
     from http_middleware import run_http_middlewares, default_http_middlewares  # type: ignore
-    from utils.system import get_system_metrics # type: ignore
+    from utils.system import get_system_metrics  # type: ignore
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -44,7 +42,8 @@ class Handler(BaseHTTPRequestHandler):
             if hasattr(db_ref, "db_path"):
                 return os.path.getsize(db_ref.db_path)
             return 0
-        except: return 0
+        except Exception:
+            return 0
 
     def _selected_workspace_root(self, qs) -> str:
         sel = ""
@@ -72,11 +71,19 @@ class Handler(BaseHTTPRequestHandler):
         try:
             from sari.mcp.workspace_registry import Registry
             from sari.core.workspace import WorkspaceManager
-            state = Registry.get_instance().get_or_create(workspace_root, persistent=True, track_ref=False)
+            state = Registry.get_instance().get_or_create(
+                workspace_root, persistent=True, track_ref=False)
             db = state.db
             indexer = state.indexer
-            roots = getattr(indexer.cfg, "workspace_roots", []) if getattr(indexer, "cfg", None) else []
-            root_ids = [WorkspaceManager.root_id_for_workspace(r) for r in roots] if roots else []
+            roots = getattr(
+                indexer.cfg,
+                "workspace_roots",
+                []) if getattr(
+                indexer,
+                "cfg",
+                None) else []
+            root_ids = [WorkspaceManager.root_id_for_workspace(
+                r) for r in roots] if roots else []
         except Exception:
             pass
         return workspace_root, db, indexer, root_ids
@@ -101,8 +108,13 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/":
             return self._serve_dashboard()
 
-        ctx = {"method": "GET", "path": path, "qs": qs, "headers": dict(self.headers)}
-        
+        ctx = {
+            "method": "GET",
+            "path": path,
+            "qs": qs,
+            "headers": dict(
+                self.headers)}
+
         def _exec():
             # Try API first
             res = self._handle_get(path, qs)
@@ -113,14 +125,15 @@ class Handler(BaseHTTPRequestHandler):
             return res
 
         resp = run_http_middlewares(ctx, self.middlewares, _exec)
-        
+
         if isinstance(resp, dict) and resp.get("__static__"):
             return
 
         if isinstance(resp, dict):
             status = int(resp.pop("status", 200))
             return self._json(resp, status=status)
-        return self._json({"ok": False, "error": "invalid response"}, status=500)
+        return self._json(
+            {"ok": False, "error": "invalid response"}, status=500)
 
     def _serve_dashboard(self):
         self.send_response(200)
@@ -286,12 +299,12 @@ class Handler(BaseHTTPRequestHandler):
                                         <HealthMetric label="CPU" percent={sys.process_cpu_percent || 0} color="bg-blue-500" />
                                         <HealthMetric label="RAM" percent={sys.memory_percent || 0} color="bg-emerald-500" />
                                     </div>
-                                    <button 
-                                        onClick={triggerRescan} 
+                                    <button
+                                        onClick={triggerRescan}
                                         disabled={rescanLoading}
                                         className={`btn-primary text-white px-6 py-2.5 rounded shadow-lg font-bold flex items-center uppercase text-sm tracking-wider ${rescanLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
                                     >
-                                        <i className={`fas fa-sync-alt mr-2 ${rescanLoading ? 'fa-spin' : ''}`}></i> 
+                                        <i className={`fas fa-sync-alt mr-2 ${rescanLoading ? 'fa-spin' : ''}`}></i>
                                         {rescanLoading ? 'Requesting...' : 'Rescan'}
                                     </button>
                                 </div>
@@ -303,11 +316,11 @@ class Handler(BaseHTTPRequestHandler):
                                 <StatCard icon="fa-project-diagram" title="Symbols" value={(data.repo_stats ? Object.values(data.repo_stats).reduce((a,b)=>a+b, 0) : 0).toLocaleString()} color="text-emerald-400" />
                                 <StatCard icon="fa-database" title="Storage" value={(sys.db_size / 1024 / 1024).toFixed(2) + " MB"} color="text-purple-400" />
                                 <StatCard icon="fa-clock" title="Uptime" value={Math.floor(sys.uptime / 60) + "m"} color="text-orange-400" />
-                                <StatCard 
-                                    icon="fa-exclamation-triangle" 
-                                    title="Errors" 
-                                    value={errorCount.toLocaleString()} 
-                                    color={errorCount > 0 ? "text-red-400" : "text-gray-400"} 
+                                <StatCard
+                                    icon="fa-exclamation-triangle"
+                                    title="Errors"
+                                    value={errorCount.toLocaleString()}
+                                    color={errorCount > 0 ? "text-red-400" : "text-gray-400"}
                                     status={errorCount > 0 ? "error" : "success"}
                                 />
                             </div>
@@ -369,8 +382,8 @@ class Handler(BaseHTTPRequestHandler):
                                                         <div className="text-[10px] text-gray-500 truncate max-w-[200px]">{r.error || r.detail || 'Healthy'}</div>
                                                     </div>
                                                     <div>
-                                                        {r.passed ? 
-                                                            <i className="fas fa-check-circle text-emerald-500"></i> : 
+                                                        {r.passed ?
+                                                            <i className="fas fa-check-circle text-emerald-500"></i> :
                                                             (r.warn ? <i className="fas fa-exclamation-circle text-yellow-500"></i> : <i className="fas fa-times-circle text-red-500"></i>)
                                                         }
                                                     </div>
@@ -380,7 +393,7 @@ class Handler(BaseHTTPRequestHandler):
                                     </div>
                                 </div>
                             </div>
-                            
+
                             <footer className="mt-12 text-center text-gray-600 text-[10px] font-mono uppercase tracking-widest">
                                 Sari High-Performance Indexing Engine • Gemini CLI Optimized
                             </footer>
@@ -393,12 +406,15 @@ class Handler(BaseHTTPRequestHandler):
         """Serve static files from the 'static' directory."""
         current_dir = os.path.dirname(os.path.abspath(__file__))
         static_root = os.path.join(current_dir, "static")
-        
+
         if path == "/":
             path = "/index.html"
-            
-        file_path = os.path.abspath(os.path.join(static_root, path.lstrip("/")))
-        
+
+        file_path = os.path.abspath(
+            os.path.join(
+                static_root,
+                path.lstrip("/")))
+
         if not file_path.startswith(os.path.abspath(static_root)):
             return False
 
@@ -408,8 +424,10 @@ class Handler(BaseHTTPRequestHandler):
                 ctype, _ = mimetypes.guess_type(file_path)
                 if ctype == "text/html":
                     ctype = "text/html; charset=utf-8"
-                self.send_header("Content-Type", ctype or "application/octet-stream")
-                
+                self.send_header(
+                    "Content-Type",
+                    ctype or "application/octet-stream")
+
                 with open(file_path, "rb") as f:
                     content = f.read()
                     self.send_header("Content-Length", str(len(content)))
@@ -431,7 +449,8 @@ class Handler(BaseHTTPRequestHandler):
                 from sari.mcp.tools.doctor import execute_doctor
                 roots = [workspace_root] if workspace_root else None
                 res = execute_doctor({}, db=db, roots=roots)
-                # execute_doctor returns a dict with 'content' which has 'text' (JSON string)
+                # execute_doctor returns a dict with 'content' which has 'text'
+                # (JSON string)
                 if isinstance(res, dict) and "content" in res:
                     text = res["content"][0]["text"]
                     # Skip the PACK1 header if it's there
@@ -448,14 +467,16 @@ class Handler(BaseHTTPRequestHandler):
                     doc = SariDoctor(workspace_root=workspace_root or None)
                     doc.run_all()
                     return doc.get_summary()
-                except:
+                except Exception:
                     return {"ok": False, "error": str(e)}
 
         if path == "/status":
             st = indexer.status
-            repo_stats = db.get_repo_stats(root_ids=root_ids) if hasattr(db, "get_repo_stats") else {}
+            repo_stats = db.get_repo_stats(
+                root_ids=root_ids) if hasattr(
+                db, "get_repo_stats") else {}
             total_db_files = sum(repo_stats.values()) if repo_stats else 0
-            
+
             # Fetch real system metrics
             metrics = get_system_metrics()
             metrics["uptime"] = int(time.time() - self.start_time)
@@ -478,6 +499,43 @@ class Handler(BaseHTTPRequestHandler):
                 "system_metrics": metrics
             }
 
+        if path == "/search":
+            q = (qs.get("q", [""])[0] or "").strip()
+            repo = (qs.get("repo", [""])[0] or "").strip() or None
+            try:
+                limit = int((qs.get("limit", ["20"])[0] or "20"))
+            except ValueError:
+                limit = 20
+            if not q:
+                return {"ok": False, "error": "missing q", "status": 400}
+            try:
+                snippet_lines = max(
+                    1, min(int(indexer.cfg.snippet_max_lines), 20))
+            except (ValueError, TypeError, AttributeError):
+                snippet_lines = 3
+            opts = SearchOptions(
+                query=q,
+                repo=repo,
+                limit=max(1, min(limit, 50)),
+                snippet_lines=snippet_lines,
+                root_ids=root_ids,
+                total_mode="exact",
+            )
+            try:
+                hits, meta = db.search_v2(opts)
+            except Exception as e:
+                return {
+                    "ok": False,
+                    "error": f"search failed: {e}",
+                    "status": 500}
+            return {
+                "ok": True,
+                "q": q,
+                "repo": repo,
+                "meta": meta,
+                "hits": [getattr(h, "__dict__", h) for h in hits],
+            }
+
         if path == "/rescan":
             # Trigger a scan ASAP (non-blocking)
             indexer.status.index_ready = False
@@ -498,14 +556,16 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": False, "error": "not found"}, status=404)
 
         if self.mcp_server is None:
-            return self._json({"ok": False, "error": "MCP disabled"}, status=503)
+            return self._json(
+                {"ok": False, "error": "MCP disabled"}, status=503)
 
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length)
         try:
             payload = json.loads(body.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
-            return self._json({"ok": False, "error": "invalid json"}, status=400)
+            return self._json(
+                {"ok": False, "error": "invalid json"}, status=400)
 
         def _handle_one(req):
             return self.mcp_server.handle_request(req)
@@ -523,6 +583,7 @@ class DualStackServer(ThreadingHTTPServer):
             pass
         super().server_bind()
 
+
 def serve_forever(
     host: str,
     port: int,
@@ -535,8 +596,7 @@ def serve_forever(
     shared_http_gateway: bool = False,
 ) -> tuple:
     import socket
-    import sys
-    address_family = socket.AF_INET6 if ":" in host or host.lower() == "localhost" else socket.AF_INET
+    socket.AF_INET6 if ":" in host or host.lower() == "localhost" else socket.AF_INET
 
     class BoundHandler(Handler):
         pass
@@ -550,7 +610,8 @@ def serve_forever(
     BoundHandler.shared_http_gateway = bool(shared_http_gateway)
     try:
         from sari.core.workspace import WorkspaceManager
-        BoundHandler.root_ids = [WorkspaceManager.root_id_for_workspace(r) for r in indexer.cfg.workspace_roots]
+        BoundHandler.root_ids = [WorkspaceManager.root_id_for_workspace(
+            r) for r in indexer.cfg.workspace_roots]
     except Exception:
         BoundHandler.root_ids = []
 

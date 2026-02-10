@@ -7,7 +7,7 @@ import multiprocessing
 import tempfile
 import concurrent.futures
 from collections import OrderedDict
-from typing import List, Optional, Dict, Any
+from typing import Optional, Dict, Any
 from pathlib import Path
 from sari.core.config.main import Config
 from sari.core.db.main import LocalSearchDB
@@ -16,7 +16,9 @@ from sari.core.workspace import WorkspaceManager
 
 from sari.core.models import IndexingResult
 
-def _scan_to_db(config: Config, db: LocalSearchDB, logger: logging.Logger) -> Dict[str, Any]:
+
+def _scan_to_db(config: Config, db: LocalSearchDB,
+                logger: logging.Logger) -> Dict[str, Any]:
     """
     파일 시스템을 스캔하여 변경된 파일을 감지하고 데이터베이스에 인덱싱합니다.
     이 함수는 별도의 프로세스(Worker) 내에서 실행될 수 있으며, 결과를 Status 딕셔너리로 반환합니다.
@@ -33,7 +35,7 @@ def _scan_to_db(config: Config, db: LocalSearchDB, logger: logging.Logger) -> Di
     worker = IndexWorker(config, db, logger, None)
     max_workers = os.cpu_count() or 4
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
-    
+
     try:
         def _get_files_generator():
             """
@@ -64,14 +66,14 @@ def _scan_to_db(config: Config, db: LocalSearchDB, logger: logging.Logger) -> Di
         file_rows = []
         all_symbols = []
         all_relations = []
-        
+
         # 완료된 작업 결과 수집
         for future in concurrent.futures.as_completed(futures):
             try:
                 res: Optional[IndexingResult] = future.result()
                 if not res:
                     continue
-                
+
                 if res.type in ("changed", "new"):
                     status["indexed_files"] += 1
                     file_rows.append(res.to_file_row())
@@ -79,19 +81,37 @@ def _scan_to_db(config: Config, db: LocalSearchDB, logger: logging.Logger) -> Di
                     root_id = res.root_id
                     if res.symbols:
                         for s in res.symbols:
-                            all_symbols.append((
-                                s.sid, s.path, root_id, s.name, s.kind, s.line, s.end_line,
-                                s.content, s.parent, json.dumps(s.meta), s.doc, s.qualname
-                            ))
+                            all_symbols.append(
+                                (s.sid,
+                                 s.path,
+                                 root_id,
+                                 s.name,
+                                 s.kind,
+                                 s.line,
+                                 s.end_line,
+                                 s.content,
+                                 s.parent,
+                                 json.dumps(
+                                     s.meta),
+                                    s.doc,
+                                    s.qualname))
                         status["symbols_extracted"] += len(res.symbols)
-                    
+
                     if res.relations:
                         for r in res.relations:
-                            all_relations.append((
-                                res.path, root_id, r.from_name, r.from_sid,
-                                r.to_path or res.path, root_id, r.to_name, r.to_sid,
-                                r.rel_type, r.line, json.dumps(r.meta)
-                            ))
+                            all_relations.append(
+                                (res.path,
+                                 root_id,
+                                 r.from_name,
+                                 r.from_sid,
+                                 r.to_path or res.path,
+                                 root_id,
+                                 r.to_name,
+                                 r.to_sid,
+                                 r.rel_type,
+                                 r.line,
+                                 json.dumps(
+                                     r.meta)))
 
             except Exception as e:
                 status["errors"] += 1
@@ -102,34 +122,39 @@ def _scan_to_db(config: Config, db: LocalSearchDB, logger: logging.Logger) -> Di
         if file_rows:
             db.upsert_files_turbo(file_rows)
         db.finalize_turbo_batch()
-        
+
         if all_symbols:
             # 중복 심볼 제거 및 트랜잭션 처리
             unique_symbols = list(OrderedDict.fromkeys(all_symbols))
             try:
                 db.upsert_symbols_tx(None, unique_symbols)
             except Exception as e:
-                if logger: logger.error(f"Failed to store extracted symbols: {e}")
+                if logger:
+                    logger.error(f"Failed to store extracted symbols: {e}")
 
         if all_relations:
             try:
                 db.upsert_relations_tx(None, all_relations)
             except Exception as e:
-                if logger: logger.error(f"Failed to store extracted relations: {e}")
-        
+                if logger:
+                    logger.error(f"Failed to store extracted relations: {e}")
+
         status["scan_finished_ts"] = int(time.time())
         status["index_version"] = str(status["scan_finished_ts"])
         return status
     finally:
         executor.shutdown(wait=True, cancel_futures=True)
 
-def _worker_build_snapshot(config_dict: Dict[str, Any], snapshot_path: str, status_path: str, log_path: str) -> None:
+
+def _worker_build_snapshot(
+        config_dict: Dict[str, Any], snapshot_path: str, status_path: str, log_path: str) -> None:
     """별도 프로세스에서 인덱싱을 수행하고 결과를 스냅샷 DB 및 상태 파일에 기록합니다."""
     logger = logging.getLogger("sari.indexer.worker")
     if log_path:
         try:
             fh = logging.FileHandler(log_path, encoding="utf-8")
-            fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+            fh.setFormatter(logging.Formatter(
+                "%(asctime)s %(levelname)s %(message)s"))
             logger.addHandler(fh)
             logger.setLevel(logging.INFO)
         except Exception:
@@ -141,22 +166,30 @@ def _worker_build_snapshot(config_dict: Dict[str, Any], snapshot_path: str, stat
         db.close_all()
         # 성공 상태 기록
         with open(status_path, "w", encoding="utf-8") as f:
-            json.dump({"ok": True, "status": status, "snapshot_path": snapshot_path}, f)
+            json.dump({"ok": True, "status": status,
+                      "snapshot_path": snapshot_path}, f)
     except Exception as e:
         # 실패 상태 기록
         try:
             with open(status_path, "w", encoding="utf-8") as f:
-                json.dump({"ok": False, "error": str(e), "snapshot_path": snapshot_path}, f)
+                json.dump({"ok": False, "error": str(e),
+                          "snapshot_path": snapshot_path}, f)
         except Exception:
             pass
+
 
 class Indexer:
     """
     전체 인덱싱 작업을 관리하는 클래스입니다.
     주기적인 스캔, 온디맨드 리스캔, 워커 프로세스 관리 등을 담당합니다.
     """
-    
-    def __init__(self, config: Config, db: LocalSearchDB, logger=None, **kwargs):
+
+    def __init__(
+            self,
+            config: Config,
+            db: LocalSearchDB,
+            logger=None,
+            **kwargs):
         self.config = config
         self.db = db
         self.logger = logger or logging.getLogger("sari.indexer")
@@ -184,7 +217,8 @@ class Indexer:
             if self.logger:
                 self.logger.debug("Failed to remove file %s: %s", path, e)
 
-    def _cleanup_snapshot_artifacts(self, snapshot_path: Optional[str]) -> None:
+    def _cleanup_snapshot_artifacts(
+            self, snapshot_path: Optional[str]) -> None:
         if not snapshot_path:
             return
         self._remove_file_if_exists(snapshot_path)
@@ -192,8 +226,11 @@ class Indexer:
         self._remove_file_if_exists(f"{snapshot_path}-shm")
         self._remove_file_if_exists(f"{snapshot_path}-journal")
 
-    def _cleanup_stale_snapshot_artifacts(self, now_ts: Optional[int] = None, max_age_seconds: int = 3600) -> None:
-        base = getattr(self.db, "db_path", "") or ""
+    def _cleanup_stale_snapshot_artifacts(
+            self,
+            now_ts: Optional[int] = None,
+            max_age_seconds: int = 3600) -> None:
+        base = self._safe_db_path()
         if not base:
             return
         parent = os.path.dirname(base) or "."
@@ -212,7 +249,8 @@ class Indexer:
                     self._remove_file_if_exists(path)
         except Exception as e:
             if self.logger:
-                self.logger.debug("Failed to cleanup stale snapshots under %s: %s", parent, e)
+                self.logger.debug(
+                    "Failed to cleanup stale snapshots under %s: %s", parent, e)
 
     def scan_once(self):
         """동기적으로 1회 스캔을 수행합니다. (블로킹)"""
@@ -220,7 +258,10 @@ class Indexer:
             self.status.index_ready = False
             main_db = self.db.db
             snapshot_path = self._snapshot_path()
-            snapshot_db = LocalSearchDB(snapshot_path, logger=self.logger, journal_mode="delete")
+            snapshot_db = LocalSearchDB(
+                snapshot_path,
+                logger=self.logger,
+                journal_mode="delete")
             status = _scan_to_db(self.config, snapshot_db, self.logger)
             try:
                 snapshot_db.close_all()
@@ -240,10 +281,12 @@ class Indexer:
                 # 스냅샷 DB를 메인 DB로 교체 (Swap)
                 self.db.swap_db_file(snapshot_path)
                 self.status.scan_started_ts = status.get("scan_started_ts", 0)
-                self.status.scan_finished_ts = status.get("scan_finished_ts", 0)
+                self.status.scan_finished_ts = status.get(
+                    "scan_finished_ts", 0)
                 self.status.scanned_files = status.get("scanned_files", 0)
                 self.status.indexed_files = status.get("indexed_files", 0)
-                self.status.symbols_extracted = status.get("symbols_extracted", 0)
+                self.status.symbols_extracted = status.get(
+                    "symbols_extracted", 0)
                 self.status.errors = status.get("errors", 0)
                 self.status.index_version = status.get("index_version", "")
                 self.status.index_ready = True
@@ -274,7 +317,7 @@ class Indexer:
         if self._executor:
             self._executor.shutdown(wait=True, cancel_futures=True)
             self._executor = None
-    
+
     def run_forever(self):
         """백그라운드에서 주기적으로 인덱싱 작업을 수행하는 무한 루프입니다."""
         next_due = time.time()
@@ -301,12 +344,21 @@ class Indexer:
 
     def _snapshot_path(self) -> str:
         """임시 스냅샷 DB 파일 경로를 생성합니다."""
-        base = getattr(self.db, "db_path", "") or ""
+        base = self._safe_db_path()
         if base in ("", ":memory:"):
             tmp_dir = os.path.join(tempfile.gettempdir(), "sari_snapshots")
             os.makedirs(tmp_dir, exist_ok=True)
             base = os.path.join(tmp_dir, "index.db")
         return f"{base}.snapshot.{int(time.time() * 1000)}"
+
+    def _safe_db_path(self) -> str:
+        """db_path를 안전한 문자열 경로로 정규화합니다."""
+        raw = getattr(self.db, "db_path", "")
+        if isinstance(raw, str):
+            return raw
+        if isinstance(raw, Path):
+            return str(raw)
+        return ""
 
     def _serialize_config(self) -> Dict[str, Any]:
         """설정 객체를 직렬화하여 워커 프로세스에 전달합니다."""
@@ -328,9 +380,12 @@ class Indexer:
         ctx = multiprocessing.get_context("spawn")
         self._worker_proc = ctx.Process(
             target=_worker_build_snapshot,
-            args=(cfg, self._worker_snapshot_path, self._worker_status_path, self._worker_log_path),
-            daemon=True
-        )
+            args=(
+                cfg,
+                self._worker_snapshot_path,
+                self._worker_status_path,
+                self._worker_log_path),
+            daemon=True)
         self._worker_proc.start()
 
     def _finalize_worker_if_done(self) -> None:
@@ -347,7 +402,8 @@ class Indexer:
         self._worker_status_path = None
         self._worker_log_path = None
         self._worker_snapshot_path = None
-        if not status_path or not snapshot_path or not os.path.exists(status_path):
+        if not status_path or not snapshot_path or not os.path.exists(
+                status_path):
             self.status.errors += 1
             self.status.last_error = "worker status missing"
             self._cleanup_snapshot_artifacts(snapshot_path)
@@ -401,9 +457,10 @@ class Indexer:
             self._pending_rescan = False
             self._start_worker_scan()
 
+
 class IndexStatus:
     """인덱싱 상태 정보를 저장하는 데이터 클래스입니다."""
-    
+
     def __init__(self):
         self.index_ready = False
         self.indexed_files = 0

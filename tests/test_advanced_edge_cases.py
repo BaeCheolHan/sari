@@ -1,10 +1,6 @@
 import json
-import pytest
 import io
-import os
-import secrets
 from unittest.mock import MagicMock, patch
-from sari.mcp.server import LocalSearchMCPServer, JsonRpcException
 from sari.mcp.proxy import _read_mcp_message, _reconnect
 
 class TestAdvancedEdgeCases:
@@ -59,7 +55,7 @@ class TestAdvancedEdgeCases:
              patch("sari.mcp.proxy._identify_sari_daemon", return_value=True), \
              patch("sari.mcp.proxy.start_daemon_if_needed", return_value=True), \
              patch("sari.mcp.proxy._send_payload") as mock_send, \
-             patch("threading.Thread") as mock_thread:
+             patch("threading.Thread"):
             
             mock_sock.return_value = MagicMock()
             
@@ -95,7 +91,7 @@ class TestAdvancedEdgeCases:
             try:
                 # This will raise because retries also fail in this mock
                 writer._process_batch(MagicMock(), tasks)
-            except:
+            except Exception:
                 pass
             assert mock_proc.call_count == 1
 

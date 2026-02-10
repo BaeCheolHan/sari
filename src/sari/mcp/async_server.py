@@ -3,13 +3,11 @@ Async implementation of LocalSearchMCPServer.
 Uses asyncio for main loop and worker, delegating sync logic to executor.
 """
 import asyncio
-import json
 import logging
 import os
 import sys
 import signal
-import inspect
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 from sari.mcp.server import LocalSearchMCPServer
 from sari.mcp.transport import AsyncMcpTransport
 from sari.core.settings import settings

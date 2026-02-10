@@ -1,11 +1,8 @@
-import pytest
-import json
-import time
 from unittest.mock import MagicMock
 from sari.mcp.tools.search import execute_search
 from sari.mcp.tools.list_files import execute_list_files
 from sari.mcp.tools.status import execute_status
-from sari.core.models import SearchHit, SearchOptions
+from sari.core.models import SearchHit
 
 def test_execute_search_basic():
     db = MagicMock()
@@ -113,3 +110,15 @@ def test_execute_status():
     assert "m:index_ready=true" in text
     assert "m:scanned_files=100" in text
     assert "m:cfg_include_ext=.py" in text
+
+
+def test_execute_search_pack_error_sets_is_error_flag(monkeypatch):
+    db = MagicMock()
+    logger = MagicMock()
+    roots = ["/tmp/ws"]
+    monkeypatch.setenv("SARI_FORMAT", "pack")
+
+    resp = execute_search({"query": ""}, db, logger, roots)
+    text = resp["content"][0]["text"]
+    assert "PACK1 tool=search ok=false" in text
+    assert resp.get("isError") is True

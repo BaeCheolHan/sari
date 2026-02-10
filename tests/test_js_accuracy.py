@@ -1,4 +1,3 @@
-import pytest
 from sari.core.parsers.ast_engine import ASTEngine
 
 def test_javascript_react_component_extraction():

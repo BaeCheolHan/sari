@@ -1,10 +1,8 @@
-import json
 import os
 import importlib
-from pathlib import Path
 from typing import Any, Dict, List
 
-from ._util import mcp_response, pack_header, pack_line, pack_encode_text, pack_encode_id
+from ._util import mcp_response, pack_header, pack_line, pack_encode_id
 try:
     from .call_graph import PLUGIN_API_VERSION
 except ImportError:

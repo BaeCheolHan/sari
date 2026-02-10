@@ -1,6 +1,6 @@
 import time
 import threading
-from typing import Dict, Any, Callable
+from typing import Callable, Optional
 
 class TokenBucket:
     """Rate limiting using Token Bucket algorithm."""

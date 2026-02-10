@@ -1,11 +1,9 @@
-import asyncio
 import json
 import socket
 import subprocess
 import sys
 import time
 import os
-import signal
 from pathlib import Path
 
 DAEMON_PORT = 47780

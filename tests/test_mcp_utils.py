@@ -1,9 +1,7 @@
-import pytest
-import os
 import json
 from sari.mcp.tools._util import (
     pack_encode_text, pack_encode_id, pack_header, pack_line, 
-    pack_error, pack_truncated, mcp_response, ErrorCode,
+    pack_error, mcp_response, ErrorCode,
     resolve_db_path, resolve_fs_path
 )
 

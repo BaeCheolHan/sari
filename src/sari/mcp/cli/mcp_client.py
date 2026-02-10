@@ -23,16 +23,16 @@ def identify_sari_daemon(
 ) -> Optional[Dict[str, Any]]:
     """
     Identify if server is a Sari daemon using MCP protocol.
-    
+
     Tries two methods:
     1. Modern: sari/identify method
     2. Legacy: ping method with "Server not initialized" error
-    
+
     Args:
         host: Daemon host
         port: Daemon port
         timeout: Connection timeout in seconds
-    
+
     Returns:
         Identify payload dict if Sari daemon, None otherwise
     """
@@ -40,7 +40,8 @@ def identify_sari_daemon(
     try:
         with socket.create_connection((host, port), timeout=timeout) as sock:
             sock.settimeout(timeout)
-            body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "sari/identify"}).encode("utf-8")
+            body = json.dumps({"jsonrpc": "2.0", "id": 1,
+                              "method": "sari/identify"}).encode("utf-8")
             header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
             sock.sendall(header + body)
 
@@ -78,7 +79,8 @@ def identify_sari_daemon(
     try:
         with socket.create_connection((host, port), timeout=timeout) as sock:
             sock.settimeout(timeout)
-            body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"}).encode("utf-8")
+            body = json.dumps({"jsonrpc": "2.0", "id": 1,
+                              "method": "ping"}).encode("utf-8")
             header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
             sock.sendall(header + body)
 
@@ -108,7 +110,10 @@ def identify_sari_daemon(
             err = resp.get("error") or {}
             msg = (err.get("message") or "").lower()
             if "server not initialized" in msg:
-                return {"name": "sari", "version": "legacy", "protocolVersion": ""}
+                return {
+                    "name": "sari",
+                    "version": "legacy",
+                    "protocolVersion": ""}
     except Exception:
         pass
 
@@ -122,12 +127,12 @@ def probe_sari_daemon(
 ) -> bool:
     """
     Verify the server speaks Sari MCP (framed JSON-RPC).
-    
+
     Args:
         host: Daemon host
         port: Daemon port
         timeout: Connection timeout in seconds
-    
+
     Returns:
         True if Sari daemon, False otherwise
     """
@@ -143,7 +148,8 @@ def is_http_running(host: str, port: int, timeout: float = 2.0) -> bool:
     try:
         url = f"http://{host}:{port}/health"
         with urllib.request.urlopen(url, timeout=timeout) as r:
-            if r.status != 200: return False
+            if r.status != 200:
+                return False
             payload = json.loads(r.read().decode("utf-8"))
             return bool(payload.get("ok"))
     except Exception:
@@ -157,17 +163,18 @@ def ensure_workspace_http(
 ) -> bool:
     """
     Ensure workspace is initialized so HTTP server is started/registered.
-    
+
     Args:
         daemon_host: Daemon host
         daemon_port: Daemon port
         workspace_root: Optional workspace root (auto-detected if None)
-    
+
     Returns:
         True if successful, False otherwise
     """
     try:
-        root = workspace_root or os.environ.get("SARI_WORKSPACE_ROOT") or WorkspaceManager.resolve_workspace_root()
+        root = workspace_root or os.environ.get(
+            "SARI_WORKSPACE_ROOT") or WorkspaceManager.resolve_workspace_root()
         with socket.create_connection((daemon_host, daemon_port), timeout=1.0) as sock:
             body = json.dumps({
                 "jsonrpc": "2.0",
@@ -211,17 +218,18 @@ def request_mcp_status(
 ) -> Optional[dict]:
     """
     Request status from daemon via MCP.
-    
+
     Args:
         daemon_host: Daemon host
         daemon_port: Daemon port
         workspace_root: Optional workspace root (auto-detected if None)
-    
+
     Returns:
         Status dict or None if request fails
     """
     try:
-        root = workspace_root or os.environ.get("SARI_WORKSPACE_ROOT") or WorkspaceManager.resolve_workspace_root()
+        root = workspace_root or os.environ.get(
+            "SARI_WORKSPACE_ROOT") or WorkspaceManager.resolve_workspace_root()
         with socket.create_connection((daemon_host, daemon_port), timeout=2.0) as sock:
             def _send(payload: dict) -> dict:
                 body = json.dumps(payload).encode("utf-8")

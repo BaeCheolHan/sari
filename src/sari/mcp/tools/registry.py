@@ -101,9 +101,26 @@ class ToolRegistry:
             raise ValueError(f"Unknown tool: {name}")
             
         result = tool.handler(ctx, args)
-        
+
+        def _is_error_response(res: Dict[str, Any]) -> bool:
+            if bool(res.get("isError")):
+                return True
+            try:
+                content = res.get("content") or []
+                if not content:
+                    return False
+                text = str((content[0] or {}).get("text") or "")
+                if not text:
+                    return False
+                first_line = text.splitlines()[0]
+                if first_line.startswith("PACK1 ") and " ok=false" in first_line:
+                    return True
+            except Exception:
+                return False
+            return False
+
         # 실행 정책 훅: 검색 액션 자동 마킹
-        if ctx.policy_engine and not result.get("isError"):
+        if ctx.policy_engine and not _is_error_response(result):
             if name in {"search", "search_symbols", "grep_and_read"}:
                 ctx.policy_engine.mark_action(name)
                 

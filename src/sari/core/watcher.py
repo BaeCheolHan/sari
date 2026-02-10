@@ -3,21 +3,28 @@ import os
 import time
 import threading
 from collections import deque
-from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional
 
 try:
     from watchdog.observers import Observer
     from watchdog.events import FileSystemEventHandler
     # Guard against mocked watchdog modules that return non-types.
-    if not isinstance(FileSystemEventHandler, type) or not isinstance(Observer, type):
+    if not isinstance(
+            FileSystemEventHandler,
+            type) or not isinstance(
+            Observer,
+            type):
         raise ImportError("watchdog mocked")
     HAS_WATCHDOG = True
 except Exception:
     HAS_WATCHDOG = False
     # Dummy classes for safe definition
-    class FileSystemEventHandler: pass
-    class Observer: pass
+
+    class FileSystemEventHandler:
+        pass
+
+    class Observer:
+        pass
 
 try:
     from .queue_pipeline import FsEvent, FsEventKind
@@ -84,6 +91,7 @@ except Exception:
         if callable(method):
             method(message)
 
+
 def _is_git_event(path: str) -> bool:
     if not path:
         return False
@@ -98,6 +106,7 @@ def _is_git_event(path: str) -> bool:
 
 class DebouncedEventHandler(FileSystemEventHandler):
     """Handles events with debounce to prevent duplicate indexing on save."""
+
     def __init__(
         self,
         callback: Callable[[str], None],
@@ -167,13 +176,17 @@ class DebouncedEventHandler(FileSystemEventHandler):
                     if self._git_timer:
                         self._git_timer.cancel()
                     self._git_last_path = src_path
-                    self._git_timer = threading.Timer(self.git_debounce_seconds, self._trigger_git)
+                    self._git_timer = threading.Timer(
+                        self.git_debounce_seconds, self._trigger_git)
                     self._git_timer.start()
             if self.logger:
-                safe_log(self.logger, "info", "Git activity detected; deferring to rescan.")
+                safe_log(
+                    self.logger,
+                    "info",
+                    "Git activity detected; deferring to rescan.")
             return
         fs_event = FsEvent(kind=evt_kind, path=src_path,
-                           root="", # Will be inferred in dispatch
+                           root="",  # Will be inferred in dispatch
                            dest_path=dest_path or None,
                            ts=time.time())
 
@@ -193,7 +206,10 @@ class DebouncedEventHandler(FileSystemEventHandler):
             if key in self._timers:
                 self._timers[key].cancel()
             self._pending_events[key] = fs_event
-            t = threading.Timer(self.debounce_seconds, self._trigger, args=[key])
+            t = threading.Timer(
+                self.debounce_seconds,
+                self._trigger,
+                args=[key])
             self._timers[key] = t
             t.start()
 
@@ -205,24 +221,33 @@ class DebouncedEventHandler(FileSystemEventHandler):
         if not fs_event:
             return
         try:
-           self.callback(fs_event)
+            self.callback(fs_event)
         except Exception as e:
             if self.logger:
-                safe_log(self.logger, "error", f"Watcher callback failed for {path}: {e}")
+                safe_log(
+                    self.logger,
+                    "error",
+                    f"Watcher callback failed for {path}: {e}")
 
     def _update_debounce(self, now_ts: float) -> None:
         self._event_times.append(now_ts)
         # Drop old events outside window
-        while self._event_times and now_ts - self._event_times[0] > self._rate_window:
+        while self._event_times and now_ts - \
+                self._event_times[0] > self._rate_window:
             self._event_times.popleft()
         rate = len(self._event_times) / max(0.5, self._rate_window)
         scale = max(1.0, rate / max(1.0, self._debounce_target_rps))
-        self.debounce_seconds = min(self._debounce_max, max(self._debounce_min, self._debounce_min * scale))
+        self.debounce_seconds = min(self._debounce_max, max(
+            self._debounce_min, self._debounce_min * scale))
 
     def _refill_tokens(self, now_ts: float) -> None:
         elapsed = max(0.0, now_ts - self._bucket_last_ts)
         if elapsed > 0:
-            self._bucket_tokens = min(self._bucket_capacity, self._bucket_tokens + elapsed * self._bucket_rate)
+            self._bucket_tokens = min(
+                self._bucket_capacity,
+                self._bucket_tokens +
+                elapsed *
+                self._bucket_rate)
             self._bucket_last_ts = now_ts
 
     def _try_consume_token(self, now_ts: float) -> bool:
@@ -235,7 +260,8 @@ class DebouncedEventHandler(FileSystemEventHandler):
     def _schedule_bucket_flush(self) -> None:
         if self._bucket_timer and self._bucket_timer.is_alive():
             return
-        self._bucket_timer = threading.Timer(max(0.1, self._bucket_flush_seconds), self._flush_bucket)
+        self._bucket_timer = threading.Timer(
+            max(0.1, self._bucket_flush_seconds), self._flush_bucket)
         self._bucket_timer.start()
 
     def _flush_bucket(self) -> None:
@@ -243,31 +269,37 @@ class DebouncedEventHandler(FileSystemEventHandler):
         with self._lock:
             now = time.time()
             self._refill_tokens(now)
-            items = sorted(self._pending_events.items(), key=lambda kv: kv[1].ts)
+            items = sorted(
+                self._pending_events.items(),
+                key=lambda kv: kv[1].ts)
             dispatched_keys = []
             for key, evt in items:
                 if self._bucket_tokens >= 1.0:
                     self._bucket_tokens -= 1.0
                     to_dispatch.append(evt)
                     dispatched_keys.append(key)
-            
+
             # 처리된 이벤트만 제거 (원자성 보장)
             for key in dispatched_keys:
                 self._pending_events.pop(key, None)
-            
+
             if self._pending_events:
-                self._bucket_timer = threading.Timer(max(0.1, self._bucket_flush_seconds), self._flush_bucket)
+                self._bucket_timer = threading.Timer(
+                    max(0.1, self._bucket_flush_seconds), self._flush_bucket)
                 self._bucket_timer.start()
             else:
                 self._bucket_timer = None
-        
+
         # Lock 외부에서 callback 호출 (데드락 방지)
         for evt in to_dispatch:
             try:
                 self.callback(evt)
             except Exception as e:
                 if self.logger:
-                    safe_log(self.logger, "error", f"Watcher callback failed for {evt.path}: {e}")
+                    safe_log(
+                        self.logger,
+                        "error",
+                        f"Watcher callback failed for {evt.path}: {e}")
 
     def _trigger_git(self):
         path = ""
@@ -279,7 +311,11 @@ class DebouncedEventHandler(FileSystemEventHandler):
                 self.git_callback(path or ".git")
         except Exception as e:
             if self.logger:
-                safe_log(self.logger, "error", f"Watcher git callback failed for {path}: {e}")
+                safe_log(
+                    self.logger,
+                    "error",
+                    f"Watcher git callback failed for {path}: {e}")
+
 
 class FileWatcher:
     def __init__(
@@ -303,7 +339,10 @@ class FileWatcher:
     def start(self):
         if not HAS_WATCHDOG:
             if self.logger:
-                safe_log(self.logger, "info", "Watchdog not installed. Skipping real-time monitoring.")
+                safe_log(
+                    self.logger,
+                    "info",
+                    "Watchdog not installed. Skipping real-time monitoring.")
             return
 
         if self._running:
@@ -312,7 +351,10 @@ class FileWatcher:
         # High-performance observer with low timeout (latency)
         self.observer = Observer(timeout=WATCHER_OBSERVER_TIMEOUT_SECONDS)
         try:
-            git_debounce = float(os.environ.get(ENV_SARI_GIT_CHECKOUT_DEBOUNCE, str(WATCHER_GIT_DEBOUNCE_SECONDS)) or WATCHER_GIT_DEBOUNCE_SECONDS)
+            git_debounce = float(
+                os.environ.get(
+                    ENV_SARI_GIT_CHECKOUT_DEBOUNCE,
+                    str(WATCHER_GIT_DEBOUNCE_SECONDS)) or WATCHER_GIT_DEBOUNCE_SECONDS)
         except Exception:
             git_debounce = WATCHER_GIT_DEBOUNCE_SECONDS
         handler = DebouncedEventHandler(
@@ -330,7 +372,10 @@ class FileWatcher:
                     started_any = True
                 except Exception as e:
                     if self.logger:
-                        safe_log(self.logger, "error", f"Failed to watch path {p}: {e}")
+                        safe_log(
+                            self.logger,
+                            "error",
+                            f"Failed to watch path {p}: {e}")
 
         if started_any:
             try:
@@ -338,10 +383,16 @@ class FileWatcher:
                 self._running = True
                 self._start_monitor()
                 if self.logger:
-                    safe_log(self.logger, "info", f"Watcher started on: {self.paths}")
+                    safe_log(
+                        self.logger,
+                        "info",
+                        f"Watcher started on: {self.paths}")
             except Exception as e:
                 if self.logger:
-                    safe_log(self.logger, "error", f"Failed to start observer: {e}")
+                    safe_log(
+                        self.logger,
+                        "error",
+                        f"Failed to start observer: {e}")
 
     def stop(self):
         self._stop_event.set()
@@ -356,7 +407,8 @@ class FileWatcher:
         if self._monitor_thread and self._monitor_thread.is_alive():
             return
         self._stop_event.clear()
-        self._monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
+        self._monitor_thread = threading.Thread(
+            target=self._monitor_loop, daemon=True)
         self._monitor_thread.start()
 
     def _restart_observer(self):
@@ -367,26 +419,33 @@ class FileWatcher:
                     try:
                         self.observer.stop()
                         # 더 긴 타임아웃으로 완전 종료 대기
-                        self.observer.join(timeout=WATCHER_OBSERVER_JOIN_TIMEOUT_SECONDS)
+                        self.observer.join(
+                            timeout=WATCHER_OBSERVER_JOIN_TIMEOUT_SECONDS)
                         if self.observer.is_alive():
                             if self.logger:
-                                safe_log(self.logger, "warning", 
-                                    f"Observer still alive after stop (attempt {attempt+1}/{max_retries})"
-                                )
+                                safe_log(
+                                    self.logger,
+                                    "warning",
+                                    f"Observer still alive after stop (attempt {attempt+1}/{max_retries})")
                             if attempt < max_retries - 1:
                                 time.sleep(WATCHER_RESTART_RETRY_DELAY_SECONDS)
                                 continue
                             else:
                                 if self.logger:
-                                    safe_log(self.logger, "error", "Observer forced restart after max retries")
+                                    safe_log(
+                                        self.logger, "error", "Observer forced restart after max retries")
                     except Exception as e:
                         if self.logger:
-                            safe_log(self.logger, "error", f"Error stopping observer: {e}")
-                
+                            safe_log(
+                                self.logger, "error", f"Error stopping observer: {e}")
+
                 # 새 observer 생성
                 self.observer = Observer()
                 try:
-                    git_debounce = float(os.environ.get(ENV_SARI_GIT_CHECKOUT_DEBOUNCE, str(WATCHER_GIT_DEBOUNCE_SECONDS)) or WATCHER_GIT_DEBOUNCE_SECONDS)
+                    git_debounce = float(
+                        os.environ.get(
+                            ENV_SARI_GIT_CHECKOUT_DEBOUNCE,
+                            str(WATCHER_GIT_DEBOUNCE_SECONDS)) or WATCHER_GIT_DEBOUNCE_SECONDS)
                 except Exception:
                     git_debounce = WATCHER_GIT_DEBOUNCE_SECONDS
                 handler = DebouncedEventHandler(
@@ -403,21 +462,31 @@ class FileWatcher:
                             started_any = True
                         except Exception as e:
                             if self.logger:
-                                safe_log(self.logger, "error", f"Failed to watch path {p}: {e}")
+                                safe_log(
+                                    self.logger, "error", f"Failed to watch path {p}: {e}")
                 if started_any:
                     self.observer.start()
                     self._running = True
                     if self.logger:
-                        safe_log(self.logger, "info", "Watcher restarted successfully.")
+                        safe_log(
+                            self.logger,
+                            "info",
+                            "Watcher restarted successfully.")
                     break  # 성공
                 else:
                     if self.logger:
-                        safe_log(self.logger, "error", "Watcher restart failed: no valid paths.")
+                        safe_log(
+                            self.logger,
+                            "error",
+                            "Watcher restart failed: no valid paths.")
                     self._running = False
                     break
             except Exception as e:
                 if self.logger:
-                    safe_log(self.logger, "error", f"Watcher restart attempt {attempt+1}/{max_retries} failed: {e}")
+                    safe_log(
+                        self.logger,
+                        "error",
+                        f"Watcher restart attempt {attempt+1}/{max_retries} failed: {e}")
                 if attempt < max_retries - 1:
                     time.sleep(WATCHER_RESTART_RETRY_DELAY_SECONDS)
                 else:
@@ -426,7 +495,10 @@ class FileWatcher:
 
     def _monitor_loop(self):
         try:
-            interval = float(os.environ.get(ENV_SARI_WATCHER_MONITOR_SECONDS, str(WATCHER_MONITOR_INTERVAL_SECONDS)))
+            interval = float(
+                os.environ.get(
+                    ENV_SARI_WATCHER_MONITOR_SECONDS,
+                    str(WATCHER_MONITOR_INTERVAL_SECONDS)))
         except Exception:
             interval = WATCHER_MONITOR_INTERVAL_SECONDS
         while not self._stop_event.is_set():
@@ -435,14 +507,18 @@ class FileWatcher:
                 break
             if self.observer and not self.observer.is_alive() and self._running:
                 if self.logger:
-                    safe_log(self.logger, "error", "Watcher observer died; restarting.")
+                    safe_log(
+                        self.logger,
+                        "error",
+                        "Watcher observer died; restarting.")
                 self._restart_observer()
 
     def _dispatch_event(self, evt: FsEvent):
         normalized_evt = evt
         try:
             if not getattr(evt, "root", ""):
-                inferred_root = self._infer_root_for_path(getattr(evt, "path", ""))
+                inferred_root = self._infer_root_for_path(
+                    getattr(evt, "path", ""))
                 if inferred_root:
                     normalized_evt = FsEvent(
                         kind=evt.kind,
@@ -464,7 +540,10 @@ class FileWatcher:
             self.callback(normalized_evt)
         except Exception as e:
             if self.logger:
-                safe_log(self.logger, "error", f"Watcher callback failed for {getattr(normalized_evt, 'path', '')}: {e}")
+                safe_log(
+                    self.logger,
+                    "error",
+                    f"Watcher callback failed for {getattr(normalized_evt, 'path', '')}: {e}")
 
     def _infer_root_for_path(self, event_path: str) -> str:
         if not event_path:

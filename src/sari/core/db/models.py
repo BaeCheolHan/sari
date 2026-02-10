@@ -1,7 +1,16 @@
-from peewee import *
+from peewee import (
+    BigIntegerField,
+    BlobField,
+    CharField,
+    CompositeKey,
+    FloatField,
+    ForeignKeyField,
+    IntegerField,
+    Model,
+    Proxy,
+    TextField,
+)
 import time
-import json
-from sari.core.models import FileDTO, IndexingResult, SymbolDTO, SnippetDTO, ContextDTO, FILE_COLUMNS, _to_dict
 
 db_proxy = Proxy()
 

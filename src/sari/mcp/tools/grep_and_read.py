@@ -100,18 +100,19 @@ def execute_grep_and_read(args: Dict[str, Any], db: LocalSearchDB, roots: List[s
         # 1. 하이브리드 검색 실행
         hits, meta = db.search_v2(opts)
     except Exception as exc:
+        msg = str(exc)
         return mcp_response(
             "grep_and_read",
             lambda: pack_error(
                 "grep_and_read",
                 ErrorCode.ERR_ENGINE_QUERY,
-                f"engine query failed: {exc}",
+                f"engine query failed: {msg}",
                 hints=["check engine status", "run sari doctor"],
             ),
             lambda: {
                 "error": {
                     "code": ErrorCode.ERR_ENGINE_QUERY.value,
-                    "message": f"engine query failed: {exc}",
+                    "message": f"engine query failed: {msg}",
                     "hint": "check engine status | run sari doctor",
                 },
                 "isError": True,

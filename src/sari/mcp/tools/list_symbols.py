@@ -5,7 +5,6 @@ from sari.mcp.tools._util import (
     mcp_response,
     pack_error,
     pack_header,
-    pack_line,
     resolve_db_path,
     handle_db_path_error,
     pack_encode_id,

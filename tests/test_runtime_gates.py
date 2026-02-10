@@ -1,7 +1,4 @@
-import os
 import sys
-import json
-import sqlite3
 from pathlib import Path
 from unittest.mock import MagicMock
 

@@ -53,40 +53,47 @@ def _resolve_http_endpoint_for_daemon(args: Any, daemon_host: str, daemon_port: 
     return host, port
 
 
-def cmd_status(args):
-    try:
-        if _arg(args, "daemon_host") or _arg(args, "daemon_port"):
-            d_host = _arg(args, "daemon_host") or DEFAULT_DAEMON_HOST
-            d_port = int(_arg(args, "daemon_port") or DEFAULT_DAEMON_PORT)
-        else:
-            d_host, d_port = get_daemon_address()
-        daemon_running = is_daemon_running(d_host, d_port)
+def _prepare_http_service(args: Any, allow_mcp_fallback: bool = False) -> Tuple[str, int, Optional[dict]]:
+    if _arg(args, "daemon_host") or _arg(args, "daemon_port"):
+        d_host = _arg(args, "daemon_host") or DEFAULT_DAEMON_HOST
+        d_port = int(_arg(args, "daemon_port") or DEFAULT_DAEMON_PORT)
+    else:
+        d_host, d_port = get_daemon_address()
+    daemon_running = is_daemon_running(d_host, d_port)
 
-        h, p = _resolve_http_endpoint_for_daemon(args, d_host, d_port)
-        http_running = _is_http_running(h, p)
+    h, p = _resolve_http_endpoint_for_daemon(args, d_host, d_port)
+    http_running = _is_http_running(h, p)
+
+    if not http_running:
+        if not daemon_running:
+            d_host, d_port, daemon_running = _ensure_daemon_running(d_host, d_port, allow_upgrade=False)
+            h, p = _resolve_http_endpoint_for_daemon(args, d_host, d_port)
+        if daemon_running:
+            for _ in range(5):
+                _ensure_workspace_http(d_host, d_port)
+                h, p = _resolve_http_endpoint_for_daemon(args, d_host, d_port)
+                http_running = _is_http_running(h, p)
+                if http_running:
+                    break
+                time.sleep(0.1)
+
+        if not http_running and daemon_running and allow_mcp_fallback:
+            fallback = _request_mcp_status(d_host, d_port)
+            if fallback:
+                return h, p, fallback
 
         if not http_running:
-            if not daemon_running:
-                d_host, d_port, daemon_running = _ensure_daemon_running(d_host, d_port, allow_upgrade=False)
-                h, p = _resolve_http_endpoint_for_daemon(args, d_host, d_port)
-            if daemon_running:
-                for _ in range(5):
-                    _ensure_workspace_http(d_host, d_port)
-                    h, p = _resolve_http_endpoint_for_daemon(args, d_host, d_port)
-                    http_running = _is_http_running(h, p)
-                    if http_running:
-                        break
-                    time.sleep(0.1)
+            raise RuntimeError(f"Sari services not running. Daemon: {d_host}:{d_port}, HTTP: {h}:{p}")
 
-            if not http_running and daemon_running:
-                fallback = _request_mcp_status(d_host, d_port)
-                if fallback:
-                    print(json.dumps(fallback, ensure_ascii=False, indent=2))
-                    return 0
+    return h, p, None
 
-            if not http_running:
-                print(f"❌ Error: Sari services not running. Daemon: {d_host}:{d_port}, HTTP: {h}:{p}")
-                return 1
+
+def cmd_status(args):
+    try:
+        h, p, fallback = _prepare_http_service(args, allow_mcp_fallback=True)
+        if fallback:
+            print(json.dumps(fallback, ensure_ascii=False, indent=2))
+            return 0
 
         data = _request_http("/status", {}, h, p)
         print(json.dumps(data, ensure_ascii=False, indent=2))
@@ -97,9 +104,15 @@ def cmd_status(args):
 
 
 def cmd_search(args):
-    params = {"q": args.query, "limit": args.limit}
-    if _arg(args, "repo"):
-        params["repo"] = args.repo
-    data = _request_http("/search", params)
-    print(json.dumps(data, ensure_ascii=False, indent=2))
-    return 0
+    try:
+        h, p, _ = _prepare_http_service(args, allow_mcp_fallback=False)
+
+        params = {"q": args.query, "limit": args.limit}
+        if _arg(args, "repo"):
+            params["repo"] = args.repo
+        data = _request_http("/search", params, h, p)
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+        return 0
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        return 1

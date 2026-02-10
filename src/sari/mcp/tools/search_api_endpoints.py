@@ -1,5 +1,4 @@
 import json
-import sqlite3
 from typing import Any, Dict, List
 from sari.mcp.tools._util import mcp_response, pack_header, pack_line, pack_encode_id, pack_encode_text, resolve_root_ids, pack_error, ErrorCode
 

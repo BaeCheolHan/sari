@@ -1,5 +1,4 @@
 import hashlib
-import json
 import threading
 import time
 from typing import Any, Dict, List, Optional
@@ -155,10 +154,11 @@ def execute_save_snippet(args: Dict[str, Any], db: Any, roots: List[str], indexe
     try:
         payload = build_save_snippet(args, db, roots, indexer=indexer)
     except ValueError as e:
+        msg = str(e)
         return mcp_response(
             "save_snippet",
-            lambda: pack_error("save_snippet", ErrorCode.INVALID_ARGS, str(e)),
-            lambda: {"error": {"code": ErrorCode.INVALID_ARGS.value, "message": str(e)}, "isError": True},
+            lambda: pack_error("save_snippet", ErrorCode.INVALID_ARGS, msg),
+            lambda: {"error": {"code": ErrorCode.INVALID_ARGS.value, "message": msg}, "isError": True},
         )
 
     def build_pack() -> str:

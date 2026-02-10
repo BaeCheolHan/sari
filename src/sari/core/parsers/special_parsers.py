@@ -1,7 +1,6 @@
 import re
-import json
 import hashlib
-from typing import List, Tuple
+from typing import List
 from sari.core.models import ParserSymbol
 
 def _symbol_id(path: str, kind: str, name: str) -> str:

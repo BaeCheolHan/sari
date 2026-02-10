@@ -1,8 +1,6 @@
 import os
-import sys
 import threading
 from pathlib import Path
-from typing import Optional
 
 _LINDERA_LOCK = threading.Lock()
 _LINDERA_TOKENIZER = None

@@ -7,13 +7,11 @@ Starlette 기반 비동기 HTTP 서버.
 import json
 import os
 import asyncio
-import mimetypes
-from pathlib import Path
 from contextlib import asynccontextmanager
-from typing import Any, Dict, List, Optional, Callable
+from typing import Any, Dict, List, Optional
 
 from starlette.applications import Starlette
-from starlette.responses import JSONResponse, Response, PlainTextResponse
+from starlette.responses import JSONResponse, Response
 from starlette.routing import Route, Mount
 from starlette.staticfiles import StaticFiles
 from starlette.requests import Request

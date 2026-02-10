@@ -1,7 +1,7 @@
 import os
-import sys
 from pathlib import Path
-from typing import Optional, Union
+from typing import Union
+
 
 class PathUtils:
     @staticmethod
@@ -14,12 +14,13 @@ class PathUtils:
         - Preserves simple local paths like 'p1' for test compatibility.
         """
         p = str(path or "").strip()
-        if not p: return os.getcwd().replace("\\", "/")
-        
+        if not p:
+            return os.getcwd().replace("\\", "/")
+
         # If it's a simple name without any path separators, keep it as is
         if "/" not in p and "\\" not in p and not p.startswith("."):
             return p
-            
+
         try:
             # Handle user home and basic cleanup
             res = os.path.expanduser(p).replace("\\", "/")
@@ -33,17 +34,19 @@ class PathUtils:
     def to_relative(path: str, root: str) -> str:
         n_path = PathUtils.normalize(path)
         n_root = PathUtils.normalize(root)
-        
-        if n_path == n_root: return "."
+
+        if n_path == n_root:
+            return "."
         if n_path.startswith(n_root + "/"):
-            return n_path[len(n_root)+1:]
+            return n_path[len(n_root) + 1:]
         return n_path
 
     @staticmethod
     def is_subpath(parent: str, child: str) -> bool:
         n_parent = PathUtils.normalize(parent)
         n_child = PathUtils.normalize(child)
-        if n_parent == n_child: return True
+        if n_parent == n_child:
+            return True
         return n_child.startswith(n_parent + "/")
 
     @staticmethod

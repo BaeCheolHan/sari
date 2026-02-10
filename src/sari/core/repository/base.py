@@ -1,6 +1,6 @@
 import sqlite3
 import logging
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger("sari.repository.base")
 

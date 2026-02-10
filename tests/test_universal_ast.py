@@ -1,5 +1,3 @@
-import pytest
-import json
 from sari.core.parsers.ast_engine import ASTEngine
 
 def test_investigate_swift_ast_nodes():

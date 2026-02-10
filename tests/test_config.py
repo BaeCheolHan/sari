@@ -1,11 +1,8 @@
 import json
-import os
 import pytest
-from pathlib import Path
 from sari.core.config.main import Config
 from sari.core.config.manager import ConfigManager
 from sari.core.workspace import WorkspaceManager
-from sari.core.settings import settings
 
 def test_config_defaults():
     defaults = Config.get_defaults("/tmp/ws")

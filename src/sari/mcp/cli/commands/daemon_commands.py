@@ -99,7 +99,10 @@ def cmd_daemon_ensure(args):
 
 
 def cmd_daemon_refresh(args):
-    stop_args = argparse.Namespace(daemon_host=None, daemon_port=None)
+    stop_args = argparse.Namespace(
+        daemon_host=_arg(args, "daemon_host"),
+        daemon_port=_arg(args, "daemon_port"),
+    )
     stop_rc = cmd_daemon_stop(stop_args)
     if stop_rc != 0:
         return stop_rc

@@ -1,5 +1,3 @@
-import pytest
-import json
 from sari.core.parsers.ast_engine import ASTEngine
 
 def test_spring_data_jpa_integrity():

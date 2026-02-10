@@ -5,33 +5,43 @@ import logging
 CURRENT_SCHEMA_VERSION = 4
 logger = logging.getLogger("sari.db.schema")
 
+
 def init_schema(conn: sqlite3.Connection):
     """Sari의 데이터베이스 스키마를 최신 표준에 맞게 초기화하고 마이그레이션을 관리합니다."""
     cur = conn.cursor()
-    
+
     # 스키마 버전 확인 및 초기 생성
-    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'")
+    cur.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'")
     if not cur.fetchone():
         _create_all_tables(cur)
-        cur.execute("INSERT INTO schema_version (version, applied_ts) VALUES (?, ?)", 
+        cur.execute("INSERT INTO schema_version (version, applied_ts) VALUES (?, ?)",
                     (CURRENT_SCHEMA_VERSION, int(time.time())))
     else:
         cur.execute("SELECT version FROM schema_version LIMIT 1")
         row = cur.fetchone()
         v = row[0] if row and isinstance(row[0], int) else 1
-        
+
         # v2 마이그레이션: 중요도 점수(importance_score) 컬럼 추가
         if v < 2:
-            try: cur.execute("ALTER TABLE symbols ADD COLUMN importance_score REAL DEFAULT 0.0")
-            except Exception as e: logger.debug("Migration v2 column already exists or failed: %s", e)
-            
+            try:
+                cur.execute(
+                    "ALTER TABLE symbols ADD COLUMN importance_score REAL DEFAULT 0.0")
+            except Exception as e:
+                logger.debug(
+                    "Migration v2 column already exists or failed: %s", e)
+
         # v3 마이그레이션: 통계 컬럼 및 메타 통계 테이블 추가
         if v < 3:
             try:
-                cur.execute("ALTER TABLE roots ADD COLUMN file_count INTEGER DEFAULT 0")
-                cur.execute("ALTER TABLE roots ADD COLUMN symbol_count INTEGER DEFAULT 0")
-                cur.execute("CREATE TABLE IF NOT EXISTS meta_stats (key TEXT PRIMARY KEY, value TEXT, updated_ts INTEGER)")
-            except Exception as e: logger.debug("Migration v3 failed: %s", e)
+                cur.execute(
+                    "ALTER TABLE roots ADD COLUMN file_count INTEGER DEFAULT 0")
+                cur.execute(
+                    "ALTER TABLE roots ADD COLUMN symbol_count INTEGER DEFAULT 0")
+                cur.execute(
+                    "CREATE TABLE IF NOT EXISTS meta_stats (key TEXT PRIMARY KEY, value TEXT, updated_ts INTEGER)")
+            except Exception as e:
+                logger.debug("Migration v3 failed: %s", e)
 
         # v4 마이그레이션: snippet_versions 테이블 추가
         if v < 4:
@@ -39,13 +49,14 @@ def init_schema(conn: sqlite3.Connection):
                 _create_snippet_versions_table(cur)
             except Exception as e:
                 logger.debug("Migration v4 failed: %s", e)
-            
+
         # metadata_json 컬럼 존재 여부 강제 확인 (복구용)
         try:
             cur.execute("SELECT metadata_json FROM files LIMIT 1")
         except Exception:
-            try: 
-                cur.execute("ALTER TABLE files ADD COLUMN metadata_json TEXT DEFAULT '{}'")
+            try:
+                cur.execute(
+                    "ALTER TABLE files ADD COLUMN metadata_json TEXT DEFAULT '{}'")
             except Exception as e:
                 logger.debug("Failed to add metadata_json column: %s", e)
 
@@ -57,16 +68,19 @@ def init_schema(conn: sqlite3.Connection):
                 _create_snippet_versions_table(cur)
             except Exception as e:
                 logger.debug("Failed to create snippet_versions table: %s", e)
-            
-        cur.execute("UPDATE schema_version SET version = ?", (CURRENT_SCHEMA_VERSION,))
-    
+
+        cur.execute("UPDATE schema_version SET version = ?",
+                    (CURRENT_SCHEMA_VERSION,))
+
     _init_fts(cur)
+
 
 def _create_all_tables(cur: sqlite3.Cursor):
     """데이터베이스의 모든 테이블을 생성합니다."""
     # 스키마 버전 관리 테이블
-    cur.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY, applied_ts INTEGER NOT NULL)")
-    
+    cur.execute(
+        "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY, applied_ts INTEGER NOT NULL)")
+
     _create_roots_table(cur)
     _create_files_table(cur)
     _create_symbols_table(cur)
@@ -126,7 +140,8 @@ def _create_files_table(cur: sqlite3.Cursor):
         );
     """)
     cur.execute("CREATE INDEX IF NOT EXISTS idx_files_root ON files(root_id);")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_files_rel_path ON files(rel_path);")
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_files_rel_path ON files(rel_path);")
 
 
 def _create_symbols_table(cur: sqlite3.Cursor):
@@ -216,6 +231,7 @@ def _create_snippets_table(cur: sqlite3.Cursor):
         );
     """)
 
+
 def _create_snippet_versions_table(cur: sqlite3.Cursor):
     """스니펫 이력 관리를 위한 'snippet_versions' 테이블을 생성합니다."""
     cur.execute("""
@@ -228,7 +244,8 @@ def _create_snippet_versions_table(cur: sqlite3.Cursor):
             FOREIGN KEY(snippet_id) REFERENCES snippets(id) ON DELETE CASCADE
         );
     """)
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_snippet_versions_snippet_id ON snippet_versions(snippet_id);")
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_snippet_versions_snippet_id ON snippet_versions(snippet_id);")
 
 
 def _create_failed_tasks_table(cur: sqlite3.Cursor):
@@ -266,17 +283,21 @@ def _create_embeddings_table(cur: sqlite3.Cursor):
 
 def _create_meta_stats_table(cur: sqlite3.Cursor):
     """시스템 메타데이터 및 통계를 보관하는 'meta_stats' 테이블을 생성합니다."""
-    cur.execute("CREATE TABLE IF NOT EXISTS meta_stats (key TEXT PRIMARY KEY, value TEXT, updated_ts INTEGER)")
+    cur.execute(
+        "CREATE TABLE IF NOT EXISTS meta_stats (key TEXT PRIMARY KEY, value TEXT, updated_ts INTEGER)")
 
 
 def _init_fts(cur: sqlite3.Cursor):
     """SQLite FTS5를 이용한 고속 텍스트 검색을 초기화합니다."""
-    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='files_fts'")
-    if cur.fetchone(): return
+    cur.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='files_fts'")
+    if cur.fetchone():
+        return
 
     # 외부 콘텐츠(content='files')를 사용하는 가상 테이블 생성
-    cur.execute("CREATE VIRTUAL TABLE files_fts USING fts5(path, rel_path, fts_content, content='files', content_rowid='rowid')")
-    
+    cur.execute(
+        "CREATE VIRTUAL TABLE files_fts USING fts5(path, rel_path, fts_content, content='files', content_rowid='rowid')")
+
     # files 테이블 변경 시 fts 테이블 자동 동기화를 위한 트리거들
     cur.execute("CREATE TRIGGER files_ai AFTER INSERT ON files BEGIN INSERT INTO files_fts(rowid, path, rel_path, fts_content) VALUES (new.rowid, new.path, new.rel_path, new.fts_content); END")
     cur.execute("CREATE TRIGGER files_ad AFTER DELETE ON files BEGIN INSERT INTO files_fts(files_fts, rowid, path, rel_path, fts_content) VALUES('delete', old.rowid, old.path, old.rel_path, old.fts_content); END")

@@ -1,5 +1,5 @@
 import time
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, Optional
 from sari.mcp.tools._util import mcp_response, pack_error, ErrorCode
 
 class PolicyEngine:
@@ -15,7 +15,7 @@ class PolicyEngine:
 
     def mark_action(self, tool_name: str):
         now = time.time()
-        if tool_name == "search":
+        if tool_name in {"search", "grep_and_read"}:
             self.usage["search"] += 1
             self.usage["last_search_ts"] = now
         elif tool_name == "search_symbols":

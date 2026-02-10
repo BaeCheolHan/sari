@@ -42,7 +42,7 @@ def _is_minified(path: Path, text_sample: str) -> bool:
     lines = text_sample.splitlines()
     if not lines:
         return len(text_sample) > 300
-    total_len = sum(len(l) for l in lines)
+    total_len = sum(len(line_text) for line_text in lines)
     avg_len = total_len / max(1, len(lines))
     return avg_len > 300
 

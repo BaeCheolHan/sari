@@ -1,6 +1,3 @@
-import os
-import sys
-from pathlib import Path
 from sari.core.parsers.factory import ParserFactory
 
 def test_js_arrow_functions():

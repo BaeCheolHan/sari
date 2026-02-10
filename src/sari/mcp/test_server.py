@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ruff: noqa: E402
 """
 Unit tests for Local Search MCP Server
 
@@ -8,11 +9,9 @@ Usage:
   python3 .codex/tools/sari/mcp/test_server.py
 """
 import json
-import os
 import sys
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 # Add paths for imports
 SCRIPT_DIR = Path(__file__).parent
@@ -143,10 +142,14 @@ def test_tool_status():
         assert "content" in result
         assert len(result["content"]) > 0
         assert result["content"][0]["type"] == "text"
-
-        status = json.loads(result["content"][0]["text"])
-        assert "index_ready" in status
-        assert "workspace_root" in status
+        text = result["content"][0]["text"]
+        if text.startswith("PACK1 "):
+            assert "m:index_ready=" in text
+            assert "m:workspace_root=" in text
+        else:
+            status = json.loads(text)
+            assert "index_ready" in status
+            assert "workspace_root" in status
 
 
 def test_tool_search_empty_query():
@@ -183,7 +186,7 @@ def run_tests():
             test()
             print(f"✓ {test.__name__}")
             passed += 1
-        except Exception as e:
+        except Exception:
             print(f"✗ {test.__name__}")
             traceback.print_exc()
             failed += 1

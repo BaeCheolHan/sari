@@ -1,8 +1,11 @@
 import pytest
 import argparse
+import sys
 from unittest.mock import MagicMock, patch
 from sari.mcp.cli import cmd_daemon_status, cmd_init, cmd_prune, cmd_status, main
 from sari.mcp.cli.commands.maintenance_commands import cmd_vacuum
+from sari.main import main as sari_entry_main
+from sari.main import run_cmd as sari_run_cmd
 
 def test_cmd_daemon_status():
     args = argparse.Namespace(daemon_host="127.0.0.1", daemon_port=47779)
@@ -68,6 +71,51 @@ def test_cli_main_help():
         with pytest.raises(SystemExit) as e:
             main()
         assert e.value.code == 0
+
+
+def test_cli_main_cmd_search_routes_to_legacy_cli():
+    with patch("sari.mcp.cli.main", return_value=0) as mock_legacy:
+        with patch("sys.argv", ["sari", "--cmd", "search", "--query", "needle", "--limit", "3"]):
+            rc = sari_entry_main()
+            assert rc == 0
+            mock_legacy.assert_called_once()
+
+
+def test_cli_main_cmd_status_routes_to_legacy_cli():
+    with patch("sari.mcp.cli.main", return_value=0) as mock_legacy:
+        with patch("sys.argv", ["sari", "--cmd", "status"]):
+            rc = sari_entry_main()
+            assert rc == 0
+            mock_legacy.assert_called_once()
+
+
+def test_cli_main_daemon_stop_all_parses():
+    with patch("sari.mcp.cli.legacy_cli.cmd_daemon_stop", return_value=0) as mock_stop:
+        with patch("sys.argv", ["sari", "daemon", "stop", "--all"]):
+            rc = main()
+            assert rc == 0
+            args = mock_stop.call_args.args[0]
+            assert args.all is True
+
+
+def test_run_cmd_does_not_mutate_sys_argv_for_legacy_routing():
+    with patch("sari.mcp.cli.main", return_value=0) as mock_legacy:
+        with patch("sys.argv", ["sari", "--sentinel"]):
+            rc = sari_run_cmd(["status"])
+            assert rc == 0
+            assert mock_legacy.called
+            assert sys.argv == ["sari", "--sentinel"]
+
+
+def test_cli_main_search_command_dispatches_to_cmd_search():
+    with patch("sari.mcp.cli.legacy_cli.cmd_search", return_value=0) as mock_search:
+        with patch("sys.argv", ["sari", "search", "--query", "needle", "--limit", "5"]):
+            rc = main()
+            assert rc == 0
+            mock_search.assert_called_once()
+            args = mock_search.call_args.args[0]
+            assert args.query == "needle"
+            assert args.limit == 5
 
 
 def test_cmd_status_uses_resolved_non_default_daemon_port():

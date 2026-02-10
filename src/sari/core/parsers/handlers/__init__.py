@@ -1,4 +1,3 @@
-from sari.core.parsers.base import BaseHandler
 from .java import JavaHandler
 from .python import PythonHandler
 from .javascript import JavaScriptHandler
@@ -13,6 +12,8 @@ from .php import PHPHandler
 from .ruby import RubyHandler
 from .yaml import YAMLHandler
 from .xml import XmlHandler
+
+__all__ = ["HandlerRegistry"]
 
 class HandlerRegistry:
     def __init__(self):

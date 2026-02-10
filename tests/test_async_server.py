@@ -1,6 +1,5 @@
 
 import asyncio
-import json
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
 from sari.mcp.async_server import AsyncLocalSearchMCPServer

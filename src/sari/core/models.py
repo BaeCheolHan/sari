@@ -1,6 +1,5 @@
 from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional, Dict, Any, Union, Tuple
-import time
 import json
 import logging
 
@@ -9,24 +8,44 @@ logger = logging.getLogger("sari.models")
 # --- Single Source of Truth for DB Column Ordering ---
 # These must match schema.py EXACTLY.
 FILE_COLUMNS = [
-    "path", "rel_path", "root_id", "repo", "mtime", "size", "content", "hash", "fts_content", 
-    "last_seen_ts", "deleted_ts", "status", "error", "parse_status", "parse_error", 
-    "ast_status", "ast_reason", "is_binary", "is_minified", "metadata_json"
-]
+    "path",
+    "rel_path",
+    "root_id",
+    "repo",
+    "mtime",
+    "size",
+    "content",
+    "hash",
+    "fts_content",
+    "last_seen_ts",
+    "deleted_ts",
+    "status",
+    "error",
+    "parse_status",
+    "parse_error",
+    "ast_status",
+    "ast_reason",
+    "is_binary",
+    "is_minified",
+    "metadata_json"]
+
 
 def _to_dict(row: Any) -> Dict[str, Any]:
-    if isinstance(row, dict): return row
+    if isinstance(row, dict):
+        return row
     try:
         if hasattr(row, "keys"):
             return {k: row[k] for k in row.keys()}
     except Exception as e:
         logger.debug("Row to dict conversion failed: %s", e)
-    
+
     if isinstance(row, (list, tuple)) and len(row) == len(FILE_COLUMNS):
         return dict(zip(FILE_COLUMNS, row))
-        
-    if hasattr(row, "__dict__"): return row.__dict__
+
+    if hasattr(row, "__dict__"):
+        return row.__dict__
     return {}
+
 
 class SearchOptions(BaseModel):
     model_config = ConfigDict(frozen=True)
@@ -44,6 +63,7 @@ class SearchOptions(BaseModel):
     path_pattern: Optional[str] = None
     snippet_lines: int = 3
     total_mode: str = "exact"
+
 
 class SearchHit(BaseModel):
     repo: str = ""
@@ -82,6 +102,7 @@ class SearchHit(BaseModel):
             "metadata": self.metadata,
         }
 
+
 class FileDTO(BaseModel):
     path: str
     rel_path: str = ""
@@ -100,9 +121,11 @@ class FileDTO(BaseModel):
         meta = {}
         m_key = "metadata_json" if "metadata_json" in d else "meta_json"
         if d.get(m_key):
-            try: meta = json.loads(d[m_key])
-            except Exception as e: logger.debug("FileDTO meta parse error: %s", e)
-        
+            try:
+                meta = json.loads(d[m_key])
+            except Exception as e:
+                logger.debug("FileDTO meta parse error: %s", e)
+
         return cls(
             path=d.get("path", ""),
             rel_path=d.get("rel_path", ""),
@@ -115,6 +138,7 @@ class FileDTO(BaseModel):
             fts_content=d.get("fts_content", ""),
             metadata=meta
         )
+
 
 class SymbolDTO(BaseModel):
     symbol_id: str = ""
@@ -136,11 +160,12 @@ class SymbolDTO(BaseModel):
         meta = {}
         m_key = "meta_json" if "meta_json" in d else "metadata"
         if d.get(m_key):
-            try: 
+            try:
                 m = d[m_key]
                 meta = json.loads(m) if isinstance(m, str) else m
-            except Exception as e: logger.debug("SymbolDTO meta parse error: %s", e)
-            
+            except Exception as e:
+                logger.debug("SymbolDTO meta parse error: %s", e)
+
         return cls(
             symbol_id=d.get("symbol_id", d.get("sid", "")),
             path=d.get("path", ""),
@@ -155,6 +180,7 @@ class SymbolDTO(BaseModel):
             qualname=d.get("qualname", ""),
             metadata=meta
         )
+
 
 class SnippetDTO(BaseModel):
     id: Optional[int] = None
@@ -180,8 +206,10 @@ class SnippetDTO(BaseModel):
         meta = {}
         m_key = "metadata_json" if "metadata_json" in d else "meta_json"
         if d.get(m_key):
-            try: meta = json.loads(d[m_key])
-            except Exception as e: logger.debug("SnippetDTO meta parse error: %s", e)
+            try:
+                meta = json.loads(d[m_key])
+            except Exception as e:
+                logger.debug("SnippetDTO meta parse error: %s", e)
         return cls(
             id=d.get("id"),
             tag=d.get("tag", ""),
@@ -200,6 +228,7 @@ class SnippetDTO(BaseModel):
             updated_ts=int(d.get("updated_ts", 0)),
             metadata=meta
         )
+
 
 class IndexingResult(BaseModel):
     type: str = "changed"
@@ -251,6 +280,7 @@ class IndexingResult(BaseModel):
         }
         return tuple(data.get(col) for col in FILE_COLUMNS)
 
+
 class ContextDTO(BaseModel):
 
     id: Optional[int] = None
@@ -275,33 +305,30 @@ class ContextDTO(BaseModel):
 
     updated_ts: int = 0
 
-
-
     @classmethod
-
     def from_row(cls, row: Union[Dict, Any]) -> "ContextDTO":
 
         d = _to_dict(row)
-
-        
 
         def _parse_json_list(key):
 
             val = d.get(key)
 
-            if not val: return []
-
-            if isinstance(val, list): return val
-
-            try: return json.loads(val)
-
-            except Exception as e: 
-
-                logger.debug("ContextDTO json list parse error for %s: %s", key, e)
-
+            if not val:
                 return []
 
+            if isinstance(val, list):
+                return val
 
+            try:
+                return json.loads(val)
+
+            except Exception as e:
+
+                logger.debug(
+                    "ContextDTO json list parse error for %s: %s", key, e)
+
+                return []
 
         return cls(
 
@@ -330,46 +357,26 @@ class ContextDTO(BaseModel):
         )
 
 
-
 # --- Parser Result Objects (to avoid messy tuple indexing) ---
-
 
 
 class ParserSymbol(BaseModel):
 
-
-
     sid: str
-
-
 
     path: str
 
-
-
     name: str
-
-
 
     kind: str
 
-
-
     line: int
-
-
 
     end_line: int
 
-
-
     content: str
 
-
-
     parent: str = ""
-
-
 
     meta: Dict[str, Any] = Field(default_factory=dict)
 
@@ -395,7 +402,3 @@ class ParserRelation(BaseModel):
     meta: Dict[str, Any] = Field(default_factory=dict)
 
     to_path: str = ""
-
-
-
-

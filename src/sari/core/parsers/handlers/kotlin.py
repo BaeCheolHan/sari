@@ -1,28 +1,40 @@
-import json
 from typing import Any, Dict, Optional, Tuple
 from .java import BaseHandler
 
+
 class KotlinHandler(BaseHandler):
-    def handle_node(self, node: Any, get_t: callable, find_id: callable, ext: str, p_meta: Dict) -> Tuple[Optional[str], Optional[str], Dict, bool]:
+    def handle_node(self,
+                    node: Any,
+                    get_t: callable,
+                    find_id: callable,
+                    ext: str,
+                    p_meta: Dict) -> Tuple[Optional[str],
+                                           Optional[str],
+                                           Dict,
+                                           bool]:
         n_type = node.type
         kind, name, meta = None, None, {"annotations": []}
         is_valid = False
-        
+
         if n_type in ("class_declaration", "object_declaration"):
             kind, is_valid = "class", True
             name = find_id(node)
             meta["annotations"] = self._extract_annotations(node, get_t)
             # kotlin specific
             txt = get_t(node)
-            if "data class" in txt: meta["kotlin_type"] = "data_class"
-            if "sealed class" in txt: meta["kotlin_type"] = "sealed_class"
-            if n_type == "object_declaration": meta["kotlin_type"] = "object"
-            
+            if "data class" in txt:
+                meta["kotlin_type"] = "data_class"
+            if "sealed class" in txt:
+                meta["kotlin_type"] = "sealed_class"
+            if n_type == "object_declaration":
+                meta["kotlin_type"] = "object"
+
         elif n_type == "function_declaration":
             kind, is_valid = "function", True
             name = find_id(node)
             meta["annotations"] = self._extract_annotations(node, get_t)
-            if "suspend" in get_t(node): meta["kotlin_coroutine"] = True
+            if "suspend" in get_t(node):
+                meta["kotlin_coroutine"] = True
 
         return kind, name, meta, is_valid
 
@@ -40,25 +52,39 @@ class KotlinHandler(BaseHandler):
                                 break
         return annotations
 
-    def extract_api_info(self, node: Any, get_t: callable, get_child: callable) -> Dict:
+    def extract_api_info(
+            self,
+            node: Any,
+            get_t: callable,
+            get_child: callable) -> Dict:
         # Kotlin/Spring Boot support
         res = {"http_path": None, "http_methods": []}
         modifiers = get_child(node, "modifiers")
-        if not modifiers: return res
+        if not modifiers:
+            return res
         for mc in modifiers.children:
             if mc.type == "annotation":
                 ann_id = get_child(mc, "user_type", "type_identifier")
                 if ann_id:
                     ann_name = get_t(ann_id)
-                    if ann_name in ("GetMapping", "PostMapping", "PutMapping", "DeleteMapping", "PatchMapping", "RequestMapping"):
+                    if ann_name in (
+                        "GetMapping",
+                        "PostMapping",
+                        "PutMapping",
+                        "DeleteMapping",
+                        "PatchMapping",
+                            "RequestMapping"):
                         if ann_name != "RequestMapping":
-                            res["http_methods"].append(ann_name.replace("Mapping", "").upper())
+                            res["http_methods"].append(
+                                ann_name.replace("Mapping", "").upper())
                         # Path extraction (similar to Java)
-                        args = get_child(mc, "annotation_argument_list", "arguments", "value_argument")
+                        args = get_child(
+                            mc, "annotation_argument_list", "arguments", "value_argument")
                         if args:
                             # Kotlin value_argument can be complex
                             txt = get_t(args)
                             import re
                             m = re.search(r'["\']([^"\']+)["\']', txt)
-                            if m: res["http_path"] = m.group(1)
+                            if m:
+                                res["http_path"] = m.group(1)
         return res

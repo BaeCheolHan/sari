@@ -1,4 +1,3 @@
-import pytest
 from unittest.mock import MagicMock
 from sari.mcp.tools.read_file import execute_read_file
 from sari.mcp.tools.get_snippet import execute_get_snippet
@@ -9,8 +8,11 @@ from sari.mcp.tools.read_symbol import execute_read_symbol
 from sari.mcp.tools.get_callers import execute_get_callers
 from sari.mcp.tools.get_implementations import execute_get_implementations
 from sari.mcp.tools.repo_candidates import execute_repo_candidates
+from sari.mcp.tools.dry_run_diff import execute_dry_run_diff
 from sari.mcp.tools.registry import build_default_registry, ToolContext
 from sari.mcp.tools._util import resolve_repo_scope
+from sari.mcp.policies import PolicyEngine
+
 
 def test_execute_read_file(tmp_path):
     roots = [str(tmp_path)]
@@ -27,6 +29,7 @@ def test_execute_read_file(tmp_path):
     import urllib.parse
     assert urllib.parse.quote("hello world") in resp["content"][0]["text"]
 
+
 def test_execute_get_snippet(tmp_path):
     roots = [str(tmp_path)]
     f = tmp_path / "code.py"
@@ -36,12 +39,18 @@ def test_execute_get_snippet(tmp_path):
     db_path = f"{root_id}/code.py"
     db = MagicMock()
     # Mock for build_get_snippet
-    db.list_snippets_by_tag.return_value = [{
-        "tag": "test", "path": db_path, "start_line": 1, "end_line": 2, "content": "line 1\nline 2", "id": 1
-    }]
+    db.list_snippets_by_tag.return_value = [
+        {
+            "tag": "test",
+            "path": db_path,
+            "start_line": 1,
+            "end_line": 2,
+            "content": "line 1\nline 2",
+            "id": 1}]
     args = {"tag": "test"}
     resp = execute_get_snippet(args, db, roots)
     assert "PACK1" in resp["content"][0]["text"]
+
 
 def test_execute_grep_and_read(tmp_path):
     roots = [str(tmp_path)]
@@ -52,7 +61,9 @@ def test_execute_grep_and_read(tmp_path):
     try:
         resp = execute_grep_and_read(args, db, logger, roots)
         assert "PACK1" in resp["content"][0]["text"]
-    except Exception: pass
+    except Exception:
+        pass
+
 
 def test_execute_index_file():
     indexer = MagicMock()
@@ -60,6 +71,7 @@ def test_execute_index_file():
     args = {"path": "root-123/file.py"}
     resp = execute_index_file(args, indexer, roots)
     assert "PACK1" in resp["content"][0]["text"]
+
 
 def test_execute_rescan():
     indexer = MagicMock()
@@ -72,8 +84,10 @@ def test_execute_rescan_fallback_to_scan_once():
     class _IndexerWithoutRequestRescan:
         indexing_enabled = True
         indexer_mode = "leader"
+
         def __init__(self):
             self.called = 0
+
         def scan_once(self):
             self.called += 1
 
@@ -81,6 +95,7 @@ def test_execute_rescan_fallback_to_scan_once():
     resp = execute_rescan({}, idx)
     assert "PACK1" in resp["content"][0]["text"]
     assert idx.called == 1
+
 
 def test_execute_repo_candidates():
     db = MagicMock()
@@ -92,13 +107,25 @@ def test_execute_repo_candidates():
     assert "repo1" in resp["content"][0]["text"]
 
 
+def test_execute_dry_run_diff_requires_content(tmp_path):
+    roots = [str(tmp_path)]
+    target = tmp_path / "foo.py"
+    target.write_text("x = 1\n", encoding="utf-8")
+    db = MagicMock()
+    resp = execute_dry_run_diff({"path": str(target)}, db, roots)
+    text = resp["content"][0]["text"]
+    assert "ok=false" in text
+    assert "code=INVALID_ARGS" in text
+
+
 def test_registry_scan_once_handler_passes_logger():
     reg = build_default_registry()
     indexer = MagicMock()
     indexer.indexing_enabled = True
     indexer.status.scanned_files = 0
     indexer.status.indexed_files = 0
-    indexer.get_queue_depths.return_value = {"fair_queue": 0, "priority_queue": 0, "db_writer": 0}
+    indexer.get_queue_depths.return_value = {
+        "fair_queue": 0, "priority_queue": 0, "db_writer": 0}
     indexer.storage.writer.flush.return_value = None
 
     ctx = ToolContext(
@@ -114,6 +141,31 @@ def test_registry_scan_once_handler_passes_logger():
 
     resp = reg.execute("scan_once", ctx, {})
     assert "PACK1 tool=scan_once ok=true" in resp["content"][0]["text"]
+
+
+def test_registry_does_not_mark_failed_search_as_search_context():
+    reg = build_default_registry()
+    policy = PolicyEngine(mode="enforce")
+    ctx = ToolContext(
+        db=MagicMock(),
+        engine=None,
+        indexer=MagicMock(),
+        roots=["/tmp/ws"],
+        cfg=MagicMock(),
+        logger=MagicMock(),
+        workspace_root="/tmp/ws",
+        server_version="test",
+        policy_engine=policy,
+    )
+    resp = reg.execute("search", ctx, {"query": ""})
+    assert "ok=false" in resp["content"][0]["text"]
+    assert policy.has_search_context() is False
+
+
+def test_policy_engine_marks_grep_and_read_as_search_context():
+    policy = PolicyEngine(mode="enforce")
+    policy.mark_action("grep_and_read")
+    assert policy.has_search_context() is True
 
 
 def test_registry_hides_internal_tools_by_default(monkeypatch):
@@ -161,14 +213,44 @@ def test_read_symbol_supports_symbol_id_without_path(tmp_path):
     rid = WorkspaceManager.root_id(str(root))
     db.upsert_root(rid, str(root), str(root.resolve()), label="ws")
     cur = db._write.cursor()
-    db.upsert_files_tx(cur, [(
-        f"{rid}/main.py", "main.py", rid, "repo", 1, 20, "def hello():\n    return 1\n",
-        "h", "hello", 1, 0, "ok", "", "ok", "", 0, 0, 0, 20, "{}"
-    )])
-    db.upsert_symbols_tx(cur, [("sid-hello", f"{rid}/main.py", rid, "hello", "function", 1, 2, "def hello():", "", "{}", "", "hello")])
+    db.upsert_files_tx(cur,
+                       [(f"{rid}/main.py",
+                         "main.py",
+                         rid,
+                         "repo",
+                         1,
+                         20,
+                         "def hello():\n    return 1\n",
+                         "h",
+                         "hello",
+                         1,
+                         0,
+                         "ok",
+                         "",
+                         "ok",
+                         "",
+                         0,
+                         0,
+                         0,
+                         20,
+                         "{}")])
+    db.upsert_symbols_tx(cur,
+                         [("sid-hello",
+                           f"{rid}/main.py",
+                           rid,
+                           "hello",
+                           "function",
+                           1,
+                           2,
+                           "def hello():",
+                           "",
+                           "{}",
+                           "",
+                           "hello")])
     db._write.commit()
 
-    resp = execute_read_symbol({"symbol_id": "sid-hello"}, db, MagicMock(), [str(root)])
+    resp = execute_read_symbol(
+        {"symbol_id": "sid-hello"}, db, MagicMock(), [str(root)])
     text = resp["content"][0]["text"]
     assert "PACK1 tool=read_symbol ok=true" in text
     assert "sid=sid-hello" in text
@@ -187,13 +269,17 @@ def test_get_callers_falls_back_to_call_graph(monkeypatch):
 
     monkeypatch.setattr(
         "sari.mcp.tools.get_callers.build_call_graph",
-        lambda _args, _db, _roots: {
+        lambda _args,
+        _db,
+        _roots: {
             "upstream": {
                 "children": [
-                    {"path": "root-x/a.py", "name": "callerA", "symbol_id": "sid-a", "line": 10, "rel_type": "calls_heuristic"}
-                ]
-            }
-        },
+                    {
+                        "path": "root-x/a.py",
+                        "name": "callerA",
+                        "symbol_id": "sid-a",
+                        "line": 10,
+                        "rel_type": "calls_heuristic"}]}},
     )
     resp = execute_get_callers({"name": "target"}, _DB(), ["/tmp/ws"])
     text = resp["content"][0]["text"]
@@ -212,13 +298,16 @@ def test_get_callers_repo_filter_applied():
                 def __init__(self, rows): self._rows = rows
                 def fetchall(self): return self._rows
             # Correctly handle root_id filtering in mock
-            if params and any(isinstance(p, str) and p.startswith(rid) for p in params):
+            if params and any(isinstance(p, str) and p.startswith(rid)
+                              for p in params):
                 # Return tuples matching the tool's unpacking logic
                 return _Rows([(f"{rid}/A.java", "a", "sid-a", 1, "calls")])
             return _Rows([])
+
     class _DB:
         _read = _Conn()
-    resp = execute_get_callers({"name": "foo", "repo": "target-repo"}, _DB(), [repo_root])
+    resp = execute_get_callers(
+        {"name": "foo", "repo": "target-repo"}, _DB(), [repo_root])
     text = resp["content"][0]["text"]
     assert f"caller_path={rid}/A.java" in text
 
@@ -229,11 +318,13 @@ def test_get_implementations_falls_back_to_file_content():
             class _Rows:
                 def __init__(self, rows): self._rows = rows
                 def fetchall(self): return self._rows
-                def fetchone(self): return self._rows[0] if self._rows else None
+                def fetchone(
+                    self): return self._rows[0] if self._rows else None
             if "FROM symbol_relations" in sql:
                 return _Rows([])
             if "SELECT path, content FROM files" in sql:
-                return _Rows([("root-x/a/Repo.java", "public interface Repo extends JpaRepository<User,Long> {}")])
+                return _Rows(
+                    [("root-x/a/Repo.java", "public interface Repo extends JpaRepository<User,Long> {}")])
             if "SELECT symbol_id, name, line FROM symbols" in sql:
                 return _Rows([("sid-repo", "Repo", 1)])
             return _Rows([])
@@ -241,7 +332,8 @@ def test_get_implementations_falls_back_to_file_content():
     class _DB:
         _read = _Conn()
 
-    resp = execute_get_implementations({"name": "JpaRepository"}, _DB(), ["/tmp/ws"])
+    resp = execute_get_implementations(
+        {"name": "JpaRepository"}, _DB(), ["/tmp/ws"])
     text = resp["content"][0]["text"]
     assert "PACK1 tool=get_implementations ok=true" in text
     assert "implementer_symbol=Repo" in text
@@ -257,19 +349,26 @@ def test_get_implementations_repo_filter_applied():
             class _Rows:
                 def __init__(self, rows): self._rows = rows
                 def fetchall(self): return self._rows
-                def fetchone(self): return self._rows[0] if self._rows else None
+                def fetchone(
+                    self): return self._rows[0] if self._rows else None
             if "FROM symbol_relations" in sql:
                 return _Rows([])
             if "SELECT path, content FROM files" in sql:
-                if params and any(isinstance(p, str) and p.startswith(rid) for p in params):
-                    return _Rows([(f"{rid}/Repo.java", "interface Repo extends JpaRepository<User,Long> {}")])
+                if params and any(
+                    isinstance(
+                        p,
+                        str) and p.startswith(rid) for p in params):
+                    return _Rows(
+                        [(f"{rid}/Repo.java", "interface Repo extends JpaRepository<User,Long> {}")])
                 return _Rows([])
             if "SELECT symbol_id, name, line FROM symbols" in sql:
                 return _Rows([("sid-repo", "Repo", 1)])
             return _Rows([])
+
     class _DB:
         _read = _Conn()
-    resp = execute_get_implementations({"name": "JpaRepository", "repo": "target-repo"}, _DB(), [repo_root])
+    resp = execute_get_implementations(
+        {"name": "JpaRepository", "repo": "target-repo"}, _DB(), [repo_root])
     text = resp["content"][0]["text"]
     assert f"implementer_path={rid}/Repo.java" in text
 
@@ -281,7 +380,8 @@ def test_resolve_repo_scope_prefers_workspace_name(tmp_path):
     ws_b = tmp_path / "stock-manager-front"
     ws_a.mkdir()
     ws_b.mkdir()
-    repo, root_ids = resolve_repo_scope("stock-manager-front", [str(ws_a), str(ws_b)], db=None)
+    repo, root_ids = resolve_repo_scope(
+        "stock-manager-front", [str(ws_a), str(ws_b)], db=None)
     assert repo is None
     assert WorkspaceManager.root_id_for_workspace(str(ws_b)) in root_ids
     assert WorkspaceManager.root_id_for_workspace(str(ws_a)) not in root_ids
@@ -299,6 +399,7 @@ def test_resolve_repo_scope_uses_repo_bucket_when_not_workspace_name():
             class _Rows:
                 def __init__(self, rows):
                     self._rows = rows
+
                 def fetchall(self_non):
                     return self_non._rows
             if "FROM files" in sql:

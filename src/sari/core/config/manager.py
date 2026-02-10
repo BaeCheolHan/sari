@@ -5,20 +5,27 @@ import fnmatch
 from typing import List, Dict, Any, Set, Optional
 from sari.core.settings import settings
 from sari.core.workspace import WorkspaceManager
-from .profiles import PROFILES, Profile
+from .profiles import PROFILES
+
 
 class ConfigManager:
     """
     Handles layered configuration merging with strict adherence to docs/reference/ARCHITECTURE.md.
     """
-    
-    def __init__(self, workspace_root: Optional[str] = None, manual_only: bool = False, settings_obj=None):
-        self.workspace_root = pathlib.Path(workspace_root).resolve() if workspace_root else None
-        self.manual_only = manual_only # If True, auto-detected profiles are just recommendations
+
+    def __init__(
+            self,
+            workspace_root: Optional[str] = None,
+            manual_only: bool = False,
+            settings_obj=None):
+        self.workspace_root = pathlib.Path(
+            workspace_root).resolve() if workspace_root else None
+        # If True, auto-detected profiles are just recommendations
+        self.manual_only = manual_only
         self.settings = settings_obj or settings
         self.active_profiles: List[str] = ["core"]
         self.recommended_profiles: List[str] = []
-        
+
         # Aligned with docs/reference/ARCHITECTURE.md key schema
         self.include_add: Set[str] = set()
         self.exclude_add: Set[str] = set()
@@ -28,15 +35,18 @@ class ConfigManager:
         # Internal flattened state for the engine
         self.final_extensions: Set[str] = set()
         self.final_filenames: Set[str] = set()
-        self.final_exclude_dirs: Set[str] = {".git", "node_modules", ".venv", "dist", "build"}
+        self.final_exclude_dirs: Set[str] = {
+            ".git", "node_modules", ".venv", "dist", "build"}
         self.final_exclude_globs: Set[str] = set()
 
     def _load_sariignore(self) -> List[str]:
         """Load patterns from .sariignore if exists."""
-        if not self.workspace_root: return []
+        if not self.workspace_root:
+            return []
         ignore_file = self.workspace_root / ".sariignore"
         if ignore_file.exists():
-            return [line.strip() for line in ignore_file.read_text().splitlines() if line.strip() and not line.startswith("#")]
+            return [line.strip() for line in ignore_file.read_text(
+            ).splitlines() if line.strip() and not line.startswith("#")]
         return []
 
     def _load_gitignore(self) -> List[str]:
@@ -50,15 +60,17 @@ class ConfigManager:
 
     def is_project_root(self) -> bool:
         """Check for .sariroot boundary marker."""
-        if not self.workspace_root: return False
+        if not self.workspace_root:
+            return False
         return (self.workspace_root / ".sariroot").exists()
 
     def detect_profiles(self) -> List[str]:
         """Optimized O(D) profile detection using a single directory walk per detection root."""
-        if not self.workspace_root: return ["core"]
-        
+        if not self.workspace_root:
+            return ["core"]
+
         detected = {"core"}
-        
+
         # Build a list of (pattern, profile_name) for matching
         marker_patterns = []
         for name, profile in PROFILES.items():
@@ -69,7 +81,8 @@ class ConfigManager:
             for base_root in self._detection_roots():
                 # We only scan up to depth 3 as per original logic.
                 for root, dirs, files in os.walk(base_root, topdown=True):
-                    depth = len(pathlib.Path(root).relative_to(base_root).parts)
+                    depth = len(
+                        pathlib.Path(root).relative_to(base_root).parts)
                     if depth >= 3:
                         dirs[:] = []
                         continue
@@ -81,7 +94,7 @@ class ConfigManager:
                                 break
         except Exception:
             pass
-        
+
         self.recommended_profiles = sorted(list(detected))
         if not self.manual_only:
             self.active_profiles = self.recommended_profiles
@@ -110,7 +123,8 @@ class ConfigManager:
 
         _add(self.workspace_root)
 
-        cfg_path = pathlib.Path(WorkspaceManager.resolve_config_path(str(self.workspace_root)))
+        cfg_path = pathlib.Path(
+            WorkspaceManager.resolve_config_path(str(self.workspace_root)))
         data = self._load_json(cfg_path)
         cfg_roots = data.get("roots") or data.get("workspace_roots") or []
         if isinstance(cfg_roots, list):
@@ -118,7 +132,9 @@ class ConfigManager:
                 if not r:
                     continue
                 try:
-                    norm = pathlib.Path(WorkspaceManager.normalize_path(str(r)))
+                    norm = pathlib.Path(
+                        WorkspaceManager.normalize_path(
+                            str(r)))
                 except Exception:
                     norm = pathlib.Path(str(r))
                 _add(norm)
@@ -145,7 +161,7 @@ class ConfigManager:
         ignore_patterns = self._load_sariignore()
         gitignore_lines = self._load_gitignore()
         self.detect_profiles()
-        
+
         # 1 & 2. Profiles
         for p_name in self.active_profiles:
             p = PROFILES.get(p_name)
@@ -157,9 +173,11 @@ class ConfigManager:
         self.final_exclude_globs.update(ignore_patterns)
 
         # 3 & 4. Load Config Files (Accumulate Overrides)
-        global_path = pathlib.Path(self.settings.GLOBAL_CONFIG_DIR) / "config.json"
-        ws_path = pathlib.Path(WorkspaceManager.resolve_config_path(str(self.workspace_root))) if self.workspace_root else None
-        
+        global_path = pathlib.Path(
+            self.settings.GLOBAL_CONFIG_DIR) / "config.json"
+        ws_path = pathlib.Path(WorkspaceManager.resolve_config_path(
+            str(self.workspace_root))) if self.workspace_root else None
+
         for path in [global_path, ws_path]:
             data = self._load_json(path)
             self.include_add.update(data.get("include_add", []))
@@ -206,20 +224,33 @@ class ConfigManager:
                     )
                 data = json.loads(path.read_text(encoding="utf-8"))
                 if not isinstance(data, dict):
-                    raise ValueError(f"Invalid config shape at {path}: expected JSON object.")
+                    raise ValueError(
+                        f"Invalid config shape at {path}: expected JSON object.")
                 return data
             except Exception as e:
-                raise ValueError(f"Failed to load config file {path}: {e}") from e
+                raise ValueError(
+                    f"Failed to load config file {path}: {e}") from e
         return {}
 
-    def to_dict(self, gitignore_lines: Optional[List[str]] = None) -> Dict[str, Any]:
+    def to_dict(
+            self, gitignore_lines: Optional[List[str]] = None) -> Dict[str, Any]:
         return {
-            "root_id": WorkspaceManager.root_id_for_workspace(str(self.workspace_root)) if self.workspace_root else None,
+            "root_id": WorkspaceManager.root_id_for_workspace(
+                str(
+                    self.workspace_root)) if self.workspace_root else None,
             "active_profiles": self.active_profiles,
             "recommended_profiles": self.recommended_profiles,
-            "final_extensions": sorted(list(self.final_extensions)),
-            "final_filenames": sorted(list(self.final_filenames)),
-            "final_exclude_dirs": sorted(list(self.final_exclude_dirs)),
-            "final_exclude_globs": sorted(list(self.final_exclude_globs)),
+            "final_extensions": sorted(
+                list(
+                    self.final_extensions)),
+            "final_filenames": sorted(
+                list(
+                    self.final_filenames)),
+            "final_exclude_dirs": sorted(
+                list(
+                    self.final_exclude_dirs)),
+            "final_exclude_globs": sorted(
+                list(
+                    self.final_exclude_globs)),
             "gitignore_lines": gitignore_lines or [],
         }

@@ -21,8 +21,6 @@ from sari.core.db import LocalSearchDB
 from sari.core.constants import (
     DEFAULT_DAEMON_HOST,
     DEFAULT_DAEMON_PORT,
-    DEFAULT_HTTP_HOST,
-    DEFAULT_HTTP_PORT,
 )
 
 

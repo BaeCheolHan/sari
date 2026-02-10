@@ -1,4 +1,3 @@
-import pytest
 from unittest.mock import MagicMock, patch
 from sari.core.watcher import DebouncedEventHandler, _is_git_event, FileWatcher
 from sari.core.queue_pipeline import FsEvent, FsEventKind

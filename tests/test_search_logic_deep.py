@@ -1,5 +1,3 @@
-import pytest
-from pathlib import Path
 from sari.core.models import SearchOptions
 from sari.core.search_engine import SearchEngine
 from sari.core.db.main import LocalSearchDB

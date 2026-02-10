@@ -1,6 +1,5 @@
 import sqlite3
 import re
-import time
 import fnmatch
 from typing import List, Tuple, Optional, Any, Dict
 from .models import SearchHit, SearchOptions
@@ -10,8 +9,10 @@ from .engine.tantivy_engine import TantivyEngine
 
 from .db.storage import GlobalStorageManager
 
+
 class SearchEngine:
-    def __init__(self, db, scoring_policy: ScoringPolicy = None, tantivy_engine: Optional[TantivyEngine] = None):
+    def __init__(self, db, scoring_policy: ScoringPolicy = None,
+                 tantivy_engine: Optional[TantivyEngine] = None):
         self.db = db
         self.scoring_policy = scoring_policy or ScoringPolicy()
         self.tantivy_engine = tantivy_engine
@@ -19,15 +20,22 @@ class SearchEngine:
         self._snippet_lru: List[tuple] = []
         self.storage = GlobalStorageManager.get_instance(db)
 
-    def search_l2_only(self, opts: SearchOptions) -> Tuple[List[SearchHit], Dict[str, Any]]:
+    def search_l2_only(
+            self, opts: SearchOptions) -> Tuple[List[SearchHit], Dict[str, Any]]:
         q = (opts.query or "").strip()
         if not q:
             return [], {"total": 0, "engine": "l2", "partial": True}
         from .workspace import WorkspaceManager
-        root_id = WorkspaceManager.normalize_path(list(opts.root_ids)[0]) if opts.root_ids else None
-        meta: Dict[str, Any] = {"engine": "l2", "partial": True, "db_health": "error", "coverage": "l2-only"}
+        root_id = WorkspaceManager.normalize_path(
+            list(opts.root_ids)[0]) if opts.root_ids else None
+        meta: Dict[str,
+                   Any] = {"engine": "l2",
+                           "partial": True,
+                           "db_health": "error",
+                           "coverage": "l2-only"}
         try:
-            recent_rows = self.storage.get_recent_files(q, root_id=root_id, limit=opts.limit)
+            recent_rows = self.storage.get_recent_files(
+                q, root_id=root_id, limit=opts.limit)
             hits = self._process_sqlite_rows(recent_rows, opts)
             for h in hits:
                 h.hit_reason = "L2 Cache (Degraded)"
@@ -37,39 +45,48 @@ class SearchEngine:
             meta["db_error"] = str(e)
             return [], meta
 
-    def search_v2(self, opts: SearchOptions) -> Tuple[List[SearchHit], Dict[str, Any]]:
+    def search_v2(
+            self, opts: SearchOptions) -> Tuple[List[SearchHit], Dict[str, Any]]:
         """Enhanced search with Score Normalization and Merged Results."""
         if hasattr(self.db, "coordinator") and self.db.coordinator:
             self.db.coordinator.notify_search_start()
 
         try:
             q = (opts.query or "").strip()
-            if not q: return [], {"total": 0}
+            if not q:
+                return [], {"total": 0}
 
             from .workspace import WorkspaceManager
-            root_id = WorkspaceManager.normalize_path(list(opts.root_ids)[0]) if opts.root_ids else None
-            meta: Dict[str, Any] = {"engine": "hybrid", "partial": False, "db_health": "ok", "db_error": ""}
+            root_id = WorkspaceManager.normalize_path(
+                list(opts.root_ids)[0]) if opts.root_ids else None
+            meta: Dict[str,
+                       Any] = {"engine": "hybrid",
+                               "partial": False,
+                               "db_health": "ok",
+                               "db_error": ""}
 
             # 1. L2 Cache (Recent) - 최상위 우선순위
             try:
-                recent_rows = self.storage.get_recent_files(q, root_id=root_id, limit=opts.limit)
+                recent_rows = self.storage.get_recent_files(
+                    q, root_id=root_id, limit=opts.limit)
                 recent_hits = self._process_sqlite_rows(recent_rows, opts)
                 for h in recent_hits:
                     h.hit_reason = "L2 Cache (Recent)"
-                    h.score = 100.0 # 매우 높은 고정 점수
+                    h.score = 100.0  # 매우 높은 고정 점수
             except Exception as e:
                 recent_hits = []
                 meta["db_health"] = "error"
                 meta["db_error"] = str(e)
                 meta["partial"] = True
-            
+
             seen_paths = {h.path for h in recent_hits}
             all_hits = recent_hits
 
             # 2. Tantivy (Primary DB Search)
             if self.tantivy_engine and not opts.use_regex:
                 try:
-                    hits = self.tantivy_engine.search(q, root_id=root_id, limit=opts.limit)
+                    hits = self.tantivy_engine.search(
+                        q, root_id=root_id, limit=opts.limit)
                     if hits:
                         t_hits = self._process_tantivy_hits(hits, opts)
                         # Tantivy 점수 정규화
@@ -81,29 +98,39 @@ class SearchEngine:
                                 seen_paths.add(h.path)
                 except Exception as te:
                     import logging
-                    logging.getLogger("sari.search").debug("Tantivy search failed: %s", te)
+                    logging.getLogger("sari.search").debug(
+                        "Tantivy search failed: %s", te)
 
-            # 3. SQLite fallback through DB facade (engine boundary kept in db/repository layer)
-            if (not all_hits or len(all_hits) < opts.limit) and hasattr(self.db, "search_sqlite_v2"):
+            # 3. SQLite fallback through DB facade (engine boundary kept in
+            # db/repository layer)
+            if (not all_hits or len(all_hits) < opts.limit) and hasattr(
+                    self.db, "search_sqlite_v2"):
                 try:
                     sqlite_hits, sqlite_meta = self.db.search_sqlite_v2(opts)
                     if isinstance(sqlite_meta, dict):
                         if "total" in sqlite_meta:
                             meta["sqlite_total"] = sqlite_meta.get("total")
                         if "total_mode" in sqlite_meta:
-                            meta["sqlite_total_mode"] = sqlite_meta.get("total_mode")
+                            meta["sqlite_total_mode"] = sqlite_meta.get(
+                                "total_mode")
                     for sqlite_hit in sqlite_hits:
                         if opts.file_types:
                             allowed_types = {
                                 str(file_type).lower().lstrip(".")
                                 for file_type in (opts.file_types or [])
                             }
-                            hit_type = get_file_extension(sqlite_hit.path).lower().lstrip(".")
+                            hit_type = get_file_extension(
+                                sqlite_hit.path).lower().lstrip(".")
                             if hit_type not in allowed_types:
                                 continue
                         if opts.path_pattern:
-                            rel_path = sqlite_hit.path.split("/", 1)[1] if "/" in sqlite_hit.path else sqlite_hit.path
-                            if not fnmatch.fnmatch(sqlite_hit.path, opts.path_pattern) and not fnmatch.fnmatch(rel_path, opts.path_pattern):
+                            rel_path = sqlite_hit.path.split(
+                                "/", 1)[1] if "/" in sqlite_hit.path else sqlite_hit.path
+                            if not fnmatch.fnmatch(
+                                    sqlite_hit.path,
+                                    opts.path_pattern) and not fnmatch.fnmatch(
+                                    rel_path,
+                                    opts.path_pattern):
                                 continue
                         if sqlite_hit.path in seen_paths:
                             continue
@@ -136,36 +163,46 @@ class SearchEngine:
             if hasattr(self.db, "coordinator") and self.db.coordinator:
                 self.db.coordinator.notify_search_end()
 
-    def _process_sqlite_rows(self, rows: list, opts: SearchOptions) -> List[SearchHit]:
+    def _process_sqlite_rows(
+            self,
+            rows: list,
+            opts: SearchOptions) -> List[SearchHit]:
         import fnmatch
         hits: List[SearchHit] = []
         for r in rows:
             # Flexible Unpacking for different row shapes
             if len(r) >= 7:
-                # FTS shape: (path, rel_path, root_id, repo, mtime, size, content)
-                path, rel_path, root_id, repo, mtime, size, content = r[0], r[1], r[2], r[3], r[4], r[5], r[6]
+                # FTS shape: (path, rel_path, root_id, repo, mtime, size,
+                # content)
+                path, rel_path, _root_id, repo, mtime, size, content = r[
+                    0], r[1], r[2], r[3], r[4], r[5], r[6]
             elif len(r) == 6:
                 # Legacy shape: (path, root_id, repo, mtime, size, content)
-                path, root_id, repo, mtime, size, content = r[0], r[1], r[2], r[3], r[4], r[5]
-                rel_path = path # Fallback
+                path, _root_id, repo, mtime, size, content = r[0], r[1], r[2], r[3], r[4], r[5]
+                rel_path = path  # Fallback
             else:
                 continue
-            
+
             # Strict Filtering
-            if opts.repo and repo != opts.repo: continue
-            
+            if opts.repo and repo != opts.repo:
+                continue
+
             # File Type Filter
             if opts.file_types:
                 ext = get_file_extension(path).lower().lstrip(".")
                 allowed = [t.lower().lstrip(".") for t in opts.file_types]
                 if ext not in allowed:
                     continue
-            
+
             # Path Pattern Filter (Glob)
             if opts.path_pattern:
                 pat = opts.path_pattern
                 # Match against rel_path or path
-                if not fnmatch.fnmatch(rel_path, pat) and not fnmatch.fnmatch(path, pat):
+                if not fnmatch.fnmatch(
+                        rel_path,
+                        pat) and not fnmatch.fnmatch(
+                        path,
+                        pat):
                     continue
 
             hits.append(SearchHit(
@@ -181,37 +218,47 @@ class SearchEngine:
             ))
         return hits
 
-    def _process_tantivy_hits(self, hits: list, opts: SearchOptions) -> List[SearchHit]:
+    def _process_tantivy_hits(
+            self,
+            hits: list,
+            opts: SearchOptions) -> List[SearchHit]:
         import fnmatch
         results: List[SearchHit] = []
         for h in hits:
             path = h.get("path", "")
             repo = h.get("repo", "")
             rel_path = h.get("rel_path", path)
-            
+
             # Strict Filtering
-            if opts.repo and repo != opts.repo: continue
+            if opts.repo and repo != opts.repo:
+                continue
 
             # File Type Filter
             if opts.file_types:
-                ext = get_file_extension(path).lower()
+                ext = get_file_extension(path).lower().lstrip(".")
                 if ext not in [t.lower().lstrip(".") for t in opts.file_types]:
                     continue
-            
+
             # Path Pattern Filter
             if opts.path_pattern:
-                if not fnmatch.fnmatch(rel_path, opts.path_pattern) and not fnmatch.fnmatch(path, opts.path_pattern):
+                if not fnmatch.fnmatch(
+                        rel_path,
+                        opts.path_pattern) and not fnmatch.fnmatch(
+                        path,
+                        opts.path_pattern):
                     continue
 
-            # Double check with DB to filter out deleted files not yet purged from Tantivy
+            # Double check with DB to filter out deleted files not yet purged
+            # from Tantivy
             is_deleted = False
             try:
-                row = self.db._get_conn().execute("SELECT deleted_ts FROM files WHERE path=?", (path,)).fetchone()
+                row = self.db._get_conn().execute(
+                    "SELECT deleted_ts FROM files WHERE path=?", (path,)).fetchone()
                 if row and row[0] > 0:
                     is_deleted = True
             except Exception:
                 pass
-            
+
             if is_deleted:
                 continue
 
@@ -241,7 +288,10 @@ class SearchEngine:
             return raw
         # Normalize common OR separators
         raw = raw.replace("||", " OR ").replace("|", " OR ")
-        tokens = re.findall(r'\(|\)|"[^"]+"|\bAND\b|\bOR\b|\bNOT\b|\bNEAR/\d+\b|\bNEAR\b|[0-9A-Za-z_\u00A1-\uFFFF]+', raw, flags=re.IGNORECASE)
+        tokens = re.findall(
+            r'\(|\)|"[^"]+"|\bAND\b|\bOR\b|\bNOT\b|\bNEAR/\d+\b|\bNEAR\b|[0-9A-Za-z_\u00A1-\uFFFF]+',
+            raw,
+            flags=re.IGNORECASE)
         if not tokens:
             return raw.replace('"', " ")
         out = []
@@ -266,7 +316,11 @@ class SearchEngine:
         max_bytes = 200_000
         try:
             if getattr(self.db, "settings", None):
-                max_bytes = int(getattr(self.db.settings, "SNIPPET_MAX_BYTES", max_bytes))
+                max_bytes = int(
+                    getattr(
+                        self.db.settings,
+                        "SNIPPET_MAX_BYTES",
+                        max_bytes))
         except Exception:
             pass
         if len(content) > max_bytes:
@@ -275,7 +329,11 @@ class SearchEngine:
         cache_size = 128
         try:
             if getattr(self.db, "settings", None):
-                cache_size = int(getattr(self.db.settings, "SNIPPET_CACHE_SIZE", cache_size))
+                cache_size = int(
+                    getattr(
+                        self.db.settings,
+                        "SNIPPET_CACHE_SIZE",
+                        cache_size))
         except Exception:
             pass
         if cache_size > 0:
@@ -286,12 +344,14 @@ class SearchEngine:
                 self._snippet_cache.pop(old, None)
         return snippet
 
-    def repo_candidates(self, q: str, limit: int = 3, root_ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    def repo_candidates(self, q: str, limit: int = 3,
+                        root_ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         q = (q or "").strip()
         if not q:
             return []
         if hasattr(self.db, "repo_candidates_sqlite"):
-            rows = self.db.repo_candidates_sqlite(q, limit=limit, root_ids=root_ids)
+            rows = self.db.repo_candidates_sqlite(
+                q, limit=limit, root_ids=root_ids)
             return [
                 {
                     "repo": row.get("repo", ""),

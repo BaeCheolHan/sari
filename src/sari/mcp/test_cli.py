@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ruff: noqa: E402
 """
 Unit tests for Sari CLI HTTP helpers.
 """
@@ -7,6 +8,7 @@ import json
 import os
 import sys
 import tempfile
+import importlib
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
@@ -73,9 +75,11 @@ def test_get_http_host_port_prefers_registry_when_no_server_json():
 
 
 def test_cmd_status_prints_json():
-    with patch("cli._request_http", return_value={"ok": True}) as mock_req, \
-         patch("cli.is_daemon_running", return_value=True), \
-         patch("cli._get_http_host_port", return_value=("127.0.0.1", 47777)):
+    mod = importlib.import_module(cmd_status.__module__)
+    with patch(f"{mod.__name__}._request_http", return_value={"ok": True}) as mock_req, \
+         patch(f"{mod.__name__}.is_daemon_running", return_value=True), \
+         patch(f"{mod.__name__}._resolve_http_endpoint_for_daemon", return_value=("127.0.0.1", 47777)), \
+         patch(f"{mod.__name__}._is_http_running", return_value=True):
         buf = io.StringIO()
         with redirect_stdout(buf):
             args = type("Args", (), {"daemon_host": "", "daemon_port": None, "http_host": "", "http_port": None})
@@ -87,13 +91,17 @@ def test_cmd_status_prints_json():
 
 
 def test_cmd_search_prints_json():
-    args = type("Args", (), {"query": "AuthService", "repo": "demo", "limit": 7})
-    with patch("cli._request_http", return_value={"ok": True, "q": "AuthService"}) as mock_req:
+    args = type("Args", (), {"query": "AuthService", "repo": "demo", "limit": 7, "daemon_host": "", "daemon_port": None, "http_host": "", "http_port": None})
+    mod = importlib.import_module(cmd_search.__module__)
+    with patch(f"{mod.__name__}._request_http", return_value={"ok": True, "q": "AuthService"}) as mock_req, \
+         patch(f"{mod.__name__}.is_daemon_running", return_value=True), \
+         patch(f"{mod.__name__}._resolve_http_endpoint_for_daemon", return_value=("127.0.0.1", 47777)), \
+         patch(f"{mod.__name__}._is_http_running", return_value=True):
         buf = io.StringIO()
         with redirect_stdout(buf):
             rc = cmd_search(args)
         assert rc == 0
-        mock_req.assert_called_once_with("/search", {"q": "AuthService", "limit": 7, "repo": "demo"})
+        mock_req.assert_called_once_with("/search", {"q": "AuthService", "limit": 7, "repo": "demo"}, "127.0.0.1", 47777)
         out = buf.getvalue().strip()
         assert out == json.dumps({"ok": True, "q": "AuthService"}, ensure_ascii=False, indent=2)
 

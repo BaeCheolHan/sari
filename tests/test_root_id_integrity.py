@@ -1,7 +1,4 @@
-import os
-import pytest
-from pathlib import Path
-from sari.mcp.tools._util import resolve_db_path, resolve_fs_path, resolve_root_ids
+from sari.mcp.tools._util import resolve_db_path, resolve_fs_path
 from sari.core.workspace import WorkspaceManager
 
 def test_absolute_path_root_id_resolution(tmp_path):
@@ -46,7 +43,7 @@ def test_nested_absolute_path_integrity(tmp_path):
     db_path = resolve_db_path(str(deep_file), roots)
     
     child_id = WorkspaceManager.normalize_path(str(child_ws))
-    parent_id = WorkspaceManager.normalize_path(str(parent_ws))
+    WorkspaceManager.normalize_path(str(parent_ws))
     
     # 2. 결과 분석
     # db_path는 "{root_id}/{rel_path}" 형태여야 함.

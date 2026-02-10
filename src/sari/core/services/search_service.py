@@ -8,7 +8,7 @@ class SearchService:
     RRF(Reciprocal Rank Fusion) 알고리즘을 사용한 하이브리드 검색 서비스입니다.
     키워드 검색(Rust 엔진)과 시맨틱 검색(임베딩) 결과를 병합하여 최적의 검색 결과를 제공합니다.
     """
-    
+
     def __init__(self, db: Any, engine: Any = None, indexer: Any = None):
         """
         Args:
@@ -20,27 +20,31 @@ class SearchService:
         self.engine = engine
         self.indexer = indexer
 
-    def _rrf_fusion(self, keyword_hits: List[SearchHit], semantic_hits: List[SearchHit], k: int = 60) -> List[SearchHit]:
+    def _rrf_fusion(
+            self,
+            keyword_hits: List[SearchHit],
+            semantic_hits: List[SearchHit],
+            k: int = 60) -> List[SearchHit]:
         """
         RRF 알고리즘을 사용하여 검색 결과를 병합합니다.
         순위 기반 점수 합산 방식으로, 서로 다른 스코어 체계를 가진 검색 결과들을 효과적으로 결합합니다.
-        
+
         Args:
             keyword_hits: 키워드 검색 결과 목록
             semantic_hits: 시맨틱 검색 결과 목록
             k: 랭크 상수 (기본값 60)
-            
+
         Returns:
             병합되고 정렬된 검색 결과 목록
         """
         scores: Dict[str, float] = {}
         hit_map: Dict[str, SearchHit] = {}
-        
+
         # 키워드 검색 결과 순위 처리
         for i, h in enumerate(keyword_hits):
             scores[h.path] = scores.get(h.path, 0.0) + (1.0 / (k + i + 1))
             hit_map[h.path] = h
-            
+
         # 시맨틱 검색 결과 순위 처리
         for i, h in enumerate(semantic_hits):
             scores[h.path] = scores.get(h.path, 0.0) + (1.0 / (k + i + 1))
@@ -48,20 +52,24 @@ class SearchService:
                 hit_map[h.path] = h
             else:
                 # 중복되는 경우 하이브리드 매칭으로 표시
-                hit_map[h.path].hit_reason += f" + Semantic"
-                
+                hit_map[h.path].hit_reason += " + Semantic"
+
         # 퓨전 점수 기준 내림차순 정렬
-        sorted_paths = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)
-        
+        sorted_paths = sorted(
+            scores.keys(),
+            key=lambda x: scores[x],
+            reverse=True)
+
         results = []
         for path in sorted_paths:
             h = hit_map[path]
             # 점수 정규화 (RRF 점수를 보기 좋은 1000점 만점 스케일로 변환)
-            h.score = scores[path] * 1000.0 
+            h.score = scores[path] * 1000.0
             results.append(h)
         return results
 
-    def search(self, opts: SearchOptions) -> Tuple[List[SearchHit], Dict[str, Any]]:
+    def search(
+            self, opts: SearchOptions) -> Tuple[List[SearchHit], Dict[str, Any]]:
         """
         통합 하이브리드 검색을 수행합니다.
         1. 키워드 검색 수행
@@ -74,28 +82,30 @@ class SearchService:
             keyword_hits, meta = ([], {})
             if engine:
                 keyword_hits, meta = engine.search_v2(opts)
-            
+
             # 2. 2차 시맨틱 검색 (메타데이터에 쿼리 벡터가 있거나 명시된 경우)
             semantic_hits = []
             query_vector = getattr(opts, "query_vector", None)
             if query_vector and hasattr(self.db, "search_repo"):
                 try:
                     semantic_hits = self.db.search_repo().search_semantic(
-                        query_vector, 
+                        query_vector,
                         limit=opts.limit,
                         root_ids=opts.root_ids
                     )
-                except Exception: pass
-            
+                except Exception:
+                    pass
+
             # 3. 하이브리드 퓨전 (병합)
             if semantic_hits:
                 fused_hits = self._rrf_fusion(keyword_hits, semantic_hits)
                 meta["engine"] = "hybrid-rrf"
                 return fused_hits[:opts.limit], meta
-            
+
             return keyword_hits, meta
 
-        except EngineError: raise
+        except EngineError:
+            raise
         except Exception as exc:
             # 엔진 에러 발생 시 폴백 로직 (L2 검색 등)
             fallback_hits = []
@@ -105,8 +115,13 @@ class SearchService:
                 "db_error": str(exc),
                 "engine": "fallback",
             }
-            if engine and hasattr(engine, "search_engine") and hasattr(engine.search_engine, "search_l2_only"):
-                fallback_hits, fallback_meta = engine.search_engine.search_l2_only(opts)
+            if engine and hasattr(
+                    engine,
+                    "search_engine") and hasattr(
+                    engine.search_engine,
+                    "search_l2_only"):
+                fallback_hits, fallback_meta = engine.search_engine.search_l2_only(
+                    opts)
             elif engine and hasattr(engine, "search_l2_only"):
                 fallback_hits, fallback_meta = engine.search_l2_only(opts)
             return fallback_hits, fallback_meta

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
+# ruff: noqa: E402
 import sys
 import os
-import json
 import time
 from pathlib import Path
 
@@ -12,7 +12,6 @@ sys.path.insert(0, project_root)
 from sari.core.db import LocalSearchDB
 from sari.mcp.tools.list_files import execute_list_files
 from sari.mcp.tools.search import execute_search
-from sari.mcp.telemetry import TelemetryLogger
 
 class MockLogger:
     def log_telemetry(self, msg):

@@ -1,6 +1,4 @@
-import os
 import time
-import json
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 from sari.core.indexer.worker import IndexWorker

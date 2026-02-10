@@ -1,5 +1,4 @@
-import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 from sari.mcp.tools._util import (
     mcp_response,
     pack_header,

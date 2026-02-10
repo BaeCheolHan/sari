@@ -6,7 +6,7 @@ StdoutGuard: MCP 프로토콜 보호를 위한 stdout 래퍼
 """
 import sys
 import threading
-from typing import Any, TextIO
+from typing import TextIO
 
 
 class StdoutGuard:

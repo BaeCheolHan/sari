@@ -1,7 +1,5 @@
-import pytest
-import json
 from sari.core.parsers.base import BaseParser
-from sari.core.parsers.common import _qualname, _symbol_id, _safe_compile
+from sari.core.parsers.common import _qualname, _symbol_id
 from sari.core.parsers.python import PythonParser
 
 def test_base_parser_sanitize():

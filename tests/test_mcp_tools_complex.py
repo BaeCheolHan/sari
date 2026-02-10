@@ -1,9 +1,5 @@
-import os
-import json
 import pytest
-import time
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 from sari.core.db import LocalSearchDB
 from sari.core.workspace import WorkspaceManager
 from sari.mcp.tools.call_graph import execute_call_graph

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Iterable, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 
 class FsEventKind(str, Enum):

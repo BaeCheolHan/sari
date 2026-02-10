@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import Optional, Any
+from typing import Optional
 from sari.version import __version__
 from sari.core.constants import DEFAULT_DAEMON_HOST, DEFAULT_DAEMON_PORT, DEFAULT_HTTP_PORT
 
@@ -10,9 +10,12 @@ try:
 except ImportError:
     class BaseSettings:
         def __init__(self, **kwargs):
-            for k, v in kwargs.items(): setattr(self, k, v)
+            for k, v in kwargs.items():
+                setattr(self, k, v)
+
     def SettingsConfigDict(*args, **kwargs): return {}
     HAS_PYDANTIC = False
+
 
 class Settings(BaseSettings):
     if HAS_PYDANTIC:
@@ -37,13 +40,13 @@ class Settings(BaseSettings):
     ENGINE_AUTO_INSTALL: bool = True
     MANUAL_ONLY: bool = False
     PERSIST_PATHS: bool = False
-    
+
     # --- STORAGE & CONTENT ---
     STORE_CONTENT: bool = True
     STORE_CONTENT_COMPRESS: bool = True
     STORE_CONTENT_COMPRESS_LEVEL: int = 6
     AST_CACHE_ENTRIES: int = 1000
-    
+
     # --- DAEMON SETTINGS ---
     DAEMON_HOST: str = DEFAULT_DAEMON_HOST
     DAEMON_PORT: int = DEFAULT_DAEMON_PORT
@@ -57,22 +60,22 @@ class Settings(BaseSettings):
     DAEMON_IDLE_WITH_ACTIVE: bool = False
     DAEMON_DRAIN_GRACE_SEC: int = 0
     DAEMON_AUTOSTOP: bool = True
-    
+
     # --- MCP SETTINGS ---
     SEARCH_FIRST_MODE: bool = True
     MCP_QUEUE_SIZE: int = 1000
-    
+
     # --- FEATURE TOGGLES ---
     ENABLE_FTS: bool = True
     ENABLE_AST: bool = True
     DEBUG: bool = False
     FTS_REBUILD_ON_START: bool = False
-    
+
     # --- INTERNAL PERFORMANCE DEFAULTS ---
-    MMAP_SIZE: int = 30 * 1024 * 1024 * 1024 # 30GB
-    PAGE_SIZE: int = 65536 
+    MMAP_SIZE: int = 30 * 1024 * 1024 * 1024  # 30GB
+    PAGE_SIZE: int = 65536
     MAX_DEPTH: int = 20
-    
+
     # --- WORKER LIMITS ---
     MAX_PARSE_BYTES: int = 10 * 1024 * 1024  # 10MB
     MAX_AST_BYTES: int = 1 * 1024 * 1024     # 1MB
@@ -92,9 +95,12 @@ class Settings(BaseSettings):
 
     def get_bool(self, key: str, default: bool) -> bool:
         val = getattr(self, key, None)
-        if val is not None: return bool(val)
+        if val is not None:
+            return bool(val)
         env = os.environ.get(f"SARI_{key}", "").lower()
-        if not env: return default
+        if not env:
+            return default
         return env in ("true", "1", "yes", "on")
+
 
 settings = Settings()

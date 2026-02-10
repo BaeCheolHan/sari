@@ -1,7 +1,5 @@
-import tree_sitter
 from tree_sitter import Parser
 from tree_sitter_languages import get_language
-import sys
 
 def print_tree(node, indent=0):
     txt = node.text.decode('utf-8', errors='ignore').strip().replace('\n', ' ')[:40]

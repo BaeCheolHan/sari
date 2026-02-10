@@ -3,7 +3,7 @@ import json
 import threading
 import time
 import io
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 from sari.mcp.server import LocalSearchMCPServer
 import sari.mcp.server as server_mod
 

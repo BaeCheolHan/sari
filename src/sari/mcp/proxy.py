@@ -1,13 +1,15 @@
+from sari.mcp.cli.smart_daemon import ensure_smart_daemon
+from sari.mcp.trace import trace
+from sari.core.daemon_resolver import resolve_daemon_address as _resolve_daemon_target
+from sari.core.workspace import WorkspaceManager
+from sari.mcp.telemetry import TelemetryLogger
 import sys
 import json
 import socket
 import threading
 import os
 import time
-import subprocess
 import logging
-import sys
-import tempfile
 import secrets
 from pathlib import Path
 
@@ -17,12 +19,6 @@ REPO_ROOT = SCRIPT_DIR.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from sari.mcp.telemetry import TelemetryLogger
-from sari.core.workspace import WorkspaceManager
-from sari.core.server_registry import ServerRegistry
-from sari.core.daemon_resolver import resolve_daemon_address as _resolve_daemon_target
-from sari.mcp.trace import trace
-from sari.mcp.cli.smart_daemon import ensure_smart_daemon
 
 try:
     import fcntl  # type: ignore
@@ -54,9 +50,10 @@ def _log_error(message: str) -> None:
     except Exception:
         pass
 
+
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 47779
-MAX_MESSAGE_SIZE = 10 * 1024 * 1024 # 10MB
+MAX_MESSAGE_SIZE = 10 * 1024 * 1024  # 10MB
 _HEADER_SEP = b"\r\n\r\n"
 _MODE_FRAMED = "framed"
 _MODE_JSONL = "jsonl"
@@ -67,7 +64,8 @@ def _identify_sari_daemon(host: str, port: int, timeout: float = 0.3) -> bool:
         trace("proxy_identify_start", host=host, port=port)
         with socket.create_connection((host, port), timeout=timeout) as sock:
             sock.settimeout(timeout)
-            body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "sari/identify"}).encode("utf-8")
+            body = json.dumps({"jsonrpc": "2.0", "id": 1,
+                              "method": "sari/identify"}).encode("utf-8")
             header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
             sock.sendall(header + body)
 
@@ -115,6 +113,7 @@ def _lock_file(lock_file) -> None:
     except Exception:
         pass
 
+
 def _unlock_file(lock_file) -> None:
     if fcntl is not None:
         fcntl.flock(lock_file, fcntl.LOCK_UN)
@@ -126,10 +125,18 @@ def _unlock_file(lock_file) -> None:
     except Exception:
         pass
 
+
 def start_daemon_if_needed(host, port, workspace_root: str = ""):
     """Ensures daemon is running using smart logic."""
-    ensure_smart_daemon(host, port, workspace_root)
-    return True
+    try:
+        ensure_smart_daemon(host, port, workspace_root)
+        return True
+    except Exception as e:
+        _log_error(f"Failed to start daemon at {host}:{port}: {e}")
+        trace("proxy_start_daemon_error", host=host, port=port, error=str(e))
+        return False
+
+
 def forward_socket_to_stdout(sock, state):
     try:
         f = sock.makefile("rb")
@@ -176,7 +183,8 @@ def forward_socket_to_stdout(sock, state):
                     code = err.get("code")
                     message = str(err.get("message") or "")
                     if code == -32001 and "draining" in message.lower():
-                        _log_info("Server draining detected; reconnecting to latest daemon.")
+                        _log_info(
+                            "Server draining detected; reconnecting to latest daemon.")
                         state["dead"] = True
                         if _reconnect(state):
                             init_req = state.get("init_request")
@@ -215,14 +223,17 @@ def forward_socket_to_stdout(sock, state):
         except Exception:
             pass
 
+
 def _read_mcp_message(stdin):
     """Robustly reads one MCP message, skipping noise or leading logs."""
     while True:
         line = stdin.readline()
-        if not line: return None
-        
+        if not line:
+            return None
+
         stripped = line.strip()
-        if not stripped: continue
+        if not stripped:
+            continue
 
         # 1. JSONL fallback (starts with '{')
         if stripped.startswith(b"{"):
@@ -236,25 +247,27 @@ def _read_mcp_message(stdin):
                 headers = [line]
                 while True:
                     h = stdin.readline()
-                    if not h or h in (b"\n", b"\r\n"): break
+                    if not h or h in (b"\n", b"\r\n"):
+                        break
                     headers.append(h)
-                
+
                 for h in headers:
                     if h.lower().startswith(b"content-length:"):
                         content_length = int(h.split(b":", 1)[1].strip())
                         break
-                
+
                 if content_length and 0 < content_length <= MAX_MESSAGE_SIZE:
                     body = b""
                     while len(body) < content_length:
                         chunk = stdin.read(content_length - len(body))
-                        if not chunk: break
+                        if not chunk:
+                            break
                         body += chunk
                     if len(body) == content_length:
                         return body, _MODE_FRAMED
             except Exception:
-                continue # Malformed frame, keep looking
-        
+                continue  # Malformed frame, keep looking
+
         # 3. If noise, keep looping
         continue
 
@@ -273,7 +286,10 @@ def _send_payload(state, payload: bytes, mode: str) -> None:
 
 def _reconnect(state) -> bool:
     max_attempts = int(os.environ.get("SARI_PROXY_RECONNECT_MAX", "10") or 10)
-    backoff = float(os.environ.get("SARI_PROXY_RECONNECT_BACKOFF", "0.2") or 0.2)
+    backoff = float(
+        os.environ.get(
+            "SARI_PROXY_RECONNECT_BACKOFF",
+            "0.2") or 0.2)
     with state["conn_lock"]:
         if not state.get("dead") and state.get("sock"):
             return True
@@ -282,7 +298,8 @@ def _reconnect(state) -> bool:
         last_err = None
         for _ in range(max_attempts):
             host, port = _resolve_daemon_target()
-            if not start_daemon_if_needed(host, port, workspace_root=workspace_root):
+            if not start_daemon_if_needed(
+                    host, port, workspace_root=workspace_root):
                 last_err = "daemon start failed"
                 time.sleep(backoff)
                 continue
@@ -303,7 +320,9 @@ def _reconnect(state) -> bool:
         state["dead"] = False
         trace("proxy_reconnect_ok", host=host, port=port)
 
-        t = threading.Thread(target=forward_socket_to_stdout, args=(sock, state), daemon=True)
+        t = threading.Thread(
+            target=forward_socket_to_stdout, args=(
+                sock, state), daemon=True)
         t.start()
 
         init_req = state.get("init_request")
@@ -317,7 +336,8 @@ def _reconnect(state) -> bool:
                         internal_id = -secrets.randbelow(2**31 - 1) - 1
                     suppress_ids.add(internal_id)
                 internal["id"] = internal_id
-                _send_payload(state, json.dumps(internal).encode("utf-8"), state.get("mode") or _MODE_FRAMED)
+                _send_payload(state, json.dumps(internal).encode(
+                    "utf-8"), state.get("mode") or _MODE_FRAMED)
             except Exception as e:
                 _log_error(f"Reconnect initialize failed: {e}")
         return True
@@ -332,12 +352,14 @@ def forward_stdin_to_socket(state):
                 break
             msg, mode = res
             trace("proxy_received_from_stdin", bytes=len(msg), mode=mode)
-            # Inject rootUri for initialize when client omits it (per-connection workspace)
+            # Inject rootUri for initialize when client omits it
+            # (per-connection workspace)
             try:
                 req = json.loads(msg.decode("utf-8"))
 
                 def _inject(obj):
-                    if not isinstance(obj, dict) or obj.get("method") != "initialize":
+                    if not isinstance(obj, dict) or obj.get(
+                            "method") != "initialize":
                         return obj, False
                     params = obj.get("params") or {}
                     if params.get("rootUri") or params.get("rootPath"):
@@ -345,7 +367,8 @@ def forward_stdin_to_socket(state):
                         return obj, False
 
                     # PRIORITY: SARI_
-                    ws = os.environ.get("SARI_WORKSPACE_ROOT") or state.get("workspace_root")
+                    ws = os.environ.get("SARI_WORKSPACE_ROOT") or state.get(
+                        "workspace_root")
                     if not ws:
                         state["init_request"] = obj
                         return obj, False
@@ -397,6 +420,7 @@ def forward_stdin_to_socket(state):
         except Exception:
             pass
 
+
 def _write_error_to_client(message: str, code: int = -32002):
     """Sends a formal JSON-RPC error directly to stdout."""
     resp = {
@@ -408,6 +432,7 @@ def _write_error_to_client(message: str, code: int = -32002):
     sys.stdout.buffer.write(header + payload)
     sys.stdout.buffer.flush()
 
+
 def main():
     # Log startup context for diagnostics
     _log_info(
@@ -418,13 +443,16 @@ def main():
             os.environ.get("SARI_WORKSPACE_ROOT"),
         )
     )
-    trace("proxy_startup", cwd=os.getcwd(), argv=sys.argv, workspace_root=os.environ.get("SARI_WORKSPACE_ROOT"))
+    trace("proxy_startup", cwd=os.getcwd(), argv=sys.argv,
+          workspace_root=os.environ.get("SARI_WORKSPACE_ROOT"))
 
-    workspace_root = os.environ.get("SARI_WORKSPACE_ROOT") or WorkspaceManager.resolve_workspace_root()
+    workspace_root = os.environ.get(
+        "SARI_WORKSPACE_ROOT") or WorkspaceManager.resolve_workspace_root()
     host, port = _resolve_daemon_target()
 
     if not start_daemon_if_needed(host, port, workspace_root=workspace_root):
-        _write_error_to_client("Sari Daemon failed to start. Run 'sari doctor' for diagnostics.")
+        _write_error_to_client(
+            "Sari Daemon failed to start. Run 'sari doctor' for diagnostics.")
         sys.exit(1)
 
     try:
@@ -449,11 +477,14 @@ def main():
         "init_request": None,
         "workspace_root": workspace_root,
     }
-    t1 = threading.Thread(target=forward_socket_to_stdout, args=(sock, state), daemon=True)
+    t1 = threading.Thread(
+        target=forward_socket_to_stdout, args=(
+            sock, state), daemon=True)
     t1.start()
 
     forward_stdin_to_socket(state)
     t1.join(timeout=1.0)
+
 
 if __name__ == "__main__":
     main()

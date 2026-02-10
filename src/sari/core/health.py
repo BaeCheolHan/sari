@@ -1,14 +1,11 @@
 import sys
-import os
 import socket
 import shutil
 import sqlite3
-from pathlib import Path
 from typing import Dict, List, Any, Optional
 
 from .db import LocalSearchDB
 from .workspace import WorkspaceManager
-from .server_registry import ServerRegistry
 
 class SariDoctor:
     def __init__(self, workspace_root: Optional[str] = None):

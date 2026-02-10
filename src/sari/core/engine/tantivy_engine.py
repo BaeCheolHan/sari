@@ -1,10 +1,9 @@
-import os
 import shutil
 import threading
 import time
 import re
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional
 
 from sari.core.settings import settings
 
@@ -13,11 +12,13 @@ try:
 except ImportError:
     tantivy = None
 
+
 class TantivyEngine:
     """
     Tantivy-based search engine for Sari.
     Unified global index with root_id filtering.
     """
+
     def __init__(self, index_path: str, logger=None, settings_obj=None):
         self.index_path = Path(index_path)
         self.logger = logger
@@ -53,15 +54,21 @@ class TantivyEngine:
 
     def _setup_schema(self):
         schema_builder = tantivy.SchemaBuilder()
-        schema_builder.add_text_field("root_id", stored=True, tokenizer_name="raw")
-        schema_builder.add_text_field("path", stored=True, tokenizer_name="raw")
-        schema_builder.add_text_field("repo", stored=True, tokenizer_name="raw")
-        
+        schema_builder.add_text_field(
+            "root_id", stored=True, tokenizer_name="raw")
+        schema_builder.add_text_field(
+            "path", stored=True, tokenizer_name="raw")
+        schema_builder.add_text_field(
+            "repo", stored=True, tokenizer_name="raw")
+
         # Priority 7: CJK Support
-        # We add 'body' with standard en_stem and a 'body_raw' for precise matching
-        schema_builder.add_text_field("body", stored=True, tokenizer_name="en_stem")
-        schema_builder.add_text_field("body_raw", stored=False, tokenizer_name="raw")
-        
+        # We add 'body' with standard en_stem and a 'body_raw' for precise
+        # matching
+        schema_builder.add_text_field(
+            "body", stored=True, tokenizer_name="en_stem")
+        schema_builder.add_text_field(
+            "body_raw", stored=False, tokenizer_name="raw")
+
         schema_builder.add_integer_field("mtime", stored=True, indexed=True)
         schema_builder.add_integer_field("size", stored=True, indexed=True)
         self._schema = schema_builder.build()
@@ -69,30 +76,36 @@ class TantivyEngine:
     def _init_index(self):
         self.index_path.mkdir(parents=True, exist_ok=True)
         try:
-            self._index = tantivy.Index(self._schema, path=str(self.index_path))
+            self._index = tantivy.Index(
+                self._schema, path=str(
+                    self.index_path))
         except Exception as e:
             if self.logger:
-                self.logger.warning(f"Failed to load Tantivy index at {self.index_path}, re-creating: {e}")
+                self.logger.warning(
+                    f"Failed to load Tantivy index at {self.index_path}, re-creating: {e}")
             # If corrupted, re-create
             try:
                 shutil.rmtree(self.index_path)
                 self.index_path.mkdir(parents=True, exist_ok=True)
-                self._index = tantivy.Index(self._schema, path=str(self.index_path))
+                self._index = tantivy.Index(
+                    self._schema, path=str(self.index_path))
             except Exception as e2:
                 if self.logger:
-                    self.logger.error(f"Critical failure re-creating Tantivy index: {e2}")
+                    self.logger.error(
+                        f"Critical failure re-creating Tantivy index: {e2}")
                 raise
-        
+
     def upsert_documents(self, docs: List[Dict[str, Any]]):
-        if not tantivy or not self._index: return
-        
+        if not tantivy or not self._index:
+            return
+
         with self._writer_lock:
             # Ticket 5.4: Enforce memory budget for indexing
             memory_budget = self.settings.ENGINE_INDEX_MEM_MB * 1024 * 1024
             if self._writer is None:
                 self._writer = self._index.writer(memory_budget)
             writer = self._writer
-            
+
             for d in docs:
                 doc_id = d.get("doc_id") or d.get("id")
                 if not doc_id:
@@ -107,15 +120,17 @@ class TantivyEngine:
                     path=doc_id,
                     repo=d.get("repo", ""),
                     body=body_text,
-                    body_raw=body_text, # Priority 7: Feed raw content for CJK matching
+                    body_raw=body_text,  # Priority 7: Feed raw content for CJK matching
                     mtime=d.get("mtime", 0),
                     size=d.get("size", 0)
                 ))
             writer.commit()
-            # Wait for merge to complete in a real env, but for local tool commit is enough
+            # Wait for merge to complete in a real env, but for local tool
+            # commit is enough
 
     def delete_documents(self, doc_ids: List[str]):
-        if not tantivy or not self._index: return
+        if not tantivy or not self._index:
+            return
         with self._writer_lock:
             if self._writer is None:
                 self._writer = self._index.writer()
@@ -153,47 +168,58 @@ class TantivyEngine:
                 out.append(ch)
         return "".join(out)
 
-    def search(self, query: str, root_id: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
-        if not tantivy or not self._index: return []
-        
+    def search(self,
+               query: str,
+               root_id: Optional[str] = None,
+               limit: int = 50) -> List[Dict[str,
+                                             Any]]:
+        if not tantivy or not self._index:
+            return []
+
         now = time.time()
         reload_interval = max(0, self.settings.ENGINE_RELOAD_MS) / 1000.0
-        
-        # Reader reload uses a separate lock to avoid multiple reloads in parallel
+
+        # Reader reload uses a separate lock to avoid multiple reloads in
+        # parallel
         try:
-            if reload_interval == 0 or (now - self._last_reload_ts) >= reload_interval:
+            if reload_interval == 0 or (
+                    now - self._last_reload_ts) >= reload_interval:
                 with self._reload_lock:
                     # Re-check inside lock (double-checked locking pattern)
-                    if reload_interval == 0 or (now - self._last_reload_ts) >= reload_interval:
+                    if reload_interval == 0 or (
+                            now - self._last_reload_ts) >= reload_interval:
                         if hasattr(self._index, "reload"):
                             self._index.reload()
                         self._last_reload_ts = now
         except Exception as e:
             if self.logger:
-                self.logger.debug(f"Non-critical failure reloading Tantivy reader: {e}")
-            pass # Non-critical if reload fails once
+                self.logger.debug(
+                    f"Non-critical failure reloading Tantivy reader: {e}")
+            pass  # Non-critical if reload fails once
 
         try:
             searcher = self._index.searcher()
         except Exception as e:
-            if self.logger: self.logger.error(f"Failed to acquire searcher: {e}")
+            if self.logger:
+                self.logger.error(f"Failed to acquire searcher: {e}")
             return []
-        
+
         # Build query: (body:query) AND (root_id:root_id)
         safe_q = self._escape_query(query or "")
         safe_root = self._escape_query(root_id or "")
         full_query = f"body:({safe_q})"
         if root_id:
             full_query = f"({full_query}) AND root_id:\"{safe_root}\""
-            
+
         try:
             q = self._index.parse_query(full_query, ["body"])
         except Exception as e:
-            if self.logger: self.logger.log_error(f"Tantivy query parse failed: {e}")
+            if self.logger:
+                self.logger.log_error(f"Tantivy query parse failed: {e}")
             return []
         try:
             hits = searcher.search(q, limit).hits
-            
+
             results = []
             for score, address in hits:
                 doc = searcher.doc(address)
@@ -207,5 +233,6 @@ class TantivyEngine:
                 })
             return results
         except Exception as e:
-            if self.logger: self.logger.log_error(f"Tantivy search failed: {e}")
+            if self.logger:
+                self.logger.log_error(f"Tantivy search failed: {e}")
             return []

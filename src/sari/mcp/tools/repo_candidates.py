@@ -3,7 +3,6 @@
 Sari MCP 서버를 위한 저장소 후보 추천 도구.
 검색 쿼리와 가장 관련성이 높은 저장소(Repo)들을 찾아 추천 이유와 함께 반환합니다.
 """
-import json
 from typing import Any, Dict, List
 from sari.mcp.tools._util import mcp_response, pack_header, pack_line, pack_encode_id, pack_encode_text, pack_error, ErrorCode, resolve_root_ids, require_db_schema
 

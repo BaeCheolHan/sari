@@ -1,8 +1,6 @@
 import os
-import pytest
 from pathlib import Path
 from sari.core.config.main import Config
-from sari.core.workspace import WorkspaceManager
 
 def test_workspace_roots_do_not_expand_to_git_root(tmp_path):
     """

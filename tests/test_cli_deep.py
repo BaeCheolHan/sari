@@ -1,6 +1,4 @@
-import os
 import sys
-import pytest
 from io import StringIO
 from sari.mcp.cli import main
 

@@ -2,8 +2,6 @@
 Sari AST Engine V20 - Comprehensive Language/Framework Test Suite
 각 언어와 프레임워크의 실제 패턴을 반영한 심화 테스트
 """
-import pytest
-import json
 from sari.core.parsers.ast_engine import ASTEngine
 
 # =============================================================================
@@ -398,7 +396,7 @@ interface Repository<T, ID> {
 }
 '''
         symbols, _ = engine.extract_symbols("types.ts", "typescript", code)
-        names = [s.name for s in symbols]
+        [s.name for s in symbols]
         
         # Interface와 Type 감지
         # TypeScript 파서가 있으면 interface_declaration, type_alias_declaration 노드가 감지됨
@@ -717,7 +715,7 @@ data "aws_ami" "ubuntu" {
 }
 '''
         symbols, _ = engine.extract_symbols("variables.tf", "hcl", code)
-        names = [s.name for s in symbols]
+        [s.name for s in symbols]
         
         # variable, module, output, data 블록 감지
         assert len(symbols) > 0

@@ -1,4 +1,3 @@
-import pytest
 from sari.core.doctor.runtime_guards import _check_db_migration_safety, _check_system_resources
 
 def test_doctor_reports_db_integrity_correctly():

@@ -8,7 +8,11 @@ from filelock import FileLock
 
 # Backward compatibility for legacy tests/tools that patch module-level path.
 REGISTRY_FILE = Path.home() / ".local" / os.path.join("share", "sari") / "server.json"
-_FALLBACK_REGISTRY = Path(os.environ.get("SARI_REGISTRY_FALLBACK", "/tmp/sari/server.json"))
+_FALLBACK_REGISTRY = Path(
+    os.environ.get(
+        "SARI_REGISTRY_FALLBACK",
+        "/tmp/sari/server.json"))
+
 
 def _ensure_writable_dir(path: Path) -> bool:
     try:
@@ -16,6 +20,7 @@ def _ensure_writable_dir(path: Path) -> bool:
         return os.access(str(path.parent), os.W_OK)
     except Exception:
         return False
+
 
 def get_registry_path() -> Path:
     """Dynamically determine registry path from environment or default."""
@@ -28,6 +33,7 @@ def get_registry_path() -> Path:
     # Fallback to a temp location when home directory is not writable.
     _ensure_writable_dir(_FALLBACK_REGISTRY)
     return _FALLBACK_REGISTRY.resolve()
+
 
 class ServerRegistry:
     """
@@ -48,9 +54,11 @@ class ServerRegistry:
         reg_file.parent.mkdir(parents=True, exist_ok=True)
         if self._lock is None:
             # Use FileLock for cross-platform reliability and built-in timeouts
-            self._lock = FileLock(str(reg_file.with_suffix(".json.lock")), timeout=10)
+            self._lock = FileLock(
+                str(reg_file.with_suffix(".json.lock")), timeout=10)
         if not reg_file.exists():
-            # Initialize registry file under lock without re-entering _ensure_lock.
+            # Initialize registry file under lock without re-entering
+            # _ensure_lock.
             with self._lock:
                 if not reg_file.exists():
                     self._atomic_write(self._empty())
@@ -81,7 +89,8 @@ class ServerRegistry:
     def _atomic_write(self, data: Dict[str, Any]) -> None:
         reg_file = get_registry_path()
         reg_file.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = reg_file.parent / f"{reg_file.name}.tmp.{os.getpid()}.{int(time.time() * 1000)}"
+        tmp_path = reg_file.parent / \
+            f"{reg_file.name}.tmp.{os.getpid()}.{int(time.time() * 1000)}"
         try:
             with open(tmp_path, "w") as f:
                 json.dump(data, f, indent=2)
@@ -108,19 +117,26 @@ class ServerRegistry:
             now = time.time()
             migrated = self._empty()
             for ws, info in data["instances"].items():
-                if not isinstance(info, dict): continue
-                ws_norm = ws # Simplification for migration
+                if not isinstance(info, dict):
+                    continue
+                ws_norm = ws  # Simplification for migration
                 pid = info.get("pid")
                 port = info.get("port")
-                if pid is None or port is None: continue
-                
+                if pid is None or port is None:
+                    continue
+
                 boot_id = f"legacy-{pid}-{port}"
                 migrated["daemons"][boot_id] = {
-                    "host": "127.0.0.1", "port": int(port), "pid": int(pid),
-                    "start_ts": info.get("start_ts") or now, "last_seen_ts": now,
-                    "draining": False, "version": info.get("version") or "legacy",
+                    "host": "127.0.0.1",
+                    "port": int(port),
+                    "pid": int(pid),
+                    "start_ts": info.get("start_ts") or now,
+                    "last_seen_ts": now,
+                    "draining": False,
+                    "version": info.get("version") or "legacy",
                 }
-                migrated["workspaces"][ws_norm] = {"boot_id": boot_id, "last_active_ts": now}
+                migrated["workspaces"][ws_norm] = {
+                    "boot_id": boot_id, "last_active_ts": now}
             return migrated
 
         return self._empty()
@@ -143,7 +159,8 @@ class ServerRegistry:
             self._atomic_write(data)
 
     def _is_process_alive(self, pid: Optional[int]) -> bool:
-        if not pid: return False
+        if not pid:
+            return False
         try:
             os.kill(pid, 0)
             return True
@@ -153,10 +170,16 @@ class ServerRegistry:
     def _prune_dead_locked(self, data: Dict[str, Any]) -> None:
         daemons = data.get("daemons", {})
         workspaces = data.get("workspaces", {})
-        dead = [bid for bid, info in daemons.items() if not self._is_process_alive(info.get("pid"))]
-        for bid in dead: daemons.pop(bid, None)
+        dead = [
+            bid for bid,
+            info in daemons.items() if not self._is_process_alive(
+                info.get("pid"))]
+        for bid in dead:
+            daemons.pop(bid, None)
         if dead:
-            workspaces = {ws: info for ws, info in workspaces.items() if info.get("boot_id") not in dead}
+            workspaces = {
+                ws: info for ws,
+                info in workspaces.items() if info.get("boot_id") not in dead}
         data["daemons"] = daemons
         data["workspaces"] = workspaces
 
@@ -199,7 +222,8 @@ class ServerRegistry:
     def get_daemon(self, boot_id: str) -> Optional[Dict[str, Any]]:
         data = self._load()
         daemon = (data.get("daemons") or {}).get(boot_id)
-        if not daemon: return None
+        if not daemon:
+            return None
         if not self._is_process_alive(daemon.get("pid")):
             self.unregister_daemon(boot_id)
             return None
@@ -213,14 +237,17 @@ class ServerRegistry:
     def list_workspaces_for_boot(self, boot_id: str) -> Iterable[str]:
         data = self._load()
         workspaces = data.get("workspaces", {})
-        return [ws for ws, info in workspaces.items() if info.get("boot_id") == boot_id]
+        return [ws for ws, info in workspaces.items(
+        ) if info.get("boot_id") == boot_id]
 
-    def resolve_workspace_daemon(self, workspace_root: str) -> Optional[Dict[str, Any]]:
+    def resolve_workspace_daemon(
+            self, workspace_root: str) -> Optional[Dict[str, Any]]:
         ws = self._normalize_workspace_root(workspace_root)
         data = self._load()
         workspaces = data.get("workspaces", {})
         info = workspaces.get(ws)
-        if not info: return None
+        if not info:
+            return None
         boot_id = info.get("boot_id")
         daemon = (data.get("daemons") or {}).get(boot_id)
         if not daemon:
@@ -238,7 +265,9 @@ class ServerRegistry:
             daemons = data.get("daemons", {})
             daemons.pop(boot_id, None)
             workspaces = data.get("workspaces", {})
-            data["workspaces"] = {ws: info for ws, info in workspaces.items() if info.get("boot_id") != boot_id}
+            data["workspaces"] = {
+                ws: info for ws,
+                info in workspaces.items() if info.get("boot_id") != boot_id}
         self._update(_upd)
 
     def set_daemon_draining(self, boot_id: str, draining: bool = True) -> None:
@@ -249,17 +278,24 @@ class ServerRegistry:
                 daemons[boot_id]["last_seen_ts"] = time.time()
         self._update(_upd)
 
-    def resolve_daemon_by_endpoint(self, host: str, port: int) -> Optional[Dict[str, Any]]:
+    def resolve_daemon_by_endpoint(
+            self, host: str, port: int) -> Optional[Dict[str, Any]]:
         data = self._load()
         daemons = data.get("daemons", {})
         for bid, info in daemons.items():
-            if str(info.get("host")) == str(host) and int(info.get("port")) == int(port):
+            if str(
+                    info.get("host")) == str(host) and int(
+                    info.get("port")) == int(port):
                 if self._is_process_alive(info.get("pid")):
-                    res = dict(info); res["boot_id"] = bid
+                    res = dict(info)
+                    res["boot_id"] = bid
                     return res
         return None
 
-    def resolve_latest_daemon(self, workspace_root: Optional[str] = None, allow_draining: bool = True) -> Optional[Dict[str, Any]]:
+    def resolve_latest_daemon(self,
+                              workspace_root: Optional[str] = None,
+                              allow_draining: bool = True) -> Optional[Dict[str,
+                                                                            Any]]:
         data = self._load()
         daemons = data.get("daemons", {}) or {}
         workspaces = data.get("workspaces", {}) or {}
@@ -270,7 +306,9 @@ class ServerRegistry:
             if info:
                 boot_id = info.get("boot_id")
                 daemon = daemons.get(boot_id)
-                if daemon and (allow_draining or not daemon.get("draining")) and self._is_process_alive(daemon.get("pid")):
+                if daemon and (
+                        allow_draining or not daemon.get("draining")) and self._is_process_alive(
+                        daemon.get("pid")):
                     res = dict(daemon)
                     res["boot_id"] = boot_id
                     return res
@@ -293,8 +331,11 @@ class ServerRegistry:
             return res
         return None
 
-    def find_free_port(self, host: str = "127.0.0.1", start_port: int = 47790, max_tries: int = 200) -> int:
-        import socket
+    def find_free_port(
+            self,
+            host: str = "127.0.0.1",
+            start_port: int = 47790,
+            max_tries: int = 200) -> int:
         port = int(start_port)
         for _ in range(max_tries):
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -310,35 +351,55 @@ class ServerRegistry:
             return s.getsockname()[1]
 
     def _is_nested_pair(self, a: str, b: str) -> bool:
-        if not a or not b or a == b: return False
+        if not a or not b or a == b:
+            return False
         return a.startswith(b + os.sep) or b.startswith(a + os.sep)
 
-    def _dedupe_nested_workspaces_locked(self, data: Dict[str, Any], preferred_ws: Optional[str] = None) -> None:
+    def _dedupe_nested_workspaces_locked(
+            self, data: Dict[str, Any], preferred_ws: Optional[str] = None) -> None:
         workspaces = dict(data.get("workspaces", {}))
-        if not workspaces: return
+        if not workspaces:
+            return
 
         if preferred_ws and preferred_ws in workspaces:
-            remove = [ws for ws in workspaces.keys() if ws != preferred_ws and self._is_nested_pair(ws, preferred_ws)]
-            for ws in remove: workspaces.pop(ws, None)
+            remove = [
+                ws for ws in workspaces.keys() if ws != preferred_ws and self._is_nested_pair(
+                    ws, preferred_ws)]
+            for ws in remove:
+                workspaces.pop(ws, None)
             data["workspaces"] = workspaces
             return
 
         # Global dedupe fallback
-        ordered = sorted(workspaces.items(), key=lambda kv: float(kv[1].get("last_active_ts", 0.0)), reverse=True)
+        ordered = sorted(
+            workspaces.items(),
+            key=lambda kv: float(
+                kv[1].get(
+                    "last_active_ts",
+                    0.0)),
+            reverse=True)
         kept = {}
         for ws, info in ordered:
-            if any(self._is_nested_pair(ws, k) for k in kept.keys()): continue
+            if any(self._is_nested_pair(ws, k) for k in kept.keys()):
+                continue
             kept[ws] = info
         data["workspaces"] = kept
 
-    def set_workspace_http(self, workspace_root: str, http_port: int, http_host: Optional[str] = None, http_pid: Optional[int] = None) -> None:
+    def set_workspace_http(
+            self,
+            workspace_root: str,
+            http_port: int,
+            http_host: Optional[str] = None,
+            http_pid: Optional[int] = None) -> None:
         def _upd(data):
             workspaces = data.setdefault("workspaces", {})
             ws = self._normalize_workspace_root(workspace_root)
             payload = dict(workspaces.get(ws, {}))
             payload["http_port"] = int(http_port)
-            if http_host: payload["http_host"] = str(http_host)
-            if http_pid: payload["http_pid"] = int(http_pid)
+            if http_host:
+                payload["http_host"] = str(http_host)
+            if http_pid:
+                payload["http_pid"] = int(http_pid)
             payload["last_active_ts"] = time.time()
             workspaces[ws] = payload
             self._dedupe_nested_workspaces_locked(data, preferred_ws=ws)
@@ -365,7 +426,12 @@ class ServerRegistry:
             self._dedupe_nested_workspaces_locked(data, preferred_ws=ws)
         self._update(_upd)
 
-    def set_daemon_http(self, boot_id: str, http_port: int, http_host: Optional[str] = None, http_pid: Optional[int] = None) -> None:
+    def set_daemon_http(
+            self,
+            boot_id: str,
+            http_port: int,
+            http_host: Optional[str] = None,
+            http_pid: Optional[int] = None) -> None:
         def _upd(data):
             daemons = data.setdefault("daemons", {})
             info = dict(daemons.get(boot_id, {}))
@@ -380,7 +446,8 @@ class ServerRegistry:
             daemons[boot_id] = info
         self._update(_upd)
 
-    def resolve_workspace_http(self, workspace_root: str) -> Optional[Dict[str, Any]]:
+    def resolve_workspace_http(
+            self, workspace_root: str) -> Optional[Dict[str, Any]]:
         ws = self._normalize_workspace_root(workspace_root)
         data = self._load()
         workspaces = data.get("workspaces", {}) or {}
@@ -392,7 +459,10 @@ class ServerRegistry:
             host = daemon.get("http_host") or daemon.get("host")
             port = daemon.get("http_port")
             if host and port:
-                return {"host": str(host), "port": int(port), "boot_id": boot_id}
+                return {
+                    "host": str(host),
+                    "port": int(port),
+                    "boot_id": boot_id}
         # Backward-compat fallback to workspace-level fields.
         if ws_info.get("http_host") and ws_info.get("http_port"):
             return {

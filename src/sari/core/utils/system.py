@@ -1,7 +1,6 @@
 import psutil
 import os
 import threading
-import time
 from typing import Dict, List, Any
 
 def get_system_metrics() -> Dict[str, Any]:

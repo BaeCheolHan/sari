@@ -1,6 +1,3 @@
-import pytest
-import time
-import psutil
 from unittest.mock import patch
 from sari.core.indexer.governor import ResourceGovernor
 

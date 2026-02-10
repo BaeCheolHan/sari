@@ -2,9 +2,8 @@ import json
 import os
 import time
 import pytest
-import urllib.parse
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 from sari.mcp.tools.doctor import execute_doctor
 
 class TestDoctorSelfHealing:

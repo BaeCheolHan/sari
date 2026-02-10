@@ -2,7 +2,7 @@ import threading
 import time
 import logging
 from collections import OrderedDict
-from typing import Dict, List, Any, Optional, Tuple
+from typing import List, Any, Optional
 from sari.core.indexer.db_writer import DBWriter, DbTask
 from sari.core.settings import settings
 from sari.core.utils.cleaner import clean_for_fts
@@ -84,7 +84,7 @@ class GlobalStorageManager:
                 path, mtime = row[0], row[4]
                 
                 existing = self._overlay_files.get(path)
-                if existing and existing[4] > mtime:
+                if existing and existing[3] > mtime:
                     continue
 
                 # Priority 9 Fix: Don't store full content in L2 cache to prevent memory explosion

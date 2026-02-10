@@ -53,8 +53,9 @@ def execute_index_file(args: Dict[str, Any], indexer: Any, roots: List[str]) -> 
             lambda: {"success": True, "path": db_path, "message": f"Successfully requested re-indexing for {db_path}"},
         )
     except Exception as e:
+        msg = str(e)
         return mcp_response(
             "index_file",
-            lambda: pack_error("index_file", ErrorCode.INTERNAL, str(e)),
-            lambda: {"error": {"code": ErrorCode.INTERNAL.value, "message": str(e)}, "isError": True},
+            lambda: pack_error("index_file", ErrorCode.INTERNAL, msg),
+            lambda: {"error": {"code": ErrorCode.INTERNAL.value, "message": msg}, "isError": True},
         )

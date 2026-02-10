@@ -4,9 +4,7 @@ import subprocess
 import time
 import socket
 import pytest
-import shutil
 import sys
-from pathlib import Path
 
 class TestColdStart:
     
@@ -34,7 +32,7 @@ class TestColdStart:
             output = subprocess.check_output(["lsof", "-ti", f":{port}"], text=True)
             for pid in output.split():
                 os.kill(int(pid), 9)
-        except:
+        except Exception:
             pass
 
     def test_pure_cold_start_via_proxy(self, tmp_path, clean_env):

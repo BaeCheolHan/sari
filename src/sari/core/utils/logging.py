@@ -2,7 +2,6 @@ import os
 import sys
 import logging
 import structlog
-from sari.core.settings import settings
 
 def get_logger(name: str) -> structlog.stdlib.BoundLogger:
     return structlog.get_logger(name)

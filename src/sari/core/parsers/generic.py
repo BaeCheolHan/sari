@@ -1,16 +1,17 @@
 import re
-import json
-from typing import List, Tuple, Dict, Any, Optional
+from typing import List, Tuple, Dict, Any
 from pathlib import Path
 from .base import BaseParser
-from .common import _qualname, _symbol_id, _safe_compile, NORMALIZE_KIND_BY_EXT
+from .common import _symbol_id, _safe_compile, NORMALIZE_KIND_BY_EXT
 from sari.core.models import ParserSymbol, ParserRelation
+
 
 class GenericRegexParser(BaseParser):
     """
     Tree-sitter 라이브러리가 없거나 해당 언어를 지원하지 않을 때 사용하는 범용 정규식 파서입니다.
     미리 정의된 정규식 패턴을 사용하여 클래스와 메서드 구조를 휴리스틱하게 추출합니다.
     """
+
     def __init__(self, config: Dict[str, Any], ext: str):
         self.ext = ext.lower()
         self.re_class = config["re_class"]
@@ -24,7 +25,10 @@ class GenericRegexParser(BaseParser):
         line = re.sub(r"#.*$", "", line)
         return line
 
-    def extract(self, path: str, content: str) -> Tuple[List[ParserSymbol], List[ParserRelation]]:
+    def extract(self,
+                path: str,
+                content: str) -> Tuple[List[ParserSymbol],
+                                       List[ParserRelation]]:
         symbols: List[ParserSymbol] = []
         relations: List[ParserRelation] = []
         # Strip block comments first to avoid finding fake symbols in them
@@ -32,11 +36,12 @@ class GenericRegexParser(BaseParser):
         lines = content.splitlines()
         active_scopes = []
         cur_bal = 0
-        
+
         for i, line in enumerate(lines):
             line_no = i + 1
             clean = self.sanitize(line)
-            if not clean.strip(): continue
+            if not clean.strip():
+                continue
 
             matches = []
             for m in self.re_class.finditer(clean):
@@ -47,12 +52,20 @@ class GenericRegexParser(BaseParser):
 
             for m in self.re_method.finditer(clean):
                 name = next((g for g in m.groups() if g), None)
-                if name and not any(name == x[0] for x in matches): 
+                if name and not any(name == x[0] for x in matches):
                     matches.append((name, self.method_kind, m.start()))
 
             for name, kind, _ in matches:
                 sid = _symbol_id(path, kind, name)
-                info = {"sid": sid, "path": path, "name": name, "kind": kind, "line": line_no, "meta": {}, "raw": line.strip(), "qual": name}
+                info = {
+                    "sid": sid,
+                    "path": path,
+                    "name": name,
+                    "kind": kind,
+                    "line": line_no,
+                    "meta": {},
+                    "raw": line.strip(),
+                    "qual": name}
                 active_scopes.append((cur_bal, info))
 
             # Safer brace counting
@@ -64,52 +77,81 @@ class GenericRegexParser(BaseParser):
             still_active = []
             for bal, info in active_scopes:
                 if cur_bal <= bal:
-                    symbols.append(ParserSymbol(
-                        sid=info["sid"], path=info["path"], name=info["name"], kind=info["kind"],
-                        line=info["line"], end_line=line_no, content=info["raw"],
-                        meta=info["meta"], qualname=info["qual"]
-                    ))
-                else: still_active.append((bal, info))
+                    symbols.append(
+                        ParserSymbol(
+                            sid=info["sid"],
+                            path=info["path"],
+                            name=info["name"],
+                            kind=info["kind"],
+                            line=info["line"],
+                            end_line=line_no,
+                            content=info["raw"],
+                            meta=info["meta"],
+                            qualname=info["qual"]))
+                else:
+                    still_active.append((bal, info))
             active_scopes = still_active
 
         for _, info in active_scopes:
-            symbols.append(ParserSymbol(
-                sid=info["sid"], path=info["path"], name=info["name"], kind=info["kind"],
-                line=info["line"], end_line=len(lines), content=info["raw"],
-                meta=info["meta"], qualname=info["qual"]
-            ))
+            symbols.append(
+                ParserSymbol(
+                    sid=info["sid"],
+                    path=info["path"],
+                    name=info["name"],
+                    kind=info["kind"],
+                    line=info["line"],
+                    end_line=len(lines),
+                    content=info["raw"],
+                    meta=info["meta"],
+                    qualname=info["qual"]))
 
         if self.ext == ".vue":
             stem = Path(path).stem
-            symbols.append(ParserSymbol(
-                sid=_symbol_id(path, "class", stem), path=path, name=stem, kind="class",
-                line=1, end_line=len(lines), content=stem, qualname=stem
-            ))
+            symbols.append(
+                ParserSymbol(
+                    sid=_symbol_id(
+                        path,
+                        "class",
+                        stem),
+                    path=path,
+                    name=stem,
+                    kind="class",
+                    line=1,
+                    end_line=len(lines),
+                    content=stem,
+                    qualname=stem))
 
         return symbols, relations
+
 
 class HCLRegexParser(GenericRegexParser):
     """
     Terraform(HCL) 파일을 처리하기 위한 특화된 정규식 파서입니다.
     resource, module, variable 등 HCL 특유의 블록 구조를 처리합니다.
     """
+
     def __init__(self, config: Dict[str, Any], ext: str):
         super().__init__(config, ext)
         self.re_resource = _safe_compile(r'^resource\s+"([^"]+)"\s+"([^"]+)"')
-        self.re_general = _safe_compile(r'^(module|variable|output|data)\s+"([^"]+)"')
+        self.re_general = _safe_compile(
+            r'^(module|variable|output|data)\s+"([^"]+)"')
 
-    def extract(self, path: str, content: str) -> Tuple[List[ParserSymbol], List[ParserRelation]]:
+    def extract(self,
+                path: str,
+                content: str) -> Tuple[List[ParserSymbol],
+                                       List[ParserRelation]]:
         symbols: List[ParserSymbol] = []
         relations: List[ParserRelation] = []
         content = re.sub(r"/\*.*?\*/", "", content, flags=re.DOTALL)
         lines = content.splitlines()
         active_scopes = []
         cur_bal = 0
-        
+
         for i, line in enumerate(lines):
             line_no = i + 1
             clean = self.sanitize(line)
-            if not clean.strip(): continue
+            if not clean.strip():
+                continue
 
             matches = []
             for m in self.re_resource.finditer(clean):
@@ -124,7 +166,15 @@ class HCLRegexParser(GenericRegexParser):
 
             for name, kind, _ in matches:
                 sid = _symbol_id(path, kind, name)
-                info = {"sid": sid, "path": path, "name": name, "kind": kind, "line": line_no, "meta": {}, "raw": line.strip(), "qual": name}
+                info = {
+                    "sid": sid,
+                    "path": path,
+                    "name": name,
+                    "kind": kind,
+                    "line": line_no,
+                    "meta": {},
+                    "raw": line.strip(),
+                    "qual": name}
                 active_scopes.append((cur_bal, info))
 
             tmp_line = re.sub(r'"[^"\\]*(?:\\.[^"\\]*)*"', "", clean)
@@ -135,19 +185,32 @@ class HCLRegexParser(GenericRegexParser):
             still_active = []
             for bal, info in active_scopes:
                 if cur_bal <= bal:
-                    symbols.append(ParserSymbol(
-                        sid=info["sid"], path=info["path"], name=info["name"], kind=info["kind"],
-                        line=info["line"], end_line=line_no, content=info["raw"],
-                        meta=info["meta"], qualname=info["qual"]
-                    ))
-                else: still_active.append((bal, info))
+                    symbols.append(
+                        ParserSymbol(
+                            sid=info["sid"],
+                            path=info["path"],
+                            name=info["name"],
+                            kind=info["kind"],
+                            line=info["line"],
+                            end_line=line_no,
+                            content=info["raw"],
+                            meta=info["meta"],
+                            qualname=info["qual"]))
+                else:
+                    still_active.append((bal, info))
             active_scopes = still_active
 
         for _, info in active_scopes:
-            symbols.append(ParserSymbol(
-                sid=info["sid"], path=info["path"], name=info["name"], kind=info["kind"],
-                line=info["line"], end_line=len(lines), content=info["raw"],
-                meta=info["meta"], qualname=info["qual"]
-            ))
+            symbols.append(
+                ParserSymbol(
+                    sid=info["sid"],
+                    path=info["path"],
+                    name=info["name"],
+                    kind=info["kind"],
+                    line=info["line"],
+                    end_line=len(lines),
+                    content=info["raw"],
+                    meta=info["meta"],
+                    qualname=info["qual"]))
 
         return symbols, relations

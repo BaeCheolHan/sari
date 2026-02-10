@@ -1,6 +1,7 @@
 import queue
 import threading
 from typing import Any, List, Optional, Set
+from sari.core.settings import settings
 
 class DedupQueue:
     """

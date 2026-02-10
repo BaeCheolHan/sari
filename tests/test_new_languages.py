@@ -1,5 +1,4 @@
 """신규 언어 및 프레임워크 지원 테스트"""
-import pytest
 from sari.core.parsers.ast_engine import ASTEngine
 
 

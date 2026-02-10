@@ -4,6 +4,7 @@ from .python import PythonParser
 from .generic import GenericRegexParser
 from .common import _safe_compile
 
+
 class ParserFactory:
     """
     파일 확장자에 따라 적절한 파서 객체를 생성하고 캐싱하는 팩토리 클래스입니다.
@@ -48,13 +49,15 @@ class ParserFactory:
             if key not in cls._parsers:
                 cls._parsers[key] = PythonParser()
             return cls._parsers[key]
-        
+
         if ext in (".tf", ".hcl"):
             from .generic import HCLRegexParser
             key = "hcl_regex"
             if key not in cls._parsers:
                 # Provide dummy config for parent GenericRegexParser
-                dummy = {"re_class": _safe_compile(r""), "re_method": _safe_compile(r"")}
+                dummy = {
+                    "re_class": _safe_compile(r""),
+                    "re_method": _safe_compile(r"")}
                 cls._parsers[key] = HCLRegexParser(dummy, ext)
             return cls._parsers[key]
 
@@ -80,7 +83,8 @@ class ParserFactory:
             ".yml": {"re_class": _safe_compile(r"^kind:\s*([a-zA-Z0-9_]+)"), "re_method": _safe_compile(r"^\s*name:\s*([a-zA-Z0-9_-]+)")},
             ".sql": {
                 "re_class": _safe_compile(r"\bCREATE\s+(?:OR\s+REPLACE\s+)?(TABLE|VIEW|INDEX|PROCEDURE|FUNCTION)\s+(?:IF\s+NOT\s+EXISTS\s+)?([a-zA-Z0-9_]+)"),
-                "re_method": _safe_compile(r"\bCONSTRAINT\s+([a-zA-Z0-9_]+)")  # Optional: constraints as methods/properties
+                # Optional: constraints as methods/properties
+                "re_method": _safe_compile(r"\bCONSTRAINT\s+([a-zA-Z0-9_]+)")
             },
             ".tf": {
                 "re_class": _safe_compile(r"^(resource|module|variable|output|data)\s+(?:\"[^\"]+\"\s+)?\"([a-zA-Z0-9_-]+)\""),
@@ -93,7 +97,8 @@ class ParserFactory:
         }
         if ext in configs:
             key = f"generic:{ext}"
-            if key not in cls._parsers: cls._parsers[key] = GenericRegexParser(configs[ext], ext)
+            if key not in cls._parsers:
+                cls._parsers[key] = GenericRegexParser(configs[ext], ext)
             return cls._parsers[key]
         return None
 

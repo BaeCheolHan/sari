@@ -1,3 +1,4 @@
+# ruff: noqa: E402
 # CRITICAL: Install stdout guard at entry point to protect MCP protocol
 # This prevents third-party library noise from breaking JSON-RPC communication
 from sari.mcp.stdout_guard import install_guard, get_real_stdout
@@ -321,17 +322,39 @@ def _spawn_http_daemon(ns: argparse.Namespace) -> int:
     cmd = [sys.executable, "-m", "sari", "--transport", "http"]
     if ns.http_api_port:
         cmd += ["--http-api-port", str(ns.http_api_port)]
+    debug = os.environ.get("SARI_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
+    log_path = None
+    log_fh = None
+    try:
+        if os.name == "nt":
+            base_dir = Path(os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or str(Path.home())) / "sari"
+        else:
+            base_dir = Path.home() / ".local" / "share" / "sari"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        log_path = base_dir / "http-daemon.log"
+        log_fh = open(log_path, "a", encoding="utf-8")
+        stdout_target = log_fh
+        stderr_target = None if debug else log_fh
+    except Exception:
+        stdout_target = subprocess.DEVNULL
+        stderr_target = None if debug else subprocess.DEVNULL
     proc = subprocess.Popen(
         cmd,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=stdout_target,
+        stderr=stderr_target,
         start_new_session=True,
         env=env,
     )
+    if log_fh:
+        try:
+            log_fh.close()
+        except Exception:
+            pass
     # Reap child on exit to avoid defunct processes in long-lived MCP stdio hosts.
     threading.Thread(target=_reap_child, args=(proc,), daemon=True).start()
     port_note = ns.http_api_port or os.environ.get("SARI_HTTP_API_PORT") or "default"
-    print(f"[sari] HTTP daemon started in background (port: {port_note})", file=sys.stderr)
+    log_note = f", log: {log_path}" if log_path else ""
+    print(f"[sari] HTTP daemon started in background (port: {port_note}{log_note})", file=sys.stderr)
     return 0
 
 
@@ -339,10 +362,11 @@ def run_cmd(argv: List[str]) -> int:
     if not argv:
         print("missing subcommand", file=sys.stderr)
         return 2
+    if argv[0] in {"status", "search"}:
+        from sari.mcp.cli import main as legacy_main
+        return legacy_main(argv)
     if argv[0] == "doctor":
         return _cmd_doctor()
-    if argv[0] == "status":
-        return _cmd_status()
     if argv[0] == "config" and len(argv) > 1 and argv[1] == "show":
         return _cmd_config_show()
     if argv[0] == "roots":
@@ -408,8 +432,7 @@ def main(argv: List[str] = None, original_stdout: Any = None) -> int:
         
         if argv[0] in {"daemon", "proxy", "status", "search", "init", "auto"}:
             from sari.mcp.cli import main as legacy_main
-            sys.argv = ["sari"] + argv
-            return legacy_main()
+            return legacy_main(argv)
         if "--cmd" in argv:
             idx = argv.index("--cmd")
             cmd_args = argv[idx + 1 :]

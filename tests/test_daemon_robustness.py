@@ -1,13 +1,7 @@
-import pytest
-import time
-import subprocess
-import socket
-import os
 import sys
 import unittest.mock as mock
 from pathlib import Path
-from sari.mcp.cli.smart_daemon import ensure_smart_daemon, is_port_in_use, smart_kill_port_owner
-from sari.core.workspace import WorkspaceManager
+from sari.mcp.cli.smart_daemon import ensure_smart_daemon, smart_kill_port_owner
 
 def test_daemon_root_reuse_across_projects(tmp_path):
     """
@@ -70,8 +64,8 @@ def test_smart_kill_protection_logic():
         # Should NOT kill because it's not a Sari process (cmdline doesn't match)
         success = smart_kill_port_owner("127.0.0.1", 9999)
         
-        assert success == False
-        assert fake_proc.terminate_called == False
+        assert not success
+        assert not fake_proc.terminate_called
 
 def test_environment_sync_verification():
     """

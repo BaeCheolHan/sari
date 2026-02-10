@@ -11,13 +11,18 @@ from sari.mcp.tools._util import (
     parse_timestamp,
 )
 
-def execute_get_context(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict[str, Any]:
+
+def execute_get_context(
+        args: Dict[str, Any], db: Any, roots: List[str]) -> Dict[str, Any]:
     """
     저장된 도메인 지식이나 작업 컨텍스트를 조회하는 도구입니다.
     특정 주제(Topic)로 직접 조회하거나 검색 쿼리를 통한 전문 검색을 지원합니다.
     """
-    guard = require_db_schema(db, "get_context", "contexts", ["topic", "content"])
-    if guard: return guard
+    guard = require_db_schema(
+        db, "get_context", "contexts", [
+            "topic", "content"])
+    if guard:
+        return guard
 
     topic = str(args.get("topic") or "").strip()
     query = str(args.get("query") or "").strip()
@@ -31,18 +36,34 @@ def execute_get_context(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict
             results = [row] if row else []
         elif query:
             # 검색 쿼리를 통한 조회
-            results = db.contexts.search_contexts(query, limit=limit, as_of=as_of)
+            results = db.contexts.search_contexts(
+                query, limit=limit, as_of=as_of)
         else:
             return mcp_response(
                 "get_context",
-                lambda: pack_error("get_context", ErrorCode.INVALID_ARGS, "topic or query is required"),
-                lambda: {"error": {"code": ErrorCode.INVALID_ARGS.value, "message": "topic or query is required"}, "isError": True},
+                lambda: pack_error(
+                    "get_context",
+                    ErrorCode.INVALID_ARGS,
+                    "topic or query is required"),
+                lambda: {
+                    "error": {
+                        "code": ErrorCode.INVALID_ARGS.value,
+                        "message": "topic or query is required"},
+                    "isError": True},
             )
     except Exception as e:
+        msg = str(e)
         return mcp_response(
             "get_context",
-            lambda: pack_error("get_context", ErrorCode.DB_ERROR, str(e)),
-            lambda: {"error": {"code": ErrorCode.DB_ERROR.value, "message": str(e)}, "isError": True},
+            lambda: pack_error(
+                "get_context",
+                ErrorCode.DB_ERROR,
+                msg),
+            lambda: {
+                "error": {
+                    "code": ErrorCode.DB_ERROR.value,
+                    "message": msg},
+                "isError": True},
         )
 
     def build_json() -> Dict[str, Any]:

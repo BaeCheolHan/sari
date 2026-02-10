@@ -1,4 +1,3 @@
-import pytest
 from sari.core.parsers.factory import ParserFactory
 
 def test_python_parser_pure_logic():

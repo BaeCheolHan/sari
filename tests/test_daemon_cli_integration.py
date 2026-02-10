@@ -1,9 +1,6 @@
-import pytest
 import subprocess
 import time
-import json
 import os
-from pathlib import Path
 
 def test_cli_daemon_lifecycle_truth(tmp_path):
     """

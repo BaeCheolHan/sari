@@ -1,4 +1,3 @@
-import pytest
 from pathlib import Path
 from sari.core.utils.file import _parse_size, _is_minified, _printable_ratio, _sample_file
 

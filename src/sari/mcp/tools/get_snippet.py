@@ -1,4 +1,3 @@
-import json
 from typing import Any, Dict, List
 import difflib
 import threading
@@ -10,7 +9,6 @@ from sari.mcp.tools._util import (
     pack_header,
     pack_line,
     pack_encode_id,
-    pack_encode_text,
     pack_error,
     ErrorCode,
     resolve_fs_path,
@@ -338,10 +336,11 @@ def execute_get_snippet(args: Dict[str, Any], db: Any, logger: Any = None, roots
     try:
         payload = build_get_snippet(args, db, roots)
     except ValueError as e:
+        msg = str(e)
         return mcp_response(
             "get_snippet",
-            lambda: pack_error("get_snippet", ErrorCode.INVALID_ARGS, str(e)),
-            lambda: {"error": {"code": ErrorCode.INVALID_ARGS.value, "message": str(e)}, "isError": True},
+            lambda: pack_error("get_snippet", ErrorCode.INVALID_ARGS, msg),
+            lambda: {"error": {"code": ErrorCode.INVALID_ARGS.value, "message": msg}, "isError": True},
         )
 
     def build_pack() -> str:

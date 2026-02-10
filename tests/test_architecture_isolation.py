@@ -1,6 +1,5 @@
 import sys
 import io
-import pytest
 from unittest.mock import MagicMock, patch
 from sari.mcp.server import main as server_main
 

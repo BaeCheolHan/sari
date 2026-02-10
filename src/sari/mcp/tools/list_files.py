@@ -1,7 +1,7 @@
 from typing import Any, Dict, List
 from sari.mcp.tools._util import resolve_root_ids, mcp_response, pack_header, pack_line, get_data_attr
 
-def execute_list_files(args: Dict[str, Any], db: "LocalSearchDB", logger=None, roots: List[str] = None) -> Dict[str, Any]:
+def execute_list_files(args: Dict[str, Any], db: Any, logger=None, roots: List[str] = None) -> Dict[str, Any]:
     """
     파일 목록 조회 도구.
     중앙화된 DB 접근과 안전한 속성 헬퍼를 사용하여 현대화되었습니다.

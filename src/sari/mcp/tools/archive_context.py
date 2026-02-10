@@ -1,7 +1,3 @@
-import json
-import threading
-import time
-from datetime import datetime
 from typing import Any, Dict, List
 
 from sari.mcp.tools._util import (
@@ -15,7 +11,6 @@ from sari.mcp.tools._util import (
     parse_timestamp,
 )
 
-from sari.core.queue_pipeline import DbTask
 
 def execute_archive_context(args: Dict[str, Any], db: Any, roots: List[str], indexer: Any = None) -> Dict[str, Any]:
     """
@@ -48,10 +43,11 @@ def execute_archive_context(args: Dict[str, Any], db: Any, roots: List[str], ind
         # Facade 사용: db.contexts가 모든 내부 세부 사항을 처리합니다.
         payload = db.contexts.upsert(data)
     except Exception as e:
+        msg = str(e)
         return mcp_response(
             "archive_context",
-            lambda: pack_error("archive_context", ErrorCode.DB_ERROR, str(e)),
-            lambda: {"error": {"code": ErrorCode.DB_ERROR.value, "message": str(e)}, "isError": True},
+            lambda: pack_error("archive_context", ErrorCode.DB_ERROR, msg),
+            lambda: {"error": {"code": ErrorCode.DB_ERROR.value, "message": msg}, "isError": True},
         )
 
     def build_pack() -> str:

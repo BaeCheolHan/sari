@@ -1,12 +1,10 @@
 import json
 import os
-import time
 import pytest
-import shutil
 import sqlite3
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-from sari.mcp.tools.doctor import execute_doctor, _check_log_errors, _check_db_integrity
+from sari.mcp.tools.doctor import execute_doctor, _check_db_integrity
 
 class TestBrokenScenarios:
     

@@ -8,6 +8,7 @@ from typing import Optional, List
 from sari.core.settings import settings
 from sari.core.utils.path import PathUtils
 
+
 class WorkspaceManager:
     """Manages workspace detection, explicit boundaries (.sariroot), and global paths."""
     settings = settings
@@ -23,7 +24,7 @@ class WorkspaceManager:
             curr = Path(PathUtils.normalize(path))
             search_start = curr if curr.is_dir() else curr.parent
             home = Path.home()
-            
+
             for parent in [search_start] + list(search_start.parents):
                 if (parent / ".git").exists():
                     return str(parent)
@@ -62,11 +63,12 @@ class WorkspaceManager:
         return PathUtils.normalize(workspace_root)
 
     @staticmethod
-    def find_root_for_path(path: str, active_roots: Optional[List[str]] = None) -> Optional[str]:
+    def find_root_for_path(
+            path: str, active_roots: Optional[List[str]] = None) -> Optional[str]:
         """Find which workspace root contains the given path."""
         p = PathUtils.normalize(path)
         roots = active_roots or WorkspaceManager.resolve_workspace_roots()
-        
+
         # Sort by length descending to find most specific root first
         sorted_roots = sorted(roots, key=len, reverse=True)
         for r in sorted_roots:
@@ -76,20 +78,25 @@ class WorkspaceManager:
         return None
 
     @staticmethod
-    def resolve_workspace_roots(root_uri: Optional[str] = None, config_roots: Optional[List[str]] = None) -> List[str]:
+    def resolve_workspace_roots(
+            root_uri: Optional[str] = None, config_roots: Optional[List[str]] = None) -> List[str]:
         raw_roots = []
         if config_roots:
             for r in config_roots:
-                if r: raw_roots.append(PathUtils.normalize(r))
-        
-        # If explicit root_uri is provided, we use it directly without expansion to respect caller's intent (e.g. tests)
+                if r:
+                    raw_roots.append(PathUtils.normalize(r))
+
+        # If explicit root_uri is provided, we use it directly without
+        # expansion to respect caller's intent (e.g. tests)
         if root_uri:
             p = root_uri[7:] if root_uri.startswith("file://") else root_uri
             return [PathUtils.normalize(p)]
 
         if WorkspaceManager.settings.WORKSPACE_ROOT:
-            raw_roots.append(PathUtils.normalize(WorkspaceManager.settings.WORKSPACE_ROOT))
-        
+            raw_roots.append(
+                PathUtils.normalize(
+                    WorkspaceManager.settings.WORKSPACE_ROOT))
+
         if not raw_roots:
             raw_roots = [PathUtils.normalize(os.getcwd())]
 
@@ -99,7 +106,7 @@ class WorkspaceManager:
     @staticmethod
     def resolve_workspace_root(root_uri: Optional[str] = None) -> str:
         """
-        Determine the primary workspace root. 
+        Determine the primary workspace root.
         """
         roots = WorkspaceManager.resolve_workspace_roots(root_uri=root_uri)
         return roots[0] if roots else PathUtils.normalize(os.getcwd())
@@ -115,7 +122,10 @@ class WorkspaceManager:
         WorkspaceManager._migrate_legacy_workspace_config(ws_root, preferred)
         if preferred.exists():
             return str(preferred)
-        return str(Path(WorkspaceManager.settings.GLOBAL_CONFIG_DIR) / "config.json")
+        return str(
+            Path(
+                WorkspaceManager.settings.GLOBAL_CONFIG_DIR) /
+            "config.json")
 
     @staticmethod
     def workspace_config_path(root_path: str) -> Path:
@@ -133,10 +143,12 @@ class WorkspaceManager:
             with path.open("rb") as f:
                 head = f.read(16)
             return head.startswith(b"SQLite format 3")
-        except Exception: return False
+        except Exception:
+            return False
 
     @staticmethod
-    def _migrate_legacy_workspace_config(root_path: str, preferred_path: Path) -> None:
+    def _migrate_legacy_workspace_config(
+            root_path: str, preferred_path: Path) -> None:
         legacy = WorkspaceManager.legacy_workspace_config_path(root_path)
         if preferred_path.exists() or not legacy.exists():
             return
@@ -150,11 +162,13 @@ class WorkspaceManager:
                 shutil.copy2(legacy, preferred_path)
         except Exception as e:
             import logging
-            logging.getLogger("sari.workspace").debug("Failed to migrate legacy config: %s", e)
+            logging.getLogger("sari.workspace").debug(
+                "Failed to migrate legacy config: %s", e)
 
     @staticmethod
     def get_global_data_dir() -> Path:
-        return Path(PathUtils.normalize(str(Path.home() / ".local" / "share" / "sari")))
+        return Path(PathUtils.normalize(
+            str(Path.home() / ".local" / "share" / "sari")))
 
     @staticmethod
     def get_global_db_path() -> Path:
@@ -173,25 +187,39 @@ class WorkspaceManager:
     def get_global_log_dir() -> Path:
         if WorkspaceManager.settings.LOG_DIR:
             return Path(PathUtils.normalize(WorkspaceManager.settings.LOG_DIR))
-        base = Path.home() / "Library" / "Logs" / "sari" if sys.platform == "darwin" else WorkspaceManager.get_global_data_dir().parent.parent / "log" / "sari"
+        base = Path.home() / "Library" / "Logs" / \
+            "sari" if sys.platform == "darwin" else WorkspaceManager.get_global_data_dir().parent.parent / "log" / "sari"
         return Path(PathUtils.normalize(str(base)))
 
     @staticmethod
-    def get_engine_index_dir(policy: Optional[str] = None, roots: Optional[List[str]] = None, root_id: Optional[str] = None) -> Path:
-        policy = (policy or WorkspaceManager.settings.ENGINE_INDEX_POLICY or "global").lower()
+    def get_engine_index_dir(policy: Optional[str] = None,
+                             roots: Optional[List[str]] = None,
+                             root_id: Optional[str] = None) -> Path:
+        policy = (
+            policy or WorkspaceManager.settings.ENGINE_INDEX_POLICY or "global").lower()
         base = WorkspaceManager.get_global_data_dir() / "index"
         if policy in {"global", "single"}:
             return base / "global"
         if policy in {"roots_hash", "legacy"}:
             roots = roots or []
             seed = "::".join(sorted([PathUtils.normalize(r) for r in roots]))
-            digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:8] if seed else "default"
+            digest = hashlib.sha1(seed.encode(
+                "utf-8")).hexdigest()[:8] if seed else "default"
             return base / f"roots-{digest}"
         if policy in {"per_root", "shard"}:
-            rid = root_id or (WorkspaceManager.root_id_for_workspace(roots[0]) if roots else "root-default")
+            rid = root_id or (
+                WorkspaceManager.root_id_for_workspace(
+                    roots[0]) if roots else "root-default")
             if os.sep in rid or "/" in rid or ":" in rid:
-                sanitized = rid.replace(os.sep, "_").replace("/", "_").replace(":", "_").lstrip("_")
-                if len(sanitized) > 100: sanitized = sanitized[-100:]
+                sanitized = rid.replace(
+                    os.sep,
+                    "_").replace(
+                    "/",
+                    "_").replace(
+                    ":",
+                    "_").lstrip("_")
+                if len(sanitized) > 100:
+                    sanitized = sanitized[-100:]
                 rid = f"ws-{sanitized}"
             return base / f"{rid}"
         return base / "global"
@@ -210,30 +238,54 @@ class WorkspaceManager:
             text = gitignore.read_text(encoding="utf-8")
             if entry not in text:
                 with gitignore.open("a", encoding="utf-8") as f:
-                    if not text.endswith("\n"): f.write("\n")
+                    if not text.endswith("\n"):
+                        f.write("\n")
                     f.write(entry + "\n")
         except Exception as e:
             import logging
-            logging.getLogger("sari.workspace").debug("Failed to update gitignore: %s", e)
+            logging.getLogger("sari.workspace").debug(
+                "Failed to update gitignore: %s", e)
 
     @staticmethod
     def ensure_global_config() -> Path:
         """Ensure global config directory and a default config.json exist."""
         global_dir = Path(WorkspaceManager.settings.GLOBAL_CONFIG_DIR)
         config_path = global_dir / "config.json"
-        
+
         if not config_path.exists():
             global_dir.mkdir(parents=True, exist_ok=True)
             default_config = {
                 "workspace_roots": [],
-                "include_ext": [".py", ".js", ".ts", ".java", ".kt", ".md", ".json", ".sql", ".gradle", ".kts"],
-                "exclude_dirs": [".git", "node_modules", ".venv", "build", "target", ".gradle", ".idea"],
-                "db_path": str(WorkspaceManager.get_global_db_path())
-            }
+                "include_ext": [
+                    ".py",
+                    ".js",
+                    ".ts",
+                    ".java",
+                    ".kt",
+                    ".md",
+                    ".json",
+                    ".sql",
+                    ".gradle",
+                    ".kts"],
+                "exclude_dirs": [
+                    ".git",
+                    "node_modules",
+                    ".venv",
+                    "build",
+                    "target",
+                    ".gradle",
+                    ".idea"],
+                "db_path": str(
+                    WorkspaceManager.get_global_db_path())}
             try:
-                config_path.write_text(json.dumps(default_config, indent=2), encoding="utf-8")
+                config_path.write_text(
+                    json.dumps(
+                        default_config,
+                        indent=2),
+                    encoding="utf-8")
             except Exception as e:
                 import logging
-                logging.getLogger("sari.workspace").error(f"Failed to create default global config: {e}")
-        
+                logging.getLogger("sari.workspace").error(
+                    f"Failed to create default global config: {e}")
+
         return config_path

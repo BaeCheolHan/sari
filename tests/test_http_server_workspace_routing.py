@@ -40,3 +40,47 @@ def test_status_routes_to_selected_workspace(monkeypatch):
     assert resp["indexed_files"] == 2
     assert resp["repo_stats"] == {"r": 2}
 
+
+def test_search_returns_400_when_query_missing():
+    handler = Handler.__new__(Handler)
+    handler.shared_http_gateway = False
+    handler.workspace_root = "/tmp/default"
+    handler.db = SimpleNamespace()
+    handler.indexer = SimpleNamespace(cfg=SimpleNamespace(snippet_max_lines=3))
+    handler.root_ids = []
+
+    resp = Handler._handle_get(handler, "/search", {})
+    assert resp["ok"] is False
+    assert resp["status"] == 400
+    assert "missing q" in resp["error"]
+
+
+def test_search_uses_db_search_v2_and_returns_hits():
+    class _Hit:
+        def __init__(self, repo, path, score, snippet):
+            self.repo = repo
+            self.path = path
+            self.score = score
+            self.snippet = snippet
+
+    handler = Handler.__new__(Handler)
+    handler.shared_http_gateway = False
+    handler.workspace_root = "/tmp/default"
+    handler.root_ids = ["rid-1"]
+    handler.indexer = SimpleNamespace(cfg=SimpleNamespace(snippet_max_lines=4))
+
+    captured = {}
+
+    def _search_v2(opts):
+        captured["query"] = opts.query
+        captured["limit"] = opts.limit
+        captured["root_ids"] = opts.root_ids
+        return ([_Hit("repo1", "a.py", 1.0, "x")], {"total": 1})
+
+    handler.db = SimpleNamespace(search_v2=_search_v2, engine=None)
+
+    resp = Handler._handle_get(handler, "/search", {"q": ["hello"], "limit": ["5"]})
+    assert resp["ok"] is True
+    assert resp["meta"]["total"] == 1
+    assert resp["hits"][0]["path"] == "a.py"
+    assert captured == {"query": "hello", "limit": 5, "root_ids": ["rid-1"]}

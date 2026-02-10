@@ -113,9 +113,10 @@ def _maybe_lint(path: str, content: str) -> Dict[str, Any]:
 def build_dry_run_diff(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict[str, Any]:
     """드라이런 분석을 수행하고 차이점, 구문 상태, 린트 결과를 포함한 데이터 딕셔너리를 빌드합니다."""
     path = str(args.get("path") or "").strip()
-    new_content = str(args.get("content") or "")
-    if not path or new_content is None:
+    raw_content = args.get("content")
+    if not path or raw_content is None:
         raise ValueError("path and content are required")
+    new_content = str(raw_content)
     db_path = resolve_db_path(path, roots)
     if not db_path:
         raise ValueError("path is out of workspace scope")
@@ -151,10 +152,11 @@ def execute_dry_run_diff(args: Dict[str, Any], db: Any, roots: List[str]) -> Dic
     try:
         payload = build_dry_run_diff(args, db, roots)
     except ValueError as e:
+        msg = str(e)
         return mcp_response(
             "dry_run_diff",
-            lambda: pack_error("dry_run_diff", ErrorCode.INVALID_ARGS, str(e)),
-            lambda: {"error": {"code": ErrorCode.INVALID_ARGS.value, "message": str(e)}, "isError": True},
+            lambda: pack_error("dry_run_diff", ErrorCode.INVALID_ARGS, msg),
+            lambda: {"error": {"code": ErrorCode.INVALID_ARGS.value, "message": msg}, "isError": True},
         )
 
     def build_pack() -> str:

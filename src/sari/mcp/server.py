@@ -5,12 +5,12 @@ import threading
 import queue
 import concurrent.futures
 import socket
-import time
 from pathlib import Path
 from typing import Any, Dict, Optional, List
 from sari.mcp.workspace_registry import Registry
 from sari.core.workspace import WorkspaceManager
 from sari.core.settings import settings
+from sari.core.config import Config
 from sari.mcp.policies import PolicyEngine
 from sari.mcp.middleware import PolicyMiddleware, run_middlewares
 from sari.mcp.tools.registry import ToolContext, build_default_registry
@@ -24,11 +24,13 @@ try:
 except Exception:
     _orjson = None
 
+
 class JsonRpcException(Exception):
     def __init__(self, code: int, message: str, data: Any = None):
         self.code = code
         self.message = message
         self.data = data
+
 
 def _json_dumps(obj: Any) -> str:
     if _orjson:
@@ -36,7 +38,8 @@ def _json_dumps(obj: Any) -> str:
     return json.dumps(obj)
 
 
-MAX_MESSAGE_SIZE = 10 * 1024 * 1024 # 10MB
+MAX_MESSAGE_SIZE = 10 * 1024 * 1024  # 10MB
+
 
 class LocalSearchMCPServer:
     """
@@ -44,12 +47,30 @@ class LocalSearchMCPServer:
     Delegates workspace management to WorkspaceRegistry.
     """
     PROTOCOL_VERSION = "2025-11-25"
-    SUPPORTED_VERSIONS = {"2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"}
+    SUPPORTED_VERSIONS = {
+        "2024-11-05",
+        "2025-03-26",
+        "2025-06-18",
+        "2025-11-25"}
     SERVER_NAME = "sari"
     SERVER_VERSION = settings.VERSION
-    _SENSITIVE_KEYS = ("token", "secret", "password", "api_key", "apikey", "authorization", "cookie", "key")
+    _SENSITIVE_KEYS = (
+        "token",
+        "secret",
+        "password",
+        "api_key",
+        "apikey",
+        "authorization",
+        "cookie",
+        "key")
 
-    def __init__(self, workspace_root: str, cfg: Any = None, db: Any = None, indexer: Any = None, start_worker: bool = True):
+    def __init__(
+            self,
+            workspace_root: str,
+            cfg: Any = None,
+            db: Any = None,
+            indexer: Any = None,
+            start_worker: bool = True):
         self.workspace_root = workspace_root
         trace(
             "server_init_start",
@@ -59,7 +80,8 @@ class LocalSearchMCPServer:
             injected_indexer=bool(indexer),
             start_worker=start_worker,
         )
-        # Keep optional injected handles for backward compatibility with older callers.
+        # Keep optional injected handles for backward compatibility with older
+        # callers.
         self._injected_cfg = cfg
         self._injected_db = db
         self._injected_indexer = indexer
@@ -69,11 +91,17 @@ class LocalSearchMCPServer:
         self.struct_logger = get_logger("sari.mcp.protocol")
         self._tool_registry = build_default_registry()
         self._middlewares = [PolicyMiddleware(self.policy_engine)]
-        self._debug_enabled = settings.DEBUG or os.environ.get("SARI_MCP_DEBUG", "0") == "1"
-        self._dev_jsonl = (os.environ.get("SARI_DEV_JSONL") or "").strip().lower() in {"1", "true", "yes", "on"}
-        self._force_content_length = (os.environ.get("SARI_FORCE_CONTENT_LENGTH") or "").strip().lower() in {"1", "true", "yes", "on"}
+        self._debug_enabled = settings.DEBUG or os.environ.get(
+            "SARI_MCP_DEBUG", "0") == "1"
+        self._dev_jsonl = (
+            os.environ.get("SARI_DEV_JSONL") or "").strip().lower() in {
+            "1", "true", "yes", "on"}
+        self._force_content_length = (
+            os.environ.get("SARI_FORCE_CONTENT_LENGTH") or "").strip().lower() in {
+            "1", "true", "yes", "on"}
         # Add maxsize to prevent memory bloat under heavy load
-        self._req_queue: "queue.Queue[Dict[str, Any]]" = queue.Queue(maxsize=settings.get_int("MCP_QUEUE_SIZE", 1000))
+        self._req_queue: "queue.Queue[Dict[str, Any]]" = queue.Queue(
+            maxsize=settings.get_int("MCP_QUEUE_SIZE", 1000))
         self._stop = threading.Event()
         self._stdout_lock = threading.Lock()
         self.transport = None
@@ -83,17 +111,22 @@ class LocalSearchMCPServer:
         self._daemon_channels_lock = threading.Lock()
         self._daemon_channels: Dict[int, Any] = {}
         # Duplicate assignment removed. Use _debug_enabled from above.
-        
-        # Daemon proxy is handled by the stdio proxy process, not the MCP server.
+
+        # Daemon proxy is handled by the stdio proxy process, not the MCP
+        # server.
         self._proxy_to_daemon = False
         self._daemon_sock = None
 
         max_workers = int(os.environ.get("SARI_MCP_WORKERS", "4") or 4)
-        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+        self._executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=max_workers)
         self._worker = threading.Thread(target=self._worker_loop, daemon=True)
         if start_worker:
             self._worker.start()
-        trace("server_init_done", workspace_root=self.workspace_root, proxy_to_daemon=self._proxy_to_daemon)
+        trace(
+            "server_init_done",
+            workspace_root=self.workspace_root,
+            proxy_to_daemon=self._proxy_to_daemon)
 
     def handle_initialize(self, params: Dict[str, Any]) -> Dict[str, Any]:
         trace(
@@ -106,7 +139,7 @@ class LocalSearchMCPServer:
         )
         root_uri = params.get("rootUri") or params.get("rootPath")
         workspace_folders = params.get("workspaceFolders", [])
-        
+
         # Primary workspace selection strategy:
         # 1. Use rootUri if provided.
         # 2. Otherwise, use the first workspaceFolder if available.
@@ -117,12 +150,16 @@ class LocalSearchMCPServer:
 
         if target_uri:
             # Update workspace if provided by client
-            self.workspace_root = WorkspaceManager.resolve_workspace_root(root_uri=target_uri)
-            trace("initialize_resolved_workspace", workspace_root=self.workspace_root, target_uri=target_uri)
-        
+            self.workspace_root = WorkspaceManager.resolve_workspace_root(
+                root_uri=target_uri)
+            trace(
+                "initialize_resolved_workspace",
+                workspace_root=self.workspace_root,
+                target_uri=target_uri)
+
         negotiated_version = self._negotiate_protocol_version(params)
         trace("initialize_negotiated_version", version=negotiated_version)
-            
+
         return {
             "protocolVersion": negotiated_version,
             "serverInfo": {"name": self.SERVER_NAME, "version": self.SERVER_VERSION},
@@ -136,7 +173,8 @@ class LocalSearchMCPServer:
             },
         }
 
-    def _iter_client_protocol_versions(self, params: Dict[str, Any]) -> List[str]:
+    def _iter_client_protocol_versions(
+            self, params: Dict[str, Any]) -> List[str]:
         versions: List[str] = []
         seen = set()
 
@@ -165,7 +203,8 @@ class LocalSearchMCPServer:
             if v in self.SUPPORTED_VERSIONS:
                 return v
 
-        strict = (os.environ.get("SARI_STRICT_PROTOCOL") or "").strip().lower() in {"1", "true", "yes", "on"}
+        strict = (os.environ.get("SARI_STRICT_PROTOCOL")
+                  or "").strip().lower() in {"1", "true", "yes", "on"}
         if strict and client_versions:
             raise JsonRpcException(
                 -32602,
@@ -188,18 +227,28 @@ class LocalSearchMCPServer:
         if self._injected_db is not None and self._injected_indexer is not None:
             db = self._injected_db
             indexer = self._injected_indexer
-            roots = list(getattr(cfg, "workspace_roots", []) or [self.workspace_root])
+            roots = list(
+                getattr(
+                    cfg,
+                    "workspace_roots",
+                    []) or [
+                    self.workspace_root])
         else:
             if self._session is None:
-                self._session = self.registry.get_or_create(self.workspace_root)
+                self._session = self.registry.get_or_create(
+                    self.workspace_root)
                 self._session_acquired = True
             session = self._session
             db = getattr(session, "db", None)
             indexer = getattr(session, "indexer", None)
             cfg_data = getattr(session, "config_data", {}) or {}
-            roots = list(cfg_data.get("workspace_roots", [self.workspace_root]))
+            roots = list(
+                cfg_data.get(
+                    "workspace_roots", [
+                        self.workspace_root]))
             if db is None:
-                raise JsonRpcException(-32000, "tools/call failed: session.db is unavailable")
+                raise JsonRpcException(-32000,
+                                       "tools/call failed: session.db is unavailable")
 
         ctx = ToolContext(
             db=db,
@@ -209,7 +258,7 @@ class LocalSearchMCPServer:
             cfg=cfg,
             logger=self.logger,
             workspace_root=self.workspace_root,
-            server_version=self.SERVER_VERSION, 
+            server_version=self.SERVER_VERSION,
             policy_engine=self.policy_engine
         )
 
@@ -225,11 +274,17 @@ class LocalSearchMCPServer:
         """Return configured workspace roots as MCP root objects."""
         cfg = None
         try:
-            cfg_path = WorkspaceManager.resolve_config_path(self.workspace_root)
-            cfg = Config.load(cfg_path, workspace_root_override=self.workspace_root)
+            cfg_path = WorkspaceManager.resolve_config_path(
+                self.workspace_root)
+            cfg = Config.load(
+                cfg_path, workspace_root_override=self.workspace_root)
         except Exception:
             cfg = None
-        config_roots = list(getattr(cfg, "workspace_roots", []) or []) if cfg else []
+        config_roots = list(
+            getattr(
+                cfg,
+                "workspace_roots",
+                []) or []) if cfg else []
         roots = WorkspaceManager.resolve_workspace_roots(
             root_uri=f"file://{self.workspace_root}",
             config_roots=config_roots,
@@ -251,28 +306,43 @@ class LocalSearchMCPServer:
         s = deepcopy(schema)
 
         def walk(node):
-            if not isinstance(node, dict): return node
+            if not isinstance(node, dict):
+                return node
             t = node.get("type")
             if isinstance(t, str):
                 if t == "integer":
                     node["type"] = "number"
-                    if "multipleOf" not in node: node["multipleOf"] = 1
+                    if "multipleOf" not in node:
+                        node["multipleOf"] = 1
             elif isinstance(t, list):
                 t2 = [x if x != "integer" else "number" for x in t if x != "null"]
-                if not t2: t2 = ["object"]
+                if not t2:
+                    t2 = ["object"]
                 node["type"] = t2[0] if len(t2) == 1 else t2
                 if "integer" in t or "number" in t2:
                     node.setdefault("multipleOf", 1)
-            
-            for key in ("properties", "patternProperties", "definitions", "$defs"):
+
+            for key in (
+                "properties",
+                "patternProperties",
+                "definitions",
+                    "$defs"):
                 if key in node and isinstance(node[key], dict):
-                    for k, v in list(node[key].items()): node[key][k] = walk(v)
-            if "items" in node: node["items"] = walk(node["items"])
+                    for k, v in list(node[key].items()):
+                        node[key][k] = walk(v)
+            if "items" in node:
+                node["items"] = walk(node["items"])
             return node
         return walk(s)
 
     def list_tools(self) -> List[Dict[str, Any]]:
-        expose_internal = os.environ.get("SARI_EXPOSE_INTERNAL_TOOLS", "").strip().lower() in {"1", "true", "yes", "on"}
+        os.environ.get(
+            "SARI_EXPOSE_INTERNAL_TOOLS",
+            "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on"}
         return [
             {
                 "name": t.name,
@@ -302,7 +372,8 @@ class LocalSearchMCPServer:
         self._ensure_initialized()
         return self.handle_tools_call({"name": "search", "arguments": args})
 
-    def handle_request(self, request: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def handle_request(
+            self, request: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         trace(
             "handle_request_enter",
             method=request.get("method"),
@@ -315,21 +386,28 @@ class LocalSearchMCPServer:
                 err = resp.get("error") if isinstance(resp, dict) else None
                 if isinstance(err, dict) and err.get("code") == -32002:
                     # Daemon is unreachable; fall back to local stdio handling.
-                    self._log_debug("Daemon proxy failed; falling back to local MCP server.")
+                    self._log_debug(
+                        "Daemon proxy failed; falling back to local MCP server.")
                     self._proxy_to_daemon = False
                     self._close_all_daemon_connections()
                     trace("daemon_proxy_fallback", error=err)
                 else:
-                    trace("handle_request_proxy_response", has_error=bool(err), msg_id=request.get("id"))
+                    trace(
+                        "handle_request_proxy_response",
+                        has_error=bool(err),
+                        msg_id=request.get("id"))
                     return resp
             else:
                 return resp
 
-        method, params, msg_id = request.get("method"), request.get("params", {}), request.get("id")
-        if msg_id is None: return None # Ignore notifications for now
-        
+        method, params, msg_id = request.get(
+            "method"), request.get("params", {}), request.get("id")
+        if msg_id is None:
+            return None  # Ignore notifications for now
+
         try:
-            if method == "initialize": result = self.handle_initialize(params)
+            if method == "initialize":
+                result = self.handle_initialize(params)
             elif method == "sari/identify":
                 result = {
                     "name": self.SERVER_NAME,
@@ -337,46 +415,87 @@ class LocalSearchMCPServer:
                     "workspaceRoot": self.workspace_root,
                     "pid": os.getpid()
                 }
-            elif method == "tools/list": result = {"tools": self.list_tools()}
-            elif method == "prompts/list": result = {"prompts": []}
-            elif method == "resources/list": result = {"resources": []}
-            elif method == "resources/templates/list": result = {"resourceTemplates": []}
-            elif method == "roots/list": result = {"roots": self.list_roots()}
-            elif method == "tools/call": 
+            elif method == "tools/list":
+                result = {"tools": self.list_tools()}
+            elif method == "prompts/list":
+                result = {"prompts": []}
+            elif method == "resources/list":
+                result = {"resources": []}
+            elif method == "resources/templates/list":
+                result = {"resourceTemplates": []}
+            elif method == "roots/list":
+                result = {"roots": self.list_roots()}
+            elif method == "tools/call":
                 result = self.handle_tools_call(params)
                 if isinstance(result, dict) and result.get("isError"):
                     err = result.get("error", {})
                     return {
-                        "jsonrpc": "2.0", 
-                        "id": msg_id, 
+                        "jsonrpc": "2.0",
+                        "id": msg_id,
                         "error": {
-                            "code": err.get("code", -32000), 
+                            "code": err.get("code", -32000),
                             "message": err.get("message", "Unknown tool error"),
                             "data": result
                         }
                     }
-            elif method in {"initialized", "notifications/initialized"}: result = {}
-            elif method == "ping": result = {}
-            else: return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32601, "message": f"Method not found: {method}"}}
+            elif method in {"initialized", "notifications/initialized"}:
+                result = {}
+            elif method == "ping":
+                result = {}
+            else:
+                return {
+                    "jsonrpc": "2.0",
+                    "id": msg_id,
+                    "error": {
+                        "code": -32601,
+                        "message": f"Method not found: {method}"}}
             resp = {"jsonrpc": "2.0", "id": msg_id, "result": result}
             trace("handle_request_exit", method=method, msg_id=msg_id, ok=True)
             return resp
         except JsonRpcException as e:
-            trace("handle_request_error", method=method, msg_id=msg_id, code=e.code, message=e.message)
-            return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": e.code, "message": e.message, "data": e.data}}
+            trace(
+                "handle_request_error",
+                method=method,
+                msg_id=msg_id,
+                code=e.code,
+                message=e.message)
+            return {
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "error": {
+                    "code": e.code,
+                    "message": e.message,
+                    "data": e.data}}
         except Exception as e:
-            trace("handle_request_error", method=method, msg_id=msg_id, code=-32000, message=str(e))
-            return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32000, "message": str(e)}}
+            trace(
+                "handle_request_error",
+                method=method,
+                msg_id=msg_id,
+                code=-32000,
+                message=str(e))
+            return {
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "error": {
+                    "code": -32000,
+                    "message": str(e)}}
 
-    def _forward_to_daemon(self, request: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def _forward_to_daemon(
+            self, request: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Forward MCP request to the TCP daemon and return response."""
         tid = threading.get_ident()
-        trace("forward_to_daemon_enter", msg_id=request.get("id"), method=request.get("method"))
+        trace(
+            "forward_to_daemon_enter",
+            msg_id=request.get("id"),
+            method=request.get("method"))
         try:
             conn, f = self._ensure_daemon_connection(tid)
             try:
                 resp = self._forward_over_open_socket(request, conn, f)
-                trace("forward_to_daemon_exit", msg_id=request.get("id"), ok=bool(resp))
+                trace(
+                    "forward_to_daemon_exit",
+                    msg_id=request.get("id"),
+                    ok=bool(resp))
                 return resp
             except Exception:
                 # Retry once with a fresh per-thread connection.
@@ -384,10 +503,16 @@ class LocalSearchMCPServer:
                 self._close_daemon_connection(tid)
                 conn, f = self._ensure_daemon_connection(tid)
                 resp = self._forward_over_open_socket(request, conn, f)
-                trace("forward_to_daemon_exit", msg_id=request.get("id"), ok=bool(resp))
+                trace(
+                    "forward_to_daemon_exit",
+                    msg_id=request.get("id"),
+                    ok=bool(resp))
                 return resp
         except Exception as e:
-            trace("forward_to_daemon_error", msg_id=request.get("id"), error=str(e))
+            trace(
+                "forward_to_daemon_error",
+                msg_id=request.get("id"),
+                error=str(e))
             msg_id = request.get("id")
             return {
                 "jsonrpc": "2.0",
@@ -404,8 +529,16 @@ class LocalSearchMCPServer:
             if ch is not None:
                 trace("daemon_connection_reuse", tid=tid)
                 return ch
-        trace("daemon_connection_new", tid=tid, daemon_address=getattr(self, "_daemon_address", None))
-        conn = socket.create_connection(self._daemon_address, timeout=settings.DAEMON_TIMEOUT_SEC)
+        trace(
+            "daemon_connection_new",
+            tid=tid,
+            daemon_address=getattr(
+                self,
+                "_daemon_address",
+                None))
+        conn = socket.create_connection(
+            self._daemon_address,
+            timeout=settings.DAEMON_TIMEOUT_SEC)
         f = conn.makefile("rb")
         with self._daemon_channels_lock:
             self._daemon_channels[tid] = (conn, f)
@@ -445,11 +578,16 @@ class LocalSearchMCPServer:
             except Exception:
                 pass
 
-    def _forward_over_open_socket(self, request: Dict[str, Any], conn: Any, f: Any) -> Optional[Dict[str, Any]]:
+    def _forward_over_open_socket(
+            self, request: Dict[str, Any], conn: Any, f: Any) -> Optional[Dict[str, Any]]:
         body = json.dumps(request).encode("utf-8")
         header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
         conn.sendall(header + body)
-        trace("daemon_socket_sent", msg_id=request.get("id"), method=request.get("method"), bytes=len(body))
+        trace(
+            "daemon_socket_sent",
+            msg_id=request.get("id"),
+            method=request.get("method"),
+            bytes=len(body))
 
         headers: Dict[bytes, bytes] = {}
         while True:
@@ -472,23 +610,32 @@ class LocalSearchMCPServer:
             trace("daemon_socket_no_body", msg_id=request.get("id"))
             return None
         resp = json.loads(resp_body.decode("utf-8"))
-        trace("daemon_socket_received", msg_id=request.get("id"), bytes=content_length)
+        trace(
+            "daemon_socket_received",
+            msg_id=request.get("id"),
+            bytes=content_length)
         return resp
 
     def run(self, output_stream: Optional[Any] = None) -> None:
         """Standard MCP JSON-RPC loop with encapsulated transport."""
         self._log_debug("Sari MCP Server starting run loop...")
         trace("run_loop_start", workspace_root=self.workspace_root)
-        
+
         if not self.transport:
             input_stream = getattr(sys.stdin, "buffer", sys.stdin)
-            
-            # Use injected stream, or fallback to server property, or finally sys.stdout.buffer
-            target_out = output_stream or getattr(self, "_original_stdout", None) or getattr(sys.stdout, "buffer", sys.stdout)
-            
-            wire_format = (os.environ.get("SARI_FORMAT") or "pack").strip().lower()
-            # Accept JSONL input for compatibility, but default to Content-Length framing unless explicitly configured.
-            self.transport = McpTransport(input_stream, target_out, allow_jsonl=True)
+
+            # Use injected stream, or fallback to server property, or finally
+            # sys.stdout.buffer
+            target_out = output_stream or getattr(
+                self, "_original_stdout", None) or getattr(
+                sys.stdout, "buffer", sys.stdout)
+
+            wire_format = (os.environ.get("SARI_FORMAT")
+                           or "pack").strip().lower()
+            # Accept JSONL input for compatibility, but default to
+            # Content-Length framing unless explicitly configured.
+            self.transport = McpTransport(
+                input_stream, target_out, allow_jsonl=True)
             if wire_format == "json":
                 self.transport.default_mode = "jsonl"
             else:
@@ -506,14 +653,18 @@ class LocalSearchMCPServer:
                 if res is None:
                     trace("run_loop_eof")
                     break
-                
+
                 req, mode = res
                 self._log_debug_request(mode, req)
-                trace("run_loop_received", msg_id=req.get("id"), method=req.get("method"), mode=mode)
-                
+                trace(
+                    "run_loop_received",
+                    msg_id=req.get("id"),
+                    method=req.get("method"),
+                    mode=mode)
+
                 # Attach metadata for response framing matching
                 req["_sari_framing_mode"] = mode
-                
+
                 try:
                     # Non-blocking put to avoid hanging the main read loop if workers are slow.
                     # We use a short timeout to handle transient spikes.
@@ -532,7 +683,8 @@ class LocalSearchMCPServer:
                         mode = req.get("_sari_framing_mode", "content-length")
                         with self._stdout_lock:
                             self.transport.write_message(error_resp, mode=mode)
-                    self._log_debug(f"CRITICAL: MCP request queue is full! Dropping request {msg_id}")
+                    self._log_debug(
+                        f"CRITICAL: MCP request queue is full! Dropping request {msg_id}")
                     trace("run_loop_queue_full", msg_id=msg_id)
                 except Exception as e:
                     self._log_debug(f"ERROR putting req to queue: {e}")
@@ -552,13 +704,13 @@ class LocalSearchMCPServer:
             return
         self._stop.set()
         trace("server_shutdown_start")
-        
+
         # 1. Stop processing new requests and WAIT for current ones
         try:
             self._executor.shutdown(wait=True, cancel_futures=False)
         except Exception as e:
             self._log_debug(f"Executor shutdown error: {e}")
-            
+
         # 2. Cleanup all workspace resources (DB, Engine)
         try:
             self.registry.shutdown_all()
@@ -597,7 +749,7 @@ class LocalSearchMCPServer:
                 # Queue access error - log and continue
                 self._log_debug(f"Queue access error in worker loop: {e}")
                 continue
-            
+
             try:
                 self._executor.submit(self._handle_and_respond, req)
             except RuntimeError as e:
@@ -612,7 +764,6 @@ class LocalSearchMCPServer:
                     self._req_queue.task_done()
                 except Exception:
                     pass
-
 
     def _drain_pending_requests(self) -> None:
         while True:
@@ -630,7 +781,10 @@ class LocalSearchMCPServer:
 
     def _handle_and_respond(self, req: Dict[str, Any]) -> None:
         try:
-            trace("handle_and_respond_enter", msg_id=req.get("id"), method=req.get("method"))
+            trace(
+                "handle_and_respond_enter",
+                msg_id=req.get("id"),
+                method=req.get("method"))
             resp = self.handle_request(req)
             if resp:
                 req_mode = req.get("_sari_framing_mode", "content-length")
@@ -641,13 +795,20 @@ class LocalSearchMCPServer:
                 self._log_debug_response(mode, resp)
                 if self.transport is None:
                     raise RuntimeError("transport is not initialized")
-                # Serialize writes to stdout transport to avoid frame interleaving.
+                # Serialize writes to stdout transport to avoid frame
+                # interleaving.
                 with self._stdout_lock:
                     self.transport.write_message(resp, mode=mode)
-                trace("handle_and_respond_sent", msg_id=req.get("id"), mode=mode)
+                trace(
+                    "handle_and_respond_sent",
+                    msg_id=req.get("id"),
+                    mode=mode)
         except Exception as e:
             self._log_debug(f"ERROR in _handle_and_respond: {e}")
-            trace("handle_and_respond_error", msg_id=req.get("id"), error=str(e))
+            trace(
+                "handle_and_respond_error",
+                msg_id=req.get("id"),
+                error=str(e))
 
     def _log_debug(self, message: str) -> None:
         """Log MCP traffic to the structured logger."""
@@ -687,8 +848,10 @@ class LocalSearchMCPServer:
             summary["tool"] = params.get("name")
             if isinstance(args, dict):
                 summary["argument_keys"] = sorted(list(args.keys()))
-                summary["arguments"] = {k: self._sanitize_value(v, k) for k, v in args.items()}
-        
+                summary["arguments"] = {
+                    k: self._sanitize_value(
+                        v, k) for k, v in args.items()}
+
         # Log as structured event
         self.struct_logger.debug("mcp_request", **summary)
 
@@ -702,25 +865,28 @@ class LocalSearchMCPServer:
             "has_error": "error" in resp,
         }
         # Simplify summary logic for response logging
-        # We don't want to log generic outbound debug string if we can log structured data
+        # We don't want to log generic outbound debug string if we can log
+        # structured data
         if "error" in resp and isinstance(resp["error"], dict):
             summary["error"] = self._sanitize_value(resp["error"])
-        
+
         self.struct_logger.debug("mcp_response", **summary)
+
 
 def main(original_stdout: Any = None) -> None:
     # 1. Capture the pure, untouched stdout for MCP communication
     mcp_out = original_stdout or sys.stdout.buffer
-    
+
     # 2. Immediately redirect global sys.stdout to sys.stderr to isolate side-effects
-    # This ensures that even accidental 'print()' calls go to logs, not the protocol.
-    import io
-    sys.stdout = sys.stderr 
-    
+    # This ensures that even accidental 'print()' calls go to logs, not the
+    # protocol.
+    sys.stdout = sys.stderr
+
     server = LocalSearchMCPServer(WorkspaceManager.resolve_workspace_root())
-    
+
     # 3. Pass only the preserved stream to the server's run loop
     server.run(mcp_out)
+
 
 if __name__ == "__main__":
     main()

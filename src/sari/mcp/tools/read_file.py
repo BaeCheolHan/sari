@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List
 from sari.core.db import LocalSearchDB
-from sari.mcp.tools._util import mcp_response, pack_error, ErrorCode, resolve_db_path, pack_header, pack_line, pack_encode_text
+from sari.mcp.tools._util import mcp_response, pack_error, ErrorCode, resolve_db_path, pack_header, pack_encode_text
 
 def execute_read_file(args: Dict[str, Any], db: LocalSearchDB, roots: List[str]) -> Dict[str, Any]:
     """

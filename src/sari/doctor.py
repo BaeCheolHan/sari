@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ruff: noqa: E402
 """
 Sari Doctor - Health Check.
 Checks:
@@ -9,10 +10,6 @@ Checks:
 """
 import sys
 import os
-import socket
-import sqlite3
-import shutil
-import urllib.request
 from pathlib import Path
 
 # Add project root to sys.path
@@ -20,15 +17,6 @@ SCRIPT_DIR = Path(__file__).parent
 REPO_ROOT = SCRIPT_DIR # The script is already in the repo root
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
-
-from sari.core.db import LocalSearchDB
-from sari.core.workspace import WorkspaceManager
-from sari.core.server_registry import ServerRegistry
-try:
-    from sari.mcp.cli import get_daemon_address
-except ImportError:
-    sys.path.insert(0, str(REPO_ROOT))
-    from sari.mcp.cli import get_daemon_address
 
 from sari.core.health import SariDoctor
 
@@ -70,7 +58,7 @@ def run_doctor():
                 print(f"       - Read/Parse Time: {d.get('read_time', 0)}s")
                 print(f"       - DB Write Time: {d.get('db_time', 0)}s")
             if d.get("slow_files"):
-                print(f"       - Top 3 Slow Files:")
+                print("       - Top 3 Slow Files:")
                 for f, ms in d["slow_files"][:3]:
                     print(f"         * {f}: {ms:.1f}ms")
 

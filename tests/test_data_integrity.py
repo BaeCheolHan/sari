@@ -1,8 +1,6 @@
 import pytest
-import os
 import hashlib
 import time
-from pathlib import Path
 from sari.core.db.main import LocalSearchDB
 from sari.core.indexer.main import Indexer
 from sari.core.config import Config

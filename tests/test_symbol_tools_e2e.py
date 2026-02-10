@@ -7,10 +7,6 @@ from sari.core.config.main import Config
 from sari.core.db.main import LocalSearchDB
 from sari.core.indexer.main import Indexer
 from sari.core.workspace import WorkspaceManager
-from sari.mcp.tools.call_graph import execute_call_graph
-from sari.mcp.tools.get_callers import execute_get_callers
-from sari.mcp.tools.get_implementations import execute_get_implementations
-from sari.mcp.tools.read_symbol import execute_read_symbol
 from sari.mcp.tools.search_symbols import execute_search_symbols
 
 
@@ -91,7 +87,7 @@ def test_structural_tools_e2e_with_repo_name_scope(tmp_path):
     helper_text = helper["content"][0]["text"]
     helper_sid = _first_sid(helper_text)
     assert helper_sid
-    helper_path = urllib.parse.unquote(helper_text).split(" path=", 1)[1].split(" ", 1)[0]
+    urllib.parse.unquote(helper_text).split(" path=", 1)[1].split(" ", 1)[0]
 
     do_work = execute_search_symbols(
         {"query": "doWork", "repo": "StockManager-v-1.0", "limit": 10},
@@ -100,9 +96,9 @@ def test_structural_tools_e2e_with_repo_name_scope(tmp_path):
         roots,
     )
     do_work_text = do_work["content"][0]["text"]
-    do_work_sid = _first_sid(do_work_text)
+    _first_sid(do_work_text)
     do_work_path = urllib.parse.unquote(do_work_text).split(" path=", 1)[1].split(" ", 1)[0]
-    root_id = do_work_path.split("/", 1)[0]
+    do_work_path.split("/", 1)[0]
     db.close_all()
 
 

@@ -228,7 +228,6 @@ def extract_daemon_start_params(args: argparse.Namespace) -> Dict[str, Any]:
 
 def handle_existing_daemon(params: Dict[str, Any]) -> Optional[int]:
     """Handle existing daemon instance, return exit code if should exit early."""
-    from .utils import get_arg as _arg
     
     host = params["host"]
     port = params["port"]
@@ -236,7 +235,7 @@ def handle_existing_daemon(params: Dict[str, Any]) -> Optional[int]:
     registry = params["registry"]
     explicit_port = params["explicit_port"]
     force_start = params["force_start"]
-    args = params["args"]
+    params["args"]
     
     identify = identify_sari_daemon(host, port)
     if not identify:
@@ -281,8 +280,8 @@ def check_port_availability(params: Dict[str, Any]) -> Optional[int]:
     
     host = params["host"]
     port = params["port"]
-    explicit_port = params["explicit_port"]
-    registry = params["registry"]
+    params["explicit_port"]
+    params["registry"]
     
     if not port_in_use(host, port):
         return None  # Port is available, continue
@@ -517,7 +516,10 @@ def extract_daemon_stop_params(args: argparse.Namespace) -> Dict[str, Any]:
     def _arg(args, key):
         return getattr(args, key, None)
 
-    if _arg(args, "daemon_host") or _arg(args, "daemon_port"):
+    if bool(_arg(args, "all")):
+        host, port = None, None
+        all_mode = True
+    elif _arg(args, "daemon_host") or _arg(args, "daemon_port"):
         host = _arg(args, "daemon_host") or DEFAULT_HOST
         port = int(_arg(args, "daemon_port") or DEFAULT_PORT)
         all_mode = False

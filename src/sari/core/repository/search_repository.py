@@ -12,7 +12,9 @@ class SearchRepository(BaseRepository):
     파일 및 심볼에 대한 고도화된 검색 기능을 제공하는 저장소입니다.
     키워드 검색, 시맨틱(벡터) 검색, 그리고 저장소 후보 탐색 기능을 포함합니다.
     """
-    def repo_candidates(self, q: str, limit: int = 3, root_ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+
+    def repo_candidates(self, q: str, limit: int = 3,
+                        root_ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         """
         사용자의 쿼리에 가장 부합하는(매칭되는 내용이 많은) 상위 N개의 저장소(repo) 후보를 반환합니다.
         """
@@ -30,14 +32,18 @@ class SearchRepository(BaseRepository):
         rows = self.execute(sql, params).fetchall()
         return [{"repo": r[0], "score": int(r[1])} for r in rows]
 
-    def search_semantic(self, query_vector: List[float], limit: int = 10, **kwargs) -> List[SearchHit]:
+    def search_semantic(
+            self,
+            query_vector: List[float],
+            limit: int = 10,
+            **kwargs) -> List[SearchHit]:
         """
         입력된 쿼리 벡터와 DB에 저장된 벡터 간의 코사인 유사도를 계산하여 시맨틱 검색을 수행합니다.
         최적화를 위해 numpy가 있는 경우 활용하며, 유사도가 높은 순으로 결과를 반환합니다.
         """
         import struct
         import math
-        
+
         try:
             import numpy as np
             has_numpy = True
@@ -52,42 +58,47 @@ class SearchRepository(BaseRepository):
             params = rs
         else:
             params = []
-            
+
         rows = self.execute(sql, params).fetchall()
-        if not rows: return []
+        if not rows:
+            return []
 
         # Convert query_vector to numpy for speed
         if has_numpy:
             q_vec = np.array(query_vector, dtype=np.float32)
             q_norm = np.linalg.norm(q_vec)
-            if q_norm > 0: q_vec /= q_norm # Normalize
+            if q_norm > 0:
+                q_vec /= q_norm  # Normalize
         else:
             q_vec = query_vector
-            q_norm = math.sqrt(sum(x*x for x in q_vec))
+            q_norm = math.sqrt(sum(x * x for x in q_vec))
 
         scored_hits = []
         for entity_id, entity_type, vec_blob, root_id in rows:
-            if not vec_blob: continue
-            
+            if not vec_blob:
+                continue
+
             # 1. Faster Unpacking
             vec = struct.unpack(f"{len(vec_blob)//4}f", vec_blob)
-            
+
             # 2. Advanced Similarity Calculation
             if has_numpy:
                 v = np.array(vec, dtype=np.float32)
                 v_norm = np.linalg.norm(v)
-                if v_norm == 0: continue
+                if v_norm == 0:
+                    continue
                 # Cosine Similarity via Dot Product of normalized vectors
-                score = np.dot(q_vec, v) / v_norm 
+                score = np.dot(q_vec, v) / v_norm
             else:
                 dot = sum(a * b for a, b in zip(q_vec, vec))
-                v_norm = math.sqrt(sum(x*x for x in vec))
-                if v_norm == 0: continue
+                v_norm = math.sqrt(sum(x * x for x in vec))
+                if v_norm == 0:
+                    continue
                 score = dot / (q_norm * v_norm)
-            
-            if score > 0.4: # Slightly lower threshold for semantic nuances
+
+            if score > 0.4:  # Slightly lower threshold for semantic nuances
                 scored_hits.append((score, entity_id, entity_type, root_id))
-        
+
         # 3. Intelligent Ranking
         scored_hits.sort(key=lambda x: x[0], reverse=True)
         results = []
@@ -107,28 +118,32 @@ class SearchRepository(BaseRepository):
         """
         query = str(getattr(opts, "query", "") or "").strip()
         if not query:
-            return [], {"total": 0, "total_mode": getattr(opts, "total_mode", "exact")}
+            return [], {
+                "total": 0, "total_mode": getattr(
+                    opts, "total_mode", "exact")}
 
         # Extract search parameters
         params = self._extract_search_params(opts, query)
-        
+
         # Build and execute SQL query
         rows = self._execute_search_query(params)
-        
+
         # Process results into SearchHits
         hits = self._process_search_results(rows, query)
-        
+
         # Calculate total count if requested
         total = self._calculate_total_count(params, hits)
-        
+
         return hits, {"total": total, "total_mode": params["total_mode"]}
 
     def _extract_search_params(self, opts: Any, query: str) -> Dict[str, Any]:
         """Extract and validate search parameters from options."""
         raw_file_types = getattr(opts, "file_types", None) or []
-        file_types = [str(value).strip().lower().lstrip(".") for value in raw_file_types if str(value).strip()]
+        file_types = [str(value).strip().lower().lstrip(".")
+                      for value in raw_file_types if str(value).strip()]
         raw_excludes = getattr(opts, "exclude_patterns", None) or []
-        exclude_patterns = [str(value).strip() for value in raw_excludes if str(value).strip()]
+        exclude_patterns = [str(value).strip()
+                            for value in raw_excludes if str(value).strip()]
         return {
             "query": query,
             "like_query": f"%{query}%",
@@ -142,12 +157,16 @@ class SearchRepository(BaseRepository):
             "total_mode": getattr(opts, "total_mode", "exact"),
         }
 
-    def _build_where_clause(self, params: Dict[str, Any]) -> Tuple[str, List[Any]]:
+    def _build_where_clause(
+            self, params: Dict[str, Any]) -> Tuple[str, List[Any]]:
         conditions: List[str] = [
             "f.deleted_ts = 0",
             "(f.path LIKE ? OR f.rel_path LIKE ? OR f.fts_content LIKE ?)",
         ]
-        sql_params: List[Any] = [params["like_query"], params["like_query"], params["like_query"]]
+        sql_params: List[Any] = [
+            params["like_query"],
+            params["like_query"],
+            params["like_query"]]
 
         if params["repo"]:
             conditions.append("f.repo = ?")
@@ -200,21 +219,27 @@ class SearchRepository(BaseRepository):
                 "SELECT f.path, f.repo, f.mtime, f.size, f.fts_content, f.rel_path, 0.0 as importance "
                 "FROM files f "
                 f"WHERE {where_clause} "
-                "ORDER BY f.mtime DESC LIMIT ? OFFSET ?"
-            )
-            return self.execute(fallback_sql, sql_params + paging_params).fetchall()
+                "ORDER BY f.mtime DESC LIMIT ? OFFSET ?")
+            return self.execute(
+                fallback_sql,
+                sql_params +
+                paging_params).fetchall()
 
-    def _process_search_results(self, rows: List[Tuple], query: str) -> List[SearchHit]:
+    def _process_search_results(
+            self,
+            rows: List[Tuple],
+            query: str) -> List[SearchHit]:
         """Process database rows into SearchHit objects with snippets."""
         hits: List[SearchHit] = []
-        
+
         for r in rows:
             # Flexible row unpacking
-            path, repo_name, mtime, size, fts_content, rel_path, importance = r[0], r[1], r[2], r[3], r[4], r[5], r[6]
-            
+            path, repo_name, mtime, size, fts_content, _rel_path, importance = r[
+                0], r[1], r[2], r[3], r[4], r[5], r[6]
+
             # Extract snippet and count matches
             snippet, match_count = self._extract_snippet(fts_content, query)
-            
+
             hits.append(
                 SearchHit(
                     repo=repo_name or "",
@@ -224,18 +249,20 @@ class SearchRepository(BaseRepository):
                     mtime=int(mtime or 0),
                     size=int(size or 0),
                     match_count=max(1, match_count),
-                    file_type=os.path.splitext(str(path))[1] if "." in str(path) else "",
+                    file_type=os.path.splitext(
+                        str(path))[1] if "." in str(path) else "",
                     hit_reason=f"Keyword (importance={importance:.1f})",
                 )
             )
-        
+
         return hits
 
-    def _extract_snippet(self, fts_content: str, query: str) -> Tuple[str, int]:
+    def _extract_snippet(self, fts_content: str,
+                         query: str) -> Tuple[str, int]:
         """Extract context snippet around query match."""
         snippet = ""
         match_count = 0
-        
+
         if fts_content:
             try:
                 text = str(fts_content)
@@ -249,19 +276,23 @@ class SearchRepository(BaseRepository):
                     snippet = text[start:end]
             except Exception:
                 snippet = ""
-        
+
         return snippet, match_count
 
-    def _calculate_total_count(self, params: Dict[str, Any], hits: List[SearchHit]) -> int:
+    def _calculate_total_count(
+            self, params: Dict[str, Any], hits: List[SearchHit]) -> int:
         """Calculate total result count based on total_mode."""
         total = len(hits)
-        
+
         if params["total_mode"] == "exact":
             try:
                 where_clause, count_params = self._build_where_clause(params)
                 count_sql = f"SELECT COUNT(1) FROM files f WHERE {where_clause}"
-                total = int(self.execute(count_sql, count_params).fetchone()[0])
+                total = int(
+                    self.execute(
+                        count_sql,
+                        count_params).fetchone()[0])
             except Exception:
                 total = len(hits)
-        
+
         return total

@@ -1,4 +1,3 @@
-import pytest
 from sari.core.db.main import LocalSearchDB
 from sari.core.models import IndexingResult
 from sari.core.repository.symbol_repository import SymbolRepository

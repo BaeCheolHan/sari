@@ -1,4 +1,3 @@
-import pytest
 from sari.core.models import IndexingResult
 
 def test_db_empty_batch_resilience(db):

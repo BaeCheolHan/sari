@@ -1,6 +1,4 @@
-import pytest
 import logging
-import os
 from sari.core.utils.compression import _compress, _decompress
 from sari.core.utils.logging import get_logger, configure_logging
 from sari.core.workspace import WorkspaceManager

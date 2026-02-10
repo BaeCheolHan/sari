@@ -1,5 +1,4 @@
 import os
-import pytest
 from sari.core.daemon_resolver import resolve_daemon_address, DEFAULT_PORT, DEFAULT_HOST
 from sari.core.server_registry import ServerRegistry
 

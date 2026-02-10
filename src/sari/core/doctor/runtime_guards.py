@@ -1,6 +1,4 @@
-import os
 import psutil
-import logging
 from typing import Dict, Any
 
 def _check_db_migration_safety() -> Dict[str, Any]:

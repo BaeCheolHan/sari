@@ -1,5 +1,5 @@
 import re
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Any, Dict, Tuple, Optional
 from sari.core.parsers.base import BaseHandler
 
 class XmlHandler(BaseHandler):

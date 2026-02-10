@@ -1,5 +1,3 @@
-import pytest
-import time
 from sari.core.config.main import Config
 from sari.core.indexer.main import Indexer
 from sari.core.search_engine import SearchEngine

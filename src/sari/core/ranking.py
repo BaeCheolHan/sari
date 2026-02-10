@@ -1,8 +1,8 @@
 import re
 import time
-import fnmatch
 from pathlib import Path
-from typing import List, Optional, Any
+from typing import List, Any
+
 
 def glob_to_like(pattern: str) -> str:
     """Convert glob-style pattern to SQL LIKE pattern for 1st-pass filtering."""
@@ -13,7 +13,7 @@ def glob_to_like(pattern: str) -> str:
     res = pattern.replace("**", "%").replace("*", "%").replace("?", "_")
 
     if not ("%" in res or "_" in res):
-        res = f"%{res}%" # Contains if no wildcards
+        res = f"%{res}%"  # Contains if no wildcards
 
     # Ensure it starts/ends correctly for directory patterns
     if pattern.endswith("/**"):
@@ -23,9 +23,11 @@ def glob_to_like(pattern: str) -> str:
         res = res.replace("%%", "%")
     return res
 
+
 def get_file_extension(path: str) -> str:
     ext = Path(path).suffix
     return ext[1:].lower() if ext else ""
+
 
 def calculate_recency_score(mtime: int, base_score: float) -> float:
     now = time.time()
@@ -41,6 +43,7 @@ def calculate_recency_score(mtime: int, base_score: float) -> float:
 
     # Ensure boost works even if base_score is 0 (bias added)
     return (base_score + 0.1) * boost
+
 
 def extract_terms(q: str) -> List[str]:
     # Use regex to extract quoted phrases or space-separated words
@@ -59,8 +62,14 @@ def extract_terms(q: str) -> List[str]:
             out.append(t)
     return out
 
-def count_matches(content: str, query: str, use_regex: bool, case_sensitive: bool) -> int:
-    if not query: return 0
+
+def count_matches(
+        content: str,
+        query: str,
+        use_regex: bool,
+        case_sensitive: bool) -> int:
+    if not query:
+        return 0
     if use_regex:
         flags = 0 if case_sensitive else re.IGNORECASE
         try:
@@ -77,28 +86,33 @@ def count_matches(content: str, query: str, use_regex: bool, case_sensitive: boo
             # Fallback to simple count if regex fails for any reason
             return content.lower().count(query.lower())
 
+
 def snippet_around(content: Any, terms: List[str], max_lines: int,
-                    highlight: bool = True) -> str:
-    if not content: return ""
+                   highlight: bool = True) -> str:
+    if not content:
+        return ""
     if isinstance(content, (bytes, bytearray)):
         content = content.decode("utf-8", errors="ignore")
-    
+
     if max_lines <= 0:
         return ""
     lines = content.splitlines()
     if not lines:
         return ""
 
-    lower_lines = [l.lower() for l in lines]
+    lower_lines = [line_text.lower() for line_text in lines]
     lower_terms = [t.lower() for t in terms if t.strip()]
 
     if not lower_terms:
-        return "\n".join(f"L{i+1}: {ln}" for i, ln in enumerate(lines[:max_lines]))
+        return "\n".join(f"L{i+1}: {ln}" for i,
+                         ln in enumerate(lines[:max_lines]))
 
     # Score per line
     # +1 per match, +5 if definition (def/class) AND match
     line_scores = [0] * len(lines)
-    def_pattern = re.compile(r"\b(class|def|function|struct|interface|type)\s+", re.IGNORECASE)
+    def_pattern = re.compile(
+        r"\b(class|def|function|struct|interface|type)\s+",
+        re.IGNORECASE)
 
     has_any_match = False
     for i, line_lower in enumerate(lower_lines):
@@ -115,7 +129,8 @@ def snippet_around(content: Any, terms: List[str], max_lines: int,
         line_scores[i] = score
 
     if not has_any_match:
-         return "\n".join(f"L{i+1}: {ln}" for i, ln in enumerate(lines[:max_lines]))
+        return "\n".join(f"L{i+1}: {ln}" for i,
+                         ln in enumerate(lines[:max_lines]))
 
     # Find best window (Sliding Window)
     window_size = min(len(lines), max_lines)
@@ -124,7 +139,8 @@ def snippet_around(content: Any, terms: List[str], max_lines: int,
     best_start = 0
 
     for i in range(1, len(lines) - window_size + 1):
-        current_score = current_score - line_scores[i-1] + line_scores[i + window_size - 1]
+        current_score = current_score - \
+            line_scores[i - 1] + line_scores[i + window_size - 1]
         if current_score > best_window_score:
             best_window_score = current_score
             best_start = i
@@ -134,7 +150,10 @@ def snippet_around(content: Any, terms: List[str], max_lines: int,
     end_idx = start_idx + window_size
 
     out_lines = []
-    highlight_patterns = [re.compile(re.escape(t), re.IGNORECASE) for t in terms if t.strip()]
+    highlight_patterns = [
+        re.compile(
+            re.escape(t),
+            re.IGNORECASE) for t in terms if t.strip()]
 
     for i in range(start_idx, end_idx):
         line = lines[i]

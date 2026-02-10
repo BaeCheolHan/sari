@@ -1,10 +1,8 @@
 import json
 import pytest
 import io
-import os
 import asyncio
-import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 from sari.mcp.server import LocalSearchMCPServer
 from sari.mcp.transport import McpTransport, AsyncMcpTransport
 from sari.mcp.stdout_guard import StdoutGuard
