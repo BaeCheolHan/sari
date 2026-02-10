@@ -4,12 +4,11 @@ from unittest.mock import MagicMock, patch
 from sari.mcp.cli import cmd_daemon_status, cmd_init, cmd_prune, cmd_status, main
 
 def test_cmd_daemon_status():
-    args = argparse.Namespace()
+    args = argparse.Namespace(daemon_host="127.0.0.1", daemon_port=47779)
     with patch('sari.mcp.cli.legacy_cli.is_daemon_running', return_value=True):
-        with patch('sari.mcp.cli.legacy_cli.read_pid', return_value=1234):
-            with patch('sari.mcp.cli.legacy_cli.get_daemon_address', return_value=("127.0.0.1", 47779)):
-                ret = cmd_daemon_status(args)
-                assert ret == 0
+        with patch('sari.mcp.cli.legacy_cli.identify_sari_daemon', return_value={"pid": 1234, "workspaceRoot": "/tmp/ws"}):
+            ret = cmd_daemon_status(args)
+            assert ret == 0
 
 def test_cmd_init(tmp_path):
     args = argparse.Namespace(workspace=str(tmp_path), force=False)

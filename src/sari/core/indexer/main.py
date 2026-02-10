@@ -174,10 +174,29 @@ class Indexer:
         self._worker_log_path: Optional[str] = None
         self._pending_rescan = False
 
+    def _remove_file_if_exists(self, path: Optional[str]) -> None:
+        if not path:
+            return
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception as e:
+            if self.logger:
+                self.logger.debug("Failed to remove file %s: %s", path, e)
+
+    def _cleanup_snapshot_artifacts(self, snapshot_path: Optional[str]) -> None:
+        if not snapshot_path:
+            return
+        self._remove_file_if_exists(snapshot_path)
+        self._remove_file_if_exists(f"{snapshot_path}-wal")
+        self._remove_file_if_exists(f"{snapshot_path}-shm")
+        self._remove_file_if_exists(f"{snapshot_path}-journal")
+
     def scan_once(self):
         """동기적으로 1회 스캔을 수행합니다. (블로킹)"""
         with self._scan_lock:
             self.status.index_ready = False
+            main_db = self.db.db
             snapshot_path = self._snapshot_path()
             snapshot_db = LocalSearchDB(snapshot_path, logger=self.logger, journal_mode="delete")
             status = _scan_to_db(self.config, snapshot_db, self.logger)
@@ -189,6 +208,13 @@ class Indexer:
                 except Exception:
                     pass
             try:
+                # LocalSearchDB(snapshot) 생성 시 global db_proxy가 snapshot으로 재바인딩되므로,
+                # 이후 ORM 조회를 위해 메인 DB 바인딩을 복구합니다.
+                from sari.core.db.models import db_proxy
+                db_proxy.initialize(main_db)
+            except Exception:
+                pass
+            try:
                 # 스냅샷 DB를 메인 DB로 교체 (Swap)
                 self.db.swap_db_file(snapshot_path)
                 self.status.scan_started_ts = status.get("scan_started_ts", 0)
@@ -199,6 +225,7 @@ class Indexer:
                 self.status.errors = status.get("errors", 0)
                 self.status.index_version = status.get("index_version", "")
                 self.status.index_ready = True
+                self._cleanup_snapshot_artifacts(snapshot_path)
             except Exception as e:
                 self.status.errors += 1
                 self.status.last_error = str(e)
@@ -284,12 +311,16 @@ class Indexer:
         exitcode = self._worker_proc.exitcode
         self._worker_proc = None
         status_path = self._worker_status_path
+        log_path = self._worker_log_path
         snapshot_path = self._worker_snapshot_path
         self._worker_status_path = None
+        self._worker_log_path = None
         self._worker_snapshot_path = None
         if not status_path or not snapshot_path or not os.path.exists(status_path):
             self.status.errors += 1
             self.status.last_error = "worker status missing"
+            self._cleanup_snapshot_artifacts(snapshot_path)
+            self._remove_file_if_exists(log_path)
             return
         try:
             with open(status_path, "r", encoding="utf-8") as f:
@@ -297,14 +328,23 @@ class Indexer:
         except Exception as e:
             self.status.errors += 1
             self.status.last_error = f"worker status read failed: {e}"
+            self._cleanup_snapshot_artifacts(snapshot_path)
+            self._remove_file_if_exists(status_path)
+            self._remove_file_if_exists(log_path)
             return
         if not payload.get("ok"):
             self.status.errors += 1
             self.status.last_error = payload.get("error", "worker failed")
+            self._cleanup_snapshot_artifacts(snapshot_path)
+            self._remove_file_if_exists(status_path)
+            self._remove_file_if_exists(log_path)
             return
         if exitcode not in (0, None):
             self.status.errors += 1
             self.status.last_error = f"worker exit {exitcode}"
+            self._cleanup_snapshot_artifacts(snapshot_path)
+            self._remove_file_if_exists(status_path)
+            self._remove_file_if_exists(log_path)
             return
         status = payload.get("status", {})
         try:
@@ -317,11 +357,15 @@ class Indexer:
             self.status.errors = status.get("errors", 0)
             self.status.index_version = status.get("index_version", "")
             self.status.index_ready = True
+            self._cleanup_snapshot_artifacts(snapshot_path)
         except Exception as e:
             self.status.errors += 1
             self.status.last_error = str(e)
             if self.logger:
                 self.logger.error(f"Snapshot swap failed: {e}")
+        finally:
+            self._remove_file_if_exists(status_path)
+            self._remove_file_if_exists(log_path)
         if self._pending_rescan:
             self._pending_rescan = False
             self._start_worker_scan()
