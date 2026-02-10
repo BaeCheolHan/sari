@@ -85,6 +85,9 @@ class SariDaemon:
         self._heartbeat_thread = None
         self._idle_since = None
         self._drain_since = None
+        self.httpd = None
+        self.http_host = None
+        self.http_port = None
         trace("daemon_init", host=self.host, port=self.port)
 
     def _cleanup_legacy_pid_file(self):
@@ -127,16 +130,48 @@ class SariDaemon:
 
         try:
             from sari.mcp.workspace_registry import Registry
-            Registry.get_instance().get_or_create(workspace_root, persistent=True)
+            shared = Registry.get_instance().get_or_create(workspace_root, persistent=True)
             self._pinned_workspace_root = workspace_root
-            logger.info(f"Auto-started workspace HTTP server for {workspace_root}")
+            self._start_http_gateway(shared)
+            logger.info(f"Auto-started workspace session for {workspace_root}")
         except Exception as e:
-            logger.error(f"Failed to auto-start workspace HTTP server: {e}")
+            logger.error(f"Failed to auto-start workspace session: {e}")
         try:
             # Record workspace mapping even if warm-up failed.
-            self._registry.set_workspace(workspace_root, self.boot_id)
+            self._registry.set_workspace(
+                workspace_root,
+                self.boot_id,
+                http_port=self.http_port,
+                http_host=self.http_host,
+            )
         except Exception as e:
             logger.error(f"Failed to record workspace mapping: {e}")
+
+    def _start_http_gateway(self, shared_state) -> None:
+        if self.httpd is not None:
+            return
+        try:
+            from sari.core.http_server import serve_forever
+
+            host = "127.0.0.1"
+            port = int(settings.HTTP_API_PORT)
+            httpd, actual_port = serve_forever(
+                host,
+                port,
+                shared_state.db,
+                shared_state.indexer,
+                version=settings.VERSION,
+                workspace_root=str(shared_state.workspace_root),
+                mcp_server=shared_state.server,
+                shared_http_gateway=True,
+            )
+            self.httpd = httpd
+            self.http_host = host
+            self.http_port = actual_port
+            self._registry.set_daemon_http(self.boot_id, actual_port, http_host=host, http_pid=os.getpid())
+            logger.info(f"Started daemon HTTP gateway on {host}:{actual_port}")
+        except Exception as e:
+            logger.error(f"Failed to start daemon HTTP gateway: {e}")
 
     def _start_heartbeat(self) -> None:
         if self._heartbeat_thread and self._heartbeat_thread.is_alive():
@@ -284,6 +319,13 @@ class SariDaemon:
             Registry.get_instance().shutdown_all()
         except Exception as e:
             logger.error(f"Error shutting down registry: {e}")
+
+        if self.httpd is not None:
+            try:
+                self.httpd.shutdown()
+                self.httpd.server_close()
+            except Exception as e:
+                logger.debug(f"Error shutting down HTTP gateway: {e}")
 
         # 3. Kill any remaining children (Safety Net)
         try:

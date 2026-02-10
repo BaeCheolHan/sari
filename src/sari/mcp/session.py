@@ -322,9 +322,9 @@ class Session:
 
         if boot_id:
             try:
-                # Include http_port if already assigned to ensure SSOT consistency
-                h_port = getattr(self.shared_state, "http_port", None)
-                h_host = getattr(self.shared_state, "http_host", None)
+                daemon_info = ServerRegistry().get_daemon(boot_id) or {}
+                h_port = daemon_info.get("http_port")
+                h_host = daemon_info.get("http_host")
                 ServerRegistry().set_workspace(workspace_root, boot_id, http_port=h_port, http_host=h_host)
             except Exception:
                 try:

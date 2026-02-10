@@ -27,7 +27,6 @@ class TestEmbeddedServer:
 
     def test_http_server_lifecycle(self, workspace, test_env):
         from sari.mcp.workspace_registry import Registry
-        from sari.core.server_registry import ServerRegistry
         
         os.environ["SARI_REGISTRY_FILE"] = test_env["SARI_REGISTRY_FILE"]
         Registry._instance = None
@@ -35,24 +34,12 @@ class TestEmbeddedServer:
         
         # 1. Create Session
         session = registry.get_or_create(workspace)
-        port = session.http_port
-        assert self._is_port_open(port)
-        
-        # Verify registered
-        ws_info = ServerRegistry().get_workspace(workspace)
-        assert ws_info is not None
-        assert ws_info["http_port"] == port
+        # Workspace session should no longer own dedicated HTTP server.
+        assert session.http_port is None
         
         # 2. Release Session
         registry.release(workspace)
         time.sleep(1.0)
-        
-        # Verify port is CLOSED
-        assert not self._is_port_open(port), f"Port {port} still open after release"
-        
-        # Verify UNREGISTERED
-        ws_info_after = ServerRegistry().get_workspace(workspace)
-        assert ws_info_after is None
 
     def test_multi_cli_single_http_server(self, workspace, test_env):
         # 1. Start a daemon

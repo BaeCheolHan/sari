@@ -35,13 +35,51 @@ class Handler(BaseHTTPRequestHandler):
     mcp_server = None
     middlewares = default_http_middlewares()
     start_time: float = time.time()
+    workspace_root: str = ""
+    shared_http_gateway: bool = False
 
-    def _get_db_size(self):
+    def _get_db_size(self, db_obj=None):
         try:
-            if hasattr(self.db, "db_path"):
-                return os.path.getsize(self.db.db_path)
+            db_ref = db_obj or self.db
+            if hasattr(db_ref, "db_path"):
+                return os.path.getsize(db_ref.db_path)
             return 0
         except: return 0
+
+    def _selected_workspace_root(self, qs) -> str:
+        sel = ""
+        try:
+            vals = qs.get("workspace_root") or []
+            if vals:
+                sel = str(vals[0] or "").strip()
+        except Exception:
+            sel = ""
+        if sel:
+            try:
+                from sari.core.workspace import WorkspaceManager
+                return WorkspaceManager.normalize_path(sel)
+            except Exception:
+                return sel
+        return self.workspace_root
+
+    def _resolve_runtime(self, qs):
+        workspace_root = self._selected_workspace_root(qs)
+        db = self.db
+        indexer = self.indexer
+        root_ids = self.root_ids
+        if not self.shared_http_gateway or not workspace_root:
+            return workspace_root, db, indexer, root_ids
+        try:
+            from sari.mcp.workspace_registry import Registry
+            from sari.core.workspace import WorkspaceManager
+            state = Registry.get_instance().get_or_create(workspace_root, persistent=True, track_ref=False)
+            db = state.db
+            indexer = state.indexer
+            roots = getattr(indexer.cfg, "workspace_roots", []) if getattr(indexer, "cfg", None) else []
+            root_ids = [WorkspaceManager.root_id_for_workspace(r) for r in roots] if roots else []
+        except Exception:
+            pass
+        return workspace_root, db, indexer, root_ids
 
     def _json(self, obj, status=200):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
@@ -383,13 +421,16 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def _handle_get(self, path, qs):
+        workspace_root, db, indexer, root_ids = self._resolve_runtime(qs)
+
         if path == "/health":
             return {"ok": True}
 
         if path == "/health-report":
             try:
                 from sari.mcp.tools.doctor import execute_doctor
-                res = execute_doctor({}, roots=[self.indexer.cfg.workspace_roots[0]] if self.indexer.cfg.workspace_roots else None)
+                roots = [workspace_root] if workspace_root else None
+                res = execute_doctor({}, db=db, roots=roots)
                 # execute_doctor returns a dict with 'content' which has 'text' (JSON string)
                 if isinstance(res, dict) and "content" in res:
                     text = res["content"][0]["text"]
@@ -404,21 +445,21 @@ class Handler(BaseHTTPRequestHandler):
                 # Fallback to simple health check
                 try:
                     from .health import SariDoctor
-                    doc = SariDoctor()
+                    doc = SariDoctor(workspace_root=workspace_root or None)
                     doc.run_all()
                     return doc.get_summary()
                 except:
                     return {"ok": False, "error": str(e)}
 
         if path == "/status":
-            st = self.indexer.status
-            repo_stats = self.db.get_repo_stats(root_ids=self.root_ids) if hasattr(self.db, "get_repo_stats") else {}
+            st = indexer.status
+            repo_stats = db.get_repo_stats(root_ids=root_ids) if hasattr(db, "get_repo_stats") else {}
             total_db_files = sum(repo_stats.values()) if repo_stats else 0
             
             # Fetch real system metrics
             metrics = get_system_metrics()
             metrics["uptime"] = int(time.time() - self.start_time)
-            metrics["db_size"] = self._get_db_size()
+            metrics["db_size"] = self._get_db_size(db)
 
             return {
                 "ok": True,
@@ -432,16 +473,17 @@ class Handler(BaseHTTPRequestHandler):
                 "total_files_db": total_db_files,
                 "errors": getattr(st, "errors", 0),
                 "repo_stats": repo_stats,
-                "roots": self.db.get_roots() if hasattr(self.db, "get_roots") else [],
+                "roots": db.get_roots() if hasattr(db, "get_roots") else [],
+                "workspace_root": workspace_root,
                 "system_metrics": metrics
             }
 
         if path == "/rescan":
             # Trigger a scan ASAP (non-blocking)
-            self.indexer.status.index_ready = False
-            if hasattr(self.indexer, "request_rescan"):
+            indexer.status.index_ready = False
+            if hasattr(indexer, "request_rescan"):
                 try:
-                    self.indexer.request_rescan()
+                    indexer.request_rescan()
                 except Exception:
                     pass
             return {"ok": True, "requested": True}
@@ -481,7 +523,17 @@ class DualStackServer(ThreadingHTTPServer):
             pass
         super().server_bind()
 
-def serve_forever(host: str, port: int, db: LocalSearchDB, indexer: Indexer, version: str = "dev", workspace_root: str = "", cfg=None, mcp_server=None) -> tuple:
+def serve_forever(
+    host: str,
+    port: int,
+    db: LocalSearchDB,
+    indexer: Indexer,
+    version: str = "dev",
+    workspace_root: str = "",
+    cfg=None,
+    mcp_server=None,
+    shared_http_gateway: bool = False,
+) -> tuple:
     import socket
     import sys
     address_family = socket.AF_INET6 if ":" in host or host.lower() == "localhost" else socket.AF_INET
@@ -494,6 +546,8 @@ def serve_forever(host: str, port: int, db: LocalSearchDB, indexer: Indexer, ver
     BoundHandler.server_host = host
     BoundHandler.server_version = version
     BoundHandler.mcp_server = mcp_server
+    BoundHandler.workspace_root = workspace_root
+    BoundHandler.shared_http_gateway = bool(shared_http_gateway)
     try:
         from sari.core.workspace import WorkspaceManager
         BoundHandler.root_ids = [WorkspaceManager.root_id_for_workspace(r) for r in indexer.cfg.workspace_roots]

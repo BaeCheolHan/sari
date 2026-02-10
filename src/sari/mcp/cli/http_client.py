@@ -55,12 +55,20 @@ def get_http_host_port(
     port = int(cfg.http_api_port or DEFAULT_HTTP_PORT)
 
     try:
-        ws_info = ServerRegistry().get_workspace(str(workspace_root))
-        if ws_info:
-            if ws_info.get("http_host"):
-                host = str(ws_info.get("http_host"))
-            if ws_info.get("http_port"):
-                port = int(ws_info.get("http_port"))
+        resolved = ServerRegistry().resolve_workspace_http(str(workspace_root))
+        if resolved:
+            if resolved.get("host"):
+                host = str(resolved.get("host"))
+            if resolved.get("port"):
+                port = int(resolved.get("port"))
+        else:
+            # Backward-compat: workspace-level endpoint
+            ws_info = ServerRegistry().get_workspace(str(workspace_root))
+            if ws_info:
+                if ws_info.get("http_host"):
+                    host = str(ws_info.get("http_host"))
+                if ws_info.get("http_port"):
+                    port = int(ws_info.get("http_port"))
     except Exception:
         pass
 

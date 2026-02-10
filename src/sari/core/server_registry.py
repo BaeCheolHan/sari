@@ -160,17 +160,40 @@ class ServerRegistry:
         data["daemons"] = daemons
         data["workspaces"] = workspaces
 
-    def register_daemon(self, boot_id: str, host: str, port: int, pid: int, version: str = "") -> None:
+    def register_daemon(
+        self,
+        boot_id: str,
+        host: str,
+        port: int,
+        pid: int,
+        version: str = "",
+        http_port: Optional[int] = None,
+        http_host: Optional[str] = None,
+        http_pid: Optional[int] = None,
+    ) -> None:
         def _upd(data):
             self._prune_dead_locked(data)
             daemons = data.setdefault("daemons", {})
+            prev = daemons.get(boot_id, {})
             daemons[boot_id] = {
                 "host": host, "port": port, "pid": pid,
-                "start_ts": daemons.get(boot_id, {}).get("start_ts") or time.time(),
+                "start_ts": prev.get("start_ts") or time.time(),
                 "last_seen_ts": time.time(),
-                "draining": bool(daemons.get(boot_id, {}).get("draining", False)),
-                "version": version or daemons.get(boot_id, {}).get("version", ""),
+                "draining": bool(prev.get("draining", False)),
+                "version": version or prev.get("version", ""),
             }
+            if http_port is not None:
+                daemons[boot_id]["http_port"] = int(http_port)
+            elif prev.get("http_port") is not None:
+                daemons[boot_id]["http_port"] = int(prev.get("http_port"))
+            if http_host:
+                daemons[boot_id]["http_host"] = str(http_host)
+            elif prev.get("http_host"):
+                daemons[boot_id]["http_host"] = str(prev.get("http_host"))
+            if http_pid is not None:
+                daemons[boot_id]["http_pid"] = int(http_pid)
+            elif prev.get("http_pid") is not None:
+                daemons[boot_id]["http_pid"] = int(prev.get("http_pid"))
         self._update(_upd)
 
     def get_daemon(self, boot_id: str) -> Optional[Dict[str, Any]]:
@@ -321,16 +344,63 @@ class ServerRegistry:
             self._dedupe_nested_workspaces_locked(data, preferred_ws=ws)
         self._update(_upd)
 
-    def set_workspace(self, workspace_root: str, boot_id: str) -> None:
+    def set_workspace(
+        self,
+        workspace_root: str,
+        boot_id: str,
+        http_port: Optional[int] = None,
+        http_host: Optional[str] = None,
+    ) -> None:
         def _upd(data):
             workspaces = data.setdefault("workspaces", {})
             ws = self._normalize_workspace_root(workspace_root)
             payload = dict(workspaces.get(ws, {}))
             payload["boot_id"] = boot_id
+            if http_port is not None:
+                payload["http_port"] = int(http_port)
+            if http_host:
+                payload["http_host"] = str(http_host)
             payload["last_active_ts"] = time.time()
             workspaces[ws] = payload
             self._dedupe_nested_workspaces_locked(data, preferred_ws=ws)
         self._update(_upd)
+
+    def set_daemon_http(self, boot_id: str, http_port: int, http_host: Optional[str] = None, http_pid: Optional[int] = None) -> None:
+        def _upd(data):
+            daemons = data.setdefault("daemons", {})
+            info = dict(daemons.get(boot_id, {}))
+            if not info:
+                return
+            info["http_port"] = int(http_port)
+            if http_host:
+                info["http_host"] = str(http_host)
+            if http_pid is not None:
+                info["http_pid"] = int(http_pid)
+            info["last_seen_ts"] = time.time()
+            daemons[boot_id] = info
+        self._update(_upd)
+
+    def resolve_workspace_http(self, workspace_root: str) -> Optional[Dict[str, Any]]:
+        ws = self._normalize_workspace_root(workspace_root)
+        data = self._load()
+        workspaces = data.get("workspaces", {}) or {}
+        daemons = data.get("daemons", {}) or {}
+        ws_info = workspaces.get(ws) or {}
+        boot_id = ws_info.get("boot_id")
+        daemon = daemons.get(boot_id) if boot_id else None
+        if daemon and self._is_process_alive(daemon.get("pid")):
+            host = daemon.get("http_host") or daemon.get("host")
+            port = daemon.get("http_port")
+            if host and port:
+                return {"host": str(host), "port": int(port), "boot_id": boot_id}
+        # Backward-compat fallback to workspace-level fields.
+        if ws_info.get("http_host") and ws_info.get("http_port"):
+            return {
+                "host": str(ws_info.get("http_host")),
+                "port": int(ws_info.get("http_port")),
+                "boot_id": boot_id,
+            }
+        return None
 
     def unregister_workspace(self, workspace_root: str) -> None:
         def _upd(data):

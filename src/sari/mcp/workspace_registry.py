@@ -105,34 +105,6 @@ class SharedState:
                 logger.info(f"FileWatcher started for {self.workspace_root}")
             except Exception as e:
                 logger.error(f"Failed to start FileWatcher: {e}")
-
-        # 2. Start HTTP Server (Phase 4)
-        try:
-            from sari.core.http_server import serve_forever
-            from sari.core.server_registry import ServerRegistry
-            
-            host = self.config_data.get("server_host", "127.0.0.1")
-            port = int(self.config_data.get("server_port", 47777))
-            
-            # Start HTTP server
-            httpd, actual_port = serve_forever(
-                host, port, self.db, self.indexer, 
-                workspace_root=self.workspace_root,
-                mcp_server=self.server
-            )
-            self.httpd = httpd
-            self.http_port = actual_port
-            self.http_host = host
-            
-            # 3. Register HTTP info in ServerRegistry for CLI to find
-            ServerRegistry().set_workspace_http(
-                self.workspace_root, 
-                actual_port, 
-                http_host=host, 
-                http_pid=os.getpid()
-            )
-        except Exception as e:
-            logger.error(f"Failed to start HTTP server for {self.workspace_root}: {e}")
     
     def touch(self):
         with self._lock:
@@ -146,23 +118,14 @@ class SharedState:
         except Exception as e:
             logger.error(f"Error stopping indexer/watcher: {e}")
         
-        # 1. Shutdown HTTP Server
-        if hasattr(self, "httpd"):
-            try:
-                self.httpd.shutdown()
-                self.httpd.server_close()
-                logger.info(f"HTTP server for {self.workspace_root} stopped.")
-            except Exception as e:
-                logger.error(f"Error stopping HTTP server: {e}")
-
-        # 2. Cleanup Registry
+        # 1. Cleanup Registry
         try:
             from sari.core.server_registry import ServerRegistry
             ServerRegistry().unregister_workspace(self.workspace_root)
         except Exception:
             pass
 
-        # 3. Close DB
+        # 2. Close DB
         try:
             self.db.close_all()
         except Exception:
@@ -179,7 +142,7 @@ class Registry:
             with cls._lock:
                 if cls._instance is None: cls._instance = cls()
         return cls._instance
-    def get_or_create(self, workspace_root: str, persistent: bool = False) -> SharedState:
+    def get_or_create(self, workspace_root: str, persistent: bool = False, track_ref: bool = True) -> SharedState:
         with self._lock:
             if workspace_root not in self._sessions:
                 session = SharedState(workspace_root)
@@ -188,7 +151,10 @@ class Registry:
                 self._sessions[workspace_root] = session
             elif persistent:
                 self._sessions[workspace_root].persistent = True
-            self._sessions[workspace_root].ref_count += 1
+            if track_ref:
+                self._sessions[workspace_root].ref_count += 1
+            elif self._sessions[workspace_root].ref_count <= 0:
+                self._sessions[workspace_root].ref_count = 1
             self._sessions[workspace_root].touch()
             return self._sessions[workspace_root]
             

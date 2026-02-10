@@ -2,7 +2,7 @@ import sys
 import os
 import socket
 import shutil
-import urllib.request
+import sqlite3
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 
@@ -38,14 +38,21 @@ class SariDoctor:
 
             db = LocalSearchDB(str(db_path))
             # Check FTS5
-            if db.fts_enabled:
-                self._add_result("DB FTS5 Support", True)
-            else:
-                self._add_result("DB FTS5 Support", False, "FTS5 module missing in SQLite")
+            try:
+                cursor = db.db.connection().execute("PRAGMA compile_options")
+                options = [r[0] for r in cursor.fetchall()]
+                if "ENABLE_FTS5" in options:
+                    self._add_result("DB FTS5 Support", True)
+                else:
+                    self._add_result("DB FTS5 Support", False, "FTS5 module missing in SQLite")
+            except Exception as e:
+                self._add_result("DB FTS5 Support", False, str(e))
 
             # Check Schema
             try:
-                cursor = db._read.execute("PRAGMA table_info(symbols)")
+                conn = db.db.connection()
+                conn.row_factory = sqlite3.Row
+                cursor = conn.execute("PRAGMA table_info(symbols)")
                 cols = [r["name"] for r in cursor.fetchall()]
                 if "end_line" in cols:
                     self._add_result("DB Schema", True)
@@ -62,7 +69,8 @@ class SariDoctor:
 
     def check_network(self) -> bool:
         try:
-            urllib.request.urlopen("https://pypi.org", timeout=3)
+            with socket.create_connection(("8.8.8.8", 53), timeout=3):
+                pass
             self._add_result("Network Check", True)
             return True
         except Exception as e:

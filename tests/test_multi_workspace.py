@@ -43,7 +43,10 @@ class TestMultiWorkspaceIntegration:
             
             assert ws0 is not None
             assert ws1 is not None
-            assert ws0["http_port"] != ws1["http_port"]
+            # Single HTTP gateway: all workspaces under the same daemon share one endpoint.
+            assert ws0["boot_id"] == ws1["boot_id"]
+            assert ws0["http_port"] == ws1["http_port"]
+            assert ws0["http_host"] == ws1["http_host"]
             
         finally:
             subprocess.run([sys.executable, "-m", "sari.mcp.cli", "daemon", "stop", "--daemon-port", "48100"], env=multi_env)
