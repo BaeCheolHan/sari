@@ -80,7 +80,7 @@ Use this if you want to search across multiple repositories from any workspace.
     sari roots add /abs/path/to/repo1
     sari roots add /abs/path/to/repo2
     ```
-3.  **Update MCP Settings**: Point `SARI_CONFIG` to the global path.
+3.  **Update MCP Settings**: Keep MCP config minimal. `sari` auto-resolves standard config paths.
 
 #### **A. Gemini CLI (~/.gemini/settings.json)**
 ```json
@@ -114,10 +114,7 @@ Use this if you want isolated indexing for a specific workspace.
   "mcpServers": {
     "sari": {
       "command": "/Users/yourname/.local/bin/sari",
-      "args": ["--transport", "stdio"],
-      "env": {
-        "SARI_CONFIG": "/abs/path/to/workspace/.sari/config.json"
-      }
+      "args": ["--transport", "stdio"]
     }
   }
 }
@@ -128,9 +125,6 @@ Use this if you want isolated indexing for a specific workspace.
 [mcp_servers.sari]
 command = "/Users/yourname/.local/bin/sari"
 args = ["--transport", "stdio"]
-
-[mcp_servers.sari.env]
-SARI_CONFIG = "/abs/path/to/workspace/.sari/config.json"
 ```
 
 ---
@@ -173,7 +167,7 @@ sari roots add /Users/user/Repo1
 sari roots add /Users/user/Repo2
 
 # Run with global config
-SARI_CONFIG=~/.config/sari/config.json sari --transport stdio
+sari --transport stdio
 ```
 
 ---
