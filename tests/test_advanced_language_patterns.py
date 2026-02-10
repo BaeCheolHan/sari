@@ -42,12 +42,12 @@ public class UserController {
 }
 '''
         symbols, _ = engine.extract_symbols("UserController.java", "java", code)
-        names = [s[1] for s in symbols]
+        names = [s.name for s in symbols]
         
         # Controller 클래스 감지
         assert "UserController" in names
-        controller = next(s for s in symbols if s[1] == "UserController")
-        meta = json.loads(controller[7])
+        controller = next(s for s in symbols if s.name == "UserController")
+        meta = controller.meta
         assert "Controller" in meta["annotations"]
         
         # 모든 엔드포인트 메서드 감지
@@ -76,12 +76,12 @@ public class OrderService {
 '''
         symbols, _ = engine.extract_symbols("OrderService.java", "java", code)
         
-        service = next(s for s in symbols if s[1] == "OrderService")
-        meta = json.loads(service[7])
+        service = next(s for s in symbols if s.name == "OrderService")
+        meta = service.meta
         assert "Service" in meta["annotations"]
         
-        create_method = next(s for s in symbols if s[1] == "createOrder")
-        assert "Transactional" in json.loads(create_method[7])["annotations"]
+        create_method = next(s for s in symbols if s.name == "createOrder")
+        assert "Transactional" in create_method.meta["annotations"]
 
     def test_spring_configuration_and_beans(self):
         """@Configuration과 @Bean 패턴"""
@@ -106,7 +106,7 @@ public class AppConfig {
 }
 '''
         symbols, _ = engine.extract_symbols("AppConfig.java", "java", code)
-        names = [s[1] for s in symbols]
+        names = [s.name for s in symbols]
         
         assert "AppConfig" in names
         assert "dataSource" in names
@@ -134,7 +134,7 @@ public final class Circle extends Shape {
 }
 '''
         symbols, _ = engine.extract_symbols("Modern.java", "java", code)
-        names = [s[1] for s in symbols]
+        names = [s.name for s in symbols]
         
         # Record 감지 (class_declaration 또는 record_declaration으로 파싱됨)
         assert "UserDto" in names or any("UserDto" in str(s) for s in symbols)
@@ -173,12 +173,12 @@ const UserProfile = ({ userId }) => {
 export default UserProfile;
 '''
         symbols, _ = engine.extract_symbols("UserProfile.jsx", "javascript", code)
-        names = [s[1] for s in symbols]
+        names = [s.name for s in symbols]
         
         # 함수형 컴포넌트 감지
         assert "UserProfile" in names
-        component = next(s for s in symbols if s[1] == "UserProfile")
-        assert component[2] == "class"  # React 컴포넌트는 class로 분류
+        component = next(s for s in symbols if s.name == "UserProfile")
+        assert component.kind == "class"  # React 컴포넌트는 class로 분류
         
     def test_react_class_component(self):
         """React Class Component 패턴"""
@@ -209,7 +209,7 @@ class Counter extends React.Component {
 }
 '''
         symbols, _ = engine.extract_symbols("Counter.jsx", "javascript", code)
-        names = [s[1] for s in symbols]
+        names = [s.name for s in symbols]
         
         # Class Component 감지
         assert "Counter" in names
@@ -241,7 +241,7 @@ const withAuth = (WrappedComponent) => {
 };
 '''
         symbols, _ = engine.extract_symbols("Advanced.jsx", "javascript", code)
-        names = [s[1] for s in symbols]
+        names = [s.name for s in symbols]
         
         # 다양한 컴포넌트 형태 감지
         assert "MemoizedList" in names or "FancyInput" in names or "withAuth" in names
@@ -324,7 +324,7 @@ export default {
 </script>
 '''
         symbols, _ = engine.extract_symbols("UserProfile.vue", "vue", code)
-        names = [s[1] for s in symbols]
+        names = [s.name for s in symbols]
         
         # Options API 핵심 메서드 감지
         assert "data" in names
@@ -398,7 +398,7 @@ interface Repository<T, ID> {
 }
 '''
         symbols, _ = engine.extract_symbols("types.ts", "typescript", code)
-        names = [s[1] for s in symbols]
+        names = [s.name for s in symbols]
         
         # Interface와 Type 감지
         # TypeScript 파서가 있으면 interface_declaration, type_alias_declaration 노드가 감지됨
@@ -430,7 +430,7 @@ class UserController {
 }
 '''
         symbols, _ = engine.extract_symbols("user.controller.ts", "typescript", code)
-        names = [s[1] for s in symbols]
+        names = [s.name for s in symbols]
         
         assert "UserController" in names
         assert "getUser" in names or "createUser" in names
@@ -459,7 +459,7 @@ class DataService<T extends Entity> {
 }
 '''
         symbols, _ = engine.extract_symbols("generics.ts", "typescript", code)
-        names = [s[1] for s in symbols]
+        names = [s.name for s in symbols]
         
         assert "identity" in names or "DataService" in names
 
@@ -511,7 +511,7 @@ class UserResponse(BaseModel):
         orm_mode = True
 '''
         symbols, _ = engine.extract_symbols("models.py", "python", code)
-        names = [s[1] for s in symbols]
+        names = [s.name for s in symbols]
         
         assert "UserEntity" in names
         assert "ImmutableConfig" in names
@@ -543,7 +543,7 @@ class AsyncRepository:
         return await self.db.insert(entity)
 '''
         symbols, _ = engine.extract_symbols("async_service.py", "python", code)
-        names = [s[1] for s in symbols]
+        names = [s.name for s in symbols]
         
         assert "fetch_user" in names
         assert "fetch_all_users" in names
@@ -601,7 +601,7 @@ class User:
         return cls(data['name'], data['birth_year'])
 '''
         symbols, _ = engine.extract_symbols("decorators.py", "python", code)
-        names = [s[1] for s in symbols]
+        names = [s.name for s in symbols]
         
         assert "log_calls" in names
         assert "retry" in names
@@ -666,7 +666,7 @@ resource "aws_security_group" "web" {
 }
 '''
         symbols, _ = engine.extract_symbols("main.tf", "hcl", code)
-        names = [s[1] for s in symbols]
+        names = [s.name for s in symbols]
         
         # Resource 블록 감지
         assert any("aws_vpc" in n for n in names)
@@ -717,7 +717,7 @@ data "aws_ami" "ubuntu" {
 }
 '''
         symbols, _ = engine.extract_symbols("variables.tf", "hcl", code)
-        names = [s[1] for s in symbols]
+        names = [s.name for s in symbols]
         
         # variable, module, output, data 블록 감지
         assert len(symbols) > 0
@@ -758,7 +758,7 @@ CREATE INDEX idx_user_orders ON orders(user_id, status);
 ALTER TABLE users ADD COLUMN phone VARCHAR(20) NULL AFTER email;
 '''
         symbols, _ = engine.extract_symbols("schema.sql", "sql", code)
-        names = [s[1] for s in symbols]
+        names = [s.name for s in symbols]
         
         # CREATE TABLE 감지
         assert "users" in names
@@ -823,13 +823,13 @@ router.delete('/users/:id', authMiddleware, async (req, res) => {
 module.exports = router;
 '''
         symbols, _ = engine.extract_symbols("users.router.js", "javascript", code)
-        names = [s[1] for s in symbols]
+        names = [s.name for s in symbols]
         
         # Middleware 함수 감지
         assert "authMiddleware" in names or "logMiddleware" in names
         
         # 라우트 핸들러 감지
-        route_symbols = [s for s in symbols if s[1].startswith("route.")]
+        route_symbols = [s for s in symbols if s.name.startswith("route.")]
         assert len(route_symbols) >= 3  # get, post, put, delete 중 일부
 
 
@@ -889,7 +889,7 @@ case "$1" in
 esac
 '''
         symbols, _ = engine.extract_symbols("sari.sh", "bash", code)
-        names = [s[1] for s in symbols]
+        names = [s.name for s in symbols]
         
         # 함수 감지
         assert "log_info" in names or "start_daemon" in names or "stop_daemon" in names

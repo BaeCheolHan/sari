@@ -6,6 +6,7 @@ from pathlib import Path
 from .handlers import HandlerRegistry
 from .special_parsers import SpecialParser
 import hashlib
+from sari.core.models import ParserSymbol, ParserRelation
 
 try:
     from tree_sitter import Parser, Language
@@ -169,7 +170,7 @@ class ASTEngine:
         
         return None
 
-    def _parse_vue_file(self, path: str, content: str) -> Tuple[List[Tuple], List[Any]]:
+    def _parse_vue_file(self, path: str, content: str) -> Tuple[List[ParserSymbol], List[ParserRelation]]:
         """Extract and parse script section from Vue file."""
         m = re.search(r"<script[^>]*>\s*(.*?)\s*</script>", content, re.DOTALL)
         script_content = m.group(1) if m else ""
@@ -177,8 +178,13 @@ class ASTEngine:
             # Delegate to JS parser but keep original path context
             js_syms, js_rels = self.extract_symbols(path.replace(".vue", ".js"), "javascript", script_content)
             # Fix paths back to original .vue path
-            fixed_syms = [(path, *s[1:]) for s in js_syms]
-            return fixed_syms, js_rels
+            for s in js_syms:
+                s.path = path
+            for r in js_rels:
+                # to_path is empty by default, but if it was set, we don't know where it points.
+                # However, for internal relations, we might need to fix them.
+                pass
+            return js_syms, js_rels
         return [], []
 
     def _try_generic_fallback(self, path: str, ext: str, content: str) -> Tuple[List[Tuple], List[Any]]:
@@ -202,11 +208,12 @@ class ASTEngine:
                 self.logger.debug("AST fallback import error")
         return [], []
 
-    def _extract_from_tree(self, path: str, content: str, tree: Any, handler: Any, ext: str) -> Tuple[List[Tuple], List[Any]]:
+    def _extract_from_tree(self, path: str, content: str, tree: Any, handler: Any, ext: str) -> Tuple[List[ParserSymbol], List[ParserRelation]]:
         """Extract symbols by walking the AST tree."""
         data = content.encode("utf-8", errors="ignore")
         lines = content.splitlines()
-        symbols = []
+        symbols: List[ParserSymbol] = []
+        relations: List[ParserRelation] = []
         
         # Helper functions for tree traversal
         def get_t(n):
@@ -221,87 +228,145 @@ class ASTEngine:
         def find_id(node, prefer_pure_identifier=False):
             """
             AST 노드 내에서 심볼의 식별자(이름)를 찾아냅니다.
-            언어별 특성에 맞춰 identifier, name, type_identifier 등을 순차적으로 탐색합니다.
             """
-            # 1. 순수 식별자 (표준)
             for c in node.children:
                 if c.type == "identifier":
                     return get_t(c)
-            # 2. 언어 특화 식별자
             if not prefer_pure_identifier:
                 for c in node.children:
                     if c.type in ("name", "type_identifier", "constant", "simple_identifier", "variable_name", "property_identifier"):
                         return get_t(c)
-            # 3. 재귀적 폴백 (얕은 탐색)
             if not prefer_pure_identifier:
                 for c in node.children:
                     if c.type in ("modifiers", "annotation", "parameter_list"):
                         continue
-                    res = find_id(c, True)  # 자식 노드에서 순수 식별자 시도
-                    if res:
-                        return res
+                    res = find_id(c, True)
+                    if res: return res
             return None
+
+        # Context for relations (tracking current scope)
+        stack: List[ParserSymbol] = [] 
 
         def walk(node, p_name="", p_meta=None):
             """
             AST 트리를 재귀적으로 순회하며 심볼 정보를 수집합니다.
-            부모 컨텍스트를 유지하여 Qualname(계층 구조 이름)을 빌드합니다.
             """
-            kind, name, meta, is_valid = None, None, {"annotations": []}, False
-            n_type = node.type
+            # 1. Symbol Extraction
+            symbol, is_new_scope = self._extract_symbol_from_node(node, handler, p_name, p_meta, lines, path, ext)
             
-            # Try handler-specific extraction
-            if handler:
-                kind, name, meta, is_valid = handler.handle_node(node, get_t, find_id, ext, p_meta or {})
-                # API Info Extraction (Backup Logic Restoration)
-                if is_valid and hasattr(handler, "extract_api_info"):
-                    api_info = handler.extract_api_info(node, get_t, get_child)
-                    if api_info.get("http_path"):
-                        parent_path = p_meta.get("http_path", "") if p_meta else ""
-                        full_path = (parent_path + api_info["http_path"]).replace("//", "/")
-                        meta["http_path"] = full_path
-                        meta["http_methods"] = api_info.get("http_methods", [])
-                        meta["api"] = True
-                if is_valid and not name:
-                    name = find_id(node)
-            
-            # Universal Fallback (Restored from Backup)
-            if not is_valid:
-                if n_type in ("class_declaration", "function_definition", "method_declaration", "function_item", "struct_item", "block", "resource", "module", "variable", "output", "create_table_statement"):
-                    kind = "class" if any(x in n_type for x in ("class", "struct", "enum", "block", "resource", "table", "module")) else "method"
-                    is_valid = True
-                    # Enhanced HCL label extraction
-                    if n_type in ("block", "resource", "module"):
-                        labels = [get_t(c).strip('"') for c in node.children if c.type in ("identifier", "string_lit", "string_literal")]
-                        if labels and labels[0] in ("resource", "variable", "module", "output", "data"):
-                            labels = labels[1:]
-                        name = ".".join(labels) if labels else find_id(node)
-                    else:
-                        name = find_id(node)
+            if symbol:
+                symbols.append(symbol)
+                stack.append(symbol)
+                # Update parent context for children
+                p_name, p_meta = symbol.name, symbol.meta
 
-            if is_valid:
-                if not name:
-                    name = "unknown"
-                start, end = node.start_point[0] + 1, node.end_point[0] + 1
-                line_content = lines[start-1].strip() if start <= len(lines) else ""
-                sid = _symbol_id(path, kind, name)
-                qual = _qualname(p_name, name)
-                
-                # Standard Tuple: (sid, path, kind, name, kind, line, end, content, parent, meta, doc, qual)
-                # Ensure Meta has critical keys for tests
-                for k in ("annotations", "extends"):
-                    if k not in meta:
-                        meta[k] = []
-                for k in ("generated", "reactive"):
-                    if k not in meta:
-                        meta[k] = False
-                
-                meta_str = json.dumps(meta) if isinstance(meta, dict) else str(meta)
-                symbols.append((path, name, kind, start, end, line_content, p_name, meta_str, "", qual, sid))
-                p_name, p_meta = name, meta
-            
+            # 2. Relation Extraction
+            if handler:
+                self._extract_relations_from_node(node, handler, path, stack, relations)
+
+            # Recurse
             for child in node.children:
                 walk(child, p_name, p_meta)
+            
+            if symbol:
+                stack.pop()
 
         walk(tree.root_node, p_meta={})
-        return symbols, []
+        return symbols, relations
+
+    def _extract_symbol_from_node(self, node, handler, p_name, p_meta, lines, path, ext) -> Tuple[Optional[ParserSymbol], bool]:
+        """Handles symbol extraction for a single node."""
+        kind, name, meta, is_valid = None, None, {"annotations": []}, False
+        n_type = node.type
+        
+        # Use content encoding from the tree's text source if possible
+        # In tree-sitter python, we typically work with the original bytes
+        # We need the data to decode text from nodes
+        
+        if handler:
+            # Try language-specific handler
+            def get_t(n):
+                # Node.text is available in newer tree-sitter, but for safety:
+                return n.text.decode("utf-8", errors="ignore") if hasattr(n, "text") else ""
+            
+            def find_id(n, prefer_pure_identifier=False): 
+                return self._find_id_logic(n, get_t, prefer_pure_identifier)
+            
+            kind, name, meta, is_valid = handler.handle_node(node, get_t, find_id, ext, p_meta or {})
+            
+            if is_valid:
+                if hasattr(handler, "extract_api_info"):
+                    api_info = handler.extract_api_info(node, get_t, lambda n, *t: next((c for c in n.children if c.type in t), None))
+                    if api_info.get("http_path"):
+                        parent_path = p_meta.get("http_path", "") if p_meta else ""
+                        meta["http_path"] = (parent_path + api_info["http_path"]).replace("//", "/")
+                        meta["http_methods"] = api_info.get("http_methods", [])
+                        meta["api"] = True
+                if not name:
+                    name = find_id(node)
+        
+        # Universal Fallback for common patterns
+        if not is_valid and not handler:
+            if n_type in ("class_declaration", "function_definition", "method_declaration", "function_item", "struct_item", "resource", "module", "variable", "output", "create_table_statement"):
+                kind = "class" if any(x in n_type for x in ("class", "struct", "enum", "resource", "table", "module")) else "method"
+                is_valid = True
+                name = self._find_name_fallback(node, n_type)
+
+        if is_valid and name and name != "unknown":
+            start, end = node.start_point[0] + 1, node.end_point[0] + 1
+            line_content = lines[start-1].strip() if start <= len(lines) else ""
+            sid = _symbol_id(path, kind, name)
+            qual = _qualname(p_name, name)
+            
+            return ParserSymbol(
+                sid=sid, path=path, name=name, kind=kind,
+                line=start, end_line=end, content=line_content,
+                parent=p_name, meta=meta, qualname=qual
+            ), True
+            
+        return None, False
+
+    def _extract_relations_from_node(self, node, handler, path, stack, relations):
+        """Handles relation extraction for a single node."""
+        def get_t(n): 
+            return n.text.decode("utf-8", errors="ignore") if hasattr(n, "text") else ""
+        def find_id(n, p=False): return self._find_id_logic(n, get_t, p)
+        
+        ctx = {"get_t": get_t, "find_id": find_id, "path": path}
+        if stack:
+            ctx["parent_name"], ctx["parent_sid"] = stack[-1].name, stack[-1].sid
+        
+        extracted_rels = handler.handle_relation(node, ctx)
+        if extracted_rels:
+            for rel in extracted_rels:
+                if stack:
+                    rel.from_name = stack[-1].name
+                    rel.from_sid = stack[-1].sid
+                relations.append(rel)
+
+    def _find_id_logic(self, node, get_t, prefer_pure_identifier=False):
+        for c in node.children:
+            if c.type == "identifier":
+                return get_t(c)
+        if not prefer_pure_identifier:
+            for c in node.children:
+                if c.type in ("name", "type_identifier", "constant", "simple_identifier", "variable_name", "property_identifier"):
+                    return get_t(c)
+        if not prefer_pure_identifier:
+            for c in node.children:
+                if c.type in ("modifiers", "annotation", "parameter_list"):
+                    continue
+                res = self._find_id_logic(c, get_t, True)
+                if res: return res
+        return None
+
+    def _find_name_fallback(self, node, n_type):
+        def get_t(n): 
+            return n.text.decode("utf-8", errors="ignore") if hasattr(n, "text") else ""
+        if n_type in ("block", "resource", "module"):
+            labels = [get_t(c).strip('"') for c in node.children if c.type in ("identifier", "string_lit", "string_literal")]
+            if labels and labels[0] in ("resource", "variable", "module", "output", "data"):
+                labels = labels[1:]
+            return ".".join(labels) if labels else self._find_id_logic(node, get_t)
+        return self._find_id_logic(node, get_t)
+

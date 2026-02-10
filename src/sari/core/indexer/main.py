@@ -63,6 +63,7 @@ def _scan_to_db(config: Config, db: LocalSearchDB, logger: logging.Logger) -> Di
 
         file_rows = []
         all_symbols = []
+        all_relations = []
         
         # 완료된 작업 결과 수집
         for future in concurrent.futures.as_completed(futures):
@@ -75,27 +76,23 @@ def _scan_to_db(config: Config, db: LocalSearchDB, logger: logging.Logger) -> Di
                     status["indexed_files"] += 1
                     file_rows.append(res.to_file_row())
 
+                    root_id = res.root_id
                     if res.symbols:
-                        root_id = res.root_id
                         for s in res.symbols:
-                            if len(s) >= 11:
-                                # 표준 심볼 튜플 매핑:
-                                # sid, path, root_id, name, kind, line, end, content, parent, meta, doc, qual
-                                all_symbols.append((
-                                    s[10], # sid
-                                    s[0],  # path
-                                    root_id,
-                                    s[1],  # name
-                                    s[2],  # kind
-                                    s[3],  # line
-                                    s[4],  # end_line
-                                    s[5],  # content
-                                    s[6],  # parent_name
-                                    s[7],  # metadata_json
-                                    s[8],  # docstring
-                                    s[9],  # qualname
-                                ))
+                            all_symbols.append((
+                                s.sid, s.path, root_id, s.name, s.kind, s.line, s.end_line,
+                                s.content, s.parent, json.dumps(s.meta), s.doc, s.qualname
+                            ))
                         status["symbols_extracted"] += len(res.symbols)
+                    
+                    if res.relations:
+                        for r in res.relations:
+                            all_relations.append((
+                                res.path, root_id, r.from_name, r.from_sid,
+                                r.to_path or res.path, root_id, r.to_name, r.to_sid,
+                                r.rel_type, r.line, json.dumps(r.meta)
+                            ))
+
             except Exception as e:
                 status["errors"] += 1
                 if logger:
@@ -113,6 +110,12 @@ def _scan_to_db(config: Config, db: LocalSearchDB, logger: logging.Logger) -> Di
                 db.upsert_symbols_tx(None, unique_symbols)
             except Exception as e:
                 if logger: logger.error(f"Failed to store extracted symbols: {e}")
+
+        if all_relations:
+            try:
+                db.upsert_relations_tx(None, all_relations)
+            except Exception as e:
+                if logger: logger.error(f"Failed to store extracted relations: {e}")
         
         status["scan_finished_ts"] = int(time.time())
         status["index_version"] = str(status["scan_finished_ts"])

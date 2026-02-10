@@ -38,10 +38,10 @@ def validate_engines():
     
     print(f"Python Symbols Extracted: {len(symbols)}")
     for s in symbols[:5]:
-        print(f" - [{s[2]}] {s[1]} (line {s[5]})")
+        print(f" - [{s.kind}] {s.name} (line {s.line})")
     
-    assert any(s[1] == "Session" for s in symbols)
-    assert any(s[1] == "request" for s in symbols)
+    assert any(s.name == "Session" for s in symbols)
+    assert any(s.name == "request" for s in symbols)
     
     # 2. CJK Tokenizer Check
     normalized = _normalize_engine_text(KOREAN_SAMPLE)

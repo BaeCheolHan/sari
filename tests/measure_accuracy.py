@@ -40,11 +40,11 @@ class AccuracyEvaluator:
             }
             
         language = ParserFactory.get_language(ext)
-        ts_symbols = self.ast_engine.extract_symbols(str(p), language, content)
+        ts_symbols, _ = self.ast_engine.extract_symbols(str(p), language, content)
         
         # Comparison Logic
-        regex_names = {s[1] for s in regex_symbols}
-        ts_names = {s[1] for s in ts_symbols}
+        regex_names = {s.name for s in regex_symbols}
+        ts_names = {s.name for s in ts_symbols}
         
         intersection = regex_names.intersection(ts_names)
         

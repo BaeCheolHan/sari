@@ -68,8 +68,9 @@ class TestDoctorSelfHealing:
 
     def test_doctor_detects_version_mismatch(self, doctor_env):
         with patch("sari.mcp.tools.doctor._identify_sari_daemon") as mock_id:
-            with patch("sari.mcp.cli.read_pid", return_value=123):
-                mock_id.return_value = {"name": "sari", "version": "0.0.1", "draining": False}
+            with patch("sari.mcp.tools.doctor.probe_sari_daemon", return_value=True):
+                with patch("sari.mcp.cli.read_pid", return_value=123):
+                    mock_id.return_value = {"name": "sari", "version": "0.0.1", "draining": False}
                 
                 with patch.dict("os.environ", doctor_env):
                     res = execute_doctor({"auto_fix": False})

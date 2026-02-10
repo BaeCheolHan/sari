@@ -7,7 +7,7 @@ name = "sari"
 version = "0.6.3"
 description = "High-performance local search and indexing engine for large codebases"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "peewee>=3.17.0",
     "pydantic>=2.0.0",

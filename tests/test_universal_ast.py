@@ -27,5 +27,5 @@ def test_rust_support_truth():
     engine = ASTEngine()
     code = "struct SariTurbo { speed: u64 }\nfn main() {}"
     symbols, _ = engine.extract_symbols("main.rs", "rust", code)
-    assert any(s[1] == "SariTurbo" for s in symbols)
-    print(f"\nDEBUG: Rust SUCCESS. Found: {[s[1] for s in symbols]}")
+    assert any(s.name == "SariTurbo" for s in symbols)
+    print(f"\nDEBUG: Rust SUCCESS. Found: {[s.name for s in symbols]}")

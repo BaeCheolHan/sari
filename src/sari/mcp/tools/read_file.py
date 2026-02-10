@@ -1,3 +1,5 @@
+import os
+from pathlib import Path
 from typing import Any, Dict, List
 from sari.core.db import LocalSearchDB
 from sari.mcp.tools._util import mcp_response, pack_error, ErrorCode, resolve_db_path, pack_header, pack_line, pack_encode_text
@@ -21,10 +23,35 @@ def execute_read_file(args: Dict[str, Any], db: LocalSearchDB, roots: List[str])
     limit = int(args["limit"]) if args.get("limit") is not None else None
     
     # DB 경로 변환 및 파일 읽기
-    db_path = resolve_db_path(path, roots)
-    if not db_path and db.has_legacy_paths():
-        db_path = path
+    # 정책 업데이트: 이제 resolve_db_path는 DB를 직접 조회하여 더 넓은 범위를 허용합니다.
+    db_path = resolve_db_path(path, roots, db=db)
     
+    if not db_path:
+        # 1단계: 디스크 존재 여부 확인
+        p_abs = Path(os.path.expanduser(path)).resolve()
+        if p_abs.exists() and p_abs.is_file():
+            # 디스크엔 있지만 수집되지 않은 경우 -> 등록 가이드 제공
+            suggested_root = str(p_abs.parent)
+            msg = (
+                f"파일이 존재하지만 현재 분석 범위(인덱스)에 포함되어 있지 않습니다. "
+                f"이 파일을 분석하려면 'sari.json'이나 MCP 설정의 'roots'에 '{suggested_root}' "
+                f"또는 상위 프로젝트 경로를 추가하여 수집되도록 설정해 주세요."
+            )
+            return mcp_response(
+                "read_file",
+                lambda: pack_error("read_file", ErrorCode.ERR_ROOT_OUT_OF_SCOPE, msg),
+                lambda: {"error": {"code": ErrorCode.ERR_ROOT_OUT_OF_SCOPE.value, "message": msg}, "isError": True},
+            )
+        else:
+            # 디스크에도 없는 경우 -> 일반적인 미존재 에러
+            msg = f"파일을 찾을 수 없습니다: {path}. 경로가 정확한지 확인해 주세요."
+            return mcp_response(
+                "read_file",
+                lambda: pack_error("read_file", ErrorCode.NOT_INDEXED, msg),
+                lambda: {"error": {"code": ErrorCode.NOT_INDEXED.value, "message": msg}, "isError": True},
+            )
+    
+    # DB 경로가 있는 경우 (인덱스 히트)
     read_result = _read_file_content(db, db_path, path)
     if read_result.get("error"):
         return read_result["error"]

@@ -330,6 +330,13 @@ class LocalSearchMCPServer:
         
         try:
             if method == "initialize": result = self.handle_initialize(params)
+            elif method == "sari/identify":
+                result = {
+                    "name": self.SERVER_NAME,
+                    "version": self.SERVER_VERSION,
+                    "workspaceRoot": self.workspace_root,
+                    "pid": os.getpid()
+                }
             elif method == "tools/list": result = {"tools": self.list_tools()}
             elif method == "prompts/list": result = {"prompts": []}
             elif method == "resources/list": result = {"resources": []}

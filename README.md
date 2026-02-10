@@ -198,5 +198,46 @@ Sari determines indexing roots in this order:
 
 ---
 
+
+
 ## 10. Troubleshooting
+
 Please see `docs/TROUBLESHOOTING.md` when issues occur.
+
+
+
+---
+
+
+
+## 11. Maintenance
+
+
+
+### Update
+
+- Force update from local source:
+
+  ```bash
+
+  uv tool install . --force
+
+  ```
+
+- Upgrade to the latest version via PyPI:
+
+  ```bash
+
+  uv tool upgrade sari
+
+  ```
+
+
+
+### Uninstall
+
+```bash
+
+uv tool uninstall sari
+
+```

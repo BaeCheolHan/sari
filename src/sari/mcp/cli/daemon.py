@@ -26,6 +26,7 @@ from sari.core.daemon_resolver import resolve_daemon_address as get_daemon_addre
 
 from .utils import get_pid_file_path, get_local_version
 from .mcp_client import identify_sari_daemon, probe_sari_daemon
+from .smart_daemon import ensure_smart_daemon
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 47765
@@ -188,36 +189,8 @@ def ensure_daemon_running(
     http_port: Optional[int] = None,
     allow_upgrade: bool = False,
 ) -> Tuple[str, int, bool]:
-    """
-    Ensure daemon is running, starting it if necessary.
-    
-    Args:
-        daemon_host: Daemon host address
-        daemon_port: Daemon port number
-        http_host: HTTP server host address
-        http_port: HTTP server port number
-        allow_upgrade: Whether to allow daemon upgrade
-    
-    Returns:
-        Tuple of (host, port, is_running)
-    """
-    identify = identify_sari_daemon(daemon_host, daemon_port)
-    if identify and not (allow_upgrade and needs_upgrade_or_drain(identify)):
-        return daemon_host, daemon_port, True
-
-    if allow_upgrade and identify and needs_upgrade_or_drain(identify):
-        start_daemon_background(daemon_host, daemon_port, http_host, http_port)
-        daemon_host, daemon_port = get_daemon_address()
-        return daemon_host, daemon_port, is_daemon_running(daemon_host, daemon_port)
-
-    if not is_daemon_running(daemon_host, daemon_port):
-        start_daemon_background(daemon_host, daemon_port, http_host, http_port)
-        daemon_host, daemon_port = get_daemon_address()
-        return daemon_host, daemon_port, is_daemon_running(daemon_host, daemon_port)
-
-    return daemon_host, daemon_port, True
-
-
+    host, port = ensure_smart_daemon(daemon_host, daemon_port)
+    return host, port, True
 def extract_daemon_start_params(args: argparse.Namespace) -> Dict[str, Any]:
     """Extract and validate daemon start parameters."""
     def _arg(args, key):

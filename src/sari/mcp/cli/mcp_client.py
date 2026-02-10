@@ -134,6 +134,22 @@ def probe_sari_daemon(
     return identify_sari_daemon(host, port, timeout=timeout) is not None
 
 
+def is_http_running(host: str, port: int, timeout: float = 2.0) -> bool:
+    """
+    Check if Sari HTTP API server is responding.
+    """
+    import urllib.request
+    import json
+    try:
+        url = f"http://{host}:{port}/health"
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            if r.status != 200: return False
+            payload = json.loads(r.read().decode("utf-8"))
+            return bool(payload.get("ok"))
+    except Exception:
+        return False
+
+
 def ensure_workspace_http(
     daemon_host: str,
     daemon_port: int,

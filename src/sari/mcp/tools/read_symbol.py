@@ -14,6 +14,7 @@ from sari.mcp.tools._util import (
     pack_error,
     ErrorCode,
     resolve_db_path,
+    handle_db_path_error,
     resolve_root_ids,
     pack_header,
     pack_line,
@@ -88,15 +89,9 @@ def execute_read_symbol(args: Dict[str, Any], db: LocalSearchDB, logger: Telemet
             lambda: {"error": {"code": ErrorCode.INVALID_ARGS.value, "message": "'name' or 'symbol_id' is required."}, "isError": True},
         )
 
-    db_path = resolve_db_path(path, roots) if path else None
-    if not db_path and db.has_legacy_paths():
-        db_path = path
+    db_path = resolve_db_path(path, roots, db=db) if path else None
     if path and not db_path:
-        return mcp_response(
-            "read_symbol",
-            lambda: pack_error("read_symbol", ErrorCode.ERR_ROOT_OUT_OF_SCOPE, f"Path out of scope: {path}", hints=["outside final_roots"]),
-            lambda: {"error": {"code": ErrorCode.ERR_ROOT_OUT_OF_SCOPE.value, "message": f"Path out of scope: {path}"}, "isError": True},
-        )
+        return handle_db_path_error("read_symbol", path, roots, db)
 
     candidates = _symbol_candidates(db, symbol_name, symbol_id, db_path, roots, limit=args.get("limit", 50))
     if not candidates:

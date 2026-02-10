@@ -7,6 +7,7 @@ from sari.mcp.tools._util import (
     pack_header,
     pack_line,
     resolve_db_path,
+    handle_db_path_error,
     pack_encode_id,
 )
 
@@ -23,13 +24,9 @@ def execute_list_symbols(args: Dict[str, Any], db: LocalSearchDB, roots: List[st
             lambda: {"error": {"code": ErrorCode.INVALID_ARGS.value, "message": "'path' is required"}, "isError": True},
         )
 
-    db_path = resolve_db_path(path, roots)
+    db_path = resolve_db_path(path, roots, db=db)
     if not db_path:
-        return mcp_response(
-            "list_symbols",
-            lambda: pack_error("list_symbols", ErrorCode.ERR_ROOT_OUT_OF_SCOPE, f"Path out of scope: {path}"),
-            lambda: {"error": {"code": ErrorCode.ERR_ROOT_OUT_OF_SCOPE.value, "message": f"Path out of scope: {path}"}, "isError": True},
-        )
+        return handle_db_path_error("list_symbols", path, roots, db)
 
     # 해당 파일의 모든 심볼 조회
     # 성능과 신뢰성을 위해 ORM 대신 Raw SQL 사용
