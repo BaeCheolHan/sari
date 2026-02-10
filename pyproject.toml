@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sari"
-version = "0.6.7"
+dynamic = ["version"]
 description = "High-performance local search and indexing engine for large codebases"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -66,3 +66,6 @@ addopts = "-ra -q"
 testpaths = ["tests"]
 python_files = "test_*.py"
 pythonpath = ["src"]
+
+[tool.setuptools.dynamic]
+version = {attr = "sari.version.__version__"}
