@@ -77,7 +77,7 @@ sari --transport http --http-api-port 47777
     sari roots add /절대/경로/저장소1
     sari roots add /절대/경로/저장소2
     ```
-3.  **MCP 설정 업데이트**: `SARI_CONFIG`가 전역 설정 파일을 바라보게 합니다.
+3.  **MCP 설정 업데이트**: 최소 설정만 유지하세요. `sari`가 표준 설정 경로를 자동 탐색합니다.
 
 #### **A. Gemini CLI (~/.gemini/settings.json)**
 ```json
@@ -111,10 +111,7 @@ args = ["--transport", "stdio"]
   "mcpServers": {
     "sari": {
       "command": "/Users/yourname/.local/bin/sari",
-      "args": ["--transport", "stdio"],
-      "env": {
-        "SARI_CONFIG": "/절대/경로/워크스페이스/.sari/config.json"
-      }
+      "args": ["--transport", "stdio"]
     }
   }
 }
@@ -125,9 +122,6 @@ args = ["--transport", "stdio"]
 [mcp_servers.sari]
 command = "/Users/yourname/.local/bin/sari"
 args = ["--transport", "stdio"]
-
-[mcp_servers.sari.env]
-SARI_CONFIG = "/절대/경로/워크스페이스/.sari/config.json"
 ```
 
 ---
@@ -137,7 +131,7 @@ SARI_CONFIG = "/절대/경로/워크스페이스/.sari/config.json"
 - **전역 DB**: `~/.local/share/sari/index.db`
 - **전역 레지스트리**: `~/.local/share/sari/server.json`
 - **로그**: `~/.local/share/sari/logs`
-- **워크스페이스 설정**: `<workspace>/.sari/config.json`
+- **워크스페이스 설정**: `<workspace>/.sari/config.json` 또는 `<workspace>/sari.json`
 - **전역 설정**: `~/.config/sari/config.json`
 
 ---
