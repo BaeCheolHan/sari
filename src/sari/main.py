@@ -385,6 +385,9 @@ def run_cmd(argv: List[str]) -> int:
 
 
 def main(argv: List[str] = None, original_stdout: Any = None) -> int:
+    # Ensure global config exists before doing anything else
+    WorkspaceManager.ensure_global_config()
+
     argv = list(argv or sys.argv[1:])
 
     # Use provided stdout or fallback to get_real_stdout() to bypass StdoutGuard
@@ -400,9 +403,9 @@ def main(argv: List[str] = None, original_stdout: Any = None) -> int:
         # Instead of run_cmd(["status"]), we fall through to the stdio server start
         pass
     else:
-        # Fast-path for subcommands
-        if argv[0] == "doctor":
-            return _cmd_doctor()
+        # Integrated command handling
+        if argv[0] in {"doctor", "roots", "config", "index", "engine", "uninstall"}:
+            return run_cmd(argv)
         
         if argv[0] in {"daemon", "proxy", "status", "search", "init", "auto"}:
             from sari.mcp.cli import main as legacy_main

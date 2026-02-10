@@ -229,3 +229,25 @@ class WorkspaceManager:
         except Exception as e:
             import logging
             logging.getLogger("sari.workspace").debug("Failed to update gitignore: %s", e)
+
+    @staticmethod
+    def ensure_global_config() -> Path:
+        """Ensure global config directory and a default config.json exist."""
+        global_dir = Path(WorkspaceManager.settings.GLOBAL_CONFIG_DIR)
+        config_path = global_dir / "config.json"
+        
+        if not config_path.exists():
+            global_dir.mkdir(parents=True, exist_ok=True)
+            default_config = {
+                "workspace_roots": [],
+                "include_ext": [".py", ".js", ".ts", ".java", ".kt", ".md", ".json", ".sql", ".gradle", ".kts"],
+                "exclude_dirs": [".git", "node_modules", ".venv", "build", "target", ".gradle", ".idea"],
+                "db_path": str(WorkspaceManager.get_global_db_path())
+            }
+            try:
+                config_path.write_text(json.dumps(default_config, indent=2), encoding="utf-8")
+            except Exception as e:
+                import logging
+                logging.getLogger("sari.workspace").error(f"Failed to create default global config: {e}")
+        
+        return config_path

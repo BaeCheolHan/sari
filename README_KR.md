@@ -62,11 +62,24 @@ sari --transport http --http-api-port 47777
 
 ## 4. MCP 클라이언트 설정
 
-설치 방식에 따라 `command`와 `args` 설정이 달라집니다. 본인의 설치 방식에 맞는 설정을 사용하세요.
+설치 방식과 워크스페이스 관리 전략(전역 관리 vs 프로젝트별 관리)에 따라 설정이 달라집니다.
 
-### 4.1 Gemini CLI 설정 (~/.gemini/settings.json)
+### 4.1 권장: 전역 설정 사용 (통합 검색 모드)
+어떤 프로젝트에서든 등록된 모든 저장소를 통합 검색하고 싶을 때 사용합니다. 가장 편리한 방식입니다.
 
-**A. `uv tool install`로 설치한 경우 (권장)**
+1.  **전역 설정 초기화**:
+    ```bash
+    mkdir -p ~/.config/sari
+    echo '{"workspace_roots": []}' > ~/.config/sari/config.json
+    ```
+2.  **워크스페이스 등록**:
+    ```bash
+    sari roots add /절대/경로/저장소1
+    sari roots add /절대/경로/저장소2
+    ```
+3.  **MCP 설정 업데이트**: `SARI_CONFIG`가 전역 설정 파일을 바라보게 합니다.
+
+#### **A. Gemini CLI (~/.gemini/settings.json)**
 ```json
 {
   "mcpServers": {
@@ -74,50 +87,51 @@ sari --transport http --http-api-port 47777
       "command": "/Users/yourname/.local/bin/sari",
       "args": ["--transport", "stdio"],
       "env": {
-        "SARI_CONFIG": "/abs/path/to/workspace/.sari/config.json"
+        "SARI_CONFIG": "/Users/yourname/.config/sari/config.json"
       }
     }
   }
 }
 ```
 
-**B. `venv`에 설치한 경우**
-```json
-{
-  "mcpServers": {
-    "sari": {
-      "command": "/abs/path/to/project/.venv/bin/python",
-      "args": ["-m", "sari", "--transport", "stdio"],
-      "env": {
-        "SARI_CONFIG": "/abs/path/to/workspace/.sari/config.json"
-      }
-    }
-  }
-}
-```
-
----
-
-### 4.2 Codex CLI 설정 (~/.codex/config.toml)
-
-**A. `uv tool install`로 설치한 경우 (권장)**
+#### **B. Codex CLI (~/.codex/config.toml)**
 ```toml
 [mcp_servers.sari]
 command = "/Users/yourname/.local/bin/sari"
 args = ["--transport", "stdio"]
 
 [mcp_servers.sari.env]
-SARI_CONFIG = "/abs/path/to/workspace/.sari/config.json"
+SARI_CONFIG = "/Users/yourname/.config/sari/config.json"
 ```
 
-**B. `venv`에 설치한 경우**
+---
+
+### 4.2 선택 사항: 프로젝트별 개별 설정
+특정 프로젝트에서만 독립적인 인덱싱을 유지하고 싶을 때 사용합니다.
+
+**A. Gemini CLI**
+```json
+{
+  "mcpServers": {
+    "sari": {
+      "command": "/Users/yourname/.local/bin/sari",
+      "args": ["--transport", "stdio"],
+      "env": {
+        "SARI_CONFIG": "/절대/경로/워크스페이스/.sari/config.json"
+      }
+    }
+  }
+}
+```
+
+**B. Codex CLI**
 ```toml
 [mcp_servers.sari]
-command = "/abs/path/to/project/.venv/bin/python"
-args = ["-m", "sari", "--transport", "stdio"]
+command = "/Users/yourname/.local/bin/sari"
+args = ["--transport", "stdio"]
 
 [mcp_servers.sari.env]
-SARI_CONFIG = "/abs/path/to/workspace/.sari/config.json"
+SARI_CONFIG = "/절대/경로/워크스페이스/.sari/config.json"
 ```
 
 ---
@@ -136,8 +150,8 @@ SARI_CONFIG = "/abs/path/to/workspace/.sari/config.json"
 
 ### 6.1 CLI로 추가
 ```bash
-sari roots add /path/to/workspaceA
-sari roots add /path/to/workspaceB
+sari roots add /절대/경로/저장소A
+sari roots add /절대/경로/저장소B
 sari roots list
 ```
 
@@ -145,8 +159,8 @@ sari roots list
 ```json
 {
   "workspace_roots": [
-    "/path/to/workspaceA",
-    "/path/to/workspaceB"
+    "/절대/경로/저장소A",
+    "/절대/경로/저장소B"
   ]
 }
 ```
@@ -165,46 +179,27 @@ sari roots list
 
 ---
 
-
-
 ## 8. 트러블슈팅
 
 문제가 발생하면 `docs/TROUBLESHOOTING.md`를 확인하세요.
 
-
-
 ---
 
-
-
 ## 9. 관리 명령어
-
-
 
 ### 업데이트
 
 - 로컬 소스에서 강제 업데이트:
-
   ```bash
-
   uv tool install . --force
-
   ```
 
 - PyPI 최신 버전으로 업데이트:
-
   ```bash
-
   uv tool upgrade sari
-
   ```
 
-
-
 ### 삭제
-
 ```bash
-
 uv tool uninstall sari
-
 ```

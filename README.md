@@ -65,11 +65,54 @@ curl http://127.0.0.1:47777/health
 
 ## 4. MCP Client Setup
 
-Configuration depends on your installation method. Replace `yourname` with your actual system username.
+Configuration depends on your installation method and whether you want to manage workspaces globally or per-project.
 
-### 4.1 Gemini CLI (~/.gemini/settings.json)
+### 4.1 Recommended: Global Configuration (Unified Search)
+Use this if you want to search across multiple repositories from any workspace.
 
-**A. If installed via `uv tool` (Recommended)**
+1.  **Initialize Global Config**:
+    ```bash
+    mkdir -p ~/.config/sari
+    echo '{"workspace_roots": []}' > ~/.config/sari/config.json
+    ```
+2.  **Add Your Workspaces**:
+    ```bash
+    sari roots add /abs/path/to/repo1
+    sari roots add /abs/path/to/repo2
+    ```
+3.  **Update MCP Settings**: Point `SARI_CONFIG` to the global path.
+
+#### **A. Gemini CLI (~/.gemini/settings.json)**
+```json
+{
+  "mcpServers": {
+    "sari": {
+      "command": "/Users/yourname/.local/bin/sari",
+      "args": ["--transport", "stdio"],
+      "env": {
+        "SARI_CONFIG": "/Users/yourname/.config/sari/config.json"
+      }
+    }
+  }
+}
+```
+
+#### **B. Codex CLI (~/.codex/config.toml)**
+```toml
+[mcp_servers.sari]
+command = "/Users/yourname/.local/bin/sari"
+args = ["--transport", "stdio"]
+
+[mcp_servers.sari.env]
+SARI_CONFIG = "/Users/yourname/.config/sari/config.json"
+```
+
+---
+
+### 4.2 Optional: Per-project Configuration
+Use this if you want isolated indexing for a specific workspace.
+
+**A. Gemini CLI**
 ```json
 {
   "mcpServers": {
@@ -84,40 +127,11 @@ Configuration depends on your installation method. Replace `yourname` with your 
 }
 ```
 
-**B. If installed via `venv`**
-```json
-{
-  "mcpServers": {
-    "sari": {
-      "command": "/abs/path/to/project/.venv/bin/python",
-      "args": ["-m", "sari", "--transport", "stdio"],
-      "env": {
-        "SARI_CONFIG": "/abs/path/to/workspace/.sari/config.json"
-      }
-    }
-  }
-}
-```
-
----
-
-### 4.2 Codex CLI (~/.codex/config.toml)
-
-**A. If installed via `uv tool` (Recommended)**
+**B. Codex CLI**
 ```toml
 [mcp_servers.sari]
 command = "/Users/yourname/.local/bin/sari"
 args = ["--transport", "stdio"]
-
-[mcp_servers.sari.env]
-SARI_CONFIG = "/abs/path/to/workspace/.sari/config.json"
-```
-
-**B. If installed via `venv`**
-```toml
-[mcp_servers.sari]
-command = "/abs/path/to/project/.venv/bin/python"
-args = ["-m", "sari", "--transport", "stdio"]
 
 [mcp_servers.sari.env]
 SARI_CONFIG = "/abs/path/to/workspace/.sari/config.json"
@@ -198,46 +212,27 @@ Sari determines indexing roots in this order:
 
 ---
 
-
-
 ## 10. Troubleshooting
 
 Please see `docs/TROUBLESHOOTING.md` when issues occur.
 
-
-
 ---
 
-
-
 ## 11. Maintenance
-
-
 
 ### Update
 
 - Force update from local source:
-
   ```bash
-
   uv tool install . --force
-
   ```
 
 - Upgrade to the latest version via PyPI:
-
   ```bash
-
   uv tool upgrade sari
-
   ```
 
-
-
 ### Uninstall
-
 ```bash
-
 uv tool uninstall sari
-
 ```
