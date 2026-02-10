@@ -53,6 +53,7 @@ from .legacy_cli import (
     cmd_doctor,
     cmd_init,
     cmd_prune,
+    cmd_vacuum,
     main,
 )
 
@@ -110,6 +111,7 @@ __all__ = [
     "cmd_doctor",
     "cmd_init",
     "cmd_prune",
+    "cmd_vacuum",
     "main",
     # Backward compat aliases
     "_get_http_host_port",

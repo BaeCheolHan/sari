@@ -52,3 +52,14 @@ def cmd_prune(args):
         return 0
     finally:
         db.close()
+
+
+def cmd_vacuum(args):
+    db, _, _ = load_local_db(get_arg(args, "workspace"))
+    try:
+        conn = db.db.connection()
+        conn.execute("VACUUM")
+        print("✅ VACUUM completed.")
+        return 0
+    finally:
+        db.close()

@@ -13,6 +13,23 @@ class _DoneProc:
         return False
 
 
+class _AliveProc:
+    exitcode = None
+
+    def __init__(self):
+        self.terminated = False
+        self.joined = False
+
+    def is_alive(self):
+        return True
+
+    def terminate(self):
+        self.terminated = True
+
+    def join(self, timeout=None):
+        self.joined = True
+
+
 def _make_indexer(tmp_path):
     ws = tmp_path / "ws"
     ws.mkdir()
@@ -81,3 +98,50 @@ def test_finalize_worker_removes_snapshot_file_after_success(tmp_path):
     indexer._finalize_worker_if_done()
 
     assert not os.path.exists(snapshot_path)
+
+
+def test_stop_removes_active_worker_snapshot_artifacts(tmp_path):
+    indexer = _make_indexer(tmp_path)
+    proc = _AliveProc()
+
+    snapshot_path = str(tmp_path / "index.db.snapshot.active")
+    status_path = str(tmp_path / "index.db.snapshot.status.json")
+    log_path = str(tmp_path / "index.db.snapshot.log")
+    for p in [snapshot_path, status_path, log_path]:
+        with open(p, "w", encoding="utf-8") as f:
+            f.write("x")
+
+    indexer._worker_proc = proc
+    indexer._worker_snapshot_path = snapshot_path
+    indexer._worker_status_path = status_path
+    indexer._worker_log_path = log_path
+
+    indexer.stop()
+
+    assert proc.terminated
+    assert proc.joined
+    assert not os.path.exists(snapshot_path)
+    assert not os.path.exists(status_path)
+    assert not os.path.exists(log_path)
+
+
+def test_cleanup_stale_snapshot_artifacts_removes_old_files(tmp_path):
+    indexer = _make_indexer(tmp_path)
+    db_path = str(tmp_path / "index.db")
+
+    old_snapshot = f"{db_path}.snapshot.1000"
+    fresh_snapshot = f"{db_path}.snapshot.2000"
+    for p in [old_snapshot, fresh_snapshot]:
+        with open(p, "w", encoding="utf-8") as f:
+            f.write("x")
+
+    now = 10_000
+    old_ts = now - 600
+    fresh_ts = now - 10
+    os.utime(old_snapshot, (old_ts, old_ts))
+    os.utime(fresh_snapshot, (fresh_ts, fresh_ts))
+
+    indexer._cleanup_stale_snapshot_artifacts(now_ts=now, max_age_seconds=60)
+
+    assert not os.path.exists(old_snapshot)
+    assert os.path.exists(fresh_snapshot)

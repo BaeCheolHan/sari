@@ -86,3 +86,4 @@ def test_legacy_status_and_maintenance_commands_reexported_from_commands_module(
     assert legacy_cli.cmd_doctor is maintenance_commands.cmd_doctor
     assert legacy_cli.cmd_init is maintenance_commands.cmd_init
     assert legacy_cli.cmd_prune is maintenance_commands.cmd_prune
+    assert legacy_cli.cmd_vacuum is maintenance_commands.cmd_vacuum

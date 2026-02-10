@@ -192,6 +192,28 @@ class Indexer:
         self._remove_file_if_exists(f"{snapshot_path}-shm")
         self._remove_file_if_exists(f"{snapshot_path}-journal")
 
+    def _cleanup_stale_snapshot_artifacts(self, now_ts: Optional[int] = None, max_age_seconds: int = 3600) -> None:
+        base = getattr(self.db, "db_path", "") or ""
+        if not base:
+            return
+        parent = os.path.dirname(base) or "."
+        prefix = f"{os.path.basename(base)}.snapshot."
+        now = int(now_ts if now_ts is not None else time.time())
+        try:
+            for name in os.listdir(parent):
+                if not name.startswith(prefix):
+                    continue
+                path = os.path.join(parent, name)
+                try:
+                    st = os.stat(path)
+                except Exception:
+                    continue
+                if (now - int(st.st_mtime)) >= int(max_age_seconds):
+                    self._remove_file_if_exists(path)
+        except Exception as e:
+            if self.logger:
+                self.logger.debug("Failed to cleanup stale snapshots under %s: %s", parent, e)
+
     def scan_once(self):
         """동기적으로 1회 스캔을 수행합니다. (블로킹)"""
         with self._scan_lock:
@@ -241,6 +263,14 @@ class Indexer:
                 self._worker_proc.join(timeout=2.0)
             except Exception:
                 pass
+        self._cleanup_snapshot_artifacts(self._worker_snapshot_path)
+        self._remove_file_if_exists(self._worker_status_path)
+        self._remove_file_if_exists(self._worker_log_path)
+        self._worker_proc = None
+        self._worker_snapshot_path = None
+        self._worker_status_path = None
+        self._worker_log_path = None
+        self._cleanup_stale_snapshot_artifacts()
         if self._executor:
             self._executor.shutdown(wait=True, cancel_futures=True)
             self._executor = None
@@ -288,6 +318,7 @@ class Indexer:
         if self._worker_proc and self._worker_proc.is_alive():
             self._pending_rescan = True
             return
+        self._cleanup_stale_snapshot_artifacts()
         self.status.index_ready = False
         self.status.last_error = ""
         self._worker_snapshot_path = self._snapshot_path()

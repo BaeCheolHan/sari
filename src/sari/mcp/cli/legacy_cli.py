@@ -133,6 +133,7 @@ from .commands.maintenance_commands import (
     cmd_doctor,
     cmd_init,
     cmd_prune,
+    cmd_vacuum,
 )
 
 def cmd_proxy(args):
@@ -174,6 +175,9 @@ def main():
     doc = subparsers.add_parser("doctor", help="Doctor"); doc.add_argument("--auto-fix", action="store_true"); doc.add_argument("--auto-fix_rescan", action="store_true"); doc.add_argument("--no-network", action="store_true"); doc.add_argument("--no-db", action="store_true"); doc.add_argument("--no-port", action="store_true"); doc.add_argument("--no-disk", action="store_true"); doc.add_argument("--min-disk-gb", type=float, default=1.0); doc.set_defaults(func=cmd_doctor)
     init = subparsers.add_parser("init", help="Init"); init.add_argument("--workspace", default=""); init.add_argument("--force", action="store_true"); init.set_defaults(func=cmd_init)
     prune = subparsers.add_parser("prune", help="Prune"); prune.add_argument("--days", type=int); prune.add_argument("--table", choices=["snippets", "failed_tasks", "contexts"]); prune.add_argument("--workspace", default=""); prune.set_defaults(func=cmd_prune)
+    vacuum = subparsers.add_parser("vacuum", help="VACUUM sqlite database")
+    vacuum.add_argument("--workspace", default="")
+    vacuum.set_defaults(func=cmd_vacuum)
     args = parser.parse_args(); return args.func(args) if hasattr(args, "func") else 0
 
 if __name__ == "__main__":

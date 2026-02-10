@@ -2,6 +2,7 @@ import pytest
 import argparse
 from unittest.mock import MagicMock, patch
 from sari.mcp.cli import cmd_daemon_status, cmd_init, cmd_prune, cmd_status, main
+from sari.mcp.cli.commands.maintenance_commands import cmd_vacuum
 
 def test_cmd_daemon_status():
     args = argparse.Namespace(daemon_host="127.0.0.1", daemon_port=47779)
@@ -27,6 +28,40 @@ def test_cmd_prune():
         ret = cmd_prune(args)
         assert ret == 0
         assert db.prune_data.called
+
+
+def test_cmd_vacuum():
+    class _Conn:
+        def __init__(self):
+            self.sql = []
+
+        def execute(self, q):
+            self.sql.append(q)
+
+    class _DB:
+        def __init__(self):
+            self.conn = _Conn()
+
+        @property
+        def db(self):
+            class _Wrap:
+                def __init__(self, conn):
+                    self._conn = conn
+
+                def connection(self):
+                    return self._conn
+
+            return _Wrap(self.conn)
+
+        def close(self):
+            pass
+
+    db = _DB()
+    args = argparse.Namespace(workspace=None)
+    with patch("sari.mcp.cli.commands.maintenance_commands.load_local_db", return_value=(db, [], "/tmp")):
+        ret = cmd_vacuum(args)
+        assert ret == 0
+        assert db.conn.sql == ["VACUUM"]
 
 def test_cli_main_help():
     with patch('sys.argv', ['sari', '--help']):
