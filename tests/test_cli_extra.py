@@ -22,8 +22,8 @@ def test_cmd_doctor():
 
 def test_cmd_search():
     args = argparse.Namespace(query="test", limit=10, repo=None)
-    with patch('sari.mcp.cli.legacy_cli._request_http', return_value={"results": []}):
-        with patch('sari.mcp.cli.legacy_cli._get_http_host_port', return_value=("127.0.0.1", 47777)):
+    with patch('sari.mcp.cli.commands.status_commands._request_http', return_value={"results": []}):
+        with patch('sari.mcp.cli.commands.status_commands._get_http_host_port', return_value=("127.0.0.1", 47777)):
             ret = cmd_search(args)
             assert ret == 0
 
@@ -75,3 +75,14 @@ def test_legacy_daemon_commands_reexported_from_commands_module():
     assert legacy_cli.cmd_daemon_status is daemon_commands.cmd_daemon_status
     assert legacy_cli.cmd_daemon_ensure is daemon_commands.cmd_daemon_ensure
     assert legacy_cli.cmd_daemon_refresh is daemon_commands.cmd_daemon_refresh
+
+
+def test_legacy_status_and_maintenance_commands_reexported_from_commands_module():
+    from sari.mcp.cli.commands import status_commands, maintenance_commands
+    import sari.mcp.cli.legacy_cli as legacy_cli
+
+    assert legacy_cli.cmd_status is status_commands.cmd_status
+    assert legacy_cli.cmd_search is status_commands.cmd_search
+    assert legacy_cli.cmd_doctor is maintenance_commands.cmd_doctor
+    assert legacy_cli.cmd_init is maintenance_commands.cmd_init
+    assert legacy_cli.cmd_prune is maintenance_commands.cmd_prune

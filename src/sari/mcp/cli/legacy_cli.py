@@ -125,6 +125,15 @@ from .commands.daemon_commands import (
     cmd_daemon_ensure,
     cmd_daemon_refresh,
 )
+from .commands.status_commands import (
+    cmd_status,
+    cmd_search,
+)
+from .commands.maintenance_commands import (
+    cmd_doctor,
+    cmd_init,
+    cmd_prune,
+)
 
 def cmd_proxy(args):
     from sari.mcp.proxy import main as proxy_main
@@ -139,78 +148,6 @@ def cmd_auto(args):
             time.sleep(0.2)
     if probe_sari_daemon(host, port): return cmd_proxy(args)
     print("❌ Daemon failed to start.", file=sys.stderr); return 1
-
-def cmd_status(args):
-    try:
-        # Resolve daemon address first
-        d_host, d_port = (_arg(args, "daemon_host") or DEFAULT_DAEMON_HOST, int(_arg(args, "daemon_port") or DEFAULT_DAEMON_PORT)) if _arg(args, "daemon_host") or _arg(args, "daemon_port") else get_daemon_address()
-        daemon_running = is_daemon_running(d_host, d_port)
-        
-        # Resolve HTTP endpoint for selected daemon (registry-aware).
-        h, p = _resolve_http_endpoint_for_daemon(args, d_host, d_port)
-        http_running = _is_http_running(h, p)
-
-        if not http_running:
-            if not daemon_running:
-                d_host, d_port, daemon_running = _ensure_daemon_running(d_host, d_port, allow_upgrade=False)
-                h, p = _resolve_http_endpoint_for_daemon(args, d_host, d_port)
-            if daemon_running:
-                for _ in range(5):
-                    _ensure_workspace_http(d_host, d_port)
-                    h, p = _resolve_http_endpoint_for_daemon(args, d_host, d_port)
-                    http_running = _is_http_running(h, p)
-                    if http_running: break
-                    time.sleep(0.1)
-            
-            if not http_running and daemon_running:
-                fallback = _request_mcp_status(d_host, d_port)
-                if fallback: print(json.dumps(fallback, ensure_ascii=False, indent=2)); return 0
-            
-            if not http_running:
-                print(f"❌ Error: Sari services not running. Daemon: {d_host}:{d_port}, HTTP: {h}:{p}"); return 1
-
-        data = _request_http("/status", {}, h, p)
-        print(json.dumps(data, ensure_ascii=False, indent=2))
-        return 0
-    except Exception as e: print(f"❌ Error: {e}"); return 1
-
-def cmd_search(args):
-    """Query HTTP search endpoint."""
-    params = {"q": args.query, "limit": args.limit}
-    if _arg(args, "repo"): params["repo"] = args.repo
-    data = _request_http("/search", params)
-    print(json.dumps(data, ensure_ascii=False, indent=2))
-    return 0
-
-def cmd_doctor(args):
-    from sari.mcp.tools.doctor import execute_doctor
-    payload = execute_doctor({
-        "auto_fix": bool(_arg(args, "auto_fix")), "auto_fix_rescan": bool(_arg(args, "auto_fix_rescan")),
-        "include_network": not _arg(args, "no_network"), "include_db": not _arg(args, "no_db"),
-        "include_port": not _arg(args, "no_port"), "include_disk": not _arg(args, "no_disk"),
-        "min_disk_gb": float(_arg(args, "min_disk_gb", 1.0)),
-    })
-    print(payload.get("content", [{}])[0].get("text", ""))
-    return 0
-
-def cmd_init(args):
-    ws_root = Path(_arg(args, "workspace") or WorkspaceManager.resolve_workspace_root()).expanduser().resolve()
-    cfg_path = Path(WorkspaceManager.resolve_config_path(str(ws_root)))
-    cfg_path.parent.mkdir(parents=True, exist_ok=True)
-    data = json.loads(cfg_path.read_text()) if cfg_path.exists() and not _arg(args, "force") else {}
-    roots = list(dict.fromkeys((data.get("roots") or []) + [str(ws_root)]))
-    data.update({"roots": roots, "db_path": data.get("db_path", Config.get_defaults(str(ws_root))["db_path"])})
-    cfg_path.write_text(json.dumps(data, indent=2)); print(f"✅ Workspace initialized at {ws_root}"); return 0
-
-def cmd_prune(args):
-    db, _, _ = _load_local_db(_arg(args, "workspace"))
-    try:
-        tables = [_arg(args, "table")] if _arg(args, "table") else ["snippets", "failed_tasks", "contexts"]
-        for t in tables:
-            count = db.prune_data(t, _arg(args, "days") or 30)
-            if count > 0: print(f"🧹 {t}: Removed {count} records.")
-        return 0
-    finally: db.close()
 
 def read_pid(host: Optional[str] = None, port: Optional[int] = None) -> Optional[int]:
     """Read daemon pid from registry (backward compat for tests)."""
