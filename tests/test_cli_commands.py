@@ -72,3 +72,24 @@ def test_cmd_status_starts_daemon_on_resolved_non_default_port():
                             mock_ensure.assert_called_once()
                             _, kwargs = mock_ensure.call_args
                             assert kwargs.get("allow_upgrade") is False
+
+
+def test_cmd_status_prefers_registry_http_endpoint_for_selected_daemon():
+    args = argparse.Namespace(
+        daemon_host=None,
+        daemon_port=None,
+        http_host=None,
+        http_port=None,
+    )
+    with patch("sari.mcp.cli.legacy_cli.get_daemon_address", return_value=("127.0.0.1", 47879)):
+        with patch("sari.mcp.cli.legacy_cli.is_daemon_running", return_value=True):
+            with patch("sari.mcp.cli.legacy_cli._get_http_host_port", return_value=("127.0.0.1", 47777)):
+                with patch(
+                    "sari.mcp.cli.legacy_cli.ServerRegistry.resolve_daemon_by_endpoint",
+                    return_value={"host": "127.0.0.1", "port": 47879, "http_host": "127.0.0.1", "http_port": 58155},
+                ):
+                    with patch("sari.mcp.cli.legacy_cli._is_http_running", return_value=True):
+                        with patch("sari.mcp.cli.legacy_cli._request_http", return_value={"ok": True}) as mock_request_http:
+                            rc = cmd_status(args)
+                            assert rc == 0
+                            mock_request_http.assert_called_once_with("/status", {}, "127.0.0.1", 58155)

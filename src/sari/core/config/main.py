@@ -129,16 +129,10 @@ class Config:
     @classmethod
     def get_defaults(cls, root: str) -> Dict[str, Any]:
         from sari.core.workspace import WorkspaceManager
-        
-        # Seamless Root Expansion: Automatically include the Git root if we are inside one
-        roots = [root]
-        git_root = WorkspaceManager.find_git_root(root)
-        if git_root and git_root not in roots:
-            roots.append(git_root)
 
         return {
             "workspace_root": root,
-            "workspace_roots": roots,
+            "workspace_roots": [root],
             "include_ext": [".py", ".js", ".ts", ".java", ".go", ".rs", ".rb", ".php", ".xml", ".yml", ".yaml", ".md", ".cs", ".swift", ".vue", ".hcl", ".tf", ".sql", ".txt"],
             "exclude_dirs": [".git", "node_modules", "target", "build", "dist", ".pytest_cache", "__pycache__", ".sari", ".venv", "venv", ".virtualenv", "env"],
             "exclude_globs": [".venv*", "venv*", "env*", "*.egg-info"],

@@ -4,10 +4,10 @@ from pathlib import Path
 from sari.core.config.main import Config
 from sari.core.workspace import WorkspaceManager
 
-def test_seamless_root_expansion_with_git(tmp_path):
+def test_workspace_roots_do_not_expand_to_git_root(tmp_path):
     """
     Scenario: User is deep inside a Git repo.
-    Expectation: Sari should automatically add the Git root to workspace_roots.
+    Expectation: Sari must keep only the explicit workspace path.
     """
     git_root = tmp_path / "my_project"
     git_root.mkdir()
@@ -19,11 +19,8 @@ def test_seamless_root_expansion_with_git(tmp_path):
     # Simulate being in the deep directory
     config = Config.load(workspace_root_override=str(deep_dir))
     
-    # Verification
-    # 1. Current deep dir should be there
-    assert str(deep_dir) in [str(Path(r)) for r in config.workspace_roots]
-    # 2. THE GIT ROOT SHOULD BE AUTOMATICALLY ADDED!
-    assert str(git_root) in [str(Path(r)) for r in config.workspace_roots]
+    roots = [str(Path(r)) for r in config.workspace_roots]
+    assert roots == [str(deep_dir)]
 
 def test_workspace_roots_deduplication():
     """

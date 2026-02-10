@@ -84,6 +84,28 @@ def _get_http_host_port(host_override: Optional[str] = None, port_override: Opti
     port = int(port_override or env_port or cfg.http_api_port or DEFAULT_HTTP_PORT)
     return host, port
 
+def _resolve_http_endpoint_for_daemon(args: Any, daemon_host: str, daemon_port: int) -> Tuple[str, int]:
+    host_override = _arg(args, "http_host")
+    port_override = _arg(args, "http_port")
+    if host_override or port_override is not None:
+        return _get_http_host_port(host_override, port_override)
+
+    host, port = _get_http_host_port(None, None)
+    try:
+        reg = ServerRegistry()
+        inst = reg.resolve_daemon_by_endpoint(daemon_host, daemon_port)
+        if not inst:
+            ws_root = os.environ.get("SARI_WORKSPACE_ROOT") or WorkspaceManager.resolve_workspace_root()
+            inst = reg.resolve_workspace_daemon(str(ws_root))
+        if inst:
+            if inst.get("http_host"):
+                host = str(inst.get("http_host"))
+            if inst.get("http_port"):
+                port = int(inst.get("http_port"))
+    except Exception:
+        pass
+    return host, port
+
 def _request_http(path: str, params: dict, host: Optional[str] = None, port: Optional[int] = None) -> dict:
     h, p = _get_http_host_port(host, port)
     _enforce_loopback(h)
@@ -166,16 +188,18 @@ def cmd_status(args):
         d_host, d_port = (_arg(args, "daemon_host") or DEFAULT_DAEMON_HOST, int(_arg(args, "daemon_port") or DEFAULT_DAEMON_PORT)) if _arg(args, "daemon_host") or _arg(args, "daemon_port") else get_daemon_address()
         daemon_running = is_daemon_running(d_host, d_port)
         
-        # Get HTTP address
-        h, p = _get_http_host_port(_arg(args, "http_host"), _arg(args, "http_port"))
+        # Resolve HTTP endpoint for selected daemon (registry-aware).
+        h, p = _resolve_http_endpoint_for_daemon(args, d_host, d_port)
         http_running = _is_http_running(h, p)
 
         if not http_running:
             if not daemon_running:
                 d_host, d_port, daemon_running = _ensure_daemon_running(d_host, d_port, allow_upgrade=False)
+                h, p = _resolve_http_endpoint_for_daemon(args, d_host, d_port)
             if daemon_running:
                 for _ in range(5):
                     _ensure_workspace_http(d_host, d_port)
+                    h, p = _resolve_http_endpoint_for_daemon(args, d_host, d_port)
                     http_running = _is_http_running(h, p)
                     if http_running: break
                     time.sleep(0.1)

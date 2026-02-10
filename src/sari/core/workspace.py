@@ -93,15 +93,8 @@ class WorkspaceManager:
         if not raw_roots:
             raw_roots = [PathUtils.normalize(os.getcwd())]
 
-        # Seamless Expansion: ONLY for default/CWD discovery
-        expanded = []
-        for r in raw_roots:
-            expanded.append(r)
-            git_r = WorkspaceManager.find_git_root(r)
-            if git_r:
-                expanded.append(PathUtils.normalize(git_r))
-        
-        return list(dict.fromkeys(expanded))
+        # Strict boundary policy: never auto-expand to parent git roots.
+        return list(dict.fromkeys(raw_roots))
 
     @staticmethod
     def resolve_workspace_root(root_uri: Optional[str] = None) -> str:
@@ -109,23 +102,6 @@ class WorkspaceManager:
         Determine the primary workspace root. 
         """
         roots = WorkspaceManager.resolve_workspace_roots(root_uri=root_uri)
-        if root_uri and roots:
-            return roots[0]
-
-        # For auto-discovery, prefer the canonical git root of the primary candidate.
-        if roots:
-            primary = PathUtils.normalize(roots[0])
-            git_root = WorkspaceManager.find_git_root(primary)
-            if git_root:
-                normalized_git_root = PathUtils.normalize(git_root)
-                for candidate in roots:
-                    if PathUtils.normalize(candidate) == normalized_git_root:
-                        return normalized_git_root
-
-        # Fallback: prefer explicit root entries that look like git boundaries.
-        for candidate in roots:
-            if (Path(candidate) / ".git").exists():
-                return candidate
         return roots[0] if roots else PathUtils.normalize(os.getcwd())
 
     @staticmethod
