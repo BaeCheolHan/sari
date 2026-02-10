@@ -14,12 +14,22 @@ def test_resolve_default():
     assert host == DEFAULT_HOST
     assert port == DEFAULT_PORT
 
-def test_resolve_env_fallback():
-    """Env set, no registry -> Env fallback."""
+def test_resolve_env_without_override_uses_default():
+    """Env set, no override -> default/registry path (env is only fallback tier)."""
     os.environ["SARI_DAEMON_PORT"] = "55555"
+    host, port = resolve_daemon_address("/tmp/fake-root")
+    assert port == DEFAULT_PORT
+    os.environ.pop("SARI_DAEMON_PORT")
+
+
+def test_resolve_env_override_wins():
+    """Env override flag forces env daemon endpoint."""
+    os.environ["SARI_DAEMON_PORT"] = "55555"
+    os.environ["SARI_DAEMON_OVERRIDE"] = "1"
     host, port = resolve_daemon_address("/tmp/fake-root")
     assert port == 55555
     os.environ.pop("SARI_DAEMON_PORT")
+    os.environ.pop("SARI_DAEMON_OVERRIDE")
 
 def test_resolve_registry_priority(monkeypatch, tmp_path):
     """Registry should beat Env fallback unless override is set."""

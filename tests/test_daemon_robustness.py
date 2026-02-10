@@ -24,6 +24,7 @@ def test_daemon_root_reuse_across_projects(tmp_path):
     
     with (
         mock.patch("sari.mcp.cli.smart_daemon.identify_sari_daemon", return_value=identity_a),
+        mock.patch("sari.mcp.cli.smart_daemon.get_local_version", return_value="0.6.1"),
         mock.patch("sari.mcp.cli.smart_daemon.smart_kill_port_owner", return_value=True) as mock_kill,
         mock.patch("sari.mcp.cli.smart_daemon.is_port_in_use", return_value=True),
         mock.patch("sari.mcp.cli.smart_daemon.ensure_workspace_http", return_value=True) as mock_init,
