@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 # Mock psutil
 sys.modules['psutil'] = MagicMock()
 
-from sari.mcp.cli import cmd_doctor, cmd_search, cmd_daemon_start, cmd_daemon_stop
+from sari.mcp.cli import cmd_doctor, cmd_search, cmd_daemon_start, cmd_daemon_stop, cmd_daemon_refresh
 
 def test_cmd_doctor():
     args = argparse.Namespace(
@@ -54,3 +54,13 @@ def test_uninstall():
                     uninstall_main()
                 except SystemExit: pass
                 assert mock_rm.called
+
+
+def test_cmd_daemon_refresh_stops_all_then_starts():
+    args = argparse.Namespace(daemon_host="127.0.0.1", daemon_port=47779)
+    with patch("sari.mcp.cli.legacy_cli.cmd_daemon_stop", return_value=0) as mock_stop:
+        with patch("sari.mcp.cli.legacy_cli.cmd_daemon_start", return_value=0) as mock_start:
+            rc = cmd_daemon_refresh(args)
+            assert rc == 0
+            mock_stop.assert_called_once()
+            mock_start.assert_called_once()

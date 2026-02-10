@@ -130,7 +130,12 @@ class SariDaemon:
 
         try:
             from sari.mcp.workspace_registry import Registry
-            shared = Registry.get_instance().get_or_create(workspace_root, persistent=True)
+            # Do not pin a permanent reference here; allow autostop when CLI sessions close.
+            shared = Registry.get_instance().get_or_create(
+                workspace_root,
+                persistent=False,
+                track_ref=False,
+            )
             self._pinned_workspace_root = workspace_root
             self._start_http_gateway(shared)
             logger.info(f"Auto-started workspace session for {workspace_root}")

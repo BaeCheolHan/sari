@@ -168,6 +168,20 @@ def cmd_daemon_ensure(args):
     print("❌ Failed to ensure daemon services.")
     return 1
 
+def cmd_daemon_refresh(args):
+    stop_args = argparse.Namespace(daemon_host=None, daemon_port=None)
+    stop_rc = cmd_daemon_stop(stop_args)
+    if stop_rc != 0:
+        return stop_rc
+    start_args = argparse.Namespace(
+        daemonize=True,
+        daemon_host=_arg(args, "daemon_host", "") or "",
+        daemon_port=_arg(args, "daemon_port"),
+        http_host="",
+        http_port=None,
+    )
+    return cmd_daemon_start(start_args)
+
 def cmd_proxy(args):
     from sari.mcp.proxy import main as proxy_main
     proxy_main()
@@ -274,6 +288,7 @@ def main():
     stop.add_argument("--daemon-host", default="")
     stop.add_argument("--daemon-port", type=int)
     stop.set_defaults(func=cmd_daemon_stop); status = d_parser.add_parser("status", help="Status"); status.add_argument("--daemon-host", default=""); status.add_argument("--daemon-port", type=int); status.set_defaults(func=cmd_daemon_status); ensure = d_parser.add_parser("ensure", help="Ensure"); ensure.add_argument("--daemon-host", default=""); ensure.add_argument("--daemon-port", type=int); ensure.set_defaults(func=cmd_daemon_ensure)
+    refresh = d_parser.add_parser("refresh", help="Refresh"); refresh.add_argument("--daemon-host", default=""); refresh.add_argument("--daemon-port", type=int); refresh.set_defaults(func=cmd_daemon_refresh)
     subparsers.add_parser("proxy", help="Proxy").set_defaults(func=cmd_proxy); subparsers.add_parser("auto", help="Auto").set_defaults(func=cmd_auto); st = subparsers.add_parser("status", help="HTTP Status"); st.add_argument("--daemon-host", default=""); st.add_argument("--daemon-port", type=int); st.add_argument("--http-host", default=""); st.add_argument("--http-port", type=int); st.set_defaults(func=cmd_status)
     doc = subparsers.add_parser("doctor", help="Doctor"); doc.add_argument("--auto-fix", action="store_true"); doc.add_argument("--auto-fix_rescan", action="store_true"); doc.add_argument("--no-network", action="store_true"); doc.add_argument("--no-db", action="store_true"); doc.add_argument("--no-port", action="store_true"); doc.add_argument("--no-disk", action="store_true"); doc.add_argument("--min-disk-gb", type=float, default=1.0); doc.set_defaults(func=cmd_doctor)
     init = subparsers.add_parser("init", help="Init"); init.add_argument("--workspace", default=""); init.add_argument("--force", action="store_true"); init.set_defaults(func=cmd_init)

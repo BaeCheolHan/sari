@@ -153,8 +153,6 @@ class Registry:
                 self._sessions[workspace_root].persistent = True
             if track_ref:
                 self._sessions[workspace_root].ref_count += 1
-            elif self._sessions[workspace_root].ref_count <= 0:
-                self._sessions[workspace_root].ref_count = 1
             self._sessions[workspace_root].touch()
             return self._sessions[workspace_root]
             
