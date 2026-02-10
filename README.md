@@ -88,10 +88,7 @@ Use this if you want to search across multiple repositories from any workspace.
   "mcpServers": {
     "sari": {
       "command": "/Users/yourname/.local/bin/sari",
-      "args": ["--transport", "stdio"],
-      "env": {
-        "SARI_CONFIG": "/Users/yourname/.config/sari/config.json"
-      }
+      "args": ["--transport", "stdio"]
     }
   }
 }
@@ -102,9 +99,6 @@ Use this if you want to search across multiple repositories from any workspace.
 [mcp_servers.sari]
 command = "/Users/yourname/.local/bin/sari"
 args = ["--transport", "stdio"]
-
-[mcp_servers.sari.env]
-SARI_CONFIG = "/Users/yourname/.config/sari/config.json"
 ```
 
 ---

@@ -66,18 +66,17 @@ def _write_json_settings(cfg_path: Path, command: str, args: List[str], env: dic
 
 
 def _cmd_install(host: str, do_print: bool) -> int:
-    ssot = WorkspaceManager.resolve_config_path(str(Path.cwd()))
-    env = {
-        "SARI_CONFIG": ssot,
-    }
     args = ["--transport", "stdio", "--format", "pack"]
     command = "sari"
+    
+    # We no longer strictly need SARI_CONFIG env if the user follows standard paths.
+    # The tool will auto-resolve to .sari/mcp-config.json or ~/.config/sari/config.json.
+    env = {}
 
     if do_print:
         payload = {
             "command": command,
             "args": args,
-            "env": env,
         }
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0

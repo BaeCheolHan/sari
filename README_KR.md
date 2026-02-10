@@ -85,10 +85,7 @@ sari --transport http --http-api-port 47777
   "mcpServers": {
     "sari": {
       "command": "/Users/yourname/.local/bin/sari",
-      "args": ["--transport", "stdio"],
-      "env": {
-        "SARI_CONFIG": "/Users/yourname/.config/sari/config.json"
-      }
+      "args": ["--transport", "stdio"]
     }
   }
 }
@@ -99,9 +96,6 @@ sari --transport http --http-api-port 47777
 [mcp_servers.sari]
 command = "/Users/yourname/.local/bin/sari"
 args = ["--transport", "stdio"]
-
-[mcp_servers.sari.env]
-SARI_CONFIG = "/Users/yourname/.config/sari/config.json"
 ```
 
 ---
