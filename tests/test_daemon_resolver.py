@@ -14,11 +14,12 @@ def test_resolve_default():
     assert host == DEFAULT_HOST
     assert port == DEFAULT_PORT
 
-def test_resolve_env_without_override_uses_default():
-    """Env set, no override -> default/registry path (env is only fallback tier)."""
+def test_resolve_env_fallback_without_registry_entry(monkeypatch, tmp_path):
+    """Env set, no matching registry entry -> env fallback."""
+    monkeypatch.setenv("SARI_REGISTRY_FILE", str(tmp_path / "server.json"))
     os.environ["SARI_DAEMON_PORT"] = "55555"
     host, port = resolve_daemon_address("/tmp/fake-root")
-    assert port == DEFAULT_PORT
+    assert port == 55555
     os.environ.pop("SARI_DAEMON_PORT")
 
 
