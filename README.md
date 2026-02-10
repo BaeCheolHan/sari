@@ -49,6 +49,11 @@ Start the daemon (required for stdio):
 sari daemon start -d
 ```
 
+Daemon lifecycle policy:
+- Sari now enforces a strict single-daemon model by default.
+- If a running daemon version differs from local CLI/package version, Sari replaces it at the same endpoint instead of spawning a new daemon on another port.
+- `sari daemon stop` without explicit `--daemon-host/--daemon-port` stops all live Sari daemons registered in `server.json`.
+
 ### 3.2 HTTP API
 Start the HTTP API server for access via browser or other HTTP clients.
 

@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 from typing import Optional, Any
 from sari.version import __version__
+from sari.core.constants import DEFAULT_DAEMON_HOST, DEFAULT_DAEMON_PORT, DEFAULT_HTTP_PORT
 
 try:
     from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -44,9 +45,9 @@ class Settings(BaseSettings):
     AST_CACHE_ENTRIES: int = 1000
     
     # --- DAEMON SETTINGS ---
-    DAEMON_HOST: str = "127.0.0.1"
-    DAEMON_PORT: int = 47800
-    HTTP_API_PORT: int = 47777
+    DAEMON_HOST: str = DEFAULT_DAEMON_HOST
+    DAEMON_PORT: int = DEFAULT_DAEMON_PORT
+    HTTP_API_PORT: int = DEFAULT_HTTP_PORT
     # Default policy: autostop on last session close.
     # Idle timeout is opt-in by setting SARI_DAEMON_IDLE_SEC > 0.
     DAEMON_IDLE_SEC: int = 0

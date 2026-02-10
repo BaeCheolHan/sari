@@ -52,6 +52,11 @@ stdio 모드는 데몬(Daemon) 프로세스를 통해 빠르게 동작합니다.
 sari daemon start -d
 ```
 
+데몬 라이프사이클 정책:
+- 기본 동작은 엄격한 단일 데몬(Strict Single)입니다.
+- 실행 중인 데몬 버전이 현재 CLI/패키지 버전과 다르면, 다른 포트에 새 데몬을 추가로 띄우지 않고 같은 endpoint에서 교체합니다.
+- `--daemon-host/--daemon-port`를 지정하지 않은 `sari daemon stop`은 `server.json`에 등록된 활성 Sari 데몬을 모두 정리합니다.
+
 ### 3.2 HTTP API
 브라우저나 다른 도구에서 API로 접근하고 싶을 때 사용합니다.
 ```bash

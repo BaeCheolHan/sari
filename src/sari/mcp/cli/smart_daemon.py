@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import argparse
 import subprocess
 import socket
 import logging
@@ -15,6 +16,7 @@ except ImportError:
 from sari.core.daemon_resolver import resolve_daemon_address as get_daemon_address
 from sari.core.workspace import WorkspaceManager
 from .mcp_client import probe_sari_daemon, ensure_workspace_http, identify_sari_daemon
+from .utils import get_local_version
 
 logger = logging.getLogger("sari.smart_daemon")
 
@@ -106,12 +108,27 @@ def ensure_smart_daemon(host: Optional[str] = None, port: Optional[int] = None, 
     # 1. Check if already running and responsive
     identity = identify_sari_daemon(host, port)
     if identity:
-        # If it's a Sari daemon, we don't kill it even if the root is different.
-        # Sari daemons can manage multiple workspaces.
-        # We just need to ensure the current workspace is initialized within it.
-        current_root = workspace_root or WorkspaceManager.resolve_workspace_root()
-        ensure_workspace_http(host, port, current_root)
-        return host, port
+        existing_version = str(identity.get("version") or "")
+        local_version = str(get_local_version() or "")
+        draining = bool(identity.get("draining"))
+        needs_replace = bool(draining or (existing_version and local_version and existing_version != local_version))
+        if needs_replace:
+            try:
+                from . import cmd_daemon_stop
+                cmd_daemon_stop(argparse.Namespace(daemon_host=host, daemon_port=port))
+            except Exception as e:
+                logger.error(f"Failed to stop stale daemon before upgrade: {e}")
+                return host, port
+            if identify_sari_daemon(host, port):
+                logger.error(f"Daemon at {host}:{port} still responds after stop attempt.")
+                return host, port
+        else:
+            # If it's a Sari daemon, we don't kill it even if the root is different.
+            # Sari daemons can manage multiple workspaces.
+            # We just need to ensure the current workspace is initialized within it.
+            current_root = workspace_root or WorkspaceManager.resolve_workspace_root()
+            ensure_workspace_http(host, port, current_root)
+            return host, port
 
     # 2. Smart Kill: If port is blocked by a STALE sari process (that didn't respond to identify), kill it
     if is_port_in_use(host, port):

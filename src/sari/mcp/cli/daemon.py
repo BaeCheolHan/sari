@@ -23,13 +23,14 @@ except ImportError:
 from sari.core.workspace import WorkspaceManager
 from sari.core.server_registry import ServerRegistry
 from sari.core.daemon_resolver import resolve_daemon_address as get_daemon_address
+from sari.core.constants import DEFAULT_DAEMON_HOST, DEFAULT_DAEMON_PORT
 
 from .utils import get_pid_file_path, get_local_version
 from .mcp_client import identify_sari_daemon, probe_sari_daemon
 from .smart_daemon import ensure_smart_daemon
 
-DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 47765
+DEFAULT_HOST = DEFAULT_DAEMON_HOST
+DEFAULT_PORT = DEFAULT_DAEMON_PORT
 
 # Forward declaration - will be set by commands module to avoid circular import
 _cmd_daemon_start_func = None
@@ -262,15 +263,15 @@ def handle_existing_daemon(params: Dict[str, Any]) -> Optional[int]:
         if pid:
             print(f"   PID: {pid}")
         return 0
-    
-    if explicit_port:
-        print(f"❌ Port {port} is already in use by a running Sari daemon.", file=sys.stderr)
+
+    # Strict singleton policy: replace existing daemon at the same endpoint.
+    from . import cmd_daemon_stop
+    stop_args = argparse.Namespace(daemon_host=host, daemon_port=port)
+    cmd_daemon_stop(stop_args)
+    identify = identify_sari_daemon(host, port)
+    if identify:
+        print(f"❌ Failed to replace existing daemon on {host}:{port}.", file=sys.stderr)
         return 1
-    
-    # Find free port for upgrade/drain
-    new_port = registry.find_free_port(start_port=47790)
-    print(f"⚠️  Starting new daemon on free port {new_port} (upgrade/drain).")
-    params["port"] = new_port
     return None
 
 
@@ -286,15 +287,8 @@ def check_port_availability(params: Dict[str, Any]) -> Optional[int]:
     if not port_in_use(host, port):
         return None  # Port is available, continue
     
-    if explicit_port:
-        print(f"❌ Port {port} is already in use by another process.", file=sys.stderr)
-        return 1
-    
-    # Choose a free port to avoid collisions
-    free_port = registry.find_free_port(start_port=47790)
-    print(f"⚠️  Port {port} is in use. Switching to free port {free_port}.")
-    params["port"] = free_port
-    return None
+    print(f"❌ Port {port} is already in use by another process.", file=sys.stderr)
+    return 1
 
 
 def prepare_daemon_environment(params: Dict[str, Any]) -> Dict[str, str]:
@@ -478,6 +472,46 @@ def get_registry_targets(host: str, port: int, pid_hint: Optional[int]) -> Tuple
     return boot_ids, http_pids
 
 
+def list_registry_daemons() -> List[Dict[str, Any]]:
+    """List all live daemon entries from registry."""
+    out: List[Dict[str, Any]] = []
+    try:
+        reg = ServerRegistry()
+        data = reg._load()
+        for boot_id, info in (data.get("daemons") or {}).items():
+            pid = int(info.get("pid") or 0)
+            if pid <= 0:
+                continue
+            try:
+                os.kill(pid, 0)
+            except Exception:
+                continue
+            row = dict(info)
+            row["boot_id"] = boot_id
+            out.append(row)
+    except Exception:
+        return []
+    out.sort(key=lambda x: float(x.get("last_seen_ts") or 0.0), reverse=True)
+    return out
+
+
+def list_registry_daemon_endpoints() -> List[Tuple[str, int]]:
+    """List unique live daemon endpoints from registry."""
+    seen: Set[Tuple[str, int]] = set()
+    endpoints: List[Tuple[str, int]] = []
+    for row in list_registry_daemons():
+        host = str(row.get("host") or DEFAULT_HOST)
+        port = int(row.get("port") or 0)
+        if port <= 0:
+            continue
+        key = (host, port)
+        if key in seen:
+            continue
+        seen.add(key)
+        endpoints.append(key)
+    return endpoints
+
+
 def extract_daemon_stop_params(args: argparse.Namespace) -> Dict[str, Any]:
     """Extract stop parameters from args."""
     def _arg(args, key):
@@ -486,16 +520,16 @@ def extract_daemon_stop_params(args: argparse.Namespace) -> Dict[str, Any]:
     if _arg(args, "daemon_host") or _arg(args, "daemon_port"):
         host = _arg(args, "daemon_host") or DEFAULT_HOST
         port = int(_arg(args, "daemon_port") or DEFAULT_PORT)
+        all_mode = False
     else:
-        host, port = get_daemon_address()
+        host, port = None, None
+        all_mode = True
         
-    return {"host": host, "port": port}
+    return {"host": host, "port": port, "all": all_mode}
 
 
-def stop_daemon_process(params: Dict[str, Any]) -> int:
-    """Stop the daemon process and cleanup."""
-    host = params["host"]
-    port = params["port"]
+def stop_one_endpoint(host: str, port: int) -> int:
+    """Stop daemon and related HTTP process for one endpoint."""
     
     if not is_daemon_running(host, port):
         print("Daemon is not running")
@@ -554,3 +588,21 @@ def stop_daemon_process(params: Dict[str, Any]) -> int:
         remove_pid()
         print("No daemon PID resolved from registry. Cleaned matching registry entries.")
         return 0
+
+
+def stop_daemon_process(params: Dict[str, Any]) -> int:
+    """Stop daemon process(es) and cleanup."""
+    if params.get("all"):
+        endpoints = list_registry_daemon_endpoints()
+        if not endpoints:
+            print("Daemon is not running")
+            remove_pid()
+            return 0
+        rc = 0
+        for host, port in endpoints:
+            rc = max(rc, stop_one_endpoint(host, port))
+        return rc
+
+    host = str(params["host"] or DEFAULT_HOST)
+    port = int(params["port"] or DEFAULT_PORT)
+    return stop_one_endpoint(host, port)

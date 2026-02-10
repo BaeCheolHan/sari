@@ -109,13 +109,34 @@ def cmd_daemon_stop(args):
     return stop_daemon_process(extract_daemon_stop_params(args))
 
 def cmd_daemon_status(args):
-    host, port = (_arg(args, "daemon_host") or DEFAULT_DAEMON_HOST, int(_arg(args, "daemon_port") or DEFAULT_DAEMON_PORT)) if _arg(args, "daemon_host") or _arg(args, "daemon_port") else get_daemon_address()
-    running = is_daemon_running(host, port)
-    identity = identify_sari_daemon(host, port) if running else None
-    print(f"Host: {host}\nPort: {port}\nStatus: {'🟢 Running' if running else '⚫ Stopped'}")
-    if identity and (root := identity.get("workspaceRoot")): print(f"Workspace Root: {root}")
-    if identity and (pid := identity.get("pid")): print(f"PID: {pid}")
-    return 0 if running else 1
+    explicit = bool(_arg(args, "daemon_host") or _arg(args, "daemon_port"))
+    if explicit:
+        host = _arg(args, "daemon_host") or DEFAULT_DAEMON_HOST
+        port = int(_arg(args, "daemon_port") or DEFAULT_DAEMON_PORT)
+        running = is_daemon_running(host, port)
+        identity = identify_sari_daemon(host, port) if running else None
+        print(f"Host: {host}\nPort: {port}\nStatus: {'🟢 Running' if running else '⚫ Stopped'}")
+        if identity and (root := identity.get("workspaceRoot")): print(f"Workspace Root: {root}")
+        if identity and (pid := identity.get("pid")): print(f"PID: {pid}")
+        return 0 if running else 1
+
+    from .daemon import list_registry_daemons
+    active_host, active_port = get_daemon_address()
+    daemons = list_registry_daemons()
+    print(f"Resolved Target: {active_host}:{active_port}")
+    if not daemons:
+        print("Status: ⚫ Stopped")
+        return 1
+
+    print(f"Status: 🟢 Running ({len(daemons)} instance(s))")
+    for d in daemons:
+        host = str(d.get("host") or DEFAULT_DAEMON_HOST)
+        port = int(d.get("port") or 0)
+        pid = int(d.get("pid") or 0)
+        ver = str(d.get("version") or "")
+        marker = "*" if (host == active_host and port == active_port) else "-"
+        print(f"{marker} {host}:{port} PID={pid} VERSION={ver}")
+    return 0
 
 def cmd_daemon_ensure(args):
     host, port = (_arg(args, "daemon_host") or DEFAULT_DAEMON_HOST, int(_arg(args, "daemon_port") or DEFAULT_DAEMON_PORT)) if _arg(args, "daemon_host") or _arg(args, "daemon_port") else get_daemon_address()

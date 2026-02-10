@@ -63,6 +63,13 @@ uv pip install -U sari
 - `SARI_DAEMON_AUTOSTOP=1` (기본값, 즉시 종료)
 - `SARI_DAEMON_IDLE_SEC=300` (idle 5분 후 종료, autostop 대신 사용)
 
+### 4.1 단일 데몬 정책 및 업그레이드 동작
+
+- 기본 정책은 **Strict Single Daemon** 입니다.
+- 포트가 사용 중일 때 임의의 free port로 우회 기동하지 않습니다.
+- 실행 중 데몬 버전이 현재 로컬 CLI 버전과 다르면, 기존 데몬을 정리한 뒤 같은 endpoint에서 재기동합니다.
+- `sari daemon stop`(host/port 미지정)은 registry(`server.json`)에 등록된 활성 데몬을 모두 정리합니다.
+
 ---
 
 ## 5. MCP 연결 오류

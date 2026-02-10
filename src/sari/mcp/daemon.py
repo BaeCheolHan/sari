@@ -21,6 +21,7 @@ from sari.mcp.session import Session
 from sari.core.workspace import WorkspaceManager
 from sari.core.server_registry import ServerRegistry
 from sari.core.settings import settings
+from sari.core.constants import DEFAULT_DAEMON_HOST, DEFAULT_DAEMON_PORT
 from sari.mcp.trace import trace
 
 def _resolve_log_dir() -> Path:
@@ -53,8 +54,8 @@ def _init_logging() -> None:
 _init_logging()
 logger = logging.getLogger("mcp-daemon")
 
-DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 47779
+DEFAULT_HOST = DEFAULT_DAEMON_HOST
+DEFAULT_PORT = DEFAULT_DAEMON_PORT
 PID_FILE = WorkspaceManager.get_global_data_dir() / "daemon.pid"
 
 def _pid_file() -> Path:

@@ -2,9 +2,10 @@ import os
 from typing import Tuple, Optional
 from sari.core.server_registry import ServerRegistry
 from sari.core.workspace import WorkspaceManager
+from sari.core.constants import DEFAULT_DAEMON_HOST, DEFAULT_DAEMON_PORT
 
-DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 47779
+DEFAULT_HOST = DEFAULT_DAEMON_HOST
+DEFAULT_PORT = DEFAULT_DAEMON_PORT
 
 def resolve_daemon_address(workspace_root: Optional[str] = None) -> Tuple[str, int]:
     """
