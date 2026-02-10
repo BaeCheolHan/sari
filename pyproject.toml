@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sari"
-version = "0.6.6"
+version = "0.6.7"
 description = "High-performance local search and indexing engine for large codebases"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -58,7 +58,7 @@ test = [
 ]
 
 [project.scripts]
-sari = "sari.mcp.cli:main"
+sari = "sari.main:main"
 
 [tool.pytest.ini_options]
 minversion = "6.0"
