@@ -87,7 +87,7 @@ Use this if you want to search across multiple repositories from any workspace.
 {
   "mcpServers": {
     "sari": {
-      "command": "/Users/yourname/.local/bin/sari",
+      "command": "sari",
       "args": ["--transport", "stdio"]
     }
   }
@@ -97,9 +97,11 @@ Use this if you want to search across multiple repositories from any workspace.
 #### **B. Codex CLI (~/.codex/config.toml)**
 ```toml
 [mcp_servers.sari]
-command = "/Users/yourname/.local/bin/sari"
+command = "sari"
 args = ["--transport", "stdio"]
 ```
+
+> **Note**: Ensure that `sari` is available in your system `PATH`. If you installed via `uv tool`, this is usually handled automatically.
 
 ---
 

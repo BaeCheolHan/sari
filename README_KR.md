@@ -84,7 +84,7 @@ sari --transport http --http-api-port 47777
 {
   "mcpServers": {
     "sari": {
-      "command": "/Users/yourname/.local/bin/sari",
+      "command": "sari",
       "args": ["--transport", "stdio"]
     }
   }
@@ -94,9 +94,11 @@ sari --transport http --http-api-port 47777
 #### **B. Codex CLI (~/.codex/config.toml)**
 ```toml
 [mcp_servers.sari]
-command = "/Users/yourname/.local/bin/sari"
+command = "sari"
 args = ["--transport", "stdio"]
 ```
+
+> **참고**: 시스템 `PATH`에 `sari`가 포함되어 있어야 합니다. `uv tool`로 설치했다면 자동으로 설정됩니다.
 
 ---
 
