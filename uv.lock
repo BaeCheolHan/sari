@@ -1175,7 +1175,7 @@ wheels = [
 
 [[package]]
 name = "sari"
-version = "0.6.1"
+version = "0.6.6"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
