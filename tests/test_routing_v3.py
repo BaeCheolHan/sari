@@ -38,13 +38,15 @@ def test_search_auto_to_symbol_routing(db_hits, roots):
     os.environ['SARI_FORMAT'] = 'json'
     args = {'query': 'LoginService', 'search_type': 'auto'}
     result = execute_search(args, db_hits, None, roots)
-    assert 'results' in result
-    assert result['count'] > 0
+    # v3 정규화된 필드 확인
+    assert 'matches' in result
+    assert len(result['matches']) > 0
+    assert result['matches'][0]['type'] == 'symbol'
 
 def test_search_auto_waterfall_to_code(db_empty, roots):
     os.environ['SARI_FORMAT'] = 'json'
     args = {'query': 'MissingService', 'search_type': 'auto'}
     result = execute_search(args, db_empty, None, roots)
-    # 기존 search.py의 JSON 응답은 'results' 필드를 사용함
-    assert 'results' in result
-    assert result['query'] == 'MissingService'
+    assert 'matches' in result
+    assert result['mode'] == 'code'
+    assert result['meta']['fallback_used'] is True

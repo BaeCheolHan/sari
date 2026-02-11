@@ -233,7 +233,7 @@ def _register_search_tools(reg: ToolRegistry):
 
     reg.register(Tool(
         name="grep_and_read",
-        description="Composite tool: Search and immediately read top snippets. BEST for quick investigation without reading full files.",
+        description="DEPRECATED: Use 'search' with preview_mode='snippet' instead. Composite tool: Search and immediately read top snippets.",
         input_schema={
             "type": "object",
             "properties": {
@@ -255,20 +255,23 @@ def _register_search_tools(reg: ToolRegistry):
             "required": ["query"],
         },
         handler=lambda ctx, args: grep_and_read_tool.execute_grep_and_read(args, ctx.db, ctx.roots),
+        hidden=True,
     ))
     
     reg.register(Tool(
         name="repo_candidates",
-        description="Suggest top repos for a query. Use before search if repo is unknown.",
+        description="DEPRECATED: Use 'search' with search_type='repo' instead. Suggest top repos for a query.",
         input_schema={"type": "object", "properties": {"query": {"type": "string"}, "limit": {"type": "integer", "default": 3}}, "required": ["query"]},
         handler=lambda ctx, args: repo_candidates_tool.execute_repo_candidates(args, ctx.db, ctx.logger, ctx.roots),
+        hidden=True,
     ))
 
     reg.register(Tool(
         name="search_api_endpoints",
-        description="Search API endpoints by path pattern (search-first for APIs).",
+        description="DEPRECATED: Use 'search' with search_type='api' instead. Search API endpoints by path pattern.",
         input_schema={"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
         handler=lambda ctx, args: search_api_endpoints_tool.execute_search_api_endpoints(args, ctx.db, ctx.roots),
+        hidden=True,
     ))
 
 
@@ -338,7 +341,7 @@ def _register_symbol_tools(reg: ToolRegistry):
 
     reg.register(Tool(
         name="search_symbols",
-        description="Search for symbols by name. Prefer this to scanning files.",
+        description="DEPRECATED: Use 'search' with search_type='symbol' instead. Search for symbols by name.",
         input_schema={
             "type": "object",
             "properties": {
@@ -355,6 +358,7 @@ def _register_symbol_tools(reg: ToolRegistry):
             "required": ["query"],
         },
         handler=lambda ctx, args: search_symbols_tool.execute_search_symbols(args, ctx.db, ctx.logger, ctx.roots),
+        hidden=True,
     ))
 
     reg.register(Tool(

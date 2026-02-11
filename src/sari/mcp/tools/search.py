@@ -274,13 +274,13 @@ def _normalize_results(
                 )
         else:  # code
             results = raw.get("results", [])
-            total = raw.get("meta", {}).get("total", len(results))
+            total = raw.get("meta", {}).get("total", len(results)) if raw.get("meta") else len(results)
             for r in results:
                 matches.append(
                     {
                         "type": "code",
                         "path": r.get("path"),
-                        "identity": r.get("path").split("/")[-1],
+                        "identity": str(r.get("path", "")).split("/")[-1],
                         "location": {"line": 0},
                         "snippet": r.get("snippet", ""),
                         "extra": {"repo": r.get("repo"), "score": r.get("score")},
@@ -333,8 +333,4 @@ def _execute_core_search_raw(
             )
         return {"results": results, "meta": meta}
     except Exception as e:
-        return mcp_response(
-            "search",
-            lambda: pack_error("search", ErrorCode.INTERNAL, str(e)),
-            lambda: {"isError": True, "error": {"message": str(e)}},
-        )
+        return {"isError": True, "error": {"message": str(e)}}
