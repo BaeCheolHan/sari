@@ -1,4 +1,5 @@
 from unittest.mock import patch
+import json
 
 import sari.main as main_mod
 
@@ -49,3 +50,30 @@ def test_mcp_entrypoint_delegates_to_sari_main(monkeypatch):
     rc = mcp_main.main()
     assert rc == 31
     assert captured["argv"] == ["--transport", "http"]
+
+
+def test_cmd_roots_add_rejects_missing_directory(tmp_path, capsys):
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text("{}", encoding="utf-8")
+    missing = str(tmp_path / "Document" / "study")
+
+    with patch.object(main_mod.WorkspaceManager, "resolve_config_path", return_value=str(cfg_path)):
+        rc = main_mod._cmd_roots_add(missing)
+
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "Root path does not exist" in err
+
+
+def test_cmd_roots_add_stores_normalized_existing_path(tmp_path):
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text("{}", encoding="utf-8")
+    root = tmp_path / "study"
+    root.mkdir()
+
+    with patch.object(main_mod.WorkspaceManager, "resolve_config_path", return_value=str(cfg_path)):
+        rc = main_mod._cmd_roots_add(str(root))
+
+    assert rc == 0
+    data = json.loads(cfg_path.read_text(encoding="utf-8"))
+    assert data["roots"] == [str(root)]

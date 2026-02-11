@@ -96,6 +96,134 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _registered_workspaces(self, workspace_root: str, db, indexer):
+        configured_roots = []
+        workspace_manager = None
+        try:
+            from sari.core.workspace import WorkspaceManager
+            from sari.core.config.main import Config
+
+            workspace_manager = WorkspaceManager
+            base_root = workspace_root or WorkspaceManager.resolve_workspace_root()
+            cfg_path = WorkspaceManager.resolve_config_path(base_root)
+            cfg = Config.load(cfg_path, workspace_root_override=base_root)
+            configured_roots = list(getattr(cfg, "workspace_roots", []) or [])
+        except Exception:
+            configured_roots = [workspace_root] if workspace_root else []
+
+        norm_roots = []
+        seen = set()
+        for root in configured_roots:
+            if not root:
+                continue
+            normalized = os.path.expanduser(str(root)).replace("\\", "/").rstrip("/")
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                norm_roots.append(normalized)
+
+        indexed_by_path = {}
+        if hasattr(db, "get_roots"):
+            try:
+                rows = db.get_roots() or []
+                for row in rows:
+                    if isinstance(row, dict):
+                        p = row.get("path") or row.get("root_path") or row.get("real_path")
+                        if not p:
+                            continue
+                        normalized = str(p).replace("\\", "/").rstrip("/")
+                        indexed_by_path[normalized] = row
+            except Exception:
+                pass
+        failed_by_root = {}
+        if hasattr(db, "execute"):
+            try:
+                failed_rows = db.execute(
+                    """
+                    SELECT
+                        root_id,
+                        SUM(CASE WHEN attempts < 3 THEN 1 ELSE 0 END) AS pending_count,
+                        SUM(CASE WHEN attempts >= 3 THEN 1 ELSE 0 END) AS failed_count
+                    FROM failed_tasks
+                    GROUP BY root_id
+                    """
+                ).fetchall() or []
+                for row in failed_rows:
+                    if isinstance(row, dict):
+                        rid = str(row.get("root_id") or "")
+                        pending_count = int(row.get("pending_count") or 0)
+                        failed_count = int(row.get("failed_count") or 0)
+                    else:
+                        rid = str(getattr(row, "root_id", "") or "")
+                        if not rid and isinstance(row, (list, tuple)) and len(row) >= 1:
+                            rid = str(row[0] or "")
+                        pending_count = int(getattr(row, "pending_count", 0) or 0)
+                        failed_count = int(getattr(row, "failed_count", 0) or 0)
+                        if isinstance(row, (list, tuple)):
+                            if len(row) >= 2:
+                                pending_count = int(row[1] or 0)
+                            if len(row) >= 3:
+                                failed_count = int(row[2] or 0)
+                    if rid:
+                        failed_by_root[rid] = {
+                            "pending_count": pending_count,
+                            "failed_count": failed_count,
+                        }
+            except Exception:
+                pass
+
+        items = []
+        watched_roots = set()
+        try:
+            cfg_roots = getattr(getattr(indexer, "cfg", None), "workspace_roots", []) or []
+            for root in cfg_roots:
+                watched_roots.add(str(root).replace("\\", "/").rstrip("/"))
+        except Exception:
+            pass
+
+        for root in norm_roots:
+            abs_path = os.path.expanduser(root)
+            exists = os.path.isdir(abs_path)
+            readable = os.access(abs_path, os.R_OK | os.X_OK) if exists else False
+            watched = root in watched_roots
+            indexed_row = indexed_by_path.get(root)
+            indexed = indexed_row is not None
+            computed_root_id = ""
+            if isinstance(indexed_row, dict):
+                computed_root_id = str(indexed_row.get("root_id", "") or "")
+            if not computed_root_id and workspace_manager is not None:
+                try:
+                    computed_root_id = str(workspace_manager.root_id_for_workspace(root))
+                except Exception:
+                    computed_root_id = ""
+            failed_counts = failed_by_root.get(computed_root_id, {})
+            status = "indexed" if indexed else ("missing" if not exists else "registered")
+            if indexed:
+                reason = "Indexed in DB"
+            elif not exists:
+                reason = "Path does not exist"
+            elif not readable:
+                reason = "Path is not readable"
+            elif not watched:
+                reason = "Not currently watched by indexer"
+            else:
+                reason = "Registered but not indexed yet"
+
+            items.append({
+                "path": root,
+                "exists": bool(exists),
+                "readable": bool(readable),
+                "watched": bool(watched),
+                "indexed": bool(indexed),
+                "file_count": int((indexed_row or {}).get("file_count", 0) or 0) if isinstance(indexed_row, dict) else 0,
+                "last_indexed_ts": int((indexed_row or {}).get("updated_ts", 0) or 0) if isinstance(indexed_row, dict) else 0,
+                "pending_count": int(failed_counts.get("pending_count", 0) or 0),
+                "failed_count": int(failed_counts.get("failed_count", 0) or 0),
+                "status": status,
+                "reason": reason,
+                "root_id": computed_root_id,
+            })
+        return items
+
     def log_message(self, format, *args):
         # keep logs quiet
         return
@@ -161,22 +289,61 @@ class Handler(BaseHTTPRequestHandler):
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <title>Sari Dashboard</title>
+            <link rel="preconnect" href="https://fonts.googleapis.com">
+            <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+            <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
             <script src="https://cdn.tailwindcss.com"></script>
             <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
             <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
             <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
             <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
             <style>
-                body { background-color: #0b0e14; color: #d8d9da; font-family: 'Inter', ui-sans-serif, system-ui; }
-                .grafana-card { background-color: #181b1f; border-left: 4px solid #3274d9; transition: transform 0.2s; }
-                .grafana-card:hover { transform: translateY(-2px); }
-                .card-warn { border-left-color: #f1c40f; }
-                .card-error { border-left-color: #e74c3c; }
-                .card-success { border-left-color: #2ecc71; }
-                .btn-primary { background-color: #3274d9; transition: all 0.2s; }
-                .btn-primary:hover { background-color: #1f60c4; }
-                .scan-pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
-                @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+                :root {
+                    --bg: #0f1218;
+                    --surface: #171c24;
+                    --surface-2: #1d2430;
+                    --border: #2a3240;
+                    --text: #dbe2ea;
+                    --muted: #95a2b2;
+                    --accent: #4f8cff;
+                    --good: #45b36b;
+                    --warn: #e2aa3a;
+                    --bad: #e05757;
+                }
+                body {
+                    background: radial-gradient(1200px 700px at 0% 0%, #172130 0%, var(--bg) 45%) fixed;
+                    color: var(--text);
+                    font-family: 'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
+                }
+                .mono { font-family: 'IBM Plex Mono', ui-monospace, Menlo, Monaco, Consolas, monospace; }
+                .panel {
+                    background: linear-gradient(180deg, var(--surface) 0%, #141920 100%);
+                    border: 1px solid var(--border);
+                    border-radius: 14px;
+                }
+                .subtle-shadow { box-shadow: 0 8px 30px rgba(0, 0, 0, 0.22); }
+                .btn-primary {
+                    background: var(--accent);
+                    color: white;
+                    border-radius: 10px;
+                    font-weight: 600;
+                    transition: background-color 0.2s ease;
+                }
+                .btn-primary:hover { background: #3d79eb; }
+                .badge {
+                    display: inline-flex;
+                    align-items: center;
+                    gap: 6px;
+                    padding: 3px 9px;
+                    border: 1px solid var(--border);
+                    border-radius: 999px;
+                    font-size: 11px;
+                    line-height: 1;
+                    font-weight: 600;
+                }
+                .badge-indexed { color: var(--good); background: rgba(69, 179, 107, 0.12); border-color: rgba(69, 179, 107, 0.28); }
+                .badge-missing { color: var(--bad); background: rgba(224, 87, 87, 0.12); border-color: rgba(224, 87, 87, 0.28); }
+                .badge-registered { color: var(--accent); background: rgba(79, 140, 255, 0.12); border-color: rgba(79, 140, 255, 0.28); }
             </style>
         </head>
         """
@@ -201,12 +368,12 @@ class Handler(BaseHTTPRequestHandler):
         return """
                 function HealthMetric({ label, percent, color }) {
                     return (
-                        <div className="w-32">
-                            <div className="flex justify-between text-[10px] font-black text-gray-500 uppercase mb-1">
+                        <div className="w-36">
+                            <div className="flex justify-between text-[10px] text-gray-400 uppercase mb-1 tracking-wide">
                                 <span>{label}</span>
                                 <span>{Math.round(percent)}%</span>
                             </div>
-                            <div className="h-1.5 w-full bg-gray-800 rounded-full overflow-hidden border border-gray-700">
+                            <div className="h-1.5 w-full bg-slate-800 rounded-full overflow-hidden border border-slate-700">
                                 <div className={`h-full ${color} transition-all duration-500`} style={{ width: `${Math.min(100, percent)}%` }}></div>
                             </div>
                         </div>
@@ -214,20 +381,20 @@ class Handler(BaseHTTPRequestHandler):
                 }
 
                 function StatCard({ icon, title, value, color, status }) {
-                    let cardClass = "grafana-card rounded-lg p-6 shadow-xl";
-                    if (status === "error") cardClass += " card-error";
-                    else if (status === "warn") cardClass += " card-warn";
-                    else if (status === "success") cardClass += " card-success";
+                    const dotClass = status === "error" ? "bg-red-400" : status === "warn" ? "bg-amber-400" : status === "success" ? "bg-emerald-400" : "bg-slate-500";
 
                     return (
-                        <div className={cardClass}>
-                            <div className="flex justify-between items-start mb-4">
-                                <span className="text-[10px] font-black text-gray-500 uppercase tracking-widest">{title}</span>
-                                <div className={`w-8 h-8 rounded-full bg-gray-800/50 flex items-center justify-center ${color}`}>
+                        <div className="panel subtle-shadow p-5">
+                            <div className="flex justify-between items-start mb-3">
+                                <span className="text-[11px] text-slate-400 uppercase tracking-wide">{title}</span>
+                                <div className={`w-8 h-8 rounded-md bg-slate-900/60 border border-slate-700 flex items-center justify-center ${color}`}>
                                     <i className={`fas ${icon}`}></i>
                                 </div>
                             </div>
-                            <div className="text-3xl font-black text-white tracking-tighter">{value}</div>
+                            <div className="flex items-center justify-between">
+                                <div className="text-2xl font-semibold text-slate-100 tracking-tight">{value}</div>
+                                <div className={`w-2 h-2 rounded-full ${dotClass}`}></div>
+                            </div>
                         </div>
                     );
                 }
@@ -239,6 +406,7 @@ class Handler(BaseHTTPRequestHandler):
                 function Dashboard() {
                     const [data, setData] = useState(null);
                     const [health, setHealth] = useState(null);
+                    const [workspaces, setWorkspaces] = useState([]);
                     const [loading, setLoading] = useState(true);
                     const [rescanLoading, setRescanLoading] = useState(false);
 
@@ -259,6 +427,14 @@ class Handler(BaseHTTPRequestHandler):
                         } catch (e) { console.error(e); }
                     };
 
+                    const fetchWorkspaces = async () => {
+                        try {
+                            const res = await fetch('/workspaces');
+                            const json = await res.json();
+                            setWorkspaces(json.workspaces || []);
+                        } catch (e) { console.error(e); }
+                    };
+
                     const triggerRescan = async () => {
                         setRescanLoading(true);
                         try {
@@ -274,35 +450,50 @@ class Handler(BaseHTTPRequestHandler):
                     useEffect(() => {
                         fetchData();
                         fetchHealth();
+                        fetchWorkspaces();
                         const interval = setInterval(fetchData, 2000);
+                        const wsInterval = setInterval(fetchWorkspaces, 5000);
                         const healthInterval = setInterval(fetchHealth, 30000);
-                        return () => { clearInterval(interval); clearInterval(healthInterval); };
+                        return () => { clearInterval(interval); clearInterval(wsInterval); clearInterval(healthInterval); };
                     }, []);
 
                     if (!data) return <div className="flex items-center justify-center h-screen text-2xl animate-pulse text-blue-500 font-black">SARI LOADING...</div>;
 
                     const sys = data.system_metrics || {};
-                    const progress = data.scanned_files > 0 ? Math.round((data.indexed_files / data.scanned_files) * 100) : 0;
                     const errorCount = data.errors || 0;
+                    const workspaceRows = (workspaces && workspaces.length > 0)
+                        ? workspaces
+                        : (data.roots || []).map((root) => ({
+                            path: root.path || root.root_path || "",
+                            root_id: root.root_id || "",
+                            file_count: root.file_count || 0,
+                            last_indexed_ts: root.last_indexed_ts || 0,
+                            pending_count: root.pending_count || 0,
+                            failed_count: root.failed_count || 0,
+                            readable: true,
+                            watched: true,
+                            status: data.index_ready ? "indexed" : "registered",
+                            reason: data.index_ready ? "Indexed in DB" : "Registered but not indexed yet",
+                          }));
 
                     return (
-                        <div className="max-w-7xl mx-auto">
-                            <header className="flex justify-between items-center mb-10 border-b border-gray-800 pb-6">
-                                <div>
-                                    <h1 className="text-4xl font-black text-white flex items-center tracking-tight">
-                                        <i className="fas fa-bolt mr-3 text-blue-500"></i> SARI <span className="text-blue-500 ml-2 font-light italic">INSIGHT</span>
+                        <div className="max-w-7xl mx-auto space-y-7">
+                            <header className="panel subtle-shadow px-6 py-5 flex flex-col gap-4 lg:flex-row lg:justify-between lg:items-center">
+                                <div className="min-w-0">
+                                    <h1 className="text-3xl md:text-4xl font-semibold text-slate-100 tracking-tight flex items-center">
+                                        <i className="fas fa-bolt mr-3 text-blue-400"></i> SARI Insight
                                     </h1>
-                                    <p className="text-gray-500 mt-1 font-mono text-sm uppercase tracking-tighter">Version {data.version} • {data.host}:{data.port}</p>
+                                    <p className="mono text-slate-400 mt-1 text-xs md:text-sm">v{data.version} · {data.host}:{data.port}</p>
                                 </div>
-                                <div className="flex items-center space-x-8">
-                                    <div className="flex space-x-6">
+                                <div className="flex items-center gap-5 flex-wrap">
+                                    <div className="flex gap-4">
                                         <HealthMetric label="CPU" percent={sys.process_cpu_percent || 0} color="bg-blue-500" />
-                                        <HealthMetric label="RAM" percent={sys.memory_percent || 0} color="bg-emerald-500" />
+                                        <HealthMetric label="RAM" percent={sys.memory_percent || 0} color="bg-sky-500" />
                                     </div>
                                     <button
                                         onClick={triggerRescan}
                                         disabled={rescanLoading}
-                                        className={`btn-primary text-white px-6 py-2.5 rounded shadow-lg font-bold flex items-center uppercase text-sm tracking-wider ${rescanLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                        className={`btn-primary px-4 py-2.5 text-sm mono flex items-center ${rescanLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
                                     >
                                         <i className={`fas fa-sync-alt mr-2 ${rescanLoading ? 'fa-spin' : ''}`}></i>
                                         {rescanLoading ? 'Requesting...' : 'Rescan'}
@@ -310,55 +501,74 @@ class Handler(BaseHTTPRequestHandler):
                                 </div>
                             </header>
 
-                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-6 mb-10">
-                                <StatCard icon="fa-binoculars" title="Scanned" value={data.scanned_files.toLocaleString()} color="text-yellow-400" />
+                            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+                                <StatCard icon="fa-binoculars" title="Scanned" value={data.scanned_files.toLocaleString()} color="text-slate-300" />
                                 <StatCard icon="fa-file-code" title="Indexed" value={data.indexed_files.toLocaleString()} color="text-blue-400" />
-                                <StatCard icon="fa-project-diagram" title="Symbols" value={(data.repo_stats ? Object.values(data.repo_stats).reduce((a,b)=>a+b, 0) : 0).toLocaleString()} color="text-emerald-400" />
-                                <StatCard icon="fa-database" title="Storage" value={(sys.db_size / 1024 / 1024).toFixed(2) + " MB"} color="text-purple-400" />
-                                <StatCard icon="fa-clock" title="Uptime" value={Math.floor(sys.uptime / 60) + "m"} color="text-orange-400" />
+                                <StatCard icon="fa-project-diagram" title="Symbols" value={(data.repo_stats ? Object.values(data.repo_stats).reduce((a,b)=>a+b, 0) : 0).toLocaleString()} color="text-cyan-300" />
+                                <StatCard icon="fa-database" title="Storage" value={(sys.db_size / 1024 / 1024).toFixed(2) + " MB"} color="text-slate-300" />
+                                <StatCard icon="fa-clock" title="Uptime" value={Math.floor(sys.uptime / 60) + "m"} color="text-slate-300" />
                                 <StatCard
                                     icon="fa-exclamation-triangle"
                                     title="Errors"
                                     value={errorCount.toLocaleString()}
-                                    color={errorCount > 0 ? "text-red-400" : "text-gray-400"}
+                                    color={errorCount > 0 ? "text-red-400" : "text-slate-400"}
                                     status={errorCount > 0 ? "error" : "success"}
                                 />
                             </div>
 
-                            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                                <div className="lg:col-span-2 space-y-8">
-                                    <div className="grafana-card rounded-lg p-8 shadow-2xl">
-                                        <h2 className="text-2xl font-bold mb-6 flex items-center text-white">
-                                            <i className="fas fa-server mr-3 text-blue-500"></i> Active Workspaces
+                            <div className="grid grid-cols-1 xl:grid-cols-3 gap-5">
+                                <div className="xl:col-span-2">
+                                    <div className="panel subtle-shadow p-6">
+                                        <h2 className="text-xl font-semibold mb-5 flex items-center text-slate-100">
+                                            <i className="fas fa-server mr-3 text-blue-400"></i> Workspaces
                                         </h2>
                                         <div className="overflow-x-auto">
-                                            <table className="w-full text-left">
-                                                <thead className="text-gray-500 text-[10px] uppercase border-b border-gray-800 tracking-widest">
+                                            <table className="w-full text-left text-sm">
+                                                <thead className="text-slate-400 text-[11px] uppercase border-b border-slate-700/80 tracking-wide">
                                                     <tr>
-                                                        <th className="pb-4 font-black">Workspace Root</th>
-                                                        <th className="pb-4 font-black">Status</th>
-                                                        <th className="pb-4 font-black">Last Sync</th>
-                                                        <th className="pb-4 font-black text-right">Actions</th>
+                                                        <th className="pb-3 font-medium">Workspace Root</th>
+                                                        <th className="pb-3 font-medium">Status</th>
+                                                        <th className="pb-3 font-medium">Reason</th>
+                                                        <th className="pb-3 font-medium">Last Indexed</th>
+                                                        <th className="pb-3 font-medium text-right">Files</th>
+                                                        <th className="pb-3 font-medium text-right">Pending</th>
+                                                        <th className="pb-3 font-medium text-right">Failed</th>
+                                                        <th className="pb-3 font-medium text-right">Actions</th>
                                                     </tr>
                                                 </thead>
-                                                <tbody className="divide-y divide-gray-800/50">
-                                                    {data.roots.map((root, i) => (
-                                                        <tr key={i} className="hover:bg-gray-800/30 transition-colors group">
-                                                            <td className="py-5">
-                                                                <div className="font-mono text-sm text-blue-300">{root.path}</div>
-                                                                <div className="text-[10px] text-gray-600 mt-1 uppercase font-bold">{root.root_id}</div>
+                                                <tbody className="divide-y divide-slate-800/80">
+                                                    {workspaceRows.map((root, i) => (
+                                                        <tr key={i} className="hover:bg-slate-800/30 transition-colors">
+                                                            <td className="py-4">
+                                                                <div className="mono text-[13px] text-slate-200">{root.path}</div>
+                                                                <div className="mono text-[10px] text-slate-500 mt-1">{root.root_id}</div>
                                                             </td>
-                                                            <td className="py-5">
-                                                                <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest ${data.index_ready ? 'bg-green-900/30 text-green-400 border border-green-800/50' : 'bg-blue-900/30 text-blue-400 border border-blue-800/50 scan-pulse'}`}>
-                                                                    {data.index_ready ? 'Synced' : `Indexing ${progress}%`}
+                                                            <td className="py-4">
+                                                                <span className={`badge ${
+                                                                    root.status === 'indexed' ? 'badge-indexed' :
+                                                                    root.status === 'missing' ? 'badge-missing' : 'badge-registered'
+                                                                }`}>
+                                                                    {root.status === 'indexed' ? 'Synced' : (root.status === 'missing' ? 'Missing' : 'Registered')}
                                                                 </span>
                                                             </td>
-                                                            <td className="py-5 text-gray-400 text-sm font-mono">
-                                                                {data.last_scan_ts > 0 ? new Date(data.last_scan_ts * 1000).toLocaleTimeString() : 'Pending...'}
+                                                            <td className="py-4 text-slate-400 text-[13px]">
+                                                                {root.reason}
                                                             </td>
-                                                            <td className="py-5 text-right">
-                                                                <button onClick={triggerRescan} className="text-gray-600 hover:text-blue-400 transition-colors p-2 bg-gray-800/50 rounded-lg group-hover:scale-110 transform">
-                                                                    <i className="fas fa-play-circle text-lg"></i>
+                                                            <td className="py-4 text-slate-400 text-[13px] mono">
+                                                                {root.last_indexed_ts > 0 ? new Date(root.last_indexed_ts * 1000).toLocaleString() : 'N/A'}
+                                                            </td>
+                                                            <td className="py-4 text-right text-slate-200 mono">
+                                                                {Number(root.file_count || 0).toLocaleString()}
+                                                            </td>
+                                                            <td className="py-4 text-right text-amber-300 mono">
+                                                                {Number(root.pending_count || 0).toLocaleString()}
+                                                            </td>
+                                                            <td className="py-4 text-right text-red-400 mono">
+                                                                {Number(root.failed_count || 0).toLocaleString()}
+                                                            </td>
+                                                            <td className="py-4 text-right">
+                                                                <button onClick={triggerRescan} className="text-slate-500 hover:text-blue-400 transition-colors p-2 bg-slate-900/40 border border-slate-700 rounded-md">
+                                                                    <i className="fas fa-rotate-right text-sm"></i>
                                                                 </button>
                                                             </td>
                                                         </tr>
@@ -369,17 +579,17 @@ class Handler(BaseHTTPRequestHandler):
                                     </div>
                                 </div>
 
-                                <div className="space-y-8">
-                                    <div className="grafana-card rounded-lg p-8 shadow-2xl">
-                                        <h2 className="text-2xl font-bold mb-6 flex items-center text-white">
-                                            <i className="fas fa-heartbeat mr-3 text-blue-500"></i> System Health
+                                <div>
+                                    <div className="panel subtle-shadow p-6">
+                                        <h2 className="text-xl font-semibold mb-5 flex items-center text-slate-100">
+                                            <i className="fas fa-heartbeat mr-3 text-blue-400"></i> Health
                                         </h2>
-                                        <div className="space-y-4">
+                                        <div className="space-y-3">
                                             {health ? health.results.map((r, i) => (
-                                                <div key={i} className="flex items-center justify-between border-b border-gray-800 pb-3 last:border-0">
+                                                <div key={i} className="flex items-center justify-between border-b border-slate-800 pb-3 last:border-0">
                                                     <div>
-                                                        <div className="text-sm font-bold text-gray-200">{r.name}</div>
-                                                        <div className="text-[10px] text-gray-500 truncate max-w-[200px]">{r.error || r.detail || 'Healthy'}</div>
+                                                        <div className="text-sm font-medium text-slate-200">{r.name}</div>
+                                                        <div className="text-[11px] text-slate-500 truncate max-w-[220px]">{r.error || r.detail || 'Healthy'}</div>
                                                     </div>
                                                     <div>
                                                         {r.passed ?
@@ -388,14 +598,14 @@ class Handler(BaseHTTPRequestHandler):
                                                         }
                                                     </div>
                                                 </div>
-                                            )) : <div className="animate-pulse text-gray-600">Checking health...</div>}
+                                            )) : <div className="text-slate-500">Checking health...</div>}
                                         </div>
                                     </div>
                                 </div>
                             </div>
 
-                            <footer className="mt-12 text-center text-gray-600 text-[10px] font-mono uppercase tracking-widest">
-                                Sari High-Performance Indexing Engine • Gemini CLI Optimized
+                            <footer className="pt-2 text-center text-slate-500 text-[11px] mono">
+                                Sari indexing dashboard
                             </footer>
                         </div>
                     );
@@ -497,6 +707,15 @@ class Handler(BaseHTTPRequestHandler):
                 "roots": db.get_roots() if hasattr(db, "get_roots") else [],
                 "workspace_root": workspace_root,
                 "system_metrics": metrics
+            }
+
+        if path == "/workspaces":
+            workspaces = self._registered_workspaces(workspace_root, db, indexer)
+            return {
+                "ok": True,
+                "workspace_root": workspace_root,
+                "count": len(workspaces),
+                "workspaces": workspaces,
             }
 
         if path == "/search":

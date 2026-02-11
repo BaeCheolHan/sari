@@ -161,6 +161,7 @@ def _register_core_tools(reg: ToolRegistry):
         description="Get indexer status. Use details=true for per-repo stats.",
         input_schema={"type": "object", "properties": {"details": {"type": "boolean", "default": False}}},
         handler=lambda ctx, args: status_tool.execute_status(args, ctx.indexer, ctx.db, ctx.cfg, ctx.workspace_root, ctx.server_version, ctx.logger),
+        hidden=True,
     ))
 
     reg.register(Tool(
@@ -197,6 +198,7 @@ def _register_core_tools(reg: ToolRegistry):
             },
         },
         handler=lambda ctx, args: doctor_tool.execute_doctor(args),
+        hidden=True,
     ))
 
 

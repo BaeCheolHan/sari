@@ -11,6 +11,42 @@ from sari.core.workspace import WorkspaceManager
 logger = logging.getLogger("sari.registry")
 
 
+def _resolve_workspace_roots_for_indexing(
+        workspace_root: str, configured_roots: object) -> list[str]:
+    """
+    Resolve and sanitize roots for indexing.
+    - Keep only existing directories.
+    - Always include current workspace root if it exists.
+    - Preserve order while deduplicating.
+    """
+    roots: list[str] = []
+    raw: list[str] = []
+
+    if isinstance(configured_roots, list):
+        raw.extend(str(r) for r in configured_roots if r)
+    raw.append(workspace_root)
+
+    seen: set[str] = set()
+    for entry in raw:
+        norm = WorkspaceManager.normalize_path(entry)
+        try:
+            from pathlib import Path
+            p = Path(norm).expanduser()
+            resolved = WorkspaceManager.normalize_path(str(p))
+            if not p.exists() or not p.is_dir():
+                logger.warning("Skipping invalid workspace root: %s", resolved)
+                continue
+        except Exception:
+            continue
+
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        roots.append(resolved)
+
+    return roots
+
+
 class SharedState:
     def __init__(self, workspace_root: str):
         self.workspace_root = WorkspaceManager.normalize_path(workspace_root)
@@ -44,7 +80,18 @@ class SharedState:
         # 3. Init Indexer (Phase 3 & 2)
         from sari.core.config import Config
         defaults = Config.get_defaults(workspace_root)
-        defaults["workspace_roots"] = [workspace_root]
+        try:
+            cfg_path = WorkspaceManager.resolve_config_path(workspace_root)
+            loaded_cfg = Config.load(
+                cfg_path,
+                workspace_root_override=workspace_root)
+            configured_roots = getattr(loaded_cfg, "workspace_roots", [])
+        except Exception:
+            configured_roots = [workspace_root]
+
+        index_roots = _resolve_workspace_roots_for_indexing(
+            workspace_root, configured_roots)
+        defaults["workspace_roots"] = index_roots or [workspace_root]
         defaults["include_ext"] = self.config_data.get(
             "final_extensions", defaults["include_ext"])
         defaults["include_files"] = self.config_data.get(
@@ -69,7 +116,7 @@ class SharedState:
                     self.indexer.index_file(evt.path)
 
             self.watcher = FileWatcher(
-                [str(self.workspace_root)], on_change_callback=on_change, logger=logger)
+                list(cfg_obj.workspace_roots), on_change_callback=on_change, logger=logger)
         except Exception as e:
             logger.warning(f"Failed to initialize FileWatcher: {e}")
             self.watcher = None

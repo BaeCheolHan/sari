@@ -84,3 +84,60 @@ def test_search_uses_db_search_v2_and_returns_hits():
     assert resp["meta"]["total"] == 1
     assert resp["hits"][0]["path"] == "a.py"
     assert captured == {"query": "hello", "limit": 5, "root_ids": ["rid-1"]}
+
+
+def test_workspaces_endpoint_includes_per_workspace_file_count(monkeypatch, tmp_path):
+    ws_a = tmp_path / "ws-a"
+    ws_b = tmp_path / "ws-b"
+    ws_a.mkdir()
+    ws_b.mkdir()
+
+    handler = Handler.__new__(Handler)
+    handler.shared_http_gateway = False
+    handler.workspace_root = str(ws_a)
+    class _Rows:
+        def fetchall(self):
+            return [
+                ("rid-a", 2, 1),
+                ("rid-b", 0, 4),
+            ]
+
+    handler.db = SimpleNamespace(
+        get_roots=lambda: [
+            {"path": str(ws_a), "root_id": "rid-a", "file_count": 11, "updated_ts": 1700000000},
+            {"path": str(ws_b), "root_id": "rid-b", "file_count": 3, "updated_ts": 1700000100},
+        ],
+        execute=lambda _sql: _Rows(),
+    )
+    handler.indexer = SimpleNamespace(cfg=SimpleNamespace(workspace_roots=[str(ws_a), str(ws_b)]))
+    handler.root_ids = []
+
+    monkeypatch.setattr(
+        "sari.core.workspace.WorkspaceManager.resolve_workspace_root",
+        lambda: str(ws_a),
+    )
+    monkeypatch.setattr(
+        "sari.core.workspace.WorkspaceManager.resolve_config_path",
+        lambda _root: str(tmp_path / "cfg.json"),
+    )
+    monkeypatch.setattr(
+        "sari.core.config.main.Config.load",
+        lambda _path, workspace_root_override=None: SimpleNamespace(
+            workspace_roots=[str(ws_a), str(ws_b)]
+        ),
+    )
+
+    resp = Handler._handle_get(handler, "/workspaces", {})
+    assert resp["ok"] is True
+    assert resp["count"] == 2
+    by_path = {w["path"]: w for w in resp["workspaces"]}
+    assert by_path[str(ws_a)]["file_count"] == 11
+    assert by_path[str(ws_b)]["file_count"] == 3
+    assert by_path[str(ws_a)]["last_indexed_ts"] == 1700000000
+    assert by_path[str(ws_b)]["last_indexed_ts"] == 1700000100
+    assert by_path[str(ws_a)]["pending_count"] == 2
+    assert by_path[str(ws_a)]["failed_count"] == 1
+    assert by_path[str(ws_b)]["pending_count"] == 0
+    assert by_path[str(ws_b)]["failed_count"] == 4
+    assert by_path[str(ws_a)]["readable"] is True
+    assert by_path[str(ws_a)]["watched"] is True
