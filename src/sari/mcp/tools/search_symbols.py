@@ -1,4 +1,6 @@
-from typing import Any, Dict, List
+from collections.abc import Mapping
+from typing import TypeAlias
+
 from sari.mcp.tools._util import (
     mcp_response,
     pack_header,
@@ -8,15 +10,23 @@ from sari.mcp.tools._util import (
     resolve_root_ids,
     pack_error,
     ErrorCode,
+    parse_int_arg,
+    invalid_args_response,
 )
 from sari.core.services.symbol_service import SymbolService
 
-def execute_search_symbols(args: Dict[str, Any], db: Any, logger: Any, roots: List[str]) -> Dict[str, Any]:
+ToolResult: TypeAlias = dict[str, object]
+
+
+def execute_search_symbols(args: object, db: object, logger: object, roots: list[str]) -> ToolResult:
     """
     스마트 랭킹을 적용한 코드 심볼(클래스, 함수 등) 검색 도구입니다.
     쿼리에 일치하는 심볼을 찾아 중요도 순으로 정렬하여 반환합니다.
     """
-    query = args.get("query", "").strip()
+    if not isinstance(args, Mapping):
+        return invalid_args_response("search_symbols", "args must be an object")
+
+    query = str(args.get("query", "")).strip()
     if not query:
         return mcp_response(
             "search_symbols",
@@ -24,7 +34,11 @@ def execute_search_symbols(args: Dict[str, Any], db: Any, logger: Any, roots: Li
             lambda: {"error": {"code": ErrorCode.INVALID_ARGS.value, "message": "Query is required"}, "isError": True},
         )
 
-    limit = max(1, min(int(args.get("limit", 20) or 20), 100))
+    limit, err = parse_int_arg(args, "limit", 20, "search_symbols", min_value=1, max_value=100)
+    if err:
+        return err
+    if limit is None:
+        return invalid_args_response("search_symbols", "'limit' must be an integer")
     repo = args.get("repo")
     kinds = args.get("kinds")
     

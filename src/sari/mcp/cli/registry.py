@@ -6,12 +6,14 @@ This module handles server registry and server info operations.
 
 import json
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, TypeAlias
 
 from sari.core.server_registry import get_registry_path
 
+JsonMap: TypeAlias = dict[str, object]
+InstancesMap: TypeAlias = dict[str, JsonMap]
 
-def load_registry_instances() -> Dict[str, Any]:
+def load_registry_instances() -> InstancesMap:
     """
     Load all daemon instances from registry.
     

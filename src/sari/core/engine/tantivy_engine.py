@@ -3,7 +3,8 @@ import threading
 import time
 import re
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from collections.abc import Mapping
+from typing import TypeAlias
 
 from sari.core.settings import settings
 
@@ -18,6 +19,9 @@ class TantivyEngine:
     Tantivy-based search engine for Sari.
     Unified global index with root_id filtering.
     """
+
+    DocMap: TypeAlias = dict[str, object]
+    SearchRow: TypeAlias = dict[str, object]
 
     def __init__(self, index_path: str, logger=None, settings_obj=None):
         self.index_path = Path(index_path)
@@ -95,7 +99,7 @@ class TantivyEngine:
                         f"Critical failure re-creating Tantivy index: {e2}")
                 raise
 
-    def upsert_documents(self, docs: List[Dict[str, Any]]):
+    def upsert_documents(self, docs: list[Mapping[str, object] | object]) -> None:
         if not tantivy or not self._index:
             return
 
@@ -107,6 +111,8 @@ class TantivyEngine:
             writer = self._writer
 
             for d in docs:
+                if not isinstance(d, Mapping):
+                    continue
                 doc_id = d.get("doc_id") or d.get("id")
                 if not doc_id:
                     continue
@@ -128,7 +134,7 @@ class TantivyEngine:
             # Wait for merge to complete in a real env, but for local tool
             # commit is enough
 
-    def delete_documents(self, doc_ids: List[str]):
+    def delete_documents(self, doc_ids: list[str]) -> None:
         if not tantivy or not self._index:
             return
         with self._writer_lock:
@@ -170,9 +176,8 @@ class TantivyEngine:
 
     def search(self,
                query: str,
-               root_id: Optional[str] = None,
-               limit: int = 50) -> List[Dict[str,
-                                             Any]]:
+               root_id: str | None = None,
+               limit: int = 50) -> list[dict[str, object]]:
         if not tantivy or not self._index:
             return []
 
@@ -220,7 +225,7 @@ class TantivyEngine:
         try:
             hits = searcher.search(q, limit).hits
 
-            results = []
+            results: list[dict[str, object]] = []
             for score, address in hits:
                 doc = searcher.doc(address)
                 results.append({

@@ -1,13 +1,30 @@
 import json
-from typing import Any, Dict, List
-from sari.mcp.tools._util import mcp_response, pack_header, pack_line, pack_encode_id, pack_encode_text, resolve_root_ids, pack_error, ErrorCode
+from collections.abc import Mapping
+from typing import TypeAlias
 
-def execute_search_api_endpoints(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict[str, Any]:
+from sari.mcp.tools._util import (
+    mcp_response,
+    pack_header,
+    pack_line,
+    pack_encode_id,
+    pack_encode_text,
+    resolve_root_ids,
+    pack_error,
+    ErrorCode,
+    invalid_args_response,
+)
+
+ToolResult: TypeAlias = dict[str, object]
+
+def execute_search_api_endpoints(args: object, db: object, roots: list[str]) -> ToolResult:
     """
     URL 경로 패턴을 기반으로 관련 API 엔드포인트(함수, 메서드)를 검색하는 도구입니다.
     코드 내 메타데이터에 기록된 `http_path` 정보를 활용하여 탐색합니다.
     """
-    path_query = args.get("path", "").strip()
+    if not isinstance(args, Mapping):
+        return invalid_args_response("search_api_endpoints", "args must be an object")
+
+    path_query = str(args.get("path", "")).strip()
     if not path_query:
         return mcp_response(
             "search_api_endpoints",

@@ -1,12 +1,19 @@
 import logging
 from dataclasses import dataclass
-from typing import List, Dict, Any, Optional, Tuple
+from typing import Mapping, Optional, TypeAlias
 from sari.core.workspace import WorkspaceManager
 from sari.core.engine.tantivy_engine import TantivyEngine
 from sari.core.search_engine import SearchEngine
 from sari.core.settings import settings
 
 logger = logging.getLogger("sari.engine")
+
+Doc: TypeAlias = dict[str, object]
+DocInput: TypeAlias = Mapping[str, object]
+SearchRow: TypeAlias = dict[str, object]
+SearchRows: TypeAlias = list[SearchRow]
+SearchMeta: TypeAlias = dict[str, object]
+SearchV2Result: TypeAlias = tuple[list[object], SearchMeta]
 
 
 class EngineError(RuntimeError):
@@ -33,7 +40,7 @@ class EngineMeta:
 class EngineRuntime:
     """Manages the Tantivy engine (Phase 5)."""
 
-    def __init__(self, roots: List[str], settings_obj=None):
+    def __init__(self, roots: list[str], settings_obj: object = None):
         self.roots = roots
         self.settings = settings_obj or settings
         self.root_ids = [WorkspaceManager.root_id(r) for r in roots]
@@ -42,7 +49,7 @@ class EngineRuntime:
         self.index_dir = WorkspaceManager.get_engine_index_dir(
             roots=roots, root_id=self.root_ids[0] if self.root_ids else None)
         self.engine: Optional[TantivyEngine] = None
-        self.engines: Dict[str, TantivyEngine] = {}
+        self.engines: dict[str, TantivyEngine] = {}
 
     def initialize(self):
         try:
@@ -62,19 +69,18 @@ class EngineRuntime:
         except Exception as e:
             logger.error(f"Engine init failed: {e}")
 
-    def upsert_documents(self, docs: List[Dict[str, Any]]):
+    def upsert_documents(self, docs: list[Doc]):
         if self.engine:
             self.engine.upsert_documents(docs)
 
-    def delete_documents(self, doc_ids: List[str]):
+    def delete_documents(self, doc_ids: list[str]):
         if self.engine:
             self.engine.delete_documents(doc_ids)
 
     def search(self,
                query: str,
                root_id: Optional[str] = None,
-               limit: int = 50) -> List[Dict[str,
-                                             Any]]:
+               limit: int = 50) -> SearchRows:
         return self.engine.search(
             query,
             root_id=root_id,
@@ -111,7 +117,7 @@ class EngineRuntime:
 class EngineRouter:
     """Routes requests to per-root engines when policy=per_root."""
 
-    def __init__(self, engines: Dict[str, TantivyEngine]):
+    def __init__(self, engines: dict[str, TantivyEngine]):
         self.engines = engines
 
     def _extract_root_id(self, doc_id: str) -> Optional[str]:
@@ -119,21 +125,23 @@ class EngineRouter:
             return None
         return doc_id.split("/", 1)[0] if "/" in doc_id else None
 
-    def upsert_documents(self, docs: List[Dict[str, Any]]) -> None:
-        buckets: Dict[str, List[Dict[str, Any]]] = {}
+    def upsert_documents(self, docs: list[DocInput]) -> None:
+        buckets: dict[str, list[Doc]] = {}
         for d in docs or []:
+            if not isinstance(d, Mapping):
+                continue
             rid = d.get("root_id") or self._extract_root_id(
                 d.get("doc_id", ""))
             if not rid:
                 continue
-            buckets.setdefault(rid, []).append(d)
+            buckets.setdefault(rid, []).append(dict(d))
         for rid, batch in buckets.items():
             engine = self.engines.get(rid)
             if engine:
                 engine.upsert_documents(batch)
 
-    def delete_documents(self, doc_ids: List[str]) -> None:
-        buckets: Dict[str, List[str]] = {}
+    def delete_documents(self, doc_ids: list[str]) -> None:
+        buckets: dict[str, list[str]] = {}
         for doc_id in doc_ids or []:
             rid = self._extract_root_id(doc_id)
             if not rid:
@@ -147,15 +155,14 @@ class EngineRouter:
     def search(self,
                query: str,
                root_id: Optional[str] = None,
-               limit: int = 50) -> List[Dict[str,
-                                             Any]]:
+               limit: int = 50) -> SearchRows:
         if root_id:
             engine = self.engines.get(root_id)
             return engine.search(
                 query,
                 root_id=root_id,
                 limit=limit) if engine else []
-        results: List[Dict[str, Any]] = []
+        results: SearchRows = []
         for rid, engine in self.engines.items():
             results.extend(engine.search(query, root_id=rid, limit=limit))
         results.sort(key=lambda r: r.get("score", 0.0), reverse=True)
@@ -165,7 +172,7 @@ class EngineRouter:
 class EmbeddedEngine:
     """Search + Index wrapper for embedded mode."""
 
-    def __init__(self, db: Any, cfg: Any, roots: List[str], settings_obj=None):
+    def __init__(self, db: object, cfg: object, roots: list[str], settings_obj: object = None):
         self.db = db
         self.cfg = cfg
         self.settings = settings_obj or settings
@@ -186,19 +193,19 @@ class EmbeddedEngine:
                 "engine not installed",
                 "sari --cmd engine install")
 
-    def search_v2(self, opts) -> Tuple[List[Any], Dict[str, Any]]:
+    def search_v2(self, opts: object) -> SearchV2Result:
         return self.search_engine.search_v2(opts)
 
     def repo_candidates(self, q: str, limit: int = 3,
-                        root_ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+                        root_ids: Optional[list[str]] = None) -> SearchRows:
         return self.search_engine.repo_candidates(
             q, limit=limit, root_ids=root_ids)
 
-    def upsert_documents(self, docs: List[Dict[str, Any]]) -> None:
+    def upsert_documents(self, docs: list[Doc]) -> None:
         if self.runtime.engine:
             self.runtime.engine.upsert_documents(docs)
 
-    def delete_documents(self, doc_ids: List[str]) -> None:
+    def delete_documents(self, doc_ids: list[str]) -> None:
         if self.runtime.engine:
             self.runtime.engine.delete_documents(doc_ids)
 
@@ -209,18 +216,18 @@ class EmbeddedEngine:
 class SqliteSearchEngineAdapter:
     """Adapter for sqlite-only search (no embedded engine)."""
 
-    def __init__(self, db: Any):
+    def __init__(self, db: object):
         self.db = db
         self.search_engine = SearchEngine(db, tantivy_engine=None)
 
     def status(self) -> EngineMeta:
         return EngineMeta(engine_mode="sqlite", engine_ready=True)
 
-    def search_v2(self, opts) -> Tuple[List[Any], Dict[str, Any]]:
+    def search_v2(self, opts: object) -> SearchV2Result:
         return self.search_engine.search_v2(opts)
 
     def repo_candidates(self, q: str, limit: int = 3,
-                        root_ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+                        root_ids: Optional[list[str]] = None) -> SearchRows:
         return self.search_engine.repo_candidates(
             q, limit=limit, root_ids=root_ids)
 

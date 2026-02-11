@@ -3,7 +3,7 @@ import os
 import time
 import socket
 from pathlib import Path
-from typing import Dict, Optional, Any, Iterable
+from typing import Optional, Iterable, Callable, TypedDict
 from filelock import FileLock
 
 # Backward compatibility for legacy tests/tools that patch module-level path.
@@ -12,6 +12,43 @@ _FALLBACK_REGISTRY = Path(
     os.environ.get(
         "SARI_REGISTRY_FALLBACK",
         "/tmp/sari/server.json"))
+
+
+class DaemonEntry(TypedDict, total=False):
+    host: str
+    port: int
+    pid: int
+    start_ts: float
+    last_seen_ts: float
+    draining: bool
+    version: str
+    http_port: int
+    http_host: str
+    http_pid: int
+
+
+class WorkspaceEntry(TypedDict, total=False):
+    boot_id: str
+    last_active_ts: float
+    http_port: int
+    http_host: str
+    http_pid: int
+
+
+class RegistryData(TypedDict):
+    version: str
+    daemons: dict[str, DaemonEntry]
+    workspaces: dict[str, WorkspaceEntry]
+
+
+class DaemonWithBootId(DaemonEntry, total=False):
+    boot_id: str
+
+
+class WorkspaceHttpEndpoint(TypedDict):
+    host: str
+    port: int
+    boot_id: Optional[str]
 
 
 def _ensure_writable_dir(path: Path) -> bool:
@@ -64,21 +101,74 @@ class ServerRegistry:
                     self._atomic_write(self._empty())
         return self._lock
 
-    def _empty(self) -> Dict[str, Any]:
+    def _empty(self) -> RegistryData:
         return {"version": self.VERSION, "daemons": {}, "workspaces": {}}
 
     def _normalize_workspace_root(self, workspace_root: str) -> str:
         from sari.core.workspace import WorkspaceManager
         return WorkspaceManager.normalize_path(workspace_root)
 
-    def _safe_load(self, content: str) -> Dict[str, Any]:
+    def _coerce_daemon_entry(self, value: object) -> Optional[DaemonEntry]:
+        if not isinstance(value, dict):
+            return None
+        out: DaemonEntry = {}
+        if value.get("host") is not None:
+            out["host"] = str(value["host"])
+        if value.get("version") is not None:
+            out["version"] = str(value["version"])
+        if value.get("http_host") is not None:
+            out["http_host"] = str(value["http_host"])
+        if value.get("draining") is not None:
+            out["draining"] = bool(value["draining"])
+        for field in ("port", "pid", "http_port", "http_pid"):
+            raw = value.get(field)
+            if raw is None:
+                continue
+            try:
+                out[field] = int(raw)  # type: ignore[literal-required]
+            except (TypeError, ValueError):
+                continue
+        for field in ("start_ts", "last_seen_ts"):
+            raw = value.get(field)
+            if raw is None:
+                continue
+            try:
+                out[field] = float(raw)  # type: ignore[literal-required]
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    def _coerce_workspace_entry(self, value: object) -> Optional[WorkspaceEntry]:
+        if not isinstance(value, dict):
+            return None
+        out: WorkspaceEntry = {}
+        if value.get("boot_id") is not None:
+            out["boot_id"] = str(value["boot_id"])
+        if value.get("http_host") is not None:
+            out["http_host"] = str(value["http_host"])
+        for field in ("http_port", "http_pid"):
+            raw = value.get(field)
+            if raw is None:
+                continue
+            try:
+                out[field] = int(raw)  # type: ignore[literal-required]
+            except (TypeError, ValueError):
+                continue
+        if value.get("last_active_ts") is not None:
+            try:
+                out["last_active_ts"] = float(value["last_active_ts"])
+            except (TypeError, ValueError):
+                pass
+        return out
+
+    def _safe_load(self, content: str) -> RegistryData:
         try:
             data = json.loads(content)
         except Exception:
             data = {}
         return self._ensure_v2(data)
 
-    def _load_unlocked(self) -> Dict[str, Any]:
+    def _load_unlocked(self) -> RegistryData:
         reg_file = get_registry_path()
         try:
             with open(reg_file, "r") as f:
@@ -86,7 +176,7 @@ class ServerRegistry:
         except FileNotFoundError:
             return self._empty()
 
-    def _atomic_write(self, data: Dict[str, Any]) -> None:
+    def _atomic_write(self, data: RegistryData) -> None:
         reg_file = get_registry_path()
         reg_file.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = reg_file.parent / \
@@ -105,12 +195,29 @@ class ServerRegistry:
                 pass
             raise
 
-    def _ensure_v2(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    def _ensure_v2(self, data: object) -> RegistryData:
         if not isinstance(data, dict):
             return self._empty()
         version = data.get("version")
         if version == self.VERSION and "daemons" in data and "workspaces" in data:
-            return data
+            normalized = self._empty()
+            daemons = data.get("daemons")
+            if isinstance(daemons, dict):
+                for boot_id, info in daemons.items():
+                    if not isinstance(boot_id, str):
+                        continue
+                    coerced = self._coerce_daemon_entry(info)
+                    if coerced is not None:
+                        normalized["daemons"][boot_id] = coerced
+            workspaces = data.get("workspaces")
+            if isinstance(workspaces, dict):
+                for ws, info in workspaces.items():
+                    if not isinstance(ws, str):
+                        continue
+                    coerced = self._coerce_workspace_entry(info)
+                    if coerced is not None:
+                        normalized["workspaces"][ws] = coerced
+            return normalized
 
         # Migrate legacy schema (v1) if needed
         if "instances" in data and isinstance(data["instances"], dict):
@@ -130,7 +237,7 @@ class ServerRegistry:
                     "host": "127.0.0.1",
                     "port": int(port),
                     "pid": int(pid),
-                    "start_ts": info.get("start_ts") or now,
+                    "start_ts": float(info.get("start_ts") or now),
                     "last_seen_ts": now,
                     "draining": False,
                     "version": info.get("version") or "legacy",
@@ -141,17 +248,17 @@ class ServerRegistry:
 
         return self._empty()
 
-    def _load(self) -> Dict[str, Any]:
+    def _load(self) -> RegistryData:
         lock = self._ensure_lock()
         with lock:
             return self._load_unlocked()
 
-    def _save(self, data: Dict[str, Any]):
+    def _save(self, data: RegistryData):
         lock = self._ensure_lock()
         with lock:
             self._atomic_write(data)
 
-    def _update(self, updater) -> None:
+    def _update(self, updater: Callable[[RegistryData], None]) -> None:
         lock = self._ensure_lock()
         with lock:
             data = self._load_unlocked()
@@ -167,19 +274,34 @@ class ServerRegistry:
         except (OSError, PermissionError):
             return False
 
-    def _prune_dead_locked(self, data: Dict[str, Any]) -> None:
-        daemons = data.get("daemons", {})
-        workspaces = data.get("workspaces", {})
-        dead = [
-            bid for bid,
-            info in daemons.items() if not self._is_process_alive(
-                info.get("pid"))]
+    def _prune_dead_locked(self, data: RegistryData) -> None:
+        daemons: dict[str, DaemonEntry] = {}
+        for bid, raw_info in (data.get("daemons", {}) or {}).items():
+            coerced = self._coerce_daemon_entry(raw_info)
+            if coerced is None:
+                continue
+            daemons[bid] = coerced
+
+        workspaces: dict[str, WorkspaceEntry] = {}
+        for ws, raw_info in (data.get("workspaces", {}) or {}).items():
+            coerced = self._coerce_workspace_entry(raw_info)
+            if coerced is None:
+                continue
+            workspaces[ws] = coerced
+
+        dead = [bid for bid, info in daemons.items() if not self._is_process_alive(info.get("pid"))]
         for bid in dead:
             daemons.pop(bid, None)
         if dead:
             workspaces = {
                 ws: info for ws,
                 info in workspaces.items() if info.get("boot_id") not in dead}
+        valid_boot_ids = set(daemons.keys())
+        workspaces = {
+            ws: info
+            for ws, info in workspaces.items()
+            if info.get("boot_id") in valid_boot_ids
+        }
         data["daemons"] = daemons
         data["workspaces"] = workspaces
 
@@ -219,7 +341,7 @@ class ServerRegistry:
                 daemons[boot_id]["http_pid"] = int(prev.get("http_pid"))
         self._update(_upd)
 
-    def get_daemon(self, boot_id: str) -> Optional[Dict[str, Any]]:
+    def get_daemon(self, boot_id: str) -> Optional[DaemonEntry]:
         data = self._load()
         daemon = (data.get("daemons") or {}).get(boot_id)
         if not daemon:
@@ -229,7 +351,7 @@ class ServerRegistry:
             return None
         return daemon
 
-    def get_workspace(self, workspace_root: str) -> Optional[Dict[str, Any]]:
+    def get_workspace(self, workspace_root: str) -> Optional[WorkspaceEntry]:
         ws = self._normalize_workspace_root(workspace_root)
         data = self._load()
         return (data.get("workspaces") or {}).get(ws)
@@ -241,7 +363,7 @@ class ServerRegistry:
         ) if info.get("boot_id") == boot_id]
 
     def resolve_workspace_daemon(
-            self, workspace_root: str) -> Optional[Dict[str, Any]]:
+            self, workspace_root: str) -> Optional[DaemonWithBootId]:
         ws = self._normalize_workspace_root(workspace_root)
         data = self._load()
         workspaces = data.get("workspaces", {})
@@ -279,7 +401,7 @@ class ServerRegistry:
         self._update(_upd)
 
     def resolve_daemon_by_endpoint(
-            self, host: str, port: int) -> Optional[Dict[str, Any]]:
+            self, host: str, port: int) -> Optional[DaemonWithBootId]:
         data = self._load()
         daemons = data.get("daemons", {})
         for bid, info in daemons.items():
@@ -294,8 +416,7 @@ class ServerRegistry:
 
     def resolve_latest_daemon(self,
                               workspace_root: Optional[str] = None,
-                              allow_draining: bool = True) -> Optional[Dict[str,
-                                                                            Any]]:
+                              allow_draining: bool = True) -> Optional[DaemonWithBootId]:
         data = self._load()
         daemons = data.get("daemons", {}) or {}
         workspaces = data.get("workspaces", {}) or {}
@@ -356,7 +477,7 @@ class ServerRegistry:
         return a.startswith(b + os.sep) or b.startswith(a + os.sep)
 
     def _dedupe_nested_workspaces_locked(
-            self, data: Dict[str, Any], preferred_ws: Optional[str] = None) -> None:
+            self, data: RegistryData, preferred_ws: Optional[str] = None) -> None:
         workspaces = dict(data.get("workspaces", {}))
         if not workspaces:
             return
@@ -447,7 +568,7 @@ class ServerRegistry:
         self._update(_upd)
 
     def resolve_workspace_http(
-            self, workspace_root: str) -> Optional[Dict[str, Any]]:
+            self, workspace_root: str) -> Optional[WorkspaceHttpEndpoint]:
         ws = self._normalize_workspace_root(workspace_root)
         data = self._load()
         workspaces = data.get("workspaces", {}) or {}

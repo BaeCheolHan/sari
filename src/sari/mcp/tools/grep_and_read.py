@@ -1,4 +1,4 @@
-from typing import Any, Dict, List
+from typing import Mapping, TypeAlias
 
 from sari.core.db import LocalSearchDB
 from sari.core.models import SearchOptions
@@ -14,13 +14,17 @@ from sari.mcp.tools._util import (
     require_db_schema,
 )
 
+ToolResult: TypeAlias = dict[str, object]
+ToolArgs: TypeAlias = dict[str, object]
+ReadRow: TypeAlias = dict[str, str]
 
-def _normalize_query(q: Any) -> str:
+
+def _normalize_query(q: object) -> str:
     """쿼리 문자열을 정규화합니다."""
     return str(q or "").strip()
 
 
-def _coerce_int(val: Any, default: int) -> int:
+def _coerce_int(val: object, default: int) -> int:
     """값을 정수형으로 변환하며, 실패 시 기본값을 반환합니다."""
     try:
         return int(val)
@@ -28,11 +32,25 @@ def _coerce_int(val: Any, default: int) -> int:
         return default
 
 
-def execute_grep_and_read(args: Dict[str, Any], db: LocalSearchDB, roots: List[str]) -> Dict[str, Any]:
+def execute_grep_and_read(args: object, db: LocalSearchDB, roots: list[str]) -> ToolResult:
     """
     복합 도구: 하이브리드 검색을 먼저 수행한 후, 최상위 결과 파일들의 전체 내용을 함께 읽어옵니다.
     (Search then Read top results)
     """
+    if not isinstance(args, Mapping):
+        return mcp_response(
+            "grep_and_read",
+            lambda: pack_error("grep_and_read", ErrorCode.INVALID_ARGS, "'args' must be an object"),
+            lambda: {
+                "error": {
+                    "code": ErrorCode.INVALID_ARGS.value,
+                    "message": "'args' must be an object",
+                },
+                "isError": True,
+            },
+        )
+    args_map: ToolArgs = dict(args)
+
     guard = require_db_schema(
         db,
         "grep_and_read",
@@ -41,7 +59,7 @@ def execute_grep_and_read(args: Dict[str, Any], db: LocalSearchDB, roots: List[s
     )
     if guard:
         return guard
-    query = _normalize_query(args.get("query"))
+    query = _normalize_query(args_map.get("query"))
     if not query:
         return mcp_response(
             "grep_and_read",
@@ -49,21 +67,21 @@ def execute_grep_and_read(args: Dict[str, Any], db: LocalSearchDB, roots: List[s
             lambda: {"error": {"code": ErrorCode.INVALID_ARGS.value, "message": "query is required"}, "isError": True},
         )
 
-    repo = args.get("scope") or args.get("repo")
+    repo = args_map.get("scope") or args_map.get("repo")
     if repo == "workspace":
         repo = None
 
-    limit = max(1, min(_coerce_int(args.get("limit"), 8), 50))
-    read_limit = max(1, min(_coerce_int(args.get("read_limit"), 3), limit))
+    limit = max(1, min(_coerce_int(args_map.get("limit"), 8), 50))
+    read_limit = max(1, min(_coerce_int(args_map.get("read_limit"), 3), limit))
 
-    raw_lines = _coerce_int(args.get("context_lines"), 5)
+    raw_lines = _coerce_int(args_map.get("context_lines"), 5)
     snippet_lines = min(max(raw_lines, 1), 20)
-    total_mode = str(args.get("total_mode") or "").strip().lower()
+    total_mode = str(args_map.get("total_mode") or "").strip().lower()
     if total_mode not in {"exact", "approx"}:
         total_mode = "exact"
 
     root_ids = resolve_root_ids(roots)
-    req_root_ids = args.get("root_ids")
+    req_root_ids = args_map.get("root_ids")
     if isinstance(req_root_ids, list):
         req_root_ids = [str(r) for r in req_root_ids if r]
         if root_ids:
@@ -86,12 +104,12 @@ def execute_grep_and_read(args: Dict[str, Any], db: LocalSearchDB, roots: List[s
         limit=limit,
         offset=0,
         snippet_lines=snippet_lines,
-        file_types=list(args.get("file_types", [])),
-        path_pattern=args.get("path_pattern"),
-        exclude_patterns=args.get("exclude_patterns", []),
-        recency_boost=bool(args.get("recency_boost", False)),
-        use_regex=bool(args.get("use_regex", False)),
-        case_sensitive=bool(args.get("case_sensitive", False)),
+        file_types=list(args_map.get("file_types", [])),
+        path_pattern=args_map.get("path_pattern"),
+        exclude_patterns=args_map.get("exclude_patterns", []),
+        recency_boost=bool(args_map.get("recency_boost", False)),
+        use_regex=bool(args_map.get("use_regex", False)),
+        case_sensitive=bool(args_map.get("case_sensitive", False)),
         total_mode=total_mode,
         root_ids=root_ids,
     )
@@ -120,8 +138,8 @@ def execute_grep_and_read(args: Dict[str, Any], db: LocalSearchDB, roots: List[s
         )
 
     # 2. 검색 결과 중 상위 N개 파일의 실제 내용 읽기
-    read_results: List[Dict[str, Any]] = []
-    read_errors: List[Dict[str, Any]] = []
+    read_results: list[dict[str, object]] = []
+    read_errors: list[ReadRow] = []
     for h in hits[:read_limit]:
         try:
             content = db.read_file(h.path)
@@ -133,8 +151,8 @@ def execute_grep_and_read(args: Dict[str, Any], db: LocalSearchDB, roots: List[s
             continue
         read_results.append({"path": h.path, "content": content})
 
-    def build_json() -> Dict[str, Any]:
-        results: List[Dict[str, Any]] = []
+    def build_json() -> ToolResult:
+        results: list[dict[str, object]] = []
         for h in hits:
             results.append(
                 {

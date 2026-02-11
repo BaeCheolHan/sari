@@ -1,12 +1,29 @@
-from typing import Dict, Any
+from collections.abc import Mapping
+from typing import TypeAlias
 import time
 
+ConfigMap: TypeAlias = dict[str, object]
+
+
 class ScoringPolicy:
-    def __init__(self, config: Dict[str, Any] = None):
-        self.config = config or {}
+    @staticmethod
+    def _section(config: ConfigMap, key: str, defaults: dict[str, float]) -> dict[str, float]:
+        raw = config.get(key)
+        if isinstance(raw, Mapping):
+            out: dict[str, float] = dict(defaults)
+            for k, v in raw.items():
+                try:
+                    out[str(k)] = float(v)
+                except Exception:
+                    continue
+            return out
+        return dict(defaults)
+
+    def __init__(self, config: object = None):
+        self.config: ConfigMap = dict(config) if isinstance(config, Mapping) else {}
         
         # Symbol weights
-        self.symbol_weights = self.config.get("symbol_weights", {
+        self.symbol_weights = self._section(self.config, "symbol_weights", {
             "class": 600.0,
             "function": 500.0,
             "method": 350.0,
@@ -16,7 +33,7 @@ class ScoringPolicy:
         })
         
         # File/Path weights
-        self.path_weights = self.config.get("path_weights", {
+        self.path_weights = self._section(self.config, "path_weights", {
             "exact_filename": 2.0,
             "filename_stem": 1.2,
             "path_suffix": 1.0,
@@ -24,7 +41,7 @@ class ScoringPolicy:
         })
         
         # SQL based priors (from search_engine.py)
-        self.sql_priors = self.config.get("sql_priors", {
+        self.sql_priors = self._section(self.config, "sql_priors", {
             "src_path": 0.6,
             "config_path": 0.4,
             "test_path": -0.7,

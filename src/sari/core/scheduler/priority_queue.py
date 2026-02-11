@@ -1,14 +1,16 @@
 import heapq
 import time
 from dataclasses import dataclass, field
-from typing import Any, List, Optional
+from typing import TypeAlias
+
+Payload: TypeAlias = object
 
 @dataclass(order=True)
 class PrioritizedTask:
     priority: float  # Lower value = Higher priority
     timestamp: float = field(compare=False)
     root_id: str = field(compare=False)
-    payload: Any = field(compare=False)
+    payload: Payload = field(compare=False)
     base_priority: float = field(compare=False, default=10.0)
 
 class AgingPriorityQueue:
@@ -17,11 +19,11 @@ class AgingPriorityQueue:
     Priority = base_priority - (current_time - wait_start_time) * age_factor
     """
     def __init__(self, age_factor: float = 0.1):
-        self._queue: List[PrioritizedTask] = []
+        self._queue: list[PrioritizedTask] = []
         self._age_factor = age_factor
         self._lock = __import__("threading").Lock()
 
-    def put(self, root_id: str, payload: Any, base_priority: float = 10.0):
+    def put(self, root_id: str, payload: Payload, base_priority: float = 10.0):
         with self._lock:
             now = time.time()
             task = PrioritizedTask(
@@ -33,7 +35,7 @@ class AgingPriorityQueue:
             )
             heapq.heappush(self._queue, task)
 
-    def get(self) -> Optional[PrioritizedTask]:
+    def get(self) -> PrioritizedTask | None:
         with self._lock:
             if not self._queue:
                 return None

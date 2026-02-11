@@ -1,7 +1,9 @@
 import time
 import heapq
 from dataclasses import dataclass, field
-from typing import Dict, Any, Optional, List
+from typing import TypeAlias
+
+Payload: TypeAlias = object
 
 
 @dataclass(order=True)
@@ -9,7 +11,7 @@ class ScheduledTask:
     priority: float  # Lower value = Higher priority
     timestamp: float = field(compare=False)
     root_id: str = field(compare=False)
-    payload: Any = field(compare=False)
+    payload: Payload = field(compare=False)
 
 
 class WeightedFairQueue:
@@ -19,32 +21,36 @@ class WeightedFairQueue:
     """
 
     def __init__(self, age_factor: float = 0.05):
-        self._queues: Dict[str, List[ScheduledTask]] = {}  # Min-heaps per root
-        self._weights: Dict[str, float] = {}
-        self._active_roots: List[str] = []
+        self._queues: dict[str, list[ScheduledTask]] = {}  # Min-heaps per root
+        self._weights: dict[str, float] = {}
+        self._active_roots: list[str] = []
         self._current_idx = 0
         self._age_factor = age_factor
         self._lock = __import__("threading").Lock()
 
     def set_weight(self, root_id: str, weight: float):
         with self._lock:
-            self._weights[root_id] = weight
+            # Guard against non-positive weights; zero would break scheduling.
+            self._weights[root_id] = float(weight) if weight and weight > 0 else 1.0
 
-    def put(self, root_id: str, task: Any, base_priority: float = 10.0):
+    def put(self, root_id: str, task: Payload, base_priority: float = 10.0):
         with self._lock:
             if root_id not in self._queues:
                 self._queues[root_id] = []
                 self._active_roots.append(root_id)
 
+            weight = self._weights.get(root_id, 1.0)
+            if weight <= 0:
+                weight = 1.0
             stask = ScheduledTask(
-                priority=base_priority / self._weights.get(root_id, 1.0),
+                priority=base_priority / weight,
                 timestamp=time.time(),
                 root_id=root_id,
                 payload=task
             )
             heapq.heappush(self._queues[root_id], stask)
 
-    def get(self) -> Optional[ScheduledTask]:
+    def get(self) -> ScheduledTask | None:
         """Weighted Round-Robin + Internal Aging."""
         with self._lock:
             if not self._active_roots:

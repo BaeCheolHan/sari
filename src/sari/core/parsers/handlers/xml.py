@@ -1,9 +1,9 @@
 import re
-from typing import Any, Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional
 from sari.core.parsers.base import BaseHandler
 
 class XmlHandler(BaseHandler):
-    def handle_node(self, node: Any, get_t, find_id, ext: str, p_meta: Dict[str, Any]) -> Tuple[Optional[str], Optional[str], Dict[str, Any], bool]:
+    def handle_node(self, node: object, get_t, find_id, ext: str, p_meta: Dict[str, object]) -> Tuple[Optional[str], Optional[str], Dict[str, object], bool]:
         txt = get_t(node)
         
         # MyBatis (Test expects kind='method')

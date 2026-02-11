@@ -1,5 +1,5 @@
 import re
-from typing import List, Dict, Any
+from typing import List, Dict
 from pathlib import Path
 from .base import BaseParser
 from .common import _symbol_id, _safe_compile, NORMALIZE_KIND_BY_EXT
@@ -12,7 +12,7 @@ class GenericRegexParser(BaseParser):
     미리 정의된 정규식 패턴을 사용하여 클래스와 메서드 구조를 휴리스틱하게 추출합니다.
     """
 
-    def __init__(self, config: Dict[str, Any], ext: str):
+    def __init__(self, config: Dict[str, object], ext: str):
         self.ext = ext.lower()
         self.re_class = config["re_class"]
         self.re_method = config["re_method"]
@@ -129,7 +129,7 @@ class HCLRegexParser(GenericRegexParser):
     resource, module, variable 등 HCL 특유의 블록 구조를 처리합니다.
     """
 
-    def __init__(self, config: Dict[str, Any], ext: str):
+    def __init__(self, config: Dict[str, object], ext: str):
         super().__init__(config, ext)
         self.re_resource = _safe_compile(r'^resource\s+"([^"]+)"\s+"([^"]+)"')
         self.re_general = _safe_compile(

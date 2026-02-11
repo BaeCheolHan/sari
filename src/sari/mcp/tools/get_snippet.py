@@ -1,4 +1,4 @@
-from typing import Any, Dict, List
+from typing import Mapping, Optional, TypeAlias
 import difflib
 import threading
 import time
@@ -15,7 +15,13 @@ from sari.mcp.tools._util import (
     require_db_schema,
 )
 
-def _as_row_dict(row: Any) -> Dict[str, Any]:
+RowData: TypeAlias = dict[str, object]
+Rows: TypeAlias = list[RowData]
+SnippetArgs: TypeAlias = dict[str, object]
+ToolResult: TypeAlias = dict[str, object]
+
+
+def _as_row_dict(row: object) -> RowData:
     if isinstance(row, dict):
         return dict(row)
     if hasattr(row, "model_dump"):
@@ -23,7 +29,7 @@ def _as_row_dict(row: Any) -> Dict[str, Any]:
             return row.model_dump()
         except Exception:
             pass
-    out: Dict[str, Any] = {}
+    out: RowData = {}
     for k in (
         "id",
         "tag",
@@ -45,7 +51,7 @@ def _as_row_dict(row: Any) -> Dict[str, Any]:
             out[k] = getattr(row, k)
     return out
 
-def _read_lines(db: Any, db_path: str, roots: List[str]) -> List[str]:
+def _read_lines(db: object, db_path: str, roots: list[str]) -> list[str]:
     """DB 또는 파일 시스템에서 파일의 모든 라인을 읽어옵니다."""
     fs_path = resolve_fs_path(db_path, roots)
     if fs_path:
@@ -57,7 +63,7 @@ def _read_lines(db: Any, db_path: str, roots: List[str]) -> List[str]:
     raw = db.read_file_raw(db_path) if hasattr(db, "read_file_raw") else db.read_file(db_path)
     return (raw or "").splitlines()
 
-def _remap_snippet(lines: List[str], stored: Dict[str, Any]) -> Dict[str, Any]:
+def _remap_snippet(lines: list[str], stored: RowData) -> RowData:
     """
     저장된 스니펫이 파일의 변경으로 인해 위치가 어긋난 경우, 
     앵커(Anchor)나 내용 매칭을 통해 현재 파일에서의 새로운 위치를 찾습니다.
@@ -149,7 +155,7 @@ def _diff_snippet(old: str, new: str, max_lines: int = 200, max_chars: int = 800
         diff_text = diff_text[:max_chars] + "\n... [diff truncated]"
     return diff_text
 
-def _update_snippet_record(db: Any, row: Dict[str, Any], mapped: Dict[str, Any]) -> None:
+def _update_snippet_record(db: object, row: RowData, mapped: RowData) -> None:
     """리매핑된 정보를 DB에 업데이트하여 위치 정보를 동기화합니다."""
     if not hasattr(db, "update_snippet_location_tx"):
         return
@@ -200,7 +206,7 @@ def _update_snippet_record(db: Any, row: Dict[str, Any], mapped: Dict[str, Any])
     finally:
         db.register_writer_thread(prev)
 
-def _should_update(mapped: Dict[str, Any]) -> tuple[bool, str]:
+def _should_update(mapped: RowData) -> tuple[bool, str]:
     """리매핑된 정보가 유효하여 업데이트를 수행해야 하는지 결정합니다."""
     start = int(mapped.get("start") or 0)
     end = int(mapped.get("end") or 0)
@@ -213,7 +219,7 @@ def _should_update(mapped: Dict[str, Any]) -> tuple[bool, str]:
         return False, "empty_content"
     return True, ""
 
-def _write_diff_file(diff_path: str, row: Dict[str, Any], mapped: Dict[str, Any]) -> None:
+def _write_diff_file(diff_path: str, row: RowData, mapped: RowData) -> None:
     """디버깅을 위해 Diff 정보를 파일로 기록합니다."""
     try:
         base = diff_path
@@ -228,7 +234,7 @@ def _write_diff_file(diff_path: str, row: Dict[str, Any], mapped: Dict[str, Any]
     except Exception:
         pass
 
-def _write_snapshot_files(diff_path: str, row: Dict[str, Any], mapped: Dict[str, Any]) -> None:
+def _write_snapshot_files(diff_path: str, row: RowData, mapped: RowData) -> None:
     """변경 전/후의 스토어드 텍스트를 각각 스냅샷 파일로 기록합니다."""
     try:
         base = diff_path
@@ -250,7 +256,7 @@ def _write_snapshot_files(diff_path: str, row: Dict[str, Any], mapped: Dict[str,
         pass
 
 
-def build_get_snippet(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict[str, Any]:
+def build_get_snippet(args: SnippetArgs, db: object, roots: list[str]) -> ToolResult:
     """스니펫 조회 및 위치 리매핑 비즈니스 로직을 수행합니다."""
     tag = str(args.get("tag") or "").strip()
     query = str(args.get("query") or "").strip()
@@ -316,7 +322,9 @@ def build_get_snippet(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict[s
     raise ValueError("tag or query is required")
 
 
-def execute_get_snippet(args: Dict[str, Any], db: Any, logger: Any = None, roots: List[str] = None) -> Dict[str, Any]:
+def execute_get_snippet(
+    args: object, db: object, logger: object = None, roots: Optional[list[str]] = None
+) -> ToolResult:
     """
     저장된 코드 스니펫을 조회하는 도구입니다.
     파일이 변경된 경우 자동으로 현재 위치를 찾는 셀프 힐링(Self-healing) 기능을 지원합니다.
@@ -329,12 +337,26 @@ def execute_get_snippet(args: Dict[str, Any], db: Any, logger: Any = None, roots
     )
     if guard:
         return guard
+    if not isinstance(args, Mapping):
+        return mcp_response(
+            "get_snippet",
+            lambda: pack_error("get_snippet", ErrorCode.INVALID_ARGS, "'args' must be an object"),
+            lambda: {
+                "error": {
+                    "code": ErrorCode.INVALID_ARGS.value,
+                    "message": "'args' must be an object",
+                },
+                "isError": True,
+            },
+        )
+    args_map: SnippetArgs = dict(args)
+
     if roots is None and isinstance(logger, list):
         roots = logger
         logger = None
     roots = roots or []
     try:
-        payload = build_get_snippet(args, db, roots)
+        payload = build_get_snippet(args_map, db, roots)
     except ValueError as e:
         msg = str(e)
         return mcp_response(

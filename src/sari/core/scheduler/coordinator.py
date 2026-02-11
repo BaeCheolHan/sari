@@ -2,7 +2,7 @@ import threading
 import time
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Dict, Optional
 from .priority_queue import AgingPriorityQueue
 
 
@@ -12,7 +12,7 @@ class SchedulingTask:
     kind: str
     path: str
     root: str
-    payload: Dict[str, Any] = field(default_factory=dict, compare=False)
+    payload: Dict[str, object] = field(default_factory=dict, compare=False)
     ts: float = field(default_factory=time.time, compare=False)
 
 

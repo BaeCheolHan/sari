@@ -1,11 +1,16 @@
 
 import fnmatch
 import os
-from typing import Any, Dict, List, Optional, Tuple, Set, Callable
+from typing import Mapping, Optional, Tuple, Set, Callable, TypeAlias
 
 from sari.core.workspace import WorkspaceManager
 from .budget import GraphBudget
 from .render import render_tree
+
+Params: TypeAlias = dict[str, object]
+Node: TypeAlias = dict[str, object]
+Rows: TypeAlias = list[Node]
+VisitedKey: TypeAlias = tuple[str, str, str]
 
 
 class CallGraphService:
@@ -14,7 +19,7 @@ class CallGraphService:
     데이터베이스에서 심볼 관계를 조회하여 계층적 트리 구조를 만듭니다.
     """
 
-    def __init__(self, db: Any, roots: List[str]):
+    def __init__(self, db: object, roots: list[str]):
         """
         Args:
             db: 데이터베이스 접근 객체
@@ -22,15 +27,18 @@ class CallGraphService:
         """
         self.db = db
         self.roots = roots
-        self._repo_cache: Dict[str, str] = {}
+        self._repo_cache: dict[str, str] = {}
 
-    def build(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    def build(self, args: object) -> Params:
         """
         호출 그래프 생성의 핵심 비즈니스 로직입니다.
         인자 검증, 심볼 식별, 상/하류 트리 구성을 수행합니다.
         """
+        if not isinstance(args, Mapping):
+            raise ValueError("args must be an object")
+        args_map: Mapping[str, object] = args
         try:
-            params = self._parse_args(args)
+            params = self._parse_args(args_map)
         except ValueError as e:
             raise e
 
@@ -77,7 +85,7 @@ class CallGraphService:
             target, upstream, downstream, budget, params, scope_reason
         )
 
-    def _parse_args(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    def _parse_args(self, args: Mapping[str, object]) -> Params:
         """입력 인자를 파싱하고 기본값을 설정합니다."""
         name = str(args.get("symbol") or args.get("name") or "").strip()
         symbol_id = str(args.get("symbol_id") or args.get(
@@ -103,7 +111,7 @@ class CallGraphService:
             "root_ids": self._resolve_root_ids(args.get("root_ids") or [])
         }
 
-    def _resolve_root_ids(self, req_root_ids: List[Any]) -> List[str]:
+    def _resolve_root_ids(self, req_root_ids: list[object]) -> list[str]:
         """요청된 root_id를 실제 활성 워크스페이스 ID로 변환 및 검증합니다."""
         known_roots = []
         allow_legacy = str(
@@ -134,7 +142,7 @@ class CallGraphService:
         return known_roots
 
     def _try_fuzzy_fallback(
-            self, name: str, scope_reason: str) -> Tuple[List[Dict], str]:
+            self, name: str, scope_reason: str) -> Tuple[Rows, str]:
         """정확한 이름 매칭 실패 시 유사 심볼을 찾습니다."""
         fuzzy = self.db.symbols.fuzzy_search_symbols(name, limit=3)
         if fuzzy:
@@ -148,7 +156,7 @@ class CallGraphService:
         return [], scope_reason
 
     def _create_allow_filter(
-            self, params: Dict[str, Any]) -> Callable[[str], bool]:
+            self, params: Params) -> Callable[[str], bool]:
         """파일 경로 필터링 함수를 생성합니다 (include/exclude/repo 등)."""
         root_ids = params["root_ids"]
         repo = params["repo"]
@@ -178,10 +186,10 @@ class CallGraphService:
             name: str,
             path: Optional[str],
             symbol_id: Optional[str],
-            root_ids: List[str],
-            repo: Optional[str]) -> List[Dict]:
+            root_ids: list[str],
+            repo: Optional[str]) -> Rows:
         """DB에서 대상 심볼을 조회합니다."""
-        params: List[Any] = []
+        params: list[object] = []
         if symbol_id:
             sql = "SELECT path, name, kind, line, end_line, qualname, symbol_id FROM symbols WHERE symbol_id = ?"
             params.append(symbol_id)
@@ -218,11 +226,11 @@ class CallGraphService:
             sid: Optional[str],
             depth: int,
             direction: str,
-            visited: Set[Tuple],
+            visited: Set[VisitedKey],
             budget: GraphBudget,
             allow: Callable,
-            root_ids: List[str],
-            sort_by: str) -> Dict:
+            root_ids: list[str],
+            sort_by: str) -> Node:
         """재귀적으로 호출 그래프 트리를 구축합니다."""
         node = {
             "name": name,
@@ -295,7 +303,7 @@ class CallGraphService:
             path: Optional[str],
             sid: Optional[str],
             direction: str,
-            root_ids: List[str]) -> List[Dict]:
+            root_ids: list[str]) -> Rows:
         """DB에서 지정된 방향(up: 호출자, down: 피호출자)의 이웃 노드를 찾습니다."""
         params = []
         if direction == "up":
@@ -375,7 +383,7 @@ class CallGraphService:
         except Exception:
             return False
 
-    def _symbol_row_to_dict(self, row: Any) -> Dict[str, Any]:
+    def _symbol_row_to_dict(self, row: object) -> Node:
         return {
             "path": str(self._row_get(row, "path", 0, "") or ""),
             "name": str(self._row_get(row, "name", 1, "") or ""),
@@ -386,7 +394,7 @@ class CallGraphService:
             "symbol_id": str(self._row_get(row, "symbol_id", 6, "") or ""),
         }
 
-    def _relation_row_to_dict(self, row: Any, key_p: str, key_s: str, key_sid: str) -> Dict[str, Any]:
+    def _relation_row_to_dict(self, row: object, key_p: str, key_s: str, key_sid: str) -> Node:
         return {
             key_p: str(self._row_get(row, key_p, 0, "") or ""),
             key_s: str(self._row_get(row, key_s, 1, "") or ""),
@@ -396,7 +404,7 @@ class CallGraphService:
         }
 
     @staticmethod
-    def _row_get(row: Any, key: str, index: int, default: Any = None) -> Any:
+    def _row_get(row: object, key: str, index: int, default: object = None) -> object:
         if row is None:
             return default
         try:
@@ -410,12 +418,12 @@ class CallGraphService:
 
     def _assemble_result(
             self,
-            target,
-            upstream,
-            downstream,
-            budget,
-            params,
-            scope_reason) -> Dict:
+            target: Node,
+            upstream: Node,
+            downstream: Node,
+            budget: GraphBudget,
+            params: Params,
+            scope_reason: str) -> Params:
         """최종 결과 딕셔너리를 조립하고 렌더링된 트리 텍스트를 포함시킵니다."""
         u_count, d_count = len(
             upstream.get("children") or []), len(
@@ -457,7 +465,7 @@ class CallGraphService:
                 "upstream_count": u_count,
                 "downstream_count": d_count}}
 
-    def _empty_result(self, params: Dict[str, Any], scope_reason: str) -> Dict:
+    def _empty_result(self, params: Params, scope_reason: str) -> Params:
         """결과가 없을 때의 빈 응답 객체를 반환합니다."""
         return {
             "symbol": params["name"] or "",

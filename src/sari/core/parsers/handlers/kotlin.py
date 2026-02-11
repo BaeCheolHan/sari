@@ -1,10 +1,10 @@
-from typing import Any, Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple
 from .java import BaseHandler
 
 
 class KotlinHandler(BaseHandler):
     def handle_node(self,
-                    node: Any,
+                    node: object,
                     get_t: callable,
                     find_id: callable,
                     ext: str,
@@ -38,7 +38,7 @@ class KotlinHandler(BaseHandler):
 
         return kind, name, meta, is_valid
 
-    def _extract_annotations(self, node: Any, get_t: callable) -> list:
+    def _extract_annotations(self, node: object, get_t: callable) -> list:
         annotations = []
         # Kotlin annotations are often in 'modifiers' -> 'annotation'
         for c in node.children:
@@ -54,7 +54,7 @@ class KotlinHandler(BaseHandler):
 
     def extract_api_info(
             self,
-            node: Any,
+            node: object,
             get_t: callable,
             get_child: callable) -> Dict:
         # Kotlin/Spring Boot support

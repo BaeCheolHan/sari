@@ -1,14 +1,15 @@
 import os
-from typing import Any, List, Optional, Tuple
 from pathlib import Path
 from sari.core.workspace import WorkspaceManager
 
 
-def _first_value(row: Any) -> Any:
+def _first_value(row: object) -> object:
     if row is None:
         return None
     if isinstance(row, dict):
         return next(iter(row.values()), None)
+    if isinstance(row, (str, bytes, bytearray)):
+        return row
     try:
         return next(iter(row))
     except Exception:
@@ -29,10 +30,10 @@ def _is_safe_relative_path(rel: str) -> bool:
     return True
 
 
-def resolve_root_ids(roots: List[str]) -> List[str]:
+def resolve_root_ids(roots: list[str]) -> list[str]:
     if not roots or not WorkspaceManager:
         return []
-    out: List[str] = []
+    out: list[str] = []
     allow_legacy = os.environ.get(
         "SARI_ALLOW_LEGACY", "").strip().lower() in {
         "1", "true", "yes", "on"}
@@ -48,8 +49,8 @@ def resolve_root_ids(roots: List[str]) -> List[str]:
 
 def resolve_db_path(
         input_path: str,
-        roots: List[str],
-        db: Optional[Any] = None) -> Optional[str]:
+        roots: list[str],
+        db: object | None = None) -> str | None:
     """
     파일 시스템 경로를 Sari DB 경로로 변환 (Index-First Policy).
     """
@@ -60,7 +61,7 @@ def resolve_db_path(
         if path_in.is_absolute():
             p_abs = str(path_in.resolve())
         else:
-            candidate_abs: Optional[str] = None
+            candidate_abs: str | None = None
             for root in roots or []:
                 try:
                     root_path = Path(root).expanduser().resolve()
@@ -120,7 +121,7 @@ def resolve_db_path(
     return None
 
 
-def resolve_fs_path(db_path: str, roots: List[str]) -> Optional[str]:
+def resolve_fs_path(db_path: str, roots: list[str]) -> str | None:
     if not db_path or not roots:
         return None
     active_root_map = {}
@@ -146,10 +147,10 @@ def resolve_fs_path(db_path: str, roots: List[str]) -> Optional[str]:
     return None
 
 
-def resolve_repo_scope(repo: Optional[str],
-                       roots: List[str],
-                       db: Optional[Any] = None) -> Tuple[Optional[str],
-                                                          List[str]]:
+def resolve_repo_scope(repo: str | None,
+                       roots: list[str],
+                       db: object | None = None) -> tuple[str | None,
+                                                          list[str]]:
     from ._util import _intersect_preserve_order  # Circular safe aggregator helper
     allowed_root_ids = resolve_root_ids(roots)
     repo_raw = str(repo or "").strip()
@@ -157,8 +158,8 @@ def resolve_repo_scope(repo: Optional[str],
         return None, allowed_root_ids
 
     q = repo_raw.lower()
-    matched_by_ws_name: List[str] = []
-    matched_by_repo_bucket: List[str] = []
+    matched_by_ws_name: list[str] = []
+    matched_by_repo_bucket: list[str] = []
     for r in roots or []:
         try:
             rp = Path(r).expanduser().resolve()

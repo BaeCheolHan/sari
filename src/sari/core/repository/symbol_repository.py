@@ -2,7 +2,8 @@ import sqlite3
 import json
 import difflib
 import time
-from typing import Iterable, List, Optional, Tuple, Dict, Any
+from collections.abc import Iterable, Mapping, Sequence
+from typing import Optional, Tuple
 from .base import BaseRepository
 from ..parsers.common import _symbol_id
 from ..models import SymbolDTO, _to_dict
@@ -23,8 +24,11 @@ SYMBOL_COLUMNS = [
     "qualname",
     "importance_score"]
 
+SymbolInput = SymbolDTO | Mapping[str, object] | Sequence[object]
+RelationRow = Sequence[object]
+RowObject = sqlite3.Row | Mapping[str, object] | Sequence[object] | None
 
-def _row_get(row: Any, key: str, index: int, default: Any = None) -> Any:
+def _row_get(row: RowObject, key: str, index: int, default: object = None) -> object:
     if row is None:
         return default
     try:
@@ -46,7 +50,7 @@ class SymbolRepository(BaseRepository):
     def upsert_symbols_tx(
             self,
             cur: sqlite3.Cursor,
-            symbols: Iterable[Any]) -> int:
+            symbols: Iterable[SymbolInput]) -> int:
         """
         심볼 정보들을 트랜잭션 내에서 삽입하거나 업데이트합니다.
         입력 데이터 형식(DTO, Dict, Tuple)을 자동으로 감지하여 정형화된 형태로 저장합니다.
@@ -56,7 +60,7 @@ class SymbolRepository(BaseRepository):
         if not symbols_list:
             return 0
 
-        normalized_rows: List[Dict[str, Any]] = []
+        normalized_rows: list[dict[str, object]] = []
         int(time.time())
 
         for s in symbols_list:
@@ -65,8 +69,8 @@ class SymbolRepository(BaseRepository):
             try:
                 if hasattr(s, "model_dump"):
                     data = s.model_dump()
-                elif isinstance(s, dict):
-                    data = s
+                elif isinstance(s, Mapping):
+                    data = dict(s)
                 else:
                     # Fallback for legacy tuple inputs (attempt best-effort
                     # mapping)
@@ -150,7 +154,7 @@ class SymbolRepository(BaseRepository):
     def upsert_relations_tx(
             self,
             cur: sqlite3.Cursor,
-            relations: Iterable[tuple]) -> int:
+            relations: Iterable[RelationRow]) -> int:
         """
         심볼 간의 호출 관계, 구현 관계 등을 트랜잭션 내에서 저장합니다.
         """
@@ -187,7 +191,7 @@ class SymbolRepository(BaseRepository):
              name)).fetchone()
         return (int(row["line"]), int(row["end_line"])) if row else None
 
-    def list_symbols_by_path(self, path: str) -> List[SymbolDTO]:
+    def list_symbols_by_path(self, path: str) -> list[SymbolDTO]:
         rows = self.execute(
             "SELECT s.*, f.repo FROM symbols s LEFT JOIN files f ON s.path = f.path WHERE s.path = ? ORDER BY s.line ASC",
             (path,
@@ -215,14 +219,14 @@ class SymbolRepository(BaseRepository):
             self,
             query: str,
             limit: int = 20,
-            **kwargs) -> List[SymbolDTO]:
+            **kwargs: object) -> list[SymbolDTO]:
         """
         이름 또는 정규화된 이름(qualname)을 기반으로 심볼을 검색합니다.
         종류(kind), 루트 ID, 장소(repo) 등으로 필터링이 가능하며 중요도 순으로 정렬됩니다.
         """
         lq = f"%{query}%"
         sql = "SELECT s.*, f.repo FROM symbols s LEFT JOIN files f ON s.path = f.path WHERE (s.name LIKE ? OR s.qualname LIKE ?)"
-        params = [lq, lq]
+        params: list[object] = [lq, lq]
 
         if kwargs.get("kinds"):
             ks = kwargs["kinds"]
@@ -244,7 +248,7 @@ class SymbolRepository(BaseRepository):
             self,
             query: str,
             limit: int = 5,
-            min_score: float = 0.6) -> List[SymbolDTO]:
+            min_score: float = 0.6) -> list[SymbolDTO]:
         if not query:
             return []
 
@@ -286,7 +290,7 @@ class SymbolRepository(BaseRepository):
         return int(_row_get(res, "COUNT(1)", 0, 0) or 0)
 
     def get_symbol_fan_in_stats(
-            self, symbol_names: List[str]) -> Dict[str, int]:
+            self, symbol_names: list[str]) -> dict[str, int]:
         if not symbol_names:
             return {}
         placeholders = ",".join(["?"] * len(symbol_names))

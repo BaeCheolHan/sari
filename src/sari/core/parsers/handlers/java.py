@@ -1,19 +1,19 @@
 import re
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional
 from sari.core.parsers.base import BaseHandler
 
 
 class JavaHandler(BaseHandler):
     def handle_node(self,
-                    node: Any,
+                    node: object,
                     get_t,
                     find_id,
                     ext: str,
                     p_meta: Dict[str,
-                                 Any]) -> Tuple[Optional[str],
+                                 object]) -> Tuple[Optional[str],
                                                 Optional[str],
                                                 Dict[str,
-                                                     Any],
+                                                     object],
                                                 bool]:
         n_type = node.type
         meta = {
@@ -96,7 +96,7 @@ class JavaHandler(BaseHandler):
 
         return None, None, {}, False
 
-    def _extract_annotations_ast(self, node: Any, get_t) -> List[str]:
+    def _extract_annotations_ast(self, node: object, get_t) -> List[str]:
         annos = []
         modifiers = None
         for c in node.children:
@@ -113,7 +113,7 @@ class JavaHandler(BaseHandler):
                             break
         return annos
 
-    def extract_api_info(self, node: Any, get_t, get_child) -> Dict:
+    def extract_api_info(self, node: object, get_t, get_child) -> Dict:
         """Restored from backup: Extracts HTTP method/path from annotations."""
         res = {"http_path": None, "http_methods": []}
         modifiers = get_child(node, "modifiers")

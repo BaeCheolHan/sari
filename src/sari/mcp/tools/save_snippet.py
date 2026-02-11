@@ -1,7 +1,8 @@
 import hashlib
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from collections.abc import Mapping
+from typing import TypeAlias
 
 from sari.mcp.tools._util import (
     mcp_response,
@@ -14,12 +15,15 @@ from sari.mcp.tools._util import (
     resolve_db_path,
     resolve_fs_path,
     resolve_root_ids,
+    invalid_args_response,
 )
 
 from sari.core.queue_pipeline import DbTask
 
+ToolResult: TypeAlias = dict[str, object]
 
-def _parse_path_range(path: str, start_line: Optional[int], end_line: Optional[int]) -> tuple[str, Optional[int], Optional[int]]:
+
+def _parse_path_range(path: str, start_line: int | None, end_line: int | None) -> tuple[str, int | None, int | None]:
     """'path:start-end' 형식의 문자열로부터 경로와 라인 범위를 파싱합니다."""
     if ":" in path and (start_line is None and end_line is None):
         base, rng = path.rsplit(":", 1)
@@ -32,7 +36,7 @@ def _parse_path_range(path: str, start_line: Optional[int], end_line: Optional[i
     return path, start_line, end_line
 
 
-def _read_lines(db: Any, db_path: str, roots: List[str]) -> List[str]:
+def _read_lines(db: object, db_path: str, roots: list[str]) -> list[str]:
     """DB 또는 파일 시스템에서 파일의 모든 라인을 읽어옵니다."""
     fs_path = resolve_fs_path(db_path, roots)
     if fs_path:
@@ -45,7 +49,7 @@ def _read_lines(db: Any, db_path: str, roots: List[str]) -> List[str]:
     return (raw or "").splitlines()
 
 
-def _split_db_path_with_roots(db_path: str, roots: List[str]) -> tuple[str, str]:
+def _split_db_path_with_roots(db_path: str, roots: list[str]) -> tuple[str, str]:
     """Resolve (root_id, rel_path) even when root_id itself contains slashes."""
     for root_id in sorted(resolve_root_ids(roots), key=len, reverse=True):
         prefix = f"{root_id}/"
@@ -59,7 +63,7 @@ def _split_db_path_with_roots(db_path: str, roots: List[str]) -> tuple[str, str]
     return "", db_path
 
 
-def _enqueue_or_write(db: Any, indexer: Any, row: tuple) -> None:
+def _enqueue_or_write(db: object, indexer: object, row: tuple[object, ...]) -> None:
     """인덱서가 활성화된 경우 작업을 큐에 넣고, 그렇지 않으면 DB에 직접 씁니다."""
     writer = getattr(indexer, "_db_writer", None) if indexer else None
     if writer and DbTask:
@@ -77,7 +81,12 @@ def _enqueue_or_write(db: Any, indexer: Any, row: tuple) -> None:
         db.register_writer_thread(prev)
 
 
-def build_save_snippet(args: Dict[str, Any], db: Any, roots: List[str], indexer: Any = None) -> Dict[str, Any]:
+def build_save_snippet(
+    args: Mapping[str, object],
+    db: object,
+    roots: list[str],
+    indexer: object = None,
+) -> ToolResult:
     """스니펫 저장을 위한 비즈니스 로직을 수행하고 결과 페이로드를 생성합니다."""
     path = str(args.get("path") or "").strip()
     tag = str(args.get("tag") or "").strip()
@@ -146,11 +155,14 @@ def build_save_snippet(args: Dict[str, Any], db: Any, roots: List[str], indexer:
     }
 
 
-def execute_save_snippet(args: Dict[str, Any], db: Any, roots: List[str], indexer: Any = None) -> Dict[str, Any]:
+def execute_save_snippet(args: object, db: object, roots: list[str], indexer: object = None) -> ToolResult:
     """
     코드 스니펫을 태그와 함께 저장하는 도구입니다.
     파일 변경 시 위치를 복구할 수 있도록 전/후 앵커 텍스트를 함께 저장합니다.
     """
+    if not isinstance(args, Mapping):
+        return invalid_args_response("save_snippet", "args must be an object")
+
     try:
         payload = build_save_snippet(args, db, roots, indexer=indexer)
     except ValueError as e:

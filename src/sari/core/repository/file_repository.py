@@ -1,10 +1,13 @@
 import sqlite3
 import json
 import time
-from typing import Iterable, List, Optional, Tuple, Dict, Any
+from collections.abc import Iterable, Mapping, Sequence
+from typing import Optional, Tuple
 from .base import BaseRepository
 from ..utils.compression import _compress
 from ..models import FILE_COLUMNS
+
+FileInputRow = Sequence[object] | Mapping[str, object]
 
 
 class FileRepository(BaseRepository):
@@ -16,7 +19,7 @@ class FileRepository(BaseRepository):
     def upsert_files_tx(
             self,
             cur: sqlite3.Cursor,
-            rows: Iterable[Any]) -> int:
+            rows: Iterable[FileInputRow]) -> int:
         """
         파일 정보들을 트랜잭션 내에서 한꺼번에 삽입하거나 업데이트(Upsert)합니다.
         mtime이 기존보다 크거나 같은 경우에만 업데이트하며, 관련 심볼 정보를 초기화합니다.
@@ -27,11 +30,13 @@ class FileRepository(BaseRepository):
         for r in rows:
             # Robust mapping: pad tuple if too short to match FILE_COLUMNS
             # length
-            r_list = list(r)
-            while len(r_list) < len(FILE_COLUMNS):
-                r_list.append(None)
-
-            data = dict(zip(FILE_COLUMNS, r_list))
+            if isinstance(r, Mapping):
+                data = {col: r.get(col) for col in FILE_COLUMNS}
+            else:
+                r_list = list(r)
+                while len(r_list) < len(FILE_COLUMNS):
+                    r_list.append(None)
+                data = dict(zip(FILE_COLUMNS, r_list))
 
             path = data.get("path")
             if not path:
@@ -92,7 +97,7 @@ class FileRepository(BaseRepository):
     def update_last_seen_tx(
             self,
             cur: sqlite3.Cursor,
-            paths: List[str],
+            paths: list[str],
             ts: int) -> None:
         if not paths:
             return
@@ -117,7 +122,7 @@ class FileRepository(BaseRepository):
         except Exception:
             return None
 
-    def get_unseen_paths(self, ts: int) -> List[str]:
+    def get_unseen_paths(self, ts: int) -> list[str]:
         rows = self.execute(
             "SELECT path FROM files WHERE last_seen_ts < ?", (ts,)).fetchall()
         return [r["path"] for r in rows]
@@ -125,9 +130,9 @@ class FileRepository(BaseRepository):
     def list_files(self,
                    limit: int = 50,
                    repo: Optional[str] = None,
-                   root_ids: Optional[List[str]] = None) -> List[Dict]:
+                   root_ids: Optional[list[str]] = None) -> list[dict[str, object]]:
         sql = "SELECT path, size, repo FROM files WHERE deleted_ts = 0"
-        params: List[Any] = []
+        params: list[object] = []
         if repo:
             sql += " AND repo = ?"
             params.append(repo)
@@ -140,7 +145,7 @@ class FileRepository(BaseRepository):
                 for r in self.execute(sql, params).fetchall()]
 
     def get_repo_stats(
-            self, root_ids: Optional[List[str]] = None) -> Dict[str, int]:
+            self, root_ids: Optional[list[str]] = None) -> dict[str, int]:
         sql = "SELECT repo, COUNT(path) AS c FROM files WHERE deleted_ts = 0"
         params = []
         if root_ids:

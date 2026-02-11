@@ -1,17 +1,16 @@
 import threading
-from typing import Callable, Dict, List, Any
-
+from collections.abc import Callable
 
 class EventBus:
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._subs: Dict[str, List[Callable[[Any], None]]] = {}
+        self._subs: dict[str, list[Callable[[object], None]]] = {}
 
-    def subscribe(self, topic: str, handler: Callable[[Any], None]) -> None:
+    def subscribe(self, topic: str, handler: Callable[[object], None]) -> None:
         with self._lock:
             self._subs.setdefault(topic, []).append(handler)
 
-    def publish(self, topic: str, payload: Any) -> None:
+    def publish(self, topic: str, payload: object) -> None:
         handlers = []
         with self._lock:
             handlers = list(self._subs.get(topic, []))

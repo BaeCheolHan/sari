@@ -1,8 +1,9 @@
 import os
 import json
-from typing import Optional, Dict, Any
+from typing import Optional, TypeAlias
 from pathlib import Path
 
+ConfigData: TypeAlias = dict[str, object]
 
 def resolve_config_path(root: str) -> str:
     """Find the config file in the given root."""
@@ -180,7 +181,7 @@ class Config:
         return cls(**data)
 
     @classmethod
-    def get_defaults(cls, root: str) -> Dict[str, Any]:
+    def get_defaults(cls, root: str) -> ConfigData:
         from sari.core.workspace import WorkspaceManager
 
         return {

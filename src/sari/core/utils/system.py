@@ -1,9 +1,12 @@
 import psutil
 import os
 import threading
-from typing import Dict, List, Any
+from typing import TypeAlias
 
-def get_system_metrics() -> Dict[str, Any]:
+MetricMap: TypeAlias = dict[str, object]
+ProcessInfo: TypeAlias = dict[str, object]
+
+def get_system_metrics() -> MetricMap:
     """Returns a dictionary of current system resource usage."""
     try:
         cpu_percent = psutil.cpu_percent(interval=None)
@@ -34,19 +37,20 @@ def get_system_metrics() -> Dict[str, Any]:
     except Exception:
         return {"error": "Failed to collect metrics"}
 
-def list_sari_processes() -> List[Dict[str, Any]]:
+def list_sari_processes() -> list[ProcessInfo]:
     """Lists all running Sari-related processes."""
-    procs = []
+    procs: list[ProcessInfo] = []
     my_pid = os.getpid()
     for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'create_time', 'memory_info']):
         try:
             cmdline = proc.info.get('cmdline') or []
             cmd_str = " ".join(cmdline).lower()
+            name = str(proc.info.get("name") or "")
             # Filter for Sari related processes
-            if "sari" in cmd_str and ("python" in cmd_str or "sari" in proc.info['name'].lower()):
+            if "sari" in cmd_str and ("python" in cmd_str or "sari" in name.lower()):
                 procs.append({
                     "pid": proc.info['pid'],
-                    "name": proc.info['name'],
+                    "name": name,
                     "cmd": " ".join(cmdline),
                     "created": proc.info['create_time'],
                     "memory_mb": round(proc.info['memory_info'].rss / (1024**2), 1),

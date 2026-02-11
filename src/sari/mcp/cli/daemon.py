@@ -13,7 +13,7 @@ import argparse
 import subprocess
 import threading
 from pathlib import Path
-from typing import Optional, Tuple, Dict, Any, Set, List
+from typing import Optional, Tuple, Set, TypeAlias
 
 try:
     import psutil
@@ -34,6 +34,10 @@ DEFAULT_PORT = DEFAULT_DAEMON_PORT
 
 # Forward declaration - will be set by commands module to avoid circular import
 _cmd_daemon_start_func = None
+
+DaemonRow: TypeAlias = dict[str, object]
+DaemonParams: TypeAlias = dict[str, object]
+DaemonRows: TypeAlias = list[DaemonRow]
 
 
 def set_daemon_start_function(func):
@@ -192,7 +196,7 @@ def ensure_daemon_running(
 ) -> Tuple[str, int, bool]:
     host, port = ensure_smart_daemon(daemon_host, daemon_port)
     return host, port, True
-def extract_daemon_start_params(args: argparse.Namespace) -> Dict[str, Any]:
+def extract_daemon_start_params(args: argparse.Namespace) -> DaemonParams:
     """Extract and validate daemon start parameters."""
     def _arg(args, key):
         return getattr(args, key, None)
@@ -226,7 +230,7 @@ def extract_daemon_start_params(args: argparse.Namespace) -> Dict[str, Any]:
     }
 
 
-def handle_existing_daemon(params: Dict[str, Any]) -> Optional[int]:
+def handle_existing_daemon(params: DaemonParams) -> Optional[int]:
     """Handle existing daemon instance, return exit code if should exit early."""
     
     host = params["host"]
@@ -274,7 +278,7 @@ def handle_existing_daemon(params: Dict[str, Any]) -> Optional[int]:
     return None
 
 
-def check_port_availability(params: Dict[str, Any]) -> Optional[int]:
+def check_port_availability(params: DaemonParams) -> Optional[int]:
     """Check if port is available, return exit code if should exit early."""
     from .utils import is_port_in_use as port_in_use
     
@@ -290,7 +294,7 @@ def check_port_availability(params: Dict[str, Any]) -> Optional[int]:
     return 1
 
 
-def prepare_daemon_environment(params: Dict[str, Any]) -> Dict[str, str]:
+def prepare_daemon_environment(params: DaemonParams) -> dict[str, str]:
     """Prepare environment variables for daemon process."""
     from .utils import get_arg as _arg
     
@@ -321,7 +325,7 @@ def prepare_daemon_environment(params: Dict[str, Any]) -> Dict[str, str]:
     return env
 
 
-def start_daemon_in_background(params: Dict[str, Any]) -> int:
+def start_daemon_in_background(params: DaemonParams) -> int:
     """Start daemon process in background."""
     def _reap_child(proc: subprocess.Popen) -> None:
         try:
@@ -362,7 +366,7 @@ def start_daemon_in_background(params: Dict[str, Any]) -> int:
     return 1
 
 
-def start_daemon_in_foreground(params: Dict[str, Any]) -> int:
+def start_daemon_in_foreground(params: DaemonParams) -> int:
     """Start daemon process in foreground."""
     from .utils import get_arg as _arg
     
@@ -453,6 +457,8 @@ def get_registry_targets(host: str, port: int, pid_hint: Optional[int]) -> Tuple
         daemons = data.get("daemons", {}) or {}
         workspaces = data.get("workspaces", {}) or {}
         for boot_id, info in daemons.items():
+            if not isinstance(info, dict):
+                continue
             if str(info.get("host") or DEFAULT_HOST) != str(host):
                 continue
             if int(info.get("port") or 0) != int(port):
@@ -461,6 +467,8 @@ def get_registry_targets(host: str, port: int, pid_hint: Optional[int]) -> Tuple
                 continue
             boot_ids.add(str(boot_id))
         for ws_info in workspaces.values():
+            if not isinstance(ws_info, dict):
+                continue
             if str(ws_info.get("boot_id") or "") not in boot_ids:
                 continue
             http_pid = int(ws_info.get("http_pid") or 0)
@@ -471,13 +479,15 @@ def get_registry_targets(host: str, port: int, pid_hint: Optional[int]) -> Tuple
     return boot_ids, http_pids
 
 
-def list_registry_daemons() -> List[Dict[str, Any]]:
+def list_registry_daemons() -> DaemonRows:
     """List all live daemon entries from registry."""
-    out: List[Dict[str, Any]] = []
+    out: DaemonRows = []
     try:
         reg = ServerRegistry()
         data = reg._load()
         for boot_id, info in (data.get("daemons") or {}).items():
+            if not isinstance(info, dict):
+                continue
             pid = int(info.get("pid") or 0)
             if pid <= 0:
                 continue
@@ -494,10 +504,10 @@ def list_registry_daemons() -> List[Dict[str, Any]]:
     return out
 
 
-def list_registry_daemon_endpoints() -> List[Tuple[str, int]]:
+def list_registry_daemon_endpoints() -> list[Tuple[str, int]]:
     """List unique live daemon endpoints from registry."""
     seen: Set[Tuple[str, int]] = set()
-    endpoints: List[Tuple[str, int]] = []
+    endpoints: list[Tuple[str, int]] = []
     for row in list_registry_daemons():
         host = str(row.get("host") or DEFAULT_HOST)
         port = int(row.get("port") or 0)
@@ -511,7 +521,7 @@ def list_registry_daemon_endpoints() -> List[Tuple[str, int]]:
     return endpoints
 
 
-def extract_daemon_stop_params(args: argparse.Namespace) -> Dict[str, Any]:
+def extract_daemon_stop_params(args: argparse.Namespace) -> DaemonParams:
     """Extract stop parameters from args."""
     def _arg(args, key):
         return getattr(args, key, None)
@@ -592,7 +602,7 @@ def stop_one_endpoint(host: str, port: int) -> int:
         return 0
 
 
-def stop_daemon_process(params: Dict[str, Any]) -> int:
+def stop_daemon_process(params: DaemonParams) -> int:
     """Stop daemon process(es) and cleanup."""
     if params.get("all"):
         endpoints = list_registry_daemon_endpoints()

@@ -5,7 +5,8 @@ import threading
 import time
 import inspect
 from pathlib import Path
-from typing import Any, Dict, Optional
+from collections.abc import Mapping
+from typing import Optional, TypeAlias
 
 from sari.core.settings import settings
 from sari.core.workspace import WorkspaceManager
@@ -14,6 +15,7 @@ _TRACE_ENV = "SARI_MCP_TRACE"
 _TRACE_PATH_ENV = "SARI_MCP_TRACE_PATH"
 
 _LOGGER: Optional[logging.Logger] = None
+JsonMap: TypeAlias = dict[str, object]
 
 
 def _trace_enabled() -> bool:
@@ -55,11 +57,11 @@ def _get_logger() -> logging.Logger:
     return logger
 
 
-def _safe_value(value: Any, depth: int = 0) -> Any:
+def _safe_value(value: object, depth: int = 0) -> object:
     if depth > 2:
         return "[truncated]"
-    if isinstance(value, dict):
-        out: Dict[str, Any] = {}
+    if isinstance(value, Mapping):
+        out: JsonMap = {}
         for k, v in value.items():
             if len(out) >= 40:
                 out["..."] = "[truncated]"
@@ -81,7 +83,7 @@ def _safe_value(value: Any, depth: int = 0) -> Any:
         return str(value)
 
 
-def trace(event: str, **fields: Any) -> None:
+def trace(event: str, **fields: object) -> None:
     if not _trace_enabled():
         return
     frame = inspect.currentframe()
@@ -94,7 +96,7 @@ def trace(event: str, **fields: Any) -> None:
             "line": caller.f_lineno,
             "func": code.co_name,
         }
-    payload: Dict[str, Any] = {
+    payload: JsonMap = {
         "ts": time.time(),
         "event": event,
         "pid": os.getpid(),

@@ -1,6 +1,11 @@
-from typing import Any, Dict, Tuple, List
+from collections.abc import Mapping
+from typing import TypeAlias
+
 from sari.core.models import SearchOptions, SearchHit
 from sari.core.engine_runtime import EngineError
+
+SearchMeta: TypeAlias = dict[str, object]
+SearchResult: TypeAlias = tuple[list[SearchHit], SearchMeta]
 
 
 class SearchService:
@@ -9,7 +14,7 @@ class SearchService:
     키워드 검색(Rust 엔진)과 시맨틱 검색(임베딩) 결과를 병합하여 최적의 검색 결과를 제공합니다.
     """
 
-    def __init__(self, db: Any, engine: Any = None, indexer: Any = None):
+    def __init__(self, db: object, engine: object = None, indexer: object = None):
         """
         Args:
             db: 데이터베이스 접근 객체
@@ -22,9 +27,9 @@ class SearchService:
 
     def _rrf_fusion(
             self,
-            keyword_hits: List[SearchHit],
-            semantic_hits: List[SearchHit],
-            k: int = 60) -> List[SearchHit]:
+            keyword_hits: list[SearchHit],
+            semantic_hits: list[SearchHit],
+            k: int = 60) -> list[SearchHit]:
         """
         RRF 알고리즘을 사용하여 검색 결과를 병합합니다.
         순위 기반 점수 합산 방식으로, 서로 다른 스코어 체계를 가진 검색 결과들을 효과적으로 결합합니다.
@@ -37,8 +42,8 @@ class SearchService:
         Returns:
             병합되고 정렬된 검색 결과 목록
         """
-        scores: Dict[str, float] = {}
-        hit_map: Dict[str, SearchHit] = {}
+        scores: dict[str, float] = {}
+        hit_map: dict[str, SearchHit] = {}
 
         # 키워드 검색 결과 순위 처리
         for i, h in enumerate(keyword_hits):
@@ -68,8 +73,27 @@ class SearchService:
             results.append(h)
         return results
 
+    @staticmethod
+    def _coerce_meta(meta: object) -> SearchMeta:
+        return dict(meta) if isinstance(meta, Mapping) else {}
+
+    @staticmethod
+    def _coerce_hits(raw_hits: object) -> list[SearchHit]:
+        if not isinstance(raw_hits, list):
+            return []
+        out: list[SearchHit] = []
+        for item in raw_hits:
+            if isinstance(item, SearchHit):
+                out.append(item)
+            elif isinstance(item, Mapping):
+                try:
+                    out.append(SearchHit.from_dict(dict(item)))
+                except Exception:
+                    continue
+        return out
+
     def search(
-            self, opts: SearchOptions) -> Tuple[List[SearchHit], Dict[str, Any]]:
+            self, opts: SearchOptions) -> SearchResult:
         """
         통합 하이브리드 검색을 수행합니다.
         1. 키워드 검색 수행
@@ -79,20 +103,28 @@ class SearchService:
         engine = self.engine
         try:
             # 1. 1차 키워드 검색
-            keyword_hits, meta = ([], {})
+            keyword_hits: list[SearchHit] = []
+            meta: SearchMeta = {}
             if engine:
-                keyword_hits, meta = engine.search_v2(opts)
+                search_fn = getattr(engine, "search_v2", None)
+                if callable(search_fn):
+                    raw_hits, raw_meta = search_fn(opts)
+                    keyword_hits = self._coerce_hits(raw_hits)
+                    meta = self._coerce_meta(raw_meta)
 
             # 2. 2차 시맨틱 검색 (메타데이터에 쿼리 벡터가 있거나 명시된 경우)
-            semantic_hits = []
+            semantic_hits: list[SearchHit] = []
             query_vector = getattr(opts, "query_vector", None)
             if query_vector and hasattr(self.db, "search_repo"):
                 try:
-                    semantic_hits = self.db.search_repo().search_semantic(
-                        query_vector,
-                        limit=opts.limit,
-                        root_ids=opts.root_ids
-                    )
+                    repo = self.db.search_repo()
+                    if hasattr(repo, "search_semantic"):
+                        raw_semantic_hits = repo.search_semantic(
+                            query_vector,
+                            limit=opts.limit,
+                            root_ids=opts.root_ids,
+                        )
+                        semantic_hits = self._coerce_hits(raw_semantic_hits)
                 except Exception:
                     pass
 
@@ -109,7 +141,7 @@ class SearchService:
         except Exception as exc:
             # 엔진 에러 발생 시 폴백 로직 (L2 검색 등)
             fallback_hits = []
-            fallback_meta: Dict[str, Any] = {
+            fallback_meta: SearchMeta = {
                 "partial": True,
                 "db_health": "error",
                 "db_error": str(exc),
@@ -126,13 +158,15 @@ class SearchService:
                 fallback_hits, fallback_meta = engine.search_l2_only(opts)
             return fallback_hits, fallback_meta
 
-    def index_meta(self) -> Dict[str, Any]:
+    def index_meta(self) -> SearchMeta:
         """인덱서의 상태 메타데이터를 반환합니다."""
         if self.indexer is None or not getattr(self.indexer, "status", None):
             return {}
         st = self.indexer.status
         if hasattr(st, "to_meta"):
-            return st.to_meta()
+            raw_meta = st.to_meta()
+            if isinstance(raw_meta, Mapping):
+                return dict(raw_meta)
         return {
             "index_ready": bool(getattr(st, "index_ready", False)),
             "indexed_files": int(getattr(st, "indexed_files", 0) or 0),

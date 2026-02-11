@@ -1,7 +1,7 @@
 import re
 import time
 from pathlib import Path
-from typing import List, Any
+from typing import List
 
 
 def glob_to_like(pattern: str) -> str:
@@ -87,12 +87,14 @@ def count_matches(
             return content.lower().count(query.lower())
 
 
-def snippet_around(content: Any, terms: List[str], max_lines: int,
+def snippet_around(content: object, terms: List[str], max_lines: int,
                    highlight: bool = True) -> str:
     if not content:
         return ""
     if isinstance(content, (bytes, bytearray)):
         content = content.decode("utf-8", errors="ignore")
+    elif not isinstance(content, str):
+        content = str(content)
 
     if max_lines <= 0:
         return ""

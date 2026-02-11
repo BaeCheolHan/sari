@@ -1,8 +1,11 @@
 import sqlite3
 import logging
-from typing import Any
+from collections.abc import Mapping, Sequence
+from typing import TypeAlias
 
 logger = logging.getLogger("sari.repository.base")
+
+SqlParams: TypeAlias = Sequence[object] | Mapping[str, object]
 
 class BaseRepository:
     """
@@ -26,7 +29,7 @@ class BaseRepository:
         """현재 리포지토리가 사용하는 DB 연결 객체를 반환합니다."""
         return self._conn
 
-    def execute(self, sql: str, params: Any = None) -> sqlite3.Cursor:
+    def execute(self, sql: str, params: SqlParams | None = None) -> sqlite3.Cursor:
         """
         SQL 쿼리를 실행하고 결과를 Cursor로 반환합니다.
         실패 시 상세 로그를 남기고 예외를 다시 던집니다.

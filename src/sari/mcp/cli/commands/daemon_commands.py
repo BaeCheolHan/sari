@@ -3,7 +3,6 @@ Daemon command handlers extracted from legacy_cli.
 """
 
 import argparse
-from typing import Any
 
 from sari.core.constants import DEFAULT_DAEMON_HOST, DEFAULT_DAEMON_PORT
 from sari.core.daemon_resolver import resolve_daemon_address as get_daemon_address
@@ -13,7 +12,7 @@ from ..mcp_client import identify_sari_daemon, ensure_workspace_http
 from ..smart_daemon import ensure_smart_daemon
 
 
-def _arg(args: Any, name: str, default: Any = None) -> Any:
+def _arg(args: object, name: str, default: object = None) -> object:
     return getattr(args, name, default) if hasattr(args, name) else default
 
 

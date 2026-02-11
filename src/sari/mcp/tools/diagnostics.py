@@ -1,11 +1,12 @@
 import os
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import TypeAlias
 from .protocol import mcp_response, pack_error, ErrorCode
 
+ToolResult: TypeAlias = dict[str, object]
 
 def handle_db_path_error(tool_name: str, path: str,
-                         roots: List[str], db: Any) -> Dict[str, Any]:
+                         roots: list[str], db: object) -> ToolResult:
     """
     파일 미존재 시 지능적 에러 가이드를 제공합니다.
     """
@@ -47,7 +48,7 @@ def handle_db_path_error(tool_name: str, path: str,
     )
 
 
-def require_db_schema(db: Any, tool: str, table: str, columns: List[str]):
+def require_db_schema(db: object, tool: str, table: str, columns: list[str]) -> ToolResult | None:
     checker = getattr(db, "has_table_columns", None)
     if not checker:
         return None

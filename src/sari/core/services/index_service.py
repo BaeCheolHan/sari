@@ -1,20 +1,30 @@
 import time
-from typing import Any, Dict
+from collections.abc import Mapping
+from typing import TypeAlias
 
 from sari.core.queue_pipeline import FsEvent, FsEventKind
 
+ServiceResult: TypeAlias = dict[str, object]
+
+
+def _safe_int(value: object, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
+
 
 class IndexService:
-    def __init__(self, indexer: Any):
+    def __init__(self, indexer: object):
         self.indexer = indexer
 
-    def _ensure_available(self) -> Dict[str, Any]:
+    def _ensure_available(self) -> ServiceResult:
         from sari.mcp.tools.protocol import ErrorCode
 
         if not self.indexer:
             return {"ok": False, "code": ErrorCode.INTERNAL, "message": "indexer not available"}
         if not getattr(self.indexer, "indexing_enabled", True):
-            mode = getattr(self.indexer, "indexer_mode", "off")
+            mode = str(getattr(self.indexer, "indexer_mode", "off"))
             code = ErrorCode.ERR_INDEXER_DISABLED if mode == "off" else ErrorCode.ERR_INDEXER_FOLLOWER
             return {
                 "ok": False,
@@ -24,19 +34,21 @@ class IndexService:
             }
         return {"ok": True}
 
-    def scan_once(self) -> Dict[str, Any]:
+    def scan_once(self) -> ServiceResult:
         chk = self._ensure_available()
         if not chk.get("ok"):
             return chk
 
-        self.indexer.scan_once()
+        if hasattr(self.indexer, "scan_once"):
+            self.indexer.scan_once()
         deadline = time.time() + 8.0
         stable_rounds = 0
         while time.time() < deadline:
-            depths = self.indexer.get_queue_depths() if hasattr(self.indexer, "get_queue_depths") else {}
-            fair_q = int(depths.get("fair_queue", 0))
-            priority_q = int(depths.get("priority_queue", 0))
-            db_q = int(depths.get("db_writer", 0))
+            depths_raw = self.indexer.get_queue_depths() if hasattr(self.indexer, "get_queue_depths") else {}
+            depths: Mapping[str, object] = depths_raw if isinstance(depths_raw, Mapping) else {}
+            fair_q = _safe_int(depths.get("fair_queue", 0))
+            priority_q = _safe_int(depths.get("priority_queue", 0))
+            db_q = _safe_int(depths.get("db_writer", 0))
             if fair_q == 0 and priority_q == 0 and db_q == 0:
                 stable_rounds += 1
                 if stable_rounds >= 3:
@@ -61,7 +73,7 @@ class IndexService:
 
         return {"ok": True, "scanned_files": scanned, "indexed_files": indexed}
 
-    def rescan(self) -> Dict[str, Any]:
+    def rescan(self) -> ServiceResult:
         from sari.mcp.tools.protocol import ErrorCode
 
         chk = self._ensure_available()
@@ -77,7 +89,7 @@ class IndexService:
 
         return {"ok": True}
 
-    def index_file(self, fs_path: str) -> Dict[str, Any]:
+    def index_file(self, fs_path: str) -> ServiceResult:
         from sari.mcp.tools.protocol import ErrorCode
 
         chk = self._ensure_available()

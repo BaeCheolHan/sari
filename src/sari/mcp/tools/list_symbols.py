@@ -1,4 +1,6 @@
-from typing import Dict, Any, List
+from collections.abc import Mapping
+from typing import TypeAlias
+
 from sari.core.db.main import LocalSearchDB
 from sari.mcp.tools._util import (
     ErrorCode,
@@ -8,13 +10,20 @@ from sari.mcp.tools._util import (
     resolve_db_path,
     handle_db_path_error,
     pack_encode_id,
+    invalid_args_response,
 )
 
-def execute_list_symbols(args: Dict[str, Any], db: LocalSearchDB, roots: List[str]) -> Dict[str, Any]:
+ToolResult: TypeAlias = dict[str, object]
+
+
+def execute_list_symbols(args: object, db: LocalSearchDB, roots: list[str]) -> ToolResult:
     """
     특정 파일 내의 모든 심볼을 계층적 구조로 나열합니다.
     LLM이 파일 전체를 읽지 않고도 파일의 구조(클래스, 함수 등)를 파악하는 데 도움을 줍니다.
     """
+    if not isinstance(args, Mapping):
+        return invalid_args_response("list_symbols", "args must be an object")
+
     path = args.get("path")
     if not path:
         return mcp_response(

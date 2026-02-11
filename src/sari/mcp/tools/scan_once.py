@@ -3,17 +3,31 @@
 로컬 검색 MCP 서버를 위한 Scan-Once 도구.
 동기적으로(synchronously) 한 번의 스캔 작업을 즉시 실행합니다.
 """
-from typing import Any, Dict
-from sari.mcp.tools._util import mcp_response, pack_header, pack_line, pack_error, ErrorCode
+from collections.abc import Mapping
+from typing import TypeAlias
+
+from sari.mcp.tools._util import (
+    mcp_response,
+    pack_header,
+    pack_line,
+    pack_error,
+    ErrorCode,
+    invalid_args_response,
+)
 from sari.core.indexer import Indexer
 from sari.core.services.index_service import IndexService
 
+ToolResult: TypeAlias = dict[str, object]
 
-def execute_scan_once(args: Dict[str, Any], indexer: Indexer, logger: Any) -> Dict[str, Any]:
+
+def execute_scan_once(args: object, indexer: Indexer, logger: object) -> ToolResult:
     """
     동기적(synchronous) 스캔 작업을 1회 실행하고 결과를 반환합니다.
     (One-off Scan Execution)
     """
+    if not isinstance(args, Mapping):
+        return invalid_args_response("scan_once", "args must be an object")
+
     svc = IndexService(indexer)
     result = svc.scan_once()
     if not result.get("ok"):
@@ -29,7 +43,7 @@ def execute_scan_once(args: Dict[str, Any], indexer: Indexer, logger: Any) -> Di
     scanned = int(result.get("scanned_files", 0) or 0)
     indexed = int(result.get("indexed_files", 0) or 0)
 
-    def build_json() -> Dict[str, Any]:
+    def build_json() -> ToolResult:
         return {"ok": True, "scanned_files": scanned, "indexed_files": indexed}
 
     def build_pack() -> str:

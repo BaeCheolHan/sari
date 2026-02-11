@@ -5,7 +5,7 @@ Status/search command handlers extracted from legacy_cli.
 import json
 import os
 import time
-from typing import Any, Optional, Tuple
+from typing import Optional
 
 from sari.core.workspace import WorkspaceManager
 from sari.core.server_registry import ServerRegistry
@@ -21,7 +21,7 @@ from ..mcp_client import request_mcp_status as _request_mcp_status
 from ..smart_daemon import ensure_smart_daemon
 
 
-def _arg(args: Any, name: str, default: Any = None) -> Any:
+def _arg(args: object, name: str, default: object = None) -> object:
     return getattr(args, name, default) if hasattr(args, name) else default
 
 
@@ -30,7 +30,7 @@ def _ensure_daemon_running(h, p, **kwargs):
     return res_h, res_p, True
 
 
-def _resolve_http_endpoint_for_daemon(args: Any, daemon_host: str, daemon_port: int) -> Tuple[str, int]:
+def _resolve_http_endpoint_for_daemon(args: object, daemon_host: str, daemon_port: int) -> tuple[str, int]:
     host_override = _arg(args, "http_host")
     port_override = _arg(args, "http_port")
     if host_override or port_override is not None:
@@ -53,7 +53,7 @@ def _resolve_http_endpoint_for_daemon(args: Any, daemon_host: str, daemon_port: 
     return host, port
 
 
-def _prepare_http_service(args: Any, allow_mcp_fallback: bool = False) -> Tuple[str, int, Optional[dict]]:
+def _prepare_http_service(args: object, allow_mcp_fallback: bool = False) -> tuple[str, int, Optional[dict]]:
     if _arg(args, "daemon_host") or _arg(args, "daemon_port"):
         d_host = _arg(args, "daemon_host") or DEFAULT_DAEMON_HOST
         d_port = int(_arg(args, "daemon_port") or DEFAULT_DAEMON_PORT)

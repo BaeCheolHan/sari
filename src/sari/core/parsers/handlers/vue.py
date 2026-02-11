@@ -1,9 +1,9 @@
 import re
-from typing import Any, Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple
 from sari.core.parsers.base import BaseHandler
 
 class VueHandler(BaseHandler):
-    def handle_node(self, node: Any, get_t: callable, find_id: callable, ext: str, p_meta: Dict) -> Tuple[Optional[str], Optional[str], Dict, bool]:
+    def handle_node(self, node: object, get_t: callable, find_id: callable, ext: str, p_meta: Dict) -> Tuple[Optional[str], Optional[str], Dict, bool]:
         kind, name, meta = None, None, {}
         is_valid = False
         

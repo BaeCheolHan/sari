@@ -1,11 +1,14 @@
-from typing import Dict, Any, Optional
+from collections.abc import Mapping
+from typing import Optional, TypeAlias
+
 from sari.core.db.main import LocalSearchDB
 from sari.core.indexer.main import Indexer
 from sari.core.config import Config
 from sari.mcp.tools._util import pack_header
 
+ToolResult: TypeAlias = dict[str, object]
 
-def _row_get(row: Any, key: str, index: int, default: Any = 0) -> Any:
+def _row_get(row: object, key: str, index: int, default: object = 0) -> object:
     if row is None:
         return default
     try:
@@ -17,7 +20,20 @@ def _row_get(row: Any, key: str, index: int, default: Any = 0) -> Any:
         return row[index]
     return default
 
-def execute_status(args: Dict[str, Any], indexer: Optional[Indexer], db: Optional[LocalSearchDB], cfg: Optional[Config], workspace_root: str, server_version: str, logger=None) -> Dict[str, Any]:
+
+def _status_field(status: object, name: str, default: object) -> object:
+    return getattr(status, name, default) if status is not None else default
+
+
+def execute_status(
+    args: Mapping[str, object],
+    indexer: Optional[Indexer],
+    db: Optional[LocalSearchDB],
+    cfg: Optional[Config],
+    workspace_root: str,
+    server_version: str,
+    logger: object = None,
+) -> ToolResult:
     """
     Sari 서버의 상태를 조회하는 현대화된 상태 도구입니다.
     인덱서 및 DB의 실시간 상태와 풍부한 메타데이터를 제공합니다.
@@ -38,12 +54,13 @@ def execute_status(args: Dict[str, Any], indexer: Optional[Indexer], db: Optiona
     else:
         db_error = "DB not connected"
 
-    status_data = {
-        "index_ready": indexer.status.index_ready if indexer else False,
-        "indexed_files": indexer.status.indexed_files if indexer else 0,
-        "scanned_files": indexer.status.scanned_files if indexer else 0,
-        "symbols_extracted": indexer.status.symbols_extracted if indexer else 0,
-        "errors": indexer.status.errors if indexer else 0,
+    status_obj = getattr(indexer, "status", None) if indexer is not None else None
+    status_data: ToolResult = {
+        "index_ready": _status_field(status_obj, "index_ready", False),
+        "indexed_files": _status_field(status_obj, "indexed_files", 0),
+        "scanned_files": _status_field(status_obj, "scanned_files", 0),
+        "symbols_extracted": _status_field(status_obj, "symbols_extracted", 0),
+        "errors": _status_field(status_obj, "errors", 0),
         "total_files_db": total_files,
         "total_symbols_db": total_symbols,
         "db_error": db_error,

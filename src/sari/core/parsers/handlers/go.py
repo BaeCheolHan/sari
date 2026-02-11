@@ -1,8 +1,8 @@
-from typing import Any, Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple
 from sari.core.parsers.base import BaseHandler
 
 class GoHandler(BaseHandler):
-    def handle_node(self, node: Any, get_t: callable, find_id: callable, ext: str, p_meta: Dict) -> Tuple[Optional[str], Optional[str], Dict, bool]:
+    def handle_node(self, node: object, get_t: callable, find_id: callable, ext: str, p_meta: Dict) -> Tuple[Optional[str], Optional[str], Dict, bool]:
         n_type = node.type
         kind, name, meta, is_valid = None, None, {"annotations": []}, False
         
@@ -18,7 +18,7 @@ class GoHandler(BaseHandler):
             
         return kind, name, meta, is_valid
 
-    def extract_api_info(self, node: Any, get_t: callable, get_child: callable) -> Dict:
+    def extract_api_info(self, node: object, get_t: callable, get_child: callable) -> Dict:
         res = {"http_path": None, "http_methods": []}
         # Go (Gin/Echo): r.GET("/path", handler)
         if node.type == "call_expression":

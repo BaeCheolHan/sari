@@ -1,15 +1,32 @@
-from typing import Any, Dict, List
+from collections.abc import Mapping
+from typing import TypeAlias
 
 from sari.core.services.index_service import IndexService
 
-from sari.mcp.tools._util import mcp_response, pack_error, ErrorCode, resolve_db_path, handle_db_path_error, pack_header, pack_line, pack_encode_id
+from sari.mcp.tools._util import (
+    mcp_response,
+    pack_error,
+    ErrorCode,
+    resolve_db_path,
+    handle_db_path_error,
+    pack_header,
+    pack_line,
+    pack_encode_id,
+    invalid_args_response,
+)
 
-def execute_index_file(args: Dict[str, Any], indexer: Any, roots: List[str]) -> Dict[str, Any]:
+ToolResult: TypeAlias = dict[str, object]
+
+
+def execute_index_file(args: object, indexer: object, roots: list[str]) -> ToolResult:
     """
     특정 파일의 강제 재인덱싱을 수행합니다.
     (Force Re-indexing)
     """
-    path = args.get("path", "").strip()
+    if not isinstance(args, Mapping):
+        return invalid_args_response("index_file", "args must be an object")
+
+    path = str(args.get("path", "")).strip()
     if not path:
         return mcp_response(
             "index_file",
@@ -27,7 +44,8 @@ def execute_index_file(args: Dict[str, Any], indexer: Any, roots: List[str]) -> 
     try:
         fs_path = path
         if hasattr(indexer, "_decode_db_path"):
-            decoded = indexer._decode_db_path(db_path)  # type: ignore[attr-defined]
+            decode_fn = getattr(indexer, "_decode_db_path", None)
+            decoded = decode_fn(db_path) if callable(decode_fn) else None
             if decoded:
                 _, fs_path = decoded
                 fs_path = str(fs_path)

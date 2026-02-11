@@ -5,7 +5,7 @@ import asyncio
 import inspect
 import os
 import urllib.parse
-from typing import Dict, Any, Optional
+from typing import Dict,  Optional
 from .workspace_registry import Registry, SharedState
 from sari.core.settings import settings
 from sari.mcp.trace import trace
@@ -154,7 +154,7 @@ class Session:
                 pass
             trace("session_handle_connection_end")
 
-    async def process_request(self, request: Dict[str, Any]):
+    async def process_request(self, request: Dict[str, object]):
         method = request.get("method")
         params = request.get("params", {})
         msg_id = request.get("id")
@@ -263,7 +263,7 @@ class Session:
                 await self.send_json(response)
                 trace("session_response_sent", msg_id=msg_id, method=method)
 
-    async def handle_initialize(self, request: Dict[str, Any]):
+    async def handle_initialize(self, request: Dict[str, object]):
         params = request.get("params", {})
         msg_id = request.get("id")
         trace("session_handle_initialize_enter", msg_id=msg_id, params_keys=sorted(list(params.keys())))
@@ -353,7 +353,7 @@ class Session:
             trace("session_handle_initialize_error", msg_id=msg_id, error=str(e))
             await self.send_error(msg_id, -32000, str(e))
 
-    async def send_json(self, data: Dict[str, Any]):
+    async def send_json(self, data: Dict[str, object]):
         body = json.dumps(data).encode("utf-8")
         header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
         res = self.writer.write(header + body)
@@ -362,7 +362,7 @@ class Session:
         await self.writer.drain()
         trace("session_send_json", msg_id=data.get("id"), has_error="error" in data, bytes=len(body))
 
-    async def send_error(self, msg_id: Any, code: int, message: str):
+    async def send_error(self, msg_id: object, code: int, message: str):
         response = {
             "jsonrpc": "2.0",
             "id": msg_id,

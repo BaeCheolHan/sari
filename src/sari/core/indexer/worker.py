@@ -3,7 +3,7 @@ import json
 import subprocess
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Optional
 from sari.core.settings import settings
 from sari.core.parsers.factory import ParserFactory
 from sari.core.parsers.ast_engine import ASTEngine
@@ -45,7 +45,7 @@ class IndexWorker:
         self.ast_engine = ASTEngine()
         self._ast_cache = OrderedDict()
         self._ast_cache_max = self.settings.AST_CACHE_ENTRIES
-        self._git_root_cache: Dict[str, Optional[str]] = {}
+        self._git_root_cache: dict[str, str | None] = {}
 
     def process_file_task(
             self,
@@ -302,7 +302,7 @@ class IndexWorker:
             self._ast_cache.move_to_end(path)
         return tree
 
-    def _ast_cache_put(self, path: str, tree: Any) -> None:
+    def _ast_cache_put(self, path: str, tree: object) -> None:
         if self._ast_cache_max <= 0:
             return
         self._ast_cache[path] = tree

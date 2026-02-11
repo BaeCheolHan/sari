@@ -1,4 +1,6 @@
-from typing import Any, Dict, List
+from collections.abc import Mapping
+from typing import TypeAlias
+
 from sari.mcp.tools._util import (
     mcp_response,
     pack_header,
@@ -10,15 +12,22 @@ from sari.mcp.tools._util import (
     pack_error,
     ErrorCode,
     parse_int_arg,
+    invalid_args_response,
 )
 from sari.mcp.tools.call_graph import build_call_graph
 from sari.core.models import CallerHitDTO
 
-def execute_get_callers(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict[str, Any]:
+ToolResult: TypeAlias = dict[str, object]
+
+
+def execute_get_callers(args: object, db: object, roots: list[str]) -> ToolResult:
     """
     특정 심볼을 호출하는 다른 심볼들을 높은 정확도로 검색합니다.
     (Symbol References / Usage Search)
     """
+    if not isinstance(args, Mapping):
+        return invalid_args_response("get_callers", "args must be an object")
+
     target_symbol = str(args.get("name", "") or "").strip()
     target_sid = str(args.get("symbol_id", "") or "").strip() or str(args.get("sid", "") or "").strip()
     target_path = str(args.get("path", "")).strip()
@@ -26,6 +35,8 @@ def execute_get_callers(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict
     limit, err = parse_int_arg(args, "limit", 100, "get_callers", min_value=1, max_value=500)
     if err:
         return err
+    if limit is None:
+        return invalid_args_response("get_callers", "'limit' must be an integer")
     
     if not target_symbol and not target_sid:
         return mcp_response(

@@ -5,7 +5,8 @@
 """
 import json
 import time
-from typing import Any, Dict, List, Optional
+from collections.abc import Mapping
+from typing import TypeAlias
 
 from sari.core.db import LocalSearchDB
 from sari.mcp.telemetry import TelemetryLogger
@@ -19,7 +20,10 @@ from sari.mcp.tools._util import (
     pack_header,
     pack_line,
     pack_encode_id,
+    invalid_args_response,
 )
+
+ToolResult: TypeAlias = dict[str, object]
 
 
 def _extract_block_from_lines(
@@ -41,17 +45,17 @@ def _symbol_candidates(
     db: LocalSearchDB,
     name: str,
     symbol_id: str,
-    db_path: Optional[str],
-    roots: List[str],
+    db_path: str | None,
+    roots: list[str],
     limit: int = 50,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, object]]:
     """
     주어진 조건(이름, ID, 경로)에 맞는 심볼 후보들을 검색합니다.
     동일한 이름의 심볼이 여러 파일에 존재할 수 있으므로 후보 목록을 반환합니다.
     """
     conn = db.get_read_connection() if hasattr(
         db, "get_read_connection") else db._read
-    params: List[Any] = []
+    params: list[object] = []
     sql = "SELECT symbol_id, path, name, kind, line, end_line, qualname FROM symbols WHERE 1=1"
     if symbol_id:
         sql += " AND symbol_id = ?"
@@ -80,18 +84,18 @@ def _symbol_candidates(
     return [dict(zip(cols, r)) for r in rows]
 
 
-def execute_read_symbol(args: Dict[str,
-                                   Any],
+def execute_read_symbol(args: object,
                         db: LocalSearchDB,
                         logger: TelemetryLogger,
-                        roots: List[str]) -> Dict[str,
-                                                  Any]:
+                        roots: list[str]) -> ToolResult:
     """
     read_symbol 도구 실행 핸들러.
     심볼 이름이나 ID를 받아 해당 코드 블록을 찾아 반환합니다.
     여러 후보가 발견되면 모호성 해결을 위해 후보 목록을 반환합니다.
     """
     start_ts = time.time()
+    if not isinstance(args, Mapping):
+        return invalid_args_response("read_symbol", "args must be an object")
 
     path = str(args.get("path") or "").strip() or None
     symbol_name = str(args.get("name") or "").strip()

@@ -7,7 +7,7 @@ import multiprocessing
 import tempfile
 import concurrent.futures
 from collections import OrderedDict
-from typing import Optional, Dict, Any
+from typing import Optional
 from pathlib import Path
 from sari.core.config.main import Config
 from sari.core.db.main import LocalSearchDB
@@ -18,7 +18,7 @@ from sari.core.models import IndexingResult
 
 
 def _scan_to_db(config: Config, db: LocalSearchDB,
-                logger: logging.Logger) -> Dict[str, Any]:
+                logger: logging.Logger) -> dict[str, object]:
     """
     파일 시스템을 스캔하여 변경된 파일을 감지하고 데이터베이스에 인덱싱합니다.
     이 함수는 별도의 프로세스(Worker) 내에서 실행될 수 있으며, 결과를 Status 딕셔너리로 반환합니다.
@@ -147,7 +147,7 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
 
 
 def _worker_build_snapshot(
-        config_dict: Dict[str, Any], snapshot_path: str, status_path: str, log_path: str) -> None:
+        config_dict: dict[str, object], snapshot_path: str, status_path: str, log_path: str) -> None:
     """별도 프로세스에서 인덱싱을 수행하고 결과를 스냅샷 DB 및 상태 파일에 기록합니다."""
     logger = logging.getLogger("sari.indexer.worker")
     if log_path:
@@ -338,7 +338,7 @@ class Indexer:
         """특정 파일 변경 시 인덱싱을 요청합니다."""
         self.request_rescan()
 
-    def _enqueue_fsevent(self, _evt: Any) -> None:
+    def _enqueue_fsevent(self, _evt: object) -> None:
         """파일 시스템 이벤트를 처리합니다."""
         self.request_rescan()
 
@@ -360,7 +360,7 @@ class Indexer:
             return str(raw)
         return ""
 
-    def _serialize_config(self) -> Dict[str, Any]:
+    def _serialize_config(self) -> dict[str, object]:
         """설정 객체를 직렬화하여 워커 프로세스에 전달합니다."""
         data = dict(self.config.__dict__)
         return data

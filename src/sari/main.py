@@ -17,7 +17,7 @@ import threading
 
 import subprocess
 from pathlib import Path
-from typing import List, Any
+from typing import List
 
 from sari.core.workspace import WorkspaceManager
 from sari.core.config import Config, validate_config_file
@@ -407,7 +407,7 @@ def run_cmd(argv: List[str]) -> int:
     return 2
 
 
-def main(argv: List[str] = None, original_stdout: Any = None) -> int:
+def main(argv: List[str] | None = None, original_stdout: object | None = None) -> int:
     # Ensure global config exists before doing anything else
     WorkspaceManager.ensure_global_config()
 

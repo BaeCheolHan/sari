@@ -1,7 +1,7 @@
 
 import os
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional
+from typing import Callable, Optional
 
 import sari.mcp.tools.search as search_tool
 import sari.mcp.tools.status as status_tool
@@ -29,6 +29,12 @@ import sari.mcp.tools.get_context as get_context_tool
 import sari.mcp.tools.dry_run_diff as dry_run_diff_tool
 
 
+ToolInputSchema = dict[str, object]
+ToolArgs = dict[str, object]
+ToolResult = dict[str, object]
+ToolHandler = Callable[["ToolContext", ToolArgs], ToolResult]
+
+
 @dataclass
 class Tool:
     """
@@ -37,8 +43,8 @@ class Tool:
     """
     name: str
     description: str
-    input_schema: Dict[str, Any]
-    handler: Callable[["ToolContext", Dict[str, Any]], Dict[str, Any]]
+    input_schema: ToolInputSchema
+    handler: ToolHandler
     hidden: bool = False
 
 
@@ -48,15 +54,15 @@ class ToolContext:
     도구 실행 시 제공되는 컨텍스트 정보.
     DB 접근 주체, 인덱서, 설정 및 환경 정보를 캡슐화합니다.
     """
-    db: Any
-    engine: Any
-    indexer: Any
-    roots: List[str]
-    cfg: Any
-    logger: Any
+    db: object
+    engine: object
+    indexer: object
+    roots: list[str]
+    cfg: object
+    logger: object
     workspace_root: str
     server_version: str
-    policy_engine: Optional[Any] = None  # 정책 추적용 추가 필드
+    policy_engine: Optional[object] = None  # 정책 추적용 추가 필드
 
 
 class ToolRegistry:
@@ -65,17 +71,17 @@ class ToolRegistry:
     """
     
     def __init__(self) -> None:
-        self._tools: Dict[str, Tool] = {}
+        self._tools: dict[str, Tool] = {}
 
     def register(self, tool: Tool) -> None:
         """도구를 레지스트리에 등록합니다."""
         self._tools[tool.name] = tool
 
-    def list_tools_raw(self) -> List[Tool]:
+    def list_tools_raw(self) -> list[Tool]:
         """등록된 원본 도구 객체 목록을 반환합니다."""
         return list(self._tools.values())
 
-    def list_tools(self) -> List[Dict[str, Any]]:
+    def list_tools(self) -> list[dict[str, object]]:
         """
         MCP 프로토콜 규격에 맞게 도구 정의(JSON Schema 포함) 목록을 반환합니다.
         `SARI_EXPOSE_INTERNAL_TOOLS` 설정에 따라 숨겨진 도구 노출 여부를 결정합니다.
@@ -91,7 +97,7 @@ class ToolRegistry:
             if (not t.hidden) or expose_internal
         ]
 
-    def execute(self, name: str, ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    def execute(self, name: str, ctx: ToolContext, args: ToolArgs) -> ToolResult:
         """
         요청된 도구를 찾아 실행하고 결과를 반환합니다.
         정책 엔진(Policy Engine)이 활성화된 경우 실행 이력을 마킹합니다.
@@ -102,17 +108,20 @@ class ToolRegistry:
             
         result = tool.handler(ctx, args)
 
-        def _is_error_response(res: Dict[str, Any]) -> bool:
+        def _is_error_response(res: ToolResult) -> bool:
             if bool(res.get("isError")):
                 return True
             try:
                 content = res.get("content") or []
-                if not content:
+                if not isinstance(content, list) or not content:
                     return False
-                text = str((content[0] or {}).get("text") or "")
+                first_item = content[0] if content else {}
+                if not isinstance(first_item, dict):
+                    return False
+                text = str(first_item.get("text") or "")
                 if not text:
                     return False
-                first_line = text.splitlines()[0]
+                first_line = text.splitlines()[0].strip()
                 if first_line.startswith("PACK1 ") and " ok=false" in first_line:
                     return True
             except Exception:

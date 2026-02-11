@@ -4,7 +4,7 @@ Search tool for Local Search MCP Server (SSOT).
 SSOT (Single Source of True) 원칙을 따르는 통합 검색 도구입니다.
 """
 import time
-from typing import Any, Dict, List
+from typing import Mapping, TypeAlias
 
 from sari.core.settings import settings
 from sari.mcp.tools._util import (
@@ -19,15 +19,20 @@ from sari.mcp.tools._util import (
     parse_search_options,
 )
 
+SearchArgs: TypeAlias = dict[str, object]
+SearchMeta: TypeAlias = dict[str, object]
+ToolResult: TypeAlias = dict[str, object]
+SearchRoots: TypeAlias = list[str]
 
-def _safe_int(value: Any, default: int) -> int:
+
+def _safe_int(value: object, default: int) -> int:
     try:
         return int(value)
     except Exception:
         return int(default)
 
 
-def _clip_text(value: Any, max_chars: int) -> str:
+def _clip_text(value: object, max_chars: int) -> str:
     text = str(value or "")
     if max_chars <= 0:
         return ""
@@ -39,13 +44,13 @@ def _clip_text(value: Any, max_chars: int) -> str:
 
 
 def execute_search(
-    args: Dict[str, Any],
-    db: Any,
-    logger: Any,
-    roots: List[str],
-    engine: Any = None,     # 사용되지 않지만 서명 호환성을 위해 유지
-    indexer: Any = None,    # 사용되지 않지만 서명 호환성을 위해 유지
-) -> Dict[str, Any]:
+    args: SearchArgs,
+    db: object,
+    logger: object,
+    roots: SearchRoots,
+    engine: object = None,     # 사용되지 않지만 서명 호환성을 위해 유지
+    indexer: object = None,    # 사용되지 않지만 서명 호환성을 위해 유지
+) -> ToolResult:
     """
     현대화된 Facade 패턴을 사용하여 하이브리드 검색을 실행합니다.
     Tantivy(Rust 엔진)와 SQLite 검색을 자동으로 분기 처리합니다.
@@ -113,8 +118,9 @@ def execute_search(
                 "isError": True},
         )
 
+    meta_map: Mapping[str, object] = meta if isinstance(meta, Mapping) else {}
     latency_ms = int((time.time() - start_ts) * 1000)
-    total = int(meta.get("total", len(hits)))
+    total = int(meta_map.get("total", len(hits)))
     max_results = max(
         1, min(
             _safe_int(
@@ -134,12 +140,12 @@ def execute_search(
                 120000)))
     bounded_hits = hits[:max_results]
 
-    def get_attr(obj: Any, attr: str, default: Any = "") -> Any:
+    def get_attr(obj: object, attr: str, default: object = "") -> object:
         if isinstance(obj, dict):
             return obj.get(attr, default)
         return getattr(obj, attr, default)
 
-    def build_json() -> Dict[str, Any]:
+    def build_json() -> ToolResult:
         """JSON 포맷 응답 생성 (디버깅용)"""
         json_results = []
         for item in bounded_hits:
@@ -163,7 +169,7 @@ def execute_search(
             "query": opts.query, "limit": opts.limit, "offset": opts.offset,
             "results": json_results,
             "meta": {
-                **meta,
+                **meta_map,
                 "latency_ms": latency_ms,
                 "returned": len(json_results),
                 "bounded_by_max_results": len(hits) > len(json_results),
@@ -181,7 +187,7 @@ def execute_search(
 
         # 메타데이터 라인
         meta_line = pack_line("m", {"total": str(total), "latency_ms": str(
-            latency_ms), "engine": str(meta.get("engine", "unknown"))})
+            latency_ms), "engine": str(meta_map.get("engine", "unknown"))})
         lines.append(meta_line)
         used_bytes += len(meta_line.encode("utf-8", errors="ignore")) + 1
 

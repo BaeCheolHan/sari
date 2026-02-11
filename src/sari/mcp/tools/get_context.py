@@ -1,4 +1,5 @@
-from typing import Any, Dict, List
+from collections.abc import Mapping
+from typing import TypeAlias
 
 from sari.mcp.tools._util import (
     mcp_response,
@@ -9,11 +10,15 @@ from sari.mcp.tools._util import (
     ErrorCode,
     require_db_schema,
     parse_timestamp,
+    parse_int_arg,
+    invalid_args_response,
 )
+
+ToolResult: TypeAlias = dict[str, object]
 
 
 def execute_get_context(
-        args: Dict[str, Any], db: Any, roots: List[str]) -> Dict[str, Any]:
+        args: object, db: object, roots: list[str]) -> ToolResult:
     """
     저장된 도메인 지식이나 작업 컨텍스트를 조회하는 도구입니다.
     특정 주제(Topic)로 직접 조회하거나 검색 쿼리를 통한 전문 검색을 지원합니다.
@@ -24,10 +29,17 @@ def execute_get_context(
     if guard:
         return guard
 
+    if not isinstance(args, Mapping):
+        return invalid_args_response("get_context", "args must be an object")
+
     topic = str(args.get("topic") or "").strip()
     query = str(args.get("query") or "").strip()
     as_of = parse_timestamp(args.get("as_of"))
-    limit = int(args.get("limit") or 20)
+    limit, err = parse_int_arg(args, "limit", 20, "get_context", min_value=1, max_value=200)
+    if err:
+        return err
+    if limit is None:
+        return invalid_args_response("get_context", "'limit' must be an integer")
 
     try:
         if topic:
@@ -66,7 +78,7 @@ def execute_get_context(
                 "isError": True},
         )
 
-    def build_json() -> Dict[str, Any]:
+    def build_json() -> ToolResult:
         """JSON 형식의 응답을 생성합니다."""
         return {
             "topic": topic, "query": query,

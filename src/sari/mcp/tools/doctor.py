@@ -12,7 +12,7 @@ import sys
 import importlib
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Mapping, Optional, Tuple, TypeAlias
 from sari.core.cjk import lindera_available, lindera_dict_uri, lindera_error
 from sari.core.db import LocalSearchDB
 from sari.core.config import Config
@@ -21,6 +21,11 @@ from sari.core.workspace import WorkspaceManager
 from sari.core.server_registry import ServerRegistry, get_registry_path
 from sari.mcp.cli.mcp_client import identify_sari_daemon, probe_sari_daemon, is_http_running as _is_http_running
 from sari.core.daemon_resolver import resolve_daemon_address as get_daemon_address
+
+DoctorResult: TypeAlias = dict[str, object]
+DoctorResults: TypeAlias = list[DoctorResult]
+ActionItem: TypeAlias = dict[str, str]
+ActionItems: TypeAlias = list[ActionItem]
 
 
 def _read_pid(host: str, port: int) -> Optional[int]:
@@ -58,12 +63,12 @@ _cli_identify = _identify_sari_daemon
 
 
 def _result(name: str, passed: bool, error: str = "",
-            warn: bool = False) -> dict[str, Any]:
+            warn: bool = False) -> DoctorResult:
     """진단 결과를 딕셔너리 형태로 반환합니다."""
     return {"name": name, "passed": passed, "error": error, "warn": warn}
 
 
-def _row_get(row: Any, key: str, index: int, default: Any = None) -> Any:
+def _row_get(row: object, key: str, index: int, default: object = None) -> object:
     if row is None:
         return default
     try:
@@ -76,9 +81,9 @@ def _row_get(row: Any, key: str, index: int, default: Any = None) -> Any:
     return default
 
 
-def _check_db(ws_root: str) -> list[dict[str, Any]]:
+def _check_db(ws_root: str) -> DoctorResults:
     """데이터베이스 설정, 접근 권한, 스키마 등을 검사합니다."""
-    results: list[dict[str, Any]] = []
+    results: DoctorResults = []
     cfg_path = WorkspaceManager.resolve_config_path(ws_root)
     cfg = Config.load(cfg_path, workspace_root_override=ws_root)
     # 자동 수정: 설정 파일에 db_path가 없으면 현재 설정값으로 저장
@@ -249,7 +254,7 @@ def _platform_tokenizer_tag() -> str:
     return "unknown"
 
 
-def _check_engine_tokenizer_data() -> dict[str, Any]:
+def _check_engine_tokenizer_data() -> DoctorResult:
     """토크나이저 데이터(lindera 등)가 설치되어 있는지 확인합니다."""
     if lindera_available():
         uri = lindera_dict_uri() or "embedded://ipadic"
@@ -261,7 +266,7 @@ def _check_engine_tokenizer_data() -> dict[str, Any]:
         f"{err} (package 'lindera-python-ipadic' optional)")
 
 
-def _check_tree_sitter() -> dict[str, Any]:
+def _check_tree_sitter() -> DoctorResult:
     """Tree-sitter 패키지와 언어 파서가 설치되어 있는지 확인합니다."""
     try:
         from sari.core.parsers.ast_engine import ASTEngine
@@ -299,7 +304,7 @@ def _check_tree_sitter() -> dict[str, Any]:
         return _result("Tree-sitter Support", False, str(e))
 
 
-def _check_embedded_engine_module() -> dict[str, Any]:
+def _check_embedded_engine_module() -> DoctorResult:
     """내장 엔진 모듈(tantivy)이 임포트 가능한지 확인합니다."""
     try:
         import tantivy  # type: ignore
@@ -312,7 +317,7 @@ def _check_embedded_engine_module() -> dict[str, Any]:
             f"{type(e).__name__}: {e}")
 
 
-def _check_windows_write_lock_support() -> dict[str, Any]:
+def _check_windows_write_lock_support() -> DoctorResult:
     """Windows 환경에서 파일 쓰기 잠금(locking)이 지원되는지 확인합니다."""
     if os.name != "nt":
         return _result("Windows Write Lock", True, "non-windows platform")
@@ -332,7 +337,7 @@ def _check_windows_write_lock_support() -> dict[str, Any]:
         return _result("Windows Write Lock", False, f"{type(e).__name__}: {e}")
 
 
-def _check_db_migration_safety() -> dict[str, Any]:
+def _check_db_migration_safety() -> DoctorResult:
     """DB 마이그레이션 도구(peewee 등)의 안전성을 확인합니다."""
     # Legacy check removed as we moved to peewee + init_schema
     return _result(
@@ -341,7 +346,7 @@ def _check_db_migration_safety() -> dict[str, Any]:
         "using peewee init_schema (idempotent)")
 
 
-def _check_engine_sync_dlq(ws_root: str) -> dict[str, Any]:
+def _check_engine_sync_dlq(ws_root: str) -> DoctorResult:
     """엔진 동기화 실패 기록(DLQ)이 있는지 확인합니다."""
     try:
         cfg_path = WorkspaceManager.resolve_config_path(ws_root)
@@ -371,7 +376,7 @@ def _check_engine_sync_dlq(ws_root: str) -> dict[str, Any]:
         return _result("Engine Sync DLQ", False, str(e))
 
 
-def _check_writer_health(db: Any = None) -> dict[str, Any]:
+def _check_writer_health(db: object = None) -> DoctorResult:
     """DB Writer 스레드의 상태를 확인합니다."""
     try:
         from sari.core.db.storage import GlobalStorageManager
@@ -414,7 +419,7 @@ def _check_writer_health(db: Any = None) -> dict[str, Any]:
         return _result("Writer Health", False, str(e))
 
 
-def _check_storage_switch_guard() -> dict[str, Any]:
+def _check_storage_switch_guard() -> DoctorResult:
     """스토리지 전환이 차단되어 있는지 확인합니다."""
     try:
         from sari.core.db.storage import GlobalStorageManager
@@ -439,7 +444,7 @@ def _check_storage_switch_guard() -> dict[str, Any]:
         return _result("Storage Switch Guard", False, str(e))
 
 
-def _check_fts_rebuild_policy() -> dict[str, Any]:
+def _check_fts_rebuild_policy() -> DoctorResult:
     """FTS 재구축 정책 설정을 확인합니다."""
     if settings.FTS_REBUILD_ON_START:
         return _result(
@@ -450,7 +455,7 @@ def _check_fts_rebuild_policy() -> dict[str, Any]:
     return _result("FTS Rebuild Policy", True, "FTS_REBUILD_ON_START=false")
 
 
-def _check_engine_runtime(ws_root: str) -> dict[str, Any]:
+def _check_engine_runtime(ws_root: str) -> DoctorResult:
     """현재 실행 중인 검색 엔진의 상태를 확인합니다."""
     try:
         cfg_path = WorkspaceManager.resolve_config_path(ws_root)
@@ -496,12 +501,12 @@ def _check_engine_runtime(ws_root: str) -> dict[str, Any]:
         return _result("Search Engine Runtime", False, str(e))
 
 
-def _check_lindera_dictionary() -> dict[str, Any]:
+def _check_lindera_dictionary() -> DoctorResult:
     # Merged into CJK Tokenizer check above
     return _check_engine_tokenizer_data()
 
 
-def _check_port(port: int, label: str) -> dict[str, Any]:
+def _check_port(port: int, label: str) -> DoctorResult:
     """특정 포트의 가용성을 확인합니다."""
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
@@ -519,7 +524,7 @@ def _check_port(port: int, label: str) -> dict[str, Any]:
             pass
 
 
-def _check_network() -> dict[str, Any]:
+def _check_network() -> DoctorResult:
     """외부 네트워크(Google DNS) 연결을 확인합니다."""
     try:
         socket.create_connection(("8.8.8.8", 53), timeout=3)
@@ -528,7 +533,7 @@ def _check_network() -> dict[str, Any]:
         return _result("Network Check", False, f"Unreachable: {e}")
 
 
-def _check_disk_space(ws_root: str, min_gb: float) -> dict[str, Any]:
+def _check_disk_space(ws_root: str, min_gb: float) -> DoctorResult:
     """워크스페이스 경로의 디스크 여유 공간을 확인합니다."""
     try:
         total, used, free = shutil.disk_usage(ws_root)
@@ -543,7 +548,7 @@ def _check_disk_space(ws_root: str, min_gb: float) -> dict[str, Any]:
         return _result("Disk Space", False, str(e))
 
 
-def _check_db_integrity(ws_root: str) -> dict[str, Any]:
+def _check_db_integrity(ws_root: str) -> DoctorResult:
     """SQLite DB 파일에 대해 깊은 무결성 검사를 수행합니다."""
     try:
         cfg_path = WorkspaceManager.resolve_config_path(ws_root)
@@ -570,7 +575,7 @@ def _check_db_integrity(ws_root: str) -> dict[str, Any]:
         return _result("DB Integrity", False, f"Check failed: {e}")
 
 
-def _check_log_errors() -> dict[str, Any]:
+def _check_log_errors() -> DoctorResult:
     """
     최근 로그 파일에서 ERROR 또는 CRITICAL 패턴을 스캔합니다.
     OOM 방지를 위해 마지막 1MB만 읽고 최근 500줄만 검사합니다.
@@ -619,7 +624,7 @@ def _check_log_errors() -> dict[str, Any]:
         return _result("Log Health", True, f"Scan skipped: {e}", warn=True)
 
 
-def _check_system_env() -> list[dict[str, Any]]:
+def _check_system_env() -> DoctorResults:
     """시스템 환경 정보(플랫폼, Python 버전, 주요 환경변수)를 확인합니다."""
     import platform
     results = []
@@ -665,7 +670,7 @@ def _check_system_env() -> list[dict[str, Any]]:
     return results
 
 
-def _check_process_resources(pid: int) -> dict[str, Any]:
+def _check_process_resources(pid: int) -> DoctorResult:
     """특정 프로세스의 리소스 사용량(메모리, CPU)을 확인합니다."""
     try:
         import psutil
@@ -678,7 +683,7 @@ def _check_process_resources(pid: int) -> dict[str, Any]:
         return {}
 
 
-def _check_daemon() -> dict[str, Any]:
+def _check_daemon() -> DoctorResult:
     """Sari 데몬 프로세스의 실행 여부와 상태를 점검합니다."""
     host, port = get_daemon_address()
     identify = _identify_sari_daemon(host, port)
@@ -737,7 +742,7 @@ def _check_daemon() -> dict[str, Any]:
     return _result("Sari Daemon", False, "Not running")
 
 
-def _check_http_service(host: str, port: int) -> dict[str, Any]:
+def _check_http_service(host: str, port: int) -> DoctorResult:
     """HTTP API 서버의 실행 여부를 확인합니다."""
     running = _is_http_running(host, port)
     if running:
@@ -746,7 +751,7 @@ def _check_http_service(host: str, port: int) -> dict[str, Any]:
 
 
 def _check_search_first_usage(
-        usage: Dict[str, Any], mode: str) -> dict[str, Any]:
+        usage: Mapping[str, object], mode: str) -> DoctorResult:
     """검색 우선(Search-First) 정책 준수 여부를 확인합니다."""
     violations = int(usage.get("read_without_search", 0))
     searches = int(usage.get("search", 0))
@@ -760,7 +765,7 @@ def _check_search_first_usage(
     return _result("Search-First Usage", False, error)
 
 
-def _check_callgraph_plugin() -> dict[str, Any]:
+def _check_callgraph_plugin() -> DoctorResult:
     """콜 그래프 플러그인 로드 상태를 확인합니다."""
     mod_path = os.environ.get("SARI_CALLGRAPH_PLUGIN", "").strip()
     if not mod_path:
@@ -790,9 +795,9 @@ def _check_callgraph_plugin() -> dict[str, Any]:
     return _result("CallGraph Plugin", True, detail)
 
 
-def _recommendations(results: list[dict[str, Any]]) -> list[dict[str, str]]:
+def _recommendations(results: DoctorResults) -> ActionItems:
     """진단 결과에 따른 한국어 권장 조치 사항을 생성합니다."""
-    recs: list[dict[str, str]] = []
+    recs: ActionItems = []
     for r in results:
         if r.get("passed"):
             continue
@@ -860,9 +865,9 @@ def _recommendations(results: list[dict[str, Any]]) -> list[dict[str, str]]:
     return recs
 
 
-def _auto_fixable(results: list[dict[str, Any]]) -> list[dict[str, str]]:
+def _auto_fixable(results: DoctorResults) -> ActionItems:
     """자동 수정 가능한 항목들을 식별하여 액션 목록을 반환합니다."""
-    actions: list[dict[str, str]] = []
+    actions: ActionItems = []
     for r in results:
         if r.get("passed"):
             continue
@@ -901,11 +906,11 @@ def _auto_fixable(results: list[dict[str, Any]]) -> list[dict[str, str]]:
 
 
 def _run_auto_fixes(
-        ws_root: str, actions: list[dict[str, str]]) -> list[dict[str, Any]]:
+        ws_root: str, actions: ActionItems) -> DoctorResults:
     """식별된 자동 수정 액션들을 실행합니다."""
     if not actions:
         return []
-    results: list[dict[str, Any]] = []
+    results: DoctorResults = []
 
     for action in actions:
         act = action["action"]
@@ -963,9 +968,9 @@ def _run_auto_fixes(
     return results
 
 
-def _run_rescan(ws_root: str) -> list[dict[str, Any]]:
+def _run_rescan(ws_root: str) -> DoctorResults:
     """자동 수정 후 재스캔(Rescan)을 실행합니다."""
-    results: list[dict[str, Any]] = []
+    results: DoctorResults = []
     results.append(
         _result(
             "Auto Fix Rescan Start",
@@ -990,7 +995,7 @@ def _run_rescan(ws_root: str) -> list[dict[str, Any]]:
     return results
 
 
-def _check_workspace_overlaps(ws_root: str) -> list[dict[str, Any]]:
+def _check_workspace_overlaps(ws_root: str) -> DoctorResults:
     """등록된 여러 워크스페이스 간의 중첩(Overlap)을 감지하여 중복 인덱싱을 방지합니다."""
     results = []
     try:
@@ -1036,26 +1041,42 @@ def _check_workspace_overlaps(ws_root: str) -> list[dict[str, Any]]:
     return results
 
 
-def execute_doctor(args: Dict[str,
-                              Any],
-                   db: Any = None,
-                   logger: Any = None,
-                   roots: List[str] = None) -> Dict[str,
-                                                    Any]:
+def execute_doctor(
+    args: object,
+    db: object = None,
+    logger: object = None,
+    roots: Optional[list[str]] = None,
+) -> dict[str, object]:
     """Doctor 도구 실행 핸들러."""
+    if not isinstance(args, Mapping):
+        try:
+            from sari.mcp.tools._util import mcp_response, pack_error, ErrorCode
+        except Exception:
+            from _util import mcp_response, pack_error, ErrorCode
+        msg = "'args' must be an object"
+        return mcp_response(
+            "doctor",
+            lambda: pack_error("doctor", ErrorCode.INVALID_ARGS, msg),
+            lambda: {
+                "error": {"code": ErrorCode.INVALID_ARGS.value, "message": msg},
+                "isError": True,
+            },
+        )
+
+    args_map: Mapping[str, object] = args
     ws_root = roots[0] if roots else WorkspaceManager.resolve_workspace_root()
 
-    include_network = bool(args.get("include_network", True))
-    include_port = bool(args.get("include_port", True))
-    include_db = bool(args.get("include_db", True))
-    include_disk = bool(args.get("include_disk", True))
-    include_daemon = bool(args.get("include_daemon", True))
-    include_venv = bool(args.get("include_venv", True))
-    bool(args.get("include_marker", False))
-    port = int(args.get("port", 0))
-    min_disk_gb = float(args.get("min_disk_gb", 1.0))
+    include_network = bool(args_map.get("include_network", True))
+    include_port = bool(args_map.get("include_port", True))
+    include_db = bool(args_map.get("include_db", True))
+    include_disk = bool(args_map.get("include_disk", True))
+    include_daemon = bool(args_map.get("include_daemon", True))
+    include_venv = bool(args_map.get("include_venv", True))
+    bool(args_map.get("include_marker", False))
+    port = int(args_map.get("port", 0))
+    min_disk_gb = float(args_map.get("min_disk_gb", 1.0))
 
-    results: list[dict[str, Any]] = []
+    results: DoctorResults = []
 
     results.extend(_check_system_env())
 
@@ -1111,16 +1132,16 @@ def execute_doctor(args: Dict[str,
 
     results.extend(_check_workspace_overlaps(ws_root))
 
-    usage = args.get("search_usage")
+    usage = args_map.get("search_usage")
     if isinstance(usage, dict):
-        mode = str(args.get("search_first_mode", "unknown"))
+        mode = str(args_map.get("search_first_mode", "unknown"))
         results.append(_check_search_first_usage(usage, mode))
 
     results.append(_check_callgraph_plugin())
 
-    auto_fix = bool(args.get("auto_fix", False))
-    auto_fix_rescan = bool(args.get("auto_fix_rescan", False))
-    auto_fix_results: list[dict[str, Any]] = []
+    auto_fix = bool(args_map.get("auto_fix", False))
+    auto_fix_rescan = bool(args_map.get("auto_fix_rescan", False))
+    auto_fix_results: DoctorResults = []
     if auto_fix:
         actions = _auto_fixable(results)
         auto_fix_results = _run_auto_fixes(ws_root, actions)

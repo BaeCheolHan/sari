@@ -1,7 +1,7 @@
 import json
 import sys
 import logging
-from typing import Any, Dict, Optional, Tuple, BinaryIO
+from typing import Optional, TypeAlias, BinaryIO
 from sari.mcp.trace import trace
 
 logger = logging.getLogger("sari.mcp.transport")
@@ -9,6 +9,7 @@ logger = logging.getLogger("sari.mcp.transport")
 _MODE_FRAMED = "content-length"
 _MODE_JSONL = "jsonl"
 MAX_MESSAGE_SIZE = 10 * 1024 * 1024  # 10MB
+JsonObject: TypeAlias = dict[str, object]
 
 
 class McpTransport:
@@ -26,7 +27,7 @@ class McpTransport:
         self.allow_jsonl = allow_jsonl
         self.default_mode = _MODE_FRAMED
 
-    def read_message(self) -> Optional[Tuple[Dict[str, Any], str]]:
+    def read_message(self) -> Optional[tuple[JsonObject, str]]:
         """
         Robustly reads one MCP message, skipping leading noise or empty lines.
         """
@@ -77,7 +78,7 @@ class McpTransport:
             return None
 
     def write_message(
-            self, message: Dict[str, Any], mode: Optional[str] = None):
+            self, message: JsonObject, mode: Optional[str] = None):
         """Writes one MCP message with proper framing."""
         try:
             json_str = json.dumps(message, ensure_ascii=False)
@@ -119,9 +120,10 @@ class McpTransport:
         except (ValueError, TypeError, Exception):
             return None
 
-    def _parse_json(self, data: str) -> Optional[Dict[str, Any]]:
+    def _parse_json(self, data: str) -> Optional[JsonObject]:
         try:
-            return json.loads(data)
+            payload = json.loads(data)
+            return payload if isinstance(payload, dict) else None
         except Exception:
             return None
 
@@ -149,7 +151,7 @@ class AsyncMcpTransport:
         self.allow_jsonl = allow_jsonl
         self.default_mode = _MODE_FRAMED
 
-    async def read_message(self) -> Optional[Tuple[Dict[str, Any], str]]:
+    async def read_message(self) -> Optional[tuple[JsonObject, str]]:
         """
         Asynchronously reads one MCP message, skipping noise.
         """
@@ -187,7 +189,7 @@ class AsyncMcpTransport:
             return None
 
     async def write_message(
-            self, message: Dict[str, Any], mode: Optional[str] = None) -> None:
+            self, message: JsonObject, mode: Optional[str] = None) -> None:
         try:
             json_str = json.dumps(message, ensure_ascii=False)
             mode = mode or self.default_mode
@@ -224,14 +226,9 @@ class AsyncMcpTransport:
         except Exception:
             return None
 
-    def _parse_json(self, data: str) -> Optional[Dict[str, Any]]:
+    def _parse_json(self, data: str) -> Optional[JsonObject]:
         try:
-            return json.loads(data)
-        except Exception:
-            return None
-
-    def _parse_json(self, data: str) -> Optional[Dict[str, Any]]:
-        try:
-            return json.loads(data)
+            payload = json.loads(data)
+            return payload if isinstance(payload, dict) else None
         except Exception:
             return None

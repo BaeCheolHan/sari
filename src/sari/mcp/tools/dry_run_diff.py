@@ -4,7 +4,7 @@ import difflib
 import os
 import shutil
 import subprocess
-from typing import Any, Dict, List
+from typing import Mapping, TypeAlias
 
 from sari.mcp.tools._util import (
     mcp_response,
@@ -18,8 +18,11 @@ from sari.mcp.tools._util import (
     resolve_fs_path,
 )
 
+ToolArgs: TypeAlias = dict[str, object]
+ToolResult: TypeAlias = dict[str, object]
 
-def _read_current(db: Any, db_path: str, roots: List[str]) -> str:
+
+def _read_current(db: object, db_path: str, roots: list[str]) -> str:
     """DB 또는 파일 시스템으로부터 현재 파일의 전체 내용을 읽어옵니다."""
     fs_path = resolve_fs_path(db_path, roots)
     if fs_path:
@@ -32,7 +35,7 @@ def _read_current(db: Any, db_path: str, roots: List[str]) -> str:
     return raw or ""
 
 
-def _syntax_check(path: str, content: str) -> Dict[str, Any]:
+def _syntax_check(path: str, content: str) -> ToolResult:
     """
     제안된 수정 사항에 대해 가벼운 구문 체크(Syntax Check)를 수행합니다.
     Python의 경우 AST 파싱을, JSON의 경우 json.loads를 시도합니다.
@@ -60,7 +63,7 @@ def _syntax_check(path: str, content: str) -> Dict[str, Any]:
             return {"syntax_ok": False, "syntax_error": str(e), "runtime": runtime}
     return {"syntax_ok": True, "runtime": runtime}
 
-def _maybe_lint(path: str, content: str) -> Dict[str, Any]:
+def _maybe_lint(path: str, content: str) -> ToolResult:
     """
     설정된 경우 Ruff나 ESLint와 같은 외부 린터를 사용하여 제안된 수정을 검사합니다.
     (SARI_DRYRUN_LINT 환경변수가 활성화된 경우)
@@ -110,7 +113,7 @@ def _maybe_lint(path: str, content: str) -> Dict[str, Any]:
     return {"lint_skipped": True, "lint_reason": "tool_not_found"}
 
 
-def build_dry_run_diff(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict[str, Any]:
+def build_dry_run_diff(args: ToolArgs, db: object, roots: list[str]) -> ToolResult:
     """드라이런 분석을 수행하고 차이점, 구문 상태, 린트 결과를 포함한 데이터 딕셔너리를 빌드합니다."""
     path = str(args.get("path") or "").strip()
     raw_content = args.get("content")
@@ -144,13 +147,27 @@ def build_dry_run_diff(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict[
     return payload
 
 
-def execute_dry_run_diff(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict[str, Any]:
+def execute_dry_run_diff(args: object, db: object, roots: list[str]) -> ToolResult:
     """
     파일 수정 전, 변경 사항을 미리 보고(Dry-run) 구문 오류나 스타일 위반을 사전에 점검하는 도구입니다.
     실제 파일 시스템에 영향을 주지 않고 안전하게 수정을 검증할 수 있습니다.
     """
+    if not isinstance(args, Mapping):
+        return mcp_response(
+            "dry_run_diff",
+            lambda: pack_error("dry_run_diff", ErrorCode.INVALID_ARGS, "'args' must be an object"),
+            lambda: {
+                "error": {
+                    "code": ErrorCode.INVALID_ARGS.value,
+                    "message": "'args' must be an object",
+                },
+                "isError": True,
+            },
+        )
+    args_map: ToolArgs = dict(args)
+
     try:
-        payload = build_dry_run_diff(args, db, roots)
+        payload = build_dry_run_diff(args_map, db, roots)
     except ValueError as e:
         msg = str(e)
         return mcp_response(

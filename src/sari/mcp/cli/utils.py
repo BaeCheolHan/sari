@@ -7,7 +7,7 @@ This module provides common utility functions used across CLI modules.
 import os
 import socket
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 import ipaddress
 
 try:
@@ -30,7 +30,7 @@ DEFAULT_PORT = DEFAULT_DAEMON_PORT
 PID_FILE = WorkspaceManager.get_global_data_dir() / "daemon.pid"
 
 
-def get_arg(args: Any, name: str, default: Any = None) -> Any:
+def get_arg(args: object, name: str, default: object = None) -> object:
     """
     Get argument value from args namespace.
     

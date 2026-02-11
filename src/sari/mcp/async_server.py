@@ -7,7 +7,7 @@ import logging
 import os
 import sys
 import signal
-from typing import Any, Optional
+from typing import Optional
 from sari.mcp.server import LocalSearchMCPServer
 from sari.mcp.transport import AsyncMcpTransport
 from sari.core.settings import settings
@@ -21,7 +21,7 @@ class AsyncLocalSearchMCPServer(LocalSearchMCPServer):
     동기적인 로직(DB 접근 등)은 ThreadPoolExecutor에서 실행합니다.
     """
 
-    def __init__(self, workspace_root: str, cfg: Any = None, db: Any = None, indexer: Any = None):
+    def __init__(self, workspace_root: str, cfg: object = None, db: object = None, indexer: object = None):
         # 부모 클래스 초기화 (워커 스레드 시작 안 함)
         super().__init__(workspace_root, cfg, db, indexer, start_worker=False)
         

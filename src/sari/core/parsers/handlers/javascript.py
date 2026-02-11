@@ -1,9 +1,9 @@
 import re
-from typing import Any, Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional
 from sari.core.parsers.base import BaseHandler
 
 class JavaScriptHandler(BaseHandler):
-    def handle_node(self, node: Any, get_t, find_id, ext: str, p_meta: Dict[str, Any]) -> Tuple[Optional[str], Optional[str], Dict[str, Any], bool]:
+    def handle_node(self, node: object, get_t, find_id, ext: str, p_meta: Dict[str, object]) -> Tuple[Optional[str], Optional[str], Dict[str, object], bool]:
         n_type = node.type
         name = find_id(node)
         meta = {"vue_option": False, "arrow": False}
@@ -51,7 +51,7 @@ class JavaScriptHandler(BaseHandler):
 
         return None, None, {}, False
 
-    def extract_api_info(self, node: Any, get_t, get_child) -> Dict:
+    def extract_api_info(self, node: object, get_t, get_child) -> Dict:
         """Extract Express route info for metadata enrichment."""
         res = {"http_path": None, "http_methods": []}
         if node.type == "call_expression":

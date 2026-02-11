@@ -1,18 +1,18 @@
-from typing import Any, Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional
 from sari.core.parsers.base import BaseHandler
 
 
 class RubyHandler(BaseHandler):
     def handle_node(self,
-                    node: Any,
+                    node: object,
                     get_t,
                     find_id,
                     ext: str,
                     p_meta: Dict[str,
-                                 Any]) -> Tuple[Optional[str],
+                                 object]) -> Tuple[Optional[str],
                                                 Optional[str],
                                                 Dict[str,
-                                                     Any],
+                                                     object],
                                                 bool]:
         # if node.type == "class": print(f"DEBUG RUBY CLASS: children={[c.type for c in node.children]}")
         n_type = node.type

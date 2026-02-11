@@ -1,4 +1,5 @@
-from typing import Any, Dict, List
+from collections.abc import Mapping
+from typing import TypeAlias
 
 from sari.mcp.tools._util import (
     mcp_response,
@@ -9,14 +10,24 @@ from sari.mcp.tools._util import (
     pack_error,
     ErrorCode,
     parse_timestamp,
+    invalid_args_response,
 )
 
+ToolResult: TypeAlias = dict[str, object]
 
-def execute_archive_context(args: Dict[str, Any], db: Any, roots: List[str], indexer: Any = None) -> Dict[str, Any]:
+def execute_archive_context(
+    args: object,
+    db: object,
+    roots: list[str],
+    indexer: object = None,
+) -> ToolResult:
     """
     도메인 지식이나 작업 컨텍스트를 보관(Archive)하는 도구입니다.
     Facade 패턴을 사용하여 지식 컨텍스트를 DB에 안전하게 저장합니다.
     """
+    if not isinstance(args, Mapping):
+        return invalid_args_response("archive_context", "args must be an object")
+
     topic = str(args.get("topic") or "").strip()
     content = str(args.get("content") or "").strip()
     

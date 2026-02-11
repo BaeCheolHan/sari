@@ -7,7 +7,7 @@ This module handles MCP (Model Context Protocol) communication with the Sari dae
 import os
 import json
 import socket
-from typing import Optional, Dict, Any
+from typing import Optional, TypeAlias
 
 from sari.core.workspace import WorkspaceManager
 from sari.core.constants import (
@@ -15,12 +15,14 @@ from sari.core.constants import (
     DAEMON_PROBE_TIMEOUT_SECONDS,
 )
 
+JsonMap: TypeAlias = dict[str, object]
+
 
 def identify_sari_daemon(
     host: str,
     port: int,
     timeout: float = DAEMON_IDENTIFY_TIMEOUT_SECONDS
-) -> Optional[Dict[str, Any]]:
+) -> Optional[JsonMap]:
     """
     Identify if server is a Sari daemon using MCP protocol.
 
@@ -215,7 +217,7 @@ def request_mcp_status(
     daemon_host: str,
     daemon_port: int,
     workspace_root: Optional[str] = None
-) -> Optional[dict]:
+) -> Optional[JsonMap]:
     """
     Request status from daemon via MCP.
 
@@ -231,7 +233,7 @@ def request_mcp_status(
         root = workspace_root or os.environ.get(
             "SARI_WORKSPACE_ROOT") or WorkspaceManager.resolve_workspace_root()
         with socket.create_connection((daemon_host, daemon_port), timeout=2.0) as sock:
-            def _send(payload: dict) -> dict:
+            def _send(payload: JsonMap) -> JsonMap:
                 body = json.dumps(payload).encode("utf-8")
                 header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
                 sock.sendall(header + body)

@@ -1,7 +1,10 @@
 import psutil
-from typing import Dict, Any
+from typing import TypeAlias
 
-def _check_db_migration_safety() -> Dict[str, Any]:
+GuardResult: TypeAlias = dict[str, object]
+
+
+def _check_db_migration_safety() -> GuardResult:
     """
     Truth: Sari now uses PeeWee ORM for automatic schema integrity.
     Always returns true unless the DB file is physically unwritable.
@@ -12,7 +15,7 @@ def _check_db_migration_safety() -> Dict[str, Any]:
         "detail": "Automatic schema management via PeeWee active."
     }
 
-def _check_system_resources() -> Dict[str, Any]:
+def _check_system_resources() -> GuardResult:
     """Check if system has enough resources for 'Ultra Turbo' mode."""
     cpu = psutil.cpu_count()
     mem = psutil.virtual_memory().total / (1024**3)

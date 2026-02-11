@@ -1,5 +1,5 @@
 import zlib
-from typing import Any, Union
+from typing import Union
 
 
 def _compress(text: Union[str, bytes]) -> bytes:
@@ -13,7 +13,7 @@ def _compress(text: Union[str, bytes]) -> bytes:
         zlib.compress(text.encode("utf-8", errors="ignore"), level=6)
 
 
-def _decompress(data: Any) -> str:
+def _decompress(data: object) -> str:
     if not data:
         return ""
     if isinstance(data, str):

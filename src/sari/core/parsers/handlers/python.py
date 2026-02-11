@@ -1,11 +1,11 @@
-from typing import Any, Dict, Optional, Tuple, List
+from typing import Dict, Optional, Tuple, List
 from ..base import BaseHandler
 from sari.core.models import ParserRelation
 
 
 class PythonHandler(BaseHandler):
     def handle_node(self,
-                    node: Any,
+                    node: object,
                     get_t: callable,
                     find_id: callable,
                     ext: str,
@@ -36,7 +36,7 @@ class PythonHandler(BaseHandler):
 
     def extract_api_info(
             self,
-            node: Any,
+            node: object,
             get_t: callable,
             get_child: callable) -> Dict:
         res = {"http_path": None, "http_methods": []}
@@ -58,7 +58,7 @@ class PythonHandler(BaseHandler):
 
     def handle_relation(
             self,
-            node: Any,
+            node: object,
             context: Dict) -> List[ParserRelation]:
         relations = []
         n_type = node.type

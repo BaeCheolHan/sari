@@ -2,11 +2,12 @@ import json
 import os
 import pathlib
 import fnmatch
-from typing import List, Dict, Any, Set, Optional
+from typing import List, Set, Optional, TypeAlias
 from sari.core.settings import settings
 from sari.core.workspace import WorkspaceManager
 from .profiles import PROFILES
 
+JsonMap: TypeAlias = dict[str, object]
 
 class ConfigManager:
     """
@@ -142,7 +143,7 @@ class ConfigManager:
         # Keep detection bounded for very large configs.
         return roots[:8]
 
-    def resolve_final_config(self) -> Dict[str, Any]:
+    def resolve_final_config(self) -> JsonMap:
         """
         Executes the 6-step merge logic from docs/reference/ARCHITECTURE.md:
         1. Core profile (always on)
@@ -213,7 +214,7 @@ class ConfigManager:
 
         return self.to_dict(gitignore_lines)
 
-    def _load_json(self, path: Optional[pathlib.Path]) -> Dict[str, Any]:
+    def _load_json(self, path: Optional[pathlib.Path]) -> JsonMap:
         if path and path.exists():
             try:
                 with path.open("rb") as f:
@@ -233,7 +234,7 @@ class ConfigManager:
         return {}
 
     def to_dict(
-            self, gitignore_lines: Optional[List[str]] = None) -> Dict[str, Any]:
+            self, gitignore_lines: Optional[List[str]] = None) -> JsonMap:
         return {
             "root_id": WorkspaceManager.root_id_for_workspace(
                 str(

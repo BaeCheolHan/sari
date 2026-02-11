@@ -1,33 +1,38 @@
 from __future__ import annotations
 
 from importlib.util import find_spec
-from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple
+from typing import Callable, Optional, Protocol, TypeAlias
 
 from sari.core.models import SearchHit, SearchOptions
 from sari.core.engine_runtime import EmbeddedEngine, SqliteSearchEngineAdapter
 
+RepoCandidate: TypeAlias = dict[str, object]
+EngineMeta: TypeAlias = dict[str, object]
+SearchRows: TypeAlias = list[SearchHit]
+RootIds: TypeAlias = list[str]
+
 
 class SearchEngineInterface(Protocol):
-    def search_v2(self, opts: SearchOptions) -> Tuple[List[SearchHit], Dict[str, Any]]:
+    def search_v2(self, opts: SearchOptions) -> tuple[SearchRows, EngineMeta]:
         ...
 
-    def repo_candidates(self, q: str, limit: int = 3, root_ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    def repo_candidates(self, q: str, limit: int = 3, root_ids: Optional[RootIds] = None) -> list[RepoCandidate]:
         ...
 
 
 class EngineRegistry:
     def __init__(self) -> None:
-        self._factories: Dict[str, Callable[[Any, Any, Any], SearchEngineInterface]] = {}
+        self._factories: dict[str, Callable[[object, object, object], SearchEngineInterface]] = {}
 
-    def register(self, name: str, factory: Callable[[Any, Any, Any], SearchEngineInterface]) -> None:
+    def register(self, name: str, factory: Callable[[object, object, object], SearchEngineInterface]) -> None:
         self._factories[name] = factory
 
-    def create(self, name: str, db: Any, cfg: Any = None, roots: Any = None) -> SearchEngineInterface:
+    def create(self, name: str, db: object, cfg: object = None, roots: object = None) -> SearchEngineInterface:
         if name not in self._factories:
             raise KeyError(f"engine not registered: {name}")
         return self._factories[name](db, cfg, roots)
 
-    def default(self, db: Any, cfg: Any = None, roots: Any = None) -> SearchEngineInterface:
+    def default(self, db: object, cfg: object = None, roots: object = None) -> SearchEngineInterface:
         name = default_engine_name(cfg)
         return self.create(name, db, cfg, roots)
 
@@ -41,12 +46,13 @@ def get_registry() -> EngineRegistry:
     return _REGISTRY
 
 
-def default_engine_name(cfg: Any = None) -> str:
+def default_engine_name(cfg: object = None) -> str:
     # Priority 11: Auto-detect best engine based on installed libs
     HAS_TANTIVY = find_spec("tantivy") is not None
 
     if cfg is not None:
-        mode = (getattr(cfg, "engine_mode", "") or "").strip().lower()
+        raw_mode = getattr(cfg, "engine_mode", "")
+        mode = str(raw_mode or "").strip().lower()
         if mode in {"embedded", "sqlite"}:
             # Respect explicit user choice if valid
             if mode == "embedded" and not HAS_TANTIVY:
@@ -59,5 +65,5 @@ def default_engine_name(cfg: Any = None) -> str:
     return "sqlite"
 
 
-def get_default_engine(db: Any, cfg: Any = None, roots: Any = None) -> SearchEngineInterface:
+def get_default_engine(db: object, cfg: object = None, roots: object = None) -> SearchEngineInterface:
     return _REGISTRY.default(db, cfg, roots)

@@ -3,7 +3,8 @@ Central utility aggregator for Sari MCP tools.
 This module re-exports common functionality from modular components to maintain backward compatibility.
 """
 import logging
-from typing import Any, Dict, List
+from collections.abc import Mapping, Sequence
+from typing import TypeAlias
 
 # --- Protocol & Formatting ---
 from .protocol import (
@@ -31,16 +32,49 @@ from .diagnostics import handle_db_path_error, require_db_schema
 # --- Small generic helpers (remain here for now) ---
 logger = logging.getLogger("sari.mcp.tools")
 
+ToolResult: TypeAlias = dict[str, object]
+ArgMap: TypeAlias = Mapping[str, object]
 
-def get_data_attr(obj: Any, attr: str, default: Any = None) -> Any:
+
+def _is_string_sequence(value: object) -> bool:
+    return isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray))
+
+
+def _normalize_string_list(value: object) -> list[str]:
+    if value is None:
+        return []
+    if _is_string_sequence(value):
+        return [str(item) for item in value if item not in (None, "")]
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    text = str(value).strip()
+    return [text] if text else []
+
+
+def _coerce_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off", ""}:
+            return False
+    return bool(value)
+
+
+def get_data_attr(obj: object, attr: str, default: object = None) -> object:
     if obj is None:
         return default
-    if isinstance(obj, dict):
+    if isinstance(obj, Mapping):
         return obj.get(attr, default)
     return getattr(obj, attr, default)
 
 
-def parse_timestamp(v: Any) -> int:
+def parse_timestamp(v: object) -> int:
     if v is None or v == "":
         return 0
     if isinstance(v, (int, float)):
@@ -55,7 +89,7 @@ def parse_timestamp(v: Any) -> int:
         return 0
 
 
-def invalid_args_response(tool: str, message: str) -> Dict[str, Any]:
+def invalid_args_response(tool: str, message: str) -> ToolResult:
     return mcp_response(
         tool,
         lambda: pack_error(tool, ErrorCode.INVALID_ARGS, message),
@@ -64,14 +98,14 @@ def invalid_args_response(tool: str, message: str) -> Dict[str, Any]:
 
 
 def parse_int_arg(
-    args: Dict[str, Any],
+    args: ArgMap,
     key: str,
     default: int,
     tool: str,
     *,
     min_value: int | None = None,
     max_value: int | None = None,
-):
+) -> tuple[int | None, ToolResult | None]:
     raw = args.get(key, default)
     try:
         value = int(raw if raw is not None else default)
@@ -84,32 +118,37 @@ def parse_int_arg(
     return value, None
 
 
-def _intersect_preserve_order(base: List[str], rhs: List[str]) -> List[str]:
+def _intersect_preserve_order(base: list[str], rhs: list[str]) -> list[str]:
     rhs_set = set(rhs)
     return [x for x in base if x in rhs_set]
 
 
-def parse_search_options(args: Dict[str, Any], roots: List[str]) -> Any:
+def parse_search_options(args: ArgMap, roots: list[str]) -> object:
     from sari.core.models import SearchOptions
+
     root_ids = resolve_root_ids(roots)
     req_root_ids = args.get("root_ids")
-    if isinstance(req_root_ids, list):
-        req_root_ids = [str(r) for r in req_root_ids if r]
-        root_ids = [r for r in root_ids if r in req_root_ids] if root_ids else list(
-            req_root_ids)
+    if _is_string_sequence(req_root_ids):
+        req_ids = [str(r) for r in req_root_ids if r]
+        root_ids = _intersect_preserve_order(root_ids, req_ids) if root_ids else list(req_ids)
+
+    repo_raw = args.get("scope") or args.get("repo")
+    repo_value = str(repo_raw).strip() if repo_raw is not None else None
+    path_pattern_raw = args.get("path_pattern")
+    path_pattern = str(path_pattern_raw) if path_pattern_raw is not None else None
 
     return SearchOptions(
-        query=(args.get("query") or "").strip(),
-        repo=args.get("scope") or args.get("repo"),
+        query=str(args.get("query") or "").strip(),
+        repo=repo_value or None,
         limit=max(1, min(int(args.get("limit", 8) or 8), 50)),
         offset=max(int(args.get("offset", 0) or 0), 0),
         snippet_lines=min(max(int(args.get("context_lines", 5) or 5), 1), 20),
-        file_types=list(args.get("file_types", [])),
-        path_pattern=args.get("path_pattern"),
-        exclude_patterns=args.get("exclude_patterns", []),
-        recency_boost=bool(args.get("recency_boost", False)),
-        use_regex=bool(args.get("use_regex", False)),
-        case_sensitive=bool(args.get("case_sensitive", False)),
+        file_types=_normalize_string_list(args.get("file_types")),
+        path_pattern=path_pattern,
+        exclude_patterns=_normalize_string_list(args.get("exclude_patterns")),
+        recency_boost=_coerce_bool(args.get("recency_boost", False)),
+        use_regex=_coerce_bool(args.get("use_regex", False)),
+        case_sensitive=_coerce_bool(args.get("case_sensitive", False)),
         total_mode=str(args.get("total_mode") or "exact").strip().lower(),
         root_ids=root_ids,
     )

@@ -27,7 +27,7 @@ import time
 import urllib.parse
 import urllib.request
 import ipaddress
-from typing import Optional, Any, Tuple
+from typing import Optional
 
 from sari.core.workspace import WorkspaceManager
 from sari.core.server_registry import ServerRegistry
@@ -59,7 +59,7 @@ _request_mcp_status = request_mcp_status
 _get_http_host_port_orig = None  # Placeholder for later
 
 
-def _arg(args: Any, name: str, default: Any = None) -> Any:
+def _arg(args: object, name: str, default: object = None) -> object:
     """Safe argument access for Namespace objects."""
     return getattr(args, name, default) if hasattr(args, name) else default
 
@@ -93,7 +93,7 @@ def _enforce_loopback(host: str) -> None:
 
 
 def _get_http_host_port(
-        host_override: Optional[str] = None, port_override: Optional[int] = None) -> Tuple[str, int]:
+        host_override: Optional[str] = None, port_override: Optional[int] = None) -> tuple[str, int]:
     env_host = os.environ.get(
         "SARI_HTTP_API_HOST") or os.environ.get("SARI_HTTP_HOST")
     env_port = os.environ.get(
@@ -108,7 +108,7 @@ def _get_http_host_port(
 
 
 def _resolve_http_endpoint_for_daemon(
-        args: Any, daemon_host: str, daemon_port: int) -> Tuple[str, int]:
+        args: object, daemon_host: str, daemon_port: int) -> tuple[str, int]:
     host_override = _arg(args, "http_host")
     port_override = _arg(args, "http_port")
     if host_override or port_override is not None:

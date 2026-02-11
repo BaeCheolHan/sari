@@ -3,15 +3,28 @@
 LLM을 위한 Sari 가이드 도구.
 Sari의 효율적인 활용을 위한 핵심 원칙과 권장 워크플로우를 한국어로 제공합니다.
 """
-from typing import Any, Dict
-from sari.mcp.tools._util import mcp_response, pack_header, pack_line, pack_encode_text
+from collections.abc import Mapping
+from typing import TypeAlias
+
+from sari.mcp.tools._util import (
+    mcp_response,
+    pack_header,
+    pack_line,
+    pack_encode_text,
+    invalid_args_response,
+)
+
+ToolResult: TypeAlias = dict[str, object]
 
 
-def execute_sari_guide(args: Dict[str, Any]) -> Dict[str, Any]:
+def execute_sari_guide(args: object) -> ToolResult:
     """
     Sari의 고급 분석 도구를 활용하여 토큰을 절약하고 코드 이해도를 높이기 위한 가이드를 반환합니다.
     (Search-first behavior enforcement)
     """
+    if not isinstance(args, Mapping):
+        return invalid_args_response("sari_guide", "args must be an object")
+
     text = (
         "Sari Agentic Workflow Guide (Expert Edition)\n\n"
         "[Core Principle: Tool Tiers]\n"

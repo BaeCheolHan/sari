@@ -1,7 +1,10 @@
+from collections.abc import Mapping, Sequence
+from typing import TypeAlias
 
-from typing import Dict, Any
+TreeNode: TypeAlias = Mapping[str, object]
 
-def render_tree(tree: Dict[str, Any], max_print_depth: int = 2) -> str:
+
+def render_tree(tree: TreeNode, max_print_depth: int = 2) -> str:
     """
     호출 그래프 트리를 ASCII 형식의 텍스트로 렌더링합니다.
     디버깅 및 사용자에게 직관적인 시각화를 제공합니다.
@@ -15,7 +18,7 @@ def render_tree(tree: Dict[str, Any], max_print_depth: int = 2) -> str:
     """
     lines = []
     
-    def _visit(node: Dict, prefix: str = "", is_last: bool = True, depth: int = 0):
+    def _visit(node: TreeNode, prefix: str = "", is_last: bool = True, depth: int = 0):
         if depth > max_print_depth:
             lines.append(f"{prefix}...")
             return
@@ -34,7 +37,10 @@ def render_tree(tree: Dict[str, Any], max_print_depth: int = 2) -> str:
         display = f"{prefix}{connector}{rel_tag}{name} ({short_path})" if depth > 0 else f"{name} ({short_path})"
         lines.append(display)
 
-        children = node.get("children", [])
+        raw_children = node.get("children", [])
+        children: list[TreeNode] = []
+        if isinstance(raw_children, Sequence) and not isinstance(raw_children, (str, bytes, bytearray)):
+            children = [c for c in raw_children if isinstance(c, Mapping)]
         # 중요도(confidence) 순으로 정렬하여 상위 결과 우선 표시
         children.sort(key=lambda x: x.get("confidence", 0), reverse=True)
         

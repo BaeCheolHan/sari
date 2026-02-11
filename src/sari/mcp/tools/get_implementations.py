@@ -1,4 +1,6 @@
-from typing import Any, Dict, List
+from collections.abc import Mapping
+from typing import TypeAlias
+
 from sari.mcp.tools._util import (
     mcp_response,
     pack_header,
@@ -9,19 +11,31 @@ from sari.mcp.tools._util import (
     resolve_repo_scope,
     pack_error,
     ErrorCode,
+    parse_int_arg,
+    invalid_args_response,
 )
 from sari.core.services.symbol_service import SymbolService
 
-def execute_get_implementations(args: Dict[str, Any], db: Any, roots: List[str]) -> Dict[str, Any]:
+ToolResult: TypeAlias = dict[str, object]
+
+
+def execute_get_implementations(args: object, db: object, roots: list[str]) -> ToolResult:
     """
     SymbolService를 사용하여 특정 심볼을 구현(implements)하거나 상속(extends)하는 심볼들을 찾습니다.
     (Interface Implementation / Subclass Search)
     """
-    target_symbol = args.get("name", "").strip()
-    target_sid = args.get("symbol_id", "").strip() or args.get("sid", "").strip()
+    if not isinstance(args, Mapping):
+        return invalid_args_response("get_implementations", "args must be an object")
+
+    target_symbol = str(args.get("name", "")).strip()
+    target_sid = str(args.get("symbol_id", "")).strip() or str(args.get("sid", "")).strip()
     target_path = str(args.get("path", "")).strip()
     repo = str(args.get("repo", "")).strip()
-    limit = max(1, min(int(args.get("limit", 100) or 100), 500))
+    limit, err = parse_int_arg(args, "limit", 100, "get_implementations", min_value=1, max_value=500)
+    if err:
+        return err
+    if limit is None:
+        return invalid_args_response("get_implementations", "'limit' must be an integer")
     
     if not target_symbol and not target_sid:
         return mcp_response(

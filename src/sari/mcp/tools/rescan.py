@@ -3,17 +3,31 @@
 로컬 검색 MCP 서버를 위한 재스캔(Rescan) 도구.
 인덱싱 프로세스를 비동기로 트리거합니다.
 """
-from typing import Any, Dict
-from sari.mcp.tools._util import mcp_response, pack_header, pack_line, pack_error, ErrorCode
+from collections.abc import Mapping
+from typing import TypeAlias
+
+from sari.mcp.tools._util import (
+    mcp_response,
+    pack_header,
+    pack_line,
+    pack_error,
+    ErrorCode,
+    invalid_args_response,
+)
 from sari.core.indexer import Indexer
 from sari.core.services.index_service import IndexService
 
+ToolResult: TypeAlias = dict[str, object]
 
-def execute_rescan(args: Dict[str, Any], indexer: Indexer) -> Dict[str, Any]:
+
+def execute_rescan(args: object, indexer: Indexer) -> ToolResult:
     """
     Indexer에게 비동기 재스캔(Rescan) 작업을 요청합니다.
     작업은 백그라운드에서 수행됩니다.
     """
+    if not isinstance(args, Mapping):
+        return invalid_args_response("rescan", "args must be an object")
+
     svc = IndexService(indexer)
     result = svc.rescan()
     if not result.get("ok"):
@@ -26,7 +40,7 @@ def execute_rescan(args: Dict[str, Any], indexer: Indexer) -> Dict[str, Any]:
             lambda: {"error": {"code": code.value, "message": message, "data": data}, "isError": True},
         )
 
-    def build_json() -> Dict[str, Any]:
+    def build_json() -> ToolResult:
         return {"requested": True}
 
     def build_pack() -> str:

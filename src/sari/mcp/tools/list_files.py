@@ -1,4 +1,6 @@
-from typing import Any, Dict, List
+from collections.abc import Mapping
+from typing import TypeAlias
+
 from sari.mcp.tools._util import (
     resolve_root_ids,
     mcp_response,
@@ -6,9 +8,18 @@ from sari.mcp.tools._util import (
     pack_line,
     get_data_attr,
     parse_int_arg,
+    invalid_args_response,
 )
 
-def execute_list_files(args: Dict[str, Any], db: Any, logger=None, roots: List[str] = None) -> Dict[str, Any]:
+ToolResult: TypeAlias = dict[str, object]
+
+
+def execute_list_files(
+    args: object,
+    db: object,
+    logger: object = None,
+    roots: list[str] | None = None,
+) -> ToolResult:
     """
     파일 목록 조회 도구.
     중앙화된 DB 접근과 안전한 속성 헬퍼를 사용하여 현대화되었습니다.
@@ -16,9 +27,14 @@ def execute_list_files(args: Dict[str, Any], db: Any, logger=None, roots: List[s
     repo 인자가 없으면 저장소별 파일 수 요약 정보를 반환하고,
     repo 인자가 있으면 해당 저장소의 파일 상세 목록을 반환합니다.
     """
+    if not isinstance(args, Mapping):
+        return invalid_args_response("list_files", "args must be an object")
+
     limit, err = parse_int_arg(args, "limit", 50, "list_files", min_value=1)
     if err:
         return err
+    if limit is None:
+        return invalid_args_response("list_files", "'limit' must be an integer")
     repo = args.get("repo")
     root_ids = resolve_root_ids(roots or [])
 
@@ -50,7 +66,7 @@ def execute_list_files(args: Dict[str, Any], db: Any, logger=None, roots: List[s
             lines.append(pack_line("m", {"hint": "repo 필터는 정확히 일치해야 합니다."}))
         return "\n".join(lines)
 
-    def build_json() -> Dict[str, Any]:
+    def build_json() -> ToolResult:
         """JSON 포맷 응답 생성"""
         if not repo:
             stats = db.get_repo_stats(root_ids=root_ids)

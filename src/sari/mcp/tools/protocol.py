@@ -3,9 +3,14 @@ import os
 import urllib.parse
 import logging
 from enum import Enum
-from typing import Any, Dict, Optional, List, Callable
+from typing import Callable, Mapping, Optional, Sequence, TypeAlias
 
 logger = logging.getLogger("sari.mcp.protocol")
+
+JsonScalar: TypeAlias = str | int | float | bool | None
+JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
+JsonObject: TypeAlias = dict[str, JsonValue]
+PackFieldValue: TypeAlias = str | int | float | bool | None
 
 
 class ErrorCode(str, Enum):
@@ -27,22 +32,24 @@ class ErrorCode(str, Enum):
     ERR_ENGINE_UNAVAILABLE = "ERR_ENGINE_UNAVAILABLE"
     ERR_ENGINE_REBUILD = "ERR_ENGINE_REBUILD"
 
+
+ErrorLike: TypeAlias = ErrorCode | str | int
+
 # --- Encoding Helpers ---
 
 
-def pack_encode_text(s: Any) -> str:
+def pack_encode_text(s: object) -> str:
     return urllib.parse.quote(str(s), safe="")
 
 
-def pack_encode_id(s: Any) -> str:
+def pack_encode_id(s: object) -> str:
     return urllib.parse.quote(str(s), safe="/._-:@")
 
 # --- Header & Line Packing ---
 
 
 def pack_header(tool: str,
-                kv: Dict[str,
-                         Any],
+                kv: Mapping[str, object],
                 returned: Optional[int] = None,
                 total: Optional[int] = None,
                 total_mode: Optional[str] = None) -> str:
@@ -59,8 +66,7 @@ def pack_header(tool: str,
 
 
 def pack_line(kind: str,
-              kv: Optional[Dict[str,
-                                str]] = None,
+              kv: Optional[Mapping[str, str]] = None,
               single_value: Optional[str] = None) -> str:
     if single_value is not None:
         return f"{kind}:{single_value}"
@@ -71,12 +77,11 @@ def pack_line(kind: str,
 
 
 def pack_error(tool: str,
-               code: Any,
+               code: ErrorLike,
                msg: str,
-               hints: List[str] = None,
-               trace: str = None,
-               fields: Dict[str,
-                            Any] = None) -> str:
+               hints: Optional[Sequence[str]] = None,
+               trace: Optional[str] = None,
+               fields: Optional[Mapping[str, PackFieldValue]] = None) -> str:
     parts = [
         "PACK1", f"tool={tool}", "ok=false",
         f"code={code.value if isinstance(code, Enum) else str(code)}",
@@ -124,14 +129,14 @@ def _compact_enabled() -> bool:
 def mcp_response(
     tool_name: str,
     pack_func: Callable[[], str],
-    json_func: Callable[[], Dict[str, Any]]
-) -> Dict[str, Any]:
+    json_func: Callable[[], JsonObject]
+) -> dict[str, object]:
     fmt = _get_format()
     try:
         if fmt == "pack":
             text = pack_func()
-            out = {"content": [{"type": "text", "text": text}]}
-            first_line = str(text).splitlines()[0] if str(text) else ""
+            out: dict[str, object] = {"content": [{"type": "text", "text": text}]}
+            first_line = str(text).splitlines()[0].strip() if str(text) else ""
             if first_line.startswith("PACK1 ") and " ok=false" in first_line:
                 out["isError"] = True
             return out
@@ -141,7 +146,7 @@ def mcp_response(
             json_text = json.dumps(data, ensure_ascii=False,
                                    separators=(",", ":") if compact else None,
                                    indent=None if compact else 2)
-            res = {"content": [{"type": "text", "text": json_text}]}
+            res: dict[str, object] = {"content": [{"type": "text", "text": json_text}]}
             if isinstance(data, dict):
                 for k, v in data.items():
                     if k not in res:

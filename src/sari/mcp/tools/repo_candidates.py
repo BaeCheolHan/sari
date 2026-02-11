@@ -3,14 +3,34 @@
 Sari MCP 서버를 위한 저장소 후보 추천 도구.
 검색 쿼리와 가장 관련성이 높은 저장소(Repo)들을 찾아 추천 이유와 함께 반환합니다.
 """
-from typing import Any, Dict, List
-from sari.mcp.tools._util import mcp_response, pack_header, pack_line, pack_encode_id, pack_encode_text, pack_error, ErrorCode, resolve_root_ids, require_db_schema
+from collections.abc import Mapping
+from typing import TypeAlias
+
+from sari.mcp.tools._util import (
+    mcp_response,
+    pack_header,
+    pack_line,
+    pack_encode_id,
+    pack_encode_text,
+    pack_error,
+    ErrorCode,
+    resolve_root_ids,
+    require_db_schema,
+    invalid_args_response,
+)
 
 from sari.core.db import LocalSearchDB
 from sari.mcp.telemetry import TelemetryLogger
 
+ToolResult: TypeAlias = dict[str, object]
 
-def execute_repo_candidates(args: Dict[str, Any], db: LocalSearchDB, logger: TelemetryLogger = None, roots: List[str] = None) -> Dict[str, Any]:
+
+def execute_repo_candidates(
+    args: object,
+    db: LocalSearchDB,
+    logger: TelemetryLogger = None,
+    roots: list[str] | None = None,
+) -> ToolResult:
     """
     쿼리와 일치하는 파일이 많은 리포지토리를 찾아 후보군을 제안합니다.
     어떤 리포지토리에서 작업을 시작해야 할지 모를 때 유용합니다.
@@ -23,8 +43,11 @@ def execute_repo_candidates(args: Dict[str, Any], db: LocalSearchDB, logger: Tel
     )
     if guard:
         return guard
+
+    if not isinstance(args, Mapping):
+        return invalid_args_response("repo_candidates", "args must be an object")
         
-    query = args.get("query", "")
+    query = str(args.get("query", ""))
     try:
         limit_arg = min(int(args.get("limit", 3)), 5)
     except (ValueError, TypeError):
@@ -53,7 +76,7 @@ def execute_repo_candidates(args: Dict[str, Any], db: LocalSearchDB, logger: Tel
         return candidates
 
     # --- JSON Builder ---
-    def build_json() -> Dict[str, Any]:
+    def build_json() -> ToolResult:
         """JSON 형식의 응답을 생성합니다."""
         candidates = get_candidates()
         return {

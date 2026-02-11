@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Mapping, Optional, TypeAlias
 from sari.core.db import LocalSearchDB
 from sari.mcp.tools._util import (
     mcp_response,
@@ -12,7 +12,11 @@ from sari.mcp.tools._util import (
     parse_int_arg,
 )
 
-def execute_read_file(args: Dict[str, Any], db: LocalSearchDB, roots: List[str]) -> Dict[str, Any]:
+ToolResult: TypeAlias = dict[str, object]
+ToolArgs: TypeAlias = dict[str, object]
+
+
+def execute_read_file(args: object, db: LocalSearchDB, roots: list[str]) -> ToolResult:
     """
     파일 내용을 읽어오는 도구입니다. 대용량 파일의 경우 페이지네이션을 지원합니다.
     검색(search)이나 심볼 목록(list_symbols) 조회 후 사용하는 것이 좋습니다.
@@ -21,17 +25,31 @@ def execute_read_file(args: Dict[str, Any], db: LocalSearchDB, roots: List[str])
         args: {"path": str, "offset": int, "limit": int} 형태의 인자
         db: LocalSearchDB 인스턴스
     """
+    if not isinstance(args, Mapping):
+        return mcp_response(
+            "read_file",
+            lambda: pack_error("read_file", ErrorCode.INVALID_ARGS, "'args' must be an object"),
+            lambda: {
+                "error": {
+                    "code": ErrorCode.INVALID_ARGS.value,
+                    "message": "'args' must be an object",
+                },
+                "isError": True,
+            },
+        )
+    args_map: ToolArgs = dict(args)
+
     # 인자 검증 및 파싱
-    validation_result = _validate_read_file_args(args)
+    validation_result = _validate_read_file_args(args_map)
     if validation_result:
         return validation_result
     
-    path = args["path"]
-    offset, err = parse_int_arg(args, "offset", 0, "read_file", min_value=0)
+    path = args_map["path"]
+    offset, err = parse_int_arg(args_map, "offset", 0, "read_file", min_value=0)
     if err:
         return err
-    if args.get("limit") is not None:
-        limit, err = parse_int_arg(args, "limit", 0, "read_file", min_value=1)
+    if args_map.get("limit") is not None:
+        limit, err = parse_int_arg(args_map, "limit", 0, "read_file", min_value=1)
         if err:
             return err
     else:
@@ -91,7 +109,7 @@ def execute_read_file(args: Dict[str, Any], db: LocalSearchDB, roots: List[str])
     )
 
 
-def _validate_read_file_args(args: Dict[str, Any]) -> Dict[str, Any]:
+def _validate_read_file_args(args: ToolArgs) -> Optional[ToolResult]:
     """read_file 인자의 유효성을 검사합니다."""
     path = args.get("path")
     if not path:
@@ -103,7 +121,7 @@ def _validate_read_file_args(args: Dict[str, Any]) -> Dict[str, Any]:
     return None
 
 
-def _read_file_content(db: LocalSearchDB, db_path: str, original_path: str) -> Dict[str, Any]:
+def _read_file_content(db: LocalSearchDB, db_path: str, original_path: str) -> ToolResult:
     """데이터베이스에서 파일 내용을 읽어옵니다."""
     if not db_path:
         return {
@@ -139,7 +157,7 @@ def _read_file_content(db: LocalSearchDB, db_path: str, original_path: str) -> D
     return {"content": content}
 
 
-def _apply_pagination(content: str, offset: int, limit: int = None) -> Dict[str, Any]:
+def _apply_pagination(content: str, offset: int, limit: Optional[int] = None) -> ToolResult:
     """내용에 라인 기반 페이지네이션을 적용합니다."""
     lines = content.splitlines()
     total_lines = len(lines)
@@ -178,9 +196,9 @@ def _build_read_file_response(
     limit: int,
     total_lines: int,
     is_truncated: bool,
-    next_offset: int,
+    next_offset: Optional[int],
     token_count: int
-) -> Dict[str, Any]:
+) -> ToolResult:
     """메타데이터를 포함한 read_file 응답을 생성합니다."""
     def build_pack() -> str:
         # 헤더에 페이지네이션 및 토큰 정보 포함

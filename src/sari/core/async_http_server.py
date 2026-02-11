@@ -8,7 +8,7 @@ import json
 import os
 import asyncio
 from contextlib import asynccontextmanager
-from typing import Any, Dict, List, Optional
+from typing import Optional, TypeAlias
 
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse, Response
@@ -18,6 +18,9 @@ from starlette.requests import Request
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 from sari.version import __version__
+
+JsonObject: TypeAlias = dict[str, object]
+JsonArray: TypeAlias = list[JsonObject]
 
 
 class AsyncHttpServer:
@@ -29,14 +32,14 @@ class AsyncHttpServer:
     
     def __init__(
         self,
-        db: Any,
-        indexer: Any,
+        db: object,
+        indexer: object,
         host: str = "127.0.0.1",
         port: int = 47777,
         version: str = __version__,
         workspace_root: str = "",
-        root_ids: Optional[List[str]] = None,
-        mcp_server: Any = None,
+        root_ids: Optional[list[str]] = None,
+        mcp_server: object = None,
     ):
         self.db = db
         self.indexer = indexer
@@ -48,7 +51,7 @@ class AsyncHttpServer:
         self.mcp_server = mcp_server
         self._app: Optional[Starlette] = None
     
-    def _get_system_metrics(self) -> Dict[str, Any]:
+    def _get_system_metrics(self) -> JsonObject:
         try:
             from sari.core.utils.system import get_system_metrics
             return get_system_metrics()
@@ -147,6 +150,13 @@ class AsyncHttpServer:
             hits, meta = await loop.run_in_executor(None, lambda: self.db.search_v2(opts))
         except Exception as e:
             return JSONResponse({"ok": False, "error": f"search failed: {e}"}, status_code=500)
+
+        normalized_hits: list[JsonObject] = []
+        for hit in hits:
+            if isinstance(hit, dict):
+                normalized_hits.append(dict(hit))
+            else:
+                normalized_hits.append(dict(getattr(hit, "__dict__", {})))
         
         return JSONResponse({
             "ok": True,
@@ -155,7 +165,7 @@ class AsyncHttpServer:
             "meta": meta,
             "engine": engine_mode,
             "index_version": index_version,
-            "hits": [h.__dict__ for h in hits],
+            "hits": normalized_hits,
         })
     
     async def rescan(self, request: Request) -> JSONResponse:
@@ -203,10 +213,11 @@ class AsyncHttpServer:
                 status_code=400,
             )
         
-        def _handle_one(req: Any) -> Optional[Dict[str, Any]]:
+        def _handle_one(req: object) -> Optional[JsonObject]:
             if not isinstance(req, dict):
                 return {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "Invalid Request"}}
-            return self.mcp_server.handle_request(req)
+            resp = self.mcp_server.handle_request(req)
+            return resp if isinstance(resp, dict) else None
         
         # Handle batch or single request
         loop = asyncio.get_running_loop()
@@ -284,12 +295,12 @@ class AsyncHttpServer:
 def serve_async(
     host: str,
     port: int,
-    db: Any,
-    indexer: Any,
+    db: object,
+    indexer: object,
     version: str = __version__,
     workspace_root: str = "",
-    cfg: Any = None,
-    mcp_server: Any = None,
+    cfg: object = None,
+    mcp_server: object = None,
 ) -> tuple:
     """
     Start async HTTP server with uvicorn.

@@ -6,7 +6,7 @@ import queue
 import concurrent.futures
 import socket
 from pathlib import Path
-from typing import Any, Dict, Optional, List
+from typing import Optional, Mapping, TypeAlias
 from sari.mcp.workspace_registry import Registry
 from sari.core.workspace import WorkspaceManager
 from sari.core.settings import settings
@@ -24,15 +24,17 @@ try:
 except Exception:
     _orjson = None
 
+JsonMap: TypeAlias = dict[str, object]
+
 
 class JsonRpcException(Exception):
-    def __init__(self, code: int, message: str, data: Any = None):
+    def __init__(self, code: int, message: str, data: object = None):
         self.code = code
         self.message = message
         self.data = data
 
 
-def _json_dumps(obj: Any) -> str:
+def _json_dumps(obj: object) -> str:
     if _orjson:
         return _orjson.dumps(obj).decode("utf-8")
     return json.dumps(obj)
@@ -67,9 +69,9 @@ class LocalSearchMCPServer:
     def __init__(
             self,
             workspace_root: str,
-            cfg: Any = None,
-            db: Any = None,
-            indexer: Any = None,
+            cfg: object = None,
+            db: object = None,
+            indexer: object = None,
             start_worker: bool = True):
         self.workspace_root = workspace_root
         trace(
@@ -100,7 +102,7 @@ class LocalSearchMCPServer:
             os.environ.get("SARI_FORCE_CONTENT_LENGTH") or "").strip().lower() in {
             "1", "true", "yes", "on"}
         # Add maxsize to prevent memory bloat under heavy load
-        self._req_queue: "queue.Queue[Dict[str, Any]]" = queue.Queue(
+        self._req_queue: "queue.Queue[JsonMap]" = queue.Queue(
             maxsize=settings.get_int("MCP_QUEUE_SIZE", 1000))
         self._stop = threading.Event()
         self._stdout_lock = threading.Lock()
@@ -109,7 +111,7 @@ class LocalSearchMCPServer:
         self._session_acquired = False
         self._daemon_lock = threading.Lock()
         self._daemon_channels_lock = threading.Lock()
-        self._daemon_channels: Dict[int, Any] = {}
+        self._daemon_channels: dict[int, object] = {}
         # Duplicate assignment removed. Use _debug_enabled from above.
 
         # Daemon proxy is handled by the stdio proxy process, not the MCP
@@ -128,7 +130,7 @@ class LocalSearchMCPServer:
             workspace_root=self.workspace_root,
             proxy_to_daemon=self._proxy_to_daemon)
 
-    def handle_initialize(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    def handle_initialize(self, params: Mapping[str, object]) -> JsonMap:
         trace(
             "initialize_enter",
             workspace_root=self.workspace_root,
@@ -174,11 +176,11 @@ class LocalSearchMCPServer:
         }
 
     def _iter_client_protocol_versions(
-            self, params: Dict[str, Any]) -> List[str]:
-        versions: List[str] = []
+            self, params: Mapping[str, object]) -> list[str]:
+        versions: list[str] = []
         seen = set()
 
-        def _append(v: Any) -> None:
+        def _append(v: object) -> None:
             if not isinstance(v, str):
                 return
             vv = v.strip()
@@ -197,7 +199,7 @@ class LocalSearchMCPServer:
 
         return versions
 
-    def _negotiate_protocol_version(self, params: Dict[str, Any]) -> str:
+    def _negotiate_protocol_version(self, params: Mapping[str, object]) -> str:
         client_versions = self._iter_client_protocol_versions(params)
         for v in client_versions:
             if v in self.SUPPORTED_VERSIONS:
@@ -214,12 +216,12 @@ class LocalSearchMCPServer:
 
         return self.PROTOCOL_VERSION
 
-    def handle_initialized(self, params: Dict[str, Any]) -> None:
+    def handle_initialized(self, params: Mapping[str, object]) -> None:
         """Called by client after initialize response is received."""
         # Optional: Start background tasks here if needed
         pass
 
-    def handle_tools_call(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    def handle_tools_call(self, params: Mapping[str, object]) -> JsonMap:
         tool_name = params.get("name")
         args = params.get("arguments", {})
         cfg = self._injected_cfg
@@ -270,7 +272,7 @@ class LocalSearchMCPServer:
             lambda: self._tool_registry.execute(tool_name, ctx, args),
         )
 
-    def list_roots(self) -> List[Dict[str, str]]:
+    def list_roots(self) -> list[dict[str, str]]:
         """Return configured workspace roots as MCP root objects."""
         cfg = None
         try:
@@ -335,7 +337,7 @@ class LocalSearchMCPServer:
             return node
         return walk(s)
 
-    def list_tools(self) -> List[Dict[str, Any]]:
+    def list_tools(self) -> list[dict[str, object]]:
         os.environ.get(
             "SARI_EXPOSE_INTERNAL_TOOLS",
             "").strip().lower() in {
@@ -352,7 +354,7 @@ class LocalSearchMCPServer:
             for t in self._tool_registry.list_tools_raw()
         ]
 
-    def handle_tools_list(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    def handle_tools_list(self, params: Mapping[str, object]) -> JsonMap:
         """Test helper: Handle tools/list request."""
         return {"tools": self.list_tools()}
 
@@ -362,26 +364,33 @@ class LocalSearchMCPServer:
             self._session = self.registry.get_or_create(self.workspace_root)
             self._session_acquired = True
 
-    def _tool_status(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    def _tool_status(self, args: dict[str, object]) -> JsonMap:
         """Test helper: Execute status tool."""
         self._ensure_initialized()
         return self.handle_tools_call({"name": "status", "arguments": args})
 
-    def _tool_search(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    def _tool_search(self, args: dict[str, object]) -> JsonMap:
         """Test helper: Execute search tool."""
         self._ensure_initialized()
         return self.handle_tools_call({"name": "search", "arguments": args})
 
     def handle_request(
-            self, request: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+            self, request: object) -> Optional[JsonMap]:
+        if not isinstance(request, Mapping):
+            return {
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {"code": -32600, "message": "Invalid Request"},
+            }
+        request_map: Mapping[str, object] = request
         trace(
             "handle_request_enter",
-            method=request.get("method"),
-            msg_id=request.get("id"),
+            method=request_map.get("method"),
+            msg_id=request_map.get("id"),
             proxy_to_daemon=self._proxy_to_daemon,
         )
         if self._proxy_to_daemon:
-            resp = self._forward_to_daemon(request)
+            resp = self._forward_to_daemon(dict(request_map))
             if isinstance(resp, dict):
                 err = resp.get("error") if isinstance(resp, dict) else None
                 if isinstance(err, dict) and err.get("code") == -32002:
@@ -395,13 +404,13 @@ class LocalSearchMCPServer:
                     trace(
                         "handle_request_proxy_response",
                         has_error=bool(err),
-                        msg_id=request.get("id"))
+                        msg_id=request_map.get("id"))
                     return resp
             else:
                 return resp
 
-        method, params, msg_id = request.get(
-            "method"), request.get("params", {}), request.get("id")
+        method, params, msg_id = request_map.get(
+            "method"), request_map.get("params", {}), request_map.get("id")
         if msg_id is None:
             return None  # Ignore notifications for now
 
@@ -481,7 +490,7 @@ class LocalSearchMCPServer:
                     "message": str(e)}}
 
     def _forward_to_daemon(
-            self, request: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+            self, request: JsonMap) -> Optional[JsonMap]:
         """Forward MCP request to the TCP daemon and return response."""
         tid = threading.get_ident()
         trace(
@@ -579,7 +588,7 @@ class LocalSearchMCPServer:
                 pass
 
     def _forward_over_open_socket(
-            self, request: Dict[str, Any], conn: Any, f: Any) -> Optional[Dict[str, Any]]:
+            self, request: JsonMap, conn: object, f: object) -> Optional[JsonMap]:
         body = json.dumps(request).encode("utf-8")
         header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
         conn.sendall(header + body)
@@ -589,7 +598,7 @@ class LocalSearchMCPServer:
             method=request.get("method"),
             bytes=len(body))
 
-        headers: Dict[bytes, bytes] = {}
+        headers: dict[bytes, bytes] = {}
         while True:
             line = f.readline()
             if not line:
@@ -616,7 +625,7 @@ class LocalSearchMCPServer:
             bytes=content_length)
         return resp
 
-    def run(self, output_stream: Optional[Any] = None) -> None:
+    def run(self, output_stream: Optional[object] = None) -> None:
         """Standard MCP JSON-RPC loop with encapsulated transport."""
         self._log_debug("Sari MCP Server starting run loop...")
         trace("run_loop_start", workspace_root=self.workspace_root)
@@ -779,7 +788,7 @@ class LocalSearchMCPServer:
                 except Exception:
                     pass
 
-    def _handle_and_respond(self, req: Dict[str, Any]) -> None:
+    def _handle_and_respond(self, req: JsonMap) -> None:
         try:
             trace(
                 "handle_and_respond_enter",
@@ -817,7 +826,7 @@ class LocalSearchMCPServer:
         # Use a specific event name for raw string messages
         self.struct_logger.debug("mcp_debug_log", message=message)
 
-    def _sanitize_value(self, value: Any, key: str = "") -> Any:
+    def _sanitize_value(self, value: object, key: str = "") -> object:
         key_l = (key or "").lower()
         if any(s in key_l for s in self._SENSITIVE_KEYS):
             return "[REDACTED]"
@@ -833,10 +842,10 @@ class LocalSearchMCPServer:
             return value
         return value
 
-    def _log_debug_request(self, mode: str, req: Dict[str, Any]) -> None:
+    def _log_debug_request(self, mode: str, req: JsonMap) -> None:
         if not self._debug_enabled:
             return
-        summary: Dict[str, Any] = {
+        summary: JsonMap = {
             "id": req.get("id"),
             "method": req.get("method"),
             "mode": mode,
@@ -855,10 +864,10 @@ class LocalSearchMCPServer:
         # Log as structured event
         self.struct_logger.debug("mcp_request", **summary)
 
-    def _log_debug_response(self, mode: str, resp: Dict[str, Any]) -> None:
+    def _log_debug_response(self, mode: str, resp: JsonMap) -> None:
         if not self._debug_enabled:
             return
-        summary: Dict[str, Any] = {
+        summary: JsonMap = {
             "id": resp.get("id"),
             "mode": mode,
             "has_result": "result" in resp,
@@ -873,7 +882,7 @@ class LocalSearchMCPServer:
         self.struct_logger.debug("mcp_response", **summary)
 
 
-def main(original_stdout: Any = None) -> None:
+def main(original_stdout: object = None) -> None:
     # 1. Capture the pure, untouched stdout for MCP communication
     mcp_out = original_stdout or sys.stdout.buffer
 
