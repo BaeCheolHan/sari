@@ -32,6 +32,14 @@ def test_server_handle_request_not_found():
     resp = server.handle_request(req)
     assert resp["error"]["code"] == -32601
 
+
+def test_server_handle_request_rejects_non_object_payload():
+    server = LocalSearchMCPServer("/tmp/ws")
+    resp = server.handle_request(["bad-request"])
+    assert resp["error"]["code"] == -32600
+    assert resp["error"]["message"] == "Invalid Request"
+
+
 def test_server_handle_request_prompts_and_resources_list():
     server = LocalSearchMCPServer("/tmp/ws")
     prompts_resp = server.handle_request({"id": 1, "method": "prompts/list", "params": {}})

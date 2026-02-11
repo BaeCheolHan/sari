@@ -36,6 +36,16 @@ class TestCommunicationEdgeCases:
         assert result["id"] == 1
         assert mode == "jsonl"
 
+    def test_transport_rejects_non_object_jsonl_message(self):
+        transport = McpTransport(io.BytesIO(b"[1,2,3]\n"), io.BytesIO())
+        assert transport.read_message() is None
+
+    def test_transport_rejects_non_object_framed_message(self):
+        body = b"[1,2,3]"
+        raw = b"Content-Length: 7\r\n\r\n" + body
+        transport = McpTransport(io.BytesIO(raw), io.BytesIO())
+        assert transport.read_message() is None
+
     @pytest.mark.asyncio
     async def test_async_transport_read_timeout_or_interruption(self):
         """비동기 환경에서 읽기 중단 시나리오 검증"""

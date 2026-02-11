@@ -8,14 +8,17 @@ import pytest
 
 from sari.mcp.tools.call_graph_health import _load_plugins, execute_call_graph_health
 from sari.mcp.tools.call_graph import execute_call_graph
+from sari.mcp.tools.archive_context import execute_archive_context
 from sari.mcp.tools.get_context import execute_get_context
 from sari.mcp.tools.get_callers import execute_get_callers
 from sari.mcp.tools.list_files import execute_list_files
+from sari.mcp.tools.list_symbols import execute_list_symbols
 from sari.mcp.tools.read_file import execute_read_file
 from sari.mcp.tools.repo_candidates import execute_repo_candidates
 from sari.mcp.tools.rescan import execute_rescan
 from sari.mcp.tools.scan_once import execute_scan_once
 from sari.mcp.tools.search_api_endpoints import execute_search_api_endpoints
+from sari.mcp.tools.search_symbols import execute_search_symbols
 from sari.mcp.tools.search import _clip_text, execute_search
 from sari.mcp.tools.registry import Tool, ToolContext, ToolRegistry, build_default_registry
 
@@ -121,6 +124,20 @@ def test_get_context_requires_topic_or_query(monkeypatch):
     assert "code=INVALID_ARGS" in text
 
 
+def test_get_context_rejects_non_object_args():
+    resp = execute_get_context(["bad-args"], MagicMock(), ["/tmp/ws"])
+    text = resp["content"][0]["text"]
+    assert "PACK1 tool=get_context ok=false code=INVALID_ARGS" in text
+    assert resp.get("isError") is True
+
+
+def test_get_context_invalid_limit_is_handled():
+    resp = execute_get_context({"query": "q", "limit": "bad"}, MagicMock(), ["/tmp/ws"])
+    text = resp["content"][0]["text"]
+    assert "PACK1 tool=get_context ok=false code=INVALID_ARGS" in text
+    assert resp.get("isError") is True
+
+
 def test_get_context_topic_and_query_paths(monkeypatch):
     monkeypatch.setenv("SARI_FORMAT", "json")
     db = MagicMock()
@@ -181,6 +198,20 @@ def test_call_graph_health_plugin_loading(monkeypatch):
     assert statuses["not_a_real_plugin_zzz"].startswith("error:")
 
 
+def test_call_graph_health_rejects_non_object_args():
+    resp = execute_call_graph_health(["bad-args"], MagicMock())
+    text = resp["content"][0]["text"]
+    assert "PACK1 tool=call_graph_health ok=false code=INVALID_ARGS" in text
+    assert resp.get("isError") is True
+
+
+def test_list_files_rejects_non_object_args():
+    resp = execute_list_files(["bad-args"], MagicMock(), MagicMock(), ["/tmp/ws"])
+    text = resp["content"][0]["text"]
+    assert "PACK1 tool=list_files ok=false code=INVALID_ARGS" in text
+    assert resp.get("isError") is True
+
+
 def test_rescan_and_scan_once_error_paths(monkeypatch):
     monkeypatch.setenv("SARI_FORMAT", "pack")
 
@@ -224,6 +255,13 @@ def test_repo_candidates_invalid_query_and_limit_fallback(monkeypatch):
     assert "reason=High%20match" in text
 
 
+def test_repo_candidates_rejects_non_object_args():
+    resp = execute_repo_candidates(["bad-args"], MagicMock(), MagicMock(), ["/tmp/ws"])
+    text = resp["content"][0]["text"]
+    assert "PACK1 tool=repo_candidates ok=false code=INVALID_ARGS" in text
+    assert resp.get("isError") is True
+
+
 def test_read_file_error_and_json_metadata_paths(monkeypatch, tmp_path):
     db = MagicMock()
 
@@ -250,6 +288,13 @@ def test_read_file_error_and_json_metadata_paths(monkeypatch, tmp_path):
     payload = json.loads(json_resp["content"][0]["text"])
     assert payload["metadata"]["is_truncated"] is True
     assert payload["metadata"]["efficiency_warning"] == "High token usage"
+
+
+def test_list_symbols_rejects_non_object_args():
+    resp = execute_list_symbols(["bad-args"], MagicMock(), ["/tmp/ws"])
+    text = resp["content"][0]["text"]
+    assert "PACK1 tool=list_symbols ok=false code=INVALID_ARGS" in text
+    assert resp.get("isError") is True
 
 
 def test_read_file_invalid_offset_limit_types_are_handled(tmp_path, monkeypatch):
@@ -290,6 +335,20 @@ def test_call_graph_list_logger_roots_and_db_error(monkeypatch):
     monkeypatch.setattr("sari.mcp.tools.call_graph.CallGraphService", _SvcErr)
     bad = execute_call_graph({"symbol": "S"}, MagicMock(), MagicMock(), ["/tmp/ws"])
     assert "code=DB_ERROR" in bad["content"][0]["text"]
+
+
+def test_call_graph_rejects_non_object_args():
+    resp = execute_call_graph(["bad-args"], MagicMock(), MagicMock(), ["/tmp/ws"])
+    text = resp["content"][0]["text"]
+    assert "PACK1 tool=call_graph ok=false code=INVALID_ARGS" in text
+    assert resp.get("isError") is True
+
+
+def test_archive_context_rejects_non_object_args():
+    resp = execute_archive_context(["bad-args"], MagicMock(), ["/tmp/ws"])
+    text = resp["content"][0]["text"]
+    assert "PACK1 tool=archive_context ok=false code=INVALID_ARGS" in text
+    assert resp.get("isError") is True
 
 
 def test_get_callers_sid_repo_and_invalid_limit(monkeypatch):
@@ -353,6 +412,27 @@ def test_search_api_endpoints_invalid_args_and_filters(monkeypatch):
     assert "s.path LIKE ?" in conn.sql
 
 
+def test_search_api_endpoints_rejects_non_object_args():
+    resp = execute_search_api_endpoints(["bad-args"], MagicMock(), ["/tmp/ws"])
+    text = resp["content"][0]["text"]
+    assert "PACK1 tool=search_api_endpoints ok=false code=INVALID_ARGS" in text
+    assert resp.get("isError") is True
+
+
+def test_search_symbols_rejects_non_object_args():
+    resp = execute_search_symbols(["bad-args"], MagicMock(), MagicMock(), ["/tmp/ws"])
+    text = resp["content"][0]["text"]
+    assert "PACK1 tool=search_symbols ok=false code=INVALID_ARGS" in text
+    assert resp.get("isError") is True
+
+
+def test_search_symbols_invalid_limit_is_handled():
+    resp = execute_search_symbols({"query": "x", "limit": "bad"}, MagicMock(), MagicMock(), ["/tmp/ws"])
+    text = resp["content"][0]["text"]
+    assert "PACK1 tool=search_symbols ok=false code=INVALID_ARGS" in text
+    assert resp.get("isError") is True
+
+
 def test_registry_execute_policy_and_guard_paths(monkeypatch):
     reg = ToolRegistry()
     reg.register(Tool(name="search", description="d", input_schema={}, handler=lambda _ctx, _args: {"content": [123]}))
@@ -387,3 +467,33 @@ def test_registry_execute_policy_and_guard_paths(monkeypatch):
     names = {t["name"] for t in build_default_registry().list_tools()}
     assert "scan_once" in names
     assert "rescan" in names
+
+
+def test_registry_execute_does_not_mark_action_for_whitespace_prefixed_pack_error():
+    reg = ToolRegistry()
+    reg.register(
+        Tool(
+            name="search",
+            description="d",
+            input_schema={},
+            handler=lambda _ctx, _args: {
+                "content": [{"text": "  PACK1 tool=search ok=false code=INVALID_ARGS msg=x"}]
+            },
+        )
+    )
+
+    policy = MagicMock()
+    ctx = ToolContext(
+        db=MagicMock(),
+        engine=None,
+        indexer=MagicMock(),
+        roots=["/tmp/ws"],
+        cfg=MagicMock(),
+        logger=MagicMock(),
+        workspace_root="/tmp/ws",
+        server_version="test",
+        policy_engine=policy,
+    )
+
+    reg.execute("search", ctx, {})
+    policy.mark_action.assert_not_called()

@@ -4,11 +4,14 @@ from sari.mcp.tools.get_snippet import execute_get_snippet
 from sari.mcp.tools.grep_and_read import execute_grep_and_read
 from sari.mcp.tools.index_file import execute_index_file
 from sari.mcp.tools.rescan import execute_rescan
+from sari.mcp.tools.scan_once import execute_scan_once
 from sari.mcp.tools.read_symbol import execute_read_symbol
 from sari.mcp.tools.get_callers import execute_get_callers
 from sari.mcp.tools.get_implementations import execute_get_implementations
 from sari.mcp.tools.repo_candidates import execute_repo_candidates
+from sari.mcp.tools.save_snippet import execute_save_snippet
 from sari.mcp.tools.dry_run_diff import execute_dry_run_diff
+from sari.mcp.tools.guide import execute_sari_guide
 from sari.mcp.tools.registry import build_default_registry, ToolContext
 from sari.mcp.tools._util import resolve_repo_scope
 from sari.mcp.policies import PolicyEngine
@@ -28,6 +31,14 @@ def test_execute_read_file(tmp_path):
     # The content is URL encoded
     import urllib.parse
     assert urllib.parse.quote("hello world") in resp["content"][0]["text"]
+
+
+def test_execute_read_file_rejects_non_object_args():
+    db = MagicMock()
+    resp = execute_read_file(["bad-args"], db, ["/tmp/ws"])
+    text = resp["content"][0]["text"]
+    assert "PACK1 tool=read_file ok=false code=INVALID_ARGS" in text
+    assert resp.get("isError") is True
 
 
 def test_execute_get_snippet(tmp_path):
@@ -52,6 +63,14 @@ def test_execute_get_snippet(tmp_path):
     assert "PACK1" in resp["content"][0]["text"]
 
 
+def test_execute_get_snippet_rejects_non_object_args():
+    db = MagicMock()
+    resp = execute_get_snippet(["bad-args"], db, ["/tmp/ws"])
+    text = resp["content"][0]["text"]
+    assert "PACK1 tool=get_snippet ok=false code=INVALID_ARGS" in text
+    assert resp.get("isError") is True
+
+
 def test_execute_grep_and_read(tmp_path):
     roots = [str(tmp_path)]
     db = MagicMock()
@@ -65,6 +84,14 @@ def test_execute_grep_and_read(tmp_path):
         pass
 
 
+def test_execute_grep_and_read_rejects_non_object_args():
+    db = MagicMock()
+    resp = execute_grep_and_read(["bad-args"], db, ["/tmp/ws"])
+    text = resp["content"][0]["text"]
+    assert "PACK1 tool=grep_and_read ok=false code=INVALID_ARGS" in text
+    assert resp.get("isError") is True
+
+
 def test_execute_index_file():
     indexer = MagicMock()
     roots = ["/tmp/ws"]
@@ -73,11 +100,32 @@ def test_execute_index_file():
     assert "PACK1" in resp["content"][0]["text"]
 
 
+def test_execute_index_file_rejects_non_object_args():
+    resp = execute_index_file(["bad-args"], MagicMock(), ["/tmp/ws"])
+    text = resp["content"][0]["text"]
+    assert "PACK1 tool=index_file ok=false code=INVALID_ARGS" in text
+    assert resp.get("isError") is True
+
+
 def test_execute_rescan():
     indexer = MagicMock()
     args = {}
     resp = execute_rescan(args, indexer)
     assert "PACK1" in resp["content"][0]["text"]
+
+
+def test_execute_rescan_rejects_non_object_args():
+    resp = execute_rescan(["bad-args"], MagicMock())
+    text = resp["content"][0]["text"]
+    assert "PACK1 tool=rescan ok=false code=INVALID_ARGS" in text
+    assert resp.get("isError") is True
+
+
+def test_execute_scan_once_rejects_non_object_args():
+    resp = execute_scan_once(["bad-args"], MagicMock(), MagicMock())
+    text = resp["content"][0]["text"]
+    assert "PACK1 tool=scan_once ok=false code=INVALID_ARGS" in text
+    assert resp.get("isError") is True
 
 
 def test_execute_rescan_fallback_to_scan_once():
@@ -116,6 +164,21 @@ def test_execute_dry_run_diff_requires_content(tmp_path):
     text = resp["content"][0]["text"]
     assert "ok=false" in text
     assert "code=INVALID_ARGS" in text
+
+
+def test_execute_dry_run_diff_rejects_non_object_args():
+    db = MagicMock()
+    resp = execute_dry_run_diff(["bad-args"], db, ["/tmp/ws"])
+    text = resp["content"][0]["text"]
+    assert "PACK1 tool=dry_run_diff ok=false code=INVALID_ARGS" in text
+    assert resp.get("isError") is True
+
+
+def test_execute_sari_guide_rejects_non_object_args():
+    resp = execute_sari_guide(["bad-args"])
+    text = resp["content"][0]["text"]
+    assert "PACK1 tool=sari_guide ok=false code=INVALID_ARGS" in text
+    assert resp.get("isError") is True
 
 
 def test_registry_scan_once_handler_passes_logger():
@@ -256,6 +319,22 @@ def test_read_symbol_supports_symbol_id_without_path(tmp_path):
     assert "sid=sid-hello" in text
 
 
+def test_execute_read_symbol_rejects_non_object_args():
+    db = MagicMock()
+    resp = execute_read_symbol(["bad-args"], db, MagicMock(), ["/tmp/ws"])
+    text = resp["content"][0]["text"]
+    assert "PACK1 tool=read_symbol ok=false code=INVALID_ARGS" in text
+    assert resp.get("isError") is True
+
+
+def test_execute_save_snippet_rejects_non_object_args():
+    db = MagicMock()
+    resp = execute_save_snippet(["bad-args"], db, ["/tmp/ws"])
+    text = resp["content"][0]["text"]
+    assert "PACK1 tool=save_snippet ok=false code=INVALID_ARGS" in text
+    assert resp.get("isError") is True
+
+
 def test_get_callers_falls_back_to_call_graph(monkeypatch):
     class _Conn:
         def execute(self, *_args, **_kwargs):
@@ -285,6 +364,13 @@ def test_get_callers_falls_back_to_call_graph(monkeypatch):
     text = resp["content"][0]["text"]
     assert "PACK1 tool=get_callers ok=true" in text
     assert "caller_symbol=callerA" in text
+
+
+def test_get_callers_rejects_non_object_args():
+    resp = execute_get_callers(["bad-args"], MagicMock(), ["/tmp/ws"])
+    text = resp["content"][0]["text"]
+    assert "PACK1 tool=get_callers ok=false code=INVALID_ARGS" in text
+    assert resp.get("isError") is True
 
 
 def test_get_callers_repo_filter_applied():
@@ -337,6 +423,20 @@ def test_get_implementations_falls_back_to_file_content():
     text = resp["content"][0]["text"]
     assert "PACK1 tool=get_implementations ok=true" in text
     assert "implementer_symbol=Repo" in text
+
+
+def test_get_implementations_rejects_non_object_args():
+    resp = execute_get_implementations(["bad-args"], MagicMock(), ["/tmp/ws"])
+    text = resp["content"][0]["text"]
+    assert "PACK1 tool=get_implementations ok=false code=INVALID_ARGS" in text
+    assert resp.get("isError") is True
+
+
+def test_get_implementations_invalid_limit_is_handled():
+    resp = execute_get_implementations({"name": "Iface", "limit": "bad"}, MagicMock(), ["/tmp/ws"])
+    text = resp["content"][0]["text"]
+    assert "PACK1 tool=get_implementations ok=false code=INVALID_ARGS" in text
+    assert resp.get("isError") is True
 
 
 def test_get_implementations_repo_filter_applied():

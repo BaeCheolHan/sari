@@ -26,3 +26,13 @@ def test_weighted_fair_queue_get_returns_scheduled_task():
     assert task.root_id == "root-b"
     assert task.payload == {"path": "b.py"}
 
+
+def test_weighted_fair_queue_non_positive_weight_does_not_crash():
+    q = WeightedFairQueue()
+    q.set_weight("root-c", 0.0)
+    q.put("root-c", {"path": "c.py"}, base_priority=4.0)
+
+    task = q.get()
+
+    assert task is not None
+    assert task.root_id == "root-c"

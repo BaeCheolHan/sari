@@ -43,6 +43,31 @@ def test_registry_workspace_deduplication_policy():
         assert parent not in workspaces
 
 
+def test_registry_prune_dead_tolerates_malformed_daemon_entry():
+    """
+    D1-1: Malformed daemon payloads should not crash prune logic.
+    """
+    reg = ServerRegistry()
+    data = {
+        "version": "2.0",
+        "daemons": {
+            "bad": 123,  # malformed payload
+            "ok": {"pid": os.getpid(), "host": "127.0.0.1", "port": 47779},
+        },
+        "workspaces": {
+            "/tmp/ws-bad": {"boot_id": "bad"},
+            "/tmp/ws-ok": {"boot_id": "ok"},
+        },
+    }
+
+    reg._prune_dead_locked(data)
+
+    assert "bad" not in data["daemons"]
+    assert "/tmp/ws-bad" not in data["workspaces"]
+    assert "ok" in data["daemons"]
+    assert "/tmp/ws-ok" in data["workspaces"]
+
+
 def test_worker_file_disappeared_mid_process():
     """
     D2: Test worker resilience when file is deleted between stat and read.

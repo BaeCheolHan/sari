@@ -81,3 +81,9 @@ class TestProDoctorEdgeCases:
                 assert res is not None
         finally:
             os.chmod(reg_file, 0o666)
+
+    def test_doctor_rejects_non_object_args(self):
+        res = execute_doctor(["bad-args"])
+        assert res.get("isError") is True
+        text = res["content"][0]["text"]
+        assert "PACK1 tool=doctor ok=false code=INVALID_ARGS" in text

@@ -93,6 +93,17 @@ def test_index_service_scan_once_flush_and_status_error_paths(monkeypatch):
     assert resp == {"ok": True, "scanned_files": 0, "indexed_files": 0}
 
 
+def test_index_service_scan_once_tolerates_non_mapping_queue_depths(monkeypatch):
+    idx = _FakeIndexer()
+    idx.get_queue_depths = lambda: None
+    svc = IndexService(idx)
+    monkeypatch.setattr("sari.core.services.index_service.time.sleep", lambda *_: None)
+
+    resp = svc.scan_once()
+
+    assert resp == {"ok": True, "scanned_files": 11, "indexed_files": 7}
+
+
 def test_index_service_rescan_paths():
     idx = _FakeIndexer()
     svc = IndexService(idx)

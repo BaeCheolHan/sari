@@ -112,6 +112,19 @@ def test_execute_status():
     assert "m:cfg_include_ext=.py" in text
 
 
+def test_execute_status_tolerates_indexer_without_status():
+    indexer = MagicMock()
+    del indexer.status
+    db = MagicMock()
+    cfg = MagicMock()
+    cfg.include_ext = []
+
+    resp = execute_status({}, indexer, db, cfg, "/tmp/ws", "0.0.1")
+    text = resp["content"][0]["text"]
+    assert "PACK1 tool=status ok=true" in text
+    assert "m:index_ready=false" in text
+
+
 def test_execute_search_pack_error_sets_is_error_flag(monkeypatch):
     db = MagicMock()
     logger = MagicMock()
@@ -122,3 +135,16 @@ def test_execute_search_pack_error_sets_is_error_flag(monkeypatch):
     text = resp["content"][0]["text"]
     assert "PACK1 tool=search ok=false" in text
     assert resp.get("isError") is True
+
+
+def test_execute_search_tolerates_non_mapping_meta():
+    db = MagicMock()
+    logger = MagicMock()
+    roots = ["/tmp/ws"]
+    hit = SearchHit(repo="repo1", path="path1", score=1.0, snippet="hi")
+    db.search_v2.return_value = ([hit], None)
+
+    resp = execute_search({"query": "test", "limit": 10}, db, logger, roots)
+    text = resp["content"][0]["text"]
+    assert "PACK1 tool=search ok=true" in text
+    assert "r:path=path1 repo=repo1" in text

@@ -25,6 +25,19 @@ def test_engine_router():
     assert len(results) == 2
     assert results[0]["score"] == 0.9
 
+
+def test_engine_router_ignores_non_mapping_docs():
+    engine1 = MagicMock()
+    router = EngineRouter({"root1": engine1})
+
+    docs = [None, "bad", {"doc_id": "root1/f1.py"}]
+    router.upsert_documents(docs)
+
+    engine1.upsert_documents.assert_called_once()
+    sent_batch = engine1.upsert_documents.call_args.args[0]
+    assert sent_batch == [{"doc_id": "root1/f1.py"}]
+
+
 def test_sqlite_adapter():
     db = MagicMock()
     adapter = SqliteSearchEngineAdapter(db)
@@ -79,6 +92,46 @@ def test_tantivy_upsert_accepts_id_key():
     with patch("sari.core.engine.tantivy_engine.tantivy") as mock_tantivy:
         mock_tantivy.Document.side_effect = lambda **kwargs: kwargs
         engine.upsert_documents([{"id": "root1/file.py", "repo": "repo1"}])
+
+    assert ("path", "root1/file.py") in fake_writer.deleted
+    assert len(fake_writer.added) == 1
+
+
+@pytest.mark.gate
+def test_tantivy_upsert_ignores_non_mapping_docs():
+    class FakeWriter:
+        def __init__(self):
+            self.deleted = []
+            self.added = []
+
+        def delete_documents(self, field, value):
+            self.deleted.append((field, value))
+
+        def add_document(self, doc):
+            self.added.append(doc)
+
+        def commit(self):
+            pass
+
+    class FakeIndex:
+        def __init__(self, writer):
+            self._writer = writer
+
+        def writer(self, *_args, **_kwargs):
+            return self._writer
+
+    fake_writer = FakeWriter()
+    engine = TantivyEngine.__new__(TantivyEngine)
+    engine._index = FakeIndex(fake_writer)
+    engine._writer = None
+    engine._writer_lock = __import__("threading").Lock()
+    engine.settings = MagicMock()
+    engine.settings.ENGINE_INDEX_MEM_MB = 64
+    engine.logger = None
+
+    with patch("sari.core.engine.tantivy_engine.tantivy") as mock_tantivy:
+        mock_tantivy.Document.side_effect = lambda **kwargs: kwargs
+        engine.upsert_documents([None, "bad", {"id": "root1/file.py", "repo": "repo1"}])
 
     assert ("path", "root1/file.py") in fake_writer.deleted
     assert len(fake_writer.added) == 1
