@@ -1,4 +1,6 @@
 import argparse
+import io
+import json
 import sys
 import urllib.error
 from unittest.mock import MagicMock, patch
@@ -122,10 +124,73 @@ def test_cmd_daemon_stop():
                 mock_registry_cls.return_value = mock_registry
                 # First call: daemon is running, later calls: stopped
                 with patch('sari.mcp.cli.daemon.is_daemon_running', side_effect=[True, False, False]):
-                    ret = cmd_daemon_stop(args)
-                    assert ret == 0
-                    # daemon + http kill path should execute
-                    assert mock_kill.called
+                    with patch("sari.mcp.cli.daemon.kill_orphan_sari_workers", return_value=0) as mock_sweep:
+                        ret = cmd_daemon_stop(args)
+                        assert ret == 0
+                        # daemon + http kill path should execute
+                        assert mock_kill.called
+                        mock_sweep.assert_called()
+
+
+class _FakeProc:
+    def __init__(self, pid, ppid, cmdline, env):
+        self.info = {"pid": pid, "ppid": ppid, "cmdline": cmdline}
+        self._env = env
+        self.terminated = False
+        self.killed = False
+
+    def environ(self):
+        return self._env
+
+    def terminate(self):
+        self.terminated = True
+
+    def wait(self, timeout=None):
+        return None
+
+    def kill(self):
+        self.killed = True
+
+
+def test_kill_orphan_sari_workers_filters_and_kills(monkeypatch):
+    from sari.mcp.cli import daemon as daemon_mod
+
+    orphan_target = _FakeProc(
+        1001,
+        1,
+        ["python", "-c", "from multiprocessing.spawn import spawn_main", "--multiprocessing-fork"],
+        {"SARI_DAEMON_PORT": "47777", "SARI_WORKSPACE_ROOT": "/tmp/ws-a"},
+    )
+    non_orphan = _FakeProc(
+        1002,
+        4321,
+        ["python", "-c", "from multiprocessing.spawn import spawn_main", "--multiprocessing-fork"],
+        {"SARI_DAEMON_PORT": "47777", "SARI_WORKSPACE_ROOT": "/tmp/ws-a"},
+    )
+    other_port = _FakeProc(
+        1003,
+        1,
+        ["python", "-c", "from multiprocessing.spawn import spawn_main", "--multiprocessing-fork"],
+        {"SARI_DAEMON_PORT": "49999", "SARI_WORKSPACE_ROOT": "/tmp/ws-a"},
+    )
+
+    fake_psutil = type(
+        "FakePsutil",
+        (),
+        {
+            "process_iter": staticmethod(lambda *_args, **_kwargs: [orphan_target, non_orphan, other_port]),
+            "NoSuchProcess": Exception,
+            "AccessDenied": Exception,
+            "ZombieProcess": Exception,
+        },
+    )()
+    monkeypatch.setattr(daemon_mod, "psutil", fake_psutil)
+
+    killed = daemon_mod.kill_orphan_sari_workers(port=47777)
+    assert killed == 1
+    assert orphan_target.terminated
+    assert not non_orphan.terminated
+    assert not other_port.terminated
 
 def test_uninstall():
     from sari.uninstall import main as uninstall_main
@@ -173,3 +238,35 @@ def test_legacy_status_and_maintenance_commands_reexported_from_commands_module(
     assert legacy_cli.cmd_init is maintenance_commands.cmd_init
     assert legacy_cli.cmd_prune is maintenance_commands.cmd_prune
     assert legacy_cli.cmd_vacuum is maintenance_commands.cmd_vacuum
+
+
+def test_ensure_workspace_http_sets_non_persistent_initialize():
+    from sari.mcp.cli.mcp_client import ensure_workspace_http
+
+    sent = {"raw": b""}
+    response = json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}).encode("utf-8")
+    framed = f"Content-Length: {len(response)}\r\n\r\n".encode("ascii") + response
+
+    class _FakeSock:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def settimeout(self, _timeout):
+            return None
+
+        def sendall(self, data):
+            sent["raw"] += data
+
+        def makefile(self, _mode):
+            return io.BytesIO(framed)
+
+    with patch("socket.create_connection", return_value=_FakeSock()):
+        ok = ensure_workspace_http("127.0.0.1", 47777, workspace_root="/tmp/ws")
+        assert ok is True
+
+    body = sent["raw"].split(b"\r\n\r\n", 1)[1]
+    payload = json.loads(body.decode("utf-8"))
+    assert payload["params"]["sariPersist"] is True

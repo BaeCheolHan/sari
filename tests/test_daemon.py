@@ -25,16 +25,17 @@ async def test_daemon_start_mock(tmp_path):
             mock_start.return_value = mock_server
 
             # Use a task to start daemon and then cancel it
-            task = asyncio.create_task(daemon.start())
-            await asyncio.sleep(0.1)
+            with patch.object(daemon._registry, "resolve_daemon_by_endpoint", return_value=None):
+                task = asyncio.create_task(daemon.start())
+                await asyncio.sleep(0.1)
 
-            assert mock_start.called
-            daemon.shutdown()
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+                assert mock_start.called
+                daemon.shutdown()
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
 
 
 def test_daemon_cleanup_legacy_pid(tmp_path):

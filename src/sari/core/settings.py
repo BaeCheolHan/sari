@@ -60,6 +60,7 @@ class Settings(BaseSettings):
     DAEMON_IDLE_WITH_ACTIVE: bool = False
     DAEMON_DRAIN_GRACE_SEC: int = 0
     DAEMON_AUTOSTOP: bool = True
+    DAEMON_AUTOSTOP_GRACE_SEC: int = 60
 
     # --- MCP SETTINGS ---
     SEARCH_FIRST_MODE: bool = True

@@ -7,7 +7,7 @@ import multiprocessing
 import tempfile
 import concurrent.futures
 from collections import OrderedDict
-from typing import Optional
+from typing import Optional, Callable
 from pathlib import Path
 from sari.core.config.main import Config
 from sari.core.db.main import LocalSearchDB
@@ -17,8 +17,25 @@ from sari.core.workspace import WorkspaceManager
 from sari.core.models import IndexingResult
 
 
+def _is_pid_alive(pid: int) -> bool:
+    """Return True when the target PID is alive."""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except Exception:
+        return False
+
+
 def _scan_to_db(config: Config, db: LocalSearchDB,
-                logger: logging.Logger) -> dict[str, object]:
+                logger: logging.Logger,
+                parent_pid: Optional[int] = None,
+                parent_alive_check: Optional[Callable[[int], bool]] = None) -> dict[str, object]:
     """
     파일 시스템을 스캔하여 변경된 파일을 감지하고 데이터베이스에 인덱싱합니다.
     이 함수는 별도의 프로세스(Worker) 내에서 실행될 수 있으며, 결과를 Status 딕셔너리로 반환합니다.
@@ -35,6 +52,14 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
     worker = IndexWorker(config, db, logger, None)
     max_workers = os.cpu_count() or 4
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+    check_parent_alive = parent_alive_check or _is_pid_alive
+
+    def _ensure_parent_alive() -> None:
+        if parent_pid is None:
+            return
+        if not check_parent_alive(int(parent_pid)):
+            raise RuntimeError(
+                f"orphaned worker detected: parent pid {parent_pid} is not alive")
 
     try:
         def _get_files_generator():
@@ -52,6 +77,7 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
         futures = []
         now = int(time.time())
         for root, path, rid in _get_files_generator():
+            _ensure_parent_alive()
             status["scanned_files"] += 1
             try:
                 st = path.stat()
@@ -69,6 +95,7 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
 
         # 완료된 작업 결과 수집
         for future in concurrent.futures.as_completed(futures):
+            _ensure_parent_alive()
             try:
                 res: Optional[IndexingResult] = future.result()
                 if not res:
@@ -147,7 +174,11 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
 
 
 def _worker_build_snapshot(
-        config_dict: dict[str, object], snapshot_path: str, status_path: str, log_path: str) -> None:
+        config_dict: dict[str, object],
+        snapshot_path: str,
+        status_path: str,
+        log_path: str,
+        parent_pid: Optional[int] = None) -> None:
     """별도 프로세스에서 인덱싱을 수행하고 결과를 스냅샷 DB 및 상태 파일에 기록합니다."""
     logger = logging.getLogger("sari.indexer.worker")
     if log_path:
@@ -162,7 +193,7 @@ def _worker_build_snapshot(
     try:
         cfg = Config(**config_dict)
         db = LocalSearchDB(snapshot_path, logger=logger, journal_mode="delete")
-        status = _scan_to_db(cfg, db, logger)
+        status = _scan_to_db(cfg, db, logger, parent_pid=parent_pid)
         db.close_all()
         # 성공 상태 기록
         with open(status_path, "w", encoding="utf-8") as f:
@@ -384,7 +415,8 @@ class Indexer:
                 cfg,
                 self._worker_snapshot_path,
                 self._worker_status_path,
-                self._worker_log_path),
+                self._worker_log_path,
+                os.getpid()),
             daemon=True)
         self._worker_proc.start()
 

@@ -161,7 +161,8 @@ def is_http_running(host: str, port: int, timeout: float = 2.0) -> bool:
 def ensure_workspace_http(
     daemon_host: str,
     daemon_port: int,
-    workspace_root: Optional[str] = None
+    workspace_root: Optional[str] = None,
+    timeout: float = 5.0,
 ) -> bool:
     """
     Ensure workspace is initialized so HTTP server is started/registered.
@@ -177,7 +178,8 @@ def ensure_workspace_http(
     try:
         root = workspace_root or os.environ.get(
             "SARI_WORKSPACE_ROOT") or WorkspaceManager.resolve_workspace_root()
-        with socket.create_connection((daemon_host, daemon_port), timeout=1.0) as sock:
+        with socket.create_connection((daemon_host, daemon_port), timeout=timeout) as sock:
+            sock.settimeout(timeout)
             body = json.dumps({
                 "jsonrpc": "2.0",
                 "id": 1,
@@ -185,6 +187,7 @@ def ensure_workspace_http(
                 "params": {
                     "rootUri": f"file://{root}",
                     "capabilities": {},
+                    # Keep initialized workspaces available through daemon lifetime.
                     "sariPersist": True,
                 },
             }).encode("utf-8")

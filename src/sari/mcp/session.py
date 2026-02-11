@@ -376,15 +376,5 @@ class Session:
     def cleanup(self):
         if self.workspace_root:
             self.registry.release(self.workspace_root)
-            # Optional immediate autostop when the last connection closes.
-            autostop = settings.get_bool("DAEMON_AUTOSTOP", True)
-            if autostop:
-                try:
-                    if self.registry.active_count() == 0 and not self.registry.has_persistent():
-                        boot_id = _boot_id()
-                        if boot_id:
-                            ServerRegistry().set_daemon_draining(boot_id, True)
-                except Exception:
-                    pass
             self.workspace_root = None
             self.shared_state = None

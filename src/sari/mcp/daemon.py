@@ -86,6 +86,7 @@ class SariDaemon:
         self._heartbeat_thread = None
         self._idle_since = None
         self._drain_since = None
+        self._autostop_no_client_since = None
         self.httpd = None
         self.http_host = None
         self.http_port = None
@@ -190,6 +191,8 @@ class SariDaemon:
         idle_sec = settings.DAEMON_IDLE_SEC
         idle_with_active = settings.DAEMON_IDLE_WITH_ACTIVE
         drain_grace = settings.DAEMON_DRAIN_GRACE_SEC
+        autostop_grace = max(1, int(settings.get_int("DAEMON_AUTOSTOP_GRACE_SEC", 60)))
+        autostop_enabled = bool(settings.get_bool("DAEMON_AUTOSTOP", True))
 
         from sari.mcp.workspace_registry import Registry
         workspace_registry = Registry.get_instance()
@@ -213,6 +216,15 @@ class SariDaemon:
                         break
                 else:
                     self._drain_since = None
+                    if autostop_enabled:
+                        if active_count == 0:
+                            if self._autostop_no_client_since is None:
+                                self._autostop_no_client_since = now
+                            elif now - self._autostop_no_client_since >= autostop_grace:
+                                self.shutdown()
+                                break
+                        else:
+                            self._autostop_no_client_since = None
                     if idle_sec > 0:
                         if active_count == 0 or idle_with_active:
                             last_activity = workspace_registry.get_last_activity_ts()

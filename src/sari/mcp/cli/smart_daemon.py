@@ -208,7 +208,7 @@ def ensure_smart_daemon(host: Optional[str] = None,
 
     # 4. Wait for it to come up
     for _ in range(20):
-        if probe_sari_daemon(host, port):
+        if probe_sari_daemon(host, port, timeout=1.0):
             logger.info("Daemon started and responsive.")
             # Ensure workspace is initialized so HTTP server starts
             ensure_workspace_http(host, port, workspace_root)

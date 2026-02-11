@@ -64,7 +64,7 @@ def is_daemon_running(host: str, port: int) -> bool:
     Returns:
         True if daemon is running, False otherwise
     """
-    return probe_sari_daemon(host, port)
+    return probe_sari_daemon(host, port, timeout=1.0)
 
 
 def read_pid(host: Optional[str] = None, port: Optional[int] = None) -> Optional[int]:
@@ -580,10 +580,95 @@ def extract_daemon_stop_params(args: argparse.Namespace) -> DaemonParams:
     return {"host": host, "port": port, "all": all_mode}
 
 
+def kill_orphan_sari_workers(
+    host: Optional[str] = None,
+    port: Optional[int] = None,
+    workspace_root: Optional[str] = None,
+) -> int:
+    """
+    Reap orphaned multiprocessing workers that were spawned by Sari daemon/indexer.
+
+    Args:
+        host: Reserved for future filtering.
+        port: Optional daemon port filter based on worker env.
+        workspace_root: Optional workspace filter based on worker env.
+
+    Returns:
+        Number of worker processes terminated.
+    """
+    del host  # Reserved for future use.
+    if psutil is None:
+        return 0
+
+    target_port = int(port) if port is not None else None
+    target_root = os.path.realpath(workspace_root) if workspace_root else None
+    this_pid = os.getpid()
+    killed = 0
+
+    for proc in psutil.process_iter(["pid", "ppid", "cmdline", "name"]):
+        try:
+            info = getattr(proc, "info", {}) or {}
+            pid = int(info.get("pid") or 0)
+            if pid <= 0 or pid == this_pid:
+                continue
+            ppid = int(info.get("ppid") or 0)
+            if ppid not in {0, 1}:
+                continue
+
+            cmdline = info.get("cmdline") or []
+            line = " ".join(str(v) for v in cmdline).lower()
+            if not line:
+                continue
+            if "multiprocessing.spawn" not in line and "--multiprocessing-fork" not in line:
+                continue
+
+            env = {}
+            try:
+                env = proc.environ() or {}
+            except Exception:
+                env = {}
+
+            env_root = str(env.get("SARI_WORKSPACE_ROOT") or "").strip()
+            env_port_raw = str(env.get("SARI_DAEMON_PORT") or "").strip()
+            env_port = None
+            if env_port_raw:
+                try:
+                    env_port = int(env_port_raw)
+                except ValueError:
+                    env_port = None
+
+            if target_port is not None and env_port not in {None, target_port}:
+                continue
+            if target_root and env_root and os.path.realpath(env_root) != target_root:
+                continue
+
+            # Require at least one Sari marker to avoid killing unrelated orphan workers.
+            if not (env_root or env_port_raw or "sari" in line):
+                continue
+
+            proc.terminate()
+            try:
+                proc.wait(timeout=0.4)
+            except Exception:
+                try:
+                    proc.kill()
+                    proc.wait(timeout=0.3)
+                except Exception:
+                    pass
+            killed += 1
+        except Exception:
+            continue
+
+    if killed > 0:
+        print(f"🧹 Reaped {killed} orphan worker process(es).")
+    return killed
+
+
 def stop_one_endpoint(host: str, port: int) -> int:
     """Stop daemon and related HTTP process for one endpoint."""
     
     if not is_daemon_running(host, port):
+        kill_orphan_sari_workers(host=host, port=port)
         print("Daemon is not running")
         remove_pid()
         return 0
@@ -619,6 +704,8 @@ def stop_one_endpoint(host: str, port: int) -> int:
             reg = ServerRegistry()
             for boot_id in boot_ids:
                 reg.unregister_daemon(boot_id)
+
+            kill_orphan_sari_workers(host=host, port=port)
                 
             if is_daemon_running(host, port):
                 print("⚠️  Daemon port still responds after stop attempt.")
@@ -644,9 +731,11 @@ def stop_one_endpoint(host: str, port: int) -> int:
                 time.sleep(0.1)
             if not is_daemon_running(host, port):
                 remove_pid()
+                kill_orphan_sari_workers(host=host, port=port)
                 print("✅ Daemon stopped (fallback smart-kill)")
                 return 0
         remove_pid()
+        kill_orphan_sari_workers(host=host, port=port)
         print("No daemon PID resolved from registry. Cleaned matching registry entries.")
         return 0
 
@@ -668,6 +757,7 @@ def stop_daemon_process(params: DaemonParams) -> int:
         rc = 0
         for host, port in endpoints:
             rc = max(rc, stop_one_endpoint(host, port))
+        kill_orphan_sari_workers()
         return rc
 
     host = str(params["host"] or DEFAULT_HOST)

@@ -1,5 +1,7 @@
 import pytest
-from sari.core.indexer.main import Indexer
+import logging
+
+from sari.core.indexer.main import Indexer, _scan_to_db, _worker_build_snapshot
 from sari.core.db.main import LocalSearchDB
 from sari.core.config import Config
 
@@ -46,3 +48,38 @@ def test_indexer_lifecycle_cleanup(test_context):
     assert indexer._executor is not None
     indexer.stop()
     assert indexer._executor is None
+
+
+def test_scan_to_db_raises_when_parent_dead(tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "main.py").write_text("print('x')", encoding="utf-8")
+    db = LocalSearchDB(str(tmp_path / "idx.db"))
+    cfg = Config(**Config.get_defaults(str(ws)))
+
+    with pytest.raises(RuntimeError, match="orphaned worker detected"):
+        _scan_to_db(
+            cfg,
+            db,
+            logging.getLogger("test"),
+            parent_pid=999999,
+            parent_alive_check=lambda _pid: False,
+        )
+
+
+def test_worker_build_snapshot_writes_error_when_parent_dead(tmp_path, monkeypatch):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "main.py").write_text("print('x')", encoding="utf-8")
+    cfg = Config(**Config.get_defaults(str(ws)))
+    snapshot = str(tmp_path / "idx.db.snapshot")
+    status_path = str(tmp_path / "status.json")
+    log_path = str(tmp_path / "worker.log")
+
+    monkeypatch.setattr("sari.core.indexer.main._is_pid_alive", lambda _pid: False)
+    _worker_build_snapshot(cfg.__dict__, snapshot, status_path, log_path, parent_pid=12345)
+
+    import json
+    payload = json.loads((tmp_path / "status.json").read_text(encoding="utf-8"))
+    assert payload["ok"] is False
+    assert "orphaned worker detected" in payload["error"]
