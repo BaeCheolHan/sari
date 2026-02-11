@@ -35,6 +35,48 @@ def _read_current(db: object, db_path: str, roots: list[str]) -> str:
     return raw or ""
 
 
+def _read_git_baseline(db_path: str, roots: list[str], against: str) -> tuple[str, bool]:
+    fs_path = resolve_fs_path(db_path, roots)
+    if not fs_path:
+        return "", False
+    abs_path = os.path.abspath(fs_path)
+    repo_probe = subprocess.run(
+        ["git", "-C", os.path.dirname(abs_path), "rev-parse", "--show-toplevel"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        text=True,
+    )
+    if repo_probe.returncode != 0:
+        return "", False
+    repo_root = repo_probe.stdout.strip()
+    if not repo_root:
+        return "", False
+    rel_path = os.path.relpath(abs_path, repo_root).replace("\\", "/")
+    spec = f"HEAD:{rel_path}" if against == "HEAD" else f":{rel_path}"
+    show_proc = subprocess.run(
+        ["git", "-C", repo_root, "show", spec],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if show_proc.returncode != 0:
+        return "", False
+    return show_proc.stdout.decode("utf-8", errors="ignore"), True
+
+
+def _read_baseline(db: object, db_path: str, roots: list[str], against: str) -> tuple[str, bool]:
+    baseline = str(against or "WORKTREE").strip().upper()
+    if baseline == "WORKTREE":
+        return _read_current(db, db_path, roots), False
+    if baseline in {"HEAD", "INDEX"}:
+        text, ok = _read_git_baseline(db_path, roots, baseline)
+        if ok:
+            return text, False
+        return _read_current(db, db_path, roots), True
+    return _read_current(db, db_path, roots), True
+
+
 def _syntax_check(path: str, content: str) -> ToolResult:
     """
     제안된 수정 사항에 대해 가벼운 구문 체크(Syntax Check)를 수행합니다.
@@ -120,10 +162,11 @@ def build_dry_run_diff(args: ToolArgs, db: object, roots: list[str]) -> ToolResu
     if not path or raw_content is None:
         raise ValueError("path and content are required")
     new_content = str(raw_content)
+    against = str(args.get("against") or "WORKTREE").strip().upper()
     db_path = resolve_db_path(path, roots)
     if not db_path:
         raise ValueError("path is out of workspace scope")
-    current = _read_current(db, db_path, roots)
+    current, fallback_used = _read_baseline(db, db_path, roots, against)
     
     # 1. 통합 차이(Unified Diff) 생성
     diff_lines = list(
@@ -141,7 +184,7 @@ def build_dry_run_diff(args: ToolArgs, db: object, roots: list[str]) -> ToolResu
     syntax = _syntax_check(path, new_content)
     lint = _maybe_lint(path, new_content)
     
-    payload = {"path": db_path, "diff": diff_text}
+    payload = {"path": db_path, "diff": diff_text, "against": against, "against_fallback": fallback_used}
     payload.update(syntax)
     payload.update(lint)
     return payload
@@ -178,8 +221,19 @@ def execute_dry_run_diff(args: object, db: object, roots: list[str]) -> ToolResu
 
     def build_pack() -> str:
         """PACK1 형식의 응답을 생성합니다."""
-        lines = [pack_header("dry_run_diff", {"path": pack_encode_id(payload["path"])}, returned=1)]
+        lines = [
+            pack_header(
+                "dry_run_diff",
+                {
+                    "path": pack_encode_id(payload["path"]),
+                    "against": pack_encode_id(payload.get("against", "WORKTREE")),
+                },
+                returned=1,
+            )
+        ]
         lines.append(pack_line("m", {"syntax_ok": str(bool(payload.get("syntax_ok", True))).lower()}))
+        if payload.get("against_fallback"):
+            lines.append(pack_line("m", {"against_fallback": "true"}))
         if payload.get("runtime"):
             lines.append(pack_line("m", {"runtime": pack_encode_text(payload["runtime"])}))
         if payload.get("hint"):

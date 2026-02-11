@@ -20,6 +20,7 @@ from sari.mcp.tools.scan_once import execute_scan_once
 from sari.mcp.tools.search_api_endpoints import execute_search_api_endpoints
 from sari.mcp.tools.search_symbols import execute_search_symbols
 from sari.mcp.tools.search import _clip_text, execute_search
+from sari.mcp.tools.read import execute_read
 from sari.mcp.tools.registry import Tool, ToolContext, ToolRegistry, build_default_registry
 
 
@@ -345,6 +346,46 @@ def test_read_file_invalid_offset_limit_types_are_handled(tmp_path, monkeypatch)
 
     negative = execute_read_file({"path": str(tmp_path / "a.py"), "offset": -1}, db, [str(tmp_path)])
     assert "code=INVALID_ARGS" in negative["content"][0]["text"]
+
+
+def test_unified_read_rejects_against_for_non_diff_mode():
+    import urllib.parse
+
+    resp = execute_read({"mode": "file", "target": "a.py", "against": "HEAD"}, MagicMock(), ["/tmp/ws"])
+    text = urllib.parse.unquote(resp["content"][0]["text"])
+    assert "code=INVALID_ARGS" in text
+    assert "against is only valid for mode='diff_preview'. Remove it or switch mode." in text
+
+
+def test_unified_read_rejects_snippet_args_for_non_snippet_mode():
+    import urllib.parse
+
+    resp = execute_read({"mode": "file", "target": "a.py", "start_line": 1}, MagicMock(), ["/tmp/ws"])
+    text = urllib.parse.unquote(resp["content"][0]["text"])
+    assert "code=INVALID_ARGS" in text
+    assert "start_line is only valid for mode='snippet'. Remove it or switch mode." in text
+
+
+def test_unified_read_rejects_symbol_disambiguation_args_for_non_symbol_mode():
+    import urllib.parse
+
+    resp = execute_read({"mode": "file", "target": "a.py", "symbol_id": "sid-1"}, MagicMock(), ["/tmp/ws"])
+    text = urllib.parse.unquote(resp["content"][0]["text"])
+    assert "code=INVALID_ARGS" in text
+    assert "symbol_id is only valid for mode='symbol'. Remove it or switch mode." in text
+
+
+def test_unified_read_rejects_invalid_against_enum_value():
+    import urllib.parse
+
+    resp = execute_read(
+        {"mode": "diff_preview", "target": "a.py", "content": "x", "against": "BAD"},
+        MagicMock(),
+        ["/tmp/ws"],
+    )
+    text = urllib.parse.unquote(resp["content"][0]["text"])
+    assert "code=INVALID_ARGS" in text
+    assert "'against' must be one of: HEAD, WORKTREE, INDEX" in text
 
 
 def test_call_graph_list_logger_roots_and_db_error(monkeypatch):

@@ -7,6 +7,7 @@ import time
 import json
 import re
 from typing import Mapping, TypeAlias, Optional, Tuple, List, Dict, Any
+from sari.mcp.stabilization.session_state import record_search_metrics
 
 from sari.mcp.tools._util import (
     mcp_response,
@@ -202,6 +203,15 @@ def execute_search(
         except Exception:
             pass
 
+    metrics_snapshot = record_search_metrics(
+        args,
+        roots,
+        preview_degraded=pm.degraded,
+        query=query,
+        top_paths=[str(m.get("path", "")) for m in normalized_matches[:10]],
+        db=db,
+    )
+
     v3_meta = {
         "total": total,
         "latency_ms": latency_ms,
@@ -211,13 +221,20 @@ def execute_search(
         "fallback_used": fallback_used,
         "inference_blocked_reason": inference_blocked_reason,
     }
+    json_meta = dict(v3_meta)
+    json_meta["stabilization"] = {
+        "budget_state": "NORMAL",
+        "suggested_next_action": "read" if total > 0 else "search",
+        "warnings": [],
+        "metrics_snapshot": metrics_snapshot,
+    }
 
     def build_json() -> ToolResult:
         return {
             "ok": True,
             "mode": resolved_type,
             "query": query,
-            "meta": v3_meta,
+            "meta": json_meta,
             "matches": normalized_matches,
             "repo_suggestions": repo_suggestions if resolved_type != "repo" else []
         }

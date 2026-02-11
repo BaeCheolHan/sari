@@ -237,9 +237,14 @@ def test_registry_hides_internal_tools_by_default(monkeypatch):
     names = {t["name"] for t in reg.list_tools()}
     assert "scan_once" not in names
     assert "rescan" not in names
+    assert "read_file" not in names
+    assert "read_symbol" not in names
+    assert "get_snippet" not in names
+    assert "dry_run_diff" not in names
 
 
-def test_registry_symbol_tool_schemas_match_runtime_flexibility():
+def test_registry_symbol_tool_schemas_match_runtime_flexibility(monkeypatch):
+    monkeypatch.setenv("SARI_EXPOSE_INTERNAL_TOOLS", "1")
     reg = build_default_registry()
     tools = {t["name"]: t for t in reg.list_tools()}
 
@@ -263,6 +268,72 @@ def test_registry_symbol_tool_schemas_match_runtime_flexibility():
     assert "name" in cg_schema["properties"]
     assert "symbol_id" in cg_schema["properties"]
     assert "sid" in cg_schema["properties"]
+
+
+def test_registry_includes_unified_read_schema_with_required_constraints():
+    reg = build_default_registry()
+    tools = {t["name"]: t for t in reg.list_tools()}
+
+    read_schema = tools["read"]["inputSchema"]
+    assert read_schema["type"] == "object"
+    props = read_schema["properties"]
+
+    assert props["mode"]["type"] == "string"
+    assert props["mode"]["enum"] == ["file", "symbol", "snippet", "diff_preview"]
+
+    for key in ("target", "path", "name", "symbol_id", "sid", "tag", "query", "content", "offset", "limit", "against"):
+        assert key in props
+        assert "description" in props[key]
+
+    assert read_schema["required"] == ["mode"]
+
+
+def test_registry_read_tool_delegates_to_read_file():
+    reg = build_default_registry()
+    ctx = ToolContext(
+        db=MagicMock(),
+        engine=None,
+        indexer=MagicMock(),
+        roots=["/tmp/ws"],
+        cfg=MagicMock(),
+        logger=MagicMock(),
+        workspace_root="/tmp/ws",
+        server_version="test",
+    )
+    ctx.db.read_file.return_value = "hello from unified read"
+    from sari.core.workspace import WorkspaceManager
+    rid = WorkspaceManager.root_id("/tmp/ws")
+    resp = reg.execute("read", ctx, {"mode": "file", "target": f"{rid}/a.py"})
+    text = resp["content"][0]["text"]
+    assert "PACK1 tool=read_file ok=true" in text
+    assert "hello%20from%20unified%20read" in text
+
+
+def test_registry_read_tool_delegates_to_get_snippet():
+    reg = build_default_registry()
+    ctx = ToolContext(
+        db=MagicMock(),
+        engine=None,
+        indexer=MagicMock(),
+        roots=["/tmp/ws"],
+        cfg=MagicMock(),
+        logger=MagicMock(),
+        workspace_root="/tmp/ws",
+        server_version="test",
+    )
+    from sari.core.workspace import WorkspaceManager
+    rid = WorkspaceManager.root_id("/tmp/ws")
+    ctx.db.list_snippets_by_tag.return_value = [{
+        "tag": "demo",
+        "path": f"{rid}/a.py",
+        "start_line": 1,
+        "end_line": 2,
+        "content": "x = 1\\ny = 2",
+        "id": 1,
+    }]
+    resp = reg.execute("read", ctx, {"mode": "snippet", "target": "demo"})
+    text = resp["content"][0]["text"]
+    assert "PACK1 tool=get_snippet ok=true" in text
 
 
 def test_read_symbol_supports_symbol_id_without_path(tmp_path):

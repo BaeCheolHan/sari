@@ -83,6 +83,100 @@ Return style for invalid args:
   - Enforce `max_preview_chars` hard cap.
 - Report `meta.preview_degraded=true` when reduced.
 
+## Stabilization Layer (v1 Addendum)
+
+### Goal
+- Add an observation + control + guidance layer to reduce:
+  - token explosion
+  - meaningless repeated reads
+  - irrelevant target selection
+  - goal drift
+- Use unified `read` (Phase 1) as the single control point.
+
+### Non-Goals (v1)
+- No model reasoning (chain-of-thought) analysis or storage.
+- No automatic code patch generation.
+- No integration with external SAST/test execution MCPs.
+
+### Stabilization Primitives (v1)
+
+1) Session Metrics (observation)
+- Collect:
+  - `reads_count`, `reads_lines_total`, `reads_chars_total`
+  - `search_count`
+  - `read_after_search_ratio`
+  - `avg_read_span`, `max_read_span`
+  - `preview_degraded_count`
+- Storage:
+  - in-memory by default
+  - optional `sqlite` table `session_metrics` (opt-in only)
+
+2) Read Budget Guard (control)
+- Default policy (initial values):
+  - `max_reads_per_session = 25`
+  - `max_total_read_lines = 2500`
+  - `max_single_read_lines = 300`
+  - `max_preview_chars = 12000`
+- Behavior when limits are exceeded:
+  - `SOFT_LIMIT`: degrade payload + attach search guidance hint
+  - `HARD_LIMIT`: return `BUDGET_EXCEEDED` with actionable "use search to narrow scope" message
+
+3) Relevance Guard (wrong-target prevention)
+- Inputs:
+  - requested read target (`path`/`symbol`)
+  - recent search query and top-K result paths
+  - workspace roots and excluded path rules
+- Heuristics (lightweight):
+  - warn when target is outside recent search top-K
+  - apply exclusion policy for `vendor/`, `node_modules/`, `.git/`, `dist/`
+- v1 default mode:
+  - soft guidance first (warning + alternatives), not hard-block by default
+  - hard block can be added as a future policy flag
+
+4) Auto-Aggregation (context pollution prevention, v1-lite)
+- Aggregate consecutive read outputs in a session with:
+  - deduplication
+  - structural compression only (no LLM summarization)
+- v1 scope:
+  - keep deterministic dedupe/compression behavior
+  - `context_bundle_id` support is optional and can remain experimental
+
+### Integration Points
+
+Unified read hook (required):
+- At `execute_read(...)` entry/exit:
+  - update metrics
+  - run budget checks
+  - run relevance checks (configurable)
+  - apply truncation/degradation policy
+
+Unified search hook (recommended):
+- At `execute_search(...)` completion:
+  - store latest query + top-K candidate paths in session state
+  - provide relevance baseline for subsequent reads
+
+### API / Tool Surface (v1)
+- Do not add new tools.
+- Extend existing `read` and `search` responses with:
+  - `meta.stabilization`
+- Suggested shape:
+  - `meta.stabilization = { budget_state, suggested_next_action, warnings[], metrics_snapshot }`
+
+### Failure Modes & Policies
+- Budget exceeded:
+  - `code: BUDGET_EXCEEDED`
+  - message: `"Read budget exceeded. Use search to narrow scope: ..."`
+- Low relevance (soft):
+  - `code: LOW_RELEVANCE`
+  - message: `"This target seems unrelated. Try ..."`
+- Always return actionable hints.
+
+### Tests (must-have)
+- budget soft/hard limit behavior
+- relevance guard hit/miss behavior
+- aggregation dedupe deterministic output
+- metrics counting deterministic behavior
+
 ## Backward Compatibility Strategy
 - Keep legacy tools temporarily.
 - Legacy handlers should internally call unified `read`:

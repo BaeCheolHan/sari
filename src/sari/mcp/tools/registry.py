@@ -22,6 +22,7 @@ import sari.mcp.tools.get_snippet as get_snippet_tool
 import sari.mcp.tools.archive_context as archive_context_tool
 import sari.mcp.tools.get_context as get_context_tool
 import sari.mcp.tools.dry_run_diff as dry_run_diff_tool
+import sari.mcp.tools.read as read_tool
 
 
 ToolInputSchema = dict[str, object]
@@ -282,6 +283,55 @@ def _register_search_tools(reg: ToolRegistry):
 def _register_file_tools(reg: ToolRegistry):
     """파일 리스팅 및 읽기 관련 도구 등록"""
     reg.register(Tool(
+        name="read",
+        description="Unified read interface for file/symbol/snippet/diff preview modes.",
+        input_schema={
+            "type": "object",
+            "description": (
+                "Unified read. Mode-specific usage: "
+                "file->target(+offset/limit), "
+                "symbol->target(+path/include_context), "
+                "snippet->target(+start_line/end_line/context_lines), "
+                "diff_preview->target(+against=HEAD|WORKTREE|INDEX)."
+            ),
+            "properties": {
+                "mode": {
+                    "type": "string",
+                    "enum": ["file", "symbol", "snippet", "diff_preview"],
+                    "description": "Read mode selector.",
+                },
+                "target": {"type": "string", "description": "Primary lookup target (path/symbol/snippet selector)."},
+                "path": {"type": "string", "description": "Disambiguation path for symbol mode."},
+                "name": {"type": "string", "description": "Symbol name for symbol mode."},
+                "symbol_id": {"type": "string", "description": "Stable symbol id for symbol mode."},
+                "sid": {"type": "string", "description": "Alias for symbol_id."},
+                "tag": {"type": "string", "description": "Snippet tag for snippet mode."},
+                "query": {"type": "string", "description": "Free-form query for snippet mode."},
+                "content": {"type": "string", "description": "Proposed content for diff_preview mode."},
+                "against": {
+                    "type": "string",
+                    "enum": ["HEAD", "WORKTREE", "INDEX"],
+                    "description": "Baseline for mode=diff_preview only.",
+                },
+                "start_line": {"type": "integer", "description": "Snippet start line (snippet mode only)."},
+                "end_line": {"type": "integer", "description": "Snippet end line (snippet mode only)."},
+                "context_lines": {"type": "integer", "description": "Snippet context lines (snippet mode only)."},
+                "include_context": {"type": "boolean", "description": "Include symbol context (symbol mode only)."},
+                "preview_mode": {
+                    "type": "string",
+                    "enum": ["none", "snippet"],
+                    "description": "Preview rendering strategy.",
+                },
+                "max_preview_chars": {"type": "integer", "description": "Hard cap for preview payload size."},
+                "offset": {"type": "integer", "description": "Line offset for paginated reads."},
+                "limit": {"type": "integer", "description": "Maximum items/lines to return."},
+            },
+            "required": ["mode"],
+        },
+        handler=lambda ctx, args: read_tool.execute_read(args, ctx.db, ctx.roots, ctx.logger),
+    ))
+
+    reg.register(Tool(
         name="list_files",
         description="List indexed files with filters. If repo is omitted, returns repo summary only.",
         input_schema={
@@ -301,9 +351,10 @@ def _register_file_tools(reg: ToolRegistry):
 
     reg.register(Tool(
         name="read_file",
-        description="Read file content. DANGER: High token cost. Use ONLY after search/list_symbols. Prefer read_symbol or pagination (limit/offset) for large files.",
+        description="Read file content (legacy; prefer unified `read` with mode=file). DANGER: High token cost. Use ONLY after search/list_symbols.",
         input_schema={"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
         handler=lambda ctx, args: read_file_tool.execute_read_file(args, ctx.db, ctx.roots),
+        hidden=True,
     ))
 
     reg.register(Tool(
@@ -315,7 +366,7 @@ def _register_file_tools(reg: ToolRegistry):
 
     reg.register(Tool(
         name="dry_run_diff",
-        description="Preview diff and run lightweight syntax check before editing.",
+        description="Preview diff and run lightweight syntax check before editing (legacy; prefer unified `read` with mode=diff_preview).",
         input_schema={
             "type": "object",
             "properties": {
@@ -325,6 +376,7 @@ def _register_file_tools(reg: ToolRegistry):
             "required": ["path", "content"],
         },
         handler=lambda ctx, args: dry_run_diff_tool.execute_dry_run_diff(args, ctx.db, ctx.roots),
+        hidden=True,
     ))
 
 
@@ -345,7 +397,7 @@ def _register_symbol_tools(reg: ToolRegistry):
 
     reg.register(Tool(
         name="read_symbol",
-        description="Read symbol definition block by name/path. Use after search_symbols.",
+        description="Read symbol definition block by name/path (legacy; prefer unified `read` with mode=symbol). Use after search_symbols.",
         input_schema={
             "type": "object",
             "properties": {
@@ -358,6 +410,7 @@ def _register_symbol_tools(reg: ToolRegistry):
             "description": "Provide name+path or symbol_id/sid.",
         },
         handler=lambda ctx, args: read_symbol_tool.execute_read_symbol(args, ctx.db, ctx.logger, ctx.roots),
+        hidden=True,
     ))
 
     reg.register(Tool(
@@ -456,7 +509,7 @@ def _register_knowledge_tools(reg: ToolRegistry):
 
     reg.register(Tool(
         name="get_snippet",
-        description="Retrieve saved snippets by tag or query.",
+        description="Retrieve saved snippets by tag or query (legacy; prefer unified `read` with mode=snippet).",
         input_schema={
             "type": "object",
             "properties": {
@@ -466,6 +519,7 @@ def _register_knowledge_tools(reg: ToolRegistry):
             },
         },
         handler=lambda ctx, args: get_snippet_tool.execute_get_snippet(args, ctx.db, ctx.roots),
+        hidden=True,
     ))
 
     reg.register(Tool(
