@@ -4,7 +4,8 @@ Search tool for Local Search MCP Server (SSOT).
 Universal search integration tool.
 """
 import time
-from typing import Mapping, TypeAlias, Optional, Tuple, List
+import json
+from typing import Mapping, TypeAlias, Optional, Tuple, List, Dict, Any
 
 from sari.core.settings import settings
 from sari.mcp.tools._util import (
@@ -26,7 +27,6 @@ from sari.mcp.tools.search_api_endpoints import execute_search_api_endpoints
 from sari.mcp.tools.repo_candidates import execute_repo_candidates
 
 SearchArgs: TypeAlias = dict[str, object]
-SearchMeta: TypeAlias = dict[str, object]
 ToolResult: TypeAlias = dict[str, object]
 SearchRoots: TypeAlias = list[str]
 
@@ -49,9 +49,29 @@ def _clip_text(value: object, max_chars: int) -> str:
     return text[: max_chars - 3] + "..."
 
 
+class PreviewManager:
+    """Manages token budget by dynamically adjusting preview lengths."""
+
+    def __init__(self, limit: int, max_total_chars: int = 10000):
+        self.limit = limit
+        self.max_total_chars = max_total_chars
+        self.degraded = False
+
+    def get_adjusted_max_chars(self, item_count: int, requested_max: int) -> int:
+        if item_count <= 0:
+            return requested_max
+
+        # Budget-based calculation
+        budget_per_item = self.max_total_chars // item_count
+        if budget_per_item < requested_max:
+            self.degraded = True
+            return max(100, budget_per_item)
+        return requested_max
+
+
 def _validate_search_args(args: Mapping[str, object]) -> Optional[str]:
     """v3 parameter validation logic"""
-    search_type = str(args.get("search_type", "code")).lower()
+    search_type = str(args.get("search_type", "auto")).lower()
 
     # Mode-specific parameters check
     symbol_only = {"kinds", "match_mode", "include_qualname"}
@@ -79,8 +99,7 @@ def execute_search(
     indexer: object = None,
 ) -> ToolResult:
     """
-    v3 Unified Search Dispatcher.
-    Routes requests to appropriate engines based on search_type or auto-inference.
+    v3 Unified Search Dispatcher with Response Normalization.
     """
     # 0. v3 Parameter Validation
     validation_err = _validate_search_args(args)
@@ -99,7 +118,8 @@ def execute_search(
 
     start_ts = time.time()
     query = str(args.get("query", "")).strip()
-    requested_type = str(args.get("search_type", "code")).lower()
+    requested_type = str(args.get("search_type", "auto")).lower()
+    limit = _safe_int(args.get("limit"), 20)
 
     resolved_type = requested_type
     inference_blocked_reason = None
@@ -109,231 +129,212 @@ def execute_search(
     if requested_type == "auto":
         resolved_type, inference_blocked_reason = resolve_search_intent(query)
 
-    # 2. Dispatch to specialized executors
+    # 2. Dispatch and Get Raw Results
+    raw_result = None
     if resolved_type == "symbol":
-        result = execute_search_symbols(args, db, logger, roots)
-        # Waterfall: if 0 results in auto mode, fallback to code
-        if requested_type == "auto" and _is_empty_result(result):
+        raw_result = execute_search_symbols(args, db, logger, roots)
+        if requested_type == "auto" and _is_empty_result(raw_result):
             fallback_used = True
             resolved_type = "code"
-            result = _execute_core_search(args, db, logger, roots, engine, indexer)
+            raw_result = _execute_core_search_raw(
+                args, db, logger, roots, engine, indexer
+            )
     elif resolved_type == "api":
-        result = execute_search_api_endpoints(args, db, roots)
-        # Waterfall: if 0 results in auto mode, fallback to code
-        if requested_type == "auto" and _is_empty_result(result):
+        raw_result = execute_search_api_endpoints(args, db, roots)
+        if requested_type == "auto" and _is_empty_result(raw_result):
             fallback_used = True
             resolved_type = "code"
-            result = _execute_core_search(args, db, logger, roots, engine, indexer)
+            raw_result = _execute_core_search_raw(
+                args, db, logger, roots, engine, indexer
+            )
     elif resolved_type == "repo":
-        result = execute_repo_candidates(
-            {"query": query, "limit": args.get("limit", 3)}, db, logger, roots
+        raw_result = execute_repo_candidates(
+            {"query": query, "limit": limit}, db, logger, roots
         )
     else:
         # Default: code search
-        result = _execute_core_search(args, db, logger, roots, engine, indexer)
+        raw_result = _execute_core_search_raw(args, db, logger, roots, engine, indexer)
 
-    # 3. Inject v3 Metadata (Only if not Error)
-    # This part will be enhanced in Task 3 (Normalization)
-    return result
+    if raw_result.get("isError"):
+        return raw_result
 
-
-def _is_empty_result(result: ToolResult) -> bool:
-    """Checks if the MCP result contains 0 items."""
-    try:
-        # Check PACK1 format
-        content_list = result.get("content", [])
-        if content_list and isinstance(content_list, list):
-            content = str(content_list[0].get("text", ""))
-            if "returned=0" in content:
-                return True
-        # Check JSON format
-        if "results" in result and len(result["results"]) == 0:
-            return True
-        if "hits" in result and len(result["hits"]) == 0:
-            return True
-    except Exception:
-        pass
-    return False
-
-
-def _execute_core_search(
-    args: SearchArgs,
-    db: object,
-    logger: object,
-    roots: SearchRoots,
-    engine: object = None,
-    indexer: object = None,
-) -> ToolResult:
-    """Existing core search logic (from legacy search.py)"""
-    start_ts = time.time()
-    try:
-        opts = parse_search_options(args, roots)
-    except Exception as e:
-        msg = str(e)
-        return mcp_response(
-            "search",
-            lambda: pack_error("search", ErrorCode.INVALID_ARGS, msg),
-            lambda: {
-                "error": {"code": ErrorCode.INVALID_ARGS.value, "message": msg},
-                "isError": True,
-            },
-        )
-
-    if not opts.query:
-        return mcp_response(
-            "search",
-            lambda: pack_error("search", ErrorCode.INVALID_ARGS, "query is required"),
-            lambda: {
-                "error": {
-                    "code": ErrorCode.INVALID_ARGS.value,
-                    "message": "query is required",
-                },
-                "isError": True,
-            },
-        )
-
-    try:
-        hits, meta = db.search_v2(opts)
-    except Exception as e:
-        msg = str(e)
-        return mcp_response(
-            "search",
-            lambda: pack_error("search", ErrorCode.ERR_ENGINE_QUERY, msg),
-            lambda: {
-                "error": {
-                    "code": ErrorCode.ERR_ENGINE_QUERY.value,
-                    "message": msg,
-                },
-                "isError": True,
-            },
-        )
-
-    meta_map: Mapping[str, object] = meta if isinstance(meta, Mapping) else {}
+    # 3. Response Normalization & Token Management
     latency_ms = int((time.time() - start_ts) * 1000)
-    total = int(meta_map.get("total", len(hits)))
-    max_results = max(
-        1, min(_safe_int(args.get("max_results"), opts.limit), opts.limit)
-    )
-    snippet_max_chars = max(
-        80,
-        min(
-            _safe_int(
-                args.get("snippet_max_chars"),
-                getattr(settings, "MCP_SEARCH_SNIPPET_MAX_CHARS", 700),
-            ),
-            2000,
-        ),
-    )
-    pack_max_bytes = max(
-        4096,
-        _safe_int(
-            args.get("max_pack_bytes"),
-            getattr(settings, "MCP_SEARCH_PACK_MAX_BYTES", 120000),
-        ),
-    )
-    bounded_hits = hits[:max_results]
+    normalized_matches, total = _normalize_results(resolved_type, raw_result)
 
-    def get_attr(obj: object, attr: str, default: object = "") -> object:
-        if isinstance(obj, dict):
-            return obj.get(attr, default)
-        return getattr(obj, attr, default)
+    # Token Budget Logic
+    pm = PreviewManager(limit)
+    requested_max = _safe_int(args.get("max_preview_chars"), 1200)
+    adjusted_max = pm.get_adjusted_max_chars(len(normalized_matches), requested_max)
+
+    for match in normalized_matches:
+        if "snippet" in match:
+            match["snippet"] = _clip_text(match["snippet"], adjusted_max)
+
+    # 4. Final Output Building
+    v3_meta = {
+        "total": total,
+        "latency_ms": latency_ms,
+        "preview_degraded": pm.degraded,
+        "requested_type": requested_type,
+        "resolved_type": resolved_type,
+        "fallback_used": fallback_used,
+        "inference_blocked_reason": inference_blocked_reason,
+    }
 
     def build_json() -> ToolResult:
-        json_results = []
-        for item in bounded_hits:
-            if hasattr(item, "to_result_dict"):
-                row = item.to_result_dict()
-            elif isinstance(item, dict):
-                row = dict(item)
-            else:
-                row = {
-                    "path": str(get_attr(item, "path", "")),
-                    "repo": str(get_attr(item, "repo", "")),
-                    "score": float(get_attr(item, "score", 0.0)),
-                    "file_type": str(get_attr(item, "file_type", "")),
-                    "snippet": str(get_attr(item, "snippet", "")),
-                    "hit_reason": str(get_attr(item, "hit_reason", "")),
-                }
-            row["snippet"] = _clip_text(row.get("snippet", ""), snippet_max_chars)
-            json_results.append(row)
         return {
-            "query": opts.query,
-            "limit": opts.limit,
-            "offset": opts.offset,
-            "results": json_results,
-            "meta": {
-                **meta_map,
-                "latency_ms": latency_ms,
-                "returned": len(json_results),
-                "bounded_by_max_results": len(hits) > len(json_results),
-                "snippet_max_chars": snippet_max_chars,
-            },
+            "ok": True,
+            "mode": resolved_type,
+            "query": query,
+            "meta": v3_meta,
+            "matches": normalized_matches,
+            "repo_suggestions": raw_result.get("candidates")
+            if resolved_type == "repo"
+            else [],
         }
 
     def build_pack() -> str:
         header = pack_header(
             "search",
-            {"q": pack_encode_text(opts.query)},
-            returned=len(bounded_hits),
+            {"q": pack_encode_text(query)},
+            returned=len(normalized_matches),
+            total=total,
         )
         lines = [header]
-        used_bytes = len(header.encode("utf-8", errors="ignore")) + 1
-        meta_line = pack_line(
-            "m",
-            {
-                "total": str(total),
-                "latency_ms": str(latency_ms),
-                "engine": str(meta_map.get("engine", "unknown")),
-            },
+        lines.append(
+            pack_line("m", {k: str(v) for k, v in v3_meta.items() if v is not None})
         )
-        lines.append(meta_line)
-        used_bytes += len(meta_line.encode("utf-8", errors="ignore")) + 1
-        returned_count = 0
-        hard_truncated = False
-        for item in bounded_hits:
-            imp_tag = ""
-            hit_reason = str(get_attr(item, "hit_reason", ""))
-            if "importance=" in hit_reason:
-                try:
-                    imp_val = hit_reason.split("importance=")[1].split(")")[0]
-                    if float(imp_val) > 10.0:
-                        imp_tag = " [CORE]"
-                    elif float(imp_val) > 2.0:
-                        imp_tag = " [SIG]"
-                except Exception:
-                    pass
-            snippet = _clip_text(get_attr(item, "snippet"), snippet_max_chars)
-            row_line = pack_line(
-                "r",
-                {
-                    "path": pack_encode_id(get_attr(item, "path")),
-                    "repo": pack_encode_id(get_attr(item, "repo")),
-                    "score": f"{float(get_attr(item, 'score', 0.0)):.2f}",
-                    "file_type": pack_encode_id(get_attr(item, "file_type")),
-                    "snippet": pack_encode_text(snippet),
-                    "rank_info": pack_encode_text(hit_reason + imp_tag),
-                },
-            )
-            row_bytes = len(row_line.encode("utf-8", errors="ignore")) + 1
-            if used_bytes + row_bytes > pack_max_bytes:
-                hard_truncated = True
-                break
-            lines.append(row_line)
-            used_bytes += row_bytes
-            returned_count += 1
-        soft_truncated = len(hits) > returned_count
-        if hard_truncated or soft_truncated:
-            next_offset = opts.offset + max(returned_count, 1)
-            lines.append(pack_truncated(next_offset, opts.limit, "maybe"))
+        for m in normalized_matches:
             lines.append(
                 pack_line(
-                    "m",
+                    "r",
                     {
-                        "budget_bytes": str(pack_max_bytes),
-                        "returned": str(returned_count),
+                        "t": m["type"],
+                        "p": pack_encode_id(m["path"]),
+                        "i": pack_encode_text(m["identity"]),
+                        "l": str(m["location"].get("line", 0)),
+                        "s": pack_encode_text(m.get("snippet", "")),
                     },
                 )
             )
         return "\n".join(lines)
 
     return mcp_response("search", build_pack, build_json)
+
+
+def _normalize_results(
+    res_type: str, raw: ToolResult
+) -> Tuple[List[Dict[str, Any]], int]:
+    matches = []
+    total = 0
+
+    try:
+        if res_type == "symbol":
+            results = raw.get("results", [])
+            total = raw.get("count", len(results))
+            for r in results:
+                matches.append(
+                    {
+                        "type": "symbol",
+                        "path": r.get("path"),
+                        "identity": r.get("name"),
+                        "location": {
+                            "line": r.get("line"),
+                            "qualname": r.get("qualname"),
+                        },
+                        "extra": {"kind": r.get("kind")},
+                    }
+                )
+        elif res_type == "api":
+            results = raw.get("results", [])
+            total = len(results)
+            for r in results:
+                matches.append(
+                    {
+                        "type": "api",
+                        "path": r.get("file", ""),
+                        "identity": r.get("path", ""),
+                        "location": {"line": r.get("line", 0)},
+                        "extra": {"method": r.get("method"), "handler": r.get("handler")},
+                    }
+                )
+        elif res_type == "repo":
+            results = raw.get("candidates", [])
+            total = len(results)
+            for r in results:
+                matches.append(
+                    {
+                        "type": "repo",
+                        "path": r.get("repo", ""),
+                        "identity": r.get("repo", ""),
+                        "location": {},
+                        "extra": {"score": r.get("score")},
+                    }
+                )
+        else:  # code
+            results = raw.get("results", [])
+            total = raw.get("meta", {}).get("total", len(results))
+            for r in results:
+                matches.append(
+                    {
+                        "type": "code",
+                        "path": r.get("path"),
+                        "identity": r.get("path").split("/")[-1],
+                        "location": {"line": 0},
+                        "snippet": r.get("snippet", ""),
+                        "extra": {"repo": r.get("repo"), "score": r.get("score")},
+                    }
+                )
+    except Exception:
+        pass
+
+    return matches, total
+
+
+def _is_empty_result(result: ToolResult) -> bool:
+    try:
+        if "results" in result and len(result["results"]) == 0:
+            return True
+        if "hits" in result and len(result["hits"]) == 0:
+            return True
+        if "candidates" in result and len(result["candidates"]) == 0:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _execute_core_search_raw(
+    args: SearchArgs,
+    db: object,
+    logger: object,
+    roots: SearchRoots,
+    engine: object,
+    indexer: object,
+) -> ToolResult:
+    """Core search logic that returns raw results for normalization."""
+    try:
+        opts = parse_search_options(args, roots)
+        hits, meta = db.search_v2(opts)
+        results = []
+        for h in hits:
+            results.append(
+                {
+                    "path": h.path,
+                    "repo": h.repo,
+                    "score": h.score,
+                    "snippet": h.snippet,
+                    "mtime": h.mtime,
+                    "size": h.size,
+                    "file_type": h.file_type,
+                    "hit_reason": h.hit_reason,
+                }
+            )
+        return {"results": results, "meta": meta}
+    except Exception as e:
+        return mcp_response(
+            "search",
+            lambda: pack_error("search", ErrorCode.INTERNAL, str(e)),
+            lambda: {"isError": True, "error": {"message": str(e)}},
+        )
