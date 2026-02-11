@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
 Search tool for Local Search MCP Server (SSOT).
-SSOT (Single Source of True) 원칙을 따르는 통합 검색 도구입니다.
+Universal search integration tool.
 """
 import time
-from typing import Mapping, TypeAlias
+from typing import Mapping, TypeAlias, Optional
 
 from sari.core.settings import settings
 from sari.mcp.tools._util import (
@@ -43,101 +43,125 @@ def _clip_text(value: object, max_chars: int) -> str:
     return text[: max_chars - 3] + "..."
 
 
+def _validate_search_args(args: Mapping[str, object]) -> Optional[str]:
+    """v3 parameter validation logic"""
+    search_type = str(args.get("search_type", "code")).lower()
+
+    # Mode-specific parameters check
+    symbol_only = {"kinds", "match_mode", "include_qualname"}
+    api_only = {"method", "framework_hint"}
+
+    if search_type != "symbol":
+        for p in symbol_only:
+            if p in args:
+                return f"'{p}' is only valid for search_type='symbol'."
+
+    if search_type != "api":
+        for p in api_only:
+            if p in args:
+                return f"'{p}' is only valid for search_type='api'."
+
+    return None
+
+
 def execute_search(
     args: SearchArgs,
     db: object,
     logger: object,
     roots: SearchRoots,
-    engine: object = None,     # 사용되지 않지만 서명 호환성을 위해 유지
-    indexer: object = None,    # 사용되지 않지만 서명 호환성을 위해 유지
+    engine: object = None,
+    indexer: object = None,
 ) -> ToolResult:
     """
-    현대화된 Facade 패턴을 사용하여 하이브리드 검색을 실행합니다.
-    Tantivy(Rust 엔진)와 SQLite 검색을 자동으로 분기 처리합니다.
-
-    Args:
-        args: MCP 클라이언트로부터 전달받은 검색 인자
-        db: 데이터베이스 접근 객체 (LocalSearchDB)
-        logger: 로거 객체
-        roots: 검색 대상 루트 디렉토리 목록
-        engine: (Deprecated) 이전 버전 호환성용
-        indexer: (Deprecated) 이전 버전 호환성용
-
-    Returns:
-        MCP 응답 딕셔너리 (JSON 또는 PACK 형식)
+    Execute hybrid search using the Facade pattern.
     """
+    # 0. v3 Parameter Validation
+    validation_err = _validate_search_args(args)
+    if validation_err:
+        return mcp_response(
+            "search",
+            lambda: pack_error("search", ErrorCode.INVALID_ARGS, validation_err),
+            lambda: {
+                "error": {
+                    "code": ErrorCode.INVALID_ARGS.value,
+                    "message": validation_err,
+                },
+                "isError": True,
+            },
+        )
+
     start_ts = time.time()
 
-    # 1. 표준화된 옵션 파싱
+    # 1. Parse standardized options
     try:
         opts = parse_search_options(args, roots)
     except Exception as e:
         msg = str(e)
         return mcp_response(
             "search",
-            lambda: pack_error(
-                "search",
-                ErrorCode.INVALID_ARGS,
-                msg),
+            lambda: pack_error("search", ErrorCode.INVALID_ARGS, msg),
             lambda: {
                 "error": {
                     "code": ErrorCode.INVALID_ARGS.value,
-                    "message": msg},
-                "isError": True},
+                    "message": msg,
+                },
+                "isError": True,
+            },
         )
 
     if not opts.query:
         return mcp_response(
             "search",
-            lambda: pack_error(
-                "search",
-                ErrorCode.INVALID_ARGS,
-                "query is required"),
+            lambda: pack_error("search", ErrorCode.INVALID_ARGS, "query is required"),
             lambda: {
                 "error": {
                     "code": ErrorCode.INVALID_ARGS.value,
-                    "message": "query is required"},
-                "isError": True},
+                    "message": "query is required",
+                },
+                "isError": True,
+            },
         )
 
-    # 2. DB Facade를 통한 하이브리드 검색 (Tantivy vs SQLite 자동 처리)
+    # 2. Hybrid search via DB Facade
     try:
         hits, meta = db.search_v2(opts)
     except Exception as e:
         msg = str(e)
         return mcp_response(
             "search",
-            lambda: pack_error(
-                "search",
-                ErrorCode.ERR_ENGINE_QUERY,
-                msg),
+            lambda: pack_error("search", ErrorCode.ERR_ENGINE_QUERY, msg),
             lambda: {
                 "error": {
                     "code": ErrorCode.ERR_ENGINE_QUERY.value,
-                    "message": msg},
-                "isError": True},
+                    "message": msg,
+                },
+                "isError": True,
+            },
         )
 
     meta_map: Mapping[str, object] = meta if isinstance(meta, Mapping) else {}
     latency_ms = int((time.time() - start_ts) * 1000)
     total = int(meta_map.get("total", len(hits)))
     max_results = max(
-        1, min(
-            _safe_int(
-                args.get("max_results"), opts.limit), opts.limit))
+        1, min(_safe_int(args.get("max_results"), opts.limit), opts.limit)
+    )
     snippet_max_chars = max(
-        80, min(
+        80,
+        min(
             _safe_int(
-                args.get("snippet_max_chars"), getattr(
-                    settings, "MCP_SEARCH_SNIPPET_MAX_CHARS", 700)), 2000))
+                args.get("snippet_max_chars"),
+                getattr(settings, "MCP_SEARCH_SNIPPET_MAX_CHARS", 700),
+            ),
+            2000,
+        ),
+    )
     pack_max_bytes = max(
         4096,
         _safe_int(
             args.get("max_pack_bytes"),
-            getattr(
-                settings,
-                "MCP_SEARCH_PACK_MAX_BYTES",
-                120000)))
+            getattr(settings, "MCP_SEARCH_PACK_MAX_BYTES", 120000),
+        ),
+    )
     bounded_hits = hits[:max_results]
 
     def get_attr(obj: object, attr: str, default: object = "") -> object:
@@ -146,7 +170,7 @@ def execute_search(
         return getattr(obj, attr, default)
 
     def build_json() -> ToolResult:
-        """JSON 포맷 응답 생성 (디버깅용)"""
+        """JSON format response (for debugging)"""
         json_results = []
         for item in bounded_hits:
             if hasattr(item, "to_result_dict"):
@@ -162,11 +186,12 @@ def execute_search(
                     "snippet": str(get_attr(item, "snippet", "")),
                     "hit_reason": str(get_attr(item, "hit_reason", "")),
                 }
-            row["snippet"] = _clip_text(
-                row.get("snippet", ""), snippet_max_chars)
+            row["snippet"] = _clip_text(row.get("snippet", ""), snippet_max_chars)
             json_results.append(row)
         return {
-            "query": opts.query, "limit": opts.limit, "offset": opts.offset,
+            "query": opts.query,
+            "limit": opts.limit,
+            "offset": opts.offset,
             "results": json_results,
             "meta": {
                 **meta_map,
@@ -178,23 +203,31 @@ def execute_search(
         }
 
     def build_pack() -> str:
-        """PACK1 포맷 응답 생성 (토큰 절약용)"""
-        header = pack_header("search",
-                             {"q": pack_encode_text(opts.query)},
-                             returned=len(bounded_hits))
+        """PACK1 format response (token efficiency)"""
+        header = pack_header(
+            "search",
+            {"q": pack_encode_text(opts.query)},
+            returned=len(bounded_hits),
+        )
         lines = [header]
         used_bytes = len(header.encode("utf-8", errors="ignore")) + 1
 
-        # 메타데이터 라인
-        meta_line = pack_line("m", {"total": str(total), "latency_ms": str(
-            latency_ms), "engine": str(meta_map.get("engine", "unknown"))})
+        # Metadata line
+        meta_line = pack_line(
+            "m",
+            {
+                "total": str(total),
+                "latency_ms": str(latency_ms),
+                "engine": str(meta_map.get("engine", "unknown")),
+            },
+        )
         lines.append(meta_line)
         used_bytes += len(meta_line.encode("utf-8", errors="ignore")) + 1
 
         returned_count = 0
         hard_truncated = False
         for item in bounded_hits:
-            # 중요도(Importance) 정보 추출하여 시각적 태그 추가
+            # Importance info tagging
             imp_tag = ""
             hit_reason = str(get_attr(item, "hit_reason", ""))
             if "importance=" in hit_reason:
@@ -208,14 +241,17 @@ def execute_search(
                     pass
 
             snippet = _clip_text(get_attr(item, "snippet"), snippet_max_chars)
-            row_line = pack_line("r", {
-                "path": pack_encode_id(get_attr(item, "path")),
-                "repo": pack_encode_id(get_attr(item, "repo")),
-                "score": f"{float(get_attr(item, 'score', 0.0)):.2f}",
-                "file_type": pack_encode_id(get_attr(item, "file_type")),
-                "snippet": pack_encode_text(snippet),
-                "rank_info": pack_encode_text(hit_reason + imp_tag),
-            })
+            row_line = pack_line(
+                "r",
+                {
+                    "path": pack_encode_id(get_attr(item, "path")),
+                    "repo": pack_encode_id(get_attr(item, "repo")),
+                    "score": f"{float(get_attr(item, 'score', 0.0)):.2f}",
+                    "file_type": pack_encode_id(get_attr(item, "file_type")),
+                    "snippet": pack_encode_text(snippet),
+                    "rank_info": pack_encode_text(hit_reason + imp_tag),
+                },
+            )
             row_bytes = len(row_line.encode("utf-8", errors="ignore")) + 1
             if used_bytes + row_bytes > pack_max_bytes:
                 hard_truncated = True
@@ -231,8 +267,13 @@ def execute_search(
             lines.append(pack_truncated(next_offset, opts.limit, "maybe"))
             lines.append(
                 pack_line(
-                    "m", {
-                        "budget_bytes": str(pack_max_bytes), "returned": str(returned_count)}))
+                    "m",
+                    {
+                        "budget_bytes": str(pack_max_bytes),
+                        "returned": str(returned_count),
+                    },
+                )
+            )
         return "\n".join(lines)
 
     return mcp_response("search", build_pack, build_json)
