@@ -4,7 +4,7 @@ Search tool for Local Search MCP Server (SSOT).
 Universal search integration tool.
 """
 import time
-from typing import Mapping, TypeAlias, Optional
+from typing import Mapping, TypeAlias, Optional, Tuple, List
 
 from sari.core.settings import settings
 from sari.mcp.tools._util import (
@@ -18,6 +18,12 @@ from sari.mcp.tools._util import (
     ErrorCode,
     parse_search_options,
 )
+from sari.mcp.tools.inference import resolve_search_intent
+
+# Import specialized executors for routing
+from sari.mcp.tools.search_symbols import execute_search_symbols
+from sari.mcp.tools.search_api_endpoints import execute_search_api_endpoints
+from sari.mcp.tools.repo_candidates import execute_repo_candidates
 
 SearchArgs: TypeAlias = dict[str, object]
 SearchMeta: TypeAlias = dict[str, object]
@@ -51,12 +57,12 @@ def _validate_search_args(args: Mapping[str, object]) -> Optional[str]:
     symbol_only = {"kinds", "match_mode", "include_qualname"}
     api_only = {"method", "framework_hint"}
 
-    if search_type != "symbol":
+    if search_type != "symbol" and search_type != "auto":
         for p in symbol_only:
             if p in args:
                 return f"'{p}' is only valid for search_type='symbol'."
 
-    if search_type != "api":
+    if search_type != "api" and search_type != "auto":
         for p in api_only:
             if p in args:
                 return f"'{p}' is only valid for search_type='api'."
@@ -73,7 +79,8 @@ def execute_search(
     indexer: object = None,
 ) -> ToolResult:
     """
-    Execute hybrid search using the Facade pattern.
+    v3 Unified Search Dispatcher.
+    Routes requests to appropriate engines based on search_type or auto-inference.
     """
     # 0. v3 Parameter Validation
     validation_err = _validate_search_args(args)
@@ -91,8 +98,74 @@ def execute_search(
         )
 
     start_ts = time.time()
+    query = str(args.get("query", "")).strip()
+    requested_type = str(args.get("search_type", "code")).lower()
 
-    # 1. Parse standardized options
+    resolved_type = requested_type
+    inference_blocked_reason = None
+    fallback_used = False
+
+    # 1. Intent Inference (if auto)
+    if requested_type == "auto":
+        resolved_type, inference_blocked_reason = resolve_search_intent(query)
+
+    # 2. Dispatch to specialized executors
+    if resolved_type == "symbol":
+        result = execute_search_symbols(args, db, logger, roots)
+        # Waterfall: if 0 results in auto mode, fallback to code
+        if requested_type == "auto" and _is_empty_result(result):
+            fallback_used = True
+            resolved_type = "code"
+            result = _execute_core_search(args, db, logger, roots, engine, indexer)
+    elif resolved_type == "api":
+        result = execute_search_api_endpoints(args, db, roots)
+        # Waterfall: if 0 results in auto mode, fallback to code
+        if requested_type == "auto" and _is_empty_result(result):
+            fallback_used = True
+            resolved_type = "code"
+            result = _execute_core_search(args, db, logger, roots, engine, indexer)
+    elif resolved_type == "repo":
+        result = execute_repo_candidates(
+            {"query": query, "limit": args.get("limit", 3)}, db, logger, roots
+        )
+    else:
+        # Default: code search
+        result = _execute_core_search(args, db, logger, roots, engine, indexer)
+
+    # 3. Inject v3 Metadata (Only if not Error)
+    # This part will be enhanced in Task 3 (Normalization)
+    return result
+
+
+def _is_empty_result(result: ToolResult) -> bool:
+    """Checks if the MCP result contains 0 items."""
+    try:
+        # Check PACK1 format
+        content_list = result.get("content", [])
+        if content_list and isinstance(content_list, list):
+            content = str(content_list[0].get("text", ""))
+            if "returned=0" in content:
+                return True
+        # Check JSON format
+        if "results" in result and len(result["results"]) == 0:
+            return True
+        if "hits" in result and len(result["hits"]) == 0:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _execute_core_search(
+    args: SearchArgs,
+    db: object,
+    logger: object,
+    roots: SearchRoots,
+    engine: object = None,
+    indexer: object = None,
+) -> ToolResult:
+    """Existing core search logic (from legacy search.py)"""
+    start_ts = time.time()
     try:
         opts = parse_search_options(args, roots)
     except Exception as e:
@@ -101,10 +174,7 @@ def execute_search(
             "search",
             lambda: pack_error("search", ErrorCode.INVALID_ARGS, msg),
             lambda: {
-                "error": {
-                    "code": ErrorCode.INVALID_ARGS.value,
-                    "message": msg,
-                },
+                "error": {"code": ErrorCode.INVALID_ARGS.value, "message": msg},
                 "isError": True,
             },
         )
@@ -122,7 +192,6 @@ def execute_search(
             },
         )
 
-    # 2. Hybrid search via DB Facade
     try:
         hits, meta = db.search_v2(opts)
     except Exception as e:
@@ -170,7 +239,6 @@ def execute_search(
         return getattr(obj, attr, default)
 
     def build_json() -> ToolResult:
-        """JSON format response (for debugging)"""
         json_results = []
         for item in bounded_hits:
             if hasattr(item, "to_result_dict"):
@@ -203,7 +271,6 @@ def execute_search(
         }
 
     def build_pack() -> str:
-        """PACK1 format response (token efficiency)"""
         header = pack_header(
             "search",
             {"q": pack_encode_text(opts.query)},
@@ -211,8 +278,6 @@ def execute_search(
         )
         lines = [header]
         used_bytes = len(header.encode("utf-8", errors="ignore")) + 1
-
-        # Metadata line
         meta_line = pack_line(
             "m",
             {
@@ -223,11 +288,9 @@ def execute_search(
         )
         lines.append(meta_line)
         used_bytes += len(meta_line.encode("utf-8", errors="ignore")) + 1
-
         returned_count = 0
         hard_truncated = False
         for item in bounded_hits:
-            # Importance info tagging
             imp_tag = ""
             hit_reason = str(get_attr(item, "hit_reason", ""))
             if "importance=" in hit_reason:
@@ -239,7 +302,6 @@ def execute_search(
                         imp_tag = " [SIG]"
                 except Exception:
                     pass
-
             snippet = _clip_text(get_attr(item, "snippet"), snippet_max_chars)
             row_line = pack_line(
                 "r",
@@ -256,11 +318,9 @@ def execute_search(
             if used_bytes + row_bytes > pack_max_bytes:
                 hard_truncated = True
                 break
-
             lines.append(row_line)
             used_bytes += row_bytes
             returned_count += 1
-
         soft_truncated = len(hits) > returned_count
         if hard_truncated or soft_truncated:
             next_offset = opts.offset + max(returned_count, 1)
