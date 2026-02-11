@@ -9,6 +9,7 @@ def test_config_defaults():
     assert defaults["workspace_root"] == "/tmp/ws"
     assert "server_port" in defaults
     assert ".py" in defaults["include_ext"]
+    assert "site-packages" in defaults["exclude_dirs"]
 
 def test_config_post_init():
     cfg = Config(
@@ -129,6 +130,14 @@ def test_config_load_rejects_sqlite_file_as_config(tmp_path):
     cfg_path.write_bytes(b"SQLite format 3\x00" + b"junk")
     with pytest.raises(ValueError, match="detected SQLite DB"):
         Config.load(str(cfg_path), workspace_root_override=str(tmp_path))
+
+
+def test_config_should_index_excludes_site_packages(tmp_path):
+    cfg = Config.load(None, workspace_root_override=str(tmp_path))
+    pkg = tmp_path / "venv" / "lib" / "python3.11" / "site-packages" / "x.py"
+    pkg.parent.mkdir(parents=True, exist_ok=True)
+    pkg.write_text("print('x')", encoding="utf-8")
+    assert cfg.should_index(str(pkg)) is False
 
 
 def test_resolve_config_path_prefers_workspace_mcp_config(tmp_path, monkeypatch):

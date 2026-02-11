@@ -43,3 +43,57 @@ def test_db_intelligent_read_compressed(db):
     
     # Must return decrypted string
     assert db.read_file("p_comp") == content
+
+
+def test_db_get_roots_includes_counts_and_paths(db):
+    db.upsert_root("rid-a", "/tmp/ws-a", "/tmp/ws-a")
+    db.upsert_root("rid-b", "/tmp/ws-b", "/tmp/ws-b")
+    rows = [
+        ("rid-a/a.py", "a.py", "rid-a", "repo-a", 100, 10, b"print(1)", "h1", "print(1)", 200, 0, "ok", "", "ok", "", 0, 0, 0, 8, "{}"),
+        ("rid-a/b.py", "b.py", "rid-a", "repo-a", 101, 11, b"print(2)", "h2", "print(2)", 201, 0, "ok", "", "ok", "", 0, 0, 0, 8, "{}"),
+        ("rid-b/c.py", "c.py", "rid-b", "repo-b", 102, 12, b"print(3)", "h3", "print(3)", 202, 0, "ok", "", "ok", "", 0, 0, 0, 8, "{}"),
+    ]
+    db.upsert_files_turbo(rows)
+    db.finalize_turbo_batch()
+
+    roots = sorted(db.get_roots(), key=lambda r: r["root_id"])
+
+    assert [r["root_id"] for r in roots] == ["rid-a", "rid-b"]
+    assert roots[0]["path"] == "/tmp/ws-a"
+    assert roots[1]["path"] == "/tmp/ws-b"
+    assert roots[0]["file_count"] == 2
+    assert roots[1]["file_count"] == 1
+
+
+def test_db_execute_allows_direct_sql(db):
+    db.execute("CREATE TABLE IF NOT EXISTS _tmp_x (id INTEGER PRIMARY KEY, name TEXT)")
+    db.execute("INSERT INTO _tmp_x(name) VALUES (?)", ("ok",))
+    row = db.execute("SELECT COUNT(1) FROM _tmp_x").fetchone()
+    assert int(row[0]) == 1
+
+
+def test_relations_upsert_deduplicates_duplicate_rows(db):
+    db.upsert_root("rid-a", "/tmp/ws-a", "/tmp/ws-a")
+    rel = (
+        "rid-a/a.py",
+        "rid-a",
+        "caller",
+        "sid-caller",
+        "rid-a/b.py",
+        "rid-a",
+        "callee",
+        "sid-callee",
+        "calls",
+        12,
+        "{}",
+    )
+    db.upsert_relations_tx(None, [rel, rel, rel])
+    db.upsert_relations_tx(None, [rel])
+    row = db.execute("SELECT COUNT(1) FROM symbol_relations").fetchone()
+    assert int(row[0]) == 1
+
+
+def test_schema_has_symbol_relations_unique_index(db):
+    rows = db.execute("PRAGMA index_list('symbol_relations')").fetchall()
+    names = [str(r[1]) for r in rows]
+    assert "ux_symbol_relations_identity" in names

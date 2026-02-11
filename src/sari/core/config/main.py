@@ -64,10 +64,12 @@ class Config:
                                         ".venv",
                                         "venv",
                                         ".virtualenv",
-                                        "env"])
+                                        "env",
+                                        "site-packages",
+                                        "__pypackages__"])
         self.exclude_globs = kwargs.get(
             "exclude_globs", [
-                ".venv*", "venv*", "env*", "*.egg-info"])
+                ".venv*", "venv*", "env*", "*.egg-info", "*site-packages*"])
         self.max_depth = kwargs.get("max_depth", 20)
         # max_file_size는 Settings.MAX_PARSE_BYTES 사용 (통일)
         self.gitignore_lines = kwargs.get("gitignore_lines", [])
@@ -188,8 +190,8 @@ class Config:
             "workspace_root": root,
             "workspace_roots": [root],
             "include_ext": [".py", ".js", ".ts", ".java", ".go", ".rs", ".rb", ".php", ".xml", ".yml", ".yaml", ".md", ".cs", ".swift", ".vue", ".hcl", ".tf", ".sql", ".txt"],
-            "exclude_dirs": [".git", "node_modules", "target", "build", "dist", ".pytest_cache", "__pycache__", ".sari", ".venv", "venv", ".virtualenv", "env"],
-            "exclude_globs": [".venv*", "venv*", "env*", "*.egg-info"],
+            "exclude_dirs": [".git", "node_modules", "target", "build", "dist", ".pytest_cache", "__pycache__", ".sari", ".venv", "venv", ".virtualenv", "env", "site-packages", "__pypackages__"],
+            "exclude_globs": [".venv*", "venv*", "env*", "*.egg-info", "*site-packages*"],
             "max_depth": 20,
             "db_path": str(WorkspaceManager.get_global_db_path()),
             "server_port": 47777,

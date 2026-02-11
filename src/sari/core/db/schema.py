@@ -2,7 +2,7 @@ import sqlite3
 import time
 import logging
 
-CURRENT_SCHEMA_VERSION = 4
+CURRENT_SCHEMA_VERSION = 5
 logger = logging.getLogger("sari.db.schema")
 
 
@@ -62,6 +62,14 @@ def init_schema(conn: sqlite3.Connection):
                 _create_snippet_versions_table(cur)
             except Exception as e:
                 logger.debug("Migration v4 failed: %s", e)
+
+        # v5 마이그레이션: symbol_relations 중복 제거 + 유니크 인덱스 추가
+        if v < 5:
+            try:
+                _deduplicate_symbol_relations(cur)
+                _create_symbol_relations_indexes(cur)
+            except Exception as e:
+                logger.debug("Migration v5 failed: %s", e)
 
         # metadata_json 컬럼 존재 여부 강제 확인 (복구용)
         try:
@@ -198,6 +206,62 @@ def _create_symbol_relations_table(cur: sqlite3.Cursor):
             meta_json TEXT               -- 추가 정보 (JSON)
         );
     """)
+    _create_symbol_relations_indexes(cur)
+
+
+def _create_symbol_relations_indexes(cur: sqlite3.Cursor):
+    # Identity-level unique index to prevent repeated accumulation.
+    cur.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_symbol_relations_identity
+        ON symbol_relations(
+            from_path,
+            from_root_id,
+            from_symbol,
+            IFNULL(from_symbol_id, ''),
+            to_path,
+            to_root_id,
+            to_symbol,
+            IFNULL(to_symbol_id, ''),
+            rel_type,
+            IFNULL(line, -1),
+            IFNULL(meta_json, '')
+        )
+        """
+    )
+    # Query helpers for call graph lookups.
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_symbol_relations_to_symbol ON symbol_relations(to_symbol)")
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_symbol_relations_to_symbol_id ON symbol_relations(to_symbol_id)")
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_symbol_relations_from_symbol ON symbol_relations(from_symbol)")
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_symbol_relations_from_symbol_id ON symbol_relations(from_symbol_id)")
+
+
+def _deduplicate_symbol_relations(cur: sqlite3.Cursor):
+    cur.execute(
+        """
+        DELETE FROM symbol_relations
+        WHERE rowid NOT IN (
+            SELECT MIN(rowid)
+            FROM symbol_relations
+            GROUP BY
+                from_path,
+                from_root_id,
+                from_symbol,
+                IFNULL(from_symbol_id, ''),
+                to_path,
+                to_root_id,
+                to_symbol,
+                IFNULL(to_symbol_id, ''),
+                rel_type,
+                IFNULL(line, -1),
+                IFNULL(meta_json, '')
+        )
+        """
+    )
 
 
 def _create_contexts_table(cur: sqlite3.Cursor):

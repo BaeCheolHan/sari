@@ -61,9 +61,51 @@ class AsyncHttpServer:
     def _get_system_metrics(self) -> JsonObject:
         try:
             from sari.core.utils.system import get_system_metrics
-            return get_system_metrics()
+            metrics = get_system_metrics()
+            metrics.update(self._get_db_storage_metrics())
+            return metrics
         except Exception:
             return {}
+
+    def _get_db_storage_metrics(self) -> JsonObject:
+        try:
+            db_path = str(getattr(self.db, "db_path", "") or "")
+            if not db_path:
+                return {
+                    "db_size": 0,
+                    "db_main_size": 0,
+                    "db_wal_size": 0,
+                    "db_shm_size": 0,
+                }
+            main_size = os.path.getsize(db_path) if os.path.exists(db_path) else 0
+            wal_path = f"{db_path}-wal"
+            shm_path = f"{db_path}-shm"
+            wal_size = os.path.getsize(wal_path) if os.path.exists(wal_path) else 0
+            shm_size = os.path.getsize(shm_path) if os.path.exists(shm_path) else 0
+            return {
+                "db_size": int(main_size + wal_size + shm_size),
+                "db_main_size": int(main_size),
+                "db_wal_size": int(wal_size),
+                "db_shm_size": int(shm_size),
+            }
+        except Exception:
+            return {
+                "db_size": 0,
+                "db_main_size": 0,
+                "db_wal_size": 0,
+                "db_shm_size": 0,
+            }
+
+    @staticmethod
+    def _normalize_workspace_path(path: str) -> str:
+        if not path:
+            return ""
+        expanded = os.path.expanduser(str(path))
+        try:
+            from sari.core.workspace import WorkspaceManager
+            return WorkspaceManager.normalize_path(expanded)
+        except Exception:
+            return expanded.replace("\\", "/").rstrip("/")
     
     @asynccontextmanager
     async def lifespan(self, app: Starlette):
@@ -300,7 +342,7 @@ class AsyncHttpServer:
         for root in configured_roots:
             if not root:
                 continue
-            normalized = os.path.expanduser(str(root)).replace("\\", "/").rstrip("/")
+            normalized = self._normalize_workspace_path(str(root))
             if normalized and normalized not in seen:
                 seen.add(normalized)
                 norm_roots.append(normalized)
@@ -314,7 +356,7 @@ class AsyncHttpServer:
                         p = row.get("path") or row.get("root_path") or row.get("real_path")
                         if not p:
                             continue
-                        normalized = str(p).replace("\\", "/").rstrip("/")
+                        normalized = self._normalize_workspace_path(str(p))
                         indexed_by_path[normalized] = row
             except Exception:
                 pass
@@ -359,7 +401,7 @@ class AsyncHttpServer:
         try:
             cfg_roots = self._indexer_workspace_roots(self.indexer)
             for root in cfg_roots:
-                watched_roots.add(str(root).replace("\\", "/").rstrip("/"))
+                watched_roots.add(self._normalize_workspace_path(str(root)))
         except Exception:
             pass
 
@@ -370,7 +412,11 @@ class AsyncHttpServer:
             readable = os.access(abs_path, os.R_OK | os.X_OK) if exists else False
             watched = root in watched_roots
             indexed_row = indexed_by_path.get(root)
-            indexed = indexed_row is not None
+            indexed = bool(indexed_row) and (
+                int((indexed_row or {}).get("file_count", 0) or 0) > 0
+                or int((indexed_row or {}).get("last_indexed_ts", 0) or 0) > 0
+                or int((indexed_row or {}).get("updated_ts", 0) or 0) > 0
+            )
             computed_root_id = ""
             if isinstance(indexed_row, dict):
                 computed_root_id = str(indexed_row.get("root_id", "") or "")
@@ -380,17 +426,30 @@ class AsyncHttpServer:
                 except Exception:
                     computed_root_id = ""
             failed_counts = failed_by_root.get(computed_root_id, {})
-            status = "indexed" if indexed else ("missing" if not exists else "registered")
-            if indexed:
-                reason = "Indexed in DB"
-            elif not exists:
+            if not exists:
+                status = "missing"
                 reason = "Path does not exist"
+                index_state = "Unavailable"
             elif not readable:
+                status = "blocked"
                 reason = "Path is not readable"
-            elif not watched:
-                reason = "Not currently watched by indexer"
+                index_state = "Blocked"
+            elif indexed and watched:
+                status = "indexed"
+                reason = "Indexed in DB and watched"
+                index_state = "Idle"
+            elif indexed and not watched:
+                status = "indexed_stale"
+                reason = "Indexed in DB but not currently watched"
+                index_state = "Stale"
+            elif watched:
+                status = "watching"
+                reason = "Watching workspace, awaiting first index"
+                index_state = "Initial Scan Pending"
             else:
-                reason = "Registered but not indexed yet"
+                status = "registered"
+                reason = "Configured but not currently watched"
+                index_state = "Not Watching"
 
             workspaces.append({
                 "path": root,
@@ -401,8 +460,9 @@ class AsyncHttpServer:
                 "indexed": bool(indexed),
                 "status": status,
                 "reason": reason,
+                "index_state": index_state,
                 "file_count": int((indexed_row or {}).get("file_count", 0) or 0) if isinstance(indexed_row, dict) else 0,
-                "last_indexed_ts": int((indexed_row or {}).get("updated_ts", 0) or 0) if isinstance(indexed_row, dict) else 0,
+                "last_indexed_ts": int((indexed_row or {}).get("last_indexed_ts", 0) or (indexed_row or {}).get("updated_ts", 0) or 0) if isinstance(indexed_row, dict) else 0,
                 "pending_count": int(failed_counts.get("pending_count", 0) or 0),
                 "failed_count": int(failed_counts.get("failed_count", 0) or 0),
             })

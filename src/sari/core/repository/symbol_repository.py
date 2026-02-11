@@ -162,18 +162,39 @@ class SymbolRepository(BaseRepository):
         if not rels_list:
             return 0
 
-        # Standard 11-column mapping for relations
-        normalized = []
+        # Standard 11-column mapping for relations + in-memory dedup
+        normalized: list[tuple[object, ...]] = []
+        seen: set[tuple[object, ...]] = set()
         for r in rels_list:
             vals = list(r)
             while len(vals) < 11:
                 vals.append("") if len(
                     vals) != 9 else vals.append(0)  # line is int
-            normalized.append(tuple(vals[:11]))
+            try:
+                line = int(vals[9]) if vals[9] not in (None, "") else None
+            except Exception:
+                line = None
+            normalized_row = (
+                str(vals[0] or ""),  # from_path
+                str(vals[1] or ""),  # from_root_id
+                str(vals[2] or ""),  # from_symbol
+                str(vals[3] or ""),  # from_symbol_id
+                str(vals[4] or ""),  # to_path
+                str(vals[5] or ""),  # to_root_id
+                str(vals[6] or ""),  # to_symbol
+                str(vals[7] or ""),  # to_symbol_id
+                str(vals[8] or ""),  # rel_type
+                line,                # line
+                str(vals[10] or ""),  # meta_json
+            )
+            if normalized_row in seen:
+                continue
+            seen.add(normalized_row)
+            normalized.append(normalized_row)
 
         cur.executemany(
             """
-            INSERT OR REPLACE INTO symbol_relations(
+            INSERT OR IGNORE INTO symbol_relations(
                 from_path, from_root_id, from_symbol, from_symbol_id,
                 to_path, to_root_id, to_symbol, to_symbol_id,
                 rel_type, line, meta_json

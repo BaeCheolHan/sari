@@ -233,6 +233,86 @@ class LocalSearchDB:
         except Exception:
             return self._file_repo().get_repo_stats(root_ids=root_ids)
 
+    def execute(self, sql: str, params: Optional[Tuple[object, ...]] = None):
+        """얇은 SQL 실행 헬퍼 (상태/진단 경로에서 사용)."""
+        conn = self.db.connection()
+        if params is None:
+            return conn.execute(sql)
+        return conn.execute(sql, params)
+
+    def get_roots(self) -> List[Dict[str, object]]:
+        """워크스페이스 루트 메타/통계를 대시보드 친화 포맷으로 반환합니다."""
+        sql = """
+            SELECT
+                r.root_id AS root_id,
+                r.root_path AS root_path,
+                r.real_path AS real_path,
+                r.label AS label,
+                r.state AS state,
+                COALESCE(r.created_ts, 0) AS created_ts,
+                COALESCE(r.updated_ts, 0) AS updated_ts,
+                COALESCE(r.last_scan_ts, 0) AS last_scan_ts,
+                COALESCE(fc.file_count, 0) AS file_count,
+                COALESCE(fc.last_indexed_ts, 0) AS last_indexed_ts,
+                COALESCE(sc.symbol_count, 0) AS symbol_count
+            FROM roots r
+            LEFT JOIN (
+                SELECT
+                    root_id,
+                    COUNT(1) AS file_count,
+                    MAX(last_seen_ts) AS last_indexed_ts
+                FROM files
+                WHERE deleted_ts = 0
+                GROUP BY root_id
+            ) fc ON fc.root_id = r.root_id
+            LEFT JOIN (
+                SELECT root_id, COUNT(1) AS symbol_count
+                FROM symbols
+                GROUP BY root_id
+            ) sc ON sc.root_id = r.root_id
+            ORDER BY r.root_path
+        """
+        rows = self.execute(sql).fetchall() or []
+        results: List[Dict[str, object]] = []
+        for row in rows:
+            if isinstance(row, sqlite3.Row):
+                data = dict(row)
+            elif isinstance(row, dict):
+                data = dict(row)
+            else:
+                vals = list(row) if isinstance(row, (list, tuple)) else []
+                data = {
+                    "root_id": vals[0] if len(vals) > 0 else "",
+                    "root_path": vals[1] if len(vals) > 1 else "",
+                    "real_path": vals[2] if len(vals) > 2 else "",
+                    "label": vals[3] if len(vals) > 3 else "",
+                    "state": vals[4] if len(vals) > 4 else "",
+                    "created_ts": vals[5] if len(vals) > 5 else 0,
+                    "updated_ts": vals[6] if len(vals) > 6 else 0,
+                    "last_scan_ts": vals[7] if len(vals) > 7 else 0,
+                    "file_count": vals[8] if len(vals) > 8 else 0,
+                    "last_indexed_ts": vals[9] if len(vals) > 9 else 0,
+                    "symbol_count": vals[10] if len(vals) > 10 else 0,
+                }
+            root_path = str(data.get("root_path") or "")
+            real_path = str(data.get("real_path") or "")
+            path = root_path or real_path
+            results.append({
+                "root_id": str(data.get("root_id") or ""),
+                "path": path,
+                "root_path": root_path,
+                "real_path": real_path,
+                "label": str(data.get("label") or ""),
+                "state": str(data.get("state") or "ready"),
+                "file_count": int(data.get("file_count") or 0),
+                "symbol_count": int(data.get("symbol_count") or 0),
+                "created_ts": int(data.get("created_ts") or 0),
+                "updated_ts": int(data.get("updated_ts") or 0),
+                "last_scan_ts": int(data.get("last_scan_ts") or 0),
+                "last_indexed_ts": int(data.get("last_indexed_ts") or 0),
+            })
+        return results
+
     def read_file(self, path: str) -> Optional[str]:
         """특정 경로의 파일 내용을 DB에서 읽어 반환합니다 (압축 해제 포함)."""
         # Critical: let OperationalError (corruption) bubble up!

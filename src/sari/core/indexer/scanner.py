@@ -18,7 +18,7 @@ class Scanner:
         self.hard_exclude_dirs = {
             ".git", "node_modules", ".venv", "venv", "dist", "build",
             ".next", "target", "coverage", ".idea", ".vscode", ".pytest_cache",
-            "__pycache__", ".DS_Store"
+            "__pycache__", ".DS_Store", "site-packages", "__pypackages__"
         }
 
         # 2. Hardcoded File Excludes (Glob Match)

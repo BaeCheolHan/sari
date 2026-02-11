@@ -44,14 +44,49 @@ class Handler(BaseHTTPRequestHandler):
         roots = getattr(cfg_obj, "workspace_roots", []) if cfg_obj is not None else []
         return list(roots or [])
 
-    def _get_db_size(self, db_obj=None):
+    def _get_db_storage_metrics(self, db_obj=None):
         try:
             db_ref = db_obj or self.db
-            if hasattr(db_ref, "db_path"):
-                return os.path.getsize(db_ref.db_path)
-            return 0
+            db_path = str(getattr(db_ref, "db_path", "") or "")
+            if not db_path:
+                return {
+                    "db_size": 0,
+                    "db_main_size": 0,
+                    "db_wal_size": 0,
+                    "db_shm_size": 0,
+                }
+            main_size = os.path.getsize(db_path) if os.path.exists(db_path) else 0
+            wal_path = f"{db_path}-wal"
+            shm_path = f"{db_path}-shm"
+            wal_size = os.path.getsize(wal_path) if os.path.exists(wal_path) else 0
+            shm_size = os.path.getsize(shm_path) if os.path.exists(shm_path) else 0
+            return {
+                "db_size": int(main_size + wal_size + shm_size),
+                "db_main_size": int(main_size),
+                "db_wal_size": int(wal_size),
+                "db_shm_size": int(shm_size),
+            }
         except Exception:
-            return 0
+            return {
+                "db_size": 0,
+                "db_main_size": 0,
+                "db_wal_size": 0,
+                "db_shm_size": 0,
+            }
+
+    def _get_db_size(self, db_obj=None):
+        return int(self._get_db_storage_metrics(db_obj).get("db_size", 0))
+
+    @staticmethod
+    def _normalize_workspace_path(path: str) -> str:
+        if not path:
+            return ""
+        expanded = os.path.expanduser(str(path))
+        try:
+            from sari.core.workspace import WorkspaceManager
+            return WorkspaceManager.normalize_path(expanded)
+        except Exception:
+            return expanded.replace("\\", "/").rstrip("/")
 
     def _selected_workspace_root(self, qs) -> str:
         sel = ""
@@ -118,7 +153,7 @@ class Handler(BaseHTTPRequestHandler):
         for root in configured_roots:
             if not root:
                 continue
-            normalized = os.path.expanduser(str(root)).replace("\\", "/").rstrip("/")
+            normalized = self._normalize_workspace_path(str(root))
             if normalized and normalized not in seen:
                 seen.add(normalized)
                 norm_roots.append(normalized)
@@ -132,7 +167,7 @@ class Handler(BaseHTTPRequestHandler):
                         p = row.get("path") or row.get("root_path") or row.get("real_path")
                         if not p:
                             continue
-                        normalized = str(p).replace("\\", "/").rstrip("/")
+                        normalized = self._normalize_workspace_path(str(p))
                         indexed_by_path[normalized] = row
             except Exception:
                 pass
@@ -178,7 +213,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             cfg_roots = self._indexer_workspace_roots(indexer)
             for root in cfg_roots:
-                watched_roots.add(str(root).replace("\\", "/").rstrip("/"))
+                watched_roots.add(self._normalize_workspace_path(str(root)))
         except Exception:
             pass
 
@@ -188,7 +223,11 @@ class Handler(BaseHTTPRequestHandler):
             readable = os.access(abs_path, os.R_OK | os.X_OK) if exists else False
             watched = root in watched_roots
             indexed_row = indexed_by_path.get(root)
-            indexed = indexed_row is not None
+            indexed = bool(indexed_row) and (
+                int((indexed_row or {}).get("file_count", 0) or 0) > 0
+                or int((indexed_row or {}).get("last_indexed_ts", 0) or 0) > 0
+                or int((indexed_row or {}).get("updated_ts", 0) or 0) > 0
+            )
             computed_root_id = ""
             if isinstance(indexed_row, dict):
                 computed_root_id = str(indexed_row.get("root_id", "") or "")
@@ -198,17 +237,30 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     computed_root_id = ""
             failed_counts = failed_by_root.get(computed_root_id, {})
-            status = "indexed" if indexed else ("missing" if not exists else "registered")
-            if indexed:
-                reason = "Indexed in DB"
-            elif not exists:
+            if not exists:
+                status = "missing"
                 reason = "Path does not exist"
+                index_state = "Unavailable"
             elif not readable:
+                status = "blocked"
                 reason = "Path is not readable"
-            elif not watched:
-                reason = "Not currently watched by indexer"
+                index_state = "Blocked"
+            elif indexed and watched:
+                status = "indexed"
+                reason = "Indexed in DB and watched"
+                index_state = "Idle"
+            elif indexed and not watched:
+                status = "indexed_stale"
+                reason = "Indexed in DB but not currently watched"
+                index_state = "Stale"
+            elif watched:
+                status = "watching"
+                reason = "Watching workspace, awaiting first index"
+                index_state = "Initial Scan Pending"
             else:
-                reason = "Registered but not indexed yet"
+                status = "registered"
+                reason = "Configured but not currently watched"
+                index_state = "Not Watching"
 
             items.append({
                 "path": root,
@@ -217,11 +269,12 @@ class Handler(BaseHTTPRequestHandler):
                 "watched": bool(watched),
                 "indexed": bool(indexed),
                 "file_count": int((indexed_row or {}).get("file_count", 0) or 0) if isinstance(indexed_row, dict) else 0,
-                "last_indexed_ts": int((indexed_row or {}).get("updated_ts", 0) or 0) if isinstance(indexed_row, dict) else 0,
+                "last_indexed_ts": int((indexed_row or {}).get("last_indexed_ts", 0) or (indexed_row or {}).get("updated_ts", 0) or 0) if isinstance(indexed_row, dict) else 0,
                 "pending_count": int(failed_counts.get("pending_count", 0) or 0),
                 "failed_count": int(failed_counts.get("failed_count", 0) or 0),
                 "status": status,
                 "reason": reason,
+                "index_state": index_state,
                 "root_id": computed_root_id,
             })
         return items
@@ -346,6 +399,9 @@ class Handler(BaseHTTPRequestHandler):
                 .badge-indexed { color: var(--good); background: rgba(69, 179, 107, 0.12); border-color: rgba(69, 179, 107, 0.28); }
                 .badge-missing { color: var(--bad); background: rgba(224, 87, 87, 0.12); border-color: rgba(224, 87, 87, 0.28); }
                 .badge-registered { color: var(--accent); background: rgba(79, 140, 255, 0.12); border-color: rgba(79, 140, 255, 0.28); }
+                .badge-watching { color: #7cc4ff; background: rgba(124, 196, 255, 0.12); border-color: rgba(124, 196, 255, 0.28); }
+                .badge-stale { color: var(--warn); background: rgba(226, 170, 58, 0.12); border-color: rgba(226, 170, 58, 0.28); }
+                .badge-blocked { color: #fca5a5; background: rgba(252, 165, 165, 0.12); border-color: rgba(252, 165, 165, 0.28); }
             </style>
         </head>
         """
@@ -470,13 +526,14 @@ class Handler(BaseHTTPRequestHandler):
                             path: root.path || root.root_path || "",
                             root_id: root.root_id || "",
                             file_count: root.file_count || 0,
-                            last_indexed_ts: root.last_indexed_ts || 0,
+                            last_indexed_ts: root.last_indexed_ts || root.updated_ts || 0,
                             pending_count: root.pending_count || 0,
                             failed_count: root.failed_count || 0,
                             readable: true,
                             watched: true,
-                            status: data.index_ready ? "indexed" : "registered",
-                            reason: data.index_ready ? "Indexed in DB" : "Registered but not indexed yet",
+                            status: (Number(root.file_count || 0) > 0 || Number(root.last_indexed_ts || 0) > 0) ? "indexed" : "registered",
+                            reason: (Number(root.file_count || 0) > 0 || Number(root.last_indexed_ts || 0) > 0) ? "Indexed in DB" : "Registered but not indexed yet",
+                            index_state: (Number(root.file_count || 0) > 0 || Number(root.last_indexed_ts || 0) > 0) ? "Idle" : "Initial Scan Pending",
                           }));
 
                     return (
@@ -539,6 +596,9 @@ class Handler(BaseHTTPRequestHandler):
                                         <h2 className="text-xl font-semibold mb-5 flex items-center text-slate-100">
                                             <i className="fas fa-server mr-3 text-blue-400"></i> Workspaces
                                         </h2>
+                                        <p className="text-[11px] text-slate-500 mb-4">
+                                            Retry Queue: auto-retry items (&lt;3 attempts), Permanent Failures: items that exceeded retry limit (>=3 attempts).
+                                        </p>
                                         <div className="overflow-x-auto">
                                             <table className="w-full text-left text-sm">
                                                 <thead className="text-slate-400 text-[11px] uppercase border-b border-slate-700/80 tracking-wide">
@@ -547,10 +607,10 @@ class Handler(BaseHTTPRequestHandler):
                                                         <th className="pb-3 font-medium">Status</th>
                                                         <th className="pb-3 font-medium">Reason</th>
                                                         <th className="pb-3 font-medium">Last Indexed</th>
-                                                        <th className="pb-3 font-medium text-right">Files</th>
-                                                        <th className="pb-3 font-medium text-right">Pending</th>
-                                                        <th className="pb-3 font-medium text-right">Failed</th>
-                                                        <th className="pb-3 font-medium text-right">Actions</th>
+                                                        <th className="pb-3 font-medium text-right">Indexed Files</th>
+                                                        <th className="pb-3 font-medium text-right">Retry Queue</th>
+                                                        <th className="pb-3 font-medium text-right">Permanent Failures</th>
+                                                        <th className="pb-3 font-medium text-right">Rescan</th>
                                                     </tr>
                                                 </thead>
                                                 <tbody className="divide-y divide-slate-800/80">
@@ -563,10 +623,18 @@ class Handler(BaseHTTPRequestHandler):
                                                             <td className="py-4">
                                                                 <span className={`badge ${
                                                                     root.status === 'indexed' ? 'badge-indexed' :
-                                                                    root.status === 'missing' ? 'badge-missing' : 'badge-registered'
+                                                                    root.status === 'watching' ? 'badge-watching' :
+                                                                    root.status === 'indexed_stale' ? 'badge-stale' :
+                                                                    root.status === 'missing' ? 'badge-missing' :
+                                                                    root.status === 'blocked' ? 'badge-blocked' : 'badge-registered'
                                                                 }`}>
-                                                                    {root.status === 'indexed' ? 'Synced' : (root.status === 'missing' ? 'Missing' : 'Registered')}
+                                                                    {root.status === 'indexed' ? 'Indexed' :
+                                                                     root.status === 'watching' ? 'Watching' :
+                                                                     root.status === 'indexed_stale' ? 'Stale' :
+                                                                     root.status === 'missing' ? 'Missing' :
+                                                                     root.status === 'blocked' ? 'Blocked' : 'Registered'}
                                                                 </span>
+                                                                <div className="mt-1 text-[10px] text-slate-500 mono">{root.index_state || 'Unknown'}</div>
                                                             </td>
                                                             <td className="py-4 text-slate-400 text-[13px]">
                                                                 {root.reason}
@@ -717,7 +785,7 @@ class Handler(BaseHTTPRequestHandler):
             # Fetch real system metrics
             metrics = get_system_metrics()
             metrics["uptime"] = int(time.time() - self.start_time)
-            metrics["db_size"] = self._get_db_size(db)
+            metrics.update(self._get_db_storage_metrics(db))
 
             return {
                 "ok": True,
