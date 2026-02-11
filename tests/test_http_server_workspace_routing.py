@@ -33,12 +33,18 @@ def test_status_routes_to_selected_workspace(monkeypatch):
         "sari.core.http_server.get_system_metrics",
         lambda: {"uptime": 1, "db_size": 0, "process_cpu_percent": 0, "memory_percent": 0},
     )
+    monkeypatch.setattr(
+        "sari.core.http_server.detect_orphan_daemons",
+        lambda: [{"pid": 9999, "cmdline": "python -m sari.mcp.daemon"}],
+    )
 
     resp = Handler._handle_get(handler, "/status", {"workspace_root": ["/tmp/target"]})
     assert resp["ok"] is True
     assert resp["workspace_root"] == "/tmp/target"
     assert resp["indexed_files"] == 2
     assert resp["repo_stats"] == {"r": 2}
+    assert resp["orphan_daemon_count"] == 1
+    assert len(resp["orphan_daemon_warnings"]) == 1
 
 
 def test_search_returns_400_when_query_missing():

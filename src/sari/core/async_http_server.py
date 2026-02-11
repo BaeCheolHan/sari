@@ -18,6 +18,7 @@ from starlette.requests import Request
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 from sari.version import __version__
+from sari.core.daemon_health import detect_orphan_daemons
 
 JsonObject: TypeAlias = dict[str, object]
 JsonArray: TypeAlias = list[JsonObject]
@@ -98,6 +99,11 @@ class AsyncHttpServer:
         if hasattr(self.db, "get_repo_stats"):
             repo_stats = self.db.get_repo_stats(root_ids=self.root_ids)
         total_db_files = sum(repo_stats.values()) if repo_stats else 0
+        orphan_daemons = detect_orphan_daemons()
+        orphan_daemon_warnings = [
+            f"Orphan daemon PID {d.get('pid')} detected (not in registry)"
+            for d in orphan_daemons
+        ]
         
         return JSONResponse({
             "ok": True,
@@ -112,6 +118,8 @@ class AsyncHttpServer:
             "indexed_files": st.indexed_files,
             "total_files_db": total_db_files,
             "errors": st.errors,
+            "orphan_daemon_count": len(orphan_daemons),
+            "orphan_daemon_warnings": orphan_daemon_warnings,
             "fts_enabled": self.db.fts_enabled,
             "worker_count": getattr(self.indexer, "max_workers", 0),
             "performance": self.indexer.get_performance_metrics() if hasattr(self.indexer, "get_performance_metrics") else {},

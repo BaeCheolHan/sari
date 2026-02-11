@@ -14,12 +14,14 @@ try:
     from .models import SearchOptions  # type: ignore
     from .http_middleware import run_http_middlewares, default_http_middlewares  # type: ignore
     from .utils.system import get_system_metrics  # type: ignore
+    from .daemon_health import detect_orphan_daemons  # type: ignore
 except ImportError:
     from db import LocalSearchDB  # type: ignore
     from indexer import Indexer  # type: ignore
     from models import SearchOptions  # type: ignore
     from http_middleware import run_http_middlewares, default_http_middlewares  # type: ignore
     from utils.system import get_system_metrics  # type: ignore
+    from daemon_health import detect_orphan_daemons  # type: ignore
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -461,6 +463,7 @@ class Handler(BaseHTTPRequestHandler):
 
                     const sys = data.system_metrics || {};
                     const errorCount = data.errors || 0;
+                    const orphanWarnings = data.orphan_daemon_warnings || [];
                     const workspaceRows = (workspaces && workspaces.length > 0)
                         ? workspaces
                         : (data.roots || []).map((root) => ({
@@ -515,6 +518,20 @@ class Handler(BaseHTTPRequestHandler):
                                     status={errorCount > 0 ? "error" : "success"}
                                 />
                             </div>
+
+                            {orphanWarnings.length > 0 && (
+                                <div className="panel subtle-shadow p-4 border-red-500/40">
+                                    <div className="flex items-center gap-2 text-red-300 font-semibold mb-2">
+                                        <i className="fas fa-triangle-exclamation"></i>
+                                        <span>Orphan Daemon Warning</span>
+                                    </div>
+                                    <div className="space-y-1 text-sm text-red-200/90 mono">
+                                        {orphanWarnings.map((w, idx) => (
+                                            <div key={idx}>{w}</div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
 
                             <div className="grid grid-cols-1 xl:grid-cols-3 gap-5">
                                 <div className="xl:col-span-2">
@@ -686,6 +703,11 @@ class Handler(BaseHTTPRequestHandler):
                 root_ids=root_ids) if hasattr(
                 db, "get_repo_stats") else {}
             total_db_files = sum(repo_stats.values()) if repo_stats else 0
+            orphan_daemons = detect_orphan_daemons()
+            orphan_daemon_warnings = [
+                f"Orphan daemon PID {d.get('pid')} detected (not in registry)"
+                for d in orphan_daemons
+            ]
 
             # Fetch real system metrics
             metrics = get_system_metrics()
@@ -703,6 +725,8 @@ class Handler(BaseHTTPRequestHandler):
                 "indexed_files": st.indexed_files,
                 "total_files_db": total_db_files,
                 "errors": getattr(st, "errors", 0),
+                "orphan_daemon_count": len(orphan_daemons),
+                "orphan_daemon_warnings": orphan_daemon_warnings,
                 "repo_stats": repo_stats,
                 "roots": db.get_roots() if hasattr(db, "get_roots") else [],
                 "workspace_root": workspace_root,

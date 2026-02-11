@@ -79,3 +79,28 @@ async def test_async_http_server_dashboard_uses_new_html():
     body = resp.body.decode("utf-8")
     assert "SARI Insight" in body
     assert "Workspaces" in body
+
+
+@pytest.mark.asyncio
+async def test_async_http_server_status_includes_orphan_daemon_warning(monkeypatch):
+    db = SimpleNamespace(
+        get_repo_stats=lambda root_ids=None: {},
+        get_roots=lambda: [],
+        fts_enabled=True,
+    )
+    indexer = SimpleNamespace(
+        status=SimpleNamespace(index_ready=True, last_scan_ts=1, scanned_files=2, indexed_files=2, errors=0),
+        get_last_commit_ts=lambda: 0,
+        get_performance_metrics=lambda: {},
+        get_queue_depths=lambda: {},
+    )
+    server = AsyncHttpServer(db, indexer, workspace_root="/tmp/ws")
+    monkeypatch.setattr(
+        "sari.core.async_http_server.detect_orphan_daemons",
+        lambda: [{"pid": 2222, "cmdline": "python -m sari.mcp.daemon"}],
+    )
+
+    resp = await server.status(SimpleNamespace())
+    data = json.loads(resp.body.decode("utf-8"))
+    assert data["orphan_daemon_count"] == 1
+    assert len(data["orphan_daemon_warnings"]) == 1
