@@ -210,10 +210,15 @@ class Handler(BaseHTTPRequestHandler):
 
         items = []
         watched_roots = set()
+        worker_alive = False
+        pending_rescan = False
         try:
             cfg_roots = self._indexer_workspace_roots(indexer)
             for root in cfg_roots:
                 watched_roots.add(self._normalize_workspace_path(str(root)))
+            proc = getattr(indexer, "_worker_proc", None)
+            worker_alive = bool(proc and proc.is_alive())
+            pending_rescan = bool(getattr(indexer, "_pending_rescan", False))
         except Exception:
             pass
 
@@ -247,16 +252,27 @@ class Handler(BaseHTTPRequestHandler):
                 index_state = "Blocked"
             elif indexed and watched:
                 status = "indexed"
-                reason = "Indexed in DB and watched"
-                index_state = "Idle"
+                if worker_alive:
+                    reason = "Indexed in DB and currently re-indexing"
+                    index_state = "Re-indexing"
+                else:
+                    reason = "Indexed in DB and watched"
+                    index_state = "Idle"
             elif indexed and not watched:
                 status = "indexed_stale"
                 reason = "Indexed in DB but not currently watched"
                 index_state = "Stale"
             elif watched:
                 status = "watching"
-                reason = "Watching workspace, awaiting first index"
-                index_state = "Initial Scan Pending"
+                if worker_alive:
+                    reason = "Watching workspace, initial indexing in progress"
+                    index_state = "Indexing"
+                elif pending_rescan:
+                    reason = "Watching workspace, rescan queued"
+                    index_state = "Rescan Queued"
+                else:
+                    reason = "Watching workspace, awaiting first index"
+                    index_state = "Initial Scan Pending"
             else:
                 status = "registered"
                 reason = "Configured but not currently watched"
@@ -520,8 +536,11 @@ class Handler(BaseHTTPRequestHandler):
                     const sys = data.system_metrics || {};
                     const errorCount = data.errors || 0;
                     const orphanWarnings = data.orphan_daemon_warnings || [];
-                    const workspaceRows = (workspaces && workspaces.length > 0)
-                        ? workspaces
+                    const mergedWorkspaces = (data.workspaces && data.workspaces.length > 0)
+                        ? data.workspaces
+                        : workspaces;
+                    const workspaceRows = (mergedWorkspaces && mergedWorkspaces.length > 0)
+                        ? mergedWorkspaces
                         : (data.roots || []).map((root) => ({
                             path: root.path || root.root_path || "",
                             root_id: root.root_id || "",
@@ -535,6 +554,10 @@ class Handler(BaseHTTPRequestHandler):
                             reason: (Number(root.file_count || 0) > 0 || Number(root.last_indexed_ts || 0) > 0) ? "Indexed in DB" : "Registered but not indexed yet",
                             index_state: (Number(root.file_count || 0) > 0 || Number(root.last_indexed_ts || 0) > 0) ? "Idle" : "Initial Scan Pending",
                           }));
+                    const queueDepths = data.queue_depths || {};
+                    const queueEntries = Object.entries(queueDepths)
+                        .filter(([_, v]) => Number.isFinite(Number(v)))
+                        .sort((a, b) => Number(b[1]) - Number(a[1]));
 
                     return (
                         <div className="max-w-7xl mx-auto space-y-7">
@@ -589,6 +612,34 @@ class Handler(BaseHTTPRequestHandler):
                                     </div>
                                 </div>
                             )}
+
+                            <div className="panel subtle-shadow p-6">
+                                <h2 className="text-xl font-semibold mb-5 flex items-center text-slate-100">
+                                    <i className="fas fa-layer-group mr-3 text-blue-400"></i> System Queues
+                                </h2>
+                                {queueEntries.length > 0 ? (
+                                    <div className="space-y-2">
+                                        {queueEntries.map(([name, rawVal]) => {
+                                            const val = Number(rawVal) || 0;
+                                            const width = Math.min((val / 200) * 100, 100);
+                                            const bar = val > 100 ? "bg-amber-400" : "bg-blue-500";
+                                            return (
+                                                <div key={name}>
+                                                    <div className="flex items-center justify-between mono text-xs text-slate-300">
+                                                        <span>{name}</span>
+                                                        <span>{val.toLocaleString()}</span>
+                                                    </div>
+                                                    <div className="mt-1 h-1.5 rounded-full bg-slate-800 overflow-hidden">
+                                                        <div className={`h-full ${bar}`} style={{ width: `${width}%` }}></div>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                ) : (
+                                    <div className="text-xs text-slate-500 mono">No live queue data</div>
+                                )}
+                            </div>
 
                             <div className="grid grid-cols-1 xl:grid-cols-3 gap-5">
                                 <div className="xl:col-span-2">
@@ -671,7 +722,8 @@ class Handler(BaseHTTPRequestHandler):
                                         </h2>
                                         <div className="space-y-3">
                                             {health ? health.results.map((r, i) => {
-                                                const detailText = r.error || r.detail || 'Healthy';
+                                                const rawDetail = (r.error ?? r.detail ?? "");
+                                                const detailText = String(rawDetail || "").trim() || "Healthy";
                                                 const titleText = `${r.name}: ${detailText}`;
                                                 return (
                                                 <div
@@ -689,10 +741,13 @@ class Handler(BaseHTTPRequestHandler):
                                                         </div>
                                                     </div>
                                                     <div>
-                                                        {r.passed ?
-                                                            <i className="fas fa-check-circle text-emerald-500"></i> :
-                                                            (r.warn ? <i className="fas fa-exclamation-circle text-yellow-500"></i> : <i className="fas fa-times-circle text-red-500"></i>)
-                                                        }
+                                                        {r.passed ? (
+                                                            <span className="mono text-[11px] px-2 py-1 rounded bg-emerald-500/15 text-emerald-300">OK</span>
+                                                        ) : (r.warn ? (
+                                                            <span className="mono text-[11px] px-2 py-1 rounded bg-amber-500/15 text-amber-300">WARN</span>
+                                                        ) : (
+                                                            <span className="mono text-[11px] px-2 py-1 rounded bg-red-500/15 text-red-300">FAIL</span>
+                                                        ))}
                                                     </div>
                                                 </div>
                                                 );
@@ -789,6 +844,40 @@ class Handler(BaseHTTPRequestHandler):
                 f"Orphan daemon PID {d.get('pid')} detected (not in registry)"
                 for d in orphan_daemons
             ]
+            performance = {}
+            if hasattr(indexer, "get_performance_metrics"):
+                try:
+                    raw_perf = indexer.get_performance_metrics()
+                    if isinstance(raw_perf, dict):
+                        performance = raw_perf
+                except Exception:
+                    performance = {}
+
+            queue_depths = {}
+            if hasattr(indexer, "get_queue_depths"):
+                try:
+                    raw_depths = indexer.get_queue_depths()
+                    if isinstance(raw_depths, dict):
+                        queue_depths = {
+                            str(k): int(v or 0)
+                            for k, v in raw_depths.items()
+                            if isinstance(k, str)
+                        }
+                except Exception:
+                    queue_depths = {}
+            if not queue_depths:
+                writer = getattr(db, "writer", None)
+                if writer is not None and hasattr(writer, "qsize"):
+                    try:
+                        queue_depths["db_writer"] = int(writer.qsize() or 0)
+                    except Exception:
+                        pass
+                worker_proc = getattr(indexer, "_worker_proc", None)
+                worker_alive = bool(worker_proc and worker_proc.is_alive())
+                queue_depths["index_worker"] = 1 if worker_alive else 0
+                queue_depths["rescan_pending"] = 1 if bool(getattr(indexer, "_pending_rescan", False)) else 0
+
+            workspaces = self._registered_workspaces(workspace_root, db, indexer)
 
             # Fetch real system metrics
             metrics = get_system_metrics()
@@ -808,7 +897,10 @@ class Handler(BaseHTTPRequestHandler):
                 "errors": getattr(st, "errors", 0),
                 "orphan_daemon_count": len(orphan_daemons),
                 "orphan_daemon_warnings": orphan_daemon_warnings,
+                "performance": performance,
+                "queue_depths": queue_depths,
                 "repo_stats": repo_stats,
+                "workspaces": workspaces,
                 "roots": db.get_roots() if hasattr(db, "get_roots") else [],
                 "workspace_root": workspace_root,
                 "system_metrics": metrics

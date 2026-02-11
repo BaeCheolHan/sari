@@ -81,7 +81,8 @@ async def test_async_http_server_dashboard_uses_new_html():
     assert "Workspaces" in body
     assert "Retry Queue" in body
     assert "Permanent Failures" in body
-    assert "title={r.error || r.detail || 'Healthy'}" in body
+    assert "title={titleText}" in body
+    assert "const rawDetail = (r.error ?? r.detail ?? \"\")" in body
 
 
 @pytest.mark.asyncio

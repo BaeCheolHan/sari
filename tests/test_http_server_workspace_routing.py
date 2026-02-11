@@ -19,6 +19,7 @@ def test_status_routes_to_selected_workspace(monkeypatch):
         get_repo_stats=lambda root_ids=None: {"r": 2},
         get_roots=lambda: [{"path": "/tmp/target", "root_id": "/tmp/target"}],
         db_path="/tmp/index.db",
+        writer=SimpleNamespace(qsize=lambda: 7),
     )
     selected_indexer = SimpleNamespace(
         status=SimpleNamespace(index_ready=True, scan_finished_ts=123, indexed_files=2, scanned_files=2, errors=0)
@@ -45,6 +46,8 @@ def test_status_routes_to_selected_workspace(monkeypatch):
     assert resp["repo_stats"] == {"r": 2}
     assert resp["orphan_daemon_count"] == 1
     assert len(resp["orphan_daemon_warnings"]) == 1
+    assert resp["queue_depths"]["db_writer"] == 7
+    assert "workspaces" in resp
 
 
 def test_search_returns_400_when_query_missing():
