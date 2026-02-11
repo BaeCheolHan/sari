@@ -6,6 +6,7 @@ ANSI 코드나 print 문을 사용하지 않고 순수 데이터 형태로 결�
 """
 import json
 import os
+import re
 import socket
 import shutil
 import sys
@@ -81,6 +82,24 @@ def _row_get(row: object, key: str, index: int, default: object = None) -> objec
     return default
 
 
+def _safe_pragma_table_name(name: str) -> str:
+    """PRAGMA 쿼리에 안전한 테이블 이름인지 확인합니다."""
+    # 화이트리스트 기반 검증
+    allowed = {
+        "symbols",
+        "symbol_relations",
+        "files",
+        "roots",
+        "failed_tasks",
+        "snippets",
+        "snippet_versions",
+        "contexts",
+    }
+    if name in allowed:
+        return name
+    raise ValueError(f"Unsafe or unauthorized table name for PRAGMA: {name}")
+
+
 def _check_db(ws_root: str) -> DoctorResults:
     """데이터베이스 설정, 접근 권한, 스키마 등을 검사합니다."""
     results: DoctorResults = []
@@ -138,7 +157,8 @@ def _check_db(ws_root: str) -> DoctorResults:
             "FTS5 module missing in SQLite" if not fts_ok else ""))
     try:
         def _cols(table: str) -> list[str]:
-            row = db.db.connection().execute(f"PRAGMA table_info({table})")
+            safe_name = _safe_pragma_table_name(table)
+            row = db.db.connection().execute(f"PRAGMA table_info({safe_name})")
             return [str(_row_get(r, "name", 1, "") or "") for r in row.fetchall()]
 
         # 주요 테이블 컬럼 존재 여부 확인 (스키마 검증)

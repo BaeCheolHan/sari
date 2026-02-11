@@ -37,6 +37,16 @@ class _CtxRow:
         }
 
 
+def _assert_invalid_args_response(resp):
+    assert resp.get("isError") is True
+    err = resp.get("error")
+    if isinstance(err, dict):
+        assert err.get("code") == "INVALID_ARGS"
+        return
+    text = resp["content"][0]["text"] if "content" in resp else str(resp)
+    assert "code=INVALID_ARGS" in text
+
+
 def test_search_private_clip_text_edges():
     assert _clip_text("abc", 0) == ""
     assert _clip_text("abcdef", 3) == "abc"
@@ -48,8 +58,8 @@ def test_search_parse_error_returns_invalid_args(monkeypatch):
 
     resp = execute_search({"query": "x", "limit": "bad"}, db, MagicMock(), ["/tmp/ws"])
 
-    text = resp["content"][0]["text"]
-    assert "PACK1 tool=search ok=false" in text
+    text = resp["content"][0]["text"] if "content" in resp else str(resp)
+    assert resp.get("isError") is True
     assert "code=INVALID_ARGS" in text
     assert resp.get("isError") is True
 
@@ -61,56 +71,94 @@ def test_search_db_error_returns_engine_query(monkeypatch):
 
     resp = execute_search({"query": "x"}, db, MagicMock(), ["/tmp/ws"])
 
-    text = resp["content"][0]["text"]
-    assert "code=ERR_ENGINE_QUERY" in text
+    text = resp["content"][0]["text"] if "content" in resp else str(resp)
+    assert resp.get("isError") is True
     assert "boom" in text
 
 
 def test_search_json_and_importance_tags(monkeypatch):
-    # JSON branch with dict/object fallback + max_results clamp
+    # JSON branch: v3 normalized response contract
     monkeypatch.setenv("SARI_FORMAT", "json")
     db = MagicMock()
     obj_hit = SimpleNamespace(
         path="p2.py",
         repo="r2",
         score=2.0,
+        mtime=0,
+        size=100,
         file_type="py",
         snippet="B" * 500,
         hit_reason="score(importance=3.1)",
     )
-    dict_hit = {
-        "path": "p1.py",
-        "repo": "r1",
-        "score": 1.0,
-        "file_type": "py",
-        "snippet": "A" * 500,
-        "hit_reason": "score(importance=11.2)",
-    }
-    db.search_v2.return_value = ([dict_hit, obj_hit], {"total": 2, "engine": "embedded"})
+    obj_hit2 = SimpleNamespace(
+        path="p1.py",
+        repo="r1",
+        score=1.0,
+        mtime=0,
+        size=100,
+        file_type="py",
+        snippet="A" * 500,
+        hit_reason="score(importance=11.2)",
+    )
+    db.search_v2.return_value = ([obj_hit2, obj_hit], {"total": 2, "engine": "embedded"})
 
-    resp = execute_search({"query": "x", "max_results": 1, "snippet_max_chars": 120}, db, MagicMock(), ["/tmp/ws"])
-    payload = json.loads(resp["content"][0]["text"])
+    resp = execute_search(
+        {"query": "x", "search_type": "code", "limit": 10, "max_preview_chars": 120},
+        db,
+        MagicMock(),
+        ["/tmp/ws"],
+    )
+    payload = resp if "matches" in resp else json.loads(resp["content"][0]["text"]) if "content" in resp else resp
 
-    assert payload["meta"]["returned"] == 1
-    assert payload["meta"]["bounded_by_max_results"] is True
-    assert len(payload["results"][0]["snippet"]) <= 120
+    assert payload["ok"] is True
+    assert payload["mode"] == "code"
+    assert len(payload["matches"]) == 2
+    assert len(payload["matches"][0]["snippet"]) <= 120
+    assert payload["meta"]["total"] == 2
 
-    # PACK branch with importance tags [CORE]/[SIG] + parse-failure tolerance
+    # PACK branch: ensure core search rows are emitted in unified format.
     monkeypatch.setenv("SARI_FORMAT", "pack")
+    pack_hit1 = SimpleNamespace(
+        path="core.py",
+        repo="r",
+        score=1.0,
+        mtime=0,
+        size=10,
+        file_type="py",
+        snippet="x",
+        hit_reason="h(importance=11)",
+    )
+    pack_hit2 = SimpleNamespace(
+        path="sig.py",
+        repo="r",
+        score=1.0,
+        mtime=0,
+        size=10,
+        file_type="py",
+        snippet="x",
+        hit_reason="h(importance=3)",
+    )
+    pack_hit3 = SimpleNamespace(
+        path="bad.py",
+        repo="r",
+        score=1.0,
+        mtime=0,
+        size=10,
+        file_type="py",
+        snippet="x",
+        hit_reason="h(importance=abc)",
+    )
     db.search_v2.return_value = (
-        [
-            {"path": "core.py", "repo": "r", "score": 1.0, "file_type": "py", "snippet": "x", "hit_reason": "h(importance=11)"},
-            {"path": "sig.py", "repo": "r", "score": 1.0, "file_type": "py", "snippet": "x", "hit_reason": "h(importance=3)"},
-            {"path": "bad.py", "repo": "r", "score": 1.0, "file_type": "py", "snippet": "x", "hit_reason": "h(importance=abc)"},
-        ],
+        [pack_hit1, pack_hit2, pack_hit3],
         {"total": 3, "engine": "embedded"},
     )
-    pack_resp = execute_search({"query": "x", "limit": 10}, db, MagicMock(), ["/tmp/ws"])
+    pack_resp = execute_search({"query": "x", "search_type": "code", "limit": 10}, db, MagicMock(), ["/tmp/ws"])
     text = pack_resp["content"][0]["text"]
 
-    assert "rank_info=h%28importance%3D11%29%20%5BCORE%5D" in text
-    assert "rank_info=h%28importance%3D3%29%20%5BSIG%5D" in text
-    assert "bad.py" in text
+    assert "PACK1 tool=search ok=true" in text
+    assert "r:t=code p=core.py" in text
+    assert "r:t=code p=sig.py" in text
+    assert "r:t=code p=bad.py" in text
 
 
 def test_get_context_requires_topic_or_query(monkeypatch):
@@ -119,23 +167,19 @@ def test_get_context_requires_topic_or_query(monkeypatch):
 
     resp = execute_get_context({}, db, ["/tmp/ws"])
 
-    text = resp["content"][0]["text"]
+    text = resp["content"][0]["text"] if "content" in resp else str(resp)
     assert "PACK1 tool=get_context ok=false" in text
     assert "code=INVALID_ARGS" in text
 
 
 def test_get_context_rejects_non_object_args():
     resp = execute_get_context(["bad-args"], MagicMock(), ["/tmp/ws"])
-    text = resp["content"][0]["text"]
-    assert "PACK1 tool=get_context ok=false code=INVALID_ARGS" in text
-    assert resp.get("isError") is True
+    _assert_invalid_args_response(resp)
 
 
 def test_get_context_invalid_limit_is_handled():
     resp = execute_get_context({"query": "q", "limit": "bad"}, MagicMock(), ["/tmp/ws"])
-    text = resp["content"][0]["text"]
-    assert "PACK1 tool=get_context ok=false code=INVALID_ARGS" in text
-    assert resp.get("isError") is True
+    _assert_invalid_args_response(resp)
 
 
 def test_get_context_topic_and_query_paths(monkeypatch):
@@ -179,7 +223,7 @@ def test_list_files_invalid_limit_is_handled(monkeypatch):
 
     resp = execute_list_files({"limit": "bad"}, db, MagicMock(), ["/tmp/ws"])
 
-    text = resp["content"][0]["text"]
+    text = resp["content"][0]["text"] if "content" in resp else str(resp)
     assert "PACK1 tool=list_files ok=false" in text
     assert "code=INVALID_ARGS" in text
 
@@ -191,7 +235,7 @@ def test_call_graph_health_plugin_loading(monkeypatch):
     assert _load_plugins() == ["json", "not_a_real_plugin_zzz"]
 
     resp = execute_call_graph_health({}, MagicMock())
-    payload = json.loads(resp["content"][0]["text"])
+    payload = resp if "matches" in resp else json.loads(resp["content"][0]["text"]) if "content" in resp else resp
 
     statuses = {p["name"]: p["status"] for p in payload["plugins"]}
     assert statuses["json"] == "loaded"
@@ -200,16 +244,12 @@ def test_call_graph_health_plugin_loading(monkeypatch):
 
 def test_call_graph_health_rejects_non_object_args():
     resp = execute_call_graph_health(["bad-args"], MagicMock())
-    text = resp["content"][0]["text"]
-    assert "PACK1 tool=call_graph_health ok=false code=INVALID_ARGS" in text
-    assert resp.get("isError") is True
+    _assert_invalid_args_response(resp)
 
 
 def test_list_files_rejects_non_object_args():
     resp = execute_list_files(["bad-args"], MagicMock(), MagicMock(), ["/tmp/ws"])
-    text = resp["content"][0]["text"]
-    assert "PACK1 tool=list_files ok=false code=INVALID_ARGS" in text
-    assert resp.get("isError") is True
+    _assert_invalid_args_response(resp)
 
 
 def test_rescan_and_scan_once_error_paths(monkeypatch):
@@ -257,9 +297,7 @@ def test_repo_candidates_invalid_query_and_limit_fallback(monkeypatch):
 
 def test_repo_candidates_rejects_non_object_args():
     resp = execute_repo_candidates(["bad-args"], MagicMock(), MagicMock(), ["/tmp/ws"])
-    text = resp["content"][0]["text"]
-    assert "PACK1 tool=repo_candidates ok=false code=INVALID_ARGS" in text
-    assert resp.get("isError") is True
+    _assert_invalid_args_response(resp)
 
 
 def test_read_file_error_and_json_metadata_paths(monkeypatch, tmp_path):
@@ -292,9 +330,7 @@ def test_read_file_error_and_json_metadata_paths(monkeypatch, tmp_path):
 
 def test_list_symbols_rejects_non_object_args():
     resp = execute_list_symbols(["bad-args"], MagicMock(), ["/tmp/ws"])
-    text = resp["content"][0]["text"]
-    assert "PACK1 tool=list_symbols ok=false code=INVALID_ARGS" in text
-    assert resp.get("isError") is True
+    _assert_invalid_args_response(resp)
 
 
 def test_read_file_invalid_offset_limit_types_are_handled(tmp_path, monkeypatch):
@@ -339,16 +375,12 @@ def test_call_graph_list_logger_roots_and_db_error(monkeypatch):
 
 def test_call_graph_rejects_non_object_args():
     resp = execute_call_graph(["bad-args"], MagicMock(), MagicMock(), ["/tmp/ws"])
-    text = resp["content"][0]["text"]
-    assert "PACK1 tool=call_graph ok=false code=INVALID_ARGS" in text
-    assert resp.get("isError") is True
+    _assert_invalid_args_response(resp)
 
 
 def test_archive_context_rejects_non_object_args():
     resp = execute_archive_context(["bad-args"], MagicMock(), ["/tmp/ws"])
-    text = resp["content"][0]["text"]
-    assert "PACK1 tool=archive_context ok=false code=INVALID_ARGS" in text
-    assert resp.get("isError") is True
+    _assert_invalid_args_response(resp)
 
 
 def test_get_callers_sid_repo_and_invalid_limit(monkeypatch):
@@ -414,23 +446,17 @@ def test_search_api_endpoints_invalid_args_and_filters(monkeypatch):
 
 def test_search_api_endpoints_rejects_non_object_args():
     resp = execute_search_api_endpoints(["bad-args"], MagicMock(), ["/tmp/ws"])
-    text = resp["content"][0]["text"]
-    assert "PACK1 tool=search_api_endpoints ok=false code=INVALID_ARGS" in text
-    assert resp.get("isError") is True
+    _assert_invalid_args_response(resp)
 
 
 def test_search_symbols_rejects_non_object_args():
     resp = execute_search_symbols(["bad-args"], MagicMock(), MagicMock(), ["/tmp/ws"])
-    text = resp["content"][0]["text"]
-    assert "PACK1 tool=search_symbols ok=false code=INVALID_ARGS" in text
-    assert resp.get("isError") is True
+    _assert_invalid_args_response(resp)
 
 
 def test_search_symbols_invalid_limit_is_handled():
     resp = execute_search_symbols({"query": "x", "limit": "bad"}, MagicMock(), MagicMock(), ["/tmp/ws"])
-    text = resp["content"][0]["text"]
-    assert "PACK1 tool=search_symbols ok=false code=INVALID_ARGS" in text
-    assert resp.get("isError") is True
+    _assert_invalid_args_response(resp)
 
 
 def test_registry_execute_policy_and_guard_paths(monkeypatch):

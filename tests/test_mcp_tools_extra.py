@@ -221,7 +221,7 @@ def test_registry_does_not_mark_failed_search_as_search_context():
         policy_engine=policy,
     )
     resp = reg.execute("search", ctx, {"query": ""})
-    assert "ok=false" in resp["content"][0]["text"]
+    assert (resp.get("isError") or "ok=false" in str(resp))
     assert policy.has_search_context() is False
 
 

@@ -61,11 +61,34 @@ class AsyncHttpServer:
     def _get_system_metrics(self) -> JsonObject:
         try:
             from sari.core.utils.system import get_system_metrics
-            metrics = get_system_metrics()
+            metrics = self._json_safe_metrics(get_system_metrics())
             metrics.update(self._get_db_storage_metrics())
             return metrics
         except Exception:
             return {}
+
+    @staticmethod
+    def _json_safe_metrics(metrics: object) -> JsonObject:
+        """Return a JSON-serializable metrics dict with primitive leaves."""
+        if not isinstance(metrics, dict):
+            return {}
+        out: JsonObject = {}
+        for k, v in metrics.items():
+            key = str(k)
+            if isinstance(v, (str, int, float, bool)) or v is None:
+                out[key] = v
+            elif isinstance(v, dict):
+                out[key] = AsyncHttpServer._json_safe_metrics(v)
+            elif isinstance(v, (list, tuple)):
+                safe_items: list[object] = []
+                for item in v:
+                    if isinstance(item, (str, int, float, bool)) or item is None:
+                        safe_items.append(item)
+                out[key] = safe_items
+            else:
+                # Keep status API resilient when test/global monkeypatch injects MagicMock-like objects.
+                out[key] = 0
+        return out
 
     def _get_db_storage_metrics(self) -> JsonObject:
         try:

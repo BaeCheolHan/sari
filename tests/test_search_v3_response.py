@@ -1,7 +1,8 @@
 import pytest
 import os
-import json
+import threading
 from sari.mcp.tools.search import execute_search
+from sari.mcp.tools._util import resolve_root_ids
 
 class MockSymbols:
     def search_symbols(self, query, limit=20, **kwargs):
@@ -45,3 +46,36 @@ def test_search_v3_token_budget_degradation(db, roots):
     assert len(match['snippet']) <= 500
     # PreviewManager의 기본 max_total_chars=10000 이고 항목이 1개면 500은 안잘릴 수도 있음
     # 강제로 다수 항목을 만들어 예산 초과 상황 유도 필요 (여기서는 간단히 로직 존재 여부만 확인)
+
+
+def test_search_auto_symbol_hit_does_not_run_code_search(roots):
+    os.environ['SARI_FORMAT'] = 'json'
+    called = threading.Event()
+
+    class SymbolDB(MockDB):
+        def search_v2(self, opts):
+            called.set()
+            return super().search_v2(opts)
+
+    db = SymbolDB()
+    result = execute_search({'query': 'AuthService', 'search_type': 'auto'}, db, None, roots)
+    assert result['mode'] == 'symbol'
+    assert called.wait(0.2) is False
+
+
+def test_search_repo_suggestions_use_scoped_root_ids(roots):
+    os.environ['SARI_FORMAT'] = 'json'
+    seen = {}
+
+    class ScopeDB(MockDB):
+        def search_v2(self, opts):
+            return [], {'total': 0}
+
+        def repo_candidates(self, q, limit=3, root_ids=None):
+            seen['root_ids'] = list(root_ids or [])
+            return [{'repo': 'scoped-repo', 'score': 9}]
+
+    db = ScopeDB()
+    result = execute_search({'query': 'nothing', 'search_type': 'code'}, db, None, roots)
+    assert result['repo_suggestions']
+    assert seen['root_ids'] == resolve_root_ids(roots)

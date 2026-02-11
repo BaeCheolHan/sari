@@ -111,7 +111,7 @@ def test_registry_smoke_for_contract_drift_tools(db, tmp_path):
         policy_engine=None,
     )
 
-    res_repo = reg.execute("repo_candidates", ctx, {"query": "api", "root_ids": [rid]})
+    res_repo = reg.execute("search", ctx, {"query": "api", "search_type": "repo", "root_ids": [rid]})
     assert isinstance(res_repo, dict)
     assert not res_repo.get("isError", False)
 
@@ -119,7 +119,7 @@ def test_registry_smoke_for_contract_drift_tools(db, tmp_path):
     assert isinstance(res_list, dict)
     assert not res_list.get("isError", False)
 
-    res_api = reg.execute("search_api_endpoints", ctx, {"path": "/api/users"})
+    res_api = reg.execute("search", ctx, {"query": "/api/users", "search_type": "api"})
     assert isinstance(res_api, dict)
     assert not res_api.get("isError", False)
 

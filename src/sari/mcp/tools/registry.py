@@ -1,19 +1,14 @@
-
 import os
 from dataclasses import dataclass
 from typing import Callable, Optional
 
 import sari.mcp.tools.search as search_tool
 import sari.mcp.tools.status as status_tool
-import sari.mcp.tools.repo_candidates as repo_candidates_tool
 import sari.mcp.tools.list_files as list_files_tool
 import sari.mcp.tools.list_symbols as list_symbols_tool
 import sari.mcp.tools.read_file as read_file_tool
-import sari.mcp.tools.grep_and_read as grep_and_read_tool
-import sari.mcp.tools.search_symbols as search_symbols_tool
 import sari.mcp.tools.read_symbol as read_symbol_tool
 import sari.mcp.tools.doctor as doctor_tool
-import sari.mcp.tools.search_api_endpoints as search_api_endpoints_tool
 import sari.mcp.tools.index_file as index_file_tool
 import sari.mcp.tools.rescan as rescan_tool
 import sari.mcp.tools.scan_once as scan_once_tool
@@ -130,7 +125,7 @@ class ToolRegistry:
 
         # 실행 정책 훅: 검색 액션 자동 마킹
         if ctx.policy_engine and not _is_error_response(result):
-            if name in {"search", "search_symbols", "grep_and_read"}:
+            if name in {"search"}:
                 ctx.policy_engine.mark_action(name)
                 
         return result
@@ -203,75 +198,84 @@ def _register_core_tools(reg: ToolRegistry):
 
 
 def _register_search_tools(reg: ToolRegistry):
-    """검색 및 탐색 관련 도구 등록"""
+    """검색 및 탐색 관련 도구 등록 (통합 검색 v3)"""
     reg.register(Tool(
         name="search",
         description="SEARCH FIRST. MANDATORY before reading files. Use to locate relevant paths/symbols. Prevents token waste by narrowing scope.",
         input_schema={
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "Search query (keywords, function names, regex)"},
-                "repo": {"type": "string", "description": "Limit search to specific repository"},
-                "limit": {"type": "integer", "description": "Maximum results (default: 10, max: 50)", "default": 10},
-                "offset": {"type": "integer", "description": "Pagination offset (default: 0)", "default": 0},
-                "file_types": {"type": "array", "items": {"type": "string"}, "description": "Filter by file extensions"},
-                "path_pattern": {"type": "string", "description": "Glob pattern for path matching"},
-                "exclude_patterns": {"type": "array", "items": {"type": "string"}, "description": "Patterns to exclude"},
-                "recency_boost": {"type": "boolean", "description": "Boost recently modified files", "default": False},
-                "use_regex": {"type": "boolean", "description": "Treat query as regex pattern", "default": False},
-                "case_sensitive": {"type": "boolean", "description": "Case-sensitive search", "default": False},
-                "context_lines": {"type": "integer", "description": "Number of context lines in snippet", "default": 5},
-                "total_mode": {"type": "string", "enum": ["exact", "approx"], "description": "Total count mode"},
-                "root_ids": {"type": "array", "items": {"type": "string"}, "description": "Limit search to specific root_ids"},
-                "scope": {"type": "string", "description": "Alias for 'repo'"},
-                "type": {"type": "string", "enum": ["docs", "code"], "description": "Filter by type: 'docs' or 'code'"},
+                "query": {"type": "string", "description": "검색어"},
+                "search_type": {
+                    "type": "string",
+                    "enum": ["code", "symbol", "api", "repo", "auto"],
+                    "default": "code",
+                    "description": "검색 대상. auto는 내부 추론 + waterfall 실행",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100,
+                    "default": 20,
+                    "description": "반환 최대 개수",
+                },
+                "path_pattern": {"type": "string", "description": "경로 필터 (Only for code/api)"},
+                "file_types": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "확장자 필터 (Only for code/api)",
+                },
+                "kinds": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "심볼 종류 필터 (Only for symbol)",
+                },
+                "match_mode": {
+                    "type": "string",
+                    "enum": ["exact", "prefix", "fuzzy"],
+                    "default": "fuzzy",
+                    "description": "심볼 매칭 방식 (Only for symbol)",
+                },
+                "include_qualname": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "qualname 포함 여부 (Only for symbol)",
+                },
+                "method": {
+                    "type": "string",
+                    "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+                    "description": "HTTP method 필터 (Only for api)",
+                },
+                "framework_hint": {"type": "string", "description": "프레임워크 힌트 (Only for api)"},
+                "preview_mode": {
+                    "type": "string",
+                    "enum": ["none", "snippet"],
+                    "default": "snippet",
+                    "description": "미리보기 모드 (Only for code/symbol/api)",
+                },
+                "context_lines": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 20,
+                    "default": 3,
+                    "description": "스니펫 문맥 라인 수 (Only for preview_mode='snippet')",
+                },
+                "max_preview_chars": {
+                    "type": "integer",
+                    "minimum": 100,
+                    "maximum": 4000,
+                    "default": 1200,
+                    "description": "스니펫 최대 길이",
+                },
+                "fallback_repo_suggestions": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "결과 0건일 때 repo 추천 첨부",
+                },
             },
             "required": ["query"],
         },
         handler=lambda ctx, args: search_tool.execute_search(args, ctx.db, ctx.logger, ctx.roots, engine=ctx.engine, indexer=ctx.indexer),
-    ))
-
-    reg.register(Tool(
-        name="grep_and_read",
-        description="DEPRECATED: Use 'search' with preview_mode='snippet' instead. Composite tool: Search and immediately read top snippets.",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "Search query"},
-                "repo": {"type": "string", "description": "Limit search to specific repository"},
-                "limit": {"type": "integer", "description": "Maximum search results (default: 8)", "default": 8},
-                "read_limit": {"type": "integer", "description": "Files to read from top results (default: 3)", "default": 3},
-                "file_types": {"type": "array", "items": {"type": "string"}, "description": "Filter by file extensions"},
-                "path_pattern": {"type": "string", "description": "Glob pattern for path matching"},
-                "exclude_patterns": {"type": "array", "items": {"type": "string"}, "description": "Patterns to exclude"},
-                "recency_boost": {"type": "boolean", "description": "Boost recently modified files", "default": False},
-                "use_regex": {"type": "boolean", "description": "Treat query as regex pattern", "default": False},
-                "case_sensitive": {"type": "boolean", "description": "Case-sensitive search", "default": False},
-                "context_lines": {"type": "integer", "description": "Number of context lines in snippet", "default": 5},
-                "total_mode": {"type": "string", "enum": ["exact", "approx"], "description": "Total count mode"},
-                "root_ids": {"type": "array", "items": {"type": "string"}, "description": "Limit search to specific root_ids"},
-                "scope": {"type": "string", "description": "Alias for 'repo'"},
-            },
-            "required": ["query"],
-        },
-        handler=lambda ctx, args: grep_and_read_tool.execute_grep_and_read(args, ctx.db, ctx.roots),
-        hidden=True,
-    ))
-    
-    reg.register(Tool(
-        name="repo_candidates",
-        description="DEPRECATED: Use 'search' with search_type='repo' instead. Suggest top repos for a query.",
-        input_schema={"type": "object", "properties": {"query": {"type": "string"}, "limit": {"type": "integer", "default": 3}}, "required": ["query"]},
-        handler=lambda ctx, args: repo_candidates_tool.execute_repo_candidates(args, ctx.db, ctx.logger, ctx.roots),
-        hidden=True,
-    ))
-
-    reg.register(Tool(
-        name="search_api_endpoints",
-        description="DEPRECATED: Use 'search' with search_type='api' instead. Search API endpoints by path pattern.",
-        input_schema={"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
-        handler=lambda ctx, args: search_api_endpoints_tool.execute_search_api_endpoints(args, ctx.db, ctx.roots),
-        hidden=True,
     ))
 
 
@@ -337,28 +341,6 @@ def _register_symbol_tools(reg: ToolRegistry):
             "required": ["path"],
         },
         handler=lambda ctx, args: list_symbols_tool.execute_list_symbols(args, ctx.db, ctx.roots),
-    ))
-
-    reg.register(Tool(
-        name="search_symbols",
-        description="DEPRECATED: Use 'search' with search_type='symbol' instead. Search for symbols by name.",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "query": {"type": "string"},
-                "limit": {"type": "integer", "default": 20},
-                "repo": {"type": "string"},
-                "kinds": {"type": "array", "items": {"type": "string"}},
-                "path_prefix": {"type": "string"},
-                "match_mode": {"type": "string", "enum": ["contains", "prefix", "exact"], "default": "contains"},
-                "include_qualname": {"type": "boolean", "default": True},
-                "case_sensitive": {"type": "boolean", "default": False},
-                "root_ids": {"type": "array", "items": {"type": "string"}},
-            },
-            "required": ["query"],
-        },
-        handler=lambda ctx, args: search_symbols_tool.execute_search_symbols(args, ctx.db, ctx.logger, ctx.roots),
-        hidden=True,
     ))
 
     reg.register(Tool(

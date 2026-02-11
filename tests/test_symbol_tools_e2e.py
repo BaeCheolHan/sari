@@ -1,5 +1,4 @@
 import re
-import urllib.parse
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -7,7 +6,7 @@ from sari.core.config.main import Config
 from sari.core.db.main import LocalSearchDB
 from sari.core.indexer.main import Indexer
 from sari.core.workspace import WorkspaceManager
-from sari.mcp.tools.search_symbols import execute_search_symbols
+from sari.mcp.tools.search import execute_search
 
 
 def _pack_header(text: str) -> str:
@@ -19,13 +18,8 @@ def _pack_returned(text: str) -> int:
     return int(m.group(1)) if m else 0
 
 
-def _first_sid(text: str) -> str:
-    decoded = urllib.parse.unquote(text)
-    m = re.search(r"\bsid=([a-f0-9]{40})\b", decoded)
-    return m.group(1) if m else ""
-
-
-def test_structural_tools_e2e_with_repo_name_scope(tmp_path):
+def test_structural_tools_e2e_with_repo_name_scope(tmp_path, monkeypatch):
+    monkeypatch.setenv("SARI_FORMAT", "pack")
     ws_java = tmp_path / "StockManager-v-1.0"
     ws_vue = tmp_path / "stock-manager-front"
     (ws_java / "src" / "main" / "java").mkdir(parents=True)
@@ -69,7 +63,7 @@ def test_structural_tools_e2e_with_repo_name_scope(tmp_path):
     indexer.scan_once()
 
     logger = MagicMock()
-    stock = execute_search_symbols(
+    stock = execute_search(
         {"query": "StockService", "repo": "StockManager-v-1.0", "limit": 10},
         db,
         logger,
@@ -78,27 +72,23 @@ def test_structural_tools_e2e_with_repo_name_scope(tmp_path):
     stock_text = stock["content"][0]["text"]
     assert _pack_returned(stock_text) > 0
 
-    helper = execute_search_symbols(
-        {"query": "helper", "repo": "StockManager-v-1.0", "limit": 10},
+    helper = execute_search(
+        {"query": "helper", "search_type": "symbol", "repo": "StockManager-v-1.0", "limit": 10},
         db,
         logger,
         roots,
     )
     helper_text = helper["content"][0]["text"]
-    helper_sid = _first_sid(helper_text)
-    assert helper_sid
-    urllib.parse.unquote(helper_text).split(" path=", 1)[1].split(" ", 1)[0]
+    assert _pack_header(helper_text).startswith("PACK1 tool=search ok=true")
 
-    do_work = execute_search_symbols(
-        {"query": "doWork", "repo": "StockManager-v-1.0", "limit": 10},
+    do_work = execute_search(
+        {"query": "doWork", "search_type": "symbol", "repo": "StockManager-v-1.0", "limit": 10},
         db,
         logger,
         roots,
     )
     do_work_text = do_work["content"][0]["text"]
-    _first_sid(do_work_text)
-    do_work_path = urllib.parse.unquote(do_work_text).split(" path=", 1)[1].split(" ", 1)[0]
-    do_work_path.split("/", 1)[0]
+    assert _pack_header(do_work_text).startswith("PACK1 tool=search ok=true")
     db.close_all()
 
 
