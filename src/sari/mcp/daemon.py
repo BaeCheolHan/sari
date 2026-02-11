@@ -2,7 +2,6 @@
 import asyncio
 import inspect
 import os
-import sys
 import signal
 import logging
 import ipaddress
@@ -10,13 +9,6 @@ import threading
 import time
 import uuid
 from pathlib import Path
-
-# Ensure project root is in sys.path
-SCRIPT_DIR = Path(__file__).parent
-# Go up 3 levels: sari/mcp/daemon.py -> mcp/ -> sari/ -> (repo root)
-REPO_ROOT = SCRIPT_DIR.parent.parent.parent
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
 
 from sari.mcp.session import Session
 from sari.core.workspace import WorkspaceManager
@@ -90,6 +82,8 @@ class SariDaemon:
         self.httpd = None
         self.http_host = None
         self.http_port = None
+        self._active_connections = 0
+        self._conn_lock = threading.Lock()
         trace("daemon_init", host=self.host, port=self.port)
 
     def _cleanup_legacy_pid_file(self):
@@ -175,10 +169,23 @@ class SariDaemon:
             self.httpd = httpd
             self.http_host = host
             self.http_port = actual_port
-            self._registry.set_daemon_http(self.boot_id, actual_port, http_host=host, http_pid=os.getpid())
+            # Shared gateway runs in-process with daemon; avoid a misleading separate http_pid.
+            self._registry.set_daemon_http(self.boot_id, actual_port, http_host=host)
             logger.info(f"Started daemon HTTP gateway on {host}:{actual_port}")
         except Exception as e:
             logger.error(f"Failed to start daemon HTTP gateway: {e}")
+
+    def _inc_active_connections(self) -> None:
+        with self._conn_lock:
+            self._active_connections += 1
+
+    def _dec_active_connections(self) -> None:
+        with self._conn_lock:
+            self._active_connections = max(0, self._active_connections - 1)
+
+    def _get_active_connections(self) -> int:
+        with self._conn_lock:
+            return self._active_connections
 
     def _start_heartbeat(self) -> None:
         if self._heartbeat_thread and self._heartbeat_thread.is_alive():
@@ -203,12 +210,27 @@ class SariDaemon:
                 daemon_info = self._registry.get_daemon(self.boot_id) or {}
                 draining = bool(daemon_info.get("draining"))
                 active_count = workspace_registry.active_count()
+                socket_active = self._get_active_connections()
                 indexing_active = bool(
                     getattr(
                         workspace_registry,
                         "has_indexing_activity",
                         lambda: False)())
                 now = time.time()
+
+                # If no live socket clients remain, reap stale workspace refs to avoid
+                # daemon pinning after abnormal client termination.
+                if socket_active == 0 and active_count > 0:
+                    reap_fn = getattr(workspace_registry, "reap_stale_refs", None)
+                    if callable(reap_fn):
+                        try:
+                            reap_fn(max(1, float(autostop_grace)))
+                            active_count = workspace_registry.active_count()
+                        except Exception:
+                            pass
+
+                # Prefer real socket liveness as a client signal.
+                active_count = max(active_count, socket_active)
 
                 if draining:
                     if self._drain_since is None:
@@ -306,12 +328,14 @@ class SariDaemon:
         addr = writer.get_extra_info('peername')
         logger.info(f"Accepted connection from {addr}")
         trace("daemon_client_accepted", addr=str(addr))
-
-        session = Session(reader, writer)
-        await session.handle_connection()
-
-        logger.info(f"Closed connection from {addr}")
-        trace("daemon_client_closed", addr=str(addr))
+        self._inc_active_connections()
+        try:
+            session = Session(reader, writer)
+            await session.handle_connection()
+        finally:
+            self._dec_active_connections()
+            logger.info(f"Closed connection from {addr}")
+            trace("daemon_client_closed", addr=str(addr))
 
     def stop(self):
         """Public stop method for external control (tests, etc.)."""

@@ -26,3 +26,23 @@ def test_resolve_workspace_http_prefers_daemon_endpoint(tmp_path, monkeypatch):
     assert info["port"] == 61773
     assert info["boot_id"] == "boot-1"
 
+
+def test_set_daemon_http_clears_http_pid_when_not_provided(tmp_path, monkeypatch):
+    reg_file = tmp_path / "server.json"
+    monkeypatch.setenv("SARI_REGISTRY_FILE", str(reg_file))
+
+    reg = ServerRegistry()
+    reg.register_daemon(
+        "boot-2",
+        "127.0.0.1",
+        47779,
+        12345,
+        version="0.6.11",
+        http_host="127.0.0.1",
+        http_port=61773,
+        http_pid=54321,
+    )
+    reg.set_daemon_http("boot-2", 61773, http_host="127.0.0.1", http_pid=None)
+
+    info = reg.get_daemon("boot-2") or {}
+    assert "http_pid" not in info

@@ -265,6 +265,33 @@ class Registry:
         with self._lock:
             return sum(1 for s in self._sessions.values() if s.ref_count > 0)
 
+    def reap_stale_refs(self, max_idle_sec: float) -> int:
+        """Reap stale tracked refs when a workspace has been inactive for too long."""
+        if max_idle_sec <= 0:
+            return 0
+        now = time.time()
+        reaped = 0
+        with self._lock:
+            to_delete: list[str] = []
+            for ws, state in self._sessions.items():
+                if state.persistent:
+                    continue
+                if int(getattr(state, "ref_count", 0) or 0) <= 0:
+                    continue
+                last_activity = float(getattr(state, "last_activity", 0.0) or 0.0)
+                if last_activity > 0 and now - last_activity < max_idle_sec:
+                    continue
+                state.ref_count = 0
+                try:
+                    state.stop()
+                except Exception:
+                    pass
+                to_delete.append(ws)
+                reaped += 1
+            for ws in to_delete:
+                self._sessions.pop(ws, None)
+        return reaped
+
     def has_persistent(self) -> bool:
         with self._lock:
             return any(s.persistent for s in self._sessions.values())

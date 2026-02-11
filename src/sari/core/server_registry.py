@@ -563,6 +563,8 @@ class ServerRegistry:
                 info["http_host"] = str(http_host)
             if http_pid is not None:
                 info["http_pid"] = int(http_pid)
+            else:
+                info.pop("http_pid", None)
             info["last_seen_ts"] = time.time()
             daemons[boot_id] = info
         self._update(_upd)
