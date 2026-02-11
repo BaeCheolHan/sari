@@ -79,6 +79,7 @@ async def test_async_http_server_dashboard_uses_new_html():
     body = resp.body.decode("utf-8")
     assert "SARI Insight" in body
     assert "Workspaces" in body
+    assert "title={r.error || r.detail || 'Healthy'}" in body
 
 
 @pytest.mark.asyncio

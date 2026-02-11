@@ -606,7 +606,12 @@ class Handler(BaseHTTPRequestHandler):
                                                 <div key={i} className="flex items-center justify-between border-b border-slate-800 pb-3 last:border-0">
                                                     <div>
                                                         <div className="text-sm font-medium text-slate-200">{r.name}</div>
-                                                        <div className="text-[11px] text-slate-500 truncate max-w-[220px]">{r.error || r.detail || 'Healthy'}</div>
+                                                        <div
+                                                            className="text-[11px] text-slate-500 truncate max-w-[220px] cursor-help"
+                                                            title={r.error || r.detail || 'Healthy'}
+                                                        >
+                                                            {r.error || r.detail || 'Healthy'}
+                                                        </div>
                                                     </div>
                                                     <div>
                                                         {r.passed ?
