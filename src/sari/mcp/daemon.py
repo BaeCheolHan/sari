@@ -203,6 +203,11 @@ class SariDaemon:
                 daemon_info = self._registry.get_daemon(self.boot_id) or {}
                 draining = bool(daemon_info.get("draining"))
                 active_count = workspace_registry.active_count()
+                indexing_active = bool(
+                    getattr(
+                        workspace_registry,
+                        "has_indexing_activity",
+                        lambda: False)())
                 now = time.time()
 
                 if draining:
@@ -217,7 +222,7 @@ class SariDaemon:
                 else:
                     self._drain_since = None
                     if autostop_enabled:
-                        if active_count == 0:
+                        if active_count == 0 and not indexing_active:
                             if self._autostop_no_client_since is None:
                                 self._autostop_no_client_since = now
                             elif now - self._autostop_no_client_since >= autostop_grace:
@@ -226,7 +231,7 @@ class SariDaemon:
                         else:
                             self._autostop_no_client_since = None
                     if idle_sec > 0:
-                        if active_count == 0 or idle_with_active:
+                        if (active_count == 0 or idle_with_active) and not indexing_active:
                             last_activity = workspace_registry.get_last_activity_ts()
                             if last_activity <= 0:
                                 last_activity = now
@@ -364,27 +369,39 @@ async def main():
 
     # Handle signals
     loop = asyncio.get_running_loop()
-    stop = asyncio.Future()
+    stop_event = asyncio.Event()
 
     def _handle_signal():
-        stop.set_result(None)
+        stop_event.set()
 
-    loop.add_signal_handler(signal.SIGTERM, _handle_signal)
-    loop.add_signal_handler(signal.SIGINT, _handle_signal)
+    try:
+        loop.add_signal_handler(signal.SIGTERM, _handle_signal)
+        loop.add_signal_handler(signal.SIGINT, _handle_signal)
+    except Exception:
+        # Some environments (tests/platforms) may not support signal handlers.
+        pass
 
     daemon_task = asyncio.create_task(daemon.start_async())
+    stop_task = asyncio.create_task(stop_event.wait())
 
     logger.info("Daemon started. Press Ctrl+C to stop.")
 
     try:
-        await stop
+        done, _ = await asyncio.wait(
+            {daemon_task, stop_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if daemon_task in done:
+            # Propagate startup/runtime errors immediately.
+            exc = daemon_task.exception()
+            if exc is not None:
+                raise exc
     finally:
+        stop_task.cancel()
         logger.info("Stopping daemon...")
         daemon.shutdown()
-        # Wait for server to close? asyncio.start_server manages this in async with
-        # but we created a task.
-        # Actually server.serve_forever() runs until cancelled.
-        daemon_task.cancel()
+        if not daemon_task.done():
+            daemon_task.cancel()
         try:
             await daemon_task
         except asyncio.CancelledError:

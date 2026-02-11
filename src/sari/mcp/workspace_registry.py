@@ -274,3 +274,24 @@ class Registry:
             return max(
                 (s.last_activity for s in self._sessions.values() if s.ref_count > 0),
                 default=0.0)
+
+    def has_indexing_activity(self) -> bool:
+        """
+        Return True when any workspace indexer is actively scanning/building snapshot.
+        """
+        with self._lock:
+            sessions = list(self._sessions.values())
+        for session in sessions:
+            indexer = getattr(session, "indexer", None)
+            if not indexer:
+                continue
+            proc = getattr(indexer, "_worker_proc", None)
+            if proc is not None:
+                try:
+                    if proc.is_alive():
+                        return True
+                except Exception:
+                    pass
+            if bool(getattr(indexer, "_pending_rescan", False)):
+                return True
+        return False

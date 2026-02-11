@@ -3,6 +3,7 @@ import asyncio
 import os
 from unittest.mock import MagicMock, patch
 from sari.mcp.daemon import SariDaemon
+import sari.mcp.daemon as daemon_mod
 
 
 @pytest.mark.asyncio
@@ -45,3 +46,23 @@ def test_daemon_cleanup_legacy_pid(tmp_path):
         legacy.write_text("1234")
         daemon._cleanup_legacy_pid_file()
         assert not legacy.exists()
+
+
+@pytest.mark.asyncio
+async def test_main_exits_when_daemon_task_finishes_without_signal(monkeypatch):
+    events = {"shutdown_called": 0}
+
+    class _FakeDaemon:
+        async def start_async(self):
+            await asyncio.sleep(0)
+            return None
+
+        def shutdown(self):
+            events["shutdown_called"] += 1
+
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(loop, "add_signal_handler", lambda *args, **kwargs: None)
+    monkeypatch.setattr(daemon_mod, "SariDaemon", _FakeDaemon)
+
+    await daemon_mod.main()
+    assert events["shutdown_called"] == 1

@@ -584,7 +584,7 @@ class Handler(BaseHTTPRequestHandler):
                                     </div>
                                     <div className="space-y-1 text-sm text-red-200/90 mono">
                                         {orphanWarnings.map((w, idx) => (
-                                            <div key={idx}>{w}</div>
+                                            <div key={idx} title={w} className="truncate">{w}</div>
                                         ))}
                                     </div>
                                 </div>
@@ -670,15 +670,22 @@ class Handler(BaseHTTPRequestHandler):
                                             <i className="fas fa-heartbeat mr-3 text-blue-400"></i> Health
                                         </h2>
                                         <div className="space-y-3">
-                                            {health ? health.results.map((r, i) => (
-                                                <div key={i} className="flex items-center justify-between border-b border-slate-800 pb-3 last:border-0">
+                                            {health ? health.results.map((r, i) => {
+                                                const detailText = r.error || r.detail || 'Healthy';
+                                                const titleText = `${r.name}: ${detailText}`;
+                                                return (
+                                                <div
+                                                    key={i}
+                                                    className="flex items-center justify-between border-b border-slate-800 pb-3 last:border-0 cursor-help"
+                                                    title={titleText}
+                                                >
                                                     <div>
-                                                        <div className="text-sm font-medium text-slate-200">{r.name}</div>
+                                                        <div className="text-sm font-medium text-slate-200 truncate max-w-[220px]" title={r.name}>{r.name}</div>
                                                         <div
                                                             className="text-[11px] text-slate-500 truncate max-w-[220px] cursor-help"
-                                                            title={r.error || r.detail || 'Healthy'}
+                                                            title={detailText}
                                                         >
-                                                            {r.error || r.detail || 'Healthy'}
+                                                            {detailText}
                                                         </div>
                                                     </div>
                                                     <div>
@@ -688,7 +695,8 @@ class Handler(BaseHTTPRequestHandler):
                                                         }
                                                     </div>
                                                 </div>
-                                            )) : <div className="text-slate-500">Checking health...</div>}
+                                                );
+                                            }) : <div className="text-slate-500">Checking health...</div>}
                                         </div>
                                     </div>
                                 </div>

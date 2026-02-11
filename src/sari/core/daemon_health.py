@@ -31,10 +31,17 @@ def _get_registry_daemon_pids() -> set[int]:
 
 
 def _is_sari_daemon_cmdline(cmdline: list[str]) -> bool:
-    line = " ".join(str(v) for v in cmdline).lower()
-    if "sari.mcp.daemon" in line:
+    parts = [str(v).strip().lower() for v in cmdline if str(v).strip()]
+    if not parts:
+        return False
+    line = " ".join(parts)
+
+    # Accept only real daemon runtime commandlines.
+    if "sari.mcp.daemon" in parts:
         return True
-    if "-m sari" in line and " daemon" in line:
+    if "-m sari.mcp.daemon" in line:
+        return True
+    if "sari/mcp/daemon.py" in line or "sari\\mcp\\daemon.py" in line:
         return True
     return False
 

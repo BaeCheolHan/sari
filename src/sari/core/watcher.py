@@ -98,10 +98,13 @@ def _is_git_event(path: str) -> bool:
     if not isinstance(path, str):
         return False
     norm = path.replace("\\", "/")
+    if norm.startswith(".git/") or norm == ".git":
+        return True
     if "/.git/" in norm or norm.endswith("/.git"):
         return True
-    base = os.path.basename(norm)
-    return base in {"HEAD", "index", "packed-refs", "ORIG_HEAD", "FETCH_HEAD"}
+    # Bare file names like "index" can exist outside git metadata.
+    # Restrict special-name matching to paths rooted under ".git".
+    return False
 
 
 class DebouncedEventHandler(FileSystemEventHandler):
@@ -179,12 +182,12 @@ class DebouncedEventHandler(FileSystemEventHandler):
                     self._git_timer = threading.Timer(
                         self.git_debounce_seconds, self._trigger_git)
                     self._git_timer.start()
-            if self.logger:
-                safe_log(
-                    self.logger,
-                    "info",
-                    "Git activity detected; deferring to rescan.")
-            return
+                if self.logger:
+                    safe_log(
+                        self.logger,
+                        "info",
+                        "Git activity detected; deferring to rescan.")
+                return
         fs_event = FsEvent(kind=evt_kind, path=src_path,
                            root="",  # Will be inferred in dispatch
                            dest_path=dest_path or None,

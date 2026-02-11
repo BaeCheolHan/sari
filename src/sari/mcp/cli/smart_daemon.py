@@ -5,6 +5,7 @@ import argparse
 import subprocess
 import socket
 import logging
+import signal
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -124,6 +125,8 @@ def ensure_smart_daemon(host: Optional[str] = None,
     if host is None or port is None:
         host, port = get_daemon_address(workspace_root)
 
+    _reap_orphan_daemons()
+
     # 1. Check if already running and responsive
     identity = identify_sari_daemon(host, port)
     if identity:
@@ -217,3 +220,39 @@ def ensure_smart_daemon(host: Optional[str] = None,
 
     logger.error("Daemon failed to become responsive after start.")
     return host, port
+
+
+def _reap_orphan_daemons() -> int:
+    """
+    Best-effort orphan-daemon cleanup for lazy auto-start path.
+    """
+    try:
+        from sari.core.daemon_health import detect_orphan_daemons
+    except Exception:
+        return 0
+
+    killed = 0
+    for item in detect_orphan_daemons():
+        try:
+            pid = int(item.get("pid") or 0)
+        except Exception:
+            pid = 0
+        if pid <= 0 or pid == os.getpid():
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+            time.sleep(0.15)
+            try:
+                os.kill(pid, 0)
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            killed += 1
+        except ProcessLookupError:
+            continue
+        except Exception:
+            continue
+
+    if killed > 0:
+        logger.info("Reaped %d orphan daemon process(es) before auto-start.", killed)
+    return killed

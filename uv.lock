@@ -419,6 +419,23 @@ wheels = [
 ]
 
 [[package]]
+name = "lindera-python-ipadic"
+version = "2.2.0"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b7/bd/aa3fb5449c33c1d1463633237b329f4f5c5e0560fa78884601ffd66a74b5/lindera_python_ipadic-2.2.0-cp310-abi3-macosx_10_12_x86_64.whl", hash = "sha256:2e94ef31cbee2bae664e96104df9cef82f9a4b5f3c0059f49f9ccbecc10813c3", size = 17894570, upload-time = "2026-02-10T23:40:04.82Z" },
+    { url = "https://files.pythonhosted.org/packages/5b/4c/2945966c25ed34b0cfceaee52eb6d29da911b6694ceb6f77c575ff5b5b1b/lindera_python_ipadic-2.2.0-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:f35df2031fefa4237aa940a794de8a74dc8dc2d1161425b35d41b2e363e313cc", size = 17912846, upload-time = "2026-02-10T23:40:07.639Z" },
+    { url = "https://files.pythonhosted.org/packages/d8/ab/fbb8c21a9eb3c213e7a681ce5f01bb21e2d74b2da85578f2ca7a955f865b/lindera_python_ipadic-2.2.0-cp310-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:089345b3879e26455def93b4f9f3c4f8ab09764246c2385910aba17791ab37ad", size = 17905410, upload-time = "2026-02-10T23:40:09.701Z" },
+    { url = "https://files.pythonhosted.org/packages/44/46/ed995f49961092caaeb3b0cb1d88737d7b995c3758ff5fc3e2ee60fb4f28/lindera_python_ipadic-2.2.0-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:1ebaa2703dc6f7be3c651359da2b07f5de8ce7af9d50c77aec731b32e66c658f", size = 17993882, upload-time = "2026-02-10T23:40:12.98Z" },
+    { url = "https://files.pythonhosted.org/packages/f3/11/e7707b1704e1ca60bebfe6c8dcdf722ab9128f4402ea78631c420acca3a3/lindera_python_ipadic-2.2.0-cp310-abi3-win_amd64.whl", hash = "sha256:d07581bc40ec4998071935df8b247c7eb4a320117771a9299839066a0ba13da7", size = 17774746, upload-time = "2026-02-10T23:40:15.074Z" },
+    { url = "https://files.pythonhosted.org/packages/e9/5c/b886bca36afe5abfe7752fa328e9ec72f173abb6a264c35133142bd0352b/lindera_python_ipadic-2.2.0-cp310-abi3-win_arm64.whl", hash = "sha256:306e916e9da30f2657f16f805bbf35264c1ebada0b43d799edbf121b2f0f1a1d", size = 17634002, upload-time = "2026-02-10T23:40:17.795Z" },
+    { url = "https://files.pythonhosted.org/packages/d4/66/e68c6662c0dbd3bb5c5521bc2ead1ed384cc9845ff5697ac1c6aa8160531/lindera_python_ipadic-2.2.0-cp313-cp313t-win_arm64.whl", hash = "sha256:206a4a52f4552b216bbc2086793735eecc2afbc6a927bc23f28094047b978106", size = 17626597, upload-time = "2026-02-10T23:40:19.858Z" },
+    { url = "https://files.pythonhosted.org/packages/c2/7c/af92e30349b971254a9a963a7b1c10f955d5796c5376f78701afb87e4112/lindera_python_ipadic-2.2.0-cp314-cp314t-win_arm64.whl", hash = "sha256:8f19ff4cb85c5c2e6cf7d2f21cd86f927940c82f696ec2ad2b5b50e057f1a483", size = 17625980, upload-time = "2026-02-10T23:40:22.099Z" },
+    { url = "https://files.pythonhosted.org/packages/f6/8a/1fb05bdc82d4ed145bd6bbc26548b529c2f9fa61fad7319b1b7d6b3601f9/lindera_python_ipadic-2.2.0-pp311-pypy311_pp73-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:080b428ed3c70a082a68124d28122ebdca03116a7683b584258120946d4a737b", size = 17903403, upload-time = "2026-02-10T23:40:24.666Z" },
+    { url = "https://files.pythonhosted.org/packages/86/15/751da6c99ce0b49a85df14edf83b20c77e348daf924f4e15614746bbc0ae/lindera_python_ipadic-2.2.0-pp311-pypy311_pp73-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:65572fcb5efc3ef7a9a22ef5d46f7c9885e25eac2fac82477a6d8755fa004f6b", size = 17991138, upload-time = "2026-02-10T23:40:27.184Z" },
+]
+
+[[package]]
 name = "markdown-it-py"
 version = "4.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1193,6 +1210,7 @@ dependencies = [
     { name = "click" },
     { name = "filelock" },
     { name = "lindera-python" },
+    { name = "lindera-python-ipadic" },
     { name = "msgpack" },
     { name = "orjson" },
     { name = "pathspec" },
@@ -1227,6 +1245,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+cjk = [
+    { name = "lindera-python-ipadic" },
+]
 test = [
     { name = "anyio" },
     { name = "pytest" },
@@ -1241,6 +1262,8 @@ requires-dist = [
     { name = "click", specifier = ">=8.0.0" },
     { name = "filelock", specifier = ">=3.12.0" },
     { name = "lindera-python", specifier = ">=0.2.0" },
+    { name = "lindera-python-ipadic", specifier = ">=0.2.0" },
+    { name = "lindera-python-ipadic", marker = "extra == 'cjk'", specifier = ">=0.2.0" },
     { name = "msgpack", specifier = ">=1.0.0" },
     { name = "orjson", specifier = ">=3.9.0" },
     { name = "pathspec", specifier = ">=0.12.0" },
@@ -1276,7 +1299,7 @@ requires-dist = [
     { name = "uvicorn", specifier = ">=0.22.0" },
     { name = "watchdog", specifier = ">=4.0.0" },
 ]
-provides-extras = ["test"]
+provides-extras = ["cjk", "test"]
 
 [[package]]
 name = "starlette"

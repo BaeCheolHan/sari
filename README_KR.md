@@ -70,7 +70,6 @@ sari status
 [mcp_servers.sari]
 command = "sari"
 args = ["--transport", "stdio", "--format", "pack"]
-startup_timeout_sec = 60
 ```
 
 ### Gemini CLI (`~/.gemini/settings.json`)
@@ -182,7 +181,7 @@ sari --cmd config show
 
 ### 대시보드에 CJK tokenizer dictionary 오류가 보일 때
 
-선택 의존성 설치:
+의존성 업데이트 이전에 설치된 환경이라면 설치/업그레이드:
 
 ```bash
 uv pip install lindera-python-ipadic

@@ -69,7 +69,6 @@ Minimal MCP server configuration (recommended):
 [mcp_servers.sari]
 command = "sari"
 args = ["--transport", "stdio", "--format", "pack"]
-startup_timeout_sec = 60
 ```
 
 ### Gemini CLI (`~/.gemini/settings.json`)
@@ -181,7 +180,7 @@ sari --cmd config show
 
 ### Dashboard shows CJK tokenizer dictionary error
 
-Install optional CJK dictionary package:
+If the environment was installed before the dependency update, install or upgrade:
 
 ```bash
 uv pip install lindera-python-ipadic

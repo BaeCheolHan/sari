@@ -6,7 +6,6 @@ ANSI 코드나 print 문을 사용하지 않고 순수 데이터 형태로 결�
 """
 import json
 import os
-import re
 import socket
 import shutil
 import sys
@@ -283,7 +282,7 @@ def _check_engine_tokenizer_data() -> DoctorResult:
     return _result(
         "CJK Tokenizer",
         False,
-        f"{err} (package 'lindera-python-ipadic' optional)")
+        f"{err} (install/upgrade package 'lindera-python-ipadic')")
 
 
 def _check_tree_sitter() -> DoctorResult:

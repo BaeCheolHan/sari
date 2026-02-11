@@ -35,7 +35,7 @@ def test_upgrade_path_replaces_daemon_in_place(monkeypatch):
     stop_calls = []
     monkeypatch.setattr("sari.mcp.cli.cmd_daemon_stop", lambda a: stop_calls.append((a.daemon_host, a.daemon_port)) or 0)
     monkeypatch.setattr(sd, "is_port_in_use", lambda h, p: False)
-    monkeypatch.setattr(sd, "probe_sari_daemon", lambda h, p: True)
+    monkeypatch.setattr(sd, "probe_sari_daemon", lambda h, p, timeout=1.0: True)
 
     popen_mock = MagicMock()
     monkeypatch.setattr(sd.subprocess, "Popen", popen_mock)

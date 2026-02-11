@@ -1,4 +1,3 @@
-import pytest
 from sari.mcp.tools.inference import resolve_search_intent
 
 def test_inference_sql_blocker():

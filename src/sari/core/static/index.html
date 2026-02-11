@@ -392,6 +392,15 @@
                     </div>
                 </div>
 
+                <div id="daemon-warning-card" class="card full-width hidden" style="border-left: 4px solid var(--warning);">
+                    <div class="card-header" style="border:none; margin:0; padding:0;">
+                        <h3 class="card-title">Daemon Warnings</h3>
+                        <span id="daemon-warning-badge" class="badge badge-yellow">0</span>
+                    </div>
+                    <div id="daemon-warning-list" style="margin-top:12px; color:var(--text-secondary); font-size:0.9rem;">
+                    </div>
+                </div>
+
                 <!-- Stats Cards -->
                 <div class="card">
                     <div class="card-header"><h3 class="card-title">Throughput</h3></div>
@@ -582,6 +591,22 @@
                 document.getElementById('app-version').innerText = d.version || 'dev';
 
                 if (!d.ok) return;
+
+                const orphanWarnings = d.orphan_daemon_warnings || [];
+                const warnCard = document.getElementById('daemon-warning-card');
+                const warnBadge = document.getElementById('daemon-warning-badge');
+                const warnList = document.getElementById('daemon-warning-list');
+                if (orphanWarnings.length > 0) {
+                    warnCard.classList.remove('hidden');
+                    warnBadge.innerText = String(orphanWarnings.length);
+                    warnList.innerHTML = orphanWarnings
+                        .map(w => `<div title="${String(w).replace(/"/g, '&quot;')}">• ${w}</div>`)
+                        .join('');
+                } else {
+                    warnCard.classList.add('hidden');
+                    warnBadge.innerText = '0';
+                    warnList.innerHTML = '';
+                }
 
                 // Indexing Stats
                 const scanned = d.scanned_files || 0;

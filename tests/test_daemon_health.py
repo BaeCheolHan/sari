@@ -31,3 +31,29 @@ def test_detect_orphan_daemons_filters_registered_pids(monkeypatch):
     result = detect_orphan_daemons()
     assert len(result) == 1
     assert result[0]["pid"] == 200
+
+
+def test_detect_orphan_daemons_ignores_cli_daemon_command(monkeypatch):
+    monkeypatch.setattr(
+        "sari.core.daemon_health._get_registry_daemon_pids",
+        lambda: set(),
+    )
+    monkeypatch.setattr(
+        "sari.core.daemon_health.psutil",
+        type(
+            "P",
+            (),
+            {
+                "process_iter": staticmethod(
+                    lambda *_args, **_kwargs: [
+                        _Proc(400, ["python", "-m", "sari.mcp.cli", "daemon", "start", "-d"]),
+                        _Proc(500, ["python", "-m", "sari.mcp.daemon"]),
+                    ]
+                )
+            },
+        )(),
+    )
+
+    result = detect_orphan_daemons()
+    assert len(result) == 1
+    assert result[0]["pid"] == 500

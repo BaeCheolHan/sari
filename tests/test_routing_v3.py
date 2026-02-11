@@ -1,7 +1,6 @@
 import pytest
 import os
 from sari.mcp.tools.search import execute_search
-from sari.mcp.tools._util import ErrorCode
 
 class MockSymbols:
     def __init__(self, mode):

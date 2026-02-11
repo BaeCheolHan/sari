@@ -4,6 +4,9 @@ from sari.core.queue_pipeline import FsEvent, FsEventKind
 
 def test_is_git_event():
     assert _is_git_event(".git/HEAD") is True
+    assert _is_git_event("/tmp/repo/.git/index") is True
+    assert _is_git_event("/tmp/repo/.git/packed-refs") is True
+    assert _is_git_event("/tmp/repo/index") is False
     assert _is_git_event("src/main.py") is False
 
 def test_debounced_event_handler_direct():
@@ -31,6 +34,35 @@ def test_debounced_event_handler_on_any_event():
         event.src_path = "test.txt"
         handler.on_any_event(event)
         assert "test.txt" in handler._pending_events
+
+
+def test_debounced_event_handler_git_event_without_git_callback_falls_back_to_normal_flow():
+    callback = MagicMock()
+    with patch('threading.Timer'):
+        handler = DebouncedEventHandler(callback, debounce_seconds=0.01, git_callback=None)
+        handler._bucket_tokens = 100.0
+        event = MagicMock()
+        event.is_directory = False
+        event.event_type = 'modified'
+        event.src_path = "/repo/.git/index"
+        event.dest_path = ""
+        handler.on_any_event(event)
+        assert event.src_path in handler._pending_events
+
+
+def test_debounced_event_handler_git_event_with_git_callback_defers_to_git_timer():
+    callback = MagicMock()
+    git_callback = MagicMock()
+    with patch('threading.Timer'):
+        handler = DebouncedEventHandler(callback, debounce_seconds=0.01, git_callback=git_callback)
+        handler._bucket_tokens = 100.0
+        event = MagicMock()
+        event.is_directory = False
+        event.event_type = 'modified'
+        event.src_path = "/repo/.git/index"
+        event.dest_path = ""
+        handler.on_any_event(event)
+        assert event.src_path not in handler._pending_events
 
 def test_watcher_start_stop(tmp_path):
     callback = MagicMock()

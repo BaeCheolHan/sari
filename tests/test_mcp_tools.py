@@ -1,5 +1,4 @@
 from unittest.mock import MagicMock
-import os
 from sari.mcp.tools.search import execute_search
 from sari.mcp.tools.list_files import execute_list_files
 from sari.mcp.tools.status import execute_status
@@ -34,8 +33,6 @@ def test_execute_search_respects_limit():
     args = {"query": "test", "limit": 2, "search_type": "code"}
     resp = execute_search(args, db, logger, roots)
     text = resp["content"][0]["text"]
-    row_lines = [line for line in text.splitlines() if line.startswith("r:t=code")]
-
     # search_v2 might return more, but normalization or builder should respect limit if implemented
     # For now, let's ensure the output format is correct
     assert "r:t=code" in text

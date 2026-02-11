@@ -232,6 +232,8 @@ def extract_daemon_start_params(args: argparse.Namespace) -> DaemonParams:
 
 def handle_existing_daemon(params: DaemonParams) -> Optional[int]:
     """Handle existing daemon instance, return exit code if should exit early."""
+    # Always reap stale/orphan daemon processes first so new start path is clean.
+    kill_orphan_sari_daemons()
     
     host = params["host"]
     port = params["port"]
@@ -276,6 +278,33 @@ def handle_existing_daemon(params: DaemonParams) -> Optional[int]:
         print(f"❌ Failed to replace existing daemon on {host}:{port}.", file=sys.stderr)
         return 1
     return None
+
+
+def kill_orphan_sari_daemons() -> int:
+    """
+    Kill running Sari daemon processes not tracked by current server registry.
+
+    Returns:
+        Number of orphan daemon processes terminated.
+    """
+    try:
+        from sari.core.daemon_health import detect_orphan_daemons
+    except Exception:
+        return 0
+
+    killed = 0
+    for item in detect_orphan_daemons():
+        try:
+            pid = int(item.get("pid") or 0)
+        except Exception:
+            pid = 0
+        if pid <= 0:
+            continue
+        if kill_pid_immediate(pid, "orphan-daemon"):
+            killed += 1
+    if killed > 0:
+        print(f"🧹 Reaped {killed} orphan daemon process(es).")
+    return killed
 
 
 def check_port_availability(params: DaemonParams) -> Optional[int]:
@@ -743,6 +772,7 @@ def stop_one_endpoint(host: str, port: int) -> int:
 def stop_daemon_process(params: DaemonParams) -> int:
     """Stop daemon process(es) and cleanup."""
     if params.get("all"):
+        kill_orphan_sari_daemons()
         endpoints = list_registry_daemon_endpoints()
         if not endpoints:
             endpoints = _discover_daemon_endpoints_from_processes()
@@ -751,6 +781,7 @@ def stop_daemon_process(params: DaemonParams) -> int:
             if is_daemon_running(host, port):
                 endpoints = [(host, port)]
         if not endpoints:
+            kill_orphan_sari_workers()
             print("Daemon is not running")
             remove_pid()
             return 0
