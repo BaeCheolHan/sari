@@ -49,7 +49,7 @@ def execute_repo_candidates(
         
     query = str(args.get("query", ""))
     try:
-        limit_arg = min(int(args.get("limit", 3)), 5)
+        limit_arg = max(1, min(int(args.get("limit", 3)), 5))
     except (ValueError, TypeError):
         limit_arg = 3
 
@@ -63,16 +63,33 @@ def execute_repo_candidates(
     def get_candidates():
         """관련 리포지토리 후보군을 계산하고 추천 이유를 생성합니다."""
         root_ids = resolve_root_ids(list(roots or []))
-        candidates = db.repo_candidates(q=query, limit=limit_arg, root_ids=root_ids)
-        for candidate in candidates:
-            score = candidate.get("score", 0)
+        raw_candidates = db.repo_candidates(q=query, limit=limit_arg, root_ids=root_ids)
+        candidates: list[dict[str, object]] = []
+        if isinstance(raw_candidates, list):
+            iterable = raw_candidates
+        else:
+            iterable = []
+        for candidate in iterable:
+            if not isinstance(candidate, Mapping):
+                continue
+            repo = str(candidate.get("repo") or "").strip()
+            if not repo:
+                continue
+            try:
+                score = int(candidate.get("score", 0))
+            except Exception:
+                score = 0
             if score >= 10:
                 reason = f"High match ({score} files contain '{query}')"
             elif score >= 5:
                 reason = f"Medium match ({score} files)"
             else:
                 reason = f"Low match ({score} files)"
-            candidate["reason"] = reason
+            item = dict(candidate)
+            item["repo"] = repo
+            item["score"] = score
+            item["reason"] = reason
+            candidates.append(item)
         return candidates
 
     # --- JSON Builder ---

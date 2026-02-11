@@ -5,6 +5,7 @@ import asyncio
 import inspect
 import os
 import urllib.parse
+from uuid import uuid4
 from typing import Dict,  Optional
 from .workspace_registry import Registry, SharedState
 from sari.core.settings import settings
@@ -33,6 +34,7 @@ class Session:
         self.registry = Registry.get_instance()
         self.running = True
         self._preinit_server = None
+        self.connection_id = str(uuid4())
         trace("session_init", has_writer=bool(writer))
 
     def _get_preinit_server(self):
@@ -252,11 +254,20 @@ class Session:
 
             # Execute in thread pool to not block async loop
             # Since LocalSearchMCPServer is synchronous
+            forwarded_request = dict(request)
+            if method == "tools/call" and isinstance(params, dict):
+                forwarded_params = dict(params)
+                raw_args = forwarded_params.get("arguments")
+                args = dict(raw_args) if isinstance(raw_args, dict) else {}
+                args["connection_id"] = self.connection_id
+                forwarded_params["arguments"] = args
+                forwarded_request["params"] = forwarded_params
+
             loop = asyncio.get_event_loop()
             response = await loop.run_in_executor(
                 None,
                 self.shared_state.server.handle_request,
-                request
+                forwarded_request
             )
 
             if response:

@@ -10,7 +10,7 @@ def test_search_service_hybrid_tolerates_non_mapping_meta():
 
     class _Engine:
         @staticmethod
-        def search_v2(_opts):
+        def search(_opts):
             return keyword_hits, None
 
     class _Repo:

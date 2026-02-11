@@ -24,6 +24,9 @@ class PathUtils:
         try:
             # Handle user home and basic cleanup
             res = os.path.expanduser(p).replace("\\", "/")
+            # Normalize Windows drive letter case to avoid lookup mismatches.
+            if len(res) >= 2 and res[1] == ":" and res[0].isalpha():
+                res = res[0].lower() + res[1:]
             if len(res) > 1 and res.endswith("/"):
                 res = res.rstrip("/")
             return res

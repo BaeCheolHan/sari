@@ -1,8 +1,15 @@
 from unittest.mock import MagicMock
+import pytest
 from sari.mcp.tools.search import execute_search
 from sari.mcp.tools.list_files import execute_list_files
 from sari.mcp.tools.status import execute_status
 from sari.core.models import SearchHit
+
+
+@pytest.fixture(autouse=True)
+def _force_pack_format(monkeypatch):
+    monkeypatch.setenv("SARI_FORMAT", "pack")
+
 
 def test_execute_search_basic():
     db = MagicMock()
@@ -10,7 +17,7 @@ def test_execute_search_basic():
     engine = MagicMock()
     roots = ["/tmp/ws"]
     hit = SearchHit(repo="repo1", path="path1", score=1.0, snippet="hi")
-    db.search_v2.return_value = ([hit], {"total": 1, "total_mode": "exact", "engine": "embedded"})
+    db.search.return_value = ([hit], {"total": 1, "total_mode": "exact", "engine": "embedded"})
     
     args = {"query": "test", "limit": 10, "search_type": "code"}
     resp = execute_search(args, db, logger, roots, engine=engine)
@@ -27,7 +34,7 @@ def test_execute_search_respects_limit():
         SearchHit(repo="repo1", path=f"path{i}", score=1.0, snippet=long_snippet)
         for i in range(5)
     ]
-    db.search_v2.return_value = (hits, {"total": 5, "total_mode": "exact", "engine": "embedded"})
+    db.search.return_value = (hits, {"total": 5, "total_mode": "exact", "engine": "embedded"})
 
     # v3 uses 'limit' as the primary constraint
     args = {"query": "test", "limit": 2, "search_type": "code"}
@@ -46,7 +53,7 @@ def test_execute_search_preview_budget():
         SearchHit(repo="repo1", path=f"path{i}", score=1.0, snippet=big_snippet)
         for i in range(10)
     ]
-    db.search_v2.return_value = (hits, {"total": 10, "total_mode": "exact", "engine": "embedded"})
+    db.search.return_value = (hits, {"total": 10, "total_mode": "exact", "engine": "embedded"})
 
     # 10 items * 2000 chars = 20000 chars (exceeds default budget of 10000)
     args = {"query": "test", "limit": 10, "search_type": "code"}
@@ -103,7 +110,7 @@ def test_execute_search_tolerates_non_mapping_meta():
     roots = ["/tmp/ws"]
     hit = SearchHit(repo="repo1", path="path1", score=1.0, snippet="hi")
     # v3 normalization handles empty meta gracefully
-    db.search_v2.return_value = ([hit], None)
+    db.search.return_value = ([hit], None)
 
     resp = execute_search({"query": "test", "limit": 10, "search_type": "code"}, db, logger, roots)
     text = resp["content"][0]["text"]

@@ -16,7 +16,7 @@ class MockDB:
         self.mode = mode
         self.engine = None
         self.symbols = MockSymbols(mode)
-    def search_v2(self, opts):
+    def search(self, opts):
         if self.mode == 'hits':
             from sari.core.models import SearchHit
             return [SearchHit(path='test.py', repo='root', score=1.0, snippet='test content', hit_reason='test')], {'total': 1}

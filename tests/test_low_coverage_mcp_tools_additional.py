@@ -68,7 +68,7 @@ def test_search_parse_error_returns_invalid_args(monkeypatch):
 def test_search_db_error_returns_engine_query(monkeypatch):
     monkeypatch.setenv("SARI_FORMAT", "pack")
     db = MagicMock()
-    db.search_v2.side_effect = RuntimeError("boom")
+    db.search.side_effect = RuntimeError("boom")
 
     resp = execute_search({"query": "x"}, db, MagicMock(), ["/tmp/ws"])
 
@@ -101,7 +101,7 @@ def test_search_json_and_importance_tags(monkeypatch):
         snippet="A" * 500,
         hit_reason="score(importance=11.2)",
     )
-    db.search_v2.return_value = ([obj_hit2, obj_hit], {"total": 2, "engine": "embedded"})
+    db.search.return_value = ([obj_hit2, obj_hit], {"total": 2, "engine": "embedded"})
 
     resp = execute_search(
         {"query": "x", "search_type": "code", "limit": 10, "max_preview_chars": 120},
@@ -149,7 +149,7 @@ def test_search_json_and_importance_tags(monkeypatch):
         snippet="x",
         hit_reason="h(importance=abc)",
     )
-    db.search_v2.return_value = (
+    db.search.return_value = (
         [pack_hit1, pack_hit2, pack_hit3],
         {"total": 3, "engine": "embedded"},
     )
@@ -296,6 +296,15 @@ def test_repo_candidates_invalid_query_and_limit_fallback(monkeypatch):
     assert "reason=High%20match" in text
 
 
+def test_repo_candidates_clamps_negative_limit_to_one(monkeypatch):
+    monkeypatch.setenv("SARI_FORMAT", "json")
+    db = MagicMock()
+    db.repo_candidates.return_value = [{"repo": "r1", "score": 1}]
+    execute_repo_candidates({"query": "x", "limit": -5}, db, MagicMock(), ["/tmp/ws"])
+    _, kwargs = db.repo_candidates.call_args
+    assert kwargs["limit"] == 1
+
+
 def test_repo_candidates_rejects_non_object_args():
     resp = execute_repo_candidates(["bad-args"], MagicMock(), MagicMock(), ["/tmp/ws"])
     _assert_invalid_args_response(resp)
@@ -353,7 +362,7 @@ def test_unified_read_rejects_against_for_non_diff_mode():
 
     resp = execute_read({"mode": "file", "target": "a.py", "against": "HEAD"}, MagicMock(), ["/tmp/ws"])
     text = urllib.parse.unquote(resp["content"][0]["text"])
-    assert "code=INVALID_ARGS" in text
+    assert "code=INVALID_ARGS" in text or '"code":"INVALID_ARGS"' in text
     assert "against is only valid for mode='diff_preview'. Remove it or switch mode." in text
 
 
@@ -362,7 +371,7 @@ def test_unified_read_rejects_snippet_args_for_non_snippet_mode():
 
     resp = execute_read({"mode": "file", "target": "a.py", "start_line": 1}, MagicMock(), ["/tmp/ws"])
     text = urllib.parse.unquote(resp["content"][0]["text"])
-    assert "code=INVALID_ARGS" in text
+    assert "code=INVALID_ARGS" in text or '"code":"INVALID_ARGS"' in text
     assert "start_line is only valid for mode='snippet'. Remove it or switch mode." in text
 
 
@@ -371,7 +380,7 @@ def test_unified_read_rejects_symbol_disambiguation_args_for_non_symbol_mode():
 
     resp = execute_read({"mode": "file", "target": "a.py", "symbol_id": "sid-1"}, MagicMock(), ["/tmp/ws"])
     text = urllib.parse.unquote(resp["content"][0]["text"])
-    assert "code=INVALID_ARGS" in text
+    assert "code=INVALID_ARGS" in text or '"code":"INVALID_ARGS"' in text
     assert "symbol_id is only valid for mode='symbol'. Remove it or switch mode." in text
 
 
@@ -384,7 +393,7 @@ def test_unified_read_rejects_invalid_against_enum_value():
         ["/tmp/ws"],
     )
     text = urllib.parse.unquote(resp["content"][0]["text"])
-    assert "code=INVALID_ARGS" in text
+    assert "code=INVALID_ARGS" in text or '"code":"INVALID_ARGS"' in text
     assert "'against' must be one of: HEAD, WORKTREE, INDEX" in text
 
 

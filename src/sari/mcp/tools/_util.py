@@ -140,7 +140,7 @@ def parse_search_options(args: ArgMap, roots: list[str]) -> object:
     return SearchOptions(
         query=str(args.get("query") or "").strip(),
         repo=repo_value or None,
-        limit=max(1, min(int(args.get("limit", 8) or 8), 50)),
+        limit=max(1, min(int(args.get("limit", 8) or 8), 100)),
         offset=max(int(args.get("offset", 0) or 0), 0),
         snippet_lines=min(max(int(args.get("context_lines", 5) or 5), 1), 20),
         file_types=_normalize_string_list(args.get("file_types")),

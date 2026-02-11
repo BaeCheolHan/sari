@@ -199,15 +199,122 @@ Related docs:
 
 ---
 
+### Task 10: Session Key Resolver & Runtime/Analytics Split
+
+**Files:**
+- Create/Modify: `src/sari/mcp/stabilization/session_keys.py`
+- Modify: `src/sari/mcp/session.py`
+- Modify: `src/sari/mcp/tools/read.py`
+- Modify: `src/sari/mcp/tools/search.py`
+- Test:
+  - `tests/test_unified_read_stabilization_metrics.py`
+  - add: `tests/test_session_key_resolver.py`
+
+**Steps:**
+1. Add server-issued `connection_id` UUID per MCP session.
+2. Resolve key priority:
+   - `ws:<workspace_hash>:sid:<session_id>`
+   - fallback: `ws:<workspace_hash>:conn:<connection_id>`
+3. Keep `client_connection_id` telemetry-only (never policy key input).
+4. Add `STRICT_SESSION_ID` config path (default OFF).
+5. Keep runtime state in-memory and analytics state as separate sink contract.
+
+---
+
+### Task 11: Deterministic Reason Codes + Registry
+
+**Files:**
+- Create: `src/sari/mcp/stabilization/reason_codes.py`
+- Create: `src/sari/mcp/stabilization/reason_registry.json`
+- Modify: `src/sari/mcp/tools/read.py`
+- Modify: `src/sari/mcp/tools/search.py`
+- Test:
+  - add: `tests/test_stabilization_reason_codes.py`
+
+**Steps:**
+1. Define typed reason enum in code:
+   - `SEARCH_FIRST_REQUIRED`
+   - `SEARCH_REF_REQUIRED`
+   - `CANDIDATE_REF_REQUIRED`
+   - `BUDGET_SOFT_LIMIT`
+   - `BUDGET_HARD_LIMIT`
+   - `LOW_RELEVANCE_OUTSIDE_TOPK`
+   - `PREVIEW_DEGRADED`
+2. Expose deterministic `reason_codes[]` in `meta.stabilization`.
+3. Keep JSON registry as UX metadata only (description/severity/next-calls template).
+4. Add tests to guarantee enum stability and deterministic output.
+
+---
+
+### Task 12: Search Candidate/Bundle Issuance + Next Calls
+
+**Files:**
+- Modify: `src/sari/mcp/tools/search.py`
+- Modify: `src/sari/mcp/stabilization/aggregation.py`
+- Test:
+  - add: `tests/test_search_ref_pipeline.py`
+
+**Steps:**
+1. Issue stable `candidate_id` per result and optional `bundle_id` per response.
+2. Add `next_calls[]` in search response with executable args.
+3. Persist top-K candidate refs in runtime state for read gate checks.
+4. Ensure determinism for ids and next-calls ordering.
+
+---
+
+### Task 13: Enforced Read Gate + Precision Exception
+
+**Files:**
+- Modify: `src/sari/mcp/tools/read.py`
+- Modify: `src/sari/mcp/stabilization/relevance_guard.py`
+- Modify: `src/sari/mcp/stabilization/budget_guard.py`
+- Test:
+  - `tests/test_unified_read_budget_guard.py`
+  - `tests/test_unified_read_relevance_guard.py`
+  - add: `tests/test_read_enforce_gate.py`
+
+**Steps:**
+1. Set default policy to `enforce`:
+   - block read without valid search ref.
+2. Allow exceptions only for:
+   - search-issued `next_calls`/valid ref reads
+   - precision read (`path+start_line+end_line`) within cap
+3. Add hard cap `max_range_lines=200` (configurable default).
+4. On block, return deterministic reasons and actionable `next_calls`.
+
+---
+
+### Task 14: Async Analytics Queue (Bounded, Non-Blocking)
+
+**Files:**
+- Create: `src/sari/mcp/stabilization/analytics_queue.py`
+- Modify: `src/sari/mcp/stabilization/session_state.py`
+- Test:
+  - add: `tests/test_stabilization_analytics_queue.py`
+
+**Steps:**
+1. Implement bounded queue: `maxsize=2000`.
+2. Enqueue via non-blocking `put_nowait`.
+3. Overflow policy: `drop_newest`.
+4. Track `drop_count_by_type[event_type]`.
+5. Flush analytics in writer thread/task only (no hot-path I/O).
+
+---
+
 ## Execution Checklist
 
-- [ ] Task 1 complete: registry + schema validated
-- [ ] Task 2 complete: unified validation/routing + invalid-arg tests
-- [ ] Task 3 complete: session metrics wired + deterministic tests
-- [ ] Task 4 complete: budget guard soft/hard limits + tests
-- [ ] Task 5 complete: relevance guard soft warnings + alternatives + tests
-- [ ] Task 6 complete: aggregation v1-lite + deterministic tests
-- [ ] Task 7 complete: `meta.stabilization` contract regression green
-- [ ] Task 8 complete: legacy wrappers preserved + deprecation flags
-- [ ] Task 9 complete: lint + targeted tests + full regression green
-- [ ] Final doc sync check between design and implementation plan
+- [x] Task 1 complete: registry + schema validated
+- [x] Task 2 complete: unified validation/routing + invalid-arg tests
+- [x] Task 3 complete: session metrics wired + deterministic tests
+- [x] Task 4 complete: budget guard soft/hard limits + tests
+- [x] Task 5 complete: relevance guard soft warnings + alternatives + tests
+- [x] Task 6 complete: aggregation v1-lite + deterministic tests
+- [x] Task 7 complete: `meta.stabilization` contract regression green
+- [x] Task 8 complete: legacy wrappers preserved + deprecation flags
+- [x] Task 9 complete: lint + targeted tests + full regression green
+- [x] Task 10 complete: session key resolver + runtime/analytics split
+- [x] Task 11 complete: deterministic reason codes + registry
+- [x] Task 12 complete: search candidate/bundle + next_calls
+- [x] Task 13 complete: enforced read gate + precision exception cap(200)
+- [x] Task 14 complete: async analytics queue + drop metrics
+- [x] Final doc sync check between design and implementation plan

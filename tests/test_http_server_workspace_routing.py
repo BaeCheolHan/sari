@@ -64,7 +64,7 @@ def test_search_returns_400_when_query_missing():
     assert "missing q" in resp["error"]
 
 
-def test_search_uses_db_search_v2_and_returns_hits():
+def test_search_uses_db_search_and_returns_hits():
     class _Hit:
         def __init__(self, repo, path, score, snippet):
             self.repo = repo
@@ -80,13 +80,13 @@ def test_search_uses_db_search_v2_and_returns_hits():
 
     captured = {}
 
-    def _search_v2(opts):
+    def _search(opts):
         captured["query"] = opts.query
         captured["limit"] = opts.limit
         captured["root_ids"] = opts.root_ids
         return ([_Hit("repo1", "a.py", 1.0, "x")], {"total": 1})
 
-    handler.db = SimpleNamespace(search_v2=_search_v2, engine=None)
+    handler.db = SimpleNamespace(search=_search, engine=None)
 
     resp = Handler._handle_get(handler, "/search", {"q": ["hello"], "limit": ["5"]})
     assert resp["ok"] is True

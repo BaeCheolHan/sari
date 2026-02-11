@@ -12,7 +12,7 @@ class StubDB:
         self._hits = hits
         self._search_meta = search_meta or {"total": len(hits)}
 
-    def search_v2(self, _opts):
+    def search(self, _opts):
         return self._hits, self._search_meta
 
     def read_file(self, _path: str):
@@ -47,11 +47,12 @@ def test_read_response_includes_metrics_and_updates_deterministically(tmp_path, 
     file_path = tmp_path / "sample.py"
     file_path.write_text("line1\nline2\nline3\n", encoding="utf-8")
 
-    hits = [SearchHit(repo="repo1", path="x.py", score=1.0, snippet="hit")]
+    hits = [SearchHit(repo="repo1", path=str(file_path), score=1.0, snippet="hit")]
     db = StubDB(file_content="line1\nline2\nline3\n", hits=hits, search_meta={"total": 1})
 
-    execute_search({"query": "line", "search_type": "code", "limit": 1}, db, None, [str(tmp_path)])
-    read_result = execute_read({"mode": "file", "target": str(file_path)}, db, [str(tmp_path)])
+    search_result = execute_search({"query": "line", "search_type": "code", "limit": 1}, db, None, [str(tmp_path)])
+    candidate_id = _json_payload(search_result)["matches"][0]["candidate_id"]
+    read_result = execute_read({"mode": "file", "target": str(file_path), "candidate_id": candidate_id}, db, [str(tmp_path)])
 
     payload = _json_payload(read_result)
     snapshot = payload["meta"]["stabilization"]["metrics_snapshot"]
@@ -78,12 +79,13 @@ def test_metrics_are_isolated_per_roots_session(tmp_path, monkeypatch):
     file_a.write_text("alpha\nbeta\n", encoding="utf-8")
     file_b.write_text("gamma\n", encoding="utf-8")
 
-    db_a = StubDB(file_content="alpha\nbeta\n", hits=[SearchHit(repo="ra", path="a.py", score=1.0, snippet="alpha")], search_meta={"total": 1})
+    db_a = StubDB(file_content="alpha\nbeta\n", hits=[SearchHit(repo="ra", path=str(file_a), score=1.0, snippet="alpha")], search_meta={"total": 1})
     db_b = StubDB(file_content="gamma\n", hits=[], search_meta={"total": 0})
 
-    execute_search({"query": "alpha", "search_type": "code", "limit": 1}, db_a, None, [str(root_a)])
-    read_a = execute_read({"mode": "file", "target": str(file_a)}, db_a, [str(root_a)])
-    read_b = execute_read({"mode": "file", "target": str(file_b)}, db_b, [str(root_b)])
+    search_a = execute_search({"query": "alpha", "search_type": "code", "limit": 1}, db_a, None, [str(root_a)])
+    candidate_id = _json_payload(search_a)["matches"][0]["candidate_id"]
+    read_a = execute_read({"mode": "file", "target": str(file_a), "candidate_id": candidate_id}, db_a, [str(root_a)])
+    read_b = execute_read({"mode": "file", "target": str(file_b), "offset": 0, "limit": 1}, db_b, [str(root_b)])
 
     snapshot_a = _json_payload(read_a)["meta"]["stabilization"]["metrics_snapshot"]
     snapshot_b = _json_payload(read_b)["meta"]["stabilization"]["metrics_snapshot"]

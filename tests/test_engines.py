@@ -26,6 +26,15 @@ def test_engine_router():
     assert results[0]["score"] == 0.9
 
 
+def test_engine_router_passes_commit_flag():
+    engine1 = MagicMock()
+    router = EngineRouter({"root1": engine1})
+    router.upsert_documents([{"doc_id": "root1/f1.py"}], commit=False)
+    router.delete_documents(["root1/f1.py"], commit=False)
+    assert engine1.upsert_documents.call_args.kwargs.get("commit") is False
+    assert engine1.delete_documents.call_args.kwargs.get("commit") is False
+
+
 def test_engine_router_ignores_non_mapping_docs():
     engine1 = MagicMock()
     router = EngineRouter({"root1": engine1})
@@ -135,3 +144,11 @@ def test_tantivy_upsert_ignores_non_mapping_docs():
 
     assert ("path", "root1/file.py") in fake_writer.deleted
     assert len(fake_writer.added) == 1
+
+
+def test_tantivy_version_support_rule_is_forward_compatible():
+    engine = TantivyEngine.__new__(TantivyEngine)
+    assert engine._is_supported_tantivy_version("0.25.0") is True
+    assert engine._is_supported_tantivy_version("0.26.1") is True
+    assert engine._is_supported_tantivy_version("1.0.0") is True
+    assert engine._is_supported_tantivy_version("0.24.9") is False

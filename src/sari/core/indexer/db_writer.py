@@ -172,12 +172,14 @@ class DBWriter:
             self._in_flight = max(0, self._in_flight - len(tasks))
 
     def _process_batch(self, cur: object, tasks: List[DbTask]) -> None:
+        pending_engine_upserts: List[dict[str, object]] = []
+        pending_engine_deletes: List[str] = []
+        engine = getattr(self.db, "engine", None)
         for t in tasks:
             if t.kind == "upsert_files" and t.rows:
                 self.db.upsert_files_tx(cur, t.rows)
-                if t.engine_docs and hasattr(
-                        self.db, "engine") and self.db.engine:
-                    self.db.engine.upsert_documents(t.engine_docs)
+                if t.engine_docs and engine:
+                    pending_engine_upserts.extend(t.engine_docs)
             elif t.kind == "upsert_files_staging" and t.rows:
                 self.db.upsert_files_staging(cur, t.rows)
             elif t.kind == "staging_merge":
@@ -186,9 +188,26 @@ class DBWriter:
                 self.db.update_last_seen_tx(cur, t.paths, int(time.time()))
             elif t.kind == "delete_path" and t.path:
                 self.db.delete_path_tx(cur, t.path)
-                if t.engine_deletes and hasattr(
-                        self.db, "engine") and self.db.engine:
-                    self.db.engine.delete_documents(t.engine_deletes)
+                if t.engine_deletes and engine:
+                    pending_engine_deletes.extend(t.engine_deletes)
+
+        if not engine:
+            return
+        has_pending = False
+        if pending_engine_upserts:
+            try:
+                engine.upsert_documents(pending_engine_upserts, commit=False)
+            except TypeError:
+                engine.upsert_documents(pending_engine_upserts)
+            has_pending = True
+        if pending_engine_deletes:
+            try:
+                engine.delete_documents(pending_engine_deletes, commit=False)
+            except TypeError:
+                engine.delete_documents(pending_engine_deletes)
+            has_pending = True
+        if has_pending and hasattr(engine, "commit"):
+            engine.commit()
 
     def get_performance_metrics(self) -> Dict[str, float]:
         return {

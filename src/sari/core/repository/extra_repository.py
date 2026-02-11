@@ -29,27 +29,59 @@ class SnippetRepository(BaseRepository):
         rows_list = list(rows)
         if not rows_list:
             return 0
-        normalized: List[object] = []
+        
+        count = 0
         for r in rows_list:
-            normalized.append(self._normalize_snippet_row(r))
-        cur.executemany(
-            """
-            INSERT INTO snippets(tag, path, root_id, start_line, end_line, content, content_hash, anchor_before, anchor_after, repo, note, commit_hash, created_ts, updated_ts, metadata_json)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            ON CONFLICT(tag, root_id, path, start_line, end_line) DO UPDATE SET
-              content=excluded.content,
-              content_hash=excluded.content_hash,
-              anchor_before=excluded.anchor_before,
-              anchor_after=excluded.anchor_after,
-              repo=excluded.repo,
-              note=excluded.note,
-              commit_hash=excluded.commit_hash,
-              updated_ts=excluded.updated_ts,
-              metadata_json=excluded.metadata_json;
-            """,
-            normalized,
-        )
-        return len(normalized)
+            norm = self._normalize_snippet_row(r)
+            # tag, path, root_id, start_line, end_line, content, content_hash, anchor_before, anchor_after, repo, note, commit_hash, created_ts, updated_ts, metadata_json
+            tag, path, root_id, start, end, content, c_hash, a_before, a_after, repo, note, commit, c_ts, u_ts, meta = norm
+            
+            # 1. Try to find an existing snippet that is "similar"
+            # Same tag, path, and root_id. If content_hash matches, it's definitely the same.
+            # If not, if the position is very close, it's likely a shift.
+            existing = cur.execute(
+                "SELECT id, start_line, end_line, content_hash FROM snippets WHERE tag = ? AND path = ? AND root_id = ?",
+                (tag, path, root_id)
+            ).fetchone()
+            
+            if existing:
+                eid, e_start, e_end, e_hash = existing
+                is_same = (e_hash == c_hash) or (abs(e_start - start) < 50) # Heuristic for shifting
+                
+                if is_same:
+                    cur.execute(
+                        """
+                        UPDATE snippets SET
+                          start_line=?, end_line=?, content=?, content_hash=?, anchor_before=?, anchor_after=?,
+                          repo=?, note=?, commit_hash=?, updated_ts=?, metadata_json=?
+                        WHERE id = ?
+                        """,
+                        (start, end, content, c_hash, a_before, a_after, repo, note, commit, u_ts, meta, eid)
+                    )
+                    count += 1
+                    continue
+
+            # 2. Fallback to standard insert (or replace if exact conflict)
+            cur.execute(
+                """
+                INSERT INTO snippets(tag, path, root_id, start_line, end_line, content, content_hash, anchor_before, anchor_after, repo, note, commit_hash, created_ts, updated_ts, metadata_json)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(tag, root_id, path, start_line, end_line) DO UPDATE SET
+                  content=excluded.content,
+                  content_hash=excluded.content_hash,
+                  anchor_before=excluded.anchor_before,
+                  anchor_after=excluded.anchor_after,
+                  repo=excluded.repo,
+                  note=excluded.note,
+                  commit_hash=excluded.commit_hash,
+                  updated_ts=excluded.updated_ts,
+                  metadata_json=excluded.metadata_json;
+                """,
+                norm,
+            )
+            count += 1
+            
+        return count
 
     def _normalize_snippet_row(self, row: object) -> tuple:
         tool_cols = [
@@ -288,9 +320,13 @@ class ContextRepository(BaseRepository):
         if not query:
             return []
         lq = f"%{query}%"
+        # Use JSON-aware searching for tags to avoid matching JSON structural characters
         sql = """
             SELECT id, topic, content, tags_json, related_files_json, source, valid_from, valid_until, deprecated, created_ts, updated_ts
-            FROM contexts WHERE (topic LIKE ? OR content LIKE ? OR tags_json LIKE ?)
+            FROM contexts 
+            WHERE (topic LIKE ? OR content LIKE ? OR EXISTS (
+                SELECT 1 FROM json_each(contexts.tags_json) WHERE value LIKE ?
+            ))
         """
         params = [lq, lq, lq]
         if as_of:

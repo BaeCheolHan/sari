@@ -1,5 +1,6 @@
 import re
 import time
+import unicodedata
 from pathlib import Path
 from typing import List
 
@@ -12,9 +13,16 @@ def glob_to_like(pattern: str) -> str:
     # Better glob-to-like conversion
     res = pattern.replace("**", "%").replace("*", "%").replace("?", "_")
 
-    if not ("%" in res or "_" in res):
-        res = f"%{res}%"  # Contains if no wildcards
-
+    # If no wildcards were present in the ORIGINAL pattern, 
+    # we don't force-wrap it in %. Let the caller handle partial vs exact.
+    # However, for 1st-pass filtering, we often WANT a partial match.
+    # We change it to only wrap if it doesn't look like an absolute or explicit relative path.
+    if not ("*" in pattern or "?" in pattern):
+        # If it's a simple name without slashes, we can keep the "contains" behavior,
+        # but for paths with slashes, we should be more precise.
+        if "/" not in pattern:
+            res = f"%{res}%"
+    
     # Ensure it starts/ends correctly for directory patterns
     if pattern.endswith("/**"):
         res = res.rstrip("%") + "%"
@@ -77,18 +85,30 @@ def count_matches(
         except re.error:
             return 0
     else:
-        if case_sensitive:
-            return content.count(query)
-        # Use regex for case-insensitive count to better handle unicode
-        try:
-            return len(re.findall(re.escape(query), content, re.IGNORECASE))
-        except Exception:
-            # Fallback to simple count if regex fails for any reason
-            return content.lower().count(query.lower())
+        normalized_query = unicodedata.normalize("NFKC", query)
+        normalized_content = unicodedata.normalize("NFKC", content)
+        if not case_sensitive:
+            normalized_query = normalized_query.casefold()
+            normalized_content = normalized_content.casefold()
+        
+        # Count overlapping matches
+        count = 0
+        start = 0
+        while True:
+            idx = normalized_content.find(normalized_query, start)
+            if idx == -1:
+                break
+            count += 1
+            start = idx + 1  # Move forward by 1 to catch overlaps
+        return count
 
 
-def snippet_around(content: object, terms: List[str], max_lines: int,
-                   highlight: bool = True) -> str:
+def snippet_around(
+        content: object,
+        terms: List[str],
+        max_lines: int,
+        highlight: bool = True,
+        case_sensitive: bool = False) -> str:
     if not content:
         return ""
     if isinstance(content, (bytes, bytearray)):
@@ -102,8 +122,8 @@ def snippet_around(content: object, terms: List[str], max_lines: int,
     if not lines:
         return ""
 
-    lower_lines = [line_text.lower() for line_text in lines]
-    lower_terms = [t.lower() for t in terms if t.strip()]
+    lower_lines = [line_text if case_sensitive else line_text.lower() for line_text in lines]
+    lower_terms = [t if case_sensitive else t.lower() for t in terms if t.strip()]
 
     if not lower_terms:
         return "\n".join(f"L{i+1}: {ln}" for i,
@@ -140,29 +160,35 @@ def snippet_around(content: object, terms: List[str], max_lines: int,
     best_window_score = current_score
     best_start = 0
 
-    for i in range(1, len(lines) - window_size + 1):
-        current_score = current_score - \
-            line_scores[i - 1] + line_scores[i + window_size - 1]
+    for i in range(len(lines) - window_size):
+        # Move window: subtract line at 'i', add line at 'i + window_size'
+        current_score = current_score - line_scores[i] + line_scores[i + window_size]
         if current_score > best_window_score:
             best_window_score = current_score
-            best_start = i
+            best_start = i + 1
 
     # Extract window
     start_idx = best_start
     end_idx = start_idx + window_size
 
     out_lines = []
-    highlight_patterns = [
-        re.compile(
-            re.escape(t),
-            re.IGNORECASE) for t in terms if t.strip()]
+    ordered_terms: list[str] = []
+    seen_terms: set[str] = set()
+    for term in sorted((t for t in terms if t.strip()), key=len, reverse=True):
+        norm = term if case_sensitive else term.lower()
+        if norm in seen_terms:
+            continue
+        seen_terms.add(norm)
+        ordered_terms.append(term)
+    highlight_pattern = None
+    if ordered_terms:
+        joined = "|".join(re.escape(t) for t in ordered_terms)
+        highlight_pattern = re.compile(joined, 0 if case_sensitive else re.IGNORECASE)
 
     for i in range(start_idx, end_idx):
         line = lines[i]
-        if highlight:
-            for pat in highlight_patterns:
-                # Use backreference to preserve case
-                line = pat.sub(r">>>\g<0><<<", line)
+        if highlight and highlight_pattern is not None:
+            line = highlight_pattern.sub(lambda m: f">>>{m.group(0)}<<<", line)
 
         out_lines.append(f"L{i+1}: {line}")
 

@@ -4,7 +4,7 @@ from sari.mcp.tools.search import execute_search
 from sari.mcp.tools._util import ErrorCode
 
 class MockDB:
-    def search_v2(self, opts):
+    def search(self, opts):
         return [], {'total': 0}
 
 @pytest.fixture
@@ -41,3 +41,11 @@ def test_search_v3_invalid_mode_params(db, roots):
     assert 'error' in result
     assert result['error']['code'] == ErrorCode.INVALID_ARGS.value
     assert 'kinds' in result['error']['message']
+
+
+def test_search_rejects_non_object_args(roots):
+    os.environ["SARI_FORMAT"] = "json"
+    db = MockDB()
+    result = execute_search(["bad-args"], db, None, roots)
+    assert result.get("isError") is True
+    assert result["error"]["code"] == ErrorCode.INVALID_ARGS.value

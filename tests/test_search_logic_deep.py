@@ -18,7 +18,7 @@ def test_search_ranking_relevance(db: LocalSearchDB):
     
     # 2. 검색 실행
     opts = SearchOptions(query="find_me", limit=10)
-    hits, meta = engine.search_v2(opts)
+    hits, meta = engine.search(opts)
     
     # 3. 결과 검증
     assert len(hits) > 0
@@ -40,13 +40,13 @@ def test_search_file_type_filtering(db: LocalSearchDB):
     
     # Python 파일만 검색
     opts = SearchOptions(query="1", file_types=["py"])
-    hits, _ = engine.search_v2(opts)
+    hits, _ = engine.search(opts)
     assert len(hits) == 1
     assert hits[0].path.endswith(".py")
 
     # CSS 파일만 검색
     opts = SearchOptions(query="body", file_types=["css"])
-    hits, _ = engine.search_v2(opts)
+    hits, _ = engine.search(opts)
     assert len(hits) == 1
     assert hits[0].path.endswith(".css")
 
@@ -65,6 +65,6 @@ def test_search_path_pattern_matching(db: LocalSearchDB):
     
     # 'src' 폴더 내부만 검색
     opts = SearchOptions(query="code", path_pattern="src/**")
-    hits, _ = engine.search_v2(opts)
+    hits, _ = engine.search(opts)
     assert len(hits) == 1
     assert "src/" in hits[0].path

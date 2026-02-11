@@ -39,7 +39,7 @@ class TantivyEngine:
         if tantivy:
             ver = str(getattr(tantivy, "__version__", "") or "")
             if not self._is_supported_tantivy_version(ver):
-                self._disabled_reason = f"Unsupported tantivy version: {ver} (required 0.25.x)"
+                self._disabled_reason = f"Unsupported tantivy version: {ver} (required 0.25.x or newer)"
                 if self.logger:
                     try:
                         self.logger.error(self._disabled_reason)
@@ -54,7 +54,7 @@ class TantivyEngine:
         if not m:
             return False
         major, minor = int(m.group(1)), int(m.group(2))
-        return major == 0 and minor == 25
+        return (major > 0) or (major == 0 and minor >= 25)
 
     def _setup_schema(self):
         schema_builder = tantivy.SchemaBuilder()
@@ -99,7 +99,7 @@ class TantivyEngine:
                         f"Critical failure re-creating Tantivy index: {e2}")
                 raise
 
-    def upsert_documents(self, docs: list[Mapping[str, object] | object]) -> None:
+    def upsert_documents(self, docs: list[Mapping[str, object] | object], commit: bool = True) -> None:
         if not tantivy or not self._index:
             return
 
@@ -130,11 +130,12 @@ class TantivyEngine:
                     mtime=d.get("mtime", 0),
                     size=d.get("size", 0)
                 ))
-            writer.commit()
+            if commit:
+                writer.commit()
             # Wait for merge to complete in a real env, but for local tool
             # commit is enough
 
-    def delete_documents(self, doc_ids: list[str]) -> None:
+    def delete_documents(self, doc_ids: list[str], commit: bool = True) -> None:
         if not tantivy or not self._index:
             return
         with self._writer_lock:
@@ -146,7 +147,16 @@ class TantivyEngine:
                     writer.delete_documents("path", doc_id)
                 else:
                     writer.delete_term("path", doc_id)
-            writer.commit()
+            if commit:
+                writer.commit()
+
+    def commit(self) -> None:
+        """Explicitly commit pending changes to the Tantivy index."""
+        if not tantivy:
+            return
+        with self._writer_lock:
+            if self._writer is not None:
+                self._writer.commit()
 
     def close(self) -> None:
         if not tantivy:
@@ -164,10 +174,14 @@ class TantivyEngine:
     def _escape_query(self, text: str) -> str:
         if text is None:
             return ""
+        raw = str(text)
+        # Preserve advanced query syntax when user explicitly uses field/group operators.
+        if re.search(r"[\(\)]|\b(AND|OR|NOT|NEAR)\b|\w+\s*:", raw, flags=re.IGNORECASE):
+            return raw
         # Escape Tantivy/Lucene special chars
         specials = r'+-&&||!(){}[]^"~*?:\\/'
         out = []
-        for ch in text:
+        for ch in raw:
             if ch in specials:
                 out.append("\\" + ch)
             else:

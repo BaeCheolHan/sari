@@ -71,7 +71,7 @@ def test_sqlite_search_file_type_filter_applied_in_repository(db):
     db._write.commit()
 
     opts = SearchOptions(query="code", file_types=["py"], limit=20, root_ids=[rid])
-    hits, _meta = db.search_sqlite_v2(opts)
+    hits, _meta = db._search_sqlite(opts)
 
     assert len(hits) == 1
     assert hits[0].path.endswith("main.py")
@@ -160,9 +160,17 @@ def test_sqlite_search_path_and_exclude_filters_applied_in_repository(db):
         limit=20,
         root_ids=[rid],
     )
-    hits, _meta = db.search_sqlite_v2(opts)
+    hits, _meta = db._search_sqlite(opts)
     paths = [hit.path for hit in hits]
 
     assert f"{rid}/src/logic.py" in paths
     assert f"{rid}/src/legacy/old.py" not in paths
     assert all(path.startswith(f"{rid}/src/") for path in paths)
+
+
+def test_process_search_results_tolerates_non_numeric_size(db, monkeypatch):
+    repo = db.search_repo
+    rows = [("rid/a.py", "repo", 1, "1024KB", "token", "a.py", "", 0.0)]
+    hits = repo._process_search_results(rows, "token")
+    assert len(hits) == 1
+    assert hits[0].size == 0

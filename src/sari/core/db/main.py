@@ -2,6 +2,7 @@ import sqlite3
 import time
 import logging
 import os
+import re
 import zlib
 import threading
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -24,11 +25,13 @@ class LocalSearchDB:
     def __init__(self,
                  db_path: str,
                  logger_obj: Optional[logging.Logger] = None,
+                 bind_proxy: bool = True,
                  **kwargs):
         """
         Args:
             db_path: SQLite 데이터베이스 파일 경로
             logger_obj: 로거 객체 (기본값: sari.db)
+            bind_proxy: 전역 db_proxy를 이 DB로 초기화할지 여부
             kwargs: 추가 DB 설정 (journal_mode 등)
         """
         self.db_path = db_path
@@ -47,7 +50,8 @@ class LocalSearchDB:
                 'synchronous': 1,     # NORMAL (안전성과 성능의 균형)
                 'busy_timeout': 15000  # Lock 대기 시간
             })
-            db_proxy.initialize(self.db)
+            if bind_proxy:
+                db_proxy.initialize(self.db)
             self.db.connect()
             init_schema(self.db.connection())
             self._init_mem_staging()
@@ -63,19 +67,20 @@ class LocalSearchDB:
         대량 삽입 성능을 위해 인메모리 스테이징(staging) 테이블을 초기화합니다.
         메인 디스크 DB에 쓰기 전, 메모리 DB(Attached DB)에 먼저 기록합니다.
         """
-        try:
-            conn = self.db.connection()
-            dbs = [name for _, name, *_ in conn.execute("PRAGMA database_list").fetchall()]
-            if "staging_mem" not in dbs:
-                conn.execute("ATTACH DATABASE ':memory:' AS staging_mem")
-            if force:
-                conn.execute("DROP TABLE IF EXISTS staging_mem.files_temp")
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS staging_mem.files_temp AS SELECT * FROM main.files WHERE 0")
-        except Exception as e:
-            self.logger.error(
-                "Failed to init mem staging: %s", e, exc_info=True)
-            raise
+        with self._lock:
+            try:
+                conn = self.db.connection()
+                dbs = [name for _, name, *_ in conn.execute("PRAGMA database_list").fetchall()]
+                if "staging_mem" not in dbs:
+                    conn.execute("ATTACH DATABASE ':memory:' AS staging_mem")
+                if force:
+                    conn.execute("DROP TABLE IF EXISTS staging_mem.files_temp")
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS staging_mem.files_temp AS SELECT * FROM main.files WHERE 0")
+            except Exception as e:
+                self.logger.error(
+                    "Failed to init mem staging: %s", e, exc_info=True)
+                raise
 
     def _ensure_staging(self):
         try:
@@ -93,14 +98,21 @@ class LocalSearchDB:
             real_path: str,
             **kwargs):
         """워크스페이스 루트 정보를 갱신하거나 삽입합니다."""
+        now = int(time.time())
+        label = kwargs.get("label", PathUtils.normalize(root_path).split("/")[-1])
         with self.db.atomic():
-            Root.insert(root_id=root_id,
-                        root_path=PathUtils.normalize(root_path),
-                        real_path=PathUtils.normalize(real_path),
-                        label=kwargs.get("label",
-                                         PathUtils.normalize(root_path).split("/")[-1]),
-                        updated_ts=int(time.time()),
-                        created_ts=int(time.time())).on_conflict_replace().execute()
+            Root.insert(
+                root_id=root_id,
+                root_path=PathUtils.normalize(root_path),
+                real_path=PathUtils.normalize(real_path),
+                label=label,
+                updated_ts=now,
+                created_ts=now
+            ).on_conflict(
+                conflict_target=[Root.root_id],
+                preserve=[Root.root_path, Root.real_path, Root.label, Root.updated_ts],
+                update={}
+            ).execute()
 
     def ensure_root(self, root_id: str, path: str):
         self.upsert_root(root_id, path, path)
@@ -143,7 +155,7 @@ class LocalSearchDB:
                     continue
                 processed = {
                     "path": PathUtils.normalize(path),
-                    "rel_path": data.get("rel_path") or os.path.basename(str(path)),
+                    "rel_path": data.get("rel_path") or re.split(r'[\\/]', str(path))[-1],
                     "root_id": data.get("root_id") or "root",
                     "repo": data.get("repo") or "",
                     "mtime": int(data.get("mtime") or now),
@@ -218,7 +230,8 @@ class LocalSearchDB:
                 "UPDATE roots SET file_count = (SELECT COUNT(1) FROM files WHERE files.root_id = roots.root_id AND deleted_ts = 0)")
             conn.execute(
                 "UPDATE roots SET symbol_count = (SELECT COUNT(1) FROM symbols WHERE symbols.root_id = roots.root_id)")
-            conn.commit()
+            if not getattr(conn, "in_transaction", False):
+                conn.commit()
         except Exception as e:
             self.logger.error("Failed to update statistics: %s", e)
 
@@ -316,8 +329,20 @@ class LocalSearchDB:
     def read_file(self, path: str) -> Optional[str]:
         """특정 경로의 파일 내용을 DB에서 읽어 반환합니다 (압축 해제 포함)."""
         # Critical: let OperationalError (corruption) bubble up!
-        db_path = self._resolve_db_path(path)
-        row = File.select(File.content).where(File.path == db_path).first()
+        normalized_path = PathUtils.normalize(path)
+        db_path = self._resolve_db_path(normalized_path)
+        candidates: list[str] = []
+        for candidate in (normalized_path, db_path):
+            candidate = str(candidate or "").strip()
+            if candidate and candidate not in candidates:
+                candidates.append(candidate)
+        if not candidates:
+            return None
+        row = (
+            File.select(File.content)
+            .where((File.path.in_(candidates)) | (File.rel_path.in_(candidates)))
+            .first()
+        )
         if not row:
             return None
         content = row.content
@@ -329,8 +354,12 @@ class LocalSearchDB:
                     "Decompression failed for %s: %s", db_path, de)
                 return None
         if isinstance(content, bytes):
-            return content.decode("utf-8", errors="ignore")
-        return str(content)
+            try:
+                return content.decode("utf-8")
+            except UnicodeDecodeError:
+                # Lossless one-byte mapping fallback for binary payloads.
+                return content.decode("latin-1")
+        return str(content) if content is not None else None
 
     def search_files(self, query: str, limit: int = 50) -> List[Dict]:
         """파일 경로 또는 내용을 기준으로 단순 검색을 수행합니다."""
@@ -417,12 +446,46 @@ class LocalSearchDB:
 
     def prune_stale_data(self, root_id: str, active_paths: List[str]):
         """더 이상 존재하지 않는 파일 데이터를 DB에서 정리(제거)합니다."""
-        with self.db.atomic():
-            if active_paths:
-                File.delete().where(
-                    (File.root == root_id) & (
-                        File.path.not_in(active_paths))).execute()
-            else:
+        if active_paths:
+            conn = self.db.connection()
+            try:
+                # Use a temp table to efficiently find stale paths
+                conn.execute("CREATE TEMP TABLE IF NOT EXISTS _active_paths(path TEXT PRIMARY KEY)")
+                conn.execute("DELETE FROM _active_paths")
+                
+                chunk_size = 1000
+                for i in range(0, len(active_paths), chunk_size):
+                    chunk = [(p,) for p in active_paths[i:i + chunk_size] if p]
+                    if not chunk:
+                        continue
+                    conn.executemany("INSERT OR IGNORE INTO _active_paths(path) VALUES (?)", chunk)
+                
+                # Delete in smaller batches to avoid long locks and WAL explosion
+                # Identify paths to delete first
+                stale_paths = [
+                    r[0] for r in conn.execute(
+                        "SELECT path FROM files WHERE root_id = ? AND path NOT IN (SELECT path FROM _active_paths)",
+                        (root_id,)
+                    ).fetchall()
+                ]
+                
+                if stale_paths:
+                    for i in range(0, len(stale_paths), chunk_size):
+                        batch = stale_paths[i:i + chunk_size]
+                        with self.db.atomic():
+                            (File.delete()
+                                 .where(File.path << batch)
+                                 .execute())
+                
+                conn.execute("DELETE FROM _active_paths")
+            except Exception as e:
+                self.logger.error("Failed to prune stale data: %s", e)
+                raise
+        else:
+            # Full cleanup for a root - also better in batches if possible, 
+            # but usually for a single root it's manageable. 
+            # Still, we use atomic to be safe.
+            with self.db.atomic():
                 File.delete().where(File.root == root_id).execute()
 
     def delete_path_tx(self, cur, path: str):
@@ -441,11 +504,13 @@ class LocalSearchDB:
             s.model_dump() for s in self._symbol_repo().search_symbols(
                 query, limit=limit, **kwargs)]
 
-    def search_v2(self, opts: SearchOptions):
-        """V2 검색 인터페이스 (엔진 위임 또는 저장소 직접 검색)."""
-        if self.engine and hasattr(self.engine, "search_v2"):
-            return self.engine.search_v2(opts)
-        return self._search_repo().search_v2(opts)
+    def search(self, opts: SearchOptions):
+        """Canonical search interface (engine delegated or repository fallback)."""
+        if self.engine:
+            if hasattr(self.engine, "search") and callable(getattr(self.engine, "search")):
+                return self.engine.search(opts)
+        repo = self._search_repo()
+        return repo.search(opts)
 
     def repo_candidates(self, q: str, limit: int = 3,
                         root_ids: Optional[List[str]] = None) -> List[Dict[str, object]]:
@@ -454,9 +519,10 @@ class LocalSearchDB:
                 q, limit=limit, root_ids=root_ids)
         return self._search_repo().repo_candidates(q, limit=limit, root_ids=root_ids)
 
-    def search_sqlite_v2(self, opts: SearchOptions):
+    def _search_sqlite(self, opts: SearchOptions):
         """SQLite-only fallback search path (engine bypass)."""
-        return self._search_repo().search_v2(opts)
+        repo = self._search_repo()
+        return repo.search(opts)
 
     def repo_candidates_sqlite(self, q: str, limit: int = 3,
                                root_ids: Optional[List[str]] = None) -> List[Dict[str, object]]:
@@ -468,16 +534,25 @@ class LocalSearchDB:
         sql = str(sql or "").strip()
         if not sql:
             return sql, []
-        has_where = " where " in sql.lower()
+        lower_sql = sql.lower()
+        insert_pos = len(sql)
+        for token in (" group by ", " order by ", " limit ", " offset "):
+            idx = lower_sql.find(token)
+            if idx != -1:
+                insert_pos = min(insert_pos, idx)
+        head = sql[:insert_pos].rstrip()
+        tail = sql[insert_pos:].lstrip()
+        has_where = re.search(r"\bwhere\b", head, flags=re.IGNORECASE) is not None
         params: List[object] = []
         if root_id:
             if has_where:
-                sql += " AND root_id = ?"
+                head += " AND root_id = ?"
             else:
-                sql += " WHERE root_id = ?"
+                head += " WHERE root_id = ?"
             params.append(str(root_id))
         elif not has_where:
-            sql += " WHERE 1=1"
+            head += " WHERE 1=1"
+        sql = head if not tail else f"{head} {tail}"
         return sql, params
 
     def count_failed_tasks(self) -> Tuple[int, int]:
@@ -503,9 +578,12 @@ class LocalSearchDB:
         if not new_path or not os.path.exists(new_path):
             return
         conn = self.db.connection()
+        attached = False
         try:
             conn.execute("ATTACH DATABASE ? AS snapshot", (new_path,))
-            with self.db.atomic():
+            attached = True
+            conn.execute("BEGIN IMMEDIATE TRANSACTION")
+            try:
                 for tbl in [
                     "roots",
                     "files",
@@ -514,26 +592,30 @@ class LocalSearchDB:
                     "snippets",
                     "failed_tasks",
                         "embeddings"]:
-                    try:
-                        if tbl == "files":
-                            cols = ", ".join(FILE_COLUMNS)
-                            conn.execute(
-                                f"INSERT OR REPLACE INTO main.files({cols}) SELECT {cols} FROM snapshot.files")
-                        else:
-                            conn.execute(
-                                f"INSERT OR REPLACE INTO main.{tbl} SELECT * FROM snapshot.{tbl}")
-                    except Exception as te:
-                        self.logger.error(
-                            "Failed to copy table %s from snapshot: %s", tbl, te)
+                    if tbl == "files":
+                        cols = ", ".join(FILE_COLUMNS)
+                        conn.execute(
+                            f"INSERT OR REPLACE INTO main.files({cols}) SELECT {cols} FROM snapshot.files")
+                    else:
+                        conn.execute(
+                            f"INSERT OR REPLACE INTO main.{tbl} SELECT * FROM snapshot.{tbl}")
+                conn.execute("COMMIT")
+            except Exception:
+                try:
+                    conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+                raise
             self.update_stats()
         except Exception as e:
             self.logger.error("Failed to swap DB file: %s", e, exc_info=True)
             raise
         finally:
-            try:
-                conn.execute("DETACH DATABASE snapshot")
-            except Exception as de:
-                self.logger.debug("Failed to detach snapshot: %s", de)
+            if attached:
+                try:
+                    conn.execute("DETACH DATABASE snapshot")
+                except Exception as de:
+                    self.logger.debug("Failed to detach snapshot: %s", de)
 
     def get_connection(self): return self.db.connection()
 
@@ -571,10 +653,12 @@ class LocalSearchDB:
         """절대 경로를 DB 내부의 상대 경로(root_id/rel_path)로 변환합니다."""
         if os.path.isabs(path):
             from sari.core.workspace import WorkspaceManager
-            root = WorkspaceManager.find_root_for_path(path)
+            # Normalize path casing for consistent root lookup (especially on Windows)
+            norm_path = PathUtils.normalize(path)
+            root = WorkspaceManager.find_root_for_path(norm_path)
             if root:
                 rid = WorkspaceManager.root_id(root)
-                rel = PathUtils.to_relative(path, root)
+                rel = PathUtils.to_relative(norm_path, root)
                 return f"{rid}/{rel}"
         return path
 

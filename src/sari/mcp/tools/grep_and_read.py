@@ -116,7 +116,7 @@ def execute_grep_and_read(args: object, db: LocalSearchDB, roots: list[str]) -> 
 
     try:
         # 1. 하이브리드 검색 실행
-        hits, meta = db.search_v2(opts)
+        hits, meta = db.search(opts)
     except Exception as exc:
         msg = str(exc)
         return mcp_response(

@@ -13,7 +13,7 @@ RootIds: TypeAlias = list[str]
 
 
 class SearchEngineInterface(Protocol):
-    def search_v2(self, opts: SearchOptions) -> tuple[SearchRows, EngineMeta]:
+    def search(self, opts: SearchOptions) -> tuple[SearchRows, EngineMeta]:
         ...
 
     def repo_candidates(self, q: str, limit: int = 3, root_ids: Optional[RootIds] = None) -> list[RepoCandidate]:

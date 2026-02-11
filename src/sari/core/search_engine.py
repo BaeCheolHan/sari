@@ -1,6 +1,7 @@
 import sqlite3
 import re
 import fnmatch
+import zlib
 from typing import Dict, List, Optional, Tuple
 from .models import SearchHit, SearchOptions
 from .ranking import snippet_around, get_file_extension
@@ -13,9 +14,16 @@ from .db.storage import GlobalStorageManager
 class SearchEngine:
     def __init__(self, db, scoring_policy: ScoringPolicy = None,
                  tantivy_engine: Optional[TantivyEngine] = None):
+        import logging
+        self.logger = logging.getLogger("sari.search_engine")
         self.db = db
         self.scoring_policy = scoring_policy or ScoringPolicy()
         self.tantivy_engine = tantivy_engine
+        
+        # Ensure tantivy_engine has a logger for error reporting
+        if self.tantivy_engine and not getattr(self.tantivy_engine, "logger", None):
+            self.tantivy_engine.logger = self.logger
+            
         self._snippet_cache: Dict[str, str] = {}
         self._snippet_lru: List[str] = []
         self.storage = GlobalStorageManager.get_instance(db)
@@ -46,7 +54,7 @@ class SearchEngine:
             meta["db_error"] = str(e)
             return [], meta
 
-    def search_v2(
+    def search(
             self, opts: SearchOptions) -> Tuple[List[SearchHit], Dict[str, object]]:
         """Enhanced search with Score Normalization and Merged Results."""
         if hasattr(self.db, "coordinator") and self.db.coordinator:
@@ -105,10 +113,9 @@ class SearchEngine:
 
             # 3. SQLite fallback through DB facade (engine boundary kept in
             # db/repository layer)
-            if (not all_hits or len(all_hits) < opts.limit) and hasattr(
-                    self.db, "search_sqlite_v2"):
+            if (not all_hits or len(all_hits) < opts.limit) and hasattr(self.db, "_search_sqlite"):
                 try:
-                    sqlite_hits, sqlite_meta = self.db.search_sqlite_v2(opts)
+                    sqlite_hits, sqlite_meta = self.db._search_sqlite(opts)
                     if isinstance(sqlite_meta, dict):
                         if "total" in sqlite_meta:
                             meta["sqlite_total"] = sqlite_meta.get("total")
@@ -218,7 +225,7 @@ class SearchEngine:
                 repo=repo,
                 path=path,
                 score=1.0,
-                snippet=self._snippet_for(path, opts.query, content),
+                snippet=self._snippet_for(path, opts.query, content, case_sensitive=bool(opts.case_sensitive)),
                 mtime=mtime,
                 size=size,
                 match_count=1,
@@ -275,7 +282,7 @@ class SearchEngine:
             try:
                 content = self.db.read_file(path)
                 if content:
-                    snippet = self._snippet_for(path, opts.query, content)
+                    snippet = self._snippet_for(path, opts.query, content, case_sensitive=bool(opts.case_sensitive))
             except Exception:
                 pass
             results.append(SearchHit(
@@ -297,17 +304,24 @@ class SearchEngine:
             return raw
         # Normalize common OR separators
         raw = raw.replace("||", " OR ").replace("|", " OR ")
+        # Support for special characters in tokens (e.g. $, @, #)
         tokens = re.findall(
-            r'\(|\)|"[^"]+"|\bAND\b|\bOR\b|\bNOT\b|\bNEAR/\d+\b|\bNEAR\b|[0-9A-Za-z_\u00A1-\uFFFF]+',
+            r'\(|\)|"[^"]+"|\bAND\b|\bOR\b|\bNOT\b|\bNEAR/\d+\b|\bNEAR\b|[^()"\s]+',
             raw,
             flags=re.IGNORECASE)
         if not tokens:
             return raw.replace('"', " ")
         out = []
-        for t in tokens:
+        for idx, t in enumerate(tokens):
             upper = t.upper()
-            if upper in {"AND", "OR", "NOT"} or upper.startswith("NEAR"):
-                out.append(upper)
+            if upper.startswith("NEAR"):
+                # NEAR must have term on both sides.
+                if out and idx < len(tokens) - 1:
+                    out.append(upper)
+                continue
+            if upper in {"AND", "OR", "NOT"}:
+                if out and idx < len(tokens) - 1:
+                    out.append(upper)
                 continue
             if t in {"(", ")"}:
                 out.append(t)
@@ -315,10 +329,14 @@ class SearchEngine:
             if t.startswith('"') and t.endswith('"'):
                 t = t[1:-1]
             out.append(f'"{t}"')
+        if out and out[-1].upper() in {"AND", "OR", "NOT", "NEAR"}:
+            out.pop()
         return " ".join(out)
 
-    def _snippet_for(self, path: str, query: str, content: str) -> str:
-        cache_key = f"{path}\0{query}"
+    def _snippet_for(self, path: str, query: str, content: str, *, case_sensitive: bool = False) -> str:
+        # Include content hash to avoid collisions when file content changes
+        content_tag = hash(content) if content else 0
+        cache_key = f"{path}\0{query}\0{content_tag}\0{case_sensitive}"
         cached = self._snippet_cache.get(cache_key)
         if cached is not None:
             return cached
@@ -332,9 +350,33 @@ class SearchEngine:
                         max_bytes))
         except Exception:
             pass
+        if isinstance(content, (bytes, bytearray)):
+            raw = bytes(content)
+            try:
+                content = zlib.decompress(raw).decode("utf-8", errors="ignore")
+            except Exception:
+                content = raw.decode("utf-8", errors="ignore")
+        elif not isinstance(content, str):
+            content = str(content)
+
         if len(content) > max_bytes:
-            content = content[:max_bytes]
-        snippet = snippet_around(content, [query], 3, highlight=True)
+            q = str(query or "")
+            if q:
+                lower = content.lower()
+                q_lower = q.lower()
+                idx = lower.find(q_lower)
+                if idx >= 0:
+                    half = max_bytes // 2
+                    start = max(0, idx - half)
+                    end = min(len(content), start + max_bytes)
+                    if end - start < max_bytes:
+                        start = max(0, end - max_bytes)
+                    content = content[start:end]
+                else:
+                    content = content[:max_bytes]
+            else:
+                content = content[:max_bytes]
+        snippet = snippet_around(content, [query], 3, highlight=True, case_sensitive=case_sensitive)
         cache_size = 128
         try:
             if getattr(self.db, "settings", None):
@@ -346,6 +388,11 @@ class SearchEngine:
         except Exception:
             pass
         if cache_size > 0:
+            if cache_key in self._snippet_cache:
+                try:
+                    self._snippet_lru.remove(cache_key)
+                except ValueError:
+                    pass
             self._snippet_cache[cache_key] = snippet
             self._snippet_lru.append(cache_key)
             while len(self._snippet_lru) > cache_size:

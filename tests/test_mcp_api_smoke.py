@@ -30,7 +30,7 @@ def test_search_v2_smoke(db):
     )
     db.upsert_files_tx(cur, [row])
     db._write.commit()
-    hits, meta = db.search_v2(type("opts", (), {"query": "hello", "limit": 10, "offset": 0, "repo": None, "root_ids": [], "total_mode": "exact"})())
+    hits, meta = db.search(type("opts", (), {"query": "hello", "limit": 10, "offset": 0, "repo": None, "root_ids": [], "total_mode": "exact"})())
     assert hits
     assert meta["total"] >= 1
 

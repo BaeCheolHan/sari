@@ -6,6 +6,7 @@ def sari_env(monkeypatch):
     monkeypatch.setenv("SARI_DAEMON_PORT", "48000")
     monkeypatch.setenv("SARI_DAEMON_IDLE_SEC", "3600")
     monkeypatch.setenv("SARI_TEST_MODE", "1")
+    monkeypatch.setenv("SARI_FORMAT", "pack")
 
 @pytest.fixture
 def db(tmp_path):

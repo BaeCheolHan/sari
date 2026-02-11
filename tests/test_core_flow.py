@@ -52,13 +52,13 @@ def test_full_indexing_and_search_flow(db, tmp_path, monkeypatch):
     
     # Test 4-1: Keyword Search
     opts = SearchOptions(query="hello", root_ids=[root_id])
-    hits, meta = engine.search_v2(opts)
+    hits, meta = engine.search(opts)
     assert len(hits) >= 1
     assert hits[0].path.endswith("src/main.py")
     
     # Test 4-2: FTS Fallback
     opts_fts = SearchOptions(query="Project", root_ids=[root_id])
-    hits_fts, _ = engine.search_v2(opts_fts)
+    hits_fts, _ = engine.search(opts_fts)
     assert len(hits_fts) >= 1
     assert hits_fts[0].path.endswith("README.md")
 

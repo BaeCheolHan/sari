@@ -78,9 +78,21 @@ class FileRepository(BaseRepository):
 
         sql = f"INSERT INTO files({col_names}) VALUES({placeholders}) ON CONFLICT(path) DO UPDATE SET {update_set} WHERE excluded.mtime >= files.mtime;"
         cur.executemany(sql, processed_rows)
+        
+        # Only delete symbols for files that were actually processed and meet the mtime update condition.
+        # This prevents accidental symbol loss when the file itself wasn't updated.
         cur.executemany(
-            "DELETE FROM symbols WHERE path = ?", [
-                (row_dict["path"],) for row_dict in (
+            """
+            DELETE FROM symbols 
+            WHERE path = ? 
+              AND EXISTS (
+                  SELECT 1 FROM files 
+                  WHERE files.path = symbols.path 
+                    AND files.mtime = ?
+              )
+            """, 
+            [
+                (row_dict["path"], row_dict["mtime"]) for row_dict in (
                     dict(zip(FILE_COLUMNS, row_vals)) for row_vals in processed_rows
                 )
             ],

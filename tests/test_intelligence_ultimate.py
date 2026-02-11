@@ -99,7 +99,7 @@ def test_intelligence_centrality_ranking(db, workspace):
 
     # 2. 'core' 키워드로 검색 (두 파일 모두 매칭되지만 순위가 갈려야 함)
     opts = SearchOptions(query="core", root_ids=[rid])
-    hits, _ = db.search_v2(opts)
+    hits, _ = db.search(opts)
 
     # 3. 검증
     assert len(hits) >= 2

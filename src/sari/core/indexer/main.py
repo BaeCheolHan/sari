@@ -192,7 +192,7 @@ def _worker_build_snapshot(
             pass
     try:
         cfg = Config(**config_dict)
-        db = LocalSearchDB(snapshot_path, logger=logger, journal_mode="delete")
+        db = LocalSearchDB(snapshot_path, logger=logger, bind_proxy=False, journal_mode="delete")
         status = _scan_to_db(cfg, db, logger, parent_pid=parent_pid)
         db.close_all()
         # 성공 상태 기록
@@ -287,11 +287,11 @@ class Indexer:
         """동기적으로 1회 스캔을 수행합니다. (블로킹)"""
         with self._scan_lock:
             self.status.index_ready = False
-            main_db = self.db.db
             snapshot_path = self._snapshot_path()
             snapshot_db = LocalSearchDB(
                 snapshot_path,
                 logger=self.logger,
+                bind_proxy=False,
                 journal_mode="delete")
             status = _scan_to_db(self.config, snapshot_db, self.logger)
             try:
@@ -301,13 +301,6 @@ class Indexer:
                     snapshot_db.close()
                 except Exception:
                     pass
-            try:
-                # LocalSearchDB(snapshot) 생성 시 global db_proxy가 snapshot으로 재바인딩되므로,
-                # 이후 ORM 조회를 위해 메인 DB 바인딩을 복구합니다.
-                from sari.core.db.models import db_proxy
-                db_proxy.initialize(main_db)
-            except Exception:
-                pass
             try:
                 # 스냅샷 DB를 메인 DB로 교체 (Swap)
                 self.db.swap_db_file(snapshot_path)
@@ -334,7 +327,10 @@ class Indexer:
         if self._worker_proc and self._worker_proc.is_alive():
             try:
                 self._worker_proc.terminate()
-                self._worker_proc.join(timeout=2.0)
+                self._worker_proc.join(timeout=3.0)
+                if self._worker_proc.is_alive():
+                    self._worker_proc.kill()
+                    self._worker_proc.join(timeout=1.0)
             except Exception:
                 pass
         self._cleanup_snapshot_artifacts(self._worker_snapshot_path)
@@ -375,12 +371,16 @@ class Indexer:
 
     def _snapshot_path(self) -> str:
         """임시 스냅샷 DB 파일 경로를 생성합니다."""
+        import random
         base = self._safe_db_path()
         if base in ("", ":memory:"):
             tmp_dir = os.path.join(tempfile.gettempdir(), "sari_snapshots")
             os.makedirs(tmp_dir, exist_ok=True)
             base = os.path.join(tmp_dir, "index.db")
-        return f"{base}.snapshot.{int(time.time() * 1000)}"
+        # Add PID and a random suffix to prevent collisions within the same millisecond
+        pid = os.getpid()
+        rand = random.randint(1000, 9999)
+        return f"{base}.snapshot.{int(time.time() * 1000)}.{pid}.{rand}"
 
     def _safe_db_path(self) -> str:
         """db_path를 안전한 문자열 경로로 정규화합니다."""
@@ -392,8 +392,17 @@ class Indexer:
         return ""
 
     def _serialize_config(self) -> dict[str, object]:
-        """설정 객체를 직렬화하여 워커 프로세스에 전달합니다."""
-        data = dict(self.config.__dict__)
+        """설정 객체를 직렬화하여 워커 프로세스에 전달합니다. 직렬화 불가능한 필드는 제외합니다."""
+        data = {}
+        for k, v in self.config.__dict__.items():
+            # Skip non-serializable or internal objects
+            if k.startswith("_") or hasattr(v, "__call__") or "lock" in k.lower() or "logger" in k.lower():
+                continue
+            # Ensure path objects are strings
+            if hasattr(v, "__fspath__"):
+                data[k] = str(v)
+            else:
+                data[k] = v
         return data
 
     def _start_worker_scan(self) -> None:

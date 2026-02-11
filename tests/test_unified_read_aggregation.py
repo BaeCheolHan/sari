@@ -26,8 +26,8 @@ def test_aggregation_dedupes_identical_reads_deterministically(tmp_path, monkeyp
     target_file.write_text("same\ncontent\n", encoding="utf-8")
     db = StubDB("same\ncontent\n")
     target = str(target_file)
-    r1 = execute_read({"session_id": "agg-1", "mode": "file", "target": target}, db, [str(tmp_path)])
-    r2 = execute_read({"session_id": "agg-1", "mode": "file", "target": target}, db, [str(tmp_path)])
+    r1 = execute_read({"session_id": "agg-1", "mode": "file", "target": target, "offset": 0, "limit": 2}, db, [str(tmp_path)])
+    r2 = execute_read({"session_id": "agg-1", "mode": "file", "target": target, "offset": 0, "limit": 2}, db, [str(tmp_path)])
 
     s1 = _payload(r1)["meta"]["stabilization"]
     s2 = _payload(r2)["meta"]["stabilization"]

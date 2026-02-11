@@ -303,7 +303,11 @@ def test_registry_read_tool_delegates_to_read_file():
     ctx.db.read_file.return_value = "hello from unified read"
     from sari.core.workspace import WorkspaceManager
     rid = WorkspaceManager.root_id("/tmp/ws")
-    resp = reg.execute("read", ctx, {"mode": "file", "target": f"{rid}/a.py"})
+    resp = reg.execute(
+        "read",
+        ctx,
+        {"mode": "file", "target": f"{rid}/a.py", "offset": 0, "limit": 1},
+    )
     text = resp["content"][0]["text"]
     assert "PACK1 tool=read_file ok=true" in text
     assert "hello%20from%20unified%20read" in text

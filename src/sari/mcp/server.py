@@ -5,6 +5,7 @@ import threading
 import queue
 import concurrent.futures
 import socket
+from uuid import uuid4
 from pathlib import Path
 from typing import Optional, Mapping, TypeAlias
 from sari.mcp.workspace_registry import Registry
@@ -118,6 +119,7 @@ class LocalSearchMCPServer:
         # server.
         self._proxy_to_daemon = False
         self._daemon_sock = None
+        self._server_connection_id = str(uuid4())
 
         max_workers = int(os.environ.get("SARI_MCP_WORKERS", "4") or 4)
         self._executor = concurrent.futures.ThreadPoolExecutor(
@@ -223,7 +225,9 @@ class LocalSearchMCPServer:
 
     def handle_tools_call(self, params: Mapping[str, object]) -> JsonMap:
         tool_name = params.get("name")
-        args = params.get("arguments", {})
+        raw_args = params.get("arguments", {})
+        args = dict(raw_args) if isinstance(raw_args, Mapping) else {}
+        args["connection_id"] = self._server_connection_id
         cfg = self._injected_cfg
 
         if self._injected_db is not None and self._injected_indexer is not None:

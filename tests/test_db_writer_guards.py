@@ -133,3 +133,49 @@ def test_db_writer_flush_waits_for_processing(tmp_path):
     assert len(db.rows) == 3
 
     writer.stop()
+
+
+def test_db_writer_batches_engine_commit_per_batch(tmp_path):
+    class FakeEngine:
+        def __init__(self):
+            self.upserts = []
+            self.commits = 0
+
+        def upsert_documents(self, docs, commit=True):
+            self.upserts.append((list(docs), commit))
+
+        def commit(self):
+            self.commits += 1
+
+    db = LocalSearchDB(str(tmp_path / "b.db"))
+    db.upsert_root("root1", str(tmp_path), str(tmp_path), label="root")
+    db.set_engine(FakeEngine())
+
+    writer = DBWriter(db)
+    conn = db._write
+    cur = conn.cursor()
+    cur.execute("BEGIN")
+    writer._process_batch(
+        cur,
+        [
+            DbTask(
+                kind="upsert_files",
+                rows=[_files_row("root1/a.py", "root1")],
+                engine_docs=[{"id": "root1/a.py", "root_id": "root1"}],
+            ),
+            DbTask(
+                kind="upsert_files",
+                rows=[_files_row("root1/b.py", "root1")],
+                engine_docs=[{"id": "root1/b.py", "root_id": "root1"}],
+            ),
+        ],
+    )
+    conn.commit()
+
+    engine = db.engine
+    assert len(engine.upserts) == 1
+    sent_docs, commit_flag = engine.upserts[0]
+    assert commit_flag is False
+    assert len(sent_docs) == 2
+    assert engine.commits == 1
+    db.close_all()

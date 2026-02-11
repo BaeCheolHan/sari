@@ -65,7 +65,7 @@ def main() -> int:
         results = {}
         for q in queries:
             opts = SearchOptions(query=q, limit=5, offset=0, snippet_lines=3)
-            hits, _meta = engine.search_v2(opts)
+            hits, _meta = engine.search(opts)
             results[q] = [h.path for h in hits]
 
         print(json.dumps(results, ensure_ascii=False, indent=2))

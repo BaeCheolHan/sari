@@ -1,0 +1,37 @@
+{
+  "SEARCH_FIRST_REQUIRED": {
+    "severity": "error",
+    "description": "Run search first before read.",
+    "next_call_template": "search"
+  },
+  "SEARCH_REF_REQUIRED": {
+    "severity": "error",
+    "description": "Use candidate/ref from search response for read.",
+    "next_call_template": "search->read"
+  },
+  "CANDIDATE_REF_REQUIRED": {
+    "severity": "error",
+    "description": "Provided candidate ref is invalid for current session/target.",
+    "next_call_template": "search->read"
+  },
+  "BUDGET_SOFT_LIMIT": {
+    "severity": "warn",
+    "description": "Read payload was degraded by budget policy.",
+    "next_call_template": "search"
+  },
+  "BUDGET_HARD_LIMIT": {
+    "severity": "error",
+    "description": "Read budget exhausted for this session.",
+    "next_call_template": "search"
+  },
+  "LOW_RELEVANCE_OUTSIDE_TOPK": {
+    "severity": "warn",
+    "description": "Requested target is outside recent search top-k.",
+    "next_call_template": "search"
+  },
+  "PREVIEW_DEGRADED": {
+    "severity": "warn",
+    "description": "Search preview was truncated by token budget.",
+    "next_call_template": "read"
+  }
+}

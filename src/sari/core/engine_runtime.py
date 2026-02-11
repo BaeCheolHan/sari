@@ -69,13 +69,13 @@ class EngineRuntime:
         except Exception as e:
             logger.error(f"Engine init failed: {e}")
 
-    def upsert_documents(self, docs: list[Doc]):
+    def upsert_documents(self, docs: list[Doc], commit: bool = True):
         if self.engine:
-            self.engine.upsert_documents(docs)
+            self.engine.upsert_documents(docs, commit=commit)
 
-    def delete_documents(self, doc_ids: list[str]):
+    def delete_documents(self, doc_ids: list[str], commit: bool = True):
         if self.engine:
-            self.engine.delete_documents(doc_ids)
+            self.engine.delete_documents(doc_ids, commit=commit)
 
     def search(self,
                query: str,
@@ -125,7 +125,7 @@ class EngineRouter:
             return None
         return doc_id.split("/", 1)[0] if "/" in doc_id else None
 
-    def upsert_documents(self, docs: list[DocInput]) -> None:
+    def upsert_documents(self, docs: list[DocInput], commit: bool = True) -> None:
         buckets: dict[str, list[Doc]] = {}
         for d in docs or []:
             if not isinstance(d, Mapping):
@@ -138,9 +138,9 @@ class EngineRouter:
         for rid, batch in buckets.items():
             engine = self.engines.get(rid)
             if engine:
-                engine.upsert_documents(batch)
+                engine.upsert_documents(batch, commit=commit)
 
-    def delete_documents(self, doc_ids: list[str]) -> None:
+    def delete_documents(self, doc_ids: list[str], commit: bool = True) -> None:
         buckets: dict[str, list[str]] = {}
         for doc_id in doc_ids or []:
             rid = self._extract_root_id(doc_id)
@@ -150,7 +150,12 @@ class EngineRouter:
         for rid, batch in buckets.items():
             engine = self.engines.get(rid)
             if engine:
-                engine.delete_documents(batch)
+                engine.delete_documents(batch, commit=commit)
+
+    def commit(self) -> None:
+        for engine in self.engines.values():
+            if hasattr(engine, "commit"):
+                engine.commit()
 
     def search(self,
                query: str,
@@ -193,21 +198,21 @@ class EmbeddedEngine:
                 "engine not installed",
                 "sari --cmd engine install")
 
-    def search_v2(self, opts: object) -> SearchV2Result:
-        return self.search_engine.search_v2(opts)
+    def search(self, opts: object) -> SearchV2Result:
+        return self.search_engine.search(opts)
 
     def repo_candidates(self, q: str, limit: int = 3,
                         root_ids: Optional[list[str]] = None) -> SearchRows:
         return self.search_engine.repo_candidates(
             q, limit=limit, root_ids=root_ids)
 
-    def upsert_documents(self, docs: list[Doc]) -> None:
+    def upsert_documents(self, docs: list[Doc], commit: bool = True) -> None:
         if self.runtime.engine:
-            self.runtime.engine.upsert_documents(docs)
+            self.runtime.engine.upsert_documents(docs, commit=commit)
 
-    def delete_documents(self, doc_ids: list[str]) -> None:
+    def delete_documents(self, doc_ids: list[str], commit: bool = True) -> None:
         if self.runtime.engine:
-            self.runtime.engine.delete_documents(doc_ids)
+            self.runtime.engine.delete_documents(doc_ids, commit=commit)
 
     def close(self) -> None:
         self.runtime.close()
@@ -223,8 +228,8 @@ class SqliteSearchEngineAdapter:
     def status(self) -> EngineMeta:
         return EngineMeta(engine_mode="sqlite", engine_ready=True)
 
-    def search_v2(self, opts: object) -> SearchV2Result:
-        return self.search_engine.search_v2(opts)
+    def search(self, opts: object) -> SearchV2Result:
+        return self.search_engine.search(opts)
 
     def repo_candidates(self, q: str, limit: int = 3,
                         root_ids: Optional[list[str]] = None) -> SearchRows:

@@ -234,7 +234,7 @@ class AsyncHttpServer:
         try:
             # Run in executor to avoid blocking event loop
             loop = asyncio.get_running_loop()
-            hits, meta = await loop.run_in_executor(None, lambda: self.db.search_v2(opts))
+            hits, meta = await loop.run_in_executor(None, lambda: self.db.search(opts))
         except Exception as e:
             return JSONResponse({"ok": False, "error": f"search failed: {e}"}, status_code=500)
 

@@ -938,7 +938,7 @@ class Handler(BaseHTTPRequestHandler):
                 total_mode="exact",
             )
             try:
-                hits, meta = db.search_v2(opts)
+                hits, meta = db.search(opts)
             except Exception as e:
                 return {
                     "ok": False,

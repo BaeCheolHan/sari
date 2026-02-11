@@ -106,7 +106,7 @@ class SearchService:
             keyword_hits: list[SearchHit] = []
             meta: SearchMeta = {}
             if engine:
-                search_fn = getattr(engine, "search_v2", None)
+                search_fn = getattr(engine, "search", None)
                 if callable(search_fn):
                     raw_hits, raw_meta = search_fn(opts)
                     keyword_hits = self._coerce_hits(raw_hits)
