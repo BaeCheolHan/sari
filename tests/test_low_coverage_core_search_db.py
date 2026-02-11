@@ -7,6 +7,7 @@ import pytest
 
 from sari.core.db.main import LocalSearchDB
 from sari.core.models import SearchOptions
+from sari.core.db.models import db_proxy
 
 
 def _insert_file(cur, row):
@@ -347,6 +348,17 @@ def test_update_stats_does_not_commit_when_outer_transaction_open(db):
     assert count == 0
 
 
+def test_local_db_bind_proxy_false_does_not_rebind_global_proxy(tmp_path):
+    main = LocalSearchDB(str(tmp_path / "main.db"), bind_proxy=True)
+    original = db_proxy.obj
+    snap = LocalSearchDB(str(tmp_path / "snap.db"), bind_proxy=False)
+    try:
+        assert db_proxy.obj is original
+    finally:
+        snap.close_all()
+        main.close_all()
+
+
 def test_upsert_root_preserves_created_timestamp(db):
     db.upsert_root("rid-created", "/tmp/a", "/tmp/a", label="a")
     created_1 = db._write.execute("SELECT created_ts FROM roots WHERE root_id = ?", ("rid-created",)).fetchone()[0]
@@ -362,5 +374,5 @@ def test_upsert_files_turbo_rel_path_handles_windows_separator(db):
     row = (r"C:\repo\src\main.py", "", rid, "repo", 1, 10, "x", "h", "x", 0, 0, "ok", "", "ok", "", "none", "none", 0, 0, "{}")
     db.upsert_files_turbo([row])
     db.finalize_turbo_batch()
-    rel = db._write.execute("SELECT rel_path FROM files WHERE path = ?", (r"C:/repo/src/main.py",)).fetchone()[0]
+    rel = db._write.execute("SELECT rel_path FROM files WHERE path = ?", (r"c:/repo/src/main.py",)).fetchone()[0]
     assert rel == "main.py"

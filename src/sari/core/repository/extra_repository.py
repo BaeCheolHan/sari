@@ -325,10 +325,10 @@ class ContextRepository(BaseRepository):
             SELECT id, topic, content, tags_json, related_files_json, source, valid_from, valid_until, deprecated, created_ts, updated_ts
             FROM contexts 
             WHERE (topic LIKE ? OR content LIKE ? OR EXISTS (
-                SELECT 1 FROM json_each(contexts.tags_json) WHERE value LIKE ?
+                SELECT 1 FROM json_each(contexts.tags_json) WHERE LOWER(value) = LOWER(?)
             ))
         """
-        params = [lq, lq, lq]
+        params = [lq, lq, query]
         if as_of:
             sql += " AND deprecated = 0 AND (valid_from = 0 OR valid_from <= ?) AND (valid_until = 0 OR valid_until >= ?)"
             params.extend([as_of, as_of])

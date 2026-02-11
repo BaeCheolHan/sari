@@ -179,3 +179,54 @@ def test_db_writer_batches_engine_commit_per_batch(tmp_path):
     assert len(sent_docs) == 2
     assert engine.commits == 1
     db.close_all()
+
+
+def test_upsert_files_tx_does_not_delete_symbols_when_file_not_updated(tmp_path):
+    db = LocalSearchDB(str(tmp_path / "sym.db"))
+    db.upsert_root("root1", str(tmp_path), str(tmp_path), label="root")
+    conn = db._write
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO files(path, rel_path, root_id, repo, mtime, size, content, hash, fts_content, last_seen_ts, deleted_ts, status, error, parse_status, parse_error, ast_status, ast_reason, is_binary, is_minified, metadata_json)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            "root1/a.py",
+            "a.py",
+            "root1",
+            "repo",
+            200,
+            10,
+            b"x",
+            "h",
+            "x",
+            0,
+            0,
+            "ok",
+            "",
+            "ok",
+            "",
+            "none",
+            "none",
+            0,
+            0,
+            "{}",
+        ),
+    )
+    cur.execute(
+        "INSERT INTO symbols(symbol_id, path, root_id, name, kind, line, end_line, content, parent, meta_json, doc_comment, qualname, importance_score) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        ("sid-a", "root1/a.py", "root1", "A", "class", 1, 2, "class A: pass", "", "{}", "", "A", 1.0),
+    )
+    conn.commit()
+
+    stale_row = _files_row("root1/a.py", "root1")
+    stale_row = list(stale_row)
+    stale_row[4] = 100  # older mtime than existing 200
+    with db._lock:
+        c2 = db._write.cursor()
+        db.upsert_files_tx(c2, [tuple(stale_row)])
+        db._write.commit()
+    left = db._read.execute("SELECT COUNT(1) FROM symbols WHERE path = ?", ("root1/a.py",)).fetchone()[0]
+    assert int(left) == 1
+    db.close_all()

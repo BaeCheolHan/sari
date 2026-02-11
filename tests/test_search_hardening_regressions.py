@@ -264,3 +264,38 @@ def test_read_file_returns_none_when_content_is_null(db):
     )
     db._write.commit()
     assert db.read_file("rid-null/a.py") is None
+
+
+def test_read_file_raises_on_corrupted_zlib_payload(db):
+    rid = "rid-bad-zlib"
+    db.upsert_root(rid, "/tmp/ws", "/tmp/ws")
+    cur = db._write.cursor()
+    _insert_file(
+        cur,
+        (
+            "rid-bad-zlib/a.py",
+            "a.py",
+            rid,
+            "repo",
+            1,
+            10,
+            b"ZLIB\0not-a-valid-deflate-stream",
+            "h",
+            "",
+            0,
+            0,
+            "ok",
+            "",
+            "ok",
+            "",
+            "none",
+            "none",
+            0,
+            0,
+            "{}",
+        ),
+    )
+    db._write.commit()
+    import pytest
+    with pytest.raises(RuntimeError):
+        db.read_file("rid-bad-zlib/a.py")

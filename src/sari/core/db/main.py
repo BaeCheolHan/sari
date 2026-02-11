@@ -350,9 +350,8 @@ class LocalSearchDB:
             try:
                 content = zlib.decompress(content[5:])
             except Exception as de:
-                self.logger.error(
-                    "Decompression failed for %s: %s", db_path, de)
-                return None
+                self.logger.error("Decompression failed for %s: %s", db_path, de)
+                raise RuntimeError(f"Corrupted compressed content for path: {db_path}") from de
         if isinstance(content, bytes):
             try:
                 return content.decode("utf-8")
