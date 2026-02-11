@@ -41,7 +41,7 @@ async def test_async_http_server_workspaces_includes_file_counts(monkeypatch, tm
         ],
         execute=lambda _sql: _Rows(),
     )
-    indexer = SimpleNamespace(cfg=SimpleNamespace(workspace_roots=[str(ws_a), str(ws_b)]))
+    indexer = SimpleNamespace(config=SimpleNamespace(workspace_roots=[str(ws_a), str(ws_b)]))
     server = AsyncHttpServer(db, indexer, workspace_root=str(ws_a))
 
     monkeypatch.setattr(
@@ -66,3 +66,16 @@ async def test_async_http_server_workspaces_includes_file_counts(monkeypatch, tm
     assert by_path[str(ws_a)]["failed_count"] == 0
     assert by_path[str(ws_b)]["pending_count"] == 3
     assert by_path[str(ws_b)]["failed_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_async_http_server_dashboard_uses_new_html():
+    db = SimpleNamespace()
+    indexer = SimpleNamespace(cfg=SimpleNamespace(snippet_max_lines=3))
+    server = AsyncHttpServer(db, indexer, workspace_root="/tmp/ws")
+
+    resp = await server.dashboard(SimpleNamespace())
+    assert resp.status_code == 200
+    body = resp.body.decode("utf-8")
+    assert "SARI Insight" in body
+    assert "Workspaces" in body

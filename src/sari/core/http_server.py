@@ -36,6 +36,12 @@ class Handler(BaseHTTPRequestHandler):
     workspace_root: str = ""
     shared_http_gateway: bool = False
 
+    @staticmethod
+    def _indexer_workspace_roots(indexer) -> list[str]:
+        cfg_obj = getattr(indexer, "cfg", None) or getattr(indexer, "config", None)
+        roots = getattr(cfg_obj, "workspace_roots", []) if cfg_obj is not None else []
+        return list(roots or [])
+
     def _get_db_size(self, db_obj=None):
         try:
             db_ref = db_obj or self.db
@@ -75,13 +81,7 @@ class Handler(BaseHTTPRequestHandler):
                 workspace_root, persistent=True, track_ref=False)
             db = state.db
             indexer = state.indexer
-            roots = getattr(
-                indexer.cfg,
-                "workspace_roots",
-                []) if getattr(
-                indexer,
-                "cfg",
-                None) else []
+            roots = self._indexer_workspace_roots(indexer)
             root_ids = [WorkspaceManager.root_id_for_workspace(
                 r) for r in roots] if roots else []
         except Exception:
@@ -174,7 +174,7 @@ class Handler(BaseHTTPRequestHandler):
         items = []
         watched_roots = set()
         try:
-            cfg_roots = getattr(getattr(indexer, "cfg", None), "workspace_roots", []) or []
+            cfg_roots = self._indexer_workspace_roots(indexer)
             for root in cfg_roots:
                 watched_roots.add(str(root).replace("\\", "/").rstrip("/"))
         except Exception:

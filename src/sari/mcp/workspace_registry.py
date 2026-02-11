@@ -148,15 +148,29 @@ class SharedState:
         self._lock = threading.Lock()
 
     def start(self):
-        # 0. Ensure Root Exists
+        # 0. Ensure all configured roots exist in DB metadata.
+        root_paths = []
         try:
-            self.db.ensure_root(self.root_id, str(self.workspace_root))
-        except Exception as e:
-            logger.error(
-                f"Failed to ensure root for {self.workspace_root}: {e}")
+            root_paths = list(getattr(getattr(self.indexer, "cfg", None), "workspace_roots", []) or [])
+        except Exception:
+            root_paths = []
+        if not root_paths:
+            root_paths = [str(self.workspace_root)]
+
+        for root_path in root_paths:
+            try:
+                normalized = WorkspaceManager.normalize_path(str(root_path))
+                rid = WorkspaceManager.root_id_for_workspace(normalized)
+                self.db.ensure_root(rid, normalized)
+            except Exception as e:
+                logger.error(f"Failed to ensure root for {root_path}: {e}")
 
         # 1. Start Indexer
         threading.Thread(target=self.indexer.run_forever, daemon=True).start()
+        try:
+            self.indexer.request_rescan()
+        except Exception:
+            pass
 
         # 1.1 Start Watcher
         if hasattr(self, "watcher") and self.watcher:

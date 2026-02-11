@@ -109,7 +109,7 @@ def test_workspaces_endpoint_includes_per_workspace_file_count(monkeypatch, tmp_
         ],
         execute=lambda _sql: _Rows(),
     )
-    handler.indexer = SimpleNamespace(cfg=SimpleNamespace(workspace_roots=[str(ws_a), str(ws_b)]))
+    handler.indexer = SimpleNamespace(config=SimpleNamespace(workspace_roots=[str(ws_a), str(ws_b)]))
     handler.root_ids = []
 
     monkeypatch.setattr(

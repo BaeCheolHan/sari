@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from typing import Optional, TypeAlias
 
 from starlette.applications import Starlette
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse, Response, HTMLResponse
 from starlette.routing import Route, Mount
 from starlette.staticfiles import StaticFiles
 from starlette.requests import Request
@@ -50,6 +50,12 @@ class AsyncHttpServer:
         self.root_ids = root_ids or []
         self.mcp_server = mcp_server
         self._app: Optional[Starlette] = None
+
+    @staticmethod
+    def _indexer_workspace_roots(indexer: object) -> list[str]:
+        cfg_obj = getattr(indexer, "cfg", None) or getattr(indexer, "config", None)
+        roots = getattr(cfg_obj, "workspace_roots", []) if cfg_obj is not None else []
+        return list(roots or [])
     
     def _get_system_metrics(self) -> JsonObject:
         try:
@@ -76,6 +82,14 @@ class AsyncHttpServer:
     async def health(self, request: Request) -> JSONResponse:
         """Health check endpoint."""
         return JSONResponse({"ok": True})
+
+    async def dashboard(self, request: Request) -> HTMLResponse:
+        """Serve dashboard HTML aligned with sync server."""
+        from sari.core.http_server import Handler
+
+        handler = Handler.__new__(Handler)
+        html = handler._get_dashboard_html()
+        return HTMLResponse(html, status_code=200)
     
     async def status(self, request: Request) -> JSONResponse:
         """Server status endpoint."""
@@ -335,7 +349,7 @@ class AsyncHttpServer:
 
         watched_roots = set()
         try:
-            cfg_roots = getattr(getattr(self.indexer, "cfg", None), "workspace_roots", []) or []
+            cfg_roots = self._indexer_workspace_roots(self.indexer)
             for root in cfg_roots:
                 watched_roots.add(str(root).replace("\\", "/").rstrip("/"))
         except Exception:
@@ -399,6 +413,7 @@ class AsyncHttpServer:
         static_root = os.path.join(current_dir, "static")
         
         routes = [
+            Route("/", self.dashboard, methods=["GET"]),
             Route("/health", self.health, methods=["GET"]),
             Route("/status", self.status, methods=["GET"]),
             Route("/workspaces", self.workspaces, methods=["GET"]),
@@ -452,7 +467,7 @@ def serve_async(
     root_ids = []
     try:
         from sari.core.workspace import WorkspaceManager
-        root_ids = [WorkspaceManager.root_id_for_workspace(r) for r in indexer.cfg.workspace_roots]
+        root_ids = [WorkspaceManager.root_id_for_workspace(r) for r in AsyncHttpServer._indexer_workspace_roots(indexer)]
     except Exception:
         pass
     

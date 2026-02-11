@@ -27,7 +27,7 @@ from sari.core.constants import DEFAULT_DAEMON_HOST, DEFAULT_DAEMON_PORT
 
 from .utils import get_pid_file_path, get_local_version
 from .mcp_client import identify_sari_daemon, probe_sari_daemon
-from .smart_daemon import ensure_smart_daemon
+from .smart_daemon import ensure_smart_daemon, smart_kill_port_owner
 
 DEFAULT_HOST = DEFAULT_DAEMON_HOST
 DEFAULT_PORT = DEFAULT_DAEMON_PORT
@@ -521,6 +521,46 @@ def list_registry_daemon_endpoints() -> list[Tuple[str, int]]:
     return endpoints
 
 
+def _discover_daemon_endpoints_from_processes() -> list[Tuple[str, int]]:
+    """
+    Best-effort fallback discovery when registry is stale.
+    Scans local processes for Sari daemon listeners and verifies them via MCP ping.
+    """
+    if psutil is None:
+        return []
+
+    seen: Set[Tuple[str, int]] = set()
+    endpoints: list[Tuple[str, int]] = []
+    for proc in psutil.process_iter(["pid", "cmdline"]):
+        try:
+            cmdline = " ".join(proc.cmdline()).lower()
+            if "sari" not in cmdline:
+                continue
+            if "daemon" not in cmdline:
+                continue
+            conns = proc.net_connections(kind="inet")
+            for conn in conns:
+                laddr = getattr(conn, "laddr", None)
+                if not laddr:
+                    continue
+                host = getattr(laddr, "ip", None)
+                port = getattr(laddr, "port", None)
+                if host is None and isinstance(laddr, tuple) and len(laddr) >= 2:
+                    host, port = laddr[0], laddr[1]
+                if not isinstance(port, int) or port <= 0:
+                    continue
+                probe_host = "127.0.0.1" if host in ("0.0.0.0", "::", "::1", "", None) else str(host)
+                key = (probe_host, port)
+                if key in seen:
+                    continue
+                if probe_sari_daemon(probe_host, port):
+                    seen.add(key)
+                    endpoints.append(key)
+        except Exception:
+            continue
+    return endpoints
+
+
 def extract_daemon_stop_params(args: argparse.Namespace) -> DaemonParams:
     """Extract stop parameters from args."""
     def _arg(args, key):
@@ -590,13 +630,22 @@ def stop_one_endpoint(host: str, port: int) -> int:
             print("PID not found or permission denied, daemon may have crashed or locked")
             return 0
     else:
-        # No PID available: at least clean stale registry mappings for this endpoint.
+        # No PID available: clean stale registry mappings and attempt smart-kill fallback.
         try:
             reg = ServerRegistry()
             for boot_id in boot_ids:
                 reg.unregister_daemon(boot_id)
         except Exception:
             pass
+        if smart_kill_port_owner(host, port):
+            for _ in range(10):
+                if not is_daemon_running(host, port):
+                    break
+                time.sleep(0.1)
+            if not is_daemon_running(host, port):
+                remove_pid()
+                print("✅ Daemon stopped (fallback smart-kill)")
+                return 0
         remove_pid()
         print("No daemon PID resolved from registry. Cleaned matching registry entries.")
         return 0
@@ -606,6 +655,12 @@ def stop_daemon_process(params: DaemonParams) -> int:
     """Stop daemon process(es) and cleanup."""
     if params.get("all"):
         endpoints = list_registry_daemon_endpoints()
+        if not endpoints:
+            endpoints = _discover_daemon_endpoints_from_processes()
+        if not endpoints:
+            host, port = get_daemon_address()
+            if is_daemon_running(host, port):
+                endpoints = [(host, port)]
         if not endpoints:
             print("Daemon is not running")
             remove_pid()
