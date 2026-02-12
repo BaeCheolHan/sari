@@ -497,6 +497,23 @@ def _check_engine_runtime(ws_root: str) -> DoctorResult:
     try:
         cfg_path = WorkspaceManager.resolve_config_path(ws_root)
         cfg = Config.load(cfg_path, workspace_root_override=ws_root)
+        db_path = Path(str(cfg.db_path or "")).expanduser()
+        try:
+            max_db_mb = float(
+                os.environ.get("SARI_DOCTOR_ENGINE_RUNTIME_MAX_DB_MB", "128") or "128"
+            )
+        except Exception:
+            max_db_mb = 128.0
+        if max_db_mb > 0 and db_path.exists():
+            db_size_mb = float(db_path.stat().st_size) / (1024.0 * 1024.0)
+            if db_size_mb > max_db_mb:
+                return _result(
+                    "Engine Runtime",
+                    True,
+                    f"skipped (db_size_mb={db_size_mb:.1f} > max_db_mb={max_db_mb:.1f})",
+                    warn=True,
+                )
+
         db = LocalSearchDB(cfg.db_path)
         try:
             from sari.core.settings import settings as _settings
@@ -586,7 +603,11 @@ def _check_disk_space(ws_root: str, min_gb: float) -> DoctorResult:
 
 
 def _check_db_integrity(ws_root: str) -> DoctorResult:
-    """SQLite DB 파일에 대해 깊은 무결성 검사를 수행합니다."""
+    """SQLite DB 무결성 검사.
+
+    Default `light` mode avoids expensive full-table scans on large DBs.
+    Set `SARI_DOCTOR_DB_INTEGRITY_MODE=quick|deep` for stronger checks.
+    """
     try:
         cfg_path = WorkspaceManager.resolve_config_path(ws_root)
         cfg = Config.load(cfg_path, workspace_root_override=ws_root)
@@ -598,16 +619,43 @@ def _check_db_integrity(ws_root: str) -> DoctorResult:
             return _result("DB Integrity", False, "DB file is 0 bytes (empty)")
 
         import sqlite3
+        mode = str(
+            os.environ.get("SARI_DOCTOR_DB_INTEGRITY_MODE")
+            or os.environ.get("SARI_DOCTOR_DEEP_DB_CHECK")
+            or "light"
+        ).strip().lower()
+        if mode in {"1", "true", "yes", "on"}:
+            mode = "deep"
+
         with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+            if mode not in {"quick", "deep"}:
+                # Lightweight liveness probe only (fast on large FTS DBs).
+                conn.execute("PRAGMA schema_version").fetchone()
+                return _result(
+                    "DB Integrity",
+                    True,
+                    "SQLite connectivity ok (integrity scan skipped; set SARI_DOCTOR_DB_INTEGRITY_MODE=quick|deep)",
+                    warn=True,
+                )
+
+            quick = conn.execute("PRAGMA quick_check(1)").fetchone()
+            quick_res = str(next(iter(quick), "")) if quick else ""
+            if quick_res != "ok":
+                return _result("DB Integrity", False, f"Corruption detected (quick_check): {quick_res}")
+
+            if mode != "deep":
+                return _result(
+                    "DB Integrity",
+                    True,
+                    "SQLite quick_check ok",
+                )
+
             cursor = conn.execute("PRAGMA integrity_check(10)")
             row = cursor.fetchone()
             res = str(next(iter(row), "")) if row else ""
             if res == "ok":
-                return _result("DB Integrity", True, "SQLite format ok")
-            return _result(
-                "DB Integrity",
-                False,
-                f"Corruption detected: {res}")
+                return _result("DB Integrity", True, "SQLite integrity_check ok")
+            return _result("DB Integrity", False, f"Corruption detected: {res}")
     except Exception as e:
         return _result("DB Integrity", False, f"Check failed: {e}")
 
