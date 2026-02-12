@@ -56,3 +56,11 @@ def test_core_layer_does_not_import_mcp_modules() -> None:
         "Unexpected imports:\n"
         + "\n".join(f"- {path}:{line} imports {module}" for path, line, module in unexpected)
     )
+
+
+def test_core_layer_boundary_baseline_has_raw_mcp_import_detections() -> None:
+    violations = _iter_core_to_mcp_imports()
+    assert len(violations) > 0, (
+        "Expected baseline core->mcp import detections for evidence. "
+        "If this is 0, the scanner is likely broken."
+    )
