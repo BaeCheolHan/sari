@@ -33,13 +33,20 @@ ActionItems: TypeAlias = list[ActionItem]
 
 def _read_pid(host: str, port: int) -> Optional[int]:
     try:
-        # Prefer CLI helper first for compatibility with tests/legacy behavior.
-        from sari.mcp.cli import read_pid as cli_read_pid
+        # Prefer direct module import to avoid pulling full CLI package graph.
+        from sari.mcp.cli.daemon import read_pid as cli_read_pid
         pid = cli_read_pid(host, port)
         if pid:
             return int(pid)
     except Exception:
-        pass
+        try:
+            # Backward-compat fallback for tests patching sari.mcp.cli.read_pid.
+            from sari.mcp.cli import read_pid as cli_read_pid
+            pid = cli_read_pid(host, port)
+            if pid:
+                return int(pid)
+        except Exception:
+            pass
     try:
         reg = ServerRegistry()
         inst = reg.resolve_daemon_by_endpoint(host, port)
@@ -1069,7 +1076,7 @@ def _run_auto_fixes(
 
             elif act == "restart_daemon":
                 # 이전 데몬 중지 및 재시작 제안
-                from sari.mcp.cli.legacy_cli import cmd_daemon_stop
+                from sari.mcp.cli.commands.daemon_commands import cmd_daemon_stop
 
                 class Args:
                     daemon_host = ""
