@@ -24,6 +24,7 @@ from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 from sari.version import __version__
 from sari.core.daemon_health import detect_orphan_daemons
+from sari.core.mcp_runtime import create_mcp_server
 from sari.core.policy_engine import load_daemon_runtime_status
 from sari.core.warning_sink import warning_sink
 
@@ -856,11 +857,12 @@ def serve_async(
     # Create MCP server if not provided
     if mcp_server is None:
         try:
-            from sari.mcp.server import LocalSearchMCPServer
-            if cfg is not None:
-                mcp_server = LocalSearchMCPServer(workspace_root, cfg=cfg, db=db, indexer=indexer)
-            else:
-                mcp_server = LocalSearchMCPServer(workspace_root)
+            mcp_server = create_mcp_server(
+                workspace_root=workspace_root,
+                cfg=cfg,
+                db=db,
+                indexer=indexer,
+            )
         except Exception:
             endpoint_ok = False
             endpoint_errors.append("MCP_SERVER_INIT_FAILED")

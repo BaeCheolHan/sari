@@ -7,10 +7,7 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _CORE_ROOT = _REPO_ROOT / "src" / "sari" / "core"
 
-_ALLOWED_CORE_TO_MCP_IMPORTS: set[tuple[str, str]] = {
-    ("src/sari/core/async_http_server.py", "sari.mcp.server"),
-    ("src/sari/core/main.py", "sari.mcp.server"),
-}
+_ALLOWED_CORE_TO_MCP_IMPORTS: set[tuple[str, str]] = set()
 
 
 def _iter_core_to_mcp_imports(
