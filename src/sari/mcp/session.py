@@ -421,6 +421,13 @@ class Session:
         await self.send_json(response)
 
     def cleanup(self):
+        preinit = self._preinit_server
+        self._preinit_server = None
+        if preinit is not None and hasattr(preinit, "shutdown"):
+            try:
+                preinit.shutdown()
+            except Exception:
+                pass
         if self.workspace_root:
             self.registry.release(self.workspace_root)
             self.workspace_root = None

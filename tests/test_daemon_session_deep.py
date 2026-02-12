@@ -115,6 +115,26 @@ def test_workspace_registry_singleton():
         assert state is not None
 
 
+def test_session_cleanup_shuts_down_preinit_server():
+    reader = MagicMock()
+    writer = MagicMock()
+    session = Session(reader, writer)
+
+    class _FakePreinitServer:
+        def __init__(self):
+            self.shutdown_called = 0
+
+        def shutdown(self):
+            self.shutdown_called += 1
+
+    fake = _FakePreinitServer()
+    session._preinit_server = fake
+
+    session.cleanup()
+    assert fake.shutdown_called == 1
+    assert session._preinit_server is None
+
+
 @pytest.mark.asyncio
 async def test_session_reinitialize_same_workspace_does_not_leak_ref(monkeypatch, tmp_path):
     ws = tmp_path / "ws"
