@@ -19,6 +19,31 @@ def _set_resolver_status(resolver_ok: bool, error: str = "") -> None:
 def get_last_resolver_status() -> dict:
     return dict(_LAST_RESOLVER_STATUS)
 
+
+def resolve_registry_daemon_address(
+    workspace_root: Optional[str] = None,
+) -> Optional[Tuple[str, int]]:
+    """
+    Resolve daemon endpoint from registry only.
+
+    Priority inside registry:
+      1. Latest non-draining workspace daemon
+      2. Workspace bound daemon (legacy/backward-compat)
+    """
+    env_host = os.environ.get("SARI_DAEMON_HOST")
+    root = workspace_root or os.environ.get("SARI_WORKSPACE_ROOT") or WorkspaceManager.resolve_workspace_root()
+    reg = ServerRegistry()
+
+    inst = reg.resolve_latest_daemon(workspace_root=str(root), allow_draining=False)
+    if not inst:
+        inst = reg.resolve_workspace_daemon(str(root))
+
+    if inst and inst.get("port"):
+        host = inst.get("host") or (env_host or DEFAULT_HOST)
+        return host, int(inst.get("port"))
+    return None
+
+
 def resolve_daemon_address(workspace_root: Optional[str] = None) -> Tuple[str, int]:
     """
     Single Source of Truth for resolving daemon address.
@@ -42,20 +67,10 @@ def resolve_daemon_address(workspace_root: Optional[str] = None) -> Tuple[str, i
 
     # 2. Check Registry (SSOT)
     try:
-        root = workspace_root or os.environ.get("SARI_WORKSPACE_ROOT") or WorkspaceManager.resolve_workspace_root()
-        reg = ServerRegistry()
-        
-        # Phase 1: Try to find the absolute best daemon (non-draining, latest)
-        inst = reg.resolve_latest_daemon(workspace_root=str(root), allow_draining=False)
-        
-        # Fallback to current bound daemon if no 'latest' found (might be first boot)
-        if not inst:
-            inst = reg.resolve_workspace_daemon(str(root))
-            
-        if inst and inst.get("port"):
-            host = inst.get("host") or (env_host or DEFAULT_HOST)
+        resolved = resolve_registry_daemon_address(workspace_root=workspace_root)
+        if resolved:
             _set_resolver_status(True, "")
-            return host, int(inst.get("port"))
+            return resolved
     except Exception as e:
         logging.getLogger("sari.daemon_resolver").warning(
             "Failed to resolve daemon address from registry",
