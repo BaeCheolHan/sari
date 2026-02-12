@@ -8,7 +8,7 @@ import socket
 from uuid import uuid4
 from pathlib import Path
 from typing import Optional, Mapping, TypeAlias
-from sari.core.workspace_registry import Registry
+from sari.mcp.workspace_registry import Registry
 from sari.core.workspace import WorkspaceManager
 from sari.core.settings import settings
 from sari.core.config import Config
