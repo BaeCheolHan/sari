@@ -39,23 +39,39 @@ from .utils import (
 )
 from .registry import load_registry_instances, load_server_info
 
-# Import legacy CLI commands to maintain compatibility
-from .legacy_cli import (
+# Import modularized command handlers directly to avoid eager legacy_cli coupling.
+from .commands.daemon_commands import (
     cmd_daemon_start,
     cmd_daemon_stop,
     cmd_daemon_status,
     cmd_daemon_ensure,
     cmd_daemon_refresh,
-    cmd_proxy,
-    cmd_auto,
+)
+from .commands.status_commands import (
     cmd_status,
     cmd_search,
+)
+from .commands.maintenance_commands import (
     cmd_doctor,
     cmd_init,
     cmd_prune,
     cmd_vacuum,
-    main,
 )
+
+
+def cmd_proxy(args):
+    from .legacy_cli import cmd_proxy as _cmd_proxy
+    return _cmd_proxy(args)
+
+
+def cmd_auto(args):
+    from .legacy_cli import cmd_auto as _cmd_auto
+    return _cmd_auto(args)
+
+
+def main(argv=None):
+    from .legacy_cli import main as _legacy_main
+    return _legacy_main(argv)
 
 # Aliases for backward compatibility with underscore-prefixed names
 _get_http_host_port = get_http_host_port
