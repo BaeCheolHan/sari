@@ -1,3 +1,4 @@
+import os
 from typing import Dict, Optional
 from .base import BaseParser
 from .python import PythonParser
@@ -13,6 +14,13 @@ class ParserFactory:
     """
     _parsers: Dict[str, BaseParser] = {}
     _lang_cache: Dict[str, Optional[str]] = {}
+    try:
+        _lang_cache_max: int = max(
+            64,
+            int(os.environ.get("SARI_PARSER_LANG_CACHE_MAX", "1024") or "1024"),
+        )
+    except Exception:
+        _lang_cache_max = 1024
     _lang_map: Dict[str, str] = {
         ".py": "python",
         ".js": "javascript",
@@ -112,4 +120,6 @@ class ParserFactory:
             return cls._lang_cache[key]
         val = cls._lang_map.get(key)
         cls._lang_cache[key] = val
+        while len(cls._lang_cache) > int(cls._lang_cache_max or 0):
+            cls._lang_cache.pop(next(iter(cls._lang_cache)), None)
         return val
