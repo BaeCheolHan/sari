@@ -9,8 +9,6 @@ _CORE_ROOT = _REPO_ROOT / "src" / "sari" / "core"
 
 _ALLOWED_CORE_TO_MCP_IMPORTS: set[tuple[str, str]] = {
     ("src/sari/core/async_http_server.py", "sari.mcp.server"),
-    ("src/sari/core/http_server.py", "sari.mcp.tools.doctor"),
-    ("src/sari/core/http_server.py", "sari.mcp.workspace_registry"),
     ("src/sari/core/main.py", "sari.mcp.server"),
 }
 

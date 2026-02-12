@@ -22,6 +22,7 @@ try:
     from .utils.system import get_system_metrics  # type: ignore
     from .daemon_health import detect_orphan_daemons  # type: ignore
     from .policy_engine import load_daemon_runtime_status  # type: ignore
+    from .workspace_state_registry import get_workspace_registry  # type: ignore
 except ImportError:
     from db import LocalSearchDB  # type: ignore
     from indexer import Indexer  # type: ignore
@@ -30,6 +31,7 @@ except ImportError:
     from utils.system import get_system_metrics  # type: ignore
     from daemon_health import detect_orphan_daemons  # type: ignore
     from policy_engine import load_daemon_runtime_status  # type: ignore
+    from workspace_state_registry import get_workspace_registry  # type: ignore
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -290,9 +292,8 @@ class Handler(BaseHTTPRequestHandler):
         if not self.shared_http_gateway or not workspace_root:
             return workspace_root, db, indexer, root_ids, registry_resolve_failed
         try:
-            from sari.mcp.workspace_registry import Registry
             from sari.core.workspace import WorkspaceManager
-            state = Registry.get_instance().get_or_create(
+            state = get_workspace_registry().get_or_create(
                 workspace_root, persistent=True, track_ref=False)
             db = state.db
             indexer = state.indexer
@@ -1148,29 +1149,12 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/health-report":
             try:
-                from sari.mcp.tools.doctor import execute_doctor
-                roots = [workspace_root] if workspace_root else None
-                res = execute_doctor({}, db=db, roots=roots)
-                # execute_doctor returns a dict with 'content' which has 'text'
-                # (JSON string)
-                if isinstance(res, dict) and "content" in res:
-                    text = res["content"][0]["text"]
-                    # Skip the PACK1 header if it's there
-                    if text.startswith("PACK1"):
-                        lines = text.split("\n")
-                        for line in lines:
-                            if line.startswith("t:"):
-                                return json.loads(line[2:])
-                    return json.loads(text)
+                from .health import SariDoctor
+                doc = SariDoctor(workspace_root=workspace_root or None)
+                doc.run_all()
+                return doc.get_summary()
             except Exception as e:
-                # Fallback to simple health check
-                try:
-                    from .health import SariDoctor
-                    doc = SariDoctor(workspace_root=workspace_root or None)
-                    doc.run_all()
-                    return doc.get_summary()
-                except Exception:
-                    return {"ok": False, "error": str(e)}
+                return {"ok": False, "error": str(e)}
 
         if path == "/status":
             daemon_status = load_daemon_runtime_status()
