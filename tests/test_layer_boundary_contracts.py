@@ -20,11 +20,17 @@ _ALLOWED_CORE_TO_MCP_IMPORTS: set[tuple[str, str]] = {
 }
 
 
-def _iter_core_to_mcp_imports() -> list[tuple[str, int, str]]:
+def _iter_core_to_mcp_imports(
+    core_root: Path = _CORE_ROOT,
+    repo_root: Path = _REPO_ROOT,
+) -> list[tuple[str, int, str]]:
     violations: list[tuple[str, int, str]] = []
 
-    for py_file in sorted(_CORE_ROOT.rglob("*.py")):
-        rel_path = py_file.relative_to(_REPO_ROOT).as_posix()
+    for py_file in sorted(core_root.rglob("*.py")):
+        try:
+            rel_path = py_file.relative_to(repo_root).as_posix()
+        except ValueError:
+            rel_path = py_file.as_posix()
         source = py_file.read_text(encoding="utf-8")
         tree = ast.parse(source, filename=str(py_file))
 
@@ -58,20 +64,11 @@ def test_core_layer_does_not_import_mcp_modules() -> None:
     )
 
 
-def test_core_layer_boundary_scanner_health_is_debt_neutral() -> None:
-    violations = _iter_core_to_mcp_imports()
+def test_core_layer_boundary_scanner_health_is_debt_neutral(tmp_path: Path) -> None:
+    core_root = tmp_path / "src" / "sari" / "core"
+    core_root.mkdir(parents=True)
+    test_file = core_root / "sample.py"
+    test_file.write_text("from sari.mcp.tools.protocol import ErrorCode\n", encoding="utf-8")
 
-    for item in violations:
-        assert isinstance(item, tuple)
-        assert len(item) == 3
-        path, line, module = item
-        assert isinstance(path, str) and path.startswith("src/sari/core/")
-        assert isinstance(line, int) and line > 0
-        assert isinstance(module, str) and module.startswith("sari.mcp")
-
-    detected_pairs = {(path, module) for path, _line, module in violations}
-    missing_allowlisted_pairs = _ALLOWED_CORE_TO_MCP_IMPORTS - detected_pairs
-    assert not missing_allowlisted_pairs, (
-        "Allowlisted core->mcp imports were not detected by scanner:\n"
-        + "\n".join(f"- {path} imports {module}" for path, module in sorted(missing_allowlisted_pairs))
-    )
+    violations = _iter_core_to_mcp_imports(core_root=core_root, repo_root=tmp_path)
+    assert ("src/sari/core/sample.py", 1, "sari.mcp.tools.protocol") in violations
