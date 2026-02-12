@@ -139,20 +139,21 @@ def test_server_run_enables_jsonl_transport_when_format_json(monkeypatch):
 
 
 @pytest.mark.gate
-def test_server_tools_call_uses_session_and_returns_result():
+def test_server_tools_call_uses_session_and_returns_result(monkeypatch):
     server = LocalSearchMCPServer("/tmp/ws")
     fake_session = MagicMock()
     fake_session.db = MagicMock()
     fake_session.db.engine = MagicMock()
     fake_session.indexer = MagicMock()
     fake_session.config_data = {"workspace_roots": ["/tmp/ws"]}
-    server.registry.get_or_create = MagicMock(return_value=fake_session)
+    get_or_create_mock = MagicMock(return_value=fake_session)
+    monkeypatch.setattr(server.registry, "get_or_create", get_or_create_mock)
     server._tool_registry.execute = MagicMock(return_value={"ok": True})
 
     result = server.handle_tools_call({"name": "status", "arguments": {}})
 
     assert result == {"ok": True}
-    server.registry.get_or_create.assert_called_once_with("/tmp/ws")
+    get_or_create_mock.assert_called_once_with("/tmp/ws")
     server.shutdown()
 
 

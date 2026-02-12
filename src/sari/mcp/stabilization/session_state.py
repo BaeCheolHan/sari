@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import os
 from dataclasses import dataclass
 from typing import Mapping
 
@@ -27,6 +28,13 @@ class _SessionMetrics:
 _LOCK = threading.RLock()
 _SESSION_METRICS: dict[str, _SessionMetrics] = {}
 _SEQUENCE = 0
+try:
+    _MAX_SESSION_METRICS = max(
+        64,
+        int(os.environ.get("SARI_SESSION_METRICS_MAX", "4096") or "4096"),
+    )
+except Exception:
+    _MAX_SESSION_METRICS = 4096
 
 
 def _next_sequence() -> int:
@@ -42,9 +50,26 @@ def _session_key(args: Mapping[str, object] | object, roots: list[str]) -> str:
 def _get_state(session_key: str) -> _SessionMetrics:
     state = _SESSION_METRICS.get(session_key)
     if state is None:
+        _evict_metrics_if_needed()
         state = _SessionMetrics()
         _SESSION_METRICS[session_key] = state
     return state
+
+
+def _evict_metrics_if_needed() -> None:
+    max_items = int(_MAX_SESSION_METRICS or 0)
+    if max_items <= 0:
+        return
+    if len(_SESSION_METRICS) < max_items:
+        return
+    # Drop oldest snapshots first to prevent unbounded memory growth.
+    overflow = len(_SESSION_METRICS) - max_items + 1
+    victims = sorted(
+        _SESSION_METRICS.items(),
+        key=lambda kv: int(getattr(kv[1], "last_seen_seq", 0) or 0),
+    )[:overflow]
+    for key, _state in victims:
+        _SESSION_METRICS.pop(key, None)
 
 
 def _enqueue_analytics_snapshot(event_type: str, session_key: str, state: _SessionMetrics) -> None:
