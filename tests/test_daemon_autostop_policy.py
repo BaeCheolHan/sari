@@ -4,7 +4,7 @@ import threading
 import time
 import sys
 
-from sari.mcp.daemon import SariDaemon, RuntimeStateProvider
+from sari.mcp.daemon import DaemonEvent, SariDaemon, RuntimeStateProvider
 from sari.mcp.workspace_registry import Registry
 
 
@@ -390,6 +390,17 @@ def test_lease_renew_events_are_coalesced_before_drain():
 
     # ISSUE(1) + coalesced RENEW(1)
     assert daemon._event_queue_depth == 2
+    daemon._apply_lease_events(max_events=64)
+    assert daemon._event_queue_depth == 0
+
+
+def test_heartbeat_events_are_coalesced_before_drain():
+    daemon = SariDaemon(host="127.0.0.1", port=49984)
+
+    for _ in range(100):
+        daemon._enqueue_event(DaemonEvent(event_type="HEARTBEAT_TICK"))
+
+    assert daemon._event_queue_depth == 1
     daemon._apply_lease_events(max_events=64)
     assert daemon._event_queue_depth == 0
 

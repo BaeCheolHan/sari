@@ -244,6 +244,7 @@ class SariDaemon:
         self._events_lock = threading.Lock()
         self._controller_wakeup = threading.Event()
         self._event_queue_depth = 0
+        self._heartbeat_event_pending = False
         self._pending_renew_lease_ids: set[str] = set()
         self._last_event_ts = 0.0
         self._active_leases: dict[str, dict[str, object]] = {}
@@ -339,10 +340,14 @@ class SariDaemon:
         return reaped
 
     def _enqueue_event(self, event: DaemonEvent) -> None:
-        self._events.put(event)
         with self._events_lock:
+            if str(getattr(event, "event_type", "")) == EVENT_HEARTBEAT_TICK:
+                if self._heartbeat_event_pending:
+                    return
+                self._heartbeat_event_pending = True
             self._event_queue_depth += 1
             self._last_event_ts = float(event.ts or time.time())
+        self._events.put(event)
         self._controller_wakeup.set()
 
     def _enqueue_lease_event(
@@ -387,7 +392,10 @@ class SariDaemon:
                 ev = self._events.get_nowait()
                 with self._events_lock:
                     self._event_queue_depth = max(0, self._event_queue_depth - 1)
-                    if str(getattr(ev, "event_type", "")) == EVENT_LEASE_RENEW:
+                    event_type = str(getattr(ev, "event_type", ""))
+                    if event_type == EVENT_HEARTBEAT_TICK:
+                        self._heartbeat_event_pending = False
+                    elif event_type == EVENT_LEASE_RENEW:
                         self._pending_renew_lease_ids.discard(str(getattr(ev, "lease_id", "") or ""))
                 raw.append(ev)
             except queue.Empty:
