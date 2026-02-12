@@ -24,6 +24,7 @@ from sari.core.workspace import WorkspaceManager
 from sari.mcp.server_registry import ServerRegistry
 from sari.core.daemon_resolver import resolve_daemon_address as get_daemon_address
 from sari.core.constants import DEFAULT_DAEMON_HOST, DEFAULT_DAEMON_PORT
+from sari.core.daemon_runtime_state import RUNTIME_HOST, RUNTIME_PORT
 
 from .utils import get_pid_file_path, get_local_version
 from .mcp_client import identify_sari_daemon, probe_sari_daemon
@@ -356,12 +357,12 @@ def prepare_daemon_environment(params: DaemonParams) -> dict[str, str]:
     env["PYTHONPATH"] = str(repo_root) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     env["SARI_DAEMON_AUTOSTART"] = "1"
     env["SARI_WORKSPACE_ROOT"] = workspace_root
-    env["SARI_DAEMON_PORT"] = str(port)
+    env[RUNTIME_PORT] = str(port)
     
     if _arg(args, "daemon_host"):
-        env["SARI_DAEMON_HOST"] = _arg(args, "daemon_host")
+        env[RUNTIME_HOST] = _arg(args, "daemon_host")
     if _arg(args, "daemon_port"):
-        env["SARI_DAEMON_PORT"] = str(_arg(args, "daemon_port"))
+        env[RUNTIME_PORT] = str(_arg(args, "daemon_port"))
     if _arg(args, "http_host"):
         env["SARI_HTTP_API_HOST"] = _arg(args, "http_host")
     if _arg(args, "http_port") is not None:
@@ -431,9 +432,9 @@ def start_daemon_in_foreground(params: DaemonParams) -> int:
         os.environ["SARI_WORKSPACE_ROOT"] = workspace_root
         os.environ["PYTHONPATH"] = str(repo_root) + (os.pathsep + os.environ["PYTHONPATH"] if os.environ.get("PYTHONPATH") else "")
         if _arg(args, "daemon_host"):
-            os.environ["SARI_DAEMON_HOST"] = _arg(args, "daemon_host")
+            os.environ[RUNTIME_HOST] = _arg(args, "daemon_host")
         if _arg(args, "daemon_port"):
-            os.environ["SARI_DAEMON_PORT"] = str(_arg(args, "daemon_port"))
+            os.environ[RUNTIME_PORT] = str(_arg(args, "daemon_port"))
         if _arg(args, "http_host"):
             os.environ["SARI_HTTP_API_HOST"] = _arg(args, "http_host")
         if _arg(args, "http_port") is not None:
@@ -500,7 +501,7 @@ def get_registry_targets(host: str, port: int, pid_hint: Optional[int]) -> Tuple
     http_pids: Set[int] = set()
     try:
         reg = ServerRegistry()
-        data = reg._load()  # internal load is acceptable for stop-path recovery
+        data = reg.get_registry_snapshot(include_dead=True)
         daemons = data.get("daemons", {}) or {}
         workspaces = data.get("workspaces", {}) or {}
         for boot_id, info in daemons.items():
@@ -531,20 +532,26 @@ def list_registry_daemons() -> DaemonRows:
     out: DaemonRows = []
     try:
         reg = ServerRegistry()
-        data = reg._load()
-        for boot_id, info in (data.get("daemons") or {}).items():
-            if not isinstance(info, dict):
-                continue
-            pid = int(info.get("pid") or 0)
-            if pid <= 0:
-                continue
-            try:
-                os.kill(pid, 0)
-            except Exception:
-                continue
-            row = dict(info)
-            row["boot_id"] = boot_id
-            out.append(row)
+        if hasattr(reg, "list_daemons"):
+            for info in reg.list_daemons(include_dead=False):
+                row = dict(info)
+                out.append(row)
+        else:
+            # Backward-compat for tests/stubs that only expose _load().
+            data = reg._load()
+            for boot_id, info in (data.get("daemons") or {}).items():
+                if not isinstance(info, dict):
+                    continue
+                pid = int(info.get("pid") or 0)
+                if pid <= 0:
+                    continue
+                try:
+                    os.kill(pid, 0)
+                except Exception:
+                    continue
+                row = dict(info)
+                row["boot_id"] = boot_id
+                out.append(row)
     except Exception:
         return []
     out.sort(key=lambda x: float(x.get("last_seen_ts") or 0.0), reverse=True)
@@ -676,7 +683,7 @@ def kill_orphan_sari_workers(
                 env = {}
 
             env_root = str(env.get("SARI_WORKSPACE_ROOT") or "").strip()
-            env_port_raw = str(env.get("SARI_DAEMON_PORT") or "").strip()
+            env_port_raw = str(env.get(RUNTIME_PORT) or "").strip()
             env_port = None
             if env_port_raw:
                 try:
@@ -723,14 +730,10 @@ def stop_one_endpoint(host: str, port: int) -> int:
     pid = read_pid(host, port)
     if not pid:
         try:
-            # Fallback: derive daemon pid from registry when pid file is stale/missing.
             reg = ServerRegistry()
-            data = reg._load()
-            for info in (data.get("daemons") or {}).values():
-                if str(info.get("host") or DEFAULT_HOST) == str(host) and int(info.get("port") or 0) == int(port):
-                    pid = int(info.get("pid") or 0) or None
-                    if pid:
-                        break
+            inst = reg.resolve_daemon_by_endpoint(str(host), int(port))
+            if inst and inst.get("pid"):
+                pid = int(inst.get("pid"))
         except Exception:
             pid = None
 

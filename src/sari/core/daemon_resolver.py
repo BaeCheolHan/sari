@@ -4,6 +4,7 @@ from typing import Tuple, Optional
 from sari.core.server_registry import ServerRegistry
 from sari.core.workspace import WorkspaceManager
 from sari.core.constants import DEFAULT_DAEMON_HOST, DEFAULT_DAEMON_PORT
+from sari.core.daemon_runtime_state import RUNTIME_HOST, RUNTIME_PORT
 
 DEFAULT_HOST = DEFAULT_DAEMON_HOST
 DEFAULT_PORT = DEFAULT_DAEMON_PORT
@@ -29,7 +30,7 @@ def resolve_registry_daemon_address(
       1. Latest non-draining workspace daemon
       2. Workspace bound daemon (legacy/backward-compat)
     """
-    env_host = os.environ.get("SARI_DAEMON_HOST")
+    env_host = os.environ.get(RUNTIME_HOST)
     root = workspace_root or os.environ.get("SARI_WORKSPACE_ROOT") or WorkspaceManager.resolve_workspace_root()
     reg = ServerRegistry()
 
@@ -52,8 +53,8 @@ def resolve_daemon_address(workspace_root: Optional[str] = None) -> Tuple[str, i
       3. Env Fallback (Legacy)
       4. Default
     """
-    env_host = os.environ.get("SARI_DAEMON_HOST")
-    env_port = os.environ.get("SARI_DAEMON_PORT")
+    env_host = os.environ.get(RUNTIME_HOST)
+    env_port = os.environ.get(RUNTIME_PORT)
     
     # 1. Env Override (Explicit only - High priority for debugging)
     force_override = (os.environ.get("SARI_DAEMON_OVERRIDE") or "").strip().lower() in {"1", "true", "yes", "on"}

@@ -23,6 +23,7 @@ from sari.mcp.server_registry import ServerRegistry, get_registry_path
 from sari.core.policy_engine import load_daemon_policy
 from sari.mcp.cli.mcp_client import identify_sari_daemon, probe_sari_daemon, is_http_running as _is_http_running
 from sari.core.daemon_resolver import resolve_daemon_address as get_daemon_address
+from sari.core.daemon_runtime_state import RUNTIME_HOST, RUNTIME_PORT
 
 DoctorResult: TypeAlias = dict[str, object]
 DoctorResults: TypeAlias = list[DoctorResult]
@@ -754,7 +755,7 @@ def _check_daemon() -> DoctorResult:
 
     try:
         reg = ServerRegistry()
-        data = reg._load()
+        data = reg.get_registry_snapshot(include_dead=True)
         for info in (data.get("daemons") or {}).values():
             if str(info.get("host") or "") != str(host):
                 continue
@@ -793,8 +794,8 @@ def _check_daemon_policy() -> DoctorResult:
         "SARI_DAEMON_AUTOSTOP_GRACE_SEC",
         "SARI_DAEMON_SHUTDOWN_INHIBIT_MAX_SEC",
         "SARI_DAEMON_LEASE_TTL_SEC",
-        "SARI_DAEMON_HOST",
-        "SARI_DAEMON_PORT",
+        RUNTIME_HOST,
+        RUNTIME_PORT,
         "SARI_HTTP_HOST",
         "SARI_HTTP_PORT",
     )
@@ -964,7 +965,7 @@ def _auto_fixable(results: DoctorResults) -> ActionItems:
     try:
         from sari.mcp.server_registry import ServerRegistry
         reg = ServerRegistry()
-        data = reg._load()
+        data = reg.get_registry_snapshot(include_dead=True)
         if not data or data.get("version") != ServerRegistry.VERSION:
             actions.append({"name": "Server Registry",
                            "action": "repair_registry"})
@@ -1011,7 +1012,7 @@ def _run_auto_fixes(
             elif act == "repair_registry":
                 from sari.mcp.server_registry import ServerRegistry
                 reg = ServerRegistry()
-                reg._save(reg._empty())  # Reset to clean state
+                reg.reset_registry()
                 results.append(
                     _result(
                         f"Auto Fix {name}",
@@ -1071,7 +1072,7 @@ def _check_workspace_overlaps(ws_root: str) -> DoctorResults:
     try:
         from sari.mcp.server_registry import ServerRegistry
         reg = ServerRegistry()
-        data = reg._load()
+        data = reg.get_registry_snapshot(include_dead=True)
         workspaces = list(data.get("workspaces", {}).keys())
 
         current = WorkspaceManager.normalize_path(ws_root)
