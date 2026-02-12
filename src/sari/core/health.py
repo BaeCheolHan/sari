@@ -1,5 +1,6 @@
 import sys
 import socket
+import json
 import shutil
 import sqlite3
 from typing import Dict, List, Optional
@@ -21,6 +22,54 @@ def _row_get(row: object, key: str, index: int, default: object = None) -> objec
     if isinstance(row, (list, tuple)) and len(row) > index:
         return row[index]
     return default
+
+
+def _probe_sari_daemon(host: str, port: int, timeout: float = 0.8) -> bool:
+    def _send_method(method: str) -> dict[str, object]:
+        with socket.create_connection((host, port), timeout=timeout) as sock:
+            sock.settimeout(timeout)
+            body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method}).encode("utf-8")
+            header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
+            sock.sendall(header + body)
+            f = sock.makefile("rb")
+            headers: dict[bytes, bytes] = {}
+            while True:
+                line = f.readline()
+                if not line:
+                    return {}
+                line = line.strip()
+                if not line:
+                    break
+                if b":" in line:
+                    k, v = line.split(b":", 1)
+                    headers[k.strip().lower()] = v.strip()
+            try:
+                content_length = int(headers.get(b"content-length", b"0"))
+            except ValueError:
+                return {}
+            if content_length <= 0:
+                return {}
+            payload = f.read(content_length)
+            return json.loads(payload.decode("utf-8")) if payload else {}
+
+    try:
+        identify = _send_method("sari/identify")
+        result = identify.get("result")
+        if isinstance(result, dict) and str(result.get("name") or "") == "sari":
+            return True
+    except Exception:
+        pass
+
+    try:
+        ping = _send_method("ping")
+        err = ping.get("error")
+        if isinstance(err, dict):
+            msg = str(err.get("message") or "").lower()
+            if "server not initialized" in msg:
+                return True
+    except Exception:
+        pass
+    return False
 
 
 class SariDoctor:
@@ -136,11 +185,7 @@ class SariDoctor:
     def check_daemon(self) -> bool:
         try:
             host, port = resolve_daemon_address(self.workspace_root)
-            try:
-                with socket.create_connection((host, port), timeout=0.5):
-                    running = True
-            except Exception:
-                running = False
+            running = _probe_sari_daemon(host, port)
             if running:
                 pid = None
                 try:
