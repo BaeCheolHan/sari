@@ -217,6 +217,40 @@ def test_sync_status_flags_registry_resolve_failure(monkeypatch):
     assert resp["status_warning_counts"]["REGISTRY_RESOLVE_FAILED"] >= 1
 
 
+def test_sync_status_rejects_unregistered_workspace_query_in_shared_gateway(monkeypatch):
+    handler = Handler.__new__(Handler)
+    handler.shared_http_gateway = True
+    handler.workspace_root = "/tmp/default"
+    handler.server_host = "127.0.0.1"
+    handler.server_port = 47777
+    handler.server_version = "0.6.11"
+    handler.start_time = 0
+    handler.db = SimpleNamespace(get_repo_stats=lambda root_ids=None: {}, get_roots=lambda: [])
+    handler.indexer = SimpleNamespace(
+        status=SimpleNamespace(index_ready=True, scan_finished_ts=1, indexed_files=1, scanned_files=1, errors=0),
+        cfg=SimpleNamespace(workspace_roots=["/tmp/default"]),
+    )
+    handler.root_ids = []
+
+    called = {}
+
+    def _get_or_create(ws, persistent=True, track_ref=False):
+        called["workspace"] = ws
+        return SimpleNamespace(db=handler.db, indexer=handler.indexer)
+
+    monkeypatch.setattr("sari.core.http_server.detect_orphan_daemons", lambda: [])
+    monkeypatch.setattr("sari.core.http_server.get_system_metrics", lambda: {"process_cpu_percent": 0, "memory_percent": 0})
+    monkeypatch.setattr(
+        "sari.mcp.workspace_registry.Registry.get_instance",
+        lambda: SimpleNamespace(get_or_create=_get_or_create),
+    )
+
+    resp = Handler._handle_get(handler, "/status", {"workspace_root": ["/tmp/not-registered"]})
+    assert resp["workspace_root"] == "/tmp/default"
+    assert called["workspace"] == "/tmp/default"
+    assert resp["status_warning_counts"]["WORKSPACE_NOT_REGISTERED"] >= 1
+
+
 def test_sync_status_warns_when_workspace_query_parse_fails(monkeypatch):
     class _BadQs:
         def get(self, _key):

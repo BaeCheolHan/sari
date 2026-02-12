@@ -293,6 +293,21 @@ class Handler(BaseHTTPRequestHandler):
             return workspace_root, db, indexer, root_ids, registry_resolve_failed
         try:
             from sari.core.workspace import WorkspaceManager
+            # Guard against unbounded workspace accumulation from arbitrary
+            # query parameters when shared gateway mode is enabled.
+            allowed_roots = set()
+            for raw_root in self._indexer_workspace_roots(self.indexer):
+                try:
+                    allowed_roots.add(WorkspaceManager.normalize_path(str(raw_root)))
+                except Exception:
+                    pass
+            if allowed_roots and workspace_root not in allowed_roots:
+                self._warn_status(
+                    "WORKSPACE_NOT_REGISTERED",
+                    "Requested workspace_root is not in configured roots; using default workspace.",
+                    workspace_root=workspace_root,
+                )
+                workspace_root = self.workspace_root
             state = get_workspace_registry().get_or_create(
                 workspace_root, persistent=True, track_ref=False)
             db = state.db
