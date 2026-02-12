@@ -34,8 +34,7 @@ class SearchEngine:
         if not q:
             return [], {"total": 0, "engine": "l2", "partial": True}
         from .workspace import WorkspaceManager
-        root_id = WorkspaceManager.normalize_path(
-            list(opts.root_ids)[0]) if opts.root_ids else None
+        root_ids = [WorkspaceManager.normalize_path(rid) for rid in opts.root_ids] if opts.root_ids else None
         meta: Dict[str, object] = {
             "engine": "l2",
             "partial": True,
@@ -44,7 +43,7 @@ class SearchEngine:
         }
         try:
             recent_rows = self.storage.get_recent_files(
-                q, root_id=root_id, limit=opts.limit)
+                q, root_ids=root_ids, limit=opts.limit)
             hits = self._process_sqlite_rows(recent_rows, opts)
             for h in hits:
                 h.hit_reason = "L2 Cache (Degraded)"
@@ -66,8 +65,7 @@ class SearchEngine:
                 return [], {"total": 0}
 
             from .workspace import WorkspaceManager
-            root_id = WorkspaceManager.normalize_path(
-                list(opts.root_ids)[0]) if opts.root_ids else None
+            root_ids = [WorkspaceManager.normalize_path(rid) for rid in opts.root_ids] if opts.root_ids else None
             meta: Dict[str, object] = {
                 "engine": "hybrid",
                 "partial": False,
@@ -78,7 +76,7 @@ class SearchEngine:
             # 1. L2 Cache (Recent) - 최상위 우선순위
             try:
                 recent_rows = self.storage.get_recent_files(
-                    q, root_id=root_id, limit=opts.limit)
+                    q, root_ids=root_ids, limit=opts.limit)
                 recent_hits = self._process_sqlite_rows(recent_rows, opts)
                 for h in recent_hits:
                     h.hit_reason = "L2 Cache (Recent)"
@@ -96,7 +94,7 @@ class SearchEngine:
             if self.tantivy_engine and not opts.use_regex:
                 try:
                     hits = self.tantivy_engine.search(
-                        q, root_id=root_id, limit=opts.limit)
+                        q, root_ids=root_ids, limit=opts.limit)
                     if hits:
                         t_hits = self._process_tantivy_hits(hits, opts)
                         # Tantivy 점수 정규화
@@ -155,15 +153,15 @@ class SearchEngine:
                     meta["partial"] = True
 
             # Root 우선 가중치 (workspace root에 속한 결과를 앞쪽으로)
-            if root_id:
+            if root_ids:
                 for h in all_hits:
-                    if h.path and h.path.startswith(root_id + "/"):
+                    if h.path and any(h.path.startswith(rid + "/") for rid in root_ids):
                         h.score += 50.0
 
             # 스코프 매칭 근거 기록
-            if root_id or opts.repo:
+            if root_ids or opts.repo:
                 for h in all_hits:
-                    h.scope_reason = f"root_id={root_id or 'any'}; repo={opts.repo or 'any'}"
+                    h.scope_reason = f"root_ids={root_ids or 'any'}; repo={opts.repo or 'any'}"
 
             # 최종 정렬: 점수 내림차순 -> 시간 내림차순
             all_hits.sort(key=lambda x: (-x.score, -x.mtime))

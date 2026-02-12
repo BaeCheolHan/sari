@@ -150,3 +150,171 @@ def test_workspaces_endpoint_includes_per_workspace_file_count(monkeypatch, tmp_
     assert by_path[str(ws_b)]["failed_count"] == 4
     assert by_path[str(ws_a)]["readable"] is True
     assert by_path[str(ws_a)]["watched"] is True
+
+
+def test_sync_status_reports_db_metrics_failure(monkeypatch):
+    handler = Handler.__new__(Handler)
+    handler.shared_http_gateway = False
+    handler.workspace_root = "/tmp/default"
+    handler.server_host = "127.0.0.1"
+    handler.server_port = 47777
+    handler.server_version = "0.6.11"
+    handler.start_time = 0
+    handler.db = SimpleNamespace(get_repo_stats=lambda root_ids=None: {}, get_roots=lambda: [], db_path="/tmp/x.db")
+    handler.indexer = SimpleNamespace(status=SimpleNamespace(index_ready=True, scan_finished_ts=1, indexed_files=1, scanned_files=1, errors=0))
+    handler.root_ids = []
+
+    monkeypatch.setattr("sari.core.http_server.detect_orphan_daemons", lambda: [])
+    monkeypatch.setattr("sari.core.http_server.get_system_metrics", lambda: {"process_cpu_percent": 0, "memory_percent": 0})
+    monkeypatch.setattr("sari.core.http_server.os.path.exists", lambda _p: (_ for _ in ()).throw(PermissionError("denied")))
+
+    resp = Handler._handle_get(handler, "/status", {})
+    assert resp["system_metrics"]["db_metrics_ok"] is False
+    assert resp["status_warning_counts"]["DB_STORAGE_METRICS_FAILED"] >= 1
+
+
+def test_sync_workspaces_tracks_normalize_fallback(monkeypatch, tmp_path):
+    ws_a = tmp_path / "ws-a"
+    ws_a.mkdir()
+    handler = Handler.__new__(Handler)
+    handler.shared_http_gateway = False
+    handler.workspace_root = str(ws_a)
+    handler.db = SimpleNamespace(get_roots=lambda: [{"path": str(ws_a)}], execute=lambda _sql: SimpleNamespace(fetchall=lambda: []))
+    handler.indexer = SimpleNamespace(config=SimpleNamespace(workspace_roots=[str(ws_a)]))
+    handler.root_ids = []
+
+    monkeypatch.setattr("sari.core.workspace.WorkspaceManager.resolve_workspace_root", lambda: str(ws_a))
+    monkeypatch.setattr("sari.core.workspace.WorkspaceManager.resolve_config_path", lambda _root: str(tmp_path / "cfg.json"))
+    monkeypatch.setattr("sari.core.config.main.Config.load", lambda _path, workspace_root_override=None: SimpleNamespace(workspace_roots=[str(ws_a)]))
+    monkeypatch.setattr("sari.core.workspace.WorkspaceManager.normalize_path", lambda _p: (_ for _ in ()).throw(RuntimeError("normalize failed")))
+
+    resp = Handler._handle_get(handler, "/workspaces", {})
+    assert resp["normalization"]["fallback_count"] >= 1
+    assert resp["workspaces"][0]["normalized_by"] == "fallback"
+
+
+def test_sync_status_flags_registry_resolve_failure(monkeypatch):
+    handler = Handler.__new__(Handler)
+    handler.shared_http_gateway = True
+    handler.workspace_root = "/tmp/default"
+    handler.server_host = "127.0.0.1"
+    handler.server_port = 47777
+    handler.server_version = "0.6.11"
+    handler.start_time = 0
+    handler.db = SimpleNamespace(get_repo_stats=lambda root_ids=None: {}, get_roots=lambda: [])
+    handler.indexer = SimpleNamespace(status=SimpleNamespace(index_ready=True, scan_finished_ts=1, indexed_files=1, scanned_files=1, errors=0))
+    handler.root_ids = []
+
+    monkeypatch.setattr("sari.core.http_server.detect_orphan_daemons", lambda: [])
+    monkeypatch.setattr("sari.core.http_server.get_system_metrics", lambda: {"process_cpu_percent": 0, "memory_percent": 0})
+    monkeypatch.setattr(
+        "sari.mcp.workspace_registry.Registry.get_instance",
+        lambda: SimpleNamespace(get_or_create=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("registry fail"))),
+    )
+
+    resp = Handler._handle_get(handler, "/status", {"workspace_root": ["/tmp/target"]})
+    assert resp["registry_resolve_failed"] is True
+    assert resp["status_warning_counts"]["REGISTRY_RESOLVE_FAILED"] >= 1
+
+
+def test_sync_status_warns_when_workspace_query_parse_fails(monkeypatch):
+    class _BadQs:
+        def get(self, _key):
+            raise RuntimeError("bad querystring")
+
+    handler = Handler.__new__(Handler)
+    handler.shared_http_gateway = False
+    handler.workspace_root = "/tmp/default"
+    handler.server_host = "127.0.0.1"
+    handler.server_port = 47777
+    handler.server_version = "0.6.11"
+    handler.start_time = 0
+    handler.db = SimpleNamespace(get_repo_stats=lambda root_ids=None: {}, get_roots=lambda: [])
+    handler.indexer = SimpleNamespace(status=SimpleNamespace(index_ready=True, scan_finished_ts=1, indexed_files=1, scanned_files=1, errors=0))
+    handler.root_ids = []
+    handler.headers = {"X-Request-ID": "req-123"}
+
+    monkeypatch.setattr("sari.core.http_server.detect_orphan_daemons", lambda: [])
+    monkeypatch.setattr("sari.core.http_server.get_system_metrics", lambda: {"process_cpu_percent": 0, "memory_percent": 0})
+
+    resp = Handler._handle_get(handler, "/status", _BadQs())
+    assert resp["status_warning_counts"]["WORKSPACE_QUERY_PARSE_FAILED"] >= 1
+
+
+def test_sync_status_includes_shutdown_runtime_markers(monkeypatch):
+    handler = Handler.__new__(Handler)
+    handler.shared_http_gateway = False
+    handler.workspace_root = "/tmp/default"
+    handler.server_host = "127.0.0.1"
+    handler.server_port = 47777
+    handler.server_version = "0.6.11"
+    handler.start_time = 0
+    handler.db = SimpleNamespace(get_repo_stats=lambda root_ids=None: {}, get_roots=lambda: [])
+    handler.indexer = SimpleNamespace(status=SimpleNamespace(index_ready=True, scan_finished_ts=1, indexed_files=1, scanned_files=1, errors=0))
+    handler.root_ids = []
+
+    monkeypatch.setattr("sari.core.http_server.detect_orphan_daemons", lambda: [])
+    monkeypatch.setattr("sari.core.http_server.get_system_metrics", lambda: {"process_cpu_percent": 0, "memory_percent": 0})
+    monkeypatch.setenv("SARI_DAEMON_SHUTDOWN_INTENT", "1")
+    monkeypatch.setenv("SARI_DAEMON_ACTIVE_LEASES_COUNT", "3")
+    monkeypatch.setenv("SARI_DAEMON_LAST_REAP_AT", "77.1")
+    monkeypatch.setenv("SARI_DAEMON_LAST_SHUTDOWN_REASON", "idle_timeout")
+    monkeypatch.setenv("SARI_DAEMON_SUICIDE_STATE", "grace")
+    monkeypatch.setenv("SARI_DAEMON_REAPER_LAST_RUN_AT", "77.1")
+    monkeypatch.setenv("SARI_DAEMON_NO_CLIENT_SINCE", "70.0")
+    monkeypatch.setenv("SARI_DAEMON_GRACE_REMAINING", "2.0")
+    monkeypatch.setenv("SARI_DAEMON_GRACE_REMAINING_MS", "2000")
+    monkeypatch.setenv("SARI_DAEMON_SHUTDOWN_ONCE_SET", "1")
+    monkeypatch.setenv("SARI_DAEMON_LAST_EVENT_TS", "78.0")
+    monkeypatch.setenv("SARI_DAEMON_EVENT_QUEUE_DEPTH", "2")
+    monkeypatch.setenv("SARI_DAEMON_LEASES", '[{"id":"l1"}]')
+    monkeypatch.setenv("SARI_DAEMON_WORKERS_ALIVE", "[999]")
+
+    resp = Handler._handle_get(handler, "/status", {})
+    assert resp["shutdown_intent"] is True
+    assert resp["active_leases_count"] == 3
+    assert resp["last_reap_at"] == 77.1
+    assert resp["last_shutdown_reason"] == "idle_timeout"
+    assert resp["suicide_state"] == "grace"
+    assert resp["reaper_last_run_at"] == 77.1
+    assert resp["no_client_since"] == 70.0
+    assert resp["grace_remaining"] == 2.0
+    assert resp["grace_remaining_ms"] == 2000
+    assert resp["shutdown_once_set"] is True
+    assert resp["last_event_ts"] == 78.0
+    assert resp["event_queue_depth"] == 2
+    assert isinstance(resp["leases"], list)
+    assert isinstance(resp["workers_alive"], list)
+
+
+def test_sync_status_contract_snapshot(monkeypatch):
+    handler = Handler.__new__(Handler)
+    handler.shared_http_gateway = False
+    handler.workspace_root = "/tmp/default"
+    handler.server_host = "127.0.0.1"
+    handler.server_port = 47777
+    handler.server_version = "0.6.11"
+    handler.start_time = 0
+    handler.db = SimpleNamespace(get_repo_stats=lambda root_ids=None: {}, get_roots=lambda: [])
+    handler.indexer = SimpleNamespace(status=SimpleNamespace(index_ready=True, scan_finished_ts=1, indexed_files=1, scanned_files=1, errors=0))
+    handler.root_ids = []
+
+    monkeypatch.setattr("sari.core.http_server.detect_orphan_daemons", lambda: [])
+    monkeypatch.setattr("sari.core.http_server.get_system_metrics", lambda: {"process_cpu_percent": 0, "memory_percent": 0})
+    monkeypatch.setenv("SARI_DAEMON_SUICIDE_STATE", "idle")
+
+    resp = Handler._handle_get(handler, "/status", {})
+    required = {
+        "suicide_state",
+        "active_leases_count",
+        "no_client_since",
+        "grace_remaining_ms",
+        "shutdown_reason",
+        "event_queue_depth",
+        "last_event_ts",
+        "workers_alive",
+        "warnings_recent",
+        "warning_counts",
+    }
+    missing = required - set(resp.keys())
+    assert not missing, f"missing status contract fields: {sorted(missing)}"

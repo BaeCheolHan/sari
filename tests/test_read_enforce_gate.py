@@ -19,6 +19,22 @@ class StubDB:
     def read_symbol(self, _query, _limit):
         return {"path": self.target, "name": "Sym", "line": 1, "content": "class Sym:\n    pass\n"}
 
+    def list_snippets_by_tag(self, _tag: str, limit: int | None = None):
+        rows = [
+            {
+                "id": 1,
+                "tag": "tag1",
+                "path": self.target,
+                "root_id": "r",
+                "start_line": 1,
+                "end_line": 2,
+                "content": "a\nb\n",
+            }
+        ]
+        if isinstance(limit, int) and limit > 0:
+            return rows[:limit]
+        return rows
+
 
 def _payload(result: dict) -> dict:
     return json.loads(result["content"][0]["text"])
@@ -145,3 +161,51 @@ def test_read_gate_blocks_symbol_candidate_when_path_mismatch(tmp_path, monkeypa
     )
     payload = _payload(blocked)
     assert payload["error"]["code"] == "CANDIDATE_REF_REQUIRED"
+
+
+def test_read_gate_blocks_snippet_when_no_search_context(tmp_path, monkeypatch):
+    monkeypatch.setenv("SARI_FORMAT", "json")
+    reset_session_metrics_for_tests()
+    target = str(tmp_path / "a.py")
+    db = StubDB(target=target)
+    blocked = execute_read({"mode": "snippet", "target": "tag1"}, db, [str(tmp_path)])
+    payload = _payload(blocked)
+    assert payload["error"]["code"] == "SEARCH_FIRST_REQUIRED"
+    stabilization = payload["meta"]["stabilization"]
+    assert stabilization["reason_codes"]
+    assert stabilization["next_calls"]
+
+
+def test_read_gate_allows_snippet_after_search_context(tmp_path, monkeypatch):
+    monkeypatch.setenv("SARI_FORMAT", "json")
+    reset_session_metrics_for_tests()
+    target = str(tmp_path / "a.py")
+    db = StubDB(target=target)
+    execute_search({"session_id": "g-snippet", "query": "a", "search_type": "code"}, db, None, [str(tmp_path)])
+    ok = execute_read({"session_id": "g-snippet", "mode": "snippet", "target": "tag1"}, db, [str(tmp_path)])
+    assert ok.get("isError") is not True
+
+
+def test_read_gate_block_is_deterministic_for_reason_and_next_calls(tmp_path, monkeypatch):
+    monkeypatch.setenv("SARI_FORMAT", "json")
+    reset_session_metrics_for_tests()
+    target = str(tmp_path / "a.py")
+    db = StubDB(target=target)
+    first = _payload(execute_read({"mode": "snippet", "target": "tag1"}, db, [str(tmp_path)]))
+    second = _payload(execute_read({"mode": "snippet", "target": "tag1"}, db, [str(tmp_path)]))
+    first_stab = first["meta"]["stabilization"]
+    second_stab = second["meta"]["stabilization"]
+    assert first_stab["reason_codes"] == second_stab["reason_codes"]
+    assert first_stab["next_calls"] == second_stab["next_calls"]
+
+
+def test_read_strict_session_error_includes_reason_and_next_calls(tmp_path, monkeypatch):
+    monkeypatch.setenv("SARI_FORMAT", "json")
+    monkeypatch.setenv("SARI_STRICT_SESSION_ID", "1")
+    reset_session_metrics_for_tests()
+    db = StubDB(target=str(tmp_path / "a.py"))
+    payload = _payload(execute_read({"mode": "file", "target": "a.py"}, db, [str(tmp_path)]))
+    stabilization = payload["meta"]["stabilization"]
+    assert payload["error"]["code"] == "STRICT_SESSION_ID_REQUIRED"
+    assert stabilization["reason_codes"] == ["STRICT_SESSION_ID_REQUIRED"]
+    assert stabilization["next_calls"]

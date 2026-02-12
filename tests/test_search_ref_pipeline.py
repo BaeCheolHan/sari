@@ -68,4 +68,32 @@ def test_search_zero_results_has_search_next_action(tmp_path, monkeypatch):
     payload = _payload(result)
     stabilization = payload["meta"]["stabilization"]
     assert stabilization["suggested_next_action"] == "search"
-    assert stabilization["next_calls"] == []
+    assert stabilization["next_calls"]
+    first = stabilization["next_calls"][0]
+    assert first["tool"] == "search"
+    assert isinstance(first["arguments"], dict)
+    assert str(first["arguments"].get("query", "")).strip()
+
+
+def test_search_deterministic_reason_and_next_calls_for_same_input(tmp_path, monkeypatch):
+    monkeypatch.setenv("SARI_FORMAT", "json")
+    reset_session_metrics_for_tests()
+
+    target = str(tmp_path / "x.py")
+    db = StubDB(target)
+    a = _payload(execute_search({"session_id": "det-1", "query": "x", "search_type": "code"}, db, None, [str(tmp_path)]))
+    b = _payload(execute_search({"session_id": "det-1", "query": "x", "search_type": "code"}, db, None, [str(tmp_path)]))
+    a_stab = a["meta"]["stabilization"]
+    b_stab = b["meta"]["stabilization"]
+    assert a_stab["reason_codes"] == b_stab["reason_codes"]
+    assert a_stab["next_calls"] == b_stab["next_calls"]
+
+
+def test_search_invalid_args_include_reason_and_next_calls(monkeypatch):
+    monkeypatch.setenv("SARI_FORMAT", "json")
+    result = execute_search([], db=StubDB("/tmp/x.py"), logger=None, roots=["/tmp"])
+    payload = _payload(result)
+    assert payload["error"]["code"] == "INVALID_ARGS"
+    stabilization = payload["meta"]["stabilization"]
+    assert stabilization["reason_codes"]
+    assert stabilization["next_calls"]

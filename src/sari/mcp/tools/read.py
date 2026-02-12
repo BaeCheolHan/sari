@@ -3,6 +3,7 @@ import json
 import os
 from typing import TypeAlias
 
+from sari.core.policy_engine import ReadPolicy, load_read_policy
 from sari.mcp.stabilization.aggregation import add_read_to_bundle
 from sari.mcp.stabilization.budget_guard import apply_soft_limits, evaluate_budget_state
 from sari.mcp.stabilization.relevance_guard import assess_relevance
@@ -176,23 +177,12 @@ def _budget_exceeded_response() -> ToolResult:
                     "reason_codes": [ReasonCode.BUDGET_HARD_LIMIT.value],
                     "suggested_next_action": "search",
                     "warnings": [msg],
+                    "next_calls": [{"tool": "search", "arguments": {"query": "target", "search_type": "code", "limit": 5}}],
                 }
             },
             "isError": True,
         },
     )
-
-
-def _gate_mode() -> str:
-    mode = str(os.environ.get("SARI_READ_GATE_MODE", "enforce")).strip().lower()
-    return mode if mode in {"enforce", "warn"} else "enforce"
-
-
-def _max_range_lines() -> int:
-    try:
-        return max(1, int(os.environ.get("SARI_READ_MAX_RANGE_LINES", "200")))
-    except Exception:
-        return 200
 
 
 def _to_int(value: object) -> int | None:
@@ -263,10 +253,29 @@ def _enforce_search_ref_gate(
     mode: str,
     args_map: Mapping[str, object],
     search_context: Mapping[str, object],
+    policy: ReadPolicy,
 ) -> tuple[bool, ToolResult | None, list[str], list[str]]:
     if mode == "snippet":
-        return (True, None, [], [])
-    max_lines = _max_range_lines()
+        search_count = int(search_context.get("search_count", 0) or 0)
+        if search_count > 0:
+            return (True, None, [], [])
+        reason = ReasonCode.SEARCH_FIRST_REQUIRED
+        message = "Snippet read requires search context first."
+        if policy.gate_mode == "warn":
+            return (True, None, [reason.value], [message])
+        return (
+            False,
+            _stabilization_error(
+                code=reason.value,
+                message=message,
+                reason_codes=[reason.value],
+                warnings=[message],
+                next_calls=[{"tool": "search", "arguments": {"query": "snippet", "search_type": "code", "limit": 5}}],
+            ),
+            [reason.value],
+            [message],
+        )
+    max_lines = int(policy.max_range_lines)
     precision_allowed, precision_overflow = _is_precision_read(args_map, max_range_lines=max_lines)
     if precision_allowed:
         return (True, None, [], [])
@@ -319,8 +328,7 @@ def _enforce_search_ref_gate(
         if reason == ReasonCode.SEARCH_FIRST_REQUIRED
         else "Read requires candidate_id from latest search response."
     )
-    gate_mode = _gate_mode()
-    if gate_mode == "warn":
+    if policy.gate_mode == "warn":
         return (True, None, [reason.value], [message])
     return (
         False,
@@ -420,7 +428,7 @@ def execute_read(args: object, db: object, roots: list[str], logger: object = No
         return _stabilization_error(
             code="STRICT_SESSION_ID_REQUIRED",
             message="session_id is required by strict session policy.",
-            reason_codes=[],
+            reason_codes=["STRICT_SESSION_ID_REQUIRED"],
             warnings=["Provide session_id or disable strict mode."],
             next_calls=[{"tool": "search", "arguments": {"query": "target"}}],
         )
@@ -466,13 +474,14 @@ def execute_read(args: object, db: object, roots: list[str], logger: object = No
 
     target = str(args_map.get("target") or "").strip()
     delegated = dict(args_map)
+    read_policy = load_read_policy()
 
     snapshot = get_metrics_snapshot(args_map, roots)
-    budget_state, budget_warnings, budget_next = evaluate_budget_state(snapshot)
+    budget_state, budget_warnings, budget_next = evaluate_budget_state(snapshot, policy=read_policy)
     if budget_state == "HARD_LIMIT":
         return _budget_exceeded_response()
 
-    delegated, soft_degraded, soft_warnings = apply_soft_limits(mode, delegated)
+    delegated, soft_degraded, soft_warnings = apply_soft_limits(mode, delegated, policy=read_policy)
     reason_codes: list[str] = []
     if soft_degraded:
         budget_state = "SOFT_LIMIT"
@@ -480,7 +489,12 @@ def execute_read(args: object, db: object, roots: list[str], logger: object = No
     all_budget_warnings = budget_warnings + soft_warnings
 
     search_ctx = get_search_context(args_map, roots)
-    gate_ok, gate_error, gate_reasons, gate_warnings = _enforce_search_ref_gate(mode, delegated, search_ctx)
+    gate_ok, gate_error, gate_reasons, gate_warnings = _enforce_search_ref_gate(
+        mode,
+        delegated,
+        search_ctx,
+        read_policy,
+    )
     reason_codes.extend(gate_reasons)
     all_budget_warnings.extend(gate_warnings)
     if not gate_ok and gate_error is not None:
@@ -529,6 +543,8 @@ def execute_read(args: object, db: object, roots: list[str], logger: object = No
     if mode == "snippet":
         if target and not (delegated.get("tag") or delegated.get("query")):
             delegated["tag"] = target
+        if "max_results" in delegated and "limit" not in delegated:
+            delegated["limit"] = delegated.get("max_results")
         response = execute_get_snippet(delegated, db, roots)
         return _finalize_read_response(
             mode,

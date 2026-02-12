@@ -177,7 +177,7 @@ class GlobalStorageManager:
         qsize = self.writer.qsize()
         return min(1.0, qsize / 5000.0)
 
-    def get_recent_files(self, query: str, root_id: Optional[str] = None, limit: int = 10) -> List[RecentFileRow]:
+    def get_recent_files(self, query: str, root_ids: Optional[List[str]] = None, limit: int = 10) -> List[RecentFileRow]:
         """Query the L2 memory overlay."""
         results: List[RecentFileRow] = []
         q = (query or "").lower()
@@ -191,8 +191,10 @@ class GlobalStorageManager:
                 row_mtime = int(row.get("mtime") or 0)
                 row_size = int(row.get("size") or 0)
                 row_snippet = str(row.get("snippet") or "")
-                if root_id and row_root_id != root_id:
+                
+                if root_ids and row_root_id not in root_ids:
                     continue
+                
                 content_match = False
                 if row_snippet and q in str(row_snippet).lower():
                     content_match = True

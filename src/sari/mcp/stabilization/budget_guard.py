@@ -1,21 +1,18 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Mapping
 
+from sari.core.policy_engine import ReadPolicy, load_read_policy
 
-@dataclass(frozen=True)
-class BudgetPolicy:
-    max_reads_per_session: int = 25
-    max_total_read_lines: int = 2500
-    max_single_read_lines: int = 300
-    max_preview_chars: int = 12000
+# Backward-compatible alias for tests/imports.
+BudgetPolicy = ReadPolicy
 
 
 def evaluate_budget_state(
     metrics_snapshot: Mapping[str, object],
-    policy: BudgetPolicy = BudgetPolicy(),
+    policy: BudgetPolicy | None = None,
 ) -> tuple[str, list[str], str | None]:
+    policy = policy or load_read_policy()
     reads_count = int(metrics_snapshot.get("reads_count", 0) or 0)
     reads_lines_total = int(metrics_snapshot.get("reads_lines_total", 0) or 0)
     warnings: list[str] = []
@@ -38,8 +35,9 @@ def evaluate_budget_state(
 def apply_soft_limits(
     mode: str,
     delegated_args: dict[str, object],
-    policy: BudgetPolicy = BudgetPolicy(),
+    policy: BudgetPolicy | None = None,
 ) -> tuple[dict[str, object], bool, list[str]]:
+    policy = policy or load_read_policy()
     out = dict(delegated_args)
     warnings: list[str] = []
     degraded = False
@@ -53,6 +51,8 @@ def apply_soft_limits(
                 warnings.append("Preview reduced due to max_preview_chars budget.")
         except Exception:
             pass
+    elif mode in {"snippet", "diff_preview"}:
+        out["max_preview_chars"] = policy.max_preview_chars
 
     if mode == "file":
         raw_limit = out.get("limit")
@@ -69,5 +69,34 @@ def apply_soft_limits(
                     warnings.append("Read limit reduced due to budget policy.")
             except Exception:
                 pass
+
+    if mode == "snippet":
+        raw_limit = out.get("max_results", out.get("limit", policy.max_snippet_results))
+        try:
+            requested = int(raw_limit)
+            clamped = max(1, min(requested, policy.max_snippet_results))
+            out["limit"] = clamped
+            out["max_results"] = clamped
+            if requested != clamped:
+                degraded = True
+                warnings.append("Snippet results reduced due to max_results budget.")
+        except Exception:
+            out["limit"] = policy.max_snippet_results
+            out["max_results"] = policy.max_snippet_results
+            degraded = True
+            warnings.append("Invalid snippet max_results; applied default budget cap.")
+
+        if "context_lines" in out:
+            try:
+                requested_context = int(out.get("context_lines"))
+                clamped_context = max(0, min(requested_context, policy.max_snippet_context_lines))
+                out["context_lines"] = clamped_context
+                if requested_context != clamped_context:
+                    degraded = True
+                    warnings.append("Snippet context_lines reduced due to budget policy.")
+            except Exception:
+                out["context_lines"] = policy.max_snippet_context_lines
+                degraded = True
+                warnings.append("Invalid snippet context_lines; applied budget cap.")
 
     return out, degraded, warnings

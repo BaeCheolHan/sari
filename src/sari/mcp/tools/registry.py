@@ -42,6 +42,7 @@ class Tool:
     input_schema: ToolInputSchema
     handler: ToolHandler
     hidden: bool = False
+    deprecated: bool = False
 
 
 @dataclass
@@ -88,6 +89,7 @@ class ToolRegistry:
                 "name": t.name,
                 "description": t.description,
                 "inputSchema": t.input_schema,
+                **({"deprecated": True} if t.deprecated else {}),
             }
             for t in self._tools.values()
             if (not t.hidden) or expose_internal
@@ -351,10 +353,21 @@ def _register_file_tools(reg: ToolRegistry):
 
     reg.register(Tool(
         name="read_file",
-        description="Read file content (legacy; prefer unified `read` with mode=file). DANGER: High token cost. Use ONLY after search/list_symbols.",
+        description="DEPRECATED legacy wrapper. Use unified `read` with mode=file.",
         input_schema={"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
-        handler=lambda ctx, args: read_file_tool.execute_read_file(args, ctx.db, ctx.roots),
+        handler=lambda ctx, args: read_tool.execute_read(
+            {
+                "mode": "file",
+                "target": args.get("path"),
+                **({"offset": args.get("offset")} if "offset" in args else {}),
+                **({"limit": args.get("limit")} if "limit" in args else {}),
+            },
+            ctx.db,
+            ctx.roots,
+            ctx.logger,
+        ),
         hidden=True,
+        deprecated=True,
     ))
 
     reg.register(Tool(
@@ -366,7 +379,7 @@ def _register_file_tools(reg: ToolRegistry):
 
     reg.register(Tool(
         name="dry_run_diff",
-        description="Preview diff and run lightweight syntax check before editing (legacy; prefer unified `read` with mode=diff_preview).",
+        description="DEPRECATED legacy wrapper. Use unified `read` with mode=diff_preview.",
         input_schema={
             "type": "object",
             "properties": {
@@ -375,8 +388,19 @@ def _register_file_tools(reg: ToolRegistry):
             },
             "required": ["path", "content"],
         },
-        handler=lambda ctx, args: dry_run_diff_tool.execute_dry_run_diff(args, ctx.db, ctx.roots),
+        handler=lambda ctx, args: read_tool.execute_read(
+            {
+                "mode": "diff_preview",
+                "target": args.get("path"),
+                "content": args.get("content"),
+                **({"against": args.get("against")} if "against" in args else {}),
+            },
+            ctx.db,
+            ctx.roots,
+            ctx.logger,
+        ),
         hidden=True,
+        deprecated=True,
     ))
 
 
@@ -397,7 +421,7 @@ def _register_symbol_tools(reg: ToolRegistry):
 
     reg.register(Tool(
         name="read_symbol",
-        description="Read symbol definition block by name/path (legacy; prefer unified `read` with mode=symbol). Use after search_symbols.",
+        description="DEPRECATED legacy wrapper. Use unified `read` with mode=symbol.",
         input_schema={
             "type": "object",
             "properties": {
@@ -409,8 +433,22 @@ def _register_symbol_tools(reg: ToolRegistry):
             },
             "description": "Provide name+path or symbol_id/sid.",
         },
-        handler=lambda ctx, args: read_symbol_tool.execute_read_symbol(args, ctx.db, ctx.logger, ctx.roots),
+        handler=lambda ctx, args: read_tool.execute_read(
+            {
+                "mode": "symbol",
+                "target": args.get("name") or args.get("symbol_id") or args.get("sid"),
+                **({"name": args.get("name")} if "name" in args else {}),
+                **({"symbol_id": args.get("symbol_id")} if "symbol_id" in args else {}),
+                **({"sid": args.get("sid")} if "sid" in args else {}),
+                **({"path": args.get("path")} if "path" in args else {}),
+                **({"limit": args.get("limit")} if "limit" in args else {}),
+            },
+            ctx.db,
+            ctx.roots,
+            ctx.logger,
+        ),
         hidden=True,
+        deprecated=True,
     ))
 
     reg.register(Tool(
@@ -484,6 +522,7 @@ def _register_symbol_tools(reg: ToolRegistry):
         description="Check call-graph plugin health and API compatibility.",
         input_schema={"type": "object", "properties": {}},
         handler=lambda ctx, args: call_graph_health_tool.execute_call_graph_health(args, ctx.db, ctx.logger, ctx.roots),
+        hidden=True,
     ))
 
 

@@ -1,6 +1,8 @@
 import pytest
 import asyncio
 import os
+import sys
+import uuid
 from unittest.mock import MagicMock, patch
 from sari.mcp.daemon import SariDaemon
 import sari.mcp.daemon as daemon_mod
@@ -11,6 +13,7 @@ async def test_daemon_init():
     daemon = SariDaemon()
     assert daemon.boot_id is not None
     assert daemon.port > 0
+    assert uuid.UUID(hex=daemon.boot_id).version == 7
 
 
 @pytest.mark.asyncio
@@ -66,3 +69,165 @@ async def test_main_exits_when_daemon_task_finishes_without_signal(monkeypatch):
 
     await daemon_mod.main()
     assert events["shutdown_called"] == 1
+
+
+def test_pid_file_type_error_emits_warning(monkeypatch):
+    monkeypatch.setattr(daemon_mod, "PID_FILE", object())
+    daemon_mod.warning_sink.clear()
+
+    pid_path = daemon_mod._pid_file()
+
+    assert pid_path.name == "daemon.pid"
+    assert daemon_mod.warning_sink.count("PID_FILE_RESOLVE_FAILED") >= 1
+
+
+def test_shutdown_warns_when_child_terminate_fails(monkeypatch):
+    daemon = SariDaemon(host="127.0.0.1", port=49993)
+    daemon_mod.warning_sink.clear()
+
+    class _Child:
+        pid = 43210
+
+        def terminate(self):
+            raise RuntimeError("boom")
+
+    fake_mp = MagicMock()
+    fake_mp.active_children.return_value = [_Child()]
+    monkeypatch.setitem(sys.modules, "multiprocessing", fake_mp)
+    monkeypatch.setattr(daemon, "_unregister_daemon", lambda: None)
+    monkeypatch.setattr(daemon, "_cleanup_legacy_pid_file", lambda: None)
+
+    daemon.shutdown()
+
+    assert daemon_mod.warning_sink.count("CHILD_TERMINATE_FAILED") >= 1
+
+
+@pytest.mark.asyncio
+async def test_main_marks_signals_disabled_on_signal_registration_failure(monkeypatch):
+    events = {"signals_disabled": 0}
+
+    class _FakeDaemon:
+        async def start_async(self):
+            await asyncio.sleep(0)
+            return None
+
+        def shutdown(self):
+            return None
+
+        def mark_signals_disabled(self):
+            events["signals_disabled"] += 1
+
+    loop = asyncio.get_running_loop()
+
+    def _raise(*_args, **_kwargs):
+        raise RuntimeError("signals unsupported")
+
+    monkeypatch.setattr(loop, "add_signal_handler", _raise)
+    monkeypatch.setattr(daemon_mod, "SariDaemon", _FakeDaemon)
+
+    await daemon_mod.main()
+    assert events["signals_disabled"] == 1
+
+
+def test_shutdown_waits_for_server_wait_closed(monkeypatch):
+    daemon = SariDaemon(host="127.0.0.1", port=49991)
+    monkeypatch.setattr(daemon, "_unregister_daemon", lambda: None)
+    monkeypatch.setattr(daemon, "_cleanup_legacy_pid_file", lambda: None)
+    monkeypatch.setitem(sys.modules, "multiprocessing", MagicMock(active_children=lambda: []))
+
+    waited = {"done": 0}
+
+    class _FakeServer:
+        def close(self):
+            return None
+
+        async def wait_closed(self):
+            waited["done"] += 1
+
+    daemon.server = _FakeServer()
+    daemon.shutdown(reason="test_wait_closed")
+    assert waited["done"] == 1
+    assert daemon.last_shutdown_reason == "test_wait_closed"
+
+
+def test_shutdown_uses_kill_fallback_for_lingering_child(monkeypatch):
+    daemon = SariDaemon(host="127.0.0.1", port=49990)
+    monkeypatch.setattr(daemon, "_unregister_daemon", lambda: None)
+    monkeypatch.setattr(daemon, "_cleanup_legacy_pid_file", lambda: None)
+
+    class _Child:
+        pid = 32123
+
+        def __init__(self):
+            self._alive = True
+            self.kill_called = 0
+            self.term_called = 0
+            self.join_called = 0
+
+        def terminate(self):
+            self.term_called += 1
+
+        def join(self, timeout=None):
+            self.join_called += 1
+
+        def is_alive(self):
+            return self._alive
+
+        def kill(self):
+            self.kill_called += 1
+            self._alive = False
+
+    child = _Child()
+    fake_mp = MagicMock()
+    fake_mp.active_children.return_value = [child]
+    monkeypatch.setitem(sys.modules, "multiprocessing", fake_mp)
+
+    daemon.shutdown(reason="test_kill_fallback")
+    assert child.term_called == 1
+    assert child.join_called >= 1
+    assert child.kill_called == 1
+
+
+def test_leases_reaped_after_ttl():
+    daemon = SariDaemon(host="127.0.0.1", port=49989)
+    lease_id = daemon._issue_lease("test-client", ttl_sec=0.01)
+    assert daemon.active_lease_count() == 1
+    daemon._reap_expired_leases(now_ts=daemon_mod.time.time() + 1.0)
+    assert daemon.active_lease_count() == 0
+    assert lease_id not in daemon._active_leases
+
+
+def test_lease_events_are_applied_via_heartbeat_queue():
+    daemon = SariDaemon(host="127.0.0.1", port=49988)
+    lease_id = "lease-q-1"
+
+    daemon._enqueue_lease_event(daemon_mod.EVENT_LEASE_ISSUE, lease_id=lease_id, client_hint="cli")
+    assert daemon.active_lease_count() == 0
+
+    daemon._apply_lease_events(now_ts=daemon_mod.time.time())
+    assert daemon.active_lease_count() == 1
+
+    daemon._enqueue_lease_event(daemon_mod.EVENT_LEASE_REVOKE, lease_id=lease_id, reason="connection_closed")
+    daemon._apply_lease_events(now_ts=daemon_mod.time.time())
+    assert daemon.active_lease_count() == 0
+
+
+def test_event_drain_respects_max_events():
+    daemon = SariDaemon(host="127.0.0.1", port=49987)
+    daemon._enqueue_lease_event(daemon_mod.EVENT_LEASE_ISSUE, lease_id="l1", client_hint="a")
+    daemon._enqueue_lease_event(daemon_mod.EVENT_LEASE_ISSUE, lease_id="l2", client_hint="b")
+
+    daemon._apply_lease_events(max_events=1)
+    assert daemon.active_lease_count() == 1
+    daemon._apply_lease_events(max_events=1)
+    assert daemon.active_lease_count() == 2
+
+
+def test_event_drain_coalesces_tick_and_processes_non_tick():
+    daemon = SariDaemon(host="127.0.0.1", port=49986)
+    daemon._enqueue_event(daemon_mod.DaemonEvent(event_type=daemon_mod.EVENT_HEARTBEAT_TICK))
+    daemon._enqueue_event(daemon_mod.DaemonEvent(event_type=daemon_mod.EVENT_HEARTBEAT_TICK))
+    daemon._enqueue_lease_event(daemon_mod.EVENT_LEASE_ISSUE, lease_id="l1", client_hint="cli")
+
+    daemon._apply_lease_events(max_events=10)
+    assert daemon.active_lease_count() == 1

@@ -7,6 +7,8 @@ Starlette 기반 비동기 HTTP 서버.
 import json
 import os
 import asyncio
+import inspect
+import logging
 from contextlib import asynccontextmanager
 from typing import Optional, TypeAlias
 
@@ -19,6 +21,8 @@ from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 from sari.version import __version__
 from sari.core.daemon_health import detect_orphan_daemons
+from sari.core.policy_engine import load_daemon_runtime_status
+from sari.mcp.stabilization.warning_sink import warning_sink
 
 JsonObject: TypeAlias = dict[str, object]
 JsonArray: TypeAlias = list[JsonObject]
@@ -51,6 +55,24 @@ class AsyncHttpServer:
         self.root_ids = root_ids or []
         self.mcp_server = mcp_server
         self._app: Optional[Starlette] = None
+        self._status_warning_counts: dict[str, int] = {}
+
+    def _warn_status(self, code: str, message: str, **context: object) -> None:
+        key = str(code or "UNKNOWN")
+        self._status_warning_counts[key] = int(self._status_warning_counts.get(key, 0) or 0) + 1
+        warning_sink.warn(
+            reason_code=key,
+            where="async_http_server",
+            extra={"message": str(message), **dict(context)},
+        )
+        details = ", ".join(f"{k}={v!r}" for k, v in context.items())
+        if details:
+            logging.getLogger("sari.async_http_server").warning("%s: %s (%s)", key, message, details)
+        else:
+            logging.getLogger("sari.async_http_server").warning("%s: %s", key, message)
+
+    def _warning_counts_json(self) -> JsonObject:
+        return {str(k): int(v or 0) for k, v in self._status_warning_counts.items()}
 
     @staticmethod
     def _indexer_workspace_roots(indexer: object) -> list[str]:
@@ -63,9 +85,20 @@ class AsyncHttpServer:
             from sari.core.utils.system import get_system_metrics
             metrics = self._json_safe_metrics(get_system_metrics())
             metrics.update(self._get_db_storage_metrics())
+            metrics["metrics_ok"] = True
+            metrics.setdefault("metrics_error_count", 0)
             return metrics
-        except Exception:
-            return {}
+        except Exception as e:
+            self._warn_status(
+                "SYSTEM_METRICS_FAILED",
+                "Failed to fetch system metrics",
+                error=repr(e),
+            )
+            return {
+                "metrics_ok": False,
+                "metrics_error_count": 1,
+                "db_metrics_ok": False,
+            }
 
     @staticmethod
     def _json_safe_metrics(metrics: object) -> JsonObject:
@@ -99,6 +132,8 @@ class AsyncHttpServer:
                     "db_main_size": 0,
                     "db_wal_size": 0,
                     "db_shm_size": 0,
+                    "db_metrics_ok": True,
+                    "db_metrics_error_count": 0,
                 }
             main_size = os.path.getsize(db_path) if os.path.exists(db_path) else 0
             wal_path = f"{db_path}-wal"
@@ -110,13 +145,22 @@ class AsyncHttpServer:
                 "db_main_size": int(main_size),
                 "db_wal_size": int(wal_size),
                 "db_shm_size": int(shm_size),
+                "db_metrics_ok": True,
+                "db_metrics_error_count": 0,
             }
-        except Exception:
+        except Exception as e:
+            self._warn_status(
+                "DB_STORAGE_METRICS_FAILED",
+                "Failed to compute DB storage metrics",
+                error=repr(e),
+            )
             return {
                 "db_size": 0,
                 "db_main_size": 0,
                 "db_wal_size": 0,
                 "db_shm_size": 0,
+                "db_metrics_ok": False,
+                "db_metrics_error_count": 1,
             }
 
     @staticmethod
@@ -129,6 +173,22 @@ class AsyncHttpServer:
             return WorkspaceManager.normalize_path(expanded)
         except Exception:
             return expanded.replace("\\", "/").rstrip("/")
+
+    def _normalize_workspace_path_with_meta(self, path: str) -> tuple[str, str]:
+        if not path:
+            return "", "empty"
+        expanded = os.path.expanduser(str(path))
+        try:
+            from sari.core.workspace import WorkspaceManager
+            return WorkspaceManager.normalize_path(expanded), "workspace_manager"
+        except Exception as e:
+            self._warn_status(
+                "WORKSPACE_NORMALIZE_FAILED",
+                "Workspace path normalization failed; using fallback normalization",
+                path=expanded,
+                error=repr(e),
+            )
+            return expanded.replace("\\", "/").rstrip("/"), "fallback"
     
     @asynccontextmanager
     async def lifespan(self, app: Starlette):
@@ -142,8 +202,30 @@ class AsyncHttpServer:
         app.state.server_host = self.host
         app.state.server_port = self.port
         yield
-        # Shutdown - cleanup resources if needed
-        pass
+        await self._best_effort_close(getattr(app.state, "mcp_server", None), "app.state.mcp_server")
+        await self._best_effort_close(getattr(app.state, "indexer", None), "app.state.indexer")
+        await self._best_effort_close(getattr(app.state, "db", None), "app.state.db")
+
+    async def _best_effort_close(self, obj: object, label: str) -> None:
+        if obj is None:
+            return
+        for method_name in ("aclose", "close", "shutdown", "stop"):
+            fn = getattr(obj, method_name, None)
+            if not callable(fn):
+                continue
+            try:
+                result = fn()
+                if inspect.isawaitable(result):
+                    await result
+            except Exception as e:
+                self._warn_status(
+                    "LIFESPAN_SHUTDOWN_FAILED",
+                    "Failed during best-effort shutdown",
+                    target=label,
+                    method=method_name,
+                    error=repr(e),
+                )
+            return
     
     async def health(self, request: Request) -> JSONResponse:
         """Health check endpoint."""
@@ -160,6 +242,7 @@ class AsyncHttpServer:
     async def status(self, request: Request) -> JSONResponse:
         """Server status endpoint."""
         st = self.indexer.status
+        daemon_status = load_daemon_runtime_status()
         repo_stats = {}
         if hasattr(self.db, "get_repo_stats"):
             repo_stats = self.db.get_repo_stats(root_ids=self.root_ids)
@@ -185,6 +268,22 @@ class AsyncHttpServer:
             "errors": st.errors,
             "orphan_daemon_count": len(orphan_daemons),
             "orphan_daemon_warnings": orphan_daemon_warnings,
+            "signals_disabled": daemon_status.signals_disabled,
+            "shutdown_intent": daemon_status.shutdown_intent,
+            "suicide_state": daemon_status.suicide_state,
+            "active_leases_count": daemon_status.active_leases_count,
+            "leases": list(daemon_status.leases or []),
+            "last_reap_at": daemon_status.last_reap_at,
+            "reaper_last_run_at": daemon_status.reaper_last_run_at,
+            "no_client_since": daemon_status.no_client_since,
+            "grace_remaining": daemon_status.grace_remaining,
+            "grace_remaining_ms": daemon_status.grace_remaining_ms,
+            "shutdown_once_set": daemon_status.shutdown_once_set,
+            "last_event_ts": daemon_status.last_event_ts,
+            "event_queue_depth": daemon_status.event_queue_depth,
+            "last_shutdown_reason": daemon_status.last_shutdown_reason,
+            "shutdown_reason": daemon_status.shutdown_reason,
+            "workers_alive": list(daemon_status.workers_alive or []),
             "fts_enabled": self.db.fts_enabled,
             "worker_count": getattr(self.indexer, "max_workers", 0),
             "performance": self.indexer.get_performance_metrics() if hasattr(self.indexer, "get_performance_metrics") else {},
@@ -192,6 +291,10 @@ class AsyncHttpServer:
             "repo_stats": repo_stats,
             "roots": self.db.get_roots() if hasattr(self.db, "get_roots") else [],
             "system_metrics": self._get_system_metrics(),
+            "endpoint_ok": bool(getattr(self, "_endpoint_ok", True)),
+            "status_warning_counts": self._warning_counts_json(),
+            "warning_counts": warning_sink.warning_counts(),
+            "warnings_recent": warning_sink.warnings_recent(),
         })
     
     async def search(self, request: Request) -> JSONResponse:
@@ -362,27 +465,49 @@ class AsyncHttpServer:
 
         norm_roots: list[str] = []
         seen: set[str] = set()
+        normalized_by_path: dict[str, str] = {}
+        normalize_fallback_count = 0
         for root in configured_roots:
             if not root:
                 continue
-            normalized = self._normalize_workspace_path(str(root))
+            normalized, normalized_by = self._normalize_workspace_path_with_meta(str(root))
             if normalized and normalized not in seen:
                 seen.add(normalized)
                 norm_roots.append(normalized)
+                normalized_by_path[normalized] = normalized_by
+            if normalized_by == "fallback":
+                normalize_fallback_count += 1
 
         indexed_by_path: dict[str, JsonObject] = {}
+        row_parse_error_count = 0
         if hasattr(self.db, "get_roots"):
             try:
                 rows = self.db.get_roots() or []
                 for row in rows:
-                    if isinstance(row, dict):
+                    if not isinstance(row, dict):
+                        continue
+                    try:
                         p = row.get("path") or row.get("root_path") or row.get("real_path")
                         if not p:
                             continue
-                        normalized = self._normalize_workspace_path(str(p))
+                        normalized, normalized_by = self._normalize_workspace_path_with_meta(str(p))
                         indexed_by_path[normalized] = row
-            except Exception:
-                pass
+                        if normalized_by == "fallback":
+                            normalize_fallback_count += 1
+                    except Exception as row_error:
+                        row_parse_error_count += 1
+                        self._warn_status(
+                            "WORKSPACE_ROW_PARSE_FAILED",
+                            "Failed to parse workspace root row",
+                            error=repr(row_error),
+                            raw_row=repr(row),
+                        )
+            except Exception as e:
+                self._warn_status(
+                    "WORKSPACE_ROOTS_FETCH_FAILED",
+                    "Failed to load workspace roots from DB",
+                    error=repr(e),
+                )
         failed_by_root: dict[str, JsonObject] = {}
         if hasattr(self.db, "execute"):
             try:
@@ -417,16 +542,27 @@ class AsyncHttpServer:
                             "pending_count": pending_count,
                             "failed_count": failed_count,
                         }
-            except Exception:
-                pass
+            except Exception as e:
+                self._warn_status(
+                    "FAILED_TASKS_AGGREGATE_FAILED",
+                    "Failed to aggregate failed task counts",
+                    error=repr(e),
+                )
 
         watched_roots = set()
         try:
             cfg_roots = self._indexer_workspace_roots(self.indexer)
             for root in cfg_roots:
-                watched_roots.add(self._normalize_workspace_path(str(root)))
-        except Exception:
-            pass
+                normalized, normalized_by = self._normalize_workspace_path_with_meta(str(root))
+                watched_roots.add(normalized)
+                if normalized_by == "fallback":
+                    normalize_fallback_count += 1
+        except Exception as e:
+            self._warn_status(
+                "WATCHED_ROOTS_NORMALIZE_FAILED",
+                "Failed while normalizing watched roots",
+                error=repr(e),
+            )
 
         workspaces: JsonArray = []
         for root in norm_roots:
@@ -476,6 +612,7 @@ class AsyncHttpServer:
 
             workspaces.append({
                 "path": root,
+                "normalized_by": normalized_by_path.get(root, "workspace_manager"),
                 "root_id": computed_root_id,
                 "exists": bool(exists),
                 "readable": bool(readable),
@@ -494,6 +631,9 @@ class AsyncHttpServer:
             "ok": True,
             "workspace_root": self.workspace_root,
             "count": len(workspaces),
+            "normalization": {"fallback_count": int(normalize_fallback_count)},
+            "row_parse_error_count": int(row_parse_error_count),
+            "status_warning_counts": self._warning_counts_json(),
             "workspaces": workspaces,
         })
     
@@ -554,13 +694,21 @@ def serve_async(
     import socket
     import threading
 
+    endpoint_ok = True
+    endpoint_errors: list[str] = []
+
     # Determine root_ids
     root_ids = []
     try:
         from sari.core.workspace import WorkspaceManager
         root_ids = [WorkspaceManager.root_id_for_workspace(r) for r in AsyncHttpServer._indexer_workspace_roots(indexer)]
     except Exception:
-        pass
+        endpoint_ok = False
+        endpoint_errors.append("ROOT_IDS_RESOLVE_FAILED")
+        logging.getLogger("sari.async_http_server").warning(
+            "Failed to resolve root_ids for async HTTP server",
+            exc_info=True,
+        )
     
     # Create MCP server if not provided
     if mcp_server is None:
@@ -571,7 +719,12 @@ def serve_async(
             else:
                 mcp_server = LocalSearchMCPServer(workspace_root)
         except Exception:
-            pass
+            endpoint_ok = False
+            endpoint_errors.append("MCP_SERVER_INIT_FAILED")
+            logging.getLogger("sari.async_http_server").warning(
+                "Failed to initialize MCP server for async HTTP server",
+                exc_info=True,
+            )
     
     # Find available port
     actual_port = port
@@ -601,6 +754,9 @@ def serve_async(
         root_ids=root_ids,
         mcp_server=mcp_server,
     )
+    server._endpoint_ok = endpoint_ok
+    for code in endpoint_errors:
+        server._warn_status(code, "Async HTTP endpoint startup diagnostic failure")
     
     app = server.create_app()
     
@@ -613,6 +769,8 @@ def serve_async(
         access_log=False,
     )
     uvicorn_server = uvicorn.Server(config)
+    setattr(uvicorn_server, "sari_endpoint_ok", endpoint_ok)
+    setattr(uvicorn_server, "sari_endpoint_errors", list(endpoint_errors))
     
     shutdown_event = threading.Event()
     
@@ -620,7 +778,19 @@ def serve_async(
         try:
             asyncio.run(uvicorn_server.serve())
         except Exception:
-            pass
+            setattr(uvicorn_server, "sari_endpoint_ok", False)
+            existing_errors = list(getattr(uvicorn_server, "sari_endpoint_errors", []))
+            existing_errors.append("ASYNC_SERVER_THREAD_FAILED")
+            setattr(uvicorn_server, "sari_endpoint_errors", existing_errors)
+            server._endpoint_ok = False
+            server._warn_status(
+                "ASYNC_SERVER_THREAD_FAILED",
+                "Async HTTP server thread terminated with exception",
+            )
+            logging.getLogger("sari.async_http_server").warning(
+                "Async HTTP server thread terminated with exception",
+                exc_info=True,
+            )
         finally:
             shutdown_event.set()
     

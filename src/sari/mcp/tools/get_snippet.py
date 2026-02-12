@@ -4,6 +4,7 @@ import threading
 import time
 from pathlib import Path
 
+from sari.core.policy_engine import load_read_policy
 from sari.mcp.tools._util import (
     mcp_response,
     pack_header,
@@ -49,6 +50,54 @@ def _as_row_dict(row: object) -> RowData:
     ):
         if hasattr(row, k):
             out[k] = getattr(row, k)
+    return out
+
+
+def _int_in_range(value: object, default: int, *, min_value: int, max_value: int) -> int:
+    try:
+        parsed = int(value if value is not None else default)
+    except Exception:
+        parsed = default
+    return max(min_value, min(parsed, max_value))
+
+
+def _clip_text(text: str, max_chars: int) -> str:
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+    return text[:max_chars]
+
+
+def _apply_context_window(row: RowData, context_lines: int) -> None:
+    if context_lines <= 0:
+        return
+    content = str(row.get("content") or "")
+    if not content:
+        return
+    lines = content.splitlines()
+    if not lines:
+        return
+    max_lines = (context_lines * 2) + 1
+    if len(lines) <= max_lines:
+        return
+    row["content"] = "\n".join(lines[:max_lines])
+
+
+def _apply_payload_budget(rows: Rows, *, max_chars: int) -> Rows:
+    remaining = max(0, int(max_chars))
+    if remaining <= 0:
+        return []
+    out: Rows = []
+    for row in rows:
+        item = dict(row)
+        content = str(item.get("content") or "")
+        if content and remaining <= 0:
+            break
+        if content and len(content) > remaining:
+            item["content"] = _clip_text(content, remaining)
+            out.append(item)
+            break
+        out.append(item)
+        remaining -= len(content)
     return out
 
 def _read_lines(db: object, db_path: str, roots: list[str]) -> list[str]:
@@ -258,16 +307,37 @@ def _write_snapshot_files(diff_path: str, row: RowData, mapped: RowData) -> None
 
 def build_get_snippet(args: SnippetArgs, db: object, roots: list[str]) -> ToolResult:
     """스니펫 조회 및 위치 리매핑 비즈니스 로직을 수행합니다."""
+    policy = load_read_policy()
     tag = str(args.get("tag") or "").strip()
     query = str(args.get("query") or "").strip()
-    limit = int(args.get("limit") or 20)
+    limit = _int_in_range(
+        args.get("max_results", args.get("limit", policy.max_snippet_results)),
+        policy.max_snippet_results,
+        min_value=1,
+        max_value=policy.max_snippet_results,
+    )
+    context_lines = _int_in_range(
+        args.get("context_lines", 0),
+        0,
+        min_value=0,
+        max_value=policy.max_snippet_context_lines,
+    )
+    max_preview_chars = _int_in_range(
+        args.get("max_preview_chars", policy.max_preview_chars),
+        policy.max_preview_chars,
+        min_value=100,
+        max_value=policy.max_preview_chars,
+    )
     remap = str(args.get("remap") or "1").strip().lower() not in {"0", "false", "no", "off"}
     update = str(args.get("update") or "0").strip().lower() in {"1", "true", "yes", "on"}
     diff_path = str(args.get("diff_path") or "").strip()
     history = str(args.get("history") or "").strip().lower() in {"1", "true", "yes", "on"}
     
     if tag:
-        rows = [_as_row_dict(r) for r in db.list_snippets_by_tag(tag)]
+        try:
+            rows = [_as_row_dict(r) for r in db.list_snippets_by_tag(tag, limit=limit)]
+        except TypeError:
+            rows = [_as_row_dict(r) for r in db.list_snippets_by_tag(tag)][:limit]
         if remap:
             for r in rows:
                 if r.get("path"):
@@ -291,6 +361,9 @@ def build_get_snippet(args: SnippetArgs, db: object, roots: list[str]) -> ToolRe
                             r["update_skipped_reason"] = reason
                 if history and r.get("id"):
                     r["versions"] = db.list_snippet_versions(int(r["id"]))
+        for r in rows:
+            _apply_context_window(r, context_lines)
+        rows = _apply_payload_budget(rows[:limit], max_chars=max_preview_chars)
         return {"tag": tag, "results": rows}
     
     if query:
@@ -318,6 +391,9 @@ def build_get_snippet(args: SnippetArgs, db: object, roots: list[str]) -> ToolRe
                             r["update_skipped_reason"] = reason
                 if history and r.get("id"):
                     r["versions"] = db.list_snippet_versions(int(r["id"]))
+        for r in rows:
+            _apply_context_window(r, context_lines)
+        rows = _apply_payload_budget(rows[:limit], max_chars=max_preview_chars)
         return {"query": query, "results": rows}
     raise ValueError("tag or query is required")
 

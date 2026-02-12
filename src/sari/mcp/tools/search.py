@@ -44,6 +44,31 @@ _clip_text = clip_text
 _safe_int = safe_int
 
 
+def _search_error_response(code: str, message: str, *, query: str = "target") -> ToolResult:
+    next_calls = [
+        {
+            "tool": "search",
+            "arguments": {"query": str(query or "target"), "search_type": "code", "limit": 5},
+        }
+    ]
+    return mcp_response(
+        "search",
+        lambda: pack_error("search", code, message),
+        lambda: {
+            "error": {"code": code, "message": message},
+            "meta": {
+                "stabilization": {
+                    "reason_codes": [str(code or "UNKNOWN")],
+                    "suggested_next_action": "search",
+                    "warnings": [str(message or "search failed")],
+                    "next_calls": next_calls,
+                }
+            },
+            "isError": True,
+        },
+    )
+
+
 def execute_search(
     args: object,
     db: object,
@@ -54,19 +79,11 @@ def execute_search(
 ) -> ToolResult:
     del engine, indexer
     if not isinstance(args, Mapping):
-        return mcp_response(
-            "search",
-            lambda: pack_error("search", ErrorCode.INVALID_ARGS, "args must be an object"),
-            lambda: {"error": {"code": ErrorCode.INVALID_ARGS.value, "message": "args must be an object"}, "isError": True},
-        )
+        return _search_error_response(ErrorCode.INVALID_ARGS.value, "args must be an object")
     args = dict(args)
     validation_err = validate_search_args(args)
     if validation_err:
-        return mcp_response(
-            "search",
-            lambda: pack_error("search", ErrorCode.INVALID_ARGS, validation_err),
-            lambda: {"error": {"code": ErrorCode.INVALID_ARGS.value, "message": validation_err}, "isError": True},
-        )
+        return _search_error_response(ErrorCode.INVALID_ARGS.value, validation_err)
 
     start_ts = time.time()
     query = str(args.get("query", "")).strip()
@@ -93,11 +110,7 @@ def execute_search(
                 code = raw_code
             if raw_message:
                 message = raw_message
-        return mcp_response(
-            "search",
-            lambda: pack_error("search", code, message),
-            lambda: {"error": {"code": code, "message": message}, "isError": True},
-        )
+        return _search_error_response(str(code), message, query=query)
 
     latency_ms = int((time.time() - start_ts) * 1000)
     normalized_matches, total, normalization_warnings = normalize_results(resolved_type, raw_result)
@@ -126,6 +139,17 @@ def execute_search(
         candidate_map[cid] = str(match.get("path", ""))
     bundle = bundle_id(query, normalized_matches)
     next_calls = next_calls_for_matches(normalized_matches, bundle)
+    if not next_calls:
+        next_calls = [
+            {
+                "tool": "search",
+                "arguments": {
+                    "query": query or "target",
+                    "search_type": "code",
+                    "limit": max(5, limit),
+                },
+            }
+        ]
 
     metrics_snapshot = record_search_metrics(
         args,

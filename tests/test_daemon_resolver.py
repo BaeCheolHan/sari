@@ -1,5 +1,6 @@
 import os
 from sari.core.daemon_resolver import resolve_daemon_address, DEFAULT_PORT, DEFAULT_HOST
+import sari.core.daemon_resolver as resolver_mod
 from sari.core.server_registry import ServerRegistry
 
 def test_resolve_default():
@@ -54,3 +55,17 @@ def test_resolve_registry_priority(monkeypatch, tmp_path):
     monkeypatch.setenv("SARI_DAEMON_OVERRIDE", "1")
     host, port = resolve_daemon_address(ws_root)
     assert port == 55555 # Should pick from env now
+
+
+def test_resolver_exposes_failure_state_on_registry_exception(monkeypatch):
+    monkeypatch.setattr("sari.core.daemon_resolver.ServerRegistry", lambda: (_ for _ in ()).throw(RuntimeError("resolver boom")))
+    monkeypatch.delenv("SARI_DAEMON_PORT", raising=False)
+    monkeypatch.delenv("SARI_DAEMON_OVERRIDE", raising=False)
+
+    host, port = resolve_daemon_address("/tmp/fake-root")
+    status = resolver_mod.get_last_resolver_status()
+
+    assert host == DEFAULT_HOST
+    assert port == DEFAULT_PORT
+    assert status["resolver_ok"] is False
+    assert "resolver boom" in str(status.get("error", ""))

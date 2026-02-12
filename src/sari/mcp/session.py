@@ -6,7 +6,7 @@ import inspect
 import os
 import urllib.parse
 from uuid import uuid4
-from typing import Dict,  Optional
+from typing import Dict, Optional, Callable
 from .workspace_registry import Registry, SharedState
 from sari.core.settings import settings
 from sari.mcp.trace import trace
@@ -26,7 +26,13 @@ class Session:
     Handles a single client connection.
     Parses JSON-RPC, manages workspace binding via Registry.
     """
-    def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+    def __init__(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        on_activity: Optional[Callable[[], None]] = None,
+        on_connection_closed: Optional[Callable[[], None]] = None,
+    ):
         self.reader = reader
         self.writer = writer
         self.workspace_root: Optional[str] = None
@@ -35,6 +41,8 @@ class Session:
         self.running = True
         self._preinit_server = None
         self.connection_id = str(uuid4())
+        self._on_activity = on_activity
+        self._on_connection_closed = on_connection_closed
         trace("session_init", has_writer=bool(writer))
 
     def _get_preinit_server(self):
@@ -54,6 +62,11 @@ class Session:
                     if not line: # EOF
                         self.running = False
                         break
+                    if callable(self._on_activity):
+                        try:
+                            self._on_activity()
+                        except Exception:
+                            pass
 
                     line_str = line.decode("utf-8").strip()
                     if not line_str:
@@ -144,6 +157,11 @@ class Session:
              trace("session_fatal_error", error=str(outer_e))
         finally:
             self.cleanup()
+            if callable(self._on_connection_closed):
+                try:
+                    self._on_connection_closed()
+                except Exception:
+                    pass
             try:
                 res = self.writer.close()
                 if inspect.isawaitable(res):

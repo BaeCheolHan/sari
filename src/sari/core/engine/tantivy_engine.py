@@ -190,7 +190,7 @@ class TantivyEngine:
 
     def search(self,
                query: str,
-               root_id: str | None = None,
+               root_ids: list[str] | str | None = None,
                limit: int = 50) -> list[dict[str, object]]:
         if not tantivy or not self._index:
             return []
@@ -225,10 +225,14 @@ class TantivyEngine:
 
         # Build query: (body:query) AND (root_id:root_id)
         safe_q = self._escape_query(query or "")
-        safe_root = self._escape_query(root_id or "")
         full_query = f"body:({safe_q})"
-        if root_id:
-            full_query = f"({full_query}) AND root_id:\"{safe_root}\""
+        
+        if root_ids:
+            if isinstance(root_ids, str):
+                root_ids = [root_ids]
+            root_clauses = [f"root_id:\"{self._escape_query(rid)}\"" for rid in root_ids if rid]
+            if root_clauses:
+                full_query = f"({full_query}) AND ({' OR '.join(root_clauses)})"
 
         try:
             q = self._index.parse_query(full_query, ["body"])

@@ -6,6 +6,7 @@ import shutil
 import subprocess
 from typing import Mapping, TypeAlias
 
+from sari.core.policy_engine import load_read_policy
 from sari.mcp.tools._util import (
     mcp_response,
     pack_header,
@@ -20,6 +21,14 @@ from sari.mcp.tools._util import (
 
 ToolArgs: TypeAlias = dict[str, object]
 ToolResult: TypeAlias = dict[str, object]
+
+
+def _bounded_int(value: object, default: int, *, min_value: int, max_value: int) -> int:
+    try:
+        parsed = int(value if value is not None else default)
+    except Exception:
+        parsed = default
+    return max(min_value, min(parsed, max_value))
 
 
 def _read_current(db: object, db_path: str, roots: list[str]) -> str:
@@ -157,12 +166,19 @@ def _maybe_lint(path: str, content: str) -> ToolResult:
 
 def build_dry_run_diff(args: ToolArgs, db: object, roots: list[str]) -> ToolResult:
     """드라이런 분석을 수행하고 차이점, 구문 상태, 린트 결과를 포함한 데이터 딕셔너리를 빌드합니다."""
+    policy = load_read_policy()
     path = str(args.get("path") or "").strip()
     raw_content = args.get("content")
     if not path or raw_content is None:
         raise ValueError("path and content are required")
     new_content = str(raw_content)
     against = str(args.get("against") or "WORKTREE").strip().upper()
+    max_preview_chars = _bounded_int(
+        args.get("max_preview_chars", policy.max_preview_chars),
+        policy.max_preview_chars,
+        min_value=100,
+        max_value=policy.max_preview_chars,
+    )
     db_path = resolve_db_path(path, roots)
     if not db_path:
         raise ValueError("path is out of workspace scope")
@@ -179,12 +195,22 @@ def build_dry_run_diff(args: ToolArgs, db: object, roots: list[str]) -> ToolResu
         )
     )
     diff_text = "\n".join(diff_lines)
+    diff_truncated = False
+    if len(diff_text) > max_preview_chars:
+        diff_text = diff_text[:max_preview_chars]
+        diff_truncated = True
     
     # 2. 구문 및 린트 검사
     syntax = _syntax_check(path, new_content)
     lint = _maybe_lint(path, new_content)
     
-    payload = {"path": db_path, "diff": diff_text, "against": against, "against_fallback": fallback_used}
+    payload = {
+        "path": db_path,
+        "diff": diff_text,
+        "against": against,
+        "against_fallback": fallback_used,
+        "diff_truncated": diff_truncated,
+    }
     payload.update(syntax)
     payload.update(lint)
     return payload

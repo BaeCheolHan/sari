@@ -241,6 +241,93 @@ def test_registry_hides_internal_tools_by_default(monkeypatch):
     assert "read_symbol" not in names
     assert "get_snippet" not in names
     assert "dry_run_diff" not in names
+    assert "call_graph_health" not in names
+
+
+def test_registry_exposes_deprecated_flag_for_legacy_tools(monkeypatch):
+    monkeypatch.setenv("SARI_EXPOSE_INTERNAL_TOOLS", "1")
+    reg = build_default_registry()
+    tools = {t["name"]: t for t in reg.list_tools()}
+    assert tools["read_file"]["deprecated"] is True
+    assert tools["read_symbol"]["deprecated"] is True
+    assert tools["dry_run_diff"]["deprecated"] is True
+
+
+def test_registry_legacy_read_file_routes_to_unified_read(monkeypatch):
+    reg = build_default_registry()
+    captured = {}
+
+    def _fake_read(args, _db, _roots, _logger):
+        captured["args"] = dict(args)
+        return {"content": [{"text": "PACK1 tool=read ok=true"}]}
+
+    monkeypatch.setattr("sari.mcp.tools.registry.read_tool.execute_read", _fake_read)
+    ctx = ToolContext(
+        db=MagicMock(),
+        engine=None,
+        indexer=MagicMock(),
+        roots=["/tmp/ws"],
+        cfg=MagicMock(),
+        logger=MagicMock(),
+        workspace_root="/tmp/ws",
+        server_version="test",
+    )
+    reg.execute("read_file", ctx, {"path": "a.py", "offset": 1, "limit": 2})
+    assert captured["args"]["mode"] == "file"
+    assert captured["args"]["target"] == "a.py"
+    assert captured["args"]["offset"] == 1
+    assert captured["args"]["limit"] == 2
+
+
+def test_registry_legacy_read_symbol_routes_to_unified_read(monkeypatch):
+    reg = build_default_registry()
+    captured = {}
+
+    def _fake_read(args, _db, _roots, _logger):
+        captured["args"] = dict(args)
+        return {"content": [{"text": "PACK1 tool=read ok=true"}]}
+
+    monkeypatch.setattr("sari.mcp.tools.registry.read_tool.execute_read", _fake_read)
+    ctx = ToolContext(
+        db=MagicMock(),
+        engine=None,
+        indexer=MagicMock(),
+        roots=["/tmp/ws"],
+        cfg=MagicMock(),
+        logger=MagicMock(),
+        workspace_root="/tmp/ws",
+        server_version="test",
+    )
+    reg.execute("read_symbol", ctx, {"name": "Foo", "path": "a.py"})
+    assert captured["args"]["mode"] == "symbol"
+    assert captured["args"]["target"] == "Foo"
+    assert captured["args"]["path"] == "a.py"
+
+
+def test_registry_legacy_dry_run_diff_routes_to_unified_read(monkeypatch):
+    reg = build_default_registry()
+    captured = {}
+
+    def _fake_read(args, _db, _roots, _logger):
+        captured["args"] = dict(args)
+        return {"content": [{"text": "PACK1 tool=read ok=true"}]}
+
+    monkeypatch.setattr("sari.mcp.tools.registry.read_tool.execute_read", _fake_read)
+    ctx = ToolContext(
+        db=MagicMock(),
+        engine=None,
+        indexer=MagicMock(),
+        roots=["/tmp/ws"],
+        cfg=MagicMock(),
+        logger=MagicMock(),
+        workspace_root="/tmp/ws",
+        server_version="test",
+    )
+    reg.execute("dry_run_diff", ctx, {"path": "a.py", "content": "x", "against": "HEAD"})
+    assert captured["args"]["mode"] == "diff_preview"
+    assert captured["args"]["target"] == "a.py"
+    assert captured["args"]["content"] == "x"
+    assert captured["args"]["against"] == "HEAD"
 
 
 def test_registry_symbol_tool_schemas_match_runtime_flexibility(monkeypatch):
@@ -313,7 +400,8 @@ def test_registry_read_tool_delegates_to_read_file():
     assert "hello%20from%20unified%20read" in text
 
 
-def test_registry_read_tool_delegates_to_get_snippet():
+def test_registry_read_tool_delegates_to_get_snippet(monkeypatch):
+    monkeypatch.setenv("SARI_READ_GATE_MODE", "warn")
     reg = build_default_registry()
     ctx = ToolContext(
         db=MagicMock(),

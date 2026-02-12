@@ -3,9 +3,12 @@ import os
 import threading
 import mimetypes
 import time
+import logging
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 from sari.version import __version__
+from sari.mcp.stabilization.warning_sink import warning_sink
+from sari.core.utils.uuid7 import uuid7_hex
 
 # Support script mode and package mode
 try:
@@ -15,6 +18,7 @@ try:
     from .http_middleware import run_http_middlewares, default_http_middlewares  # type: ignore
     from .utils.system import get_system_metrics  # type: ignore
     from .daemon_health import detect_orphan_daemons  # type: ignore
+    from .policy_engine import load_daemon_runtime_status  # type: ignore
 except ImportError:
     from db import LocalSearchDB  # type: ignore
     from indexer import Indexer  # type: ignore
@@ -22,6 +26,7 @@ except ImportError:
     from http_middleware import run_http_middlewares, default_http_middlewares  # type: ignore
     from utils.system import get_system_metrics  # type: ignore
     from daemon_health import detect_orphan_daemons  # type: ignore
+    from policy_engine import load_daemon_runtime_status  # type: ignore
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -37,6 +42,30 @@ class Handler(BaseHTTPRequestHandler):
     start_time: float = time.time()
     workspace_root: str = ""
     shared_http_gateway: bool = False
+
+    def _init_request_status(self):
+        self._status_warning_counts = {}
+
+    def _warn_status(self, code: str, message: str, **context):
+        if not hasattr(self, "_status_warning_counts"):
+            self._init_request_status()
+        key = str(code or "UNKNOWN")
+        self._status_warning_counts[key] = int(self._status_warning_counts.get(key, 0) or 0) + 1
+        warning_sink.warn(
+            reason_code=key,
+            where="http_server",
+            extra={"message": str(message), **dict(context)},
+        )
+        details = ", ".join(f"{k}={v!r}" for k, v in context.items())
+        if details:
+            logging.getLogger("sari.http_server").warning("%s: %s (%s)", key, message, details)
+        else:
+            logging.getLogger("sari.http_server").warning("%s: %s", key, message)
+
+    def _status_warning_counts_json(self):
+        if not hasattr(self, "_status_warning_counts"):
+            return {}
+        return {str(k): int(v or 0) for k, v in self._status_warning_counts.items()}
 
     @staticmethod
     def _indexer_workspace_roots(indexer) -> list[str]:
@@ -54,6 +83,8 @@ class Handler(BaseHTTPRequestHandler):
                     "db_main_size": 0,
                     "db_wal_size": 0,
                     "db_shm_size": 0,
+                    "db_metrics_ok": True,
+                    "db_metrics_error_count": 0,
                 }
             main_size = os.path.getsize(db_path) if os.path.exists(db_path) else 0
             wal_path = f"{db_path}-wal"
@@ -65,13 +96,22 @@ class Handler(BaseHTTPRequestHandler):
                 "db_main_size": int(main_size),
                 "db_wal_size": int(wal_size),
                 "db_shm_size": int(shm_size),
+                "db_metrics_ok": True,
+                "db_metrics_error_count": 0,
             }
-        except Exception:
+        except Exception as e:
+            self._warn_status(
+                "DB_STORAGE_METRICS_FAILED",
+                "Failed to compute DB storage metrics",
+                error=repr(e),
+            )
             return {
                 "db_size": 0,
                 "db_main_size": 0,
                 "db_wal_size": 0,
                 "db_shm_size": 0,
+                "db_metrics_ok": False,
+                "db_metrics_error_count": 1,
             }
 
     def _get_db_size(self, db_obj=None):
@@ -88,19 +128,55 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return expanded.replace("\\", "/").rstrip("/")
 
+    def _normalize_workspace_path_with_meta(self, path: str):
+        if not path:
+            return "", "empty"
+        expanded = os.path.expanduser(str(path))
+        try:
+            from sari.core.workspace import WorkspaceManager
+            return WorkspaceManager.normalize_path(expanded), "workspace_manager"
+        except Exception as e:
+            self._warn_status(
+                "WORKSPACE_NORMALIZE_FAILED",
+                "Workspace path normalization failed; using fallback",
+                path=expanded,
+                error=repr(e),
+            )
+            return expanded.replace("\\", "/").rstrip("/"), "fallback"
+
     def _selected_workspace_root(self, qs) -> str:
         sel = ""
         try:
             vals = qs.get("workspace_root") or []
             if vals:
                 sel = str(vals[0] or "").strip()
-        except Exception:
+        except Exception as e:
+            request_id = ""
+            try:
+                hdrs = getattr(self, "headers", None)
+                request_id = str((hdrs.get("X-Request-ID") if hdrs is not None else "") or "").strip()
+            except Exception:
+                request_id = ""
+            if not request_id:
+                request_id = uuid7_hex()[:12]
+            self._warn_status(
+                "WORKSPACE_QUERY_PARSE_FAILED",
+                "Failed to parse workspace_root query parameter",
+                request_id=request_id,
+                error=repr(e),
+            )
             sel = ""
         if sel:
             try:
                 from sari.core.workspace import WorkspaceManager
                 return WorkspaceManager.normalize_path(sel)
-            except Exception:
+            except Exception as e:
+                self._warn_status(
+                    "WORKSPACE_QUERY_NORMALIZE_FAILED",
+                    "Failed to normalize selected workspace_root query parameter",
+                    workspace_root=sel,
+                    error=repr(e),
+                )
                 return sel
         return self.workspace_root
 
@@ -109,8 +185,9 @@ class Handler(BaseHTTPRequestHandler):
         db = self.db
         indexer = self.indexer
         root_ids = self.root_ids
+        registry_resolve_failed = False
         if not self.shared_http_gateway or not workspace_root:
-            return workspace_root, db, indexer, root_ids
+            return workspace_root, db, indexer, root_ids, registry_resolve_failed
         try:
             from sari.mcp.workspace_registry import Registry
             from sari.core.workspace import WorkspaceManager
@@ -121,9 +198,15 @@ class Handler(BaseHTTPRequestHandler):
             roots = self._indexer_workspace_roots(indexer)
             root_ids = [WorkspaceManager.root_id_for_workspace(
                 r) for r in roots] if roots else []
-        except Exception:
-            pass
-        return workspace_root, db, indexer, root_ids
+        except Exception as e:
+            registry_resolve_failed = True
+            self._warn_status(
+                "REGISTRY_RESOLVE_FAILED",
+                "Failed to resolve runtime workspace state from registry",
+                workspace_root=workspace_root,
+                error=repr(e),
+            )
+        return workspace_root, db, indexer, root_ids, registry_resolve_failed
 
     def _json(self, obj, status=200):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
@@ -150,27 +233,49 @@ class Handler(BaseHTTPRequestHandler):
 
         norm_roots = []
         seen = set()
+        normalized_by_path = {}
+        normalize_fallback_count = 0
         for root in configured_roots:
             if not root:
                 continue
-            normalized = self._normalize_workspace_path(str(root))
+            normalized, normalized_by = self._normalize_workspace_path_with_meta(str(root))
             if normalized and normalized not in seen:
                 seen.add(normalized)
                 norm_roots.append(normalized)
+                normalized_by_path[normalized] = normalized_by
+            if normalized_by == "fallback":
+                normalize_fallback_count += 1
 
         indexed_by_path = {}
+        row_parse_error_count = 0
         if hasattr(db, "get_roots"):
             try:
                 rows = db.get_roots() or []
                 for row in rows:
-                    if isinstance(row, dict):
+                    if not isinstance(row, dict):
+                        continue
+                    try:
                         p = row.get("path") or row.get("root_path") or row.get("real_path")
                         if not p:
                             continue
-                        normalized = self._normalize_workspace_path(str(p))
+                        normalized, normalized_by = self._normalize_workspace_path_with_meta(str(p))
                         indexed_by_path[normalized] = row
-            except Exception:
-                pass
+                        if normalized_by == "fallback":
+                            normalize_fallback_count += 1
+                    except Exception as row_error:
+                        row_parse_error_count += 1
+                        self._warn_status(
+                            "WORKSPACE_ROW_PARSE_FAILED",
+                            "Failed to parse workspace root row",
+                            error=repr(row_error),
+                            raw_row=repr(row),
+                        )
+            except Exception as e:
+                self._warn_status(
+                    "WORKSPACE_ROOTS_FETCH_FAILED",
+                    "Failed to load workspace roots from DB",
+                    error=repr(e),
+                )
         failed_by_root = {}
         if hasattr(db, "execute"):
             try:
@@ -205,8 +310,12 @@ class Handler(BaseHTTPRequestHandler):
                             "pending_count": pending_count,
                             "failed_count": failed_count,
                         }
-            except Exception:
-                pass
+            except Exception as e:
+                self._warn_status(
+                    "FAILED_TASKS_AGGREGATE_FAILED",
+                    "Failed to aggregate failed task counts",
+                    error=repr(e),
+                )
 
         items = []
         watched_roots = set()
@@ -215,12 +324,19 @@ class Handler(BaseHTTPRequestHandler):
         try:
             cfg_roots = self._indexer_workspace_roots(indexer)
             for root in cfg_roots:
-                watched_roots.add(self._normalize_workspace_path(str(root)))
+                normalized, normalized_by = self._normalize_workspace_path_with_meta(str(root))
+                watched_roots.add(normalized)
+                if normalized_by == "fallback":
+                    normalize_fallback_count += 1
             proc = getattr(indexer, "_worker_proc", None)
             worker_alive = bool(proc and proc.is_alive())
             pending_rescan = bool(getattr(indexer, "_pending_rescan", False))
-        except Exception:
-            pass
+        except Exception as e:
+            self._warn_status(
+                "WATCHED_ROOTS_RESOLVE_FAILED",
+                "Failed while resolving watched workspace roots",
+                error=repr(e),
+            )
 
         for root in norm_roots:
             abs_path = os.path.expanduser(root)
@@ -280,6 +396,7 @@ class Handler(BaseHTTPRequestHandler):
 
             items.append({
                 "path": root,
+                "normalized_by": normalized_by_path.get(root, "workspace_manager"),
                 "exists": bool(exists),
                 "readable": bool(readable),
                 "watched": bool(watched),
@@ -293,7 +410,12 @@ class Handler(BaseHTTPRequestHandler):
                 "index_state": index_state,
                 "root_id": computed_root_id,
             })
-        return items
+        return {
+            "workspaces": items,
+            "normalization": {"fallback_count": int(normalize_fallback_count)},
+            "row_parse_error_count": int(row_parse_error_count),
+            "status_warning_counts": self._status_warning_counts_json(),
+        }
 
     def log_message(self, format, *args):
         # keep logs quiet
@@ -802,7 +924,8 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def _handle_get(self, path, qs):
-        workspace_root, db, indexer, root_ids = self._resolve_runtime(qs)
+        self._init_request_status()
+        workspace_root, db, indexer, root_ids, registry_resolve_failed = self._resolve_runtime(qs)
 
         if path == "/health":
             return {"ok": True}
@@ -834,6 +957,7 @@ class Handler(BaseHTTPRequestHandler):
                     return {"ok": False, "error": str(e)}
 
         if path == "/status":
+            daemon_status = load_daemon_runtime_status()
             st = indexer.status
             repo_stats = db.get_repo_stats(
                 root_ids=root_ids) if hasattr(
@@ -877,7 +1001,8 @@ class Handler(BaseHTTPRequestHandler):
                 queue_depths["index_worker"] = 1 if worker_alive else 0
                 queue_depths["rescan_pending"] = 1 if bool(getattr(indexer, "_pending_rescan", False)) else 0
 
-            workspaces = self._registered_workspaces(workspace_root, db, indexer)
+            workspaces_payload = self._registered_workspaces(workspace_root, db, indexer)
+            workspaces = workspaces_payload.get("workspaces", [])
 
             # Fetch real system metrics
             metrics = get_system_metrics()
@@ -897,21 +1022,47 @@ class Handler(BaseHTTPRequestHandler):
                 "errors": getattr(st, "errors", 0),
                 "orphan_daemon_count": len(orphan_daemons),
                 "orphan_daemon_warnings": orphan_daemon_warnings,
+                "signals_disabled": daemon_status.signals_disabled,
+                "shutdown_intent": daemon_status.shutdown_intent,
+                "suicide_state": daemon_status.suicide_state,
+                "active_leases_count": daemon_status.active_leases_count,
+                "leases": list(daemon_status.leases or []),
+                "last_reap_at": daemon_status.last_reap_at,
+                "reaper_last_run_at": daemon_status.reaper_last_run_at,
+                "no_client_since": daemon_status.no_client_since,
+                "grace_remaining": daemon_status.grace_remaining,
+                "grace_remaining_ms": daemon_status.grace_remaining_ms,
+                "shutdown_once_set": daemon_status.shutdown_once_set,
+                "last_event_ts": daemon_status.last_event_ts,
+                "event_queue_depth": daemon_status.event_queue_depth,
+                "last_shutdown_reason": daemon_status.last_shutdown_reason,
+                "shutdown_reason": daemon_status.shutdown_reason,
+                "workers_alive": list(daemon_status.workers_alive or []),
                 "performance": performance,
                 "queue_depths": queue_depths,
                 "repo_stats": repo_stats,
                 "workspaces": workspaces,
+                "normalization": workspaces_payload.get("normalization", {"fallback_count": 0}),
+                "row_parse_error_count": int(workspaces_payload.get("row_parse_error_count", 0) or 0),
+                "registry_resolve_failed": bool(registry_resolve_failed),
                 "roots": db.get_roots() if hasattr(db, "get_roots") else [],
                 "workspace_root": workspace_root,
-                "system_metrics": metrics
+                "system_metrics": metrics,
+                "status_warning_counts": self._status_warning_counts_json(),
+                "warning_counts": warning_sink.warning_counts(),
+                "warnings_recent": warning_sink.warnings_recent(),
             }
 
         if path == "/workspaces":
-            workspaces = self._registered_workspaces(workspace_root, db, indexer)
+            workspaces_payload = self._registered_workspaces(workspace_root, db, indexer)
+            workspaces = workspaces_payload.get("workspaces", [])
             return {
                 "ok": True,
                 "workspace_root": workspace_root,
                 "count": len(workspaces),
+                "normalization": workspaces_payload.get("normalization", {"fallback_count": 0}),
+                "row_parse_error_count": int(workspaces_payload.get("row_parse_error_count", 0) or 0),
+                "status_warning_counts": self._status_warning_counts_json(),
                 "workspaces": workspaces,
             }
 

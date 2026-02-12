@@ -143,7 +143,10 @@ def dispatch_search(
             api_args["path"] = api_args["query"]
         raw_result = api_executor(api_args, db, roots)
     elif resolved_type == "repo":
-        raw_result = repo_executor({"query": query, "limit": limit}, db, logger, roots)
+        repo_args = {"query": query, "limit": limit}
+        if "root_ids" in args:
+            repo_args["root_ids"] = args["root_ids"]
+        raw_result = repo_executor(repo_args, db, logger, roots)
     else:
         raw_result = execute_core_search_raw(args, db, roots)
 
