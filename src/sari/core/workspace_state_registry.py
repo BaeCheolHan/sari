@@ -9,6 +9,6 @@ def get_workspace_registry() -> Any:
     The concrete implementation currently lives under MCP runtime.
     This shim keeps core HTTP layer free of direct compile-time MCP imports.
     """
-    module = importlib.import_module("sari.mcp.workspace_registry")
+    module = importlib.import_module("sari.core.workspace_registry")
     registry_cls = getattr(module, "Registry")
     return registry_cls.get_instance()
