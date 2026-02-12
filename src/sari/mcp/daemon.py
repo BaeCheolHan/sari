@@ -244,6 +244,8 @@ class SariDaemon:
         self._events_lock = threading.Lock()
         self._controller_wakeup = threading.Event()
         self._event_queue_depth = 0
+        self._event_queue_max = max(1, int(settings.get_int("DAEMON_EVENT_QUEUE_SIZE", 4096) or 4096))
+        self._event_drop_count = 0
         self._heartbeat_event_pending = False
         self._pending_renew_lease_ids: set[str] = set()
         self._pending_issue_lease_ids: set[str] = set()
@@ -342,16 +344,22 @@ class SariDaemon:
         self._emit_runtime_markers()
         return reaped
 
-    def _enqueue_event(self, event: DaemonEvent) -> None:
+    def _enqueue_event(self, event: DaemonEvent) -> bool:
+        event_type = str(getattr(event, "event_type", ""))
         with self._events_lock:
-            if str(getattr(event, "event_type", "")) == EVENT_HEARTBEAT_TICK:
+            if event_type == EVENT_HEARTBEAT_TICK:
                 if self._heartbeat_event_pending:
-                    return
+                    return False
+            if self._event_queue_depth >= self._event_queue_max:
+                self._event_drop_count += 1
+                return False
+            if event_type == EVENT_HEARTBEAT_TICK:
                 self._heartbeat_event_pending = True
             self._event_queue_depth += 1
             self._last_event_ts = float(event.ts or time.time())
         self._events.put(event)
         self._controller_wakeup.set()
+        return True
 
     def _enqueue_lease_event(
         self,
@@ -395,21 +403,40 @@ class SariDaemon:
                 self._pending_issue_lease_ids.discard(lid)
                 self._pending_revoke_lease_ids.discard(lid)
                 self._canceled_issue_lease_counts.pop(lid, None)
-        self._enqueue_event(
+        accepted = self._enqueue_event(
             DaemonEvent(
                 event_type=et,
                 lease_id=lid,
                 payload={"client_hint": str(client_hint or ""), "reason": str(reason or "")},
             )
         )
+        if accepted:
+            return
+        enqueue_fallback_revoke = False
+        fallback_reason = reason or "revoked"
+        with self._events_lock:
+            if et == EVENT_LEASE_ISSUE and lid:
+                self._pending_issue_lease_ids.discard(lid)
+            elif et == EVENT_LEASE_RENEW and lid:
+                self._pending_renew_lease_ids.discard(lid)
+            elif et == EVENT_LEASE_REVOKE and lid:
+                self._pending_revoke_lease_ids.discard(lid)
+                enqueue_fallback_revoke = True
+            elif et == EVENT_CONN_CLOSED and lid:
+                enqueue_fallback_revoke = True
+        if enqueue_fallback_revoke and lid:
+            self._revoke_lease(lid, reason=fallback_reason)
 
     def _enqueue_shutdown_request(self, reason: str) -> None:
-        self._enqueue_event(
+        if self._enqueue_event(
             DaemonEvent(
                 event_type=EVENT_SHUTDOWN_REQUEST,
                 payload={"reason": str(reason or "manual")},
             )
-        )
+        ):
+            return
+        # Force shutdown intent to be visible even under event queue pressure.
+        self._controller_wakeup.set()
 
     def _drain_events(self, max_events: int) -> list[DaemonEvent]:
         limit = max(1, int(max_events or DEFAULT_EVENT_DRAIN_MAX))

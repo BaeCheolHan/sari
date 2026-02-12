@@ -459,6 +459,16 @@ def test_duplicate_revoke_events_are_coalesced():
     assert daemon._event_queue_depth == 0
 
 
+def test_event_queue_depth_is_capped_under_issue_burst(monkeypatch):
+    monkeypatch.setenv("SARI_DAEMON_EVENT_QUEUE_SIZE", "8")
+    daemon = SariDaemon(host="127.0.0.1", port=49980)
+
+    for i in range(200):
+        daemon._enqueue_lease_event("LEASE_ISSUE", lease_id=f"burst-{i}", client_hint="burst")
+
+    assert daemon._event_queue_depth <= 8
+
+
 def test_worker_hang_with_reconnect_still_shuts_down_once(monkeypatch):
     daemon = SariDaemon(host="127.0.0.1", port=49986)
     daemon._autostop_no_client_since = time.time() - 60
