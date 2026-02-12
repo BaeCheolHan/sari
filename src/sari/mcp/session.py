@@ -334,8 +334,26 @@ class Session:
         self.workspace_root = workspace_root
         persist_flag = params.get("sariPersist") or params.get("persist")
         persist = bool(persist_flag) or str(os.environ.get("SARI_PERSIST_WORKSPACE", "")).strip().lower() in {"1", "true", "yes", "on"}
-        self.shared_state = self.registry.get_or_create(self.workspace_root, persistent=persist)
-        self.registry.touch_workspace(self.workspace_root)
+        same_workspace_reinit = (
+            self.shared_state is not None
+            and self.workspace_root == workspace_root
+        )
+        if same_workspace_reinit:
+            # Keep one ref per live connection. Re-initialize on same root
+            # should not grow ref_count.
+            if persist:
+                try:
+                    self.shared_state = self.registry.get_or_create(
+                        self.workspace_root,
+                        persistent=True,
+                        track_ref=False,
+                    )
+                except TypeError:
+                    self.shared_state = self.registry.get_or_create(self.workspace_root, persistent=True)
+            self.registry.touch_workspace(self.workspace_root)
+        else:
+            self.shared_state = self.registry.get_or_create(self.workspace_root, persistent=persist)
+            self.registry.touch_workspace(self.workspace_root)
         trace("session_handle_initialize_bound", workspace_root=self.workspace_root)
 
         # Record workspace mapping in global registry so other clients can find us
