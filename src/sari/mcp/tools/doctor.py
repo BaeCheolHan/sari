@@ -634,7 +634,9 @@ def _check_log_errors() -> DoctorResult:
             return _result("Log Health", True, "No log file yet")
 
         errors = []
-        level_pat = re.compile(r"(?:\s-\s(ERROR|CRITICAL)\s-\s|\[(ERROR|CRITICAL)\])")
+        level_pat = re.compile(
+            r"(?:^|\s-\s)(ERROR|CRITICAL)(?:\s-\s|$)|\[(ERROR|CRITICAL)\]"
+        )
         # 안전 장치: 파일의 마지막 1MB만 읽음
         file_size = log_file.stat().st_size
         read_size = min(file_size, 1024 * 1024)  # 1MB
