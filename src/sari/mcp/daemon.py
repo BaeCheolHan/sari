@@ -9,6 +9,7 @@ import threading
 import time
 import json
 import queue
+import gc
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -38,6 +39,7 @@ EVENT_CONN_CLOSED = "CONN_CLOSED"
 EVENT_HEARTBEAT_TICK = "HEARTBEAT_TICK"
 EVENT_SHUTDOWN_REQUEST = "SHUTDOWN_REQUEST"
 DEFAULT_EVENT_DRAIN_MAX = 256
+DEFAULT_MEM_TELEMETRY_SEC = 60.0
 
 
 @dataclass(slots=True)
@@ -242,6 +244,7 @@ class SariDaemon:
         self._events_lock = threading.Lock()
         self._controller_wakeup = threading.Event()
         self._event_queue_depth = 0
+        self._pending_renew_lease_ids: set[str] = set()
         self._last_event_ts = 0.0
         self._active_leases: dict[str, dict[str, object]] = {}
         self._recent_leases: deque[dict[str, object]] = deque(maxlen=50)
@@ -257,6 +260,7 @@ class SariDaemon:
         self._autostop_no_client_since = None  # backward-compat tests
         self._grace_deadline = 0.0
         self._shutdown_inhibit_since: float | None = None
+        self._last_mem_telemetry_at = 0.0
         trace("daemon_init", host=self.host, port=self.port)
 
     @property
@@ -349,10 +353,20 @@ class SariDaemon:
         client_hint: str = "",
         reason: str = "",
     ) -> None:
+        et = str(event_type or "")
+        lid = str(lease_id or "")
+        if et == EVENT_LEASE_RENEW and lid:
+            with self._events_lock:
+                if lid in self._pending_renew_lease_ids:
+                    return
+                self._pending_renew_lease_ids.add(lid)
+        elif et in {EVENT_LEASE_ISSUE, EVENT_LEASE_REVOKE, EVENT_CONN_CLOSED} and lid:
+            with self._events_lock:
+                self._pending_renew_lease_ids.discard(lid)
         self._enqueue_event(
             DaemonEvent(
-                event_type=str(event_type or ""),
-                lease_id=str(lease_id or ""),
+                event_type=et,
+                lease_id=lid,
                 payload={"client_hint": str(client_hint or ""), "reason": str(reason or "")},
             )
         )
@@ -373,6 +387,8 @@ class SariDaemon:
                 ev = self._events.get_nowait()
                 with self._events_lock:
                     self._event_queue_depth = max(0, self._event_queue_depth - 1)
+                    if str(getattr(ev, "event_type", "")) == EVENT_LEASE_RENEW:
+                        self._pending_renew_lease_ids.discard(str(getattr(ev, "lease_id", "") or ""))
                 raw.append(ev)
             except queue.Empty:
                 break
@@ -472,6 +488,66 @@ class SariDaemon:
             os.environ["SARI_DAEMON_WORKERS_ALIVE"] = json.dumps(self._workers_alive(), ensure_ascii=True)
         except Exception:
             os.environ["SARI_DAEMON_WORKERS_ALIVE"] = "[]"
+
+    @staticmethod
+    def _process_rss_bytes() -> int:
+        try:
+            import psutil  # type: ignore
+            return int(psutil.Process(os.getpid()).memory_info().rss or 0)
+        except Exception:
+            pass
+        try:
+            import resource  # type: ignore
+            v = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss or 0)
+            if v <= 0:
+                return 0
+            # macOS reports bytes, Linux reports KiB.
+            if v < 10_000_000:
+                return v * 1024
+            return v
+        except Exception:
+            return 0
+
+    def _emit_memory_telemetry(
+        self,
+        *,
+        active_count: int,
+        socket_active: int,
+        lease_active: int,
+        workers_inflight: int,
+    ) -> None:
+        try:
+            interval = float(
+                os.environ.get("SARI_DAEMON_MEM_TELEMETRY_SEC", str(DEFAULT_MEM_TELEMETRY_SEC))
+                or DEFAULT_MEM_TELEMETRY_SEC
+            )
+        except Exception:
+            interval = DEFAULT_MEM_TELEMETRY_SEC
+        interval = max(5.0, interval)
+        now = time.time()
+        if now - float(self._last_mem_telemetry_at or 0.0) < interval:
+            return
+        self._last_mem_telemetry_at = now
+
+        rss_bytes = self._process_rss_bytes()
+        rss_mb = float(rss_bytes) / (1024.0 * 1024.0) if rss_bytes > 0 else 0.0
+        gc0, gc1, gc2 = gc.get_count()
+        with self._events_lock:
+            q_depth = int(self._event_queue_depth or 0)
+        os.environ["SARI_DAEMON_RSS_BYTES"] = str(int(rss_bytes or 0))
+        os.environ["SARI_DAEMON_RSS_MB"] = f"{rss_mb:.2f}"
+        logger.info(
+            "daemon_runtime rss_mb=%.2f q_depth=%d active=%d sockets=%d leases=%d workers=%d gc=(%d,%d,%d)",
+            rss_mb,
+            q_depth,
+            int(active_count),
+            int(socket_active),
+            int(lease_active),
+            int(workers_inflight),
+            int(gc0),
+            int(gc1),
+            int(gc2),
+        )
 
     def _request_shutdown(self, reason: str) -> None:
         self._set_suicide_state("stopping")
@@ -661,6 +737,12 @@ class SariDaemon:
                         )
 
                 active_count = max(active_count, socket_active, lease_active)
+                self._emit_memory_telemetry(
+                    active_count=active_count,
+                    socket_active=socket_active,
+                    lease_active=lease_active,
+                    workers_inflight=workers_inflight,
+                )
 
                 if self._suicide_state == "stopping":
                     pass

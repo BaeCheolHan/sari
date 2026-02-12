@@ -381,6 +381,19 @@ def test_event_burst_soak_drains_queue_without_state_corruption():
     assert daemon._suicide_state in {"idle", "grace", "stopping"}
 
 
+def test_lease_renew_events_are_coalesced_before_drain():
+    daemon = SariDaemon(host="127.0.0.1", port=49985)
+
+    daemon._enqueue_lease_event("LEASE_ISSUE", lease_id="lease-1", client_hint="cli")
+    for _ in range(100):
+        daemon._enqueue_lease_event("LEASE_RENEW", lease_id="lease-1")
+
+    # ISSUE(1) + coalesced RENEW(1)
+    assert daemon._event_queue_depth == 2
+    daemon._apply_lease_events(max_events=64)
+    assert daemon._event_queue_depth == 0
+
+
 def test_worker_hang_with_reconnect_still_shuts_down_once(monkeypatch):
     daemon = SariDaemon(host="127.0.0.1", port=49986)
     daemon._autostop_no_client_since = time.time() - 60
