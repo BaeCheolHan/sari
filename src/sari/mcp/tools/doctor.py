@@ -20,7 +20,7 @@ from sari.core.config import Config
 from sari.core.settings import settings
 from sari.core.workspace import WorkspaceManager
 from sari.mcp.server_registry import ServerRegistry, get_registry_path
-from sari.core.policy_engine import load_daemon_policy
+from sari.core.policy_engine import load_daemon_policy, load_daemon_runtime_status
 from sari.mcp.cli.mcp_client import identify_sari_daemon, probe_sari_daemon, is_http_running as _is_http_running
 from sari.core.daemon_resolver import resolve_daemon_address as get_daemon_address
 from sari.core.daemon_runtime_state import RUNTIME_HOST, RUNTIME_PORT
@@ -876,6 +876,22 @@ def _check_http_service(host: str, port: int) -> DoctorResult:
     return _result("HTTP API", False, f"Not running on {host}:{port}")
 
 
+def _check_daemon_runtime_markers() -> DoctorResult:
+    """런타임 마커(daemon_runtime_state) 스냅샷을 점검합니다."""
+    try:
+        status = load_daemon_runtime_status()
+        detail = (
+            f"shutdown_intent={str(bool(status.shutdown_intent)).lower()} "
+            f"suicide_state={status.suicide_state} "
+            f"active_leases={int(status.active_leases_count)} "
+            f"event_queue_depth={int(status.event_queue_depth)} "
+            f"workers_alive={len(list(status.workers_alive or []))}"
+        )
+        return _result("Daemon Runtime Markers", True, detail)
+    except Exception as e:
+        return _result("Daemon Runtime Markers", False, str(e))
+
+
 def _check_search_first_usage(
         usage: Mapping[str, object], mode: str) -> DoctorResult:
     """검색 우선(Search-First) 정책 준수 여부를 확인합니다."""
@@ -1198,7 +1214,7 @@ def execute_doctor(
     include_disk = bool(args_map.get("include_disk", True))
     include_daemon = bool(args_map.get("include_daemon", True))
     include_venv = bool(args_map.get("include_venv", True))
-    bool(args_map.get("include_marker", False))
+    include_marker = bool(args_map.get("include_marker", False))
     port = int(args_map.get("port", 0))
     min_disk_gb = float(args_map.get("min_disk_gb", 1.0))
 
@@ -1259,6 +1275,9 @@ def execute_doctor(
 
     if include_disk:
         results.append(_check_disk_space(ws_root, min_disk_gb))
+
+    if include_marker:
+        results.append(_check_daemon_runtime_markers())
 
     results.extend(_check_workspace_overlaps(ws_root))
 
