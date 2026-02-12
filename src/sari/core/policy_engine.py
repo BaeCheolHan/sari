@@ -5,6 +5,7 @@ import os
 from dataclasses import dataclass
 from collections.abc import Mapping
 from threading import Lock
+from sari.core.daemon_runtime_state import get_daemon_runtime_state_snapshot
 
 
 @dataclass(frozen=True)
@@ -57,7 +58,17 @@ _JSON_LIST_CACHE_LOCK = Lock()
 
 
 def _env(environ: Mapping[str, str] | None) -> Mapping[str, str]:
-    return environ if environ is not None else os.environ
+    if environ is not None:
+        return environ
+    merged: dict[str, str] = {}
+    try:
+        snapshot = get_daemon_runtime_state_snapshot()
+        if snapshot:
+            merged.update(snapshot)
+    except Exception:
+        pass
+    merged.update(dict(os.environ))
+    return merged
 
 
 def _to_int(value: object, default: int, *, minimum: int | None = None) -> int:

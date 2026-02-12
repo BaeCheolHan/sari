@@ -20,6 +20,7 @@ from sari.core.workspace import WorkspaceManager
 from sari.mcp.server_registry import ServerRegistry
 from sari.core.settings import settings
 from sari.core.constants import DEFAULT_DAEMON_HOST, DEFAULT_DAEMON_PORT
+from sari.core.daemon_runtime_state import publish_daemon_runtime_state
 from sari.core.utils.uuid7 import uuid7_hex
 from sari.mcp.trace import trace
 from sari.mcp.stabilization.warning_sink import warning_sink, warn
@@ -547,28 +548,33 @@ class SariDaemon:
     def _emit_runtime_markers(self) -> None:
         now = time.time()
         grace_remaining = max(0.0, float(self._grace_deadline or 0.0) - now) if self._suicide_state == "grace" else 0.0
-        os.environ["SARI_DAEMON_ACTIVE_LEASES_COUNT"] = str(self.active_lease_count())
-        os.environ["SARI_DAEMON_LAST_REAP_AT"] = str(float(self._last_reap_at or 0.0))
-        os.environ["SARI_DAEMON_REAPER_LAST_RUN_AT"] = str(float(self._reaper_last_run_at or 0.0))
-        os.environ["SARI_DAEMON_SHUTDOWN_INTENT"] = "1" if self._shutdown_intent else ""
-        os.environ["SARI_DAEMON_LAST_SHUTDOWN_REASON"] = str(self._last_shutdown_reason or "")
-        os.environ["SARI_DAEMON_SHUTDOWN_REASON"] = str(self._last_shutdown_reason or "")
-        os.environ["SARI_DAEMON_SUICIDE_STATE"] = str(self._suicide_state or "idle")
-        os.environ["SARI_DAEMON_NO_CLIENT_SINCE"] = str(float(self._no_client_since or 0.0))
-        os.environ["SARI_DAEMON_GRACE_REMAINING"] = str(float(grace_remaining))
-        os.environ["SARI_DAEMON_GRACE_REMAINING_MS"] = str(int(max(0.0, float(grace_remaining)) * 1000.0))
-        os.environ["SARI_DAEMON_SHUTDOWN_ONCE_SET"] = "1" if self._shutdown_once.is_set() else ""
+        runtime_values = {
+            "SARI_DAEMON_ACTIVE_LEASES_COUNT": str(self.active_lease_count()),
+            "SARI_DAEMON_LAST_REAP_AT": str(float(self._last_reap_at or 0.0)),
+            "SARI_DAEMON_REAPER_LAST_RUN_AT": str(float(self._reaper_last_run_at or 0.0)),
+            "SARI_DAEMON_SHUTDOWN_INTENT": "1" if self._shutdown_intent else "",
+            "SARI_DAEMON_LAST_SHUTDOWN_REASON": str(self._last_shutdown_reason or ""),
+            "SARI_DAEMON_SHUTDOWN_REASON": str(self._last_shutdown_reason or ""),
+            "SARI_DAEMON_SUICIDE_STATE": str(self._suicide_state or "idle"),
+            "SARI_DAEMON_NO_CLIENT_SINCE": str(float(self._no_client_since or 0.0)),
+            "SARI_DAEMON_GRACE_REMAINING": str(float(grace_remaining)),
+            "SARI_DAEMON_GRACE_REMAINING_MS": str(int(max(0.0, float(grace_remaining)) * 1000.0)),
+            "SARI_DAEMON_SHUTDOWN_ONCE_SET": "1" if self._shutdown_once.is_set() else "",
+        }
         with self._events_lock:
-            os.environ["SARI_DAEMON_LAST_EVENT_TS"] = str(float(self._last_event_ts or 0.0))
-            os.environ["SARI_DAEMON_EVENT_QUEUE_DEPTH"] = str(int(self._event_queue_depth or 0))
+            runtime_values["SARI_DAEMON_LAST_EVENT_TS"] = str(float(self._last_event_ts or 0.0))
+            runtime_values["SARI_DAEMON_EVENT_QUEUE_DEPTH"] = str(int(self._event_queue_depth or 0))
         try:
-            os.environ["SARI_DAEMON_LEASES"] = json.dumps(self.leases_snapshot(), ensure_ascii=True)
+            runtime_values["SARI_DAEMON_LEASES"] = json.dumps(self.leases_snapshot(), ensure_ascii=True)
         except Exception:
-            os.environ["SARI_DAEMON_LEASES"] = "[]"
+            runtime_values["SARI_DAEMON_LEASES"] = "[]"
         try:
-            os.environ["SARI_DAEMON_WORKERS_ALIVE"] = json.dumps(self._workers_alive(), ensure_ascii=True)
+            runtime_values["SARI_DAEMON_WORKERS_ALIVE"] = json.dumps(self._workers_alive(), ensure_ascii=True)
         except Exception:
-            os.environ["SARI_DAEMON_WORKERS_ALIVE"] = "[]"
+            runtime_values["SARI_DAEMON_WORKERS_ALIVE"] = "[]"
+        for key, value in runtime_values.items():
+            os.environ[key] = str(value)
+        publish_daemon_runtime_state(runtime_values)
 
     @staticmethod
     def _process_rss_bytes() -> int:
