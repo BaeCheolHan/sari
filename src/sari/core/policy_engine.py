@@ -5,7 +5,25 @@ import os
 from dataclasses import dataclass
 from collections.abc import Mapping
 from threading import Lock
-from sari.core.daemon_runtime_state import get_daemon_runtime_state_snapshot
+from sari.core.daemon_runtime_state import (
+    RUNTIME_ACTIVE_LEASES_COUNT,
+    RUNTIME_EVENT_QUEUE_DEPTH,
+    RUNTIME_GRACE_REMAINING,
+    RUNTIME_GRACE_REMAINING_MS,
+    RUNTIME_LAST_EVENT_TS,
+    RUNTIME_LAST_REAP_AT,
+    RUNTIME_LAST_SHUTDOWN_REASON,
+    RUNTIME_LEASES,
+    RUNTIME_NO_CLIENT_SINCE,
+    RUNTIME_REAPER_LAST_RUN_AT,
+    RUNTIME_SHUTDOWN_INTENT,
+    RUNTIME_SHUTDOWN_ONCE_SET,
+    RUNTIME_SHUTDOWN_REASON,
+    RUNTIME_SIGNALS_DISABLED,
+    RUNTIME_SUICIDE_STATE,
+    RUNTIME_WORKERS_ALIVE,
+    get_daemon_runtime_state_snapshot,
+)
 
 
 @dataclass(frozen=True)
@@ -213,20 +231,20 @@ def _json_list(env: Mapping[str, str], key: str) -> list[object]:
 def load_daemon_runtime_status(environ: Mapping[str, str] | None = None) -> DaemonRuntimeStatus:
     env = _env(environ)
     return DaemonRuntimeStatus(
-        signals_disabled=_to_bool(env.get("SARI_DAEMON_SIGNALS_DISABLED"), False),
-        shutdown_intent=_to_bool(env.get("SARI_DAEMON_SHUTDOWN_INTENT"), False),
-        suicide_state=str(env.get("SARI_DAEMON_SUICIDE_STATE", "idle") or "idle"),
-        active_leases_count=_to_int(env.get("SARI_DAEMON_ACTIVE_LEASES_COUNT", 0), 0, minimum=0),
-        leases=_json_list(env, "SARI_DAEMON_LEASES"),
-        last_reap_at=_to_float(env.get("SARI_DAEMON_LAST_REAP_AT", 0), 0.0, minimum=0.0),
-        reaper_last_run_at=_to_float(env.get("SARI_DAEMON_REAPER_LAST_RUN_AT", 0), 0.0, minimum=0.0),
-        no_client_since=_to_float(env.get("SARI_DAEMON_NO_CLIENT_SINCE", 0), 0.0, minimum=0.0),
-        grace_remaining=_to_float(env.get("SARI_DAEMON_GRACE_REMAINING", 0), 0.0, minimum=0.0),
-        grace_remaining_ms=_to_int(env.get("SARI_DAEMON_GRACE_REMAINING_MS", 0), 0, minimum=0),
-        shutdown_once_set=_to_bool(env.get("SARI_DAEMON_SHUTDOWN_ONCE_SET"), False),
-        last_event_ts=_to_float(env.get("SARI_DAEMON_LAST_EVENT_TS", 0), 0.0, minimum=0.0),
-        event_queue_depth=_to_int(env.get("SARI_DAEMON_EVENT_QUEUE_DEPTH", 0), 0, minimum=0),
-        last_shutdown_reason=str(env.get("SARI_DAEMON_LAST_SHUTDOWN_REASON", "") or ""),
-        shutdown_reason=str(env.get("SARI_DAEMON_SHUTDOWN_REASON", "") or ""),
-        workers_alive=_json_list(env, "SARI_DAEMON_WORKERS_ALIVE"),
+        signals_disabled=_to_bool(env.get(RUNTIME_SIGNALS_DISABLED), False),
+        shutdown_intent=_to_bool(env.get(RUNTIME_SHUTDOWN_INTENT), False),
+        suicide_state=str(env.get(RUNTIME_SUICIDE_STATE, "idle") or "idle"),
+        active_leases_count=_to_int(env.get(RUNTIME_ACTIVE_LEASES_COUNT, 0), 0, minimum=0),
+        leases=_json_list(env, RUNTIME_LEASES),
+        last_reap_at=_to_float(env.get(RUNTIME_LAST_REAP_AT, 0), 0.0, minimum=0.0),
+        reaper_last_run_at=_to_float(env.get(RUNTIME_REAPER_LAST_RUN_AT, 0), 0.0, minimum=0.0),
+        no_client_since=_to_float(env.get(RUNTIME_NO_CLIENT_SINCE, 0), 0.0, minimum=0.0),
+        grace_remaining=_to_float(env.get(RUNTIME_GRACE_REMAINING, 0), 0.0, minimum=0.0),
+        grace_remaining_ms=_to_int(env.get(RUNTIME_GRACE_REMAINING_MS, 0), 0, minimum=0),
+        shutdown_once_set=_to_bool(env.get(RUNTIME_SHUTDOWN_ONCE_SET), False),
+        last_event_ts=_to_float(env.get(RUNTIME_LAST_EVENT_TS, 0), 0.0, minimum=0.0),
+        event_queue_depth=_to_int(env.get(RUNTIME_EVENT_QUEUE_DEPTH, 0), 0, minimum=0),
+        last_shutdown_reason=str(env.get(RUNTIME_LAST_SHUTDOWN_REASON, "") or ""),
+        shutdown_reason=str(env.get(RUNTIME_SHUTDOWN_REASON, "") or ""),
+        workers_alive=_json_list(env, RUNTIME_WORKERS_ALIVE),
     )

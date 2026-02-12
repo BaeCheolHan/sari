@@ -20,7 +20,24 @@ from sari.core.workspace import WorkspaceManager
 from sari.mcp.server_registry import ServerRegistry
 from sari.core.settings import settings
 from sari.core.constants import DEFAULT_DAEMON_HOST, DEFAULT_DAEMON_PORT
-from sari.core.daemon_runtime_state import publish_daemon_runtime_state
+from sari.core.daemon_runtime_state import (
+    RUNTIME_ACTIVE_LEASES_COUNT,
+    RUNTIME_EVENT_QUEUE_DEPTH,
+    RUNTIME_GRACE_REMAINING,
+    RUNTIME_GRACE_REMAINING_MS,
+    RUNTIME_LAST_EVENT_TS,
+    RUNTIME_LAST_REAP_AT,
+    RUNTIME_LAST_SHUTDOWN_REASON,
+    RUNTIME_LEASES,
+    RUNTIME_NO_CLIENT_SINCE,
+    RUNTIME_REAPER_LAST_RUN_AT,
+    RUNTIME_SHUTDOWN_INTENT,
+    RUNTIME_SHUTDOWN_ONCE_SET,
+    RUNTIME_SHUTDOWN_REASON,
+    RUNTIME_SUICIDE_STATE,
+    RUNTIME_WORKERS_ALIVE,
+    publish_daemon_runtime_state,
+)
 from sari.core.utils.uuid7 import uuid7_hex
 from sari.mcp.trace import trace
 from sari.mcp.stabilization.warning_sink import warning_sink, warn
@@ -549,29 +566,29 @@ class SariDaemon:
         now = time.time()
         grace_remaining = max(0.0, float(self._grace_deadline or 0.0) - now) if self._suicide_state == "grace" else 0.0
         runtime_values = {
-            "SARI_DAEMON_ACTIVE_LEASES_COUNT": str(self.active_lease_count()),
-            "SARI_DAEMON_LAST_REAP_AT": str(float(self._last_reap_at or 0.0)),
-            "SARI_DAEMON_REAPER_LAST_RUN_AT": str(float(self._reaper_last_run_at or 0.0)),
-            "SARI_DAEMON_SHUTDOWN_INTENT": "1" if self._shutdown_intent else "",
-            "SARI_DAEMON_LAST_SHUTDOWN_REASON": str(self._last_shutdown_reason or ""),
-            "SARI_DAEMON_SHUTDOWN_REASON": str(self._last_shutdown_reason or ""),
-            "SARI_DAEMON_SUICIDE_STATE": str(self._suicide_state or "idle"),
-            "SARI_DAEMON_NO_CLIENT_SINCE": str(float(self._no_client_since or 0.0)),
-            "SARI_DAEMON_GRACE_REMAINING": str(float(grace_remaining)),
-            "SARI_DAEMON_GRACE_REMAINING_MS": str(int(max(0.0, float(grace_remaining)) * 1000.0)),
-            "SARI_DAEMON_SHUTDOWN_ONCE_SET": "1" if self._shutdown_once.is_set() else "",
+            RUNTIME_ACTIVE_LEASES_COUNT: str(self.active_lease_count()),
+            RUNTIME_LAST_REAP_AT: str(float(self._last_reap_at or 0.0)),
+            RUNTIME_REAPER_LAST_RUN_AT: str(float(self._reaper_last_run_at or 0.0)),
+            RUNTIME_SHUTDOWN_INTENT: "1" if self._shutdown_intent else "",
+            RUNTIME_LAST_SHUTDOWN_REASON: str(self._last_shutdown_reason or ""),
+            RUNTIME_SHUTDOWN_REASON: str(self._last_shutdown_reason or ""),
+            RUNTIME_SUICIDE_STATE: str(self._suicide_state or "idle"),
+            RUNTIME_NO_CLIENT_SINCE: str(float(self._no_client_since or 0.0)),
+            RUNTIME_GRACE_REMAINING: str(float(grace_remaining)),
+            RUNTIME_GRACE_REMAINING_MS: str(int(max(0.0, float(grace_remaining)) * 1000.0)),
+            RUNTIME_SHUTDOWN_ONCE_SET: "1" if self._shutdown_once.is_set() else "",
         }
         with self._events_lock:
-            runtime_values["SARI_DAEMON_LAST_EVENT_TS"] = str(float(self._last_event_ts or 0.0))
-            runtime_values["SARI_DAEMON_EVENT_QUEUE_DEPTH"] = str(int(self._event_queue_depth or 0))
+            runtime_values[RUNTIME_LAST_EVENT_TS] = str(float(self._last_event_ts or 0.0))
+            runtime_values[RUNTIME_EVENT_QUEUE_DEPTH] = str(int(self._event_queue_depth or 0))
         try:
-            runtime_values["SARI_DAEMON_LEASES"] = json.dumps(self.leases_snapshot(), ensure_ascii=True)
+            runtime_values[RUNTIME_LEASES] = json.dumps(self.leases_snapshot(), ensure_ascii=True)
         except Exception:
-            runtime_values["SARI_DAEMON_LEASES"] = "[]"
+            runtime_values[RUNTIME_LEASES] = "[]"
         try:
-            runtime_values["SARI_DAEMON_WORKERS_ALIVE"] = json.dumps(self._workers_alive(), ensure_ascii=True)
+            runtime_values[RUNTIME_WORKERS_ALIVE] = json.dumps(self._workers_alive(), ensure_ascii=True)
         except Exception:
-            runtime_values["SARI_DAEMON_WORKERS_ALIVE"] = "[]"
+            runtime_values[RUNTIME_WORKERS_ALIVE] = "[]"
         for key, value in runtime_values.items():
             os.environ[key] = str(value)
         publish_daemon_runtime_state(runtime_values)

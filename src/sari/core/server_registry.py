@@ -612,3 +612,20 @@ class ServerRegistry:
     def prune_dead(self) -> None:
         """Public method to prune dead daemons and associated workspaces."""
         self._update(self._prune_dead_locked)
+
+    def get_live_daemon_pids(self) -> set[int]:
+        """Return alive daemon PIDs currently tracked in registry."""
+        data = self._load()
+        out: set[int] = set()
+        for info in (data.get("daemons") or {}).values():
+            if not isinstance(info, dict):
+                continue
+            try:
+                pid = int(info.get("pid") or 0)
+            except (TypeError, ValueError):
+                continue
+            if pid <= 0:
+                continue
+            if self._is_process_alive(pid):
+                out.add(pid)
+        return out
