@@ -810,7 +810,16 @@ class SariDaemon:
         # 1. Stop Server Loop
         if self.server:
             try:
-                self.server.close()
+                close_result = self.server.close()
+                if inspect.isawaitable(close_result):
+                    try:
+                        if self._loop and self._loop.is_running():
+                            fut = asyncio.run_coroutine_threadsafe(close_result, self._loop)
+                            fut.result(timeout=5.0)
+                        else:
+                            asyncio.run(close_result)
+                    except Exception:
+                        logger.warning("Failed awaiting daemon server close", exc_info=True)
                 wait_closed = getattr(self.server, "wait_closed", None)
                 if callable(wait_closed):
                     close_result = wait_closed()

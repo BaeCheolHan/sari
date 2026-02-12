@@ -150,6 +150,27 @@ def test_shutdown_waits_for_server_wait_closed(monkeypatch):
     assert daemon.last_shutdown_reason == "test_wait_closed"
 
 
+def test_shutdown_awaits_async_server_close(monkeypatch):
+    daemon = SariDaemon(host="127.0.0.1", port=49985)
+    monkeypatch.setattr(daemon, "_unregister_daemon", lambda: None)
+    monkeypatch.setattr(daemon, "_cleanup_legacy_pid_file", lambda: None)
+    monkeypatch.setitem(sys.modules, "multiprocessing", MagicMock(active_children=lambda: []))
+
+    observed = {"close_awaited": 0, "wait_closed_awaited": 0}
+
+    class _FakeServer:
+        async def close(self):
+            observed["close_awaited"] += 1
+
+        async def wait_closed(self):
+            observed["wait_closed_awaited"] += 1
+
+    daemon.server = _FakeServer()
+    daemon.shutdown(reason="test_async_close")
+    assert observed["close_awaited"] == 1
+    assert observed["wait_closed_awaited"] == 1
+
+
 def test_shutdown_uses_kill_fallback_for_lingering_child(monkeypatch):
     daemon = SariDaemon(host="127.0.0.1", port=49990)
     monkeypatch.setattr(daemon, "_unregister_daemon", lambda: None)
