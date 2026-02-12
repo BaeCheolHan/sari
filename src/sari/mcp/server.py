@@ -701,11 +701,8 @@ class LocalSearchMCPServer:
         except Exception as e:
             self._log_debug(f"Executor shutdown error: {e}")
 
-        # 2. Cleanup all workspace resources (DB, Engine)
-        try:
-            self.registry.shutdown_all()
-        except Exception:
-            pass
+        # 2. Release only this server's acquired workspace ref.
+        # Global registry shutdown here can tear down unrelated sessions.
         try:
             if self.transport and hasattr(self.transport, "close"):
                 self.transport.close()

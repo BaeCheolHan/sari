@@ -208,3 +208,27 @@ def test_server_queue_overload_emits_error_response():
     assert payload["error"]["code"] == -32003
     assert mode == "jsonl"
     server.shutdown()
+
+
+def test_server_shutdown_does_not_globally_shutdown_registry_when_unacquired():
+    server = LocalSearchMCPServer("/tmp/ws", start_worker=False)
+
+    class _FakeRegistry:
+        def __init__(self):
+            self.shutdown_all_called = 0
+            self.release_called = 0
+
+        def shutdown_all(self):
+            self.shutdown_all_called += 1
+
+        def release(self, _workspace_root):
+            self.release_called += 1
+
+    fake = _FakeRegistry()
+    server.registry = fake
+    server._session_acquired = False
+
+    server.shutdown()
+
+    assert fake.shutdown_all_called == 0
+    assert fake.release_called == 0
