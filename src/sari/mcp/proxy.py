@@ -57,6 +57,7 @@ MAX_MESSAGE_SIZE = 10 * 1024 * 1024  # 10MB
 _HEADER_SEP = b"\r\n\r\n"
 _MODE_FRAMED = "framed"
 _MODE_JSONL = "jsonl"
+_MAX_SUPPRESS_IDS = 4096
 
 
 def _identify_sari_daemon(host: str, port: int, timeout: float = 0.3) -> bool:
@@ -331,6 +332,8 @@ def _reconnect(state) -> bool:
                 internal = dict(init_req)
                 with state["suppress_lock"]:
                     suppress_ids = state.setdefault("suppress_ids", set())
+                    if len(suppress_ids) >= _MAX_SUPPRESS_IDS:
+                        suppress_ids.clear()
                     internal_id = -secrets.randbelow(2**31 - 1) - 1
                     while internal_id in suppress_ids:
                         internal_id = -secrets.randbelow(2**31 - 1) - 1

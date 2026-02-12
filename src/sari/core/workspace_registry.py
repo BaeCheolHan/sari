@@ -214,6 +214,10 @@ class Registry:
     _lock = threading.Lock()
     def __init__(self): self._sessions: Dict[str, SharedState] = {}
 
+    @staticmethod
+    def _workspace_key(workspace_root: str) -> str:
+        return WorkspaceManager.normalize_path(str(workspace_root or ""))
+
     @classmethod
     def get_instance(cls):
         if cls._instance is None:
@@ -227,33 +231,36 @@ class Registry:
             workspace_root: str,
             persistent: bool = False,
             track_ref: bool = True) -> SharedState:
+        workspace_key = self._workspace_key(workspace_root)
         with self._lock:
-            if workspace_root not in self._sessions:
-                session = SharedState(workspace_root)
+            if workspace_key not in self._sessions:
+                session = SharedState(workspace_key)
                 session.persistent = bool(persistent)
                 session.start()
-                self._sessions[workspace_root] = session
+                self._sessions[workspace_key] = session
             elif persistent:
-                self._sessions[workspace_root].persistent = True
+                self._sessions[workspace_key].persistent = True
             if track_ref:
-                self._sessions[workspace_root].ref_count += 1
-            self._sessions[workspace_root].touch()
-            return self._sessions[workspace_root]
+                self._sessions[workspace_key].ref_count += 1
+            self._sessions[workspace_key].touch()
+            return self._sessions[workspace_key]
 
     def touch_workspace(self, workspace_root: str):
+        workspace_key = self._workspace_key(workspace_root)
         with self._lock:
-            if workspace_root in self._sessions:
-                self._sessions[workspace_root].touch()
+            if workspace_key in self._sessions:
+                self._sessions[workspace_key].touch()
 
     def release(self, workspace_root: str):
+        workspace_key = self._workspace_key(workspace_root)
         with self._lock:
-            if workspace_root in self._sessions:
-                state = self._sessions[workspace_root]
+            if workspace_key in self._sessions:
+                state = self._sessions[workspace_key]
                 state.ref_count = max(0, state.ref_count - 1)
                 state.touch()
                 if state.ref_count == 0 and not state.persistent:
                     state.stop()
-                    del self._sessions[workspace_root]
+                    del self._sessions[workspace_key]
 
     def shutdown_all(self):
         with self._lock:
@@ -276,12 +283,12 @@ class Registry:
             for ws, state in self._sessions.items():
                 if state.persistent:
                     continue
-                if int(getattr(state, "ref_count", 0) or 0) <= 0:
-                    continue
+                ref_count = int(getattr(state, "ref_count", 0) or 0)
                 last_activity = float(getattr(state, "last_activity", 0.0) or 0.0)
                 if last_activity > 0 and now - last_activity < max_idle_sec:
                     continue
-                state.ref_count = 0
+                if ref_count > 0:
+                    state.ref_count = 0
                 try:
                     state.stop()
                 except Exception:
