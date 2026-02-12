@@ -25,18 +25,24 @@ from sari.core.daemon_runtime_state import (
     RUNTIME_EVENT_QUEUE_DEPTH,
     RUNTIME_GRACE_REMAINING,
     RUNTIME_GRACE_REMAINING_MS,
+    RUNTIME_HOST,
     RUNTIME_LAST_EVENT_TS,
     RUNTIME_LAST_REAP_AT,
     RUNTIME_LAST_SHUTDOWN_REASON,
     RUNTIME_LEASES,
     RUNTIME_NO_CLIENT_SINCE,
+    RUNTIME_PORT,
     RUNTIME_REAPER_LAST_RUN_AT,
+    RUNTIME_RSS_BYTES,
+    RUNTIME_RSS_MB,
+    RUNTIME_SIGNALS_DISABLED,
     RUNTIME_SHUTDOWN_INTENT,
     RUNTIME_SHUTDOWN_ONCE_SET,
     RUNTIME_SHUTDOWN_REASON,
     RUNTIME_SUICIDE_STATE,
     RUNTIME_WORKERS_ALIVE,
     publish_daemon_runtime_state,
+    update_daemon_runtime_state,
 )
 from sari.core.utils.uuid7 import uuid7_hex
 from sari.mcp.trace import trace
@@ -636,8 +642,12 @@ class SariDaemon:
         gc0, gc1, gc2 = gc.get_count()
         with self._events_lock:
             q_depth = int(self._event_queue_depth or 0)
-        os.environ["SARI_DAEMON_RSS_BYTES"] = str(int(rss_bytes or 0))
-        os.environ["SARI_DAEMON_RSS_MB"] = f"{rss_mb:.2f}"
+        update_daemon_runtime_state(
+            {
+                RUNTIME_RSS_BYTES: str(int(rss_bytes or 0)),
+                RUNTIME_RSS_MB: f"{rss_mb:.2f}",
+            }
+        )
         logger.info(
             "daemon_runtime rss_mb=%.2f q_depth=%d active=%d sockets=%d leases=%d workers=%d gc=(%d,%d,%d)",
             rss_mb,
@@ -657,7 +667,7 @@ class SariDaemon:
 
     def mark_signals_disabled(self) -> None:
         self._signals_disabled = True
-        os.environ["SARI_DAEMON_SIGNALS_DISABLED"] = "1"
+        update_daemon_runtime_state({RUNTIME_SIGNALS_DISABLED: "1"})
         warn(
             SIGNAL_HANDLER_REG_FAILED,
             "SariDaemon.mark_signals_disabled",
@@ -937,8 +947,7 @@ class SariDaemon:
         self.server = await asyncio.start_server(
             self.handle_client, self.host, self.port
         )
-        os.environ["SARI_DAEMON_HOST"] = host
-        os.environ["SARI_DAEMON_PORT"] = str(self.port)
+        update_daemon_runtime_state({RUNTIME_HOST: host, RUNTIME_PORT: str(self.port)})
         self._loop = asyncio.get_running_loop()
         self._register_daemon()
         self._autostart_workspace()

@@ -23,6 +23,10 @@ RUNTIME_EVENT_QUEUE_DEPTH = "SARI_DAEMON_EVENT_QUEUE_DEPTH"
 RUNTIME_LAST_SHUTDOWN_REASON = "SARI_DAEMON_LAST_SHUTDOWN_REASON"
 RUNTIME_SHUTDOWN_REASON = "SARI_DAEMON_SHUTDOWN_REASON"
 RUNTIME_WORKERS_ALIVE = "SARI_DAEMON_WORKERS_ALIVE"
+RUNTIME_HOST = "SARI_DAEMON_HOST"
+RUNTIME_PORT = "SARI_DAEMON_PORT"
+RUNTIME_RSS_BYTES = "SARI_DAEMON_RSS_BYTES"
+RUNTIME_RSS_MB = "SARI_DAEMON_RSS_MB"
 
 
 def _bool_flag(raw: object, default: bool = True) -> bool:
@@ -36,13 +40,7 @@ def _bool_flag(raw: object, default: bool = True) -> bool:
     return bool(default)
 
 
-def publish_daemon_runtime_state(
-    values: Mapping[str, object], *, mirror_env: bool | None = None
-) -> None:
-    data = {str(k): str(v) for k, v in values.items()}
-    with _LOCK:
-        _SNAPSHOT.clear()
-        _SNAPSHOT.update(data)
+def _mirror_to_env(data: Mapping[str, str], mirror_env: bool | None) -> None:
     should_mirror = (
         _bool_flag(os.environ.get("SARI_DAEMON_RUNTIME_ENV_MIRROR", "1"), True)
         if mirror_env is None
@@ -51,6 +49,25 @@ def publish_daemon_runtime_state(
     if should_mirror:
         for key, value in data.items():
             os.environ[key] = value
+
+
+def publish_daemon_runtime_state(
+    values: Mapping[str, object], *, mirror_env: bool | None = None
+) -> None:
+    data = {str(k): str(v) for k, v in values.items()}
+    with _LOCK:
+        _SNAPSHOT.clear()
+        _SNAPSHOT.update(data)
+    _mirror_to_env(data, mirror_env)
+
+
+def update_daemon_runtime_state(
+    values: Mapping[str, object], *, mirror_env: bool | None = None
+) -> None:
+    data = {str(k): str(v) for k, v in values.items()}
+    with _LOCK:
+        _SNAPSHOT.update(data)
+    _mirror_to_env(data, mirror_env)
 
 
 def get_daemon_runtime_state_snapshot() -> dict[str, str]:
