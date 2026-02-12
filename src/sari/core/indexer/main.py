@@ -36,7 +36,8 @@ def _is_pid_alive(pid: int) -> bool:
 def _scan_to_db(config: Config, db: LocalSearchDB,
                 logger: logging.Logger,
                 parent_pid: Optional[int] = None,
-                parent_alive_check: Optional[Callable[[int], bool]] = None) -> dict[str, object]:
+                parent_alive_check: Optional[Callable[[int], bool]] = None,
+                progress_callback: Optional[Callable[[dict[str, object]], None]] = None) -> dict[str, object]:
     """
     파일 시스템을 스캔하여 변경된 파일을 감지하고 데이터베이스에 인덱싱합니다.
     이 함수는 별도의 프로세스(Worker) 내에서 실행될 수 있으며, 결과를 Status 딕셔너리로 반환합니다.
@@ -54,6 +55,11 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
     max_workers = os.cpu_count() or 4
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
     check_parent_alive = parent_alive_check or _is_pid_alive
+    progress_every_files = max(1, int(os.environ.get("SARI_INDEXER_PROGRESS_EVERY_FILES", "200") or 200))
+    progress_every_sec = max(0.2, float(os.environ.get("SARI_INDEXER_PROGRESS_EVERY_SEC", "1.5") or 1.5))
+    progress_log_enabled = str(os.environ.get("SARI_INDEXER_PROGRESS_LOG", "1")).strip().lower() in {
+        "1", "true", "yes", "on"}
+    last_progress_ts = time.time()
 
     def _ensure_parent_alive() -> None:
         if parent_pid is None:
@@ -62,7 +68,37 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
             raise RuntimeError(
                 f"orphaned worker detected: parent pid {parent_pid} is not alive")
 
+    def _emit_progress(*, force: bool = False, stage: str = "") -> None:
+        nonlocal last_progress_ts
+        now = time.time()
+        should_emit = force
+        if not should_emit:
+            if int(status["scanned_files"] or 0) % progress_every_files == 0:
+                should_emit = True
+            elif (now - last_progress_ts) >= progress_every_sec:
+                should_emit = True
+        if not should_emit:
+            return
+        last_progress_ts = now
+        payload = dict(status)
+        payload["stage"] = str(stage or "")
+        if progress_callback is not None:
+            try:
+                progress_callback(payload)
+            except Exception:
+                pass
+        if logger and progress_log_enabled:
+            logger.info(
+                "indexer_worker_progress stage=%s scanned=%s indexed=%s symbols=%s errors=%s",
+                stage or "running",
+                int(status.get("scanned_files", 0) or 0),
+                int(status.get("indexed_files", 0) or 0),
+                int(status.get("symbols_extracted", 0) or 0),
+                int(status.get("errors", 0) or 0),
+            )
+
     try:
+        _emit_progress(force=True, stage="start")
         def _get_files_generator():
             """
             모든 파일을 메모리에 로드하지 않고 하나씩 처리하기 위한 제너레이터입니다.
@@ -80,6 +116,7 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
         for root, path, rid in _get_files_generator():
             _ensure_parent_alive()
             status["scanned_files"] += 1
+            _emit_progress(stage="enqueue")
             try:
                 st = path.stat()
                 # 파일 처리 작업을 쓰레드 풀에 제출
@@ -145,6 +182,9 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
                 status["errors"] += 1
                 if logger:
                     logger.error(f"Async result processing failed: {e}")
+                _emit_progress(stage="collect_error")
+            else:
+                _emit_progress(stage="collect")
 
         # 데이터베이스 일괄 업데이트 (Batch Update)
         if file_rows:
@@ -169,6 +209,7 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
 
         status["scan_finished_ts"] = int(time.time())
         status["index_version"] = str(status["scan_finished_ts"])
+        _emit_progress(force=True, stage="done")
         return status
     finally:
         executor.shutdown(wait=True, cancel_futures=True)
@@ -192,30 +233,60 @@ def _worker_build_snapshot(
         except Exception:
             pass
     try:
+        def _write_worker_status(payload: dict[str, object]) -> None:
+            tmp_path = f"{status_path}.tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f)
+            os.replace(tmp_path, status_path)
+
+        def _progress_callback(status_payload: dict[str, object]) -> None:
+            _write_worker_status(
+                {
+                    "ok": True,
+                    "in_progress": True,
+                    "status": status_payload,
+                    "snapshot_path": snapshot_path,
+                }
+            )
+
         cfg = Config(**config_dict)
         db = LocalSearchDB(snapshot_path, logger=logger, bind_proxy=False, journal_mode="delete")
-        status = _scan_to_db(cfg, db, logger, parent_pid=parent_pid)
+        status = _scan_to_db(
+            cfg,
+            db,
+            logger,
+            parent_pid=parent_pid,
+            progress_callback=_progress_callback,
+        )
         db.close_all()
         # 성공 상태 기록
-        with open(status_path, "w", encoding="utf-8") as f:
-            json.dump({"ok": True, "status": status,
-                      "snapshot_path": snapshot_path}, f)
+        _write_worker_status(
+            {
+                "ok": True,
+                "in_progress": False,
+                "status": status,
+                "snapshot_path": snapshot_path,
+            }
+        )
     except Exception as e:
         tb = traceback.format_exc()
         logger.error("Worker snapshot build failed: %s", e)
         logger.debug("Worker snapshot traceback:\n%s", tb)
         # 실패 상태 기록
         try:
-            with open(status_path, "w", encoding="utf-8") as f:
+            tmp_path = f"{status_path}.tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(
                     {
                         "ok": False,
+                        "in_progress": False,
                         "error": str(e),
                         "traceback": tb,
                         "snapshot_path": snapshot_path,
                     },
                     f,
                 )
+            os.replace(tmp_path, status_path)
         except Exception:
             pass
 
@@ -280,6 +351,58 @@ class Indexer:
             return content[-max_chars:]
         except Exception:
             return ""
+
+    def _read_worker_progress_status(self) -> Optional[dict[str, object]]:
+        status_path = self._worker_status_path
+        if not status_path or not os.path.exists(status_path):
+            return None
+        try:
+            with open(status_path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if not payload.get("ok", False):
+            return None
+        status_payload = payload.get("status", {})
+        if not isinstance(status_payload, dict):
+            return None
+        return status_payload
+
+    def get_runtime_status(self) -> dict[str, object]:
+        status_obj = self.status
+        runtime = {
+            "index_ready": bool(getattr(status_obj, "index_ready", False)),
+            "indexed_files": int(getattr(status_obj, "indexed_files", 0) or 0),
+            "scanned_files": int(getattr(status_obj, "scanned_files", 0) or 0),
+            "symbols_extracted": int(getattr(status_obj, "symbols_extracted", 0) or 0),
+            "errors": int(getattr(status_obj, "errors", 0) or 0),
+            "scan_started_ts": int(getattr(status_obj, "scan_started_ts", 0) or 0),
+            "scan_finished_ts": int(getattr(status_obj, "scan_finished_ts", 0) or 0),
+            "index_version": str(getattr(status_obj, "index_version", "") or ""),
+            "last_error": str(getattr(status_obj, "last_error", "") or ""),
+            "status_source": "indexer_status",
+        }
+        worker_proc = self._worker_proc
+        worker_alive = bool(worker_proc and worker_proc.is_alive())
+        if not worker_alive:
+            return runtime
+        progress = self._read_worker_progress_status() or {}
+        if progress:
+            runtime["index_ready"] = bool(progress.get("index_ready", False))
+            runtime["indexed_files"] = int(progress.get("indexed_files", 0) or 0)
+            runtime["scanned_files"] = int(progress.get("scanned_files", 0) or 0)
+            runtime["symbols_extracted"] = int(progress.get("symbols_extracted", 0) or 0)
+            runtime["errors"] = int(progress.get("errors", 0) or 0)
+            runtime["scan_started_ts"] = int(progress.get("scan_started_ts", runtime["scan_started_ts"]) or 0)
+            runtime["scan_finished_ts"] = int(progress.get("scan_finished_ts", runtime["scan_finished_ts"]) or 0)
+            runtime["index_version"] = str(progress.get("index_version", runtime["index_version"]) or "")
+            runtime["status_source"] = "worker_progress"
+        else:
+            runtime["index_ready"] = False
+            runtime["status_source"] = "worker_pending"
+        return runtime
 
     def _cleanup_stale_snapshot_artifacts(
             self,

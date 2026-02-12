@@ -9,6 +9,9 @@ import os
 import asyncio
 import inspect
 import logging
+import re
+import datetime as _dt
+import time
 from contextlib import asynccontextmanager
 from typing import Optional, TypeAlias
 
@@ -73,6 +76,106 @@ class AsyncHttpServer:
 
     def _warning_counts_json(self) -> JsonObject:
         return {str(k): int(v or 0) for k, v in self._status_warning_counts.items()}
+
+    def _read_recent_log_errors(self, limit: int = 50) -> list[str]:
+        try:
+            from sari.core.workspace import WorkspaceManager
+            env_log_dir = os.environ.get("SARI_LOG_DIR")
+            log_dir = os.path.expanduser(env_log_dir) if env_log_dir else str(WorkspaceManager.get_global_log_dir())
+            log_file = os.path.join(log_dir, "daemon.log")
+            if not os.path.exists(log_file):
+                return []
+            file_size = os.path.getsize(log_file)
+            read_size = min(file_size, 1024 * 1024)
+            with open(log_file, "rb") as f:
+                if file_size > read_size:
+                    f.seek(file_size - read_size)
+                chunk = f.read().decode("utf-8", errors="ignore")
+            lines = chunk.splitlines()
+            out: list[str] = []
+            level_pat = re.compile(r"\b(ERROR|CRITICAL)\b")
+            for line in reversed(lines):
+                text = str(line or "").strip()
+                if not text:
+                    continue
+                if level_pat.search(text):
+                    out.append(text)
+                if len(out) >= max(1, int(limit)):
+                    break
+            out.reverse()
+            return out
+        except Exception:
+            return []
+
+    @staticmethod
+    def _parse_log_line_ts(text: str) -> float:
+        raw = str(text or "")
+        m = re.match(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:,\d{1,6})?)", raw)
+        if not m:
+            return 0.0
+        token = m.group(1)
+        for fmt in ("%Y-%m-%d %H:%M:%S,%f", "%Y-%m-%d %H:%M:%S"):
+            try:
+                return _dt.datetime.strptime(token, fmt).timestamp()
+            except Exception:
+                continue
+        return 0.0
+
+    def _read_recent_log_error_entries(self, limit: int = 50) -> list[JsonObject]:
+        lines = self._read_recent_log_errors(limit=limit)
+        return [{"text": str(line), "ts": float(self._parse_log_line_ts(str(line)) or 0.0)} for line in lines]
+
+    def _build_errors_payload(
+        self,
+        limit: int = 50,
+        source: str = "all",
+        reason_codes: Optional[set[str]] = None,
+        since_sec: int = 0,
+    ) -> JsonObject:
+        lim = max(1, min(int(limit or 50), 200))
+        source_norm = str(source or "all").strip().lower()
+        if source_norm not in {"all", "log", "warning"}:
+            source_norm = "all"
+        reason_filter = {str(rc).strip() for rc in (reason_codes or set()) if str(rc).strip()}
+        since = max(0, int(since_sec or 0))
+        cutoff_ts = time.time() - since if since > 0 else 0.0
+        warnings_recent = warning_sink.warnings_recent()
+        if isinstance(warnings_recent, list):
+            filtered_warnings = []
+            for item in warnings_recent:
+                if not isinstance(item, dict):
+                    continue
+                code = str(item.get("reason_code") or "")
+                ts = float(item.get("ts") or 0.0)
+                if reason_filter and code not in reason_filter:
+                    continue
+                if cutoff_ts > 0 and ts > 0 and ts < cutoff_ts:
+                    continue
+                filtered_warnings.append(item)
+            warnings_recent = filtered_warnings
+        else:
+            warnings_recent = []
+        log_entries = self._read_recent_log_error_entries(limit=lim)
+        if cutoff_ts > 0:
+            log_entries = [e for e in log_entries if float(e.get("ts") or 0.0) >= cutoff_ts]
+        log_errors = [str(e.get("text") or "") for e in log_entries]
+        if source_norm == "log":
+            warnings_recent = []
+        elif source_norm == "warning":
+            log_entries = []
+            log_errors = []
+        return {
+            "ok": True,
+            "limit": lim,
+            "source": source_norm,
+            "reason_codes": sorted(list(reason_filter)),
+            "since_sec": since,
+            "warnings_recent": warnings_recent[-lim:] if isinstance(warnings_recent, list) else [],
+            "warning_counts": warning_sink.warning_counts(),
+            "status_warning_counts": self._warning_counts_json(),
+            "log_errors": log_errors[-lim:],
+            "log_error_entries": log_entries[-lim:],
+        }
 
     @staticmethod
     def _indexer_workspace_roots(indexer: object) -> list[str]:
@@ -242,6 +345,18 @@ class AsyncHttpServer:
     async def status(self, request: Request) -> JSONResponse:
         """Server status endpoint."""
         st = self.indexer.status
+        runtime_status = {}
+        if hasattr(self.indexer, "get_runtime_status"):
+            try:
+                raw_runtime = self.indexer.get_runtime_status()
+                if isinstance(raw_runtime, dict):
+                    runtime_status = raw_runtime
+            except Exception as e:
+                self._warn_status(
+                    "INDEXER_RUNTIME_STATUS_FAILED",
+                    "Failed to resolve indexer runtime status; using base status",
+                    error=repr(e),
+                )
         daemon_status = load_daemon_runtime_status()
         repo_stats = {}
         if hasattr(self.db, "get_repo_stats"):
@@ -259,13 +374,15 @@ class AsyncHttpServer:
             "port": self.port,
             "version": self.version,
             "async_server": True,  # New flag to indicate async server
-            "index_ready": bool(st.index_ready),
-            "last_scan_ts": st.last_scan_ts,
+            "index_ready": bool(runtime_status.get("index_ready", bool(getattr(st, "index_ready", False)))),
+            "last_scan_ts": int(runtime_status.get("scan_finished_ts", getattr(st, "scan_finished_ts", getattr(st, "last_scan_ts", 0))) or 0),
             "last_commit_ts": self.indexer.get_last_commit_ts() if hasattr(self.indexer, "get_last_commit_ts") else 0,
-            "scanned_files": st.scanned_files,
-            "indexed_files": st.indexed_files,
+            "scanned_files": int(runtime_status.get("scanned_files", getattr(st, "scanned_files", 0)) or 0),
+            "indexed_files": int(runtime_status.get("indexed_files", getattr(st, "indexed_files", 0)) or 0),
+            "symbols_extracted": int(runtime_status.get("symbols_extracted", getattr(st, "symbols_extracted", 0)) or 0),
             "total_files_db": total_db_files,
-            "errors": st.errors,
+            "errors": int(runtime_status.get("errors", getattr(st, "errors", 0)) or 0),
+            "status_source": str(runtime_status.get("status_source", "indexer_status") or "indexer_status"),
             "orphan_daemon_count": len(orphan_daemons),
             "orphan_daemon_warnings": orphan_daemon_warnings,
             "signals_disabled": daemon_status.signals_disabled,
@@ -296,6 +413,31 @@ class AsyncHttpServer:
             "warning_counts": warning_sink.warning_counts(),
             "warnings_recent": warning_sink.warnings_recent(),
         })
+
+    async def errors(self, request: Request) -> JSONResponse:
+        raw_limit = request.query_params.get("limit", "50")
+        source = str(request.query_params.get("source", "all") or "all").strip().lower()
+        raw_reason_codes = str(request.query_params.get("reason_code", "") or "").strip()
+        raw_since = str(request.query_params.get("since_sec", "0") or "0").strip()
+        try:
+            limit = int(raw_limit)
+        except Exception:
+            limit = 50
+        try:
+            since_sec = int(raw_since or "0")
+        except Exception:
+            since_sec = 0
+        reason_codes = {
+            part.strip() for part in raw_reason_codes.split(",") if str(part or "").strip()
+        } if raw_reason_codes else set()
+        return JSONResponse(
+            self._build_errors_payload(
+                limit=limit,
+                source=source,
+                reason_codes=reason_codes,
+                since_sec=since_sec,
+            )
+        )
     
     async def search(self, request: Request) -> JSONResponse:
         """Search endpoint."""
@@ -647,6 +789,7 @@ class AsyncHttpServer:
             Route("/", self.dashboard, methods=["GET"]),
             Route("/health", self.health, methods=["GET"]),
             Route("/status", self.status, methods=["GET"]),
+            Route("/errors", self.errors, methods=["GET"]),
             Route("/workspaces", self.workspaces, methods=["GET"]),
             Route("/search", self.search, methods=["GET"]),
             Route("/rescan", self.rescan, methods=["GET"]),

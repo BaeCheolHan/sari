@@ -1,5 +1,6 @@
 import pytest
 import logging
+import json
 
 from sari.core.indexer.main import Indexer, _scan_to_db, _worker_build_snapshot
 from sari.core.db.main import LocalSearchDB
@@ -83,3 +84,57 @@ def test_worker_build_snapshot_writes_error_when_parent_dead(tmp_path, monkeypat
     payload = json.loads((tmp_path / "status.json").read_text(encoding="utf-8"))
     assert payload["ok"] is False
     assert "orphaned worker detected" in payload["error"]
+
+
+def test_scan_to_db_emits_progress_callback(tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "main.py").write_text("print('x')", encoding="utf-8")
+    db = LocalSearchDB(str(tmp_path / "idx.db"))
+    cfg = Config(**Config.get_defaults(str(ws)))
+    events = []
+
+    _scan_to_db(cfg, db, logging.getLogger("test"), progress_callback=lambda s: events.append(dict(s)))
+    assert events
+    assert any(str(e.get("stage", "")) == "start" for e in events)
+    assert str(events[-1].get("stage", "")) == "done"
+
+
+def test_indexer_runtime_status_prefers_worker_progress(tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "main.py").write_text("print('x')", encoding="utf-8")
+    db = LocalSearchDB(str(tmp_path / "idx.db"))
+    cfg = Config(**Config.get_defaults(str(ws)))
+    indexer = Indexer(cfg, db)
+
+    status_path = tmp_path / "worker.status.json"
+    status_path.write_text(
+        json.dumps(
+            {
+                "ok": True,
+                "in_progress": True,
+                "status": {
+                    "scanned_files": 10,
+                    "indexed_files": 6,
+                    "symbols_extracted": 13,
+                    "errors": 1,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    indexer._worker_status_path = str(status_path)
+
+    class _AliveProc:
+        @staticmethod
+        def is_alive():
+            return True
+
+    indexer._worker_proc = _AliveProc()
+    runtime = indexer.get_runtime_status()
+    assert runtime["status_source"] == "worker_progress"
+    assert runtime["scanned_files"] == 10
+    assert runtime["indexed_files"] == 6
+    assert runtime["symbols_extracted"] == 13
+    assert runtime["errors"] == 1

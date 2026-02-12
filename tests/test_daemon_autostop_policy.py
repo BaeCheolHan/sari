@@ -4,7 +4,7 @@ import threading
 import time
 import sys
 
-from sari.mcp.daemon import SariDaemon
+from sari.mcp.daemon import SariDaemon, RuntimeStateProvider
 from sari.mcp.workspace_registry import Registry
 
 
@@ -47,6 +47,28 @@ def test_daemon_autostart_workspace_is_not_persistent_and_not_tracked(monkeypatc
     assert calls["workspace_root"] == "/tmp/ws"
     assert calls["persistent"] is False
     assert calls["track_ref"] is False
+
+
+def test_runtime_state_provider_collects_controller_signals(monkeypatch):
+    daemon = SariDaemon(host="127.0.0.1", port=49999)
+    ws_reg = SimpleNamespace(
+        active_count=lambda: 3,
+        has_indexing_activity=lambda: True,
+        get_last_activity_ts=lambda: 123.0,
+    )
+    monkeypatch.setattr(daemon._registry, "get_daemon", lambda _boot_id: {"draining": True})
+    monkeypatch.setattr(daemon, "_get_active_connections", lambda: 2)
+    monkeypatch.setattr(daemon, "active_lease_count", lambda: 1)
+    monkeypatch.setattr(daemon, "_workers_inflight", lambda: 4)
+
+    snap = RuntimeStateProvider(daemon, ws_reg).collect()
+    assert snap.draining is True
+    assert snap.active_count == 3
+    assert snap.socket_active == 2
+    assert snap.lease_active == 1
+    assert snap.workers_inflight == 4
+    assert snap.indexing_active is True
+    assert snap.last_activity == 123.0
 
 
 def test_heartbeat_autostops_when_no_active_clients(monkeypatch):

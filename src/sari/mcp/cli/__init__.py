@@ -57,9 +57,6 @@ from .legacy_cli import (
     main,
 )
 
-# Register daemon start function to break circular dependency
-set_daemon_start_function(cmd_daemon_start)
-
 # Aliases for backward compatibility with underscore-prefixed names
 _get_http_host_port = get_http_host_port
 _is_http_running = is_http_running

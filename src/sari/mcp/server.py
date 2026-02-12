@@ -678,30 +678,7 @@ class LocalSearchMCPServer:
                 # Attach metadata for response framing matching
                 req["_sari_framing_mode"] = mode
 
-                try:
-                    # Non-blocking put to avoid hanging the main read loop if workers are slow.
-                    # We use a short timeout to handle transient spikes.
-                    self._req_queue.put(req, timeout=0.01)
-                except queue.Full:
-                    msg_id = req.get("id")
-                    if msg_id is not None:
-                        error_resp = {
-                            "jsonrpc": "2.0",
-                            "id": msg_id,
-                            "error": {
-                                "code": -32003,
-                                "message": "Server overloaded: request queue is full. Please try again later."
-                            }
-                        }
-                        mode = req.get("_sari_framing_mode", "content-length")
-                        with self._stdout_lock:
-                            self.transport.write_message(error_resp, mode=mode)
-                    self._log_debug(
-                        f"CRITICAL: MCP request queue is full! Dropping request {msg_id}")
-                    trace("run_loop_queue_full", msg_id=msg_id)
-                except Exception as e:
-                    self._log_debug(f"ERROR putting req to queue: {e}")
-                    trace("run_loop_queue_error", error=str(e))
+                self._enqueue_incoming_request(req)
         except Exception as e:
             self._log_debug(f"CRITICAL in run loop: {e}")
             trace("run_loop_error", error=str(e))
@@ -763,20 +740,59 @@ class LocalSearchMCPServer:
                 self._log_debug(f"Queue access error in worker loop: {e}")
                 continue
 
+            should_break = False
             try:
-                self._executor.submit(self._handle_and_respond, req)
-            except RuntimeError as e:
-                # Executor shutdown - graceful exit
-                self._log_debug(f"Executor shutdown during submit: {e}")
-                break
-            except Exception as e:
-                # Unexpected error - log and continue
-                self._log_debug(f"Error submitting to executor: {e}")
+                should_break = not self._submit_request_for_execution(req)
             finally:
                 try:
                     self._req_queue.task_done()
                 except Exception:
                     pass
+            if should_break:
+                break
+
+    def _enqueue_incoming_request(self, req: JsonMap) -> None:
+        try:
+            # Non-blocking put to avoid hanging the main read loop if workers are slow.
+            # We use a short timeout to handle transient spikes.
+            self._req_queue.put(req, timeout=0.01)
+        except queue.Full:
+            self._emit_queue_overload(req)
+        except Exception as e:
+            self._log_debug(f"ERROR putting req to queue: {e}")
+            trace("run_loop_queue_error", error=str(e))
+
+    def _emit_queue_overload(self, req: JsonMap) -> None:
+        msg_id = req.get("id")
+        if msg_id is not None:
+            error_resp = {
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "error": {
+                    "code": -32003,
+                    "message": "Server overloaded: request queue is full. Please try again later."
+                }
+            }
+            mode = req.get("_sari_framing_mode", "content-length")
+            with self._stdout_lock:
+                if self.transport is not None:
+                    self.transport.write_message(error_resp, mode=mode)
+        self._log_debug(
+            f"CRITICAL: MCP request queue is full! Dropping request {msg_id}")
+        trace("run_loop_queue_full", msg_id=msg_id)
+
+    def _submit_request_for_execution(self, req: JsonMap) -> bool:
+        try:
+            self._executor.submit(self._handle_and_respond, req)
+            return True
+        except RuntimeError as e:
+            # Executor shutdown - graceful exit
+            self._log_debug(f"Executor shutdown during submit: {e}")
+            return False
+        except Exception as e:
+            # Unexpected error - log and continue
+            self._log_debug(f"Error submitting to executor: {e}")
+            return True
 
     def _drain_pending_requests(self) -> None:
         while True:

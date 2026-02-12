@@ -1,9 +1,12 @@
 import json
 import os
+import re
 import threading
 import mimetypes
 import time
 import logging
+import datetime as _dt
+from typing import Optional
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 from sari.version import __version__
@@ -66,6 +69,104 @@ class Handler(BaseHTTPRequestHandler):
         if not hasattr(self, "_status_warning_counts"):
             return {}
         return {str(k): int(v or 0) for k, v in self._status_warning_counts.items()}
+
+    @staticmethod
+    def _parse_log_line_ts(text: str) -> float:
+        raw = str(text or "")
+        m = re.match(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:,\d{1,6})?)", raw)
+        if not m:
+            return 0.0
+        token = m.group(1)
+        for fmt in ("%Y-%m-%d %H:%M:%S,%f", "%Y-%m-%d %H:%M:%S"):
+            try:
+                return _dt.datetime.strptime(token, fmt).timestamp()
+            except Exception:
+                continue
+        return 0.0
+
+    def _read_recent_log_error_entries(self, limit: int = 50) -> list[dict[str, object]]:
+        try:
+            from sari.core.workspace import WorkspaceManager
+            env_log_dir = os.environ.get("SARI_LOG_DIR")
+            log_dir = os.path.expanduser(env_log_dir) if env_log_dir else str(WorkspaceManager.get_global_log_dir())
+            log_file = os.path.join(log_dir, "daemon.log")
+            if not os.path.exists(log_file):
+                return []
+            file_size = os.path.getsize(log_file)
+            read_size = min(file_size, 1024 * 1024)
+            with open(log_file, "rb") as f:
+                if file_size > read_size:
+                    f.seek(file_size - read_size)
+                chunk = f.read().decode("utf-8", errors="ignore")
+            lines = chunk.splitlines()
+            out: list[dict[str, object]] = []
+            level_pat = re.compile(r"\b(ERROR|CRITICAL)\b")
+            for line in reversed(lines):
+                text = str(line or "").strip()
+                if not text:
+                    continue
+                if level_pat.search(text):
+                    out.append({"text": text, "ts": float(self._parse_log_line_ts(text) or 0.0)})
+                if len(out) >= max(1, int(limit)):
+                    break
+            out.reverse()
+            return out
+        except Exception:
+            return []
+
+    def _build_errors_payload(
+        self,
+        limit: int = 50,
+        source: str = "all",
+        reason_codes: Optional[set[str]] = None,
+        since_sec: int = 0,
+    ):
+        lim = max(1, min(int(limit or 50), 200))
+        source_norm = str(source or "all").strip().lower()
+        if source_norm not in {"all", "log", "warning"}:
+            source_norm = "all"
+        reason_filter = {str(rc).strip() for rc in (reason_codes or set()) if str(rc).strip()}
+        since = max(0, int(since_sec or 0))
+        cutoff_ts = time.time() - since if since > 0 else 0.0
+
+        warnings_recent = warning_sink.warnings_recent()
+        if isinstance(warnings_recent, list):
+            filtered_warnings = []
+            for item in warnings_recent:
+                if not isinstance(item, dict):
+                    continue
+                code = str(item.get("reason_code") or "")
+                ts = float(item.get("ts") or 0.0)
+                if reason_filter and code not in reason_filter:
+                    continue
+                if cutoff_ts > 0 and ts > 0 and ts < cutoff_ts:
+                    continue
+                filtered_warnings.append(item)
+            warnings_recent = filtered_warnings
+        else:
+            warnings_recent = []
+
+        log_entries = self._read_recent_log_error_entries(limit=lim)
+        if cutoff_ts > 0:
+            log_entries = [e for e in log_entries if float(e.get("ts") or 0.0) >= cutoff_ts]
+        log_errors = [str(e.get("text") or "") for e in log_entries]
+        if source_norm == "log":
+            warnings_recent = []
+        elif source_norm == "warning":
+            log_entries = []
+            log_errors = []
+        return {
+            "ok": True,
+            "limit": lim,
+            "source": source_norm,
+            "reason_codes": sorted(list(reason_filter)),
+            "since_sec": since,
+            "warnings_recent": warnings_recent[-lim:] if isinstance(warnings_recent, list) else [],
+            "warning_counts": warning_sink.warning_counts(),
+            "status_warning_counts": self._status_warning_counts_json(),
+            "log_errors": log_errors[-lim:],
+            "log_error_entries": log_entries[-lim:],
+        }
 
     @staticmethod
     def _indexer_workspace_roots(indexer) -> list[str]:
@@ -576,11 +677,14 @@ class Handler(BaseHTTPRequestHandler):
                     );
                 }
 
-                function StatCard({ icon, title, value, color, status }) {
+                function StatCard({ icon, title, value, color, status, onClick }) {
                     const dotClass = status === "error" ? "bg-red-400" : status === "warn" ? "bg-amber-400" : status === "success" ? "bg-emerald-400" : "bg-slate-500";
 
                     return (
-                        <div className="panel subtle-shadow p-5">
+                        <div
+                            className={`panel subtle-shadow p-5 ${onClick ? 'cursor-pointer hover:border-red-400/60 transition-colors' : ''}`}
+                            onClick={onClick || undefined}
+                        >
                             <div className="flex justify-between items-start mb-3">
                                 <span className="text-[11px] text-slate-400 uppercase tracking-wide">{title}</span>
                                 <div className={`w-8 h-8 rounded-md bg-slate-900/60 border border-slate-700 flex items-center justify-center ${color}`}>
@@ -605,6 +709,13 @@ class Handler(BaseHTTPRequestHandler):
                     const [workspaces, setWorkspaces] = useState([]);
                     const [loading, setLoading] = useState(true);
                     const [rescanLoading, setRescanLoading] = useState(false);
+                    const [errorPanelOpen, setErrorPanelOpen] = useState(false);
+                    const [errorLoading, setErrorLoading] = useState(false);
+                    const [errorDetails, setErrorDetails] = useState({ log_errors: [], warnings_recent: [] });
+                    const [errorFilterSource, setErrorFilterSource] = useState('all');
+                    const [errorReasonCode, setErrorReasonCode] = useState('');
+                    const [errorSinceSec, setErrorSinceSec] = useState('');
+                    const [copyNotice, setCopyNotice] = useState('');
 
                     const fetchData = async () => {
                         try {
@@ -640,6 +751,40 @@ class Handler(BaseHTTPRequestHandler):
                             console.error(e);
                         } finally {
                             setRescanLoading(false);
+                        }
+                    };
+
+                    const fetchErrors = async () => {
+                        setErrorLoading(true);
+                        try {
+                            const params = new URLSearchParams();
+                            params.set('limit', '80');
+                            params.set('source', errorFilterSource || 'all');
+                            if ((errorReasonCode || '').trim()) {
+                                params.set('reason_code', (errorReasonCode || '').trim());
+                            }
+                            if ((errorSinceSec || '').trim()) {
+                                params.set('since_sec', (errorSinceSec || '').trim());
+                            }
+                            const res = await fetch('/errors?' + params.toString());
+                            const json = await res.json();
+                            setErrorDetails(json || { log_errors: [], warnings_recent: [] });
+                        } catch (e) {
+                            console.error(e);
+                            setErrorDetails({ log_errors: [], warnings_recent: [], error: String(e) });
+                        } finally {
+                            setErrorLoading(false);
+                        }
+                    };
+
+                    const copyText = async (text) => {
+                        try {
+                            await navigator.clipboard.writeText(String(text || ''));
+                            setCopyNotice('Copied');
+                            setTimeout(() => setCopyNotice(''), 1200);
+                        } catch (_e) {
+                            setCopyNotice('Copy failed');
+                            setTimeout(() => setCopyNotice(''), 1200);
                         }
                     };
 
@@ -718,8 +863,79 @@ class Handler(BaseHTTPRequestHandler):
                                     value={errorCount.toLocaleString()}
                                     color={errorCount > 0 ? "text-red-400" : "text-slate-400"}
                                     status={errorCount > 0 ? "error" : "success"}
+                                    onClick={() => { setErrorPanelOpen(true); fetchErrors(); }}
                                 />
                             </div>
+                            <div className="text-[11px] text-slate-500 mono mt-1">
+                                ERRORS card shows runtime indexer errors. Log Health scans daemon log history, so counts can differ.
+                            </div>
+
+                            {errorPanelOpen && (
+                                <div className="panel subtle-shadow p-5 border-red-500/40">
+                                    <div className="flex items-center justify-between mb-3">
+                                        <h2 className="text-lg font-semibold text-red-300 flex items-center">
+                                            <i className="fas fa-circle-exclamation mr-2"></i> Error Details
+                                        </h2>
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-xs mono text-slate-400">{copyNotice}</span>
+                                            <button onClick={fetchErrors} className="text-xs mono px-2 py-1 bg-slate-900 border border-slate-700 rounded hover:border-red-400/60">
+                                                Refresh
+                                            </button>
+                                            <button onClick={() => setErrorPanelOpen(false)} className="text-xs mono px-2 py-1 bg-slate-900 border border-slate-700 rounded hover:border-slate-400/60">
+                                                Close
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div className="grid grid-cols-1 md:grid-cols-4 gap-2 mb-3">
+                                        <select value={errorFilterSource} onChange={(e) => setErrorFilterSource(e.target.value)} className="text-xs mono bg-slate-900 border border-slate-700 rounded px-2 py-1">
+                                            <option value="all">all</option>
+                                            <option value="log">log</option>
+                                            <option value="warning">warning</option>
+                                        </select>
+                                        <input value={errorReasonCode} onChange={(e) => setErrorReasonCode(e.target.value)} placeholder="reason_code (comma)" className="text-xs mono bg-slate-900 border border-slate-700 rounded px-2 py-1" />
+                                        <input value={errorSinceSec} onChange={(e) => setErrorSinceSec(e.target.value)} placeholder="since_sec" className="text-xs mono bg-slate-900 border border-slate-700 rounded px-2 py-1" />
+                                        <button onClick={fetchErrors} className="text-xs mono px-2 py-1 bg-slate-900 border border-slate-700 rounded hover:border-blue-400/60">Apply Filters</button>
+                                    </div>
+                                    {errorLoading ? (
+                                        <div className="text-sm text-slate-400 mono">Loading...</div>
+                                    ) : (
+                                        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                                            <div>
+                                                <div className="text-xs uppercase tracking-wide text-slate-400 mb-2">Daemon Log Errors</div>
+                                                <div className="max-h-64 overflow-auto border border-slate-800 rounded p-2 bg-slate-950/60 space-y-1">
+                                                    {(errorDetails.log_errors || []).length === 0 ? (
+                                                        <div className="text-xs text-slate-500 mono">No recent log errors</div>
+                                                    ) : (
+                                                        (errorDetails.log_errors || []).map((line, idx) => (
+                                                            <div key={idx} className="text-xs text-red-200/90 mono break-all border-b border-slate-900 pb-1">
+                                                                <div>{line}</div>
+                                                                <button onClick={() => copyText(line)} className="mt-1 text-[10px] text-slate-400 hover:text-red-300">Copy</button>
+                                                            </div>
+                                                        ))
+                                                    )}
+                                                </div>
+                                            </div>
+                                            <div>
+                                                <div className="text-xs uppercase tracking-wide text-slate-400 mb-2">Warnings Recent</div>
+                                                <div className="max-h-64 overflow-auto border border-slate-800 rounded p-2 bg-slate-950/60 space-y-2">
+                                                    {(errorDetails.warnings_recent || []).length === 0 ? (
+                                                        <div className="text-xs text-slate-500 mono">No recent warnings</div>
+                                                    ) : (
+                                                        (errorDetails.warnings_recent || []).map((w, idx) => (
+                                                            <div key={idx} className="text-xs">
+                                                                <div className="text-amber-300 mono">{w.reason_code || 'UNKNOWN'}</div>
+                                                                <div className="text-slate-400 mono">{w.where || ''}</div>
+                                                                <div className="text-slate-300 break-all">{(w.extra && w.extra.message) ? String(w.extra.message) : ''}</div>
+                                                                <button onClick={() => copyText(JSON.stringify(w, null, 2))} className="mt-1 text-[10px] text-slate-400 hover:text-amber-300">Copy</button>
+                                                            </div>
+                                                        ))
+                                                    )}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
 
                             {orphanWarnings.length > 0 && (
                                 <div className="panel subtle-shadow p-4 border-red-500/40">
@@ -959,6 +1175,18 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/status":
             daemon_status = load_daemon_runtime_status()
             st = indexer.status
+            runtime_status = {}
+            if hasattr(indexer, "get_runtime_status"):
+                try:
+                    raw_runtime = indexer.get_runtime_status()
+                    if isinstance(raw_runtime, dict):
+                        runtime_status = raw_runtime
+                except Exception as e:
+                    self._warn_status(
+                        "INDEXER_RUNTIME_STATUS_FAILED",
+                        "Failed to resolve indexer runtime status; using base status",
+                        error=repr(e),
+                    )
             repo_stats = db.get_repo_stats(
                 root_ids=root_ids) if hasattr(
                 db, "get_repo_stats") else {}
@@ -1014,12 +1242,14 @@ class Handler(BaseHTTPRequestHandler):
                 "host": self.server_host,
                 "port": self.server_port,
                 "version": self.server_version,
-                "index_ready": bool(st.index_ready),
-                "last_scan_ts": st.scan_finished_ts,
-                "scanned_files": getattr(st, "scanned_files", 0),
-                "indexed_files": st.indexed_files,
+                "index_ready": bool(runtime_status.get("index_ready", bool(st.index_ready))),
+                "last_scan_ts": int(runtime_status.get("scan_finished_ts", getattr(st, "scan_finished_ts", 0)) or 0),
+                "scanned_files": int(runtime_status.get("scanned_files", getattr(st, "scanned_files", 0)) or 0),
+                "indexed_files": int(runtime_status.get("indexed_files", getattr(st, "indexed_files", 0)) or 0),
+                "symbols_extracted": int(runtime_status.get("symbols_extracted", getattr(st, "symbols_extracted", 0)) or 0),
                 "total_files_db": total_db_files,
-                "errors": getattr(st, "errors", 0),
+                "errors": int(runtime_status.get("errors", getattr(st, "errors", 0)) or 0),
+                "status_source": str(runtime_status.get("status_source", "indexer_status") or "indexer_status"),
                 "orphan_daemon_count": len(orphan_daemons),
                 "orphan_daemon_warnings": orphan_daemon_warnings,
                 "signals_disabled": daemon_status.signals_disabled,
@@ -1052,6 +1282,33 @@ class Handler(BaseHTTPRequestHandler):
                 "warning_counts": warning_sink.warning_counts(),
                 "warnings_recent": warning_sink.warnings_recent(),
             }
+
+        if path == "/errors":
+            raw_limit = 50
+            source = str((qs.get("source", ["all"])[0] or "all")).strip().lower()
+            raw_reason_codes = str((qs.get("reason_code", [""])[0] or "")).strip()
+            raw_since = "0"
+            try:
+                raw_since = str((qs.get("since_sec", ["0"])[0] or "0")).strip()
+            except Exception:
+                raw_since = "0"
+            try:
+                raw_limit = int((qs.get("limit", ["50"])[0] or "50"))
+            except Exception:
+                raw_limit = 50
+            try:
+                since_sec = int(raw_since or "0")
+            except Exception:
+                since_sec = 0
+            reason_codes = {
+                part.strip() for part in raw_reason_codes.split(",") if str(part or "").strip()
+            } if raw_reason_codes else set()
+            return self._build_errors_payload(
+                limit=raw_limit,
+                source=source,
+                reason_codes=reason_codes,
+                since_sec=since_sec,
+            )
 
         if path == "/workspaces":
             workspaces_payload = self._registered_workspaces(workspace_root, db, indexer)

@@ -55,17 +55,26 @@ def execute_status(
         db_error = "DB not connected"
 
     status_obj = getattr(indexer, "status", None) if indexer is not None else None
+    runtime_status = {}
+    if indexer is not None and hasattr(indexer, "get_runtime_status"):
+        try:
+            raw_runtime = indexer.get_runtime_status()
+            if isinstance(raw_runtime, dict):
+                runtime_status = raw_runtime
+        except Exception:
+            runtime_status = {}
     status_data: ToolResult = {
-        "index_ready": _status_field(status_obj, "index_ready", False),
-        "indexed_files": _status_field(status_obj, "indexed_files", 0),
-        "scanned_files": _status_field(status_obj, "scanned_files", 0),
-        "symbols_extracted": _status_field(status_obj, "symbols_extracted", 0),
-        "errors": _status_field(status_obj, "errors", 0),
+        "index_ready": runtime_status.get("index_ready", _status_field(status_obj, "index_ready", False)),
+        "indexed_files": runtime_status.get("indexed_files", _status_field(status_obj, "indexed_files", 0)),
+        "scanned_files": runtime_status.get("scanned_files", _status_field(status_obj, "scanned_files", 0)),
+        "symbols_extracted": runtime_status.get("symbols_extracted", _status_field(status_obj, "symbols_extracted", 0)),
+        "errors": runtime_status.get("errors", _status_field(status_obj, "errors", 0)),
         "total_files_db": total_files,
         "total_symbols_db": total_symbols,
         "db_error": db_error,
         "server_version": server_version,
         "workspace_root": workspace_root,
+        "status_source": runtime_status.get("status_source", "indexer_status"),
         "db_engine": "PeeWee+Turbo",
         "fts_enabled": True,
         "cfg_include_ext": ",".join(cfg.include_ext) if cfg and cfg.include_ext else "",

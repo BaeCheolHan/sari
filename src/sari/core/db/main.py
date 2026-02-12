@@ -7,7 +7,7 @@ import zlib
 import threading
 from typing import Dict, Iterable, List, Optional, Tuple
 from peewee import SqliteDatabase
-from .models import db_proxy, Root, File
+from .models import db_proxy
 from ..models import ContextDTO, FILE_COLUMNS, SearchOptions, SnippetDTO
 from .schema import init_schema
 from ..utils.path import PathUtils
@@ -100,19 +100,26 @@ class LocalSearchDB:
         """워크스페이스 루트 정보를 갱신하거나 삽입합니다."""
         now = int(time.time())
         label = kwargs.get("label", PathUtils.normalize(root_path).split("/")[-1])
+        n_root_path = PathUtils.normalize(root_path)
+        n_real_path = PathUtils.normalize(real_path)
+        # bind_proxy=False 환경(스냅샷 워커)에서도 동작하도록
+        # 전역 Peewee Proxy 모델 대신 연결 DB에 직접 UPSERT를 수행한다.
+        sql = """
+            INSERT INTO roots
+                (root_id, root_path, real_path, label, updated_ts, created_ts)
+            VALUES
+                (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(root_id) DO UPDATE SET
+                root_path = excluded.root_path,
+                real_path = excluded.real_path,
+                label = excluded.label,
+                updated_ts = excluded.updated_ts
+        """
         with self.db.atomic():
-            Root.insert(
-                root_id=root_id,
-                root_path=PathUtils.normalize(root_path),
-                real_path=PathUtils.normalize(real_path),
-                label=label,
-                updated_ts=now,
-                created_ts=now
-            ).on_conflict(
-                conflict_target=[Root.root_id],
-                preserve=[Root.root_path, Root.real_path, Root.label, Root.updated_ts],
-                update={}
-            ).execute()
+            self.execute(
+                sql,
+                (root_id, n_root_path, n_real_path, label, now, now),
+            )
 
     def ensure_root(self, root_id: str, path: str):
         self.upsert_root(root_id, path, path)
@@ -239,10 +246,27 @@ class LocalSearchDB:
             self, root_ids: Optional[List[str]] = None) -> Dict[str, int]:
         """레포지토리별 파일 수 통계를 반환합니다."""
         try:
-            query = Root.select(Root.label, Root.file_count)
+            sql = "SELECT label, file_count FROM roots"
+            params: list[object] = []
             if root_ids:
-                query = query.where(Root.root_id << root_ids)
-            return {r.label: r.file_count for r in query}
+                placeholders = ",".join(["?"] * len(root_ids))
+                sql += f" WHERE root_id IN ({placeholders})"
+                params.extend([str(rid) for rid in root_ids])
+            rows = self.execute(sql, tuple(params) if params else None).fetchall() or []
+            out: Dict[str, int] = {}
+            for row in rows:
+                if isinstance(row, sqlite3.Row):
+                    label = str(row["label"] or "")
+                    count = int(row["file_count"] or 0)
+                elif isinstance(row, (list, tuple)):
+                    label = str(row[0] or "")
+                    count = int(row[1] or 0)
+                else:
+                    row_dict = dict(row) if isinstance(row, dict) else {}
+                    label = str(row_dict.get("label") or "")
+                    count = int(row_dict.get("file_count") or 0)
+                out[label] = count
+            return out
         except Exception:
             return self._file_repo().get_repo_stats(root_ids=root_ids)
 
@@ -338,14 +362,24 @@ class LocalSearchDB:
                 candidates.append(candidate)
         if not candidates:
             return None
-        row = (
-            File.select(File.content)
-            .where((File.path.in_(candidates)) | (File.rel_path.in_(candidates)))
-            .first()
-        )
+        placeholders = ",".join(["?"] * len(candidates))
+        sql = f"""
+            SELECT content
+            FROM files
+            WHERE path IN ({placeholders}) OR rel_path IN ({placeholders})
+            LIMIT 1
+        """
+        row = self.execute(sql, tuple(candidates + candidates)).fetchone()
         if not row:
             return None
-        content = row.content
+        if isinstance(row, sqlite3.Row):
+            content = row["content"]
+        elif isinstance(row, (list, tuple)):
+            content = row[0] if row else None
+        elif isinstance(row, dict):
+            content = row.get("content")
+        else:
+            content = getattr(row, "content", None)
         if isinstance(content, bytes) and content.startswith(b"ZLIB\0"):
             try:
                 content = zlib.decompress(content[5:])
@@ -364,8 +398,24 @@ class LocalSearchDB:
         """파일 경로 또는 내용을 기준으로 단순 검색을 수행합니다."""
         lq = f"%{query}%"
         # No try-except here! Let the engine errors be seen.
-        return list(File.select().where((File.path ** lq) | (File.rel_path ** lq) |
-                    (File.fts_content ** lq)).where(File.deleted_ts == 0).limit(limit).dicts())
+        rows = self.execute(
+            """
+            SELECT * FROM files
+            WHERE deleted_ts = 0
+              AND (path LIKE ? OR rel_path LIKE ? OR fts_content LIKE ?)
+            LIMIT ?
+            """,
+            (lq, lq, lq, int(limit)),
+        ).fetchall() or []
+        out: List[Dict] = []
+        for row in rows:
+            if isinstance(row, sqlite3.Row):
+                out.append(dict(row))
+            elif isinstance(row, dict):
+                out.append(dict(row))
+            elif isinstance(row, (list, tuple)):
+                out.append({k: row[idx] if idx < len(row) else None for idx, k in enumerate(FILE_COLUMNS)})
+        return out
 
     def list_files(self,
                    limit: int = 50,
@@ -471,10 +521,12 @@ class LocalSearchDB:
                 if stale_paths:
                     for i in range(0, len(stale_paths), chunk_size):
                         batch = stale_paths[i:i + chunk_size]
+                        placeholders = ",".join(["?"] * len(batch))
                         with self.db.atomic():
-                            (File.delete()
-                                 .where(File.path << batch)
-                                 .execute())
+                            conn.execute(
+                                f"DELETE FROM files WHERE path IN ({placeholders})",
+                                tuple(batch),
+                            )
                 
                 conn.execute("DELETE FROM _active_paths")
             except Exception as e:
@@ -485,7 +537,8 @@ class LocalSearchDB:
             # but usually for a single root it's manageable. 
             # Still, we use atomic to be safe.
             with self.db.atomic():
-                File.delete().where(File.root == root_id).execute()
+                conn = self.db.connection()
+                conn.execute("DELETE FROM files WHERE root_id = ?", (str(root_id),))
 
     def delete_path_tx(self, cur, path: str):
         self._file_repo(cur).delete_path_tx(cur, path)

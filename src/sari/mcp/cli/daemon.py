@@ -32,7 +32,7 @@ from .smart_daemon import ensure_smart_daemon, smart_kill_port_owner
 DEFAULT_HOST = DEFAULT_DAEMON_HOST
 DEFAULT_PORT = DEFAULT_DAEMON_PORT
 
-# Forward declaration - will be set by commands module to avoid circular import
+# Optional injection point kept for backward compatibility in tests.
 _cmd_daemon_start_func = None
 
 DaemonRow: TypeAlias = dict[str, object]
@@ -155,8 +155,11 @@ def start_daemon_background(
     Returns:
         True if daemon started successfully, False otherwise
     """
-    if _cmd_daemon_start_func is None:
-        raise RuntimeError("Daemon start function not set. Call set_daemon_start_function first.")
+    start_func = _cmd_daemon_start_func
+    if start_func is None:
+        # Lazy import to avoid eager circular coupling at package import time.
+        from .commands.daemon_commands import cmd_daemon_start
+        start_func = cmd_daemon_start
     
     start_args = build_start_args(
         daemonize=True,
@@ -165,7 +168,7 @@ def start_daemon_background(
         http_host=http_host,
         http_port=http_port,
     )
-    return _cmd_daemon_start_func(start_args) == 0
+    return start_func(start_args) == 0
 
 
 def needs_upgrade_or_drain(identify: Optional[dict]) -> bool:
@@ -316,9 +319,24 @@ def check_port_availability(params: DaemonParams) -> Optional[int]:
     params["explicit_port"]
     params["registry"]
     
-    if not port_in_use(host, port):
-        return None  # Port is available, continue
-    
+    # stop/replace 직후에는 소켓 정리 타이밍 때문에 짧게 EADDRINUSE가 튈 수 있어
+    # 제한된 재시도 후 최종 판단한다.
+    attempts = 8
+    last_in_use = False
+    for _ in range(attempts):
+        last_in_use = bool(port_in_use(host, port))
+        if not last_in_use:
+            return None
+        time.sleep(0.1)
+
+    # 포트가 여전히 점유되어 있으면 stale Sari 프로세스 회수 1회 시도
+    try:
+        if smart_kill_port_owner(host, port):
+            if not port_in_use(host, port):
+                return None
+    except Exception:
+        pass
+
     print(f"❌ Port {port} is already in use by another process.", file=sys.stderr)
     return 1
 

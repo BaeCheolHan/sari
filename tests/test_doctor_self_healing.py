@@ -77,5 +77,40 @@ class TestDoctorSelfHealing:
                     assert not daemon_res["passed"]
                     assert "Version mismatch" in daemon_res["error"]
 
+    def test_doctor_includes_daemon_policy(self, doctor_env):
+        with patch.dict("os.environ", doctor_env):
+            res = execute_doctor({"auto_fix": False})
+            policy_res = next(r for r in res.get("results", []) if r["name"] == "Daemon Policy")
+            assert policy_res["passed"] is True
+            assert "autostop_enabled=" in policy_res["error"]
+            assert "heartbeat_sec=" in policy_res["error"]
+
+    def test_doctor_policy_prefers_registry_http_endpoint(self, doctor_env):
+        with patch("sari.mcp.tools.doctor.ServerRegistry.resolve_daemon_by_endpoint", return_value={"http_host": "127.0.0.1", "http_port": 53305}):
+            with patch.dict("os.environ", doctor_env):
+                res = execute_doctor({"auto_fix": False})
+                policy_res = next(r for r in res.get("results", []) if r["name"] == "Daemon Policy")
+                assert "http=127.0.0.1:53305" in policy_res["error"]
+
+    def test_doctor_log_health_ignores_errors_counter_text(self, doctor_env, tmp_path):
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        (log_dir / "daemon.log").write_text(
+            "\n".join(
+                [
+                    "2026-02-12 10:00:00,000 - sari.indexer.worker - INFO - indexer_worker_progress stage=enqueue scanned=200 errors=0",
+                    "2026-02-12 10:00:01,000 - sari.indexer.worker - ERROR - actual error happened",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        env = dict(doctor_env)
+        env["SARI_LOG_DIR"] = str(log_dir)
+        with patch.dict("os.environ", env):
+            res = execute_doctor({"auto_fix": False})
+            log_res = next(r for r in res.get("results", []) if r["name"] == "Log Health")
+            assert log_res["passed"] is False
+            assert "Found 1 error(s)" in log_res["error"]
+
 def share_path():
     return os.path.join("share", "sari")

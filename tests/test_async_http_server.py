@@ -260,6 +260,90 @@ async def test_async_http_server_status_contract_snapshot(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_async_http_server_status_uses_indexer_runtime_status_overlay(monkeypatch):
+    db = SimpleNamespace(
+        get_repo_stats=lambda root_ids=None: {},
+        get_roots=lambda: [],
+        fts_enabled=True,
+    )
+    indexer = SimpleNamespace(
+        status=SimpleNamespace(index_ready=True, last_scan_ts=1, scanned_files=2, indexed_files=2, errors=0),
+        get_runtime_status=lambda: {
+            "index_ready": False,
+            "scan_finished_ts": 0,
+            "scanned_files": 44,
+            "indexed_files": 22,
+            "symbols_extracted": 66,
+            "errors": 3,
+            "status_source": "worker_progress",
+        },
+        get_last_commit_ts=lambda: 0,
+        get_performance_metrics=lambda: {},
+        get_queue_depths=lambda: {},
+    )
+    server = AsyncHttpServer(db, indexer, workspace_root="/tmp/ws")
+    monkeypatch.setattr("sari.core.async_http_server.detect_orphan_daemons", lambda: [])
+
+    resp = await server.status(SimpleNamespace())
+    data = json.loads(resp.body.decode("utf-8"))
+    assert data["index_ready"] is False
+    assert data["scanned_files"] == 44
+    assert data["indexed_files"] == 22
+    assert data["errors"] == 3
+    assert data["status_source"] == "worker_progress"
+
+
+@pytest.mark.asyncio
+async def test_async_http_server_errors_endpoint_returns_payload(monkeypatch):
+    db = SimpleNamespace()
+    indexer = SimpleNamespace(status=SimpleNamespace())
+    server = AsyncHttpServer(db, indexer, workspace_root="/tmp/ws")
+    monkeypatch.setattr(server, "_read_recent_log_errors", lambda limit=50: ["err-a"])
+    monkeypatch.setattr("sari.core.async_http_server.warning_sink.warnings_recent", lambda: [{"reason_code": "X"}])
+    monkeypatch.setattr("sari.core.async_http_server.warning_sink.warning_counts", lambda: {"X": 1})
+
+    req = SimpleNamespace(query_params=QueryParams("limit=1"))
+    resp = await server.errors(req)
+    data = json.loads(resp.body.decode("utf-8"))
+    assert data["ok"] is True
+    assert data["limit"] == 1
+    assert data["log_errors"] == ["err-a"]
+    assert data["warning_counts"]["X"] == 1
+
+
+@pytest.mark.asyncio
+async def test_async_http_server_errors_endpoint_applies_filters(monkeypatch):
+    db = SimpleNamespace()
+    indexer = SimpleNamespace(status=SimpleNamespace())
+    server = AsyncHttpServer(db, indexer, workspace_root="/tmp/ws")
+    now = 1_700_000_000.0
+    monkeypatch.setattr("sari.core.async_http_server.time.time", lambda: now)
+    monkeypatch.setattr(
+        server,
+        "_read_recent_log_error_entries",
+        lambda limit=50: [
+            {"text": "old-log", "ts": now - 1000},
+            {"text": "new-log", "ts": now - 1},
+        ],
+    )
+    monkeypatch.setattr(
+        "sari.core.async_http_server.warning_sink.warnings_recent",
+        lambda: [
+            {"reason_code": "A", "ts": now - 1000},
+            {"reason_code": "B", "ts": now - 1},
+        ],
+    )
+    monkeypatch.setattr("sari.core.async_http_server.warning_sink.warning_counts", lambda: {"A": 1, "B": 1})
+
+    req = SimpleNamespace(query_params=QueryParams("source=log&since_sec=60&limit=10"))
+    resp = await server.errors(req)
+    data = json.loads(resp.body.decode("utf-8"))
+    assert data["source"] == "log"
+    assert data["warnings_recent"] == []
+    assert data["log_errors"] == ["new-log"]
+
+
+@pytest.mark.asyncio
 async def test_async_http_server_workspaces_tracks_normalize_fallback(monkeypatch, tmp_path):
     ws_a = tmp_path / "ws-a"
     ws_a.mkdir()

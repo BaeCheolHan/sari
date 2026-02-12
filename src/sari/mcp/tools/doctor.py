@@ -11,6 +11,7 @@ import shutil
 import sys
 import importlib
 import time
+import re
 from pathlib import Path
 from typing import Mapping, Optional, Tuple, TypeAlias
 from sari.core.cjk import lindera_available, lindera_dict_uri, lindera_error
@@ -19,6 +20,7 @@ from sari.core.config import Config
 from sari.core.settings import settings
 from sari.core.workspace import WorkspaceManager
 from sari.core.server_registry import ServerRegistry, get_registry_path
+from sari.core.policy_engine import load_daemon_policy
 from sari.mcp.cli.mcp_client import identify_sari_daemon, probe_sari_daemon, is_http_running as _is_http_running
 from sari.core.daemon_resolver import resolve_daemon_address as get_daemon_address
 
@@ -52,6 +54,22 @@ def _get_http_host_port(
     host = os.environ.get("SARI_HTTP_HOST") or DEFAULT_HTTP_HOST
     port = port_override or int(os.environ.get(
         "SARI_HTTP_PORT") or DEFAULT_HTTP_PORT)
+    return host, port
+
+
+def _resolve_http_endpoint_for_daemon(
+        daemon_host: str, daemon_port: int, port_override: Optional[int] = None) -> Tuple[str, int]:
+    host, port = _get_http_host_port(port_override=port_override)
+    try:
+        reg = ServerRegistry()
+        inst = reg.resolve_daemon_by_endpoint(daemon_host, daemon_port)
+        if inst:
+            if inst.get("http_host"):
+                host = str(inst.get("http_host"))
+            if inst.get("http_port"):
+                port = int(inst.get("http_port"))
+    except Exception:
+        pass
     return host, port
 
 
@@ -608,6 +626,7 @@ def _check_log_errors() -> DoctorResult:
             return _result("Log Health", True, "No log file yet")
 
         errors = []
+        level_pat = re.compile(r"(?:\s-\s(ERROR|CRITICAL)\s-\s|\[(ERROR|CRITICAL)\])")
         # 안전 장치: 파일의 마지막 1MB만 읽음
         file_size = log_file.stat().st_size
         read_size = min(file_size, 1024 * 1024)  # 1MB
@@ -619,8 +638,7 @@ def _check_log_errors() -> DoctorResult:
             lines = chunk.splitlines()
             # 마지막 500줄에서만 에러 검색
             for line in lines[-500:]:
-                line_upper = line.upper()
-                if "ERROR" in line_upper or "CRITICAL" in line_upper:
+                if level_pat.search(str(line)):
                     errors.append(line.strip())
 
         if not errors:
@@ -759,6 +777,38 @@ def _check_daemon() -> DoctorResult:
         pass
 
     return _result("Sari Daemon", False, "Not running")
+
+
+def _check_daemon_policy() -> DoctorResult:
+    policy = load_daemon_policy(settings_obj=settings)
+    daemon_host, daemon_port = get_daemon_address()
+    http_host, http_port = _resolve_http_endpoint_for_daemon(daemon_host, daemon_port)
+    override_keys = (
+        "SARI_DAEMON_HEARTBEAT_SEC",
+        "SARI_DAEMON_IDLE_SEC",
+        "SARI_DAEMON_IDLE_WITH_ACTIVE",
+        "SARI_DAEMON_DRAIN_GRACE_SEC",
+        "SARI_DAEMON_AUTOSTOP",
+        "SARI_DAEMON_AUTOSTOP_GRACE_SEC",
+        "SARI_DAEMON_SHUTDOWN_INHIBIT_MAX_SEC",
+        "SARI_DAEMON_LEASE_TTL_SEC",
+        "SARI_DAEMON_HOST",
+        "SARI_DAEMON_PORT",
+        "SARI_HTTP_HOST",
+        "SARI_HTTP_PORT",
+    )
+    overrides = [k for k in override_keys if os.environ.get(k) not in (None, "")]
+    detail = (
+        f"daemon={daemon_host}:{daemon_port} http={http_host}:{http_port} "
+        f"heartbeat_sec={policy.heartbeat_sec} idle_sec={policy.idle_sec} "
+        f"idle_with_active={str(policy.idle_with_active).lower()} "
+        f"autostop_enabled={str(policy.autostop_enabled).lower()} "
+        f"autostop_grace_sec={policy.autostop_grace_sec} "
+        f"shutdown_inhibit_max_sec={policy.shutdown_inhibit_max_sec} "
+        f"lease_ttl_sec={policy.lease_ttl_sec} "
+        f"overrides={','.join(overrides) if overrides else 'none'}"
+    )
+    return _result("Daemon Policy", True, detail)
 
 
 def _check_http_service(host: str, port: int) -> DoctorResult:
@@ -1109,6 +1159,7 @@ def execute_doctor(
 
     if include_daemon:
         results.append(_check_daemon())
+        results.append(_check_daemon_policy())
         results.append(_check_log_errors())
 
     if include_port:
@@ -1123,8 +1174,8 @@ def execute_doctor(
         else:
             results.append(_check_port(daemon_port, "Daemon"))
 
-        http_host, http_port = _get_http_host_port(
-            port_override=port if port else None)
+        http_host, http_port = _resolve_http_endpoint_for_daemon(
+            daemon_host, daemon_port, port_override=port if port else None)
         results.append(_check_http_service(http_host, http_port))
         if not _is_http_running(http_host, http_port):
             results.append(_check_port(http_port, "HTTP"))

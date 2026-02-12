@@ -260,6 +260,80 @@ def test_search_semantic_skips_corrupted_vector_blob(db):
     assert any(h.path == f"{rid}/ok.py" for h in hits)
 
 
+def test_local_db_sql_paths_for_repo_stats_and_file_queries(db):
+    rid = "root-sql"
+    db.upsert_root(rid, "/tmp/ws", "/tmp/ws")
+    cur = db._write.cursor()
+    _insert_file(
+        cur,
+        (
+            f"{rid}/src/a.py",
+            "src/a.py",
+            rid,
+            "repo-a",
+            11,
+            20,
+            "print('a')",
+            "h1",
+            "print a",
+            0,
+            0,
+            "ok",
+            "",
+            "ok",
+            "",
+            "none",
+            "none",
+            0,
+            0,
+            "{}",
+        ),
+    )
+    _insert_file(
+        cur,
+        (
+            f"{rid}/src/b.py",
+            "src/b.py",
+            rid,
+            "repo-a",
+            12,
+            21,
+            "print('b')",
+            "h2",
+            "print b",
+            0,
+            0,
+            "ok",
+            "",
+            "ok",
+            "",
+            "none",
+            "none",
+            0,
+            0,
+            "{}",
+        ),
+    )
+    db._write.commit()
+    db.update_stats()
+
+    stats = db.get_repo_stats(root_ids=[rid])
+    assert stats
+    assert list(stats.values())[0] == 2
+
+    assert db.read_file(f"{rid}/src/a.py") == "print('a')"
+    hits = db.search_files("src/", limit=5)
+    assert len(hits) >= 2
+
+    db.prune_stale_data(rid, active_paths=[f"{rid}/src/a.py"])
+    rows_after_prune = db._write.execute("SELECT path FROM files WHERE root_id = ?", (rid,)).fetchall()
+    assert len(rows_after_prune) == 1
+
+    db.prune_stale_data(rid, active_paths=[])
+    rows_after_full = db._write.execute("SELECT COUNT(1) FROM files WHERE root_id = ?", (rid,)).fetchone()[0]
+    assert rows_after_full == 0
+
+
 def test_search_semantic_zero_query_vector_returns_empty_without_division_error(db, monkeypatch):
     rid = "root-sem-zero"
     db.upsert_root(rid, "/tmp/ws", "/tmp/ws")
@@ -354,6 +428,23 @@ def test_local_db_bind_proxy_false_does_not_rebind_global_proxy(tmp_path):
     snap = LocalSearchDB(str(tmp_path / "snap.db"), bind_proxy=False)
     try:
         assert db_proxy.obj is original
+    finally:
+        snap.close_all()
+        main.close_all()
+
+
+def test_upsert_root_works_with_bind_proxy_false(tmp_path):
+    main = LocalSearchDB(str(tmp_path / "main.db"), bind_proxy=True)
+    snap = LocalSearchDB(str(tmp_path / "snap.db"), bind_proxy=False)
+    try:
+        snap.upsert_root("rid-snap", "/tmp/snap", "/tmp/snap", label="snap")
+        row = snap._write.execute(
+            "SELECT root_id, label FROM roots WHERE root_id = ?",
+            ("rid-snap",),
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "rid-snap"
+        assert row[1] == "snap"
     finally:
         snap.close_all()
         main.close_all()

@@ -270,3 +270,14 @@ def test_ensure_workspace_http_sets_non_persistent_initialize():
     body = sent["raw"].split(b"\r\n\r\n", 1)[1]
     payload = json.loads(body.decode("utf-8"))
     assert payload["params"]["sariPersist"] is True
+
+
+def test_start_daemon_background_uses_lazy_command_import():
+    from sari.mcp.cli import daemon as daemon_mod
+
+    # No explicit function injection should be required.
+    daemon_mod._cmd_daemon_start_func = None
+    with patch("sari.mcp.cli.commands.daemon_commands.cmd_daemon_start", return_value=0) as mock_start:
+        ok = daemon_mod.start_daemon_background(daemon_host="127.0.0.1", daemon_port=47779)
+        assert ok is True
+        mock_start.assert_called_once()

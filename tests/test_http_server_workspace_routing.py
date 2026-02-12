@@ -318,3 +318,100 @@ def test_sync_status_contract_snapshot(monkeypatch):
     }
     missing = required - set(resp.keys())
     assert not missing, f"missing status contract fields: {sorted(missing)}"
+
+
+def test_sync_status_uses_indexer_runtime_status_overlay(monkeypatch):
+    handler = Handler.__new__(Handler)
+    handler.shared_http_gateway = False
+    handler.workspace_root = "/tmp/default"
+    handler.server_host = "127.0.0.1"
+    handler.server_port = 47777
+    handler.server_version = "0.6.11"
+    handler.start_time = 0
+    handler.db = SimpleNamespace(get_repo_stats=lambda root_ids=None: {}, get_roots=lambda: [])
+    handler.indexer = SimpleNamespace(
+        status=SimpleNamespace(index_ready=True, scan_finished_ts=1, indexed_files=1, scanned_files=1, errors=0),
+        get_runtime_status=lambda: {
+            "index_ready": False,
+            "scan_finished_ts": 0,
+            "scanned_files": 33,
+            "indexed_files": 21,
+            "symbols_extracted": 55,
+            "errors": 2,
+            "status_source": "worker_progress",
+        },
+    )
+    handler.root_ids = []
+
+    monkeypatch.setattr("sari.core.http_server.detect_orphan_daemons", lambda: [])
+    monkeypatch.setattr("sari.core.http_server.get_system_metrics", lambda: {"process_cpu_percent": 0, "memory_percent": 0})
+
+    resp = Handler._handle_get(handler, "/status", {})
+    assert resp["index_ready"] is False
+    assert resp["scanned_files"] == 33
+    assert resp["indexed_files"] == 21
+    assert resp["errors"] == 2
+    assert resp["status_source"] == "worker_progress"
+
+
+def test_sync_errors_endpoint_returns_log_and_warning_payload(monkeypatch):
+    handler = Handler.__new__(Handler)
+    handler.shared_http_gateway = False
+    handler.workspace_root = "/tmp/default"
+    handler.db = SimpleNamespace()
+    handler.indexer = SimpleNamespace()
+    handler.root_ids = []
+    handler._init_request_status()
+
+    monkeypatch.setattr(
+        handler,
+        "_read_recent_log_error_entries",
+        lambda limit=50: [{"text": "line1", "ts": 0.0}, {"text": "line2", "ts": 0.0}],
+    )
+    monkeypatch.setattr("sari.core.http_server.warning_sink.warnings_recent", lambda: [{"reason_code": "E1"}])
+    monkeypatch.setattr("sari.core.http_server.warning_sink.warning_counts", lambda: {"E1": 1})
+
+    resp = Handler._handle_get(handler, "/errors", {"limit": ["2"]})
+    assert resp["ok"] is True
+    assert resp["limit"] == 2
+    assert resp["log_errors"] == ["line1", "line2"]
+    assert isinstance(resp["warnings_recent"], list)
+
+
+def test_sync_errors_endpoint_applies_filters(monkeypatch):
+    handler = Handler.__new__(Handler)
+    handler.shared_http_gateway = False
+    handler.workspace_root = "/tmp/default"
+    handler.db = SimpleNamespace()
+    handler.indexer = SimpleNamespace()
+    handler.root_ids = []
+    handler._init_request_status()
+
+    now = 1_700_000_000.0
+    monkeypatch.setattr("sari.core.http_server.time.time", lambda: now)
+    monkeypatch.setattr(
+        handler,
+        "_read_recent_log_error_entries",
+        lambda limit=50: [
+            {"text": "old-log", "ts": now - 1000},
+            {"text": "new-log", "ts": now - 10},
+        ],
+    )
+    monkeypatch.setattr(
+        "sari.core.http_server.warning_sink.warnings_recent",
+        lambda: [
+            {"reason_code": "A", "ts": now - 1000},
+            {"reason_code": "B", "ts": now - 5},
+        ],
+    )
+    monkeypatch.setattr("sari.core.http_server.warning_sink.warning_counts", lambda: {"A": 1, "B": 1})
+
+    resp = Handler._handle_get(
+        handler,
+        "/errors",
+        {"source": ["warning"], "reason_code": ["B"], "since_sec": ["60"], "limit": ["10"]},
+    )
+    assert resp["source"] == "warning"
+    assert resp["log_errors"] == []
+    assert len(resp["warnings_recent"]) == 1
+    assert resp["warnings_recent"][0]["reason_code"] == "B"

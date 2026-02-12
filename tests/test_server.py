@@ -188,3 +188,23 @@ def test_server_serializes_transport_writes():
 
     assert server.transport.max_active == 1
     server.shutdown()
+
+
+def test_server_queue_overload_emits_error_response():
+    server = LocalSearchMCPServer("/tmp/ws")
+
+    class _Transport:
+        def __init__(self):
+            self.calls = []
+
+        def write_message(self, payload, mode="content-length"):
+            self.calls.append((payload, mode))
+
+    server.transport = _Transport()
+    req = {"id": 7, "method": "ping", "_sari_framing_mode": "jsonl"}
+    server._emit_queue_overload(req)
+    assert len(server.transport.calls) == 1
+    payload, mode = server.transport.calls[0]
+    assert payload["error"]["code"] == -32003
+    assert mode == "jsonl"
+    server.shutdown()

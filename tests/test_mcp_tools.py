@@ -95,6 +95,34 @@ def test_execute_status():
     assert "PACK1 tool=status ok=true" in text
     assert "m:index_ready=true" in text
 
+
+def test_execute_status_prefers_indexer_runtime_status():
+    indexer = MagicMock()
+    indexer.status.index_ready = False
+    indexer.status.scanned_files = 0
+    indexer.status.indexed_files = 0
+    indexer.status.errors = 0
+    indexer.get_runtime_status.return_value = {
+        "index_ready": False,
+        "scanned_files": 12,
+        "indexed_files": 7,
+        "symbols_extracted": 19,
+        "errors": 1,
+        "status_source": "worker_progress",
+    }
+    db = MagicMock()
+    db.fts_enabled = True
+    cfg = MagicMock()
+    cfg.include_ext = [".py"]
+    logger = MagicMock()
+
+    resp = execute_status({"details": True}, indexer, db, cfg, "/tmp/ws", "0.0.1", logger)
+    text = resp["content"][0]["text"]
+    assert "m:scanned_files=12" in text
+    assert "m:indexed_files=7" in text
+    assert "m:symbols_extracted=19" in text
+    assert "m:errors=1" in text
+
 def test_execute_search_pack_error_sets_is_error_flag(monkeypatch):
     db = MagicMock()
     logger = MagicMock()

@@ -49,6 +49,45 @@ class DaemonEvent:
     payload: dict[str, object] = field(default_factory=dict)
 
 
+@dataclass(slots=True)
+class RuntimeStateSnapshot:
+    draining: bool
+    active_count: int
+    socket_active: int
+    lease_active: int
+    workers_inflight: int
+    indexing_active: bool
+    last_activity: float
+
+
+class RuntimeStateProvider:
+    """Collects runtime signals used by daemon controller policy logic."""
+
+    def __init__(self, daemon: "SariDaemon", workspace_registry: object):
+        self._daemon = daemon
+        self._workspace_registry = workspace_registry
+
+    def collect(self) -> RuntimeStateSnapshot:
+        daemon_info = self._daemon._registry.get_daemon(self._daemon.boot_id) or {}
+        active_count = int(self._workspace_registry.active_count() or 0)
+        socket_active = int(self._daemon._get_active_connections() or 0)
+        lease_active = int(self._daemon.active_lease_count() or 0)
+        workers_inflight = int(self._daemon._workers_inflight() or 0)
+        indexing_active = bool(
+            getattr(self._workspace_registry, "has_indexing_activity", lambda: False)()
+        )
+        last_activity = float(self._workspace_registry.get_last_activity_ts() or 0.0)
+        return RuntimeStateSnapshot(
+            draining=bool(daemon_info.get("draining")),
+            active_count=active_count,
+            socket_active=socket_active,
+            lease_active=lease_active,
+            workers_inflight=workers_inflight,
+            indexing_active=indexing_active,
+            last_activity=last_activity,
+        )
+
+
 def _resolve_log_dir() -> Path:
     val = settings.LOG_DIR
     if val:
@@ -201,6 +240,7 @@ class SariDaemon:
         self._lease_lock = threading.Lock()
         self._events: queue.SimpleQueue[DaemonEvent] = queue.SimpleQueue()
         self._events_lock = threading.Lock()
+        self._controller_wakeup = threading.Event()
         self._event_queue_depth = 0
         self._last_event_ts = 0.0
         self._active_leases: dict[str, dict[str, object]] = {}
@@ -299,6 +339,7 @@ class SariDaemon:
         with self._events_lock:
             self._event_queue_depth += 1
             self._last_event_ts = float(event.ts or time.time())
+        self._controller_wakeup.set()
 
     def _enqueue_lease_event(
         self,
@@ -563,7 +604,8 @@ class SariDaemon:
         interval = daemon_policy.heartbeat_sec
         while not self._stop_event.is_set():
             self._enqueue_event(DaemonEvent(event_type=EVENT_HEARTBEAT_TICK))
-            self._stop_event.wait(interval)
+            self._controller_wakeup.wait(interval)
+            self._controller_wakeup.clear()
 
     def _controller_loop(self) -> None:
         daemon_policy = load_daemon_policy(settings_obj=settings)
@@ -576,6 +618,7 @@ class SariDaemon:
         inhibit_max = daemon_policy.shutdown_inhibit_max_sec
         from sari.mcp.workspace_registry import Registry
         workspace_registry = Registry.get_instance()
+        runtime_provider = RuntimeStateProvider(self, workspace_registry)
 
         while not self._stop_event.is_set():
             try:
@@ -583,12 +626,12 @@ class SariDaemon:
                 self._apply_lease_events(now_ts=now)
                 self._reap_expired_leases(now_ts=now)
                 self._registry.touch_daemon(self.boot_id)
-                daemon_info = self._registry.get_daemon(self.boot_id) or {}
-                draining = bool(daemon_info.get("draining"))
-                active_count = workspace_registry.active_count()
-                socket_active = self._get_active_connections()
-                lease_active = self.active_lease_count()
-                workers_inflight = self._workers_inflight()
+                runtime = runtime_provider.collect()
+                draining = bool(runtime.draining)
+                active_count = int(runtime.active_count)
+                socket_active = int(runtime.socket_active)
+                lease_active = int(runtime.lease_active)
+                workers_inflight = int(runtime.workers_inflight)
                 reap_fn = getattr(workspace_registry, "reap_stale_refs", None)
                 if callable(reap_fn):
                     try:
@@ -654,13 +697,9 @@ class SariDaemon:
                                 self._request_shutdown("autostop_inhibit_timeout")
 
                     if idle_sec > 0:
-                        indexing_active = bool(
-                            getattr(
-                                workspace_registry,
-                                "has_indexing_activity",
-                                lambda: False)())
+                        indexing_active = bool(runtime.indexing_active)
                         if (active_count == 0 or idle_with_active) and not indexing_active:
-                            last_activity = workspace_registry.get_last_activity_ts()
+                            last_activity = float(runtime.last_activity)
                             if last_activity <= 0:
                                 last_activity = now
                             if self._idle_since is None:
