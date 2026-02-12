@@ -7,7 +7,7 @@ import os
 import urllib.parse
 from uuid import uuid4
 from typing import Dict, Optional, Callable
-from sari.core.workspace_registry import Registry, SharedState
+from sari.mcp.workspace_registry import Registry, SharedState
 from sari.core.settings import settings
 from sari.mcp.trace import trace
 
@@ -51,6 +51,20 @@ class Session:
             workspace_root = WorkspaceManager.resolve_workspace_root()
             self._preinit_server = LocalSearchMCPServer(workspace_root, start_worker=False)
         return self._preinit_server
+
+    def _shared_server(self):
+        if self.shared_state is None:
+            raise RuntimeError("shared_state is not bound")
+        server = getattr(self.shared_state, "server", None)
+        if server is None:
+            from sari.core.mcp_runtime import create_mcp_server
+            server = create_mcp_server(
+                str(self.shared_state.workspace_root),
+                db=getattr(self.shared_state, "db", None),
+                indexer=getattr(self.shared_state, "indexer", None),
+            )
+            self.shared_state.server = server
+        return server
 
     async def handle_connection(self):
         trace("session_handle_connection_start")
@@ -231,7 +245,7 @@ class Session:
                 loop = asyncio.get_event_loop()
                 await loop.run_in_executor(
                     None,
-                    self.shared_state.server.handle_initialized,
+                    self._shared_server().handle_initialized,
                     params
                 )
         elif method == "shutdown":
@@ -284,7 +298,7 @@ class Session:
             loop = asyncio.get_event_loop()
             response = await loop.run_in_executor(
                 None,
-                self.shared_state.server.handle_request,
+                self._shared_server().handle_request,
                 forwarded_request
             )
 
@@ -384,7 +398,7 @@ class Session:
         # We need to construct the result based on server's response
         # LocalSearchMCPServer.handle_initialize returns the result dict directly
         try:
-            result = self.shared_state.server.handle_initialize(params)
+            result = self._shared_server().handle_initialize(params)
             response = {
                 "jsonrpc": "2.0",
                 "id": msg_id,

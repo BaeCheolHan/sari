@@ -682,7 +682,7 @@ class SariDaemon:
         workspace_root = settings.WORKSPACE_ROOT or WorkspaceManager.resolve_workspace_root()
 
         try:
-            from sari.core.workspace_registry import Registry
+            from sari.mcp.workspace_registry import Registry
             # Do not pin a permanent reference here; allow autostop when CLI sessions close.
             shared = Registry.get_instance().get_or_create(
                 workspace_root,
@@ -710,9 +710,18 @@ class SariDaemon:
             return
         try:
             from sari.core.http_server import serve_forever
+            from sari.core.mcp_runtime import create_mcp_server
 
             host = "127.0.0.1"
             port = int(settings.HTTP_API_PORT)
+            gateway_mcp_server = getattr(shared_state, "server", None)
+            if gateway_mcp_server is None:
+                gateway_mcp_server = create_mcp_server(
+                    str(shared_state.workspace_root),
+                    db=getattr(shared_state, "db", None),
+                    indexer=getattr(shared_state, "indexer", None),
+                )
+                shared_state.server = gateway_mcp_server
             httpd, actual_port = serve_forever(
                 host,
                 port,
@@ -720,7 +729,7 @@ class SariDaemon:
                 shared_state.indexer,
                 version=settings.VERSION,
                 workspace_root=str(shared_state.workspace_root),
-                mcp_server=shared_state.server,
+                mcp_server=gateway_mcp_server,
                 shared_http_gateway=True,
             )
             self.httpd = httpd
@@ -773,7 +782,7 @@ class SariDaemon:
         autostop_grace = daemon_policy.autostop_grace_sec
         autostop_enabled = daemon_policy.autostop_enabled
         inhibit_max = daemon_policy.shutdown_inhibit_max_sec
-        from sari.core.workspace_registry import Registry
+        from sari.mcp.workspace_registry import Registry
         workspace_registry = Registry.get_instance()
         runtime_provider = RuntimeStateProvider(self, workspace_registry)
 
@@ -1017,7 +1026,7 @@ class SariDaemon:
                 logger.debug(f"Error during server close: {e}")
 
         # 2. Shutdown all workspaces (Stops Indexers and ProcessPools)
-        from sari.core.workspace_registry import Registry
+        from sari.mcp.workspace_registry import Registry
         try:
             logger.info("Shutting down workspace registry and indexers...")
             Registry.get_instance().shutdown_all()

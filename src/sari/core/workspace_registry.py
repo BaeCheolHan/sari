@@ -5,7 +5,6 @@ from typing import Dict
 from sari.core.config.manager import ConfigManager
 from sari.core.db.main import LocalSearchDB
 from sari.core.indexer import Indexer
-from sari.core.mcp_runtime import create_mcp_server
 from sari.core.search_engine import SearchEngine
 from sari.core.workspace import WorkspaceManager
 
@@ -136,8 +135,8 @@ class SharedState:
             self.search_engine = SearchEngine(self.db)
             self.db.set_engine(self.search_engine)
 
-        # 5. MCP Server instance
-        self.server = create_mcp_server(workspace_root)
+        # MCP server is created lazily by MCP layer to avoid core->mcp coupling.
+        self.server = None
 
         self.http_port = None
         self.http_host = None
