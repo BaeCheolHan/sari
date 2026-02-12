@@ -33,8 +33,8 @@ Reason:
 - 느리지만 registry corruption/stale healing 시나리오 검증.
 
 5. `tests/test_daemon_session_deep.py`
-- 현재 테스트 자체가 고정 포트(`49991`)를 사용해 환경에 따라 flaky 발생 가능.
-- 삭제 대상은 아니고, 추후 동적 포트 할당 방식으로 안정화 권장.
+- 고정 포트(`49991`) 사용으로 flaky 발생하던 케이스를 동적 포트 + 응답 대기 루프로 안정화 완료.
+- 유지 대상.
 
 ## Guardrails for further pruning
 - 삭제 전 동일 시나리오 대체 테스트 존재 확인.
