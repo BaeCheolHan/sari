@@ -21,6 +21,7 @@ from sari.mcp.server_registry import ServerRegistry
 from sari.core.settings import settings
 from sari.core.constants import DEFAULT_DAEMON_HOST, DEFAULT_DAEMON_PORT
 from sari.core.daemon_runtime_state import (
+    clear_daemon_runtime_state,
     RUNTIME_ACTIVE_LEASES_COUNT,
     RUNTIME_EVENT_QUEUE_DEPTH,
     RUNTIME_GRACE_REMAINING,
@@ -925,6 +926,7 @@ class SariDaemon:
                     break
 
     async def start_async(self):
+        clear_daemon_runtime_state()
         host = (self.host or "127.0.0.1").strip()
         try:
             is_loopback = host.lower() == "localhost" or ipaddress.ip_address(host).is_loopback
