@@ -6,8 +6,6 @@ import sari.mcp.tools.search as search_tool
 import sari.mcp.tools.status as status_tool
 import sari.mcp.tools.list_files as list_files_tool
 import sari.mcp.tools.list_symbols as list_symbols_tool
-import sari.mcp.tools.read_file as read_file_tool
-import sari.mcp.tools.read_symbol as read_symbol_tool
 import sari.mcp.tools.doctor as doctor_tool
 import sari.mcp.tools.index_file as index_file_tool
 import sari.mcp.tools.rescan as rescan_tool
@@ -21,7 +19,6 @@ import sari.mcp.tools.save_snippet as save_snippet_tool
 import sari.mcp.tools.get_snippet as get_snippet_tool
 import sari.mcp.tools.archive_context as archive_context_tool
 import sari.mcp.tools.get_context as get_context_tool
-import sari.mcp.tools.dry_run_diff as dry_run_diff_tool
 import sari.mcp.tools.read as read_tool
 
 

@@ -16,7 +16,7 @@ def _row_to_named_dict(row: object, columns: List[str], fill: object = "") -> Di
         return {col: row.get(col, fill) for col in columns}
     values = list(row) if isinstance(row, Sequence) and not isinstance(row, (str, bytes, bytearray)) else []
     padded = values + [fill] * max(0, len(columns) - len(values))
-    return dict(zip(columns, padded))
+    return dict(zip(columns, padded, strict=False))
 
 
 class SnippetRepository(BaseRepository):

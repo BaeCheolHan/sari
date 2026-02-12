@@ -156,7 +156,7 @@ class LocalSearchDB:
                     row_tuple = list(r)
                 while len(row_tuple) < len(FILE_COLUMNS):
                     row_tuple.append(None)
-                data = dict(zip(FILE_COLUMNS, row_tuple))
+                data = dict(zip(FILE_COLUMNS, row_tuple, strict=False))
                 path = data.get("path")
                 if not path:
                     continue
@@ -559,8 +559,12 @@ class LocalSearchDB:
     def search(self, opts: SearchOptions):
         """Canonical search interface (engine delegated or repository fallback)."""
         if self.engine:
-            if hasattr(self.engine, "search") and callable(getattr(self.engine, "search")):
-                return self.engine.search(opts)
+            try:
+                search_fn = self.engine.search
+            except AttributeError:
+                search_fn = None
+            if callable(search_fn):
+                return search_fn(opts)
         repo = self._search_repo()
         return repo.search(opts)
 

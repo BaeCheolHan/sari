@@ -543,7 +543,7 @@ class Indexer:
         data = {}
         for k, v in self.config.__dict__.items():
             # Skip non-serializable or internal objects
-            if k.startswith("_") or hasattr(v, "__call__") or "lock" in k.lower() or "logger" in k.lower():
+            if k.startswith("_") or callable(v) or "lock" in k.lower() or "logger" in k.lower():
                 continue
             # Ensure path objects are strings
             if hasattr(v, "__fspath__"):

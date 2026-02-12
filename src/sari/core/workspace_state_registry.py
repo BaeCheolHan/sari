@@ -10,5 +10,8 @@ def get_workspace_registry() -> Any:
     This shim keeps core HTTP layer free of direct compile-time MCP imports.
     """
     module = importlib.import_module("sari.core.workspace_registry")
-    registry_cls = getattr(module, "Registry")
+    try:
+        registry_cls = module.Registry
+    except AttributeError as exc:
+        raise RuntimeError("Registry class is not available in sari.core.workspace_registry") from exc
     return registry_cls.get_instance()

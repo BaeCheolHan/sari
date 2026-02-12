@@ -71,6 +71,7 @@ __all__ = [
     "read_pid",
     "remove_pid",
     "ensure_daemon_running",
+    "set_daemon_start_function",
     "get_daemon_address",
     # HTTP client
     "get_http_host_port",

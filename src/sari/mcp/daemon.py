@@ -24,6 +24,9 @@ from sari.core.utils.uuid7 import uuid7_hex
 from sari.mcp.trace import trace
 from sari.mcp.stabilization.warning_sink import warning_sink, warn
 
+# Backward-compatible module-level handle used in tests/diagnostics.
+_warning_sink = warning_sink
+
 LOG_INIT_FAILED = "LOG_INIT_FAILED"
 PID_FILE_RESOLVE_FAILED = "PID_FILE_RESOLVE_FAILED"
 REAP_STALE_REFS_FAILED = "REAP_STALE_REFS_FAILED"

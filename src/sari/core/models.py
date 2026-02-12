@@ -40,7 +40,7 @@ def _to_dict(row: object) -> Dict[str, object]:
         logger.debug("Row to dict conversion failed: %s", e)
 
     if isinstance(row, (list, tuple)) and len(row) == len(FILE_COLUMNS):
-        return dict(zip(FILE_COLUMNS, row))
+        return dict(zip(FILE_COLUMNS, row, strict=False))
 
     if hasattr(row, "__dict__"):
         return row.__dict__
@@ -52,7 +52,7 @@ def _sequence_to_dict(row: object, columns: List[str]) -> Dict[str, object]:
         return {}
     values = list(row)
     padded = values + [None] * max(0, len(columns) - len(values))
-    return dict(zip(columns, padded))
+    return dict(zip(columns, padded, strict=False))
 
 
 class SearchOptions(BaseModel):

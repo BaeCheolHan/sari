@@ -342,13 +342,6 @@ class LocalSearchMCPServer:
         return walk(s)
 
     def list_tools(self) -> list[dict[str, object]]:
-        os.environ.get(
-            "SARI_EXPOSE_INTERNAL_TOOLS",
-            "").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on"}
         return [
             {
                 "name": t.name,

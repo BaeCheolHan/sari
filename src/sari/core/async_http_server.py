@@ -879,9 +879,9 @@ def serve_async(
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.bind((host, port))
         sock.close()
-    except OSError:
+    except OSError as err:
         if strategy == "strict":
-            raise RuntimeError(f"HTTP API port {port} unavailable")
+            raise RuntimeError(f"HTTP API port {port} unavailable") from err
         # Auto-assign port
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.bind((host, 0))
@@ -914,8 +914,8 @@ def serve_async(
         access_log=False,
     )
     uvicorn_server = uvicorn.Server(config)
-    setattr(uvicorn_server, "sari_endpoint_ok", endpoint_ok)
-    setattr(uvicorn_server, "sari_endpoint_errors", list(endpoint_errors))
+    uvicorn_server.sari_endpoint_ok = endpoint_ok
+    uvicorn_server.sari_endpoint_errors = list(endpoint_errors)
     
     shutdown_event = threading.Event()
     
@@ -923,10 +923,10 @@ def serve_async(
         try:
             asyncio.run(uvicorn_server.serve())
         except Exception:
-            setattr(uvicorn_server, "sari_endpoint_ok", False)
-            existing_errors = list(getattr(uvicorn_server, "sari_endpoint_errors", []))
+            uvicorn_server.sari_endpoint_ok = False
+            existing_errors = list(uvicorn_server.sari_endpoint_errors)
             existing_errors.append("ASYNC_SERVER_THREAD_FAILED")
-            setattr(uvicorn_server, "sari_endpoint_errors", existing_errors)
+            uvicorn_server.sari_endpoint_errors = existing_errors
             server._endpoint_ok = False
             server._warn_status(
                 "ASYNC_SERVER_THREAD_FAILED",

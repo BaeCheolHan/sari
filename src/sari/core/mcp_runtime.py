@@ -12,7 +12,10 @@ def create_mcp_server(
     Build MCP server instance lazily.
     """
     module = importlib.import_module("sari.mcp.server")
-    server_cls = getattr(module, "LocalSearchMCPServer")
+    try:
+        server_cls = module.LocalSearchMCPServer
+    except AttributeError as exc:
+        raise RuntimeError("LocalSearchMCPServer is not available in sari.mcp.server") from exc
     if cfg is not None:
         return server_cls(workspace_root, cfg=cfg, db=db, indexer=indexer)
     return server_cls(workspace_root)
