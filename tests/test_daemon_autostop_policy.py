@@ -405,6 +405,36 @@ def test_heartbeat_events_are_coalesced_before_drain():
     assert daemon._event_queue_depth == 0
 
 
+def test_controller_wakeup_drains_events_before_heartbeat_interval(monkeypatch):
+    daemon = SariDaemon(host="127.0.0.1", port=49983)
+    fake_ws_reg = SimpleNamespace(
+        active_count=lambda: 0,
+        has_persistent=lambda: False,
+        has_indexing_activity=lambda: False,
+        get_last_activity_ts=lambda: time.time(),
+        reap_stale_refs=lambda _max_idle_sec: 0,
+    )
+    monkeypatch.setattr("sari.mcp.workspace_registry.Registry.get_instance", lambda: fake_ws_reg)
+    monkeypatch.setattr("sari.mcp.daemon.settings.DAEMON_HEARTBEAT_SEC", 5.0)
+    monkeypatch.setattr("sari.mcp.daemon.settings.DAEMON_AUTOSTOP", False)
+    monkeypatch.setattr(daemon._registry, "touch_daemon", lambda _boot_id: None)
+    monkeypatch.setattr(daemon._registry, "get_daemon", lambda _boot_id: {"draining": False})
+
+    t = threading.Thread(target=daemon._controller_loop, daemon=True)
+    t.start()
+    daemon._enqueue_lease_event("LEASE_ISSUE", lease_id="lease-early-drain", client_hint="cli")
+    daemon._enqueue_lease_event("LEASE_REVOKE", lease_id="lease-early-drain", reason="close")
+
+    deadline = time.time() + 0.5
+    while time.time() < deadline and daemon._event_queue_depth > 0:
+        time.sleep(0.01)
+
+    daemon._stop_event.set()
+    daemon._controller_wakeup.set()
+    t.join(timeout=1.0)
+    assert daemon._event_queue_depth == 0
+
+
 def test_worker_hang_with_reconnect_still_shuts_down_once(monkeypatch):
     daemon = SariDaemon(host="127.0.0.1", port=49986)
     daemon._autostop_no_client_since = time.time() - 60

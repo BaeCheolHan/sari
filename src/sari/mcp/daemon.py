@@ -802,7 +802,14 @@ class SariDaemon:
             except Exception as e:
                 logger.error(f"Controller loop failed: {e}")
 
-            self._stop_event.wait(interval)
+            deadline = time.monotonic() + max(0.01, float(interval or 0.0))
+            while not self._stop_event.is_set():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                if self._controller_wakeup.wait(timeout=min(remaining, 0.1)):
+                    self._controller_wakeup.clear()
+                    break
 
     async def start_async(self):
         host = (self.host or "127.0.0.1").strip()
@@ -889,6 +896,7 @@ class SariDaemon:
             return
         self._shutdown_once.set()
         self._stop_event.set()
+        self._controller_wakeup.set()
         self._shutdown_intent = True
         self._last_shutdown_reason = str(reason or "manual")
         self._set_suicide_state("stopping")
