@@ -156,3 +156,19 @@ def test_doctor_db_path_autofix_requires_auto_fix_flag(tmp_path):
 
     raw_after_fix = json.loads(cfg_path.read_text(encoding="utf-8"))
     assert raw_after_fix["db_path"] == str(db_path)
+
+
+def test_doctor_tolerates_invalid_numeric_args():
+    res = execute_doctor(
+        {
+            "port": "not-a-number",
+            "min_disk_gb": "oops",
+            "include_network": False,
+            "include_port": False,
+            "include_db": False,
+            "include_disk": False,
+            "include_daemon": False,
+        }
+    )
+    text = res.get("content", [{}])[0].get("text", "")
+    assert "PACK1 tool=doctor ok=true" in text

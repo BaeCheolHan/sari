@@ -107,6 +107,20 @@ def _row_get(row: object, key: str, index: int, default: object = None) -> objec
     return default
 
 
+def _safe_int(value: object, default: int) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
+
+
+def _safe_float(value: object, default: float) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
 def _safe_pragma_table_name(name: str) -> str:
     """PRAGMA 쿼리에 안전한 테이블 이름인지 확인합니다."""
     # 화이트리스트 기반 검증
@@ -1215,8 +1229,8 @@ def execute_doctor(
     include_daemon = bool(args_map.get("include_daemon", True))
     include_venv = bool(args_map.get("include_venv", True))
     include_marker = bool(args_map.get("include_marker", False))
-    port = int(args_map.get("port", 0))
-    min_disk_gb = float(args_map.get("min_disk_gb", 1.0))
+    port = _safe_int(args_map.get("port", 0), 0)
+    min_disk_gb = _safe_float(args_map.get("min_disk_gb", 1.0), 1.0)
 
     auto_fix = bool(args_map.get("auto_fix", False))
     auto_fix_rescan = bool(args_map.get("auto_fix_rescan", False))
