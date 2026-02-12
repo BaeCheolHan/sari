@@ -19,6 +19,9 @@ from sari.core.services.index_service import IndexService
 
 ToolResult: TypeAlias = dict[str, object]
 
+def _code_str(code: object) -> str:
+    return str(getattr(code, "value", code))
+
 
 def execute_scan_once(args: object, indexer: Indexer, logger: object) -> ToolResult:
     """
@@ -32,12 +35,13 @@ def execute_scan_once(args: object, indexer: Indexer, logger: object) -> ToolRes
     result = svc.scan_once()
     if not result.get("ok"):
         code = result.get("code", ErrorCode.INTERNAL)
+        code_text = _code_str(code)
         message = result.get("message", "indexer not available")
         data = result.get("data")
         return mcp_response(
             "scan_once",
-            lambda: pack_error("scan_once", code, message, fields=data),
-            lambda: {"error": {"code": code.value, "message": message, "data": data}, "isError": True},
+            lambda: pack_error("scan_once", code_text, message, fields=data),
+            lambda: {"error": {"code": code_text, "message": message, "data": data}, "isError": True},
         )
 
     scanned = int(result.get("scanned_files", 0) or 0)

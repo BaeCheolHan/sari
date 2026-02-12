@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 from urllib.parse import unquote
+from pathlib import Path
 
 from sari.core.services.index_service import IndexService
 from sari.mcp.tools import diagnostics
@@ -199,3 +200,8 @@ def test_diagnostics_require_db_schema_paths():
             raise RuntimeError("boom")
 
     assert diagnostics.require_db_schema(_DBExplode(), "tool", "table", ["c"]) is None
+
+
+def test_index_service_has_no_direct_mcp_import_dependency():
+    src = Path("src/sari/core/services/index_service.py").read_text(encoding="utf-8")
+    assert "sari.mcp" not in src

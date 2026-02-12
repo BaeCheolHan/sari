@@ -17,6 +17,9 @@ from sari.mcp.tools._util import (
 
 ToolResult: TypeAlias = dict[str, object]
 
+def _code_str(code: object) -> str:
+    return str(getattr(code, "value", code))
+
 
 def execute_index_file(args: object, indexer: object, roots: list[str]) -> ToolResult:
     """
@@ -52,12 +55,13 @@ def execute_index_file(args: object, indexer: object, roots: list[str]) -> ToolR
         result = svc.index_file(fs_path)
         if not result.get("ok"):
             code = result.get("code", ErrorCode.INTERNAL)
+            code_text = _code_str(code)
             message = result.get("message", "Indexer not available")
             data = result.get("data")
             return mcp_response(
                 "index_file",
-                lambda: pack_error("index_file", code, message, fields=data),
-                lambda: {"error": {"code": code.value, "message": message, "data": data}, "isError": True},
+                lambda: pack_error("index_file", code_text, message, fields=data),
+                lambda: {"error": {"code": code_text, "message": message, "data": data}, "isError": True},
             )
 
         def build_pack() -> str:
