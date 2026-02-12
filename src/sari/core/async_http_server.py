@@ -25,7 +25,7 @@ from starlette.middleware.cors import CORSMiddleware
 from sari.version import __version__
 from sari.core.daemon_health import detect_orphan_daemons
 from sari.core.policy_engine import load_daemon_runtime_status
-from sari.mcp.stabilization.warning_sink import warning_sink
+from sari.core.warning_sink import warning_sink
 
 JsonObject: TypeAlias = dict[str, object]
 JsonArray: TypeAlias = list[JsonObject]

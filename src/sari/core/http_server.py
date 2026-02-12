@@ -10,7 +10,7 @@ from typing import Optional
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 from sari.version import __version__
-from sari.mcp.stabilization.warning_sink import warning_sink
+from sari.core.warning_sink import warning_sink
 from sari.core.utils.uuid7 import uuid7_hex
 
 # Support script mode and package mode
