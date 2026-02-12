@@ -7,7 +7,7 @@ import os
 import urllib.parse
 from uuid import uuid4
 from typing import Dict, Optional, Callable
-from .workspace_registry import Registry, SharedState
+from sari.core.workspace_registry import Registry, SharedState
 from sari.core.settings import settings
 from sari.mcp.trace import trace
 
