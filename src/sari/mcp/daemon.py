@@ -589,8 +589,6 @@ class SariDaemon:
             runtime_values[RUNTIME_WORKERS_ALIVE] = json.dumps(self._workers_alive(), ensure_ascii=True)
         except Exception:
             runtime_values[RUNTIME_WORKERS_ALIVE] = "[]"
-        for key, value in runtime_values.items():
-            os.environ[key] = str(value)
         publish_daemon_runtime_state(runtime_values)
 
     @staticmethod

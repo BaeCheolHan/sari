@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from threading import RLock
 
@@ -24,11 +25,32 @@ RUNTIME_SHUTDOWN_REASON = "SARI_DAEMON_SHUTDOWN_REASON"
 RUNTIME_WORKERS_ALIVE = "SARI_DAEMON_WORKERS_ALIVE"
 
 
-def publish_daemon_runtime_state(values: Mapping[str, object]) -> None:
+def _bool_flag(raw: object, default: bool = True) -> bool:
+    if raw is None:
+        return bool(default)
+    text = str(raw).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off", ""}:
+        return False
+    return bool(default)
+
+
+def publish_daemon_runtime_state(
+    values: Mapping[str, object], *, mirror_env: bool | None = None
+) -> None:
     data = {str(k): str(v) for k, v in values.items()}
     with _LOCK:
         _SNAPSHOT.clear()
         _SNAPSHOT.update(data)
+    should_mirror = (
+        _bool_flag(os.environ.get("SARI_DAEMON_RUNTIME_ENV_MIRROR", "1"), True)
+        if mirror_env is None
+        else bool(mirror_env)
+    )
+    if should_mirror:
+        for key, value in data.items():
+            os.environ[key] = value
 
 
 def get_daemon_runtime_state_snapshot() -> dict[str, str]:
