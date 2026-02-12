@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     VERSION: str = __version__
     WORKSPACE_ROOT: str = str(Path.cwd())
     LOG_DIR: str = str(Path.home() / ".local" / "share" / "sari" / "logs")
+    LOG_RETENTION_DAYS: int = 14
     CONFIG_PATH: Optional[str] = None
     GLOBAL_CONFIG_DIR: str = str(Path.home() / ".config" / "sari")
     WORKSPACE_CONFIG_DIR_NAME: str = ".sari"

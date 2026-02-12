@@ -158,3 +158,55 @@ def test_snapshot_path_falls_back_when_db_path_is_not_string():
     snapshot_path = indexer._snapshot_path()
     expected_base = os.path.join(tempfile.gettempdir(), "sari_snapshots", "index.db")
     assert snapshot_path.startswith(expected_base + ".snapshot.")
+
+
+def test_finalize_worker_logs_when_status_file_missing(tmp_path):
+    indexer = _make_indexer(tmp_path)
+    indexer.logger = MagicMock()
+
+    snapshot_path = str(tmp_path / "index.db.snapshot.worker")
+    log_path = str(tmp_path / "index.db.snapshot.log")
+    with open(log_path, "w", encoding="utf-8") as f:
+        f.write("worker stderr line\n")
+
+    indexer._worker_proc = _DoneProc()
+    indexer._worker_snapshot_path = snapshot_path
+    indexer._worker_status_path = str(tmp_path / "missing.status.json")
+    indexer._worker_log_path = log_path
+
+    indexer._finalize_worker_if_done()
+
+    assert indexer.status.last_error == "worker status missing"
+    assert indexer.logger.error.called
+    logged_message = indexer.logger.error.call_args[0][0]
+    assert "status file missing" in logged_message
+
+
+def test_finalize_worker_logs_payload_traceback(tmp_path):
+    indexer = _make_indexer(tmp_path)
+    indexer.logger = MagicMock()
+
+    snapshot_path = str(tmp_path / "index.db.snapshot.worker")
+    status_path = str(tmp_path / "index.db.snapshot.status.json")
+    with open(status_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "ok": False,
+                "error": "spawn failed",
+                "traceback": "Traceback (most recent call last): ...",
+                "snapshot_path": snapshot_path,
+            },
+            f,
+        )
+
+    indexer._worker_proc = _DoneProc()
+    indexer._worker_snapshot_path = snapshot_path
+    indexer._worker_status_path = status_path
+    indexer._worker_log_path = str(tmp_path / "index.db.snapshot.log")
+
+    indexer._finalize_worker_if_done()
+
+    assert indexer.status.last_error == "spawn failed"
+    assert indexer.logger.error.called
+    args = indexer.logger.error.call_args[0]
+    assert "worker reported failure" in args[0]

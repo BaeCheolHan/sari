@@ -1,10 +1,14 @@
 import json
+import pytest
 
 from sari.core.models import SearchHit
 from sari.mcp.stabilization.aggregation import reset_bundles_for_tests
 from sari.mcp.stabilization.session_state import get_metrics_snapshot, reset_session_metrics_for_tests
 from sari.mcp.tools.read import execute_read
 from sari.mcp.tools.search import execute_search
+
+
+pytestmark = pytest.mark.read
 
 
 class StubDB:

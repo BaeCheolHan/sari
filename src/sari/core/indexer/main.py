@@ -5,6 +5,7 @@ import logging
 import threading
 import multiprocessing
 import tempfile
+import traceback
 import concurrent.futures
 from collections import OrderedDict
 from typing import Optional, Callable
@@ -200,11 +201,21 @@ def _worker_build_snapshot(
             json.dump({"ok": True, "status": status,
                       "snapshot_path": snapshot_path}, f)
     except Exception as e:
+        tb = traceback.format_exc()
+        logger.error("Worker snapshot build failed: %s", e)
+        logger.debug("Worker snapshot traceback:\n%s", tb)
         # 실패 상태 기록
         try:
             with open(status_path, "w", encoding="utf-8") as f:
-                json.dump({"ok": False, "error": str(e),
-                          "snapshot_path": snapshot_path}, f)
+                json.dump(
+                    {
+                        "ok": False,
+                        "error": str(e),
+                        "traceback": tb,
+                        "snapshot_path": snapshot_path,
+                    },
+                    f,
+                )
         except Exception:
             pass
 
@@ -256,6 +267,19 @@ class Indexer:
         self._remove_file_if_exists(f"{snapshot_path}-wal")
         self._remove_file_if_exists(f"{snapshot_path}-shm")
         self._remove_file_if_exists(f"{snapshot_path}-journal")
+
+    def _read_worker_log_tail(
+            self, path: Optional[str], max_chars: int = 1200) -> str:
+        if not path or not os.path.exists(path):
+            return ""
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+            if len(content) <= max_chars:
+                return content
+            return content[-max_chars:]
+        except Exception:
+            return ""
 
     def _cleanup_stale_snapshot_artifacts(
             self,
@@ -409,6 +433,11 @@ class Indexer:
         """별도 프로세스에서 인덱싱 작업을 시작합니다."""
         if self._worker_proc and self._worker_proc.is_alive():
             self._pending_rescan = True
+            if self.logger:
+                self.logger.warning(
+                    "Indexer worker busy; rescan queued (pid=%s)",
+                    getattr(self._worker_proc, "pid", None),
+                )
             return
         self._cleanup_stale_snapshot_artifacts()
         self.status.index_ready = False
@@ -428,6 +457,14 @@ class Indexer:
                 os.getpid()),
             daemon=True)
         self._worker_proc.start()
+        if self.logger:
+            self.logger.info(
+                "Started indexer worker (pid=%s, snapshot=%s, status=%s, log=%s)",
+                getattr(self._worker_proc, "pid", None),
+                self._worker_snapshot_path,
+                self._worker_status_path,
+                self._worker_log_path,
+            )
 
     def _finalize_worker_if_done(self) -> None:
         """워커 프로세스가 완료되었는지 확인하고 결과를 반영합니다."""
@@ -447,6 +484,17 @@ class Indexer:
                 status_path):
             self.status.errors += 1
             self.status.last_error = "worker status missing"
+            if self.logger:
+                log_tail = self._read_worker_log_tail(log_path)
+                self.logger.error(
+                    "Indexer worker failed: status file missing "
+                    "(exitcode=%s, status_path=%s, snapshot=%s, log_path=%s, log_tail=%r)",
+                    exitcode,
+                    status_path,
+                    snapshot_path,
+                    log_path,
+                    log_tail,
+                )
             self._cleanup_snapshot_artifacts(snapshot_path)
             self._remove_file_if_exists(log_path)
             return
@@ -456,6 +504,15 @@ class Indexer:
         except Exception as e:
             self.status.errors += 1
             self.status.last_error = f"worker status read failed: {e}"
+            if self.logger:
+                self.logger.error(
+                    "Indexer worker status read failed "
+                    "(status_path=%s, snapshot=%s, log_path=%s): %s",
+                    status_path,
+                    snapshot_path,
+                    log_path,
+                    e,
+                )
             self._cleanup_snapshot_artifacts(snapshot_path)
             self._remove_file_if_exists(status_path)
             self._remove_file_if_exists(log_path)
@@ -463,6 +520,16 @@ class Indexer:
         if not payload.get("ok"):
             self.status.errors += 1
             self.status.last_error = payload.get("error", "worker failed")
+            if self.logger:
+                self.logger.error(
+                    "Indexer worker reported failure "
+                    "(status_path=%s, snapshot=%s, log_path=%s, error=%s, traceback=%s)",
+                    status_path,
+                    snapshot_path,
+                    log_path,
+                    payload.get("error", "worker failed"),
+                    payload.get("traceback", ""),
+                )
             self._cleanup_snapshot_artifacts(snapshot_path)
             self._remove_file_if_exists(status_path)
             self._remove_file_if_exists(log_path)
@@ -470,6 +537,17 @@ class Indexer:
         if exitcode not in (0, None):
             self.status.errors += 1
             self.status.last_error = f"worker exit {exitcode}"
+            if self.logger:
+                log_tail = self._read_worker_log_tail(log_path)
+                self.logger.error(
+                    "Indexer worker exited with non-zero code "
+                    "(exitcode=%s, status_path=%s, snapshot=%s, log_path=%s, log_tail=%r)",
+                    exitcode,
+                    status_path,
+                    snapshot_path,
+                    log_path,
+                    log_tail,
+                )
             self._cleanup_snapshot_artifacts(snapshot_path)
             self._remove_file_if_exists(status_path)
             self._remove_file_if_exists(log_path)

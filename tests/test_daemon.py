@@ -231,3 +231,44 @@ def test_event_drain_coalesces_tick_and_processes_non_tick():
 
     daemon._apply_lease_events(max_events=10)
     assert daemon.active_lease_count() == 1
+
+
+def test_cleanup_old_logs_removes_only_stale_managed_logs(tmp_path):
+    old_log = tmp_path / "daemon.log.1"
+    new_log = tmp_path / "daemon.log"
+    old_trace = tmp_path / "mcp_trace.log"
+    keep_text = tmp_path / "notes.txt"
+
+    old_log.write_text("old", encoding="utf-8")
+    new_log.write_text("new", encoding="utf-8")
+    old_trace.write_text("trace", encoding="utf-8")
+    keep_text.write_text("notes", encoding="utf-8")
+
+    now = 200_000.0
+    old_ts = now - (20 * 86400)
+    new_ts = now - (1 * 86400)
+    os.utime(old_log, (old_ts, old_ts))
+    os.utime(old_trace, (old_ts, old_ts))
+    os.utime(new_log, (new_ts, new_ts))
+    os.utime(keep_text, (old_ts, old_ts))
+
+    removed = daemon_mod._cleanup_old_logs(tmp_path, retention_days=14, now_ts=now)
+
+    assert removed == 2
+    assert not old_log.exists()
+    assert not old_trace.exists()
+    assert new_log.exists()
+    assert keep_text.exists()
+
+
+def test_cleanup_old_logs_can_be_disabled(tmp_path):
+    old_log = tmp_path / "daemon.log.1"
+    old_log.write_text("old", encoding="utf-8")
+    now = 100_000.0
+    old_ts = now - (20 * 86400)
+    os.utime(old_log, (old_ts, old_ts))
+
+    removed = daemon_mod._cleanup_old_logs(tmp_path, retention_days=0, now_ts=now)
+
+    assert removed == 0
+    assert old_log.exists()

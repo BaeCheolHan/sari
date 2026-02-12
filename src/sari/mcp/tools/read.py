@@ -1,4 +1,5 @@
 from collections.abc import Mapping
+import hashlib
 import json
 import os
 from typing import TypeAlias
@@ -49,6 +50,140 @@ def _invalid_mode_param(param: str, mode: str) -> ToolResult:
 
 def _line_count(text: str) -> int:
     return len(text.splitlines()) if text else 0
+
+
+def _compute_content_hash(text: str) -> str:
+    return hashlib.sha1(str(text).encode("utf-8", "replace")).hexdigest()[:12]
+
+
+def _mode_to_evidence_kind(mode: str) -> str:
+    if mode == "diff_preview":
+        return "diff"
+    if mode in {"file", "symbol", "snippet"}:
+        return mode
+    return "file"
+
+
+def _extract_file_text(payload: Mapping[str, object]) -> str:
+    items = payload.get("content", [])
+    if isinstance(items, list) and items and isinstance(items[0], Mapping):
+        return str(items[0].get("text", ""))
+    return str(payload.get("content", ""))
+
+
+def _extract_evidence_refs(
+    mode: str,
+    payload: Mapping[str, object],
+    delegated: Mapping[str, object],
+    request: Mapping[str, object],
+    bundle_id: str | None,
+) -> list[dict[str, object]]:
+    refs: list[dict[str, object]] = []
+    kind = _mode_to_evidence_kind(mode)
+    candidate_id = str(request.get("candidate_id") or "").strip()
+    bundle = str(bundle_id or "").strip()
+
+    def _add_common(ref: dict[str, object]) -> dict[str, object]:
+        out = dict(ref)
+        out["kind"] = kind
+        if candidate_id:
+            out.setdefault("candidate_id", candidate_id)
+        if bundle:
+            out.setdefault("bundle_id", bundle)
+        return out
+
+    if mode == "file":
+        text = _extract_file_text(payload)
+        path = str(request.get("path") or payload.get("path") or request.get("target") or "").strip()
+        ref: dict[str, object] = {"path": path, "content_hash": _compute_content_hash(text)}
+
+        req_start = request.get("start_line")
+        req_end = request.get("end_line")
+        if isinstance(req_start, int) and isinstance(req_end, int):
+            ref["start_line"] = req_start
+            ref["end_line"] = req_end
+        else:
+            offset = request.get("offset")
+            if isinstance(offset, int) and offset >= 0:
+                actual_lines = _line_count(text)
+                ref["start_line"] = offset + 1
+                ref["end_line"] = offset + actual_lines if actual_lines > 0 else offset
+        refs.append(_add_common(ref))
+
+    elif mode == "symbol":
+        text = str(payload.get("content", ""))
+        path = str(payload.get("path") or request.get("path") or request.get("target") or "").strip()
+        ref = {
+            "path": path,
+            "content_hash": _compute_content_hash(text),
+        }
+        start_line = payload.get("start_line")
+        end_line = payload.get("end_line")
+        if isinstance(start_line, int):
+            ref["start_line"] = start_line
+        if isinstance(end_line, int):
+            ref["end_line"] = end_line
+        symbol = str(request.get("symbol") or request.get("name") or request.get("target") or payload.get("name") or "").strip()
+        if symbol:
+            ref["symbol"] = symbol
+        refs.append(_add_common(ref))
+
+    elif mode == "snippet":
+        results = payload.get("results", [])
+        if isinstance(results, list):
+            for result in results:
+                if not isinstance(result, Mapping):
+                    continue
+                text = str(result.get("content") or result.get("text") or "")
+                ref = {
+                    "path": str(result.get("path") or request.get("path") or request.get("target") or "").strip(),
+                    "content_hash": _compute_content_hash(text),
+                }
+                start_line = result.get("start_line")
+                end_line = result.get("end_line")
+                if isinstance(start_line, int):
+                    ref["start_line"] = start_line
+                if isinstance(end_line, int):
+                    ref["end_line"] = end_line
+                snippet_id = result.get("snippet_id")
+                if snippet_id is None:
+                    snippet_id = result.get("id")
+                if snippet_id is not None:
+                    ref["snippet_id"] = str(snippet_id)
+                refs.append(_add_common(ref))
+
+    else:
+        text = str(payload.get("diff", ""))
+        path = str(request.get("path") or payload.get("path") or request.get("target") or "").strip()
+        against = str(request.get("against") or payload.get("against") or "").strip()
+        ref = {
+            "path": path,
+            "content_hash": _compute_content_hash(text),
+        }
+        if against:
+            ref["against"] = against
+        refs.append(_add_common(ref))
+
+    if refs:
+        return refs
+
+    # Success response must not have empty evidence.
+    fallback_text = ""
+    if mode == "file":
+        fallback_text = _extract_file_text(payload)
+    elif mode == "symbol":
+        fallback_text = str(payload.get("content", ""))
+    elif mode == "snippet":
+        fallback_text = json.dumps(payload.get("results", []), ensure_ascii=False)
+    else:
+        fallback_text = str(payload.get("diff", ""))
+    fallback_ref = _add_common(
+        {
+            "path": str(request.get("path") or request.get("target") or payload.get("path") or "").strip(),
+            "content_hash": _compute_content_hash(fallback_text),
+        }
+    )
+    return [fallback_ref]
 
 
 def _env_any(key: str, default: str = "") -> str:
@@ -133,6 +268,7 @@ def _inject_stabilization(
     suggested_next_action: str | None,
     metrics_snapshot: Mapping[str, float | int],
     reason_codes: list[str],
+    evidence_refs: list[dict[str, object]] | None = None,
     extra: Mapping[str, object] | None = None,
 ) -> ToolResult:
     payload = _extract_json_payload(response)
@@ -147,6 +283,7 @@ def _inject_stabilization(
     stabilization_dict["suggested_next_action"] = suggested_next_action or "search"
     stabilization_dict["metrics_snapshot"] = dict(metrics_snapshot)
     stabilization_dict["reason_codes"] = list(dict.fromkeys(reason_codes))
+    stabilization_dict["evidence_refs"] = list(evidence_refs or [])
     if extra:
         stabilization_dict.update(dict(extra))
     meta_dict["stabilization"] = stabilization_dict
@@ -177,6 +314,7 @@ def _budget_exceeded_response() -> ToolResult:
                     "reason_codes": [ReasonCode.BUDGET_HARD_LIMIT.value],
                     "suggested_next_action": "search",
                     "warnings": [msg],
+                    "evidence_refs": [],
                     "next_calls": [{"tool": "search", "arguments": {"query": "target", "search_type": "code", "limit": 5}}],
                 }
             },
@@ -228,6 +366,7 @@ def _stabilization_error(
                 "stabilization": {
                     "reason_codes": reason_codes,
                     "warnings": list(warnings or []),
+                    "evidence_refs": [],
                     "suggested_next_action": "search",
                     "next_calls": list(next_calls or []),
                 }
@@ -347,6 +486,7 @@ def _enforce_search_ref_gate(
 def _finalize_read_response(
     mode: str,
     args_map: Mapping[str, object],
+    delegated: Mapping[str, object],
     db: object,
     roots: list[str],
     response: ToolResult,
@@ -404,6 +544,13 @@ def _finalize_read_response(
         all_warnings.append("This target seems unrelated to recent search results.")
         reason_codes.append(ReasonCode.LOW_RELEVANCE_OUTSIDE_TOPK.value)
     extra = dict(bundle_meta)
+    evidence_refs = _extract_evidence_refs(
+        mode,
+        payload if payload is not None else {},
+        delegated,
+        args_map,
+        str(bundle_meta.get("context_bundle_id") or ""),
+    )
     if relevance_alternatives:
         extra["alternatives"] = relevance_alternatives
     if relevance_state == "LOW_RELEVANCE":
@@ -415,6 +562,7 @@ def _finalize_read_response(
         suggested_next_action=suggested_next_action,
         metrics_snapshot=metrics_snapshot,
         reason_codes=reason_codes,
+        evidence_refs=evidence_refs,
         extra=extra,
     )
 
@@ -511,6 +659,7 @@ def execute_read(args: object, db: object, roots: list[str], logger: object = No
         return _finalize_read_response(
             mode,
             args_map,
+            delegated,
             db,
             roots,
             response,
@@ -529,6 +678,7 @@ def execute_read(args: object, db: object, roots: list[str], logger: object = No
         return _finalize_read_response(
             mode,
             args_map,
+            delegated,
             db,
             roots,
             response,
@@ -546,9 +696,22 @@ def execute_read(args: object, db: object, roots: list[str], logger: object = No
         if "max_results" in delegated and "limit" not in delegated:
             delegated["limit"] = delegated.get("max_results")
         response = execute_get_snippet(delegated, db, roots)
+        snippet_payload = _extract_json_payload(response)
+        if snippet_payload is not None:
+            results = snippet_payload.get("results", [])
+            if isinstance(results, list) and len(results) == 0:
+                msg = "No snippet results for requested target."
+                return _stabilization_error(
+                    code="NO_RESULTS",
+                    message=msg,
+                    reason_codes=["NO_RESULTS"],
+                    warnings=[msg],
+                    next_calls=_build_search_next_calls(str(target or delegated.get("tag") or "snippet")),
+                )
         return _finalize_read_response(
             mode,
             args_map,
+            delegated,
             db,
             roots,
             response,
@@ -566,6 +729,7 @@ def execute_read(args: object, db: object, roots: list[str], logger: object = No
     return _finalize_read_response(
         mode,
         args_map,
+        delegated,
         db,
         roots,
         response,

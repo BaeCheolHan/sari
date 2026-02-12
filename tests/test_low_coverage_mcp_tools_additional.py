@@ -310,6 +310,8 @@ def test_repo_candidates_rejects_non_object_args():
     _assert_invalid_args_response(resp)
 
 
+@pytest.mark.read
+@pytest.mark.slow
 def test_read_file_error_and_json_metadata_paths(monkeypatch, tmp_path):
     db = MagicMock()
 
@@ -343,6 +345,8 @@ def test_list_symbols_rejects_non_object_args():
     _assert_invalid_args_response(resp)
 
 
+@pytest.mark.read
+@pytest.mark.slow
 def test_read_file_invalid_offset_limit_types_are_handled(tmp_path, monkeypatch):
     monkeypatch.setenv("SARI_FORMAT", "pack")
     db = MagicMock()
@@ -357,6 +361,8 @@ def test_read_file_invalid_offset_limit_types_are_handled(tmp_path, monkeypatch)
     assert "code=INVALID_ARGS" in negative["content"][0]["text"]
 
 
+@pytest.mark.read
+@pytest.mark.slow
 def test_unified_read_rejects_against_for_non_diff_mode():
     import urllib.parse
 
@@ -366,6 +372,8 @@ def test_unified_read_rejects_against_for_non_diff_mode():
     assert "against is only valid for mode='diff_preview'. Remove it or switch mode." in text
 
 
+@pytest.mark.read
+@pytest.mark.slow
 def test_unified_read_rejects_snippet_args_for_non_snippet_mode():
     import urllib.parse
 
@@ -375,6 +383,8 @@ def test_unified_read_rejects_snippet_args_for_non_snippet_mode():
     assert "start_line is only valid for mode='snippet'. Remove it or switch mode." in text
 
 
+@pytest.mark.read
+@pytest.mark.slow
 def test_unified_read_rejects_symbol_disambiguation_args_for_non_symbol_mode():
     import urllib.parse
 
@@ -384,6 +394,8 @@ def test_unified_read_rejects_symbol_disambiguation_args_for_non_symbol_mode():
     assert "symbol_id is only valid for mode='symbol'. Remove it or switch mode." in text
 
 
+@pytest.mark.read
+@pytest.mark.slow
 def test_unified_read_rejects_invalid_against_enum_value():
     import urllib.parse
 

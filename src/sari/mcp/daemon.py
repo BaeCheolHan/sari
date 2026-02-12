@@ -55,11 +55,53 @@ def _resolve_log_dir() -> Path:
         return Path(os.path.expanduser(val)).resolve()
     return WorkspaceManager.get_global_log_dir()
 
+
+def _is_managed_log_file(name: str) -> bool:
+    lowered = str(name or "").lower()
+    return (
+        lowered.endswith(".log")
+        or ".log." in lowered
+        or lowered.endswith(".log.swp")
+    )
+
+
+def _cleanup_old_logs(
+        log_dir: Path,
+        retention_days: int,
+        now_ts: float | None = None) -> int:
+    keep_days = int(retention_days or 0)
+    if keep_days <= 0:
+        return 0
+    now = float(now_ts if now_ts is not None else time.time())
+    cutoff = now - (keep_days * 86400)
+    removed = 0
+    for entry in log_dir.iterdir():
+        try:
+            if not entry.is_file():
+                continue
+            if not _is_managed_log_file(entry.name):
+                continue
+            if float(entry.stat().st_mtime) >= cutoff:
+                continue
+            entry.unlink(missing_ok=True)
+            removed += 1
+        except Exception:
+            continue
+    return removed
+
+
 def _init_logging() -> None:
     log_dir = _resolve_log_dir()
     handlers = [logging.StreamHandler()]
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
+        removed = _cleanup_old_logs(log_dir, getattr(settings, "LOG_RETENTION_DAYS", 14))
+        if removed:
+            logging.getLogger("mcp-daemon.bootstrap").info(
+                "Removed %s stale log files under %s",
+                removed,
+                str(log_dir),
+            )
         handlers.insert(0, logging.FileHandler(log_dir / "daemon.log"))
     except Exception as e:
         logging.getLogger("mcp-daemon.bootstrap").warning(
