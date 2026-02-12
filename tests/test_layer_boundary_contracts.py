@@ -58,9 +58,20 @@ def test_core_layer_does_not_import_mcp_modules() -> None:
     )
 
 
-def test_core_layer_boundary_baseline_has_raw_mcp_import_detections() -> None:
+def test_core_layer_boundary_scanner_health_is_debt_neutral() -> None:
     violations = _iter_core_to_mcp_imports()
-    assert len(violations) > 0, (
-        "Expected baseline core->mcp import detections for evidence. "
-        "If this is 0, the scanner is likely broken."
+
+    for item in violations:
+        assert isinstance(item, tuple)
+        assert len(item) == 3
+        path, line, module = item
+        assert isinstance(path, str) and path.startswith("src/sari/core/")
+        assert isinstance(line, int) and line > 0
+        assert isinstance(module, str) and module.startswith("sari.mcp")
+
+    detected_pairs = {(path, module) for path, _line, module in violations}
+    missing_allowlisted_pairs = _ALLOWED_CORE_TO_MCP_IMPORTS - detected_pairs
+    assert not missing_allowlisted_pairs, (
+        "Allowlisted core->mcp imports were not detected by scanner:\n"
+        + "\n".join(f"- {path} imports {module}" for path, module in sorted(missing_allowlisted_pairs))
     )
