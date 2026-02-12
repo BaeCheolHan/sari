@@ -24,3 +24,4 @@ build/
 *.snapshot.*
 <MagicMock*
 UNKNOWN.egg-info/
+.worktrees/
