@@ -94,6 +94,20 @@ def test_worker_file_disappeared_mid_process():
     assert res is None
 
 
+def test_worker_git_root_cache_is_capped(monkeypatch):
+    mock_db = MagicMock(spec=LocalSearchDB)
+    cfg = MagicMock()
+    cfg.store_content = True
+    worker = IndexWorker(cfg, mock_db, None, lambda p, c: ([], []))
+    worker._git_root_cache.clear()
+    worker._git_root_cache_max = 32
+
+    for i in range(200):
+        worker._git_cache_set(f"/tmp/p-{i}", f"/tmp/repo-{i}")
+
+    assert len(worker._git_root_cache) <= 32
+
+
 def test_db_writer_resilience_to_batch_failure():
     """
     D3: Verify that DBWriter handles batch failures by retrying individually.

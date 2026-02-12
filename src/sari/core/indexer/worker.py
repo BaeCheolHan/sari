@@ -52,6 +52,20 @@ class IndexWorker:
         self._ast_cache = OrderedDict()
         self._ast_cache_max = self.settings.AST_CACHE_ENTRIES
         self._git_root_cache: dict[str, str | None] = {}
+        try:
+            self._git_root_cache_max = max(
+                64,
+                int(os.environ.get("SARI_GIT_ROOT_CACHE_MAX", "4096") or "4096"),
+            )
+        except Exception:
+            self._git_root_cache_max = 4096
+
+    def _git_cache_set(self, key: str, value: str | None) -> None:
+        if not key:
+            return
+        self._git_root_cache[key] = value
+        while len(self._git_root_cache) > int(self._git_root_cache_max or 0):
+            self._git_root_cache.pop(next(iter(self._git_root_cache)), None)
 
     def process_file_task(
             self,
@@ -238,12 +252,12 @@ class IndexWorker:
                     git_root = proc.stdout.strip() if proc.returncode == 0 else None
             except Exception:
                 git_root = None
-            self._git_root_cache[parent] = git_root
+            self._git_cache_set(parent, git_root)
 
         if git_root:
             repo_name = Path(git_root).name
             # Cache for this workspace root
-            self._git_root_cache[root_str] = repo_name
+            self._git_cache_set(root_str, repo_name)
             return repo_name
         return Path(root).name or "root"
 
