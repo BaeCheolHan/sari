@@ -73,17 +73,16 @@ def test_cli_main_help():
         assert e.value.code == 0
 
 
-def test_cli_main_cmd_search_routes_to_legacy_cli():
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["sari", "--cmd", "search", "--query", "needle", "--limit", "3"],
+        ["sari", "--cmd", "status"],
+    ],
+)
+def test_cli_main_cmd_routes_to_legacy_cli(argv):
     with patch("sari.mcp.cli.main", return_value=0) as mock_legacy:
-        with patch("sys.argv", ["sari", "--cmd", "search", "--query", "needle", "--limit", "3"]):
-            rc = sari_entry_main()
-            assert rc == 0
-            mock_legacy.assert_called_once()
-
-
-def test_cli_main_cmd_status_routes_to_legacy_cli():
-    with patch("sari.mcp.cli.main", return_value=0) as mock_legacy:
-        with patch("sys.argv", ["sari", "--cmd", "status"]):
+        with patch("sys.argv", argv):
             rc = sari_entry_main()
             assert rc == 0
             mock_legacy.assert_called_once()

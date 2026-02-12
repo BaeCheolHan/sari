@@ -217,27 +217,25 @@ def test_cmd_daemon_refresh_stops_all_then_starts():
             mock_start.assert_called_once()
 
 
-def test_legacy_daemon_commands_reexported_from_commands_module():
-    from sari.mcp.cli.commands import daemon_commands
+def test_legacy_commands_reexported_from_commands_modules():
+    from sari.mcp.cli.commands import daemon_commands, status_commands, maintenance_commands
     import sari.mcp.cli.legacy_cli as legacy_cli
 
-    assert legacy_cli.cmd_daemon_start is daemon_commands.cmd_daemon_start
-    assert legacy_cli.cmd_daemon_stop is daemon_commands.cmd_daemon_stop
-    assert legacy_cli.cmd_daemon_status is daemon_commands.cmd_daemon_status
-    assert legacy_cli.cmd_daemon_ensure is daemon_commands.cmd_daemon_ensure
-    assert legacy_cli.cmd_daemon_refresh is daemon_commands.cmd_daemon_refresh
-
-
-def test_legacy_status_and_maintenance_commands_reexported_from_commands_module():
-    from sari.mcp.cli.commands import status_commands, maintenance_commands
-    import sari.mcp.cli.legacy_cli as legacy_cli
-
-    assert legacy_cli.cmd_status is status_commands.cmd_status
-    assert legacy_cli.cmd_search is status_commands.cmd_search
-    assert legacy_cli.cmd_doctor is maintenance_commands.cmd_doctor
-    assert legacy_cli.cmd_init is maintenance_commands.cmd_init
-    assert legacy_cli.cmd_prune is maintenance_commands.cmd_prune
-    assert legacy_cli.cmd_vacuum is maintenance_commands.cmd_vacuum
+    pairs = [
+        (legacy_cli.cmd_daemon_start, daemon_commands.cmd_daemon_start),
+        (legacy_cli.cmd_daemon_stop, daemon_commands.cmd_daemon_stop),
+        (legacy_cli.cmd_daemon_status, daemon_commands.cmd_daemon_status),
+        (legacy_cli.cmd_daemon_ensure, daemon_commands.cmd_daemon_ensure),
+        (legacy_cli.cmd_daemon_refresh, daemon_commands.cmd_daemon_refresh),
+        (legacy_cli.cmd_status, status_commands.cmd_status),
+        (legacy_cli.cmd_search, status_commands.cmd_search),
+        (legacy_cli.cmd_doctor, maintenance_commands.cmd_doctor),
+        (legacy_cli.cmd_init, maintenance_commands.cmd_init),
+        (legacy_cli.cmd_prune, maintenance_commands.cmd_prune),
+        (legacy_cli.cmd_vacuum, maintenance_commands.cmd_vacuum),
+    ]
+    for actual, expected in pairs:
+        assert actual is expected
 
 
 def test_ensure_workspace_http_sets_non_persistent_initialize():
