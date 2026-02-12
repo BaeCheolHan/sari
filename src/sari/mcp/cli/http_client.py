@@ -11,7 +11,7 @@ import urllib.request
 from typing import Optional
 
 from sari.core.workspace import WorkspaceManager
-from sari.core.server_registry import ServerRegistry
+from sari.mcp.server_registry import ServerRegistry
 from sari.core.constants import (
     DEFAULT_HTTP_HOST,
     DEFAULT_HTTP_PORT,

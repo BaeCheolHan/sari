@@ -17,7 +17,7 @@ from pathlib import Path
 from sari.mcp.session import Session
 from sari.core.policy_engine import load_daemon_policy
 from sari.core.workspace import WorkspaceManager
-from sari.core.server_registry import ServerRegistry
+from sari.mcp.server_registry import ServerRegistry
 from sari.core.settings import settings
 from sari.core.constants import DEFAULT_DAEMON_HOST, DEFAULT_DAEMON_PORT
 from sari.core.utils.uuid7 import uuid7_hex

@@ -14,7 +14,7 @@ from sari.mcp.trace import trace
 _SARI_VERSION = settings.VERSION
 _SARI_PROTOCOL_VERSION = "2025-11-25"
 from sari.core.workspace import WorkspaceManager
-from sari.core.server_registry import ServerRegistry
+from sari.mcp.server_registry import ServerRegistry
 
 logger = logging.getLogger(__name__)
 

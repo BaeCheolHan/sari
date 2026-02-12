@@ -19,7 +19,7 @@ from sari.core.db import LocalSearchDB
 from sari.core.config import Config
 from sari.core.settings import settings
 from sari.core.workspace import WorkspaceManager
-from sari.core.server_registry import ServerRegistry, get_registry_path
+from sari.mcp.server_registry import ServerRegistry, get_registry_path
 from sari.core.policy_engine import load_daemon_policy
 from sari.mcp.cli.mcp_client import identify_sari_daemon, probe_sari_daemon, is_http_running as _is_http_running
 from sari.core.daemon_resolver import resolve_daemon_address as get_daemon_address
@@ -425,7 +425,7 @@ def _check_writer_health(db: object = None) -> DoctorResult:
     """DB Writer 스레드의 상태를 확인합니다."""
     try:
         from sari.core.db.storage import GlobalStorageManager
-        sm = getattr(GlobalStorageManager, "_instance", None)
+        sm = GlobalStorageManager.get_active_instance()
         if sm is None:
             return _result("Writer Health", True, "no active storage manager")
         writer = getattr(sm, "writer", None)
@@ -468,16 +468,7 @@ def _check_storage_switch_guard() -> DoctorResult:
     """스토리지 전환이 차단되어 있는지 확인합니다."""
     try:
         from sari.core.db.storage import GlobalStorageManager
-        reason = str(
-            getattr(
-                GlobalStorageManager,
-                "_last_switch_block_reason",
-                "") or "")
-        ts = float(
-            getattr(
-                GlobalStorageManager,
-                "_last_switch_block_ts",
-                0.0) or 0.0)
+        reason, ts = GlobalStorageManager.get_switch_guard_status()
         if not reason:
             return _result("Storage Switch Guard", True, "no blocked switch")
         age = int(time.time() - ts) if ts > 0 else -1
@@ -971,7 +962,7 @@ def _auto_fixable(results: DoctorResults) -> ActionItems:
 
     # 레지스트리 손상 확인 (SSOT Check)
     try:
-        from sari.core.server_registry import ServerRegistry
+        from sari.mcp.server_registry import ServerRegistry
         reg = ServerRegistry()
         data = reg._load()
         if not data or data.get("version") != ServerRegistry.VERSION:
@@ -1008,7 +999,7 @@ def _run_auto_fixes(
                         "Schema migration applied"))
 
             elif act == "cleanup_registry_daemons":
-                from sari.core.server_registry import ServerRegistry
+                from sari.mcp.server_registry import ServerRegistry
                 reg = ServerRegistry()
                 reg.prune_dead()
                 results.append(
@@ -1018,7 +1009,7 @@ def _run_auto_fixes(
                         "Stale daemon registry entries pruned"))
 
             elif act == "repair_registry":
-                from sari.core.server_registry import ServerRegistry
+                from sari.mcp.server_registry import ServerRegistry
                 reg = ServerRegistry()
                 reg._save(reg._empty())  # Reset to clean state
                 results.append(
@@ -1078,7 +1069,7 @@ def _check_workspace_overlaps(ws_root: str) -> DoctorResults:
     """등록된 여러 워크스페이스 간의 중첩(Overlap)을 감지하여 중복 인덱싱을 방지합니다."""
     results = []
     try:
-        from sari.core.server_registry import ServerRegistry
+        from sari.mcp.server_registry import ServerRegistry
         reg = ServerRegistry()
         data = reg._load()
         workspaces = list(data.get("workspaces", {}).keys())

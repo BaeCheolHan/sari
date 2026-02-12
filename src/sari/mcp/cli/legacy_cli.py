@@ -30,7 +30,7 @@ import ipaddress
 from typing import Optional
 
 from sari.core.workspace import WorkspaceManager
-from sari.core.server_registry import ServerRegistry
+from sari.mcp.server_registry import ServerRegistry
 from sari.core.config import Config
 from sari.core.db import LocalSearchDB
 from sari.core.daemon_resolver import resolve_daemon_address as get_daemon_address

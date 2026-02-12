@@ -103,6 +103,18 @@ class GlobalStorageManager:
                 cls._last_switch_block_ts = 0.0
             return cls._instance
 
+    @classmethod
+    def get_active_instance(cls):
+        with cls._lock:
+            return cls._instance
+
+    @classmethod
+    def get_switch_guard_status(cls) -> tuple[str, float]:
+        with cls._lock:
+            reason = str(cls._last_switch_block_reason or "")
+            ts = float(cls._last_switch_block_ts or 0.0)
+        return reason, ts
+
     def start(self):
         self.writer.start()
 

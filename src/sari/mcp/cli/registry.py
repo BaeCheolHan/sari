@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 from typing import Optional, TypeAlias
 
-from sari.core.server_registry import ServerRegistry, get_registry_path
+from sari.mcp.server_registry import ServerRegistry, get_registry_path
 
 JsonMap: TypeAlias = dict[str, object]
 InstancesMap: TypeAlias = dict[str, JsonMap]
