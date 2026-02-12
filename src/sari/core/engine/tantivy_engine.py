@@ -238,7 +238,7 @@ class TantivyEngine:
             q = self._index.parse_query(full_query, ["body"])
         except Exception as e:
             if self.logger:
-                self.logger.log_error(f"Tantivy query parse failed: {e}")
+                self.logger.error(f"Tantivy query parse failed: {e}")
             return []
         try:
             hits = searcher.search(q, limit).hits
@@ -257,5 +257,5 @@ class TantivyEngine:
             return results
         except Exception as e:
             if self.logger:
-                self.logger.log_error(f"Tantivy search failed: {e}")
+                self.logger.error(f"Tantivy search failed: {e}")
             return []

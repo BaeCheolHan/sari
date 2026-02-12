@@ -5,6 +5,7 @@ from sari.core.policy_engine import (
     load_daemon_runtime_status,
     load_read_policy,
 )
+import sari.core.policy_engine as policy_engine
 
 
 def test_load_read_policy_defaults():
@@ -86,3 +87,24 @@ def test_load_daemon_runtime_status_parses_marker_payload():
     assert status.active_leases_count == 3
     assert status.last_shutdown_reason == "idle_timeout"
     assert status.workers_alive == [111, 222]
+
+
+def test_load_daemon_runtime_status_reuses_json_list_cache(monkeypatch):
+    calls = {"n": 0}
+    original = policy_engine.json.loads
+
+    def _wrapped_loads(raw):
+        calls["n"] += 1
+        return original(raw)
+
+    monkeypatch.setattr(policy_engine.json, "loads", _wrapped_loads)
+    env = {
+        "SARI_DAEMON_LEASES": '[{"id":"l1"}]',
+        "SARI_DAEMON_WORKERS_ALIVE": "[111,222]",
+    }
+
+    load_daemon_runtime_status(env)
+    load_daemon_runtime_status(env)
+
+    # without cache this is 4 calls (2 keys x 2 invocations)
+    assert calls["n"] <= 2

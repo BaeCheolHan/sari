@@ -19,6 +19,33 @@ def test_js_arrow_functions():
     assert "asyncArrow" in names
     assert "legacyFunc" in names
 
+
+def test_js_variable_declarator_without_arrow_token_text_is_not_marked_arrow():
+    from sari.core.parsers.handlers.javascript import JavaScriptHandler
+
+    class _Node:
+        def __init__(self, node_type, children=None, text=""):
+            self.type = node_type
+            self.children = children or []
+            self._text = text
+
+    handler = JavaScriptHandler()
+    decl = _Node(
+        "lexical_declaration",
+        children=[_Node("variable_declarator", children=[_Node("identifier", text="value")], text="value = createHandler(req)")],
+    )
+    kind, name, meta, ok = handler.handle_node(
+        decl,
+        lambda n: n._text,
+        lambda n: "value" if n.type == "variable_declarator" else n._text,
+        ".js",
+        {},
+    )
+    assert ok is True
+    assert kind == "function"
+    assert name == "value"
+    assert meta.get("arrow") is False
+
 def test_rust_traits():
     rs_code = """
     struct Point { x: i32, y: i32 }

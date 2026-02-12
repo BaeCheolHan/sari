@@ -4,7 +4,7 @@ import time
 import pytest
 from pathlib import Path
 from unittest.mock import patch
-from sari.mcp.tools.doctor import execute_doctor
+from sari.mcp.tools.doctor import execute_doctor, _check_db
 
 class TestDoctorSelfHealing:
     
@@ -114,3 +114,29 @@ class TestDoctorSelfHealing:
 
 def share_path():
     return os.path.join("share", "sari")
+
+
+def test_doctor_db_path_autofix_requires_auto_fix_flag(tmp_path):
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps({"workspace_roots": [str(tmp_path)]}), encoding="utf-8")
+    db_path = tmp_path / "missing.db"
+
+    class _Cfg:
+        pass
+
+    cfg = _Cfg()
+    cfg.db_path = str(db_path)
+
+    with patch("sari.mcp.tools.doctor.WorkspaceManager.resolve_config_path", return_value=str(cfg_path)), \
+         patch("sari.mcp.tools.doctor.Config.load", return_value=cfg):
+        _check_db(str(tmp_path), allow_config_autofix=False)
+
+    raw_after_no_fix = json.loads(cfg_path.read_text(encoding="utf-8"))
+    assert "db_path" not in raw_after_no_fix
+
+    with patch("sari.mcp.tools.doctor.WorkspaceManager.resolve_config_path", return_value=str(cfg_path)), \
+         patch("sari.mcp.tools.doctor.Config.load", return_value=cfg):
+        _check_db(str(tmp_path), allow_config_autofix=True)
+
+    raw_after_fix = json.loads(cfg_path.read_text(encoding="utf-8"))
+    assert raw_after_fix["db_path"] == str(db_path)

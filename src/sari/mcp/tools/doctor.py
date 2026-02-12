@@ -117,30 +117,38 @@ def _safe_pragma_table_name(name: str) -> str:
     raise ValueError(f"Unsafe or unauthorized table name for PRAGMA: {name}")
 
 
-def _check_db(ws_root: str) -> DoctorResults:
+def _check_db(ws_root: str, *, allow_config_autofix: bool = False) -> DoctorResults:
     """데이터베이스 설정, 접근 권한, 스키마 등을 검사합니다."""
     results: DoctorResults = []
     cfg_path = WorkspaceManager.resolve_config_path(ws_root)
     cfg = Config.load(cfg_path, workspace_root_override=ws_root)
-    # 자동 수정: 설정 파일에 db_path가 없으면 현재 설정값으로 저장
+    # Optional auto-fix: persist missing db_path only when explicitly enabled.
     try:
         if cfg_path and Path(cfg_path).exists():
             raw = json.loads(Path(cfg_path).read_text(encoding="utf-8"))
             if isinstance(raw, dict) and not raw.get(
                     "db_path") and cfg.db_path:
-                raw["db_path"] = cfg.db_path
-                Path(cfg_path).parent.mkdir(parents=True, exist_ok=True)
-                Path(cfg_path).write_text(
-                    json.dumps(
-                        raw,
-                        ensure_ascii=False,
-                        indent=2) + "\n",
-                    encoding="utf-8")
-                results.append(
-                    _result(
-                        "DB Path AutoFix",
-                        True,
-                        f"db_path set to {cfg.db_path}"))
+                if allow_config_autofix:
+                    raw["db_path"] = cfg.db_path
+                    Path(cfg_path).parent.mkdir(parents=True, exist_ok=True)
+                    Path(cfg_path).write_text(
+                        json.dumps(
+                            raw,
+                            ensure_ascii=False,
+                            indent=2) + "\n",
+                        encoding="utf-8")
+                    results.append(
+                        _result(
+                            "DB Path AutoFix",
+                            True,
+                            f"db_path set to {cfg.db_path}"))
+                else:
+                    results.append(
+                        _result(
+                            "DB Path AutoFix",
+                            True,
+                            "skipped (auto_fix=false)",
+                            warn=True))
     except Exception as e:
         results.append(_result("DB Path AutoFix", False, f"failed: {e}"))
     db_path = Path(cfg.db_path)
@@ -1145,6 +1153,9 @@ def execute_doctor(
     port = int(args_map.get("port", 0))
     min_disk_gb = float(args_map.get("min_disk_gb", 1.0))
 
+    auto_fix = bool(args_map.get("auto_fix", False))
+    auto_fix_rescan = bool(args_map.get("auto_fix_rescan", False))
+
     results: DoctorResults = []
 
     results.extend(_check_system_env())
@@ -1185,7 +1196,7 @@ def execute_doctor(
 
     if include_db:
         results.append(_check_db_integrity(ws_root))
-        results.extend(_check_db(ws_root))
+        results.extend(_check_db(ws_root, allow_config_autofix=auto_fix))
         results.append(_check_db_migration_safety())
         results.append(_check_windows_write_lock_support())
         results.append(_check_engine_sync_dlq(ws_root))
@@ -1209,8 +1220,6 @@ def execute_doctor(
 
     results.append(_check_callgraph_plugin())
 
-    auto_fix = bool(args_map.get("auto_fix", False))
-    auto_fix_rescan = bool(args_map.get("auto_fix_rescan", False))
     auto_fix_results: DoctorResults = []
     if auto_fix:
         actions = _auto_fixable(results)

@@ -233,6 +233,18 @@ def test_snippet_cache_key_changes_when_content_changes():
     assert s1 != s2
 
 
+def test_snippet_cache_key_uses_stable_hex_digest_segment():
+    engine = SearchEngine.__new__(SearchEngine)
+    engine.db = type("DummyDB", (), {"settings": type("S", (), {"SNIPPET_CACHE_SIZE": 8, "SNIPPET_MAX_BYTES": 5000})()})()
+    engine._snippet_cache = {}
+    engine._snippet_lru = []
+    SearchEngine._snippet_for(engine, "p.py", "needle", "aaa\nneedle\nbbb")
+    [cache_key] = list(engine._snippet_cache.keys())
+    digest = cache_key.split("\0")[2]
+    assert len(digest) == 16
+    assert all(ch in "0123456789abcdef" for ch in digest)
+
+
 def test_read_file_returns_none_when_content_is_null(db):
     rid = "rid-null"
     db.upsert_root(rid, "/tmp/ws", "/tmp/ws")

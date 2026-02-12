@@ -105,8 +105,25 @@ class FailedTaskRepository(BaseRepository):
         return [dict(r) for r in rows]
 
     def count_failed_tasks(self) -> Tuple[int, int]:
-        row = self.execute("SELECT COUNT(*) AS c FROM failed_tasks").fetchone()
-        total = int(row["c"]) if row else 0
-        row2 = self.execute("SELECT COUNT(*) AS c FROM failed_tasks WHERE attempts >= 3").fetchone()
-        high = int(row2["c"]) if row2 else 0
+        row = self.execute(
+            """
+            SELECT
+                COUNT(*) AS total,
+                SUM(CASE WHEN attempts >= 3 THEN 1 ELSE 0 END) AS high
+            FROM failed_tasks
+            """
+        ).fetchone()
+        total_raw = 0
+        high_raw = 0
+        if row:
+            try:
+                total_raw = row["total"]
+            except Exception:
+                total_raw = 0
+            try:
+                high_raw = row["high"]
+            except Exception:
+                high_raw = 0
+        total = int(total_raw or 0)
+        high = int(high_raw or 0)
         return total, high

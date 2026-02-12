@@ -152,3 +152,24 @@ def test_tantivy_version_support_rule_is_forward_compatible():
     assert engine._is_supported_tantivy_version("0.26.1") is True
     assert engine._is_supported_tantivy_version("1.0.0") is True
     assert engine._is_supported_tantivy_version("0.24.9") is False
+
+
+def test_tantivy_search_parse_error_uses_standard_logger_error():
+    class FakeIndex:
+        def parse_query(self, _query, _fields):
+            raise ValueError("bad query")
+
+    logger = MagicMock()
+    engine = TantivyEngine.__new__(TantivyEngine)
+    engine._index = FakeIndex()
+    engine._last_reload_ts = 0.0
+    engine._reload_lock = __import__("threading").Lock()
+    engine.settings = MagicMock()
+    engine.settings.ENGINE_RELOAD_MS = 0
+    engine.logger = logger
+
+    with patch("sari.core.engine.tantivy_engine.tantivy", object()):
+        out = engine.search("x", limit=3)
+
+    assert out == []
+    assert logger.error.called

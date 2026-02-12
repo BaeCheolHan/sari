@@ -110,7 +110,13 @@ def parse_int_arg(
     try:
         value = int(raw if raw is not None else default)
     except (TypeError, ValueError):
-        return None, invalid_args_response(tool, f"'{key}' must be an integer")
+        try:
+            f_value = float(raw if raw is not None else default)
+        except (TypeError, ValueError):
+            return None, invalid_args_response(tool, f"'{key}' must be an integer")
+        if not f_value.is_integer():
+            return None, invalid_args_response(tool, f"'{key}' must be an integer")
+        value = int(f_value)
     if min_value is not None and value < min_value:
         return None, invalid_args_response(tool, f"'{key}' must be >= {min_value}")
     if max_value is not None and value > max_value:

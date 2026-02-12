@@ -62,6 +62,10 @@ def _parse_size(value: Optional[str], default: int) -> int:
     elif s.endswith("gb"):
         mult = 1024 * 1024 * 1024
         s = s[:-2]
+    elif s.endswith("tb"):
+        mult = 1024 * 1024 * 1024 * 1024
+        s = s[:-2]
+    s = s.replace(",", "").replace("_", "")
     try:
         return int(float(s) * mult)
     except Exception:

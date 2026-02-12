@@ -54,3 +54,21 @@ def test_search_service_index_meta_fallback_when_to_meta_is_not_mapping():
     assert isinstance(meta, dict)
     assert meta["index_ready"] is True
     assert meta["indexed_files"] == 3
+
+
+def test_search_service_fallback_ignores_non_callable_l2_only():
+    class _BrokenEngine:
+        @staticmethod
+        def search(_opts):
+            raise RuntimeError("boom")
+
+        search_l2_only = "not-callable"
+
+    svc = SearchService(db=None, engine=_BrokenEngine(), indexer=None)
+    opts = SimpleNamespace(limit=5, root_ids=[], query_vector=None)
+
+    hits, meta = svc.search(opts)
+
+    assert hits == []
+    assert meta["partial"] is True
+    assert meta["engine"] == "fallback"

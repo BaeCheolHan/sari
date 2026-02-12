@@ -1,0 +1,6 @@
+- Install/upgrade: `uv tool install sari`, `uv tool upgrade sari`
+- Daemon: `sari daemon start -d`, `sari daemon status`, `sari daemon refresh`, `sari daemon stop`
+- Index trigger: `sari --cmd index`
+- Diagnostics: `sari --cmd status`, `sari doctor`, `curl http://127.0.0.1:47777/status`
+- Workspace roots: `sari roots add <abs_path>`, `sari roots list`, `sari roots remove <abs_path>`
+- Tests: `pytest -q`, marker split: `pytest -q -m "read and not slow"`, `pytest -q -m "read and slow"`

@@ -2,6 +2,7 @@ import sqlite3
 import re
 import fnmatch
 import zlib
+import hashlib
 from typing import Dict, List, Optional, Tuple
 from .models import SearchHit, SearchOptions
 from .ranking import snippet_around, get_file_extension
@@ -99,6 +100,8 @@ class SearchEngine:
                         t_hits = self._process_tantivy_hits(hits, opts)
                         # Tantivy 점수 정규화
                         max_t = max((h.score for h in t_hits), default=1.0)
+                        if max_t <= 0:
+                            max_t = 1.0
                         for h in t_hits:
                             h.score = (h.score / max_t) * 10.0
                             if h.path not in seen_paths:
@@ -332,8 +335,15 @@ class SearchEngine:
         return " ".join(out)
 
     def _snippet_for(self, path: str, query: str, content: str, *, case_sensitive: bool = False) -> str:
-        # Include content hash to avoid collisions when file content changes
-        content_tag = hash(content) if content else 0
+        # Use stable content digest to avoid process-dependent cache keys.
+        if content:
+            if isinstance(content, (bytes, bytearray)):
+                content_bytes = bytes(content)
+            else:
+                content_bytes = str(content).encode("utf-8", errors="ignore")
+            content_tag = hashlib.blake2b(content_bytes, digest_size=8).hexdigest()
+        else:
+            content_tag = "0"
         cache_key = f"{path}\0{query}\0{content_tag}\0{case_sensitive}"
         cached = self._snippet_cache.get(cache_key)
         if cached is not None:

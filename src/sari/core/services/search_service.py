@@ -147,15 +147,15 @@ class SearchService:
                 "db_error": str(exc),
                 "engine": "fallback",
             }
-            if engine and hasattr(
-                    engine,
-                    "search_engine") and hasattr(
-                    engine.search_engine,
-                    "search_l2_only"):
-                fallback_hits, fallback_meta = engine.search_engine.search_l2_only(
-                    opts)
-            elif engine and hasattr(engine, "search_l2_only"):
-                fallback_hits, fallback_meta = engine.search_l2_only(opts)
+            if engine and hasattr(engine, "search_engine"):
+                search_engine = getattr(engine, "search_engine", None)
+                l2_fn = getattr(search_engine, "search_l2_only", None)
+                if callable(l2_fn):
+                    fallback_hits, fallback_meta = l2_fn(opts)
+            if not fallback_hits and engine:
+                l2_fn = getattr(engine, "search_l2_only", None)
+                if callable(l2_fn):
+                    fallback_hits, fallback_meta = l2_fn(opts)
             return fallback_hits, fallback_meta
 
     def index_meta(self) -> SearchMeta:

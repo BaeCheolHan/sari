@@ -5,10 +5,12 @@ from typing import Optional
 
 
 class WarningSink:
-    def __init__(self, max_recent: int = 50) -> None:
+    def __init__(self, max_recent: int = 50, max_reason_codes: int = 1024) -> None:
         self._max_recent = max(1, int(max_recent))
+        self._max_reason_codes = max(1, int(max_reason_codes))
         self._recent = deque(maxlen=self._max_recent)
         self._counts: dict[str, int] = {}
+        self._code_order = deque()
         self._lock = threading.Lock()
 
     def warn(
@@ -21,6 +23,11 @@ class WarningSink:
         code = str(reason_code or "UNKNOWN")
         where_text = str(where or "")
         with self._lock:
+            if code not in self._counts:
+                if len(self._counts) >= self._max_reason_codes and self._code_order:
+                    oldest = self._code_order.popleft()
+                    self._counts.pop(str(oldest), None)
+                self._code_order.append(code)
             self._counts[code] = int(self._counts.get(code, 0) or 0) + 1
             event = {
                 "ts": float(time.time()),
@@ -47,6 +54,7 @@ class WarningSink:
         with self._lock:
             self._recent.clear()
             self._counts.clear()
+            self._code_order.clear()
 
 
 warning_sink = WarningSink()

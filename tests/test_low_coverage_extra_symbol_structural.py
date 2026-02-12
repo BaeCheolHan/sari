@@ -79,6 +79,55 @@ def test_context_repository_normalization_and_upsert(db):
     assert any(x.topic == "topic-y" for x in found)
 
 
+def test_snippet_repository_does_not_merge_distinct_close_ranges(db):
+    rid = "root-snippet-merge"
+    db.upsert_root(rid, "/tmp/ws-snip-merge", "/tmp/ws-snip-merge")
+    repo = db.snippets
+    cur = db._write.cursor()
+
+    row1 = (
+        "tag-merge",
+        f"{rid}/same.py",
+        100,
+        110,
+        "content-1",
+        "hash-1",
+        "before-1",
+        "after-1",
+        "repo1",
+        rid,
+        "note-1",
+        "c1",
+        100,
+        101,
+        "{}",
+    )
+    row2 = (
+        "tag-merge",
+        f"{rid}/same.py",
+        120,
+        130,
+        "content-2",
+        "hash-2",
+        "before-2",
+        "after-2",
+        "repo1",
+        rid,
+        "note-2",
+        "c2",
+        100,
+        102,
+        "{}",
+    )
+
+    inserted = repo.upsert_snippet_tx(cur, [row1, row2])
+    db._write.commit()
+
+    assert inserted == 2
+    rows = repo.list_snippets_by_tag("tag-merge", limit=10)
+    assert len(rows) == 2
+
+
 def test_extra_repositories_accept_dict_rows(db):
     rid = "root-dict"
     db.upsert_root(rid, "/tmp/ws-dict", "/tmp/ws-dict")

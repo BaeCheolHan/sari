@@ -41,6 +41,35 @@ def test_execute_read_file_rejects_non_object_args():
     assert resp.get("isError") is True
 
 
+def test_execute_read_file_empty_page_sets_returned_zero(tmp_path):
+    roots = [str(tmp_path)]
+    db = MagicMock()
+    db.read_file.return_value = "line1\nline2"
+    from sari.core.workspace import WorkspaceManager
+    root_id = WorkspaceManager.root_id(str(tmp_path))
+    db_path = f"{root_id}/test.txt"
+
+    resp = execute_read_file({"path": db_path, "offset": 99, "limit": 10}, db, roots)
+    text = resp["content"][0]["text"]
+
+    assert "PACK1 tool=read_file ok=true" in text
+    assert "returned=0" in text
+
+
+def test_execute_read_file_out_of_scope_error_hides_physical_parent_path(tmp_path):
+    outside_file = tmp_path / "secret.txt"
+    outside_file.write_text("secret")
+    db = MagicMock()
+
+    # roots does not include tmp_path, so this file is out-of-scope.
+    resp = execute_read_file({"path": str(outside_file)}, db, ["/tmp/other-root"])
+    text = resp["content"][0]["text"]
+    import urllib.parse
+
+    assert "PACK1 tool=read_file ok=false code=ERR_ROOT_OUT_OF_SCOPE" in text
+    assert urllib.parse.quote(str(outside_file.parent), safe="") not in text
+
+
 def test_execute_get_snippet(tmp_path):
     roots = [str(tmp_path)]
     f = tmp_path / "code.py"

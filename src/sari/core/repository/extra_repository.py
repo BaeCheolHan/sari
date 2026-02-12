@@ -36,17 +36,32 @@ class SnippetRepository(BaseRepository):
             # tag, path, root_id, start_line, end_line, content, content_hash, anchor_before, anchor_after, repo, note, commit_hash, created_ts, updated_ts, metadata_json
             tag, path, root_id, start, end, content, c_hash, a_before, a_after, repo, note, commit, c_ts, u_ts, meta = norm
             
-            # 1. Try to find an existing snippet that is "similar"
-            # Same tag, path, and root_id. If content_hash matches, it's definitely the same.
-            # If not, if the position is very close, it's likely a shift.
+            # 1. Try to find an existing snippet that is safely identifiable as the same snippet.
+            # Match by stable content hash first, or by both anchors when available.
             existing = cur.execute(
-                "SELECT id, start_line, end_line, content_hash FROM snippets WHERE tag = ? AND path = ? AND root_id = ?",
-                (tag, path, root_id)
+                """
+                SELECT id, content_hash, anchor_before, anchor_after
+                FROM snippets
+                WHERE tag = ? AND path = ? AND root_id = ?
+                  AND (
+                    content_hash = ?
+                    OR (
+                      anchor_before = ? AND anchor_after = ?
+                      AND anchor_before != '' AND anchor_after != ''
+                    )
+                  )
+                ORDER BY updated_ts DESC
+                LIMIT 1
+                """,
+                (tag, path, root_id, c_hash, a_before, a_after),
             ).fetchone()
             
             if existing:
-                eid, e_start, e_end, e_hash = existing
-                is_same = (e_hash == c_hash) or (abs(e_start - start) < 50) # Heuristic for shifting
+                eid, e_hash, e_before, e_after = existing
+                is_same = (e_hash == c_hash) or (
+                    bool(a_before) and bool(a_after) and
+                    e_before == a_before and e_after == a_after
+                )
                 
                 if is_same:
                     cur.execute(

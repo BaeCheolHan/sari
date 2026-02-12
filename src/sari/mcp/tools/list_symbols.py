@@ -1,4 +1,5 @@
 from collections.abc import Mapping
+from bisect import bisect_left
 from typing import TypeAlias
 
 from sari.core.db.main import LocalSearchDB
@@ -55,25 +56,65 @@ def execute_list_symbols(args: object, db: LocalSearchDB, roots: list[str]) -> T
             "qual": row["qualname"],
         })
 
-    def build_tree(nodes, parent="", depth=0):
-        if depth > 10:  # 무한 재귀 방지용 안전 장치
-            return []
-        tree = []
-        for n in nodes:
-            # 부모 이름이 일치하거나, 최상위 노드(parent가 빈 문자열)인 경우 처리
-            # 실제로는 parent_name 필드가 정확하지 않을 수 있어 개선 필요할 수 있음
-            if n["parent"] == parent or (parent == "" and not n["parent"]):
-                # 자식 노드 재귀 탐색 (현재 구조상 parent 로직이 단순하여 모든 계층을 완벽히 표현하지 못할 수 있음)
-                # 여기서는 간단히 이름 기반으로 매칭 시도
-                children = build_tree(nodes, n["name"], depth + 1)
-                item = {"name": n["name"], "kind": n["kind"], "line": n["line"], "end": n["end_line"]}
-                if children:
-                    item["children"] = children
-                tree.append(item)
-        return tree
+    def _node_id(n: dict[str, object]) -> str:
+        qual = str(n.get("qual") or "").strip()
+        if qual:
+            return qual
+        return f"{n.get('name','')}@{n.get('line',0)}"
 
-    # 계층 구조 생성 (다만 현재 parent_name 로직상 평면적으로 나올 수 있음)
-    hierarchical_tree = build_tree(symbols)
+    # parent-name fallback 인덱스(동명 parent disambiguation용)
+    symbols_sorted = sorted(symbols, key=lambda n: int(n.get("line") or 0))
+    name_to_line_nodes: dict[str, list[tuple[int, str]]] = {}
+    for n in symbols_sorted:
+        nname = str(n.get("name") or "")
+        nid = _node_id(n)
+        nline = int(n.get("line") or 0)
+        name_to_line_nodes.setdefault(nname, []).append((nline, nid))
+
+    id_to_item: dict[str, dict[str, object]] = {}
+    child_ids: dict[str, list[str]] = {}
+    roots: list[str] = []
+
+    for n in symbols_sorted:
+        nid = _node_id(n)
+        id_to_item[nid] = {
+            "name": n["name"],
+            "kind": n["kind"],
+            "line": n["line"],
+            "end": n["end_line"],
+        }
+
+        parent_id: str | None = None
+        qual = str(n.get("qual") or "").strip()
+        if qual and "." in qual:
+            parent_candidate = qual.rsplit(".", 1)[0]
+            if parent_candidate in id_to_item:
+                parent_id = parent_candidate
+        if parent_id is None:
+            parent_name = str(n.get("parent") or "").strip()
+            if parent_name:
+                candidates = name_to_line_nodes.get(parent_name, [])
+                if candidates:
+                    lines_only = [ln for ln, _ in candidates]
+                    idx = bisect_left(lines_only, int(n.get("line") or 0)) - 1
+                    if idx >= 0:
+                        parent_id = candidates[idx][1]
+
+        if parent_id:
+            child_ids.setdefault(parent_id, []).append(nid)
+        else:
+            roots.append(nid)
+
+    def _build(nid: str, depth: int = 0) -> dict[str, object]:
+        if depth > 20:
+            return dict(id_to_item[nid])
+        node = dict(id_to_item[nid])
+        children = child_ids.get(nid, [])
+        if children:
+            node["children"] = [_build(cid, depth + 1) for cid in children]
+        return node
+
+    hierarchical_tree = [_build(rid) for rid in roots]
     
     # 만약 트리가 비어있고 심볼은 있다면 평면적으로라도 반환 (Fallback)
     if not hierarchical_tree and symbols:

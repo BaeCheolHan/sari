@@ -15,7 +15,7 @@ def test_compression():
     assert _compress("") == b""
     assert _decompress(b"") == ""
     assert _decompress("already string") == "already string"
-    assert _decompress(b"invalid data") == str(b"invalid data")
+    assert _decompress(b"invalid data") == "invalid data"
 
 def test_get_logger():
     # New get_logger returns a structlog bound logger

@@ -24,6 +24,21 @@ def test_mybatis_xml_symbol_extraction():
     meta = select_sql.meta
     assert meta["mybatis_tag"] == "select"
 
+
+def test_mybatis_xml_symbol_extraction_multiline_tag_attributes():
+    engine = ASTEngine()
+    code = (
+        "<mapper namespace=\"com.example.UserMapper\">\n"
+        "  <select\n"
+        "      id=\"findByUsername\"\n"
+        "      resultType=\"User\">\n"
+        "    SELECT * FROM users WHERE username = #{username}\n"
+        "  </select>\n"
+        "</mapper>\n"
+    )
+    symbols, _ = engine.extract_symbols("UserMapper.xml", "xml", code)
+    assert any(s.name == "findByUsername" for s in symbols)
+
 def test_querydsl_generated_class_detection():
     """
     Verify that QueryDSL Q-classes are identified as generated.
@@ -39,6 +54,18 @@ def test_querydsl_generated_class_detection():
     q_cls = next(s for s in symbols if s.name == "QUser")
     meta = q_cls.meta
     assert meta["generated"] is True
+
+
+def test_java_q_prefix_class_without_entitypathbase_is_not_generated():
+    engine = ASTEngine()
+    code = (
+        "public class QUtility {\n"
+        "    public void run() {}\n"
+        "}\n"
+    )
+    symbols, _ = engine.extract_symbols("QUtility.java", "java", code)
+    q_cls = next(s for s in symbols if s.name == "QUtility")
+    assert q_cls.meta.get("generated") is False
 
 def test_jsp_basic_understanding():
     """

@@ -1,4 +1,5 @@
 import os
+import io
 from pathlib import Path
 from typing import Mapping, Optional, TypeAlias
 from sari.core.db import LocalSearchDB
@@ -64,11 +65,10 @@ def execute_read_file(args: object, db: LocalSearchDB, roots: list[str]) -> Tool
         p_abs = Path(os.path.expanduser(path)).resolve()
         if p_abs.exists() and p_abs.is_file():
             # 디스크엔 있지만 수집되지 않은 경우 -> 등록 가이드 제공
-            suggested_root = str(p_abs.parent)
             msg = (
                 f"파일이 존재하지만 현재 분석 범위(인덱스)에 포함되어 있지 않습니다. "
-                f"이 파일을 분석하려면 'sari.json'이나 MCP 설정의 'roots'에 '{suggested_root}' "
-                f"또는 상위 프로젝트 경로를 추가하여 수집되도록 설정해 주세요."
+                f"이 파일을 분석하려면 'sari.json'이나 MCP 설정의 'roots'에 대상 프로젝트 루트를 "
+                f"추가하여 수집되도록 설정해 주세요."
             )
             return mcp_response(
                 "read_file",
@@ -159,16 +159,25 @@ def _read_file_content(db: LocalSearchDB, db_path: str, original_path: str) -> T
 
 def _apply_pagination(content: str, offset: int, limit: Optional[int] = None) -> ToolResult:
     """내용에 라인 기반 페이지네이션을 적용합니다."""
-    lines = content.splitlines()
-    total_lines = len(lines)
-    
+    text = str(content or "")
+    paged_lines: list[str] = []
+    total_lines = 0
+
+    start = int(offset or 0)
+    end = (start + int(limit)) if limit is not None else None
+
+    for line_idx, raw_line in enumerate(io.StringIO(text)):
+        total_lines += 1
+        if line_idx < start:
+            continue
+        if end is not None and line_idx >= end:
+            continue
+        paged_lines.append(raw_line.rstrip("\r\n"))
+
     if limit is not None:
-        end = offset + limit
-        paged_lines = lines[offset:end]
-        is_truncated = end < total_lines
+        is_truncated = end is not None and end < total_lines
         next_offset = offset + len(paged_lines) if is_truncated else None
     else:
-        paged_lines = lines[offset:]
         is_truncated = False
         next_offset = None
     
@@ -187,7 +196,9 @@ def _count_tokens(content: str) -> int:
         enc = tiktoken.get_encoding("cl100k_base")
         return len(enc.encode(content))
     except Exception:
-        return len(content) // 4  # tiktoken 없을 시 글자 수 기반 근사치 사용
+        char_estimate = len(content) // 4
+        byte_estimate = len(content.encode("utf-8", errors="ignore")) // 4
+        return max(char_estimate, byte_estimate)
 
 
 def _build_read_file_response(
@@ -211,9 +222,11 @@ def _build_read_file_response(
         if token_count > 2000:
             kv["warning"] = "High token usage. Consider using list_symbols or read_symbol."
 
-        lines_out = [pack_header("read_file", kv, returned=1)]
+        has_content = bool(content)
+        lines_out = [pack_header("read_file", kv, returned=1 if has_content else 0)]
         # 다른 도구 및 테스트와의 일관성을 위해 인코딩된 텍스트 사용
-        lines_out.append(f"t:{pack_encode_text(content)}")
+        if has_content:
+            lines_out.append(f"t:{pack_encode_text(content)}")
         return "\n".join(lines_out)
 
     return mcp_response(

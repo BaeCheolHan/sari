@@ -53,11 +53,13 @@ class DbTask:
 
 
 def coalesce_action(existing: Optional[TaskAction], incoming: TaskAction) -> TaskAction:
-    if incoming == TaskAction.DELETE:
-        return TaskAction.DELETE
-    if existing == TaskAction.DELETE:
-        return TaskAction.DELETE
-    return TaskAction.INDEX
+    # The latest event should win for a path to avoid stale DELETE dominance
+    # when a file is recreated immediately after deletion.
+    if existing is None:
+        return incoming
+    if incoming == TaskAction.INDEX:
+        return TaskAction.INDEX
+    return TaskAction.DELETE
 
 
 def split_moved_event(event: FsEvent) -> List[CoalesceTask]:

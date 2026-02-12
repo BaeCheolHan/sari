@@ -273,11 +273,20 @@ class SymbolRepository(BaseRepository):
         if not query:
             return []
 
-        # 1. SQL level pre-filtering: Get all unique names
-        # For performance in large DBs, we'd use a trigram index or similar,
-        # but here we fetch candidates that share some characters.
-        all_names = [str(_row_get(r, "name", 0, "") or "") for r in self.execute(
-            "SELECT name FROM symbols GROUP BY name").fetchall()]
+        # 1. SQL level pre-filtering
+        normalized_query = str(query).strip().lower()
+        probe = "".join(ch for ch in normalized_query if ch.isalnum())[:4] or normalized_query[:4]
+        like_probe = f"%{probe}%"
+        candidate_limit = max(200, min(5000, int(limit) * 80))
+
+        rows = self.execute(
+            "SELECT DISTINCT name FROM symbols WHERE LOWER(name) LIKE ? ORDER BY name LIMIT ?",
+            (like_probe, candidate_limit),
+        ).fetchall()
+        all_names = [str(_row_get(r, "name", 0, "") or "") for r in rows]
+        if not all_names:
+            all_names = [str(_row_get(r, "name", 0, "") or "") for r in self.execute(
+                "SELECT name FROM symbols GROUP BY name").fetchall()]
 
         # 2. difflib refined matching
         matches = difflib.get_close_matches(

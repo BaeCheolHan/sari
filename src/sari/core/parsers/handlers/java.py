@@ -47,9 +47,7 @@ class JavaHandler(BaseHandler):
                         r"[A-Z][a-zA-Z0-9_]*", get_t(c)))
 
             # Framework Logic
-            if any(
-                    "EntityPathBase" in x for x in meta["extends"]) or (
-                    name and name.startswith("Q")):
+            if any("EntityPathBase" in x for x in meta["extends"]):
                 meta["generated"] = True
                 meta["framework"] = "QueryDSL"
 

@@ -41,19 +41,28 @@ def list_sari_processes() -> list[ProcessInfo]:
     """Lists all running Sari-related processes."""
     procs: list[ProcessInfo] = []
     my_pid = os.getpid()
-    for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'create_time', 'memory_info']):
+    for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'create_time']):
         try:
             cmdline = proc.info.get('cmdline') or []
             cmd_str = " ".join(cmdline).lower()
             name = str(proc.info.get("name") or "")
             # Filter for Sari related processes
             if "sari" in cmd_str and ("python" in cmd_str or "sari" in name.lower()):
+                memory_mb = 0.0
+                try:
+                    memory_mb = round(proc.memory_info().rss / (1024**2), 1)
+                except Exception:
+                    try:
+                        info_mem = proc.info.get("memory_info")
+                        memory_mb = round(float(getattr(info_mem, "rss", 0) or 0) / (1024**2), 1)
+                    except Exception:
+                        memory_mb = 0.0
                 procs.append({
                     "pid": proc.info['pid'],
                     "name": name,
                     "cmd": " ".join(cmdline),
                     "created": proc.info['create_time'],
-                    "memory_mb": round(proc.info['memory_info'].rss / (1024**2), 1),
+                    "memory_mb": memory_mb,
                     "is_self": proc.info['pid'] == my_pid
                 })
         except (psutil.NoSuchProcess, psutil.AccessDenied):
@@ -67,6 +76,24 @@ def kill_sari_process(pid: int) -> bool:
             return False # Don't suicide via this API
         proc = psutil.Process(pid)
         proc.terminate()
+        wait = getattr(proc, "wait", None)
+        if callable(wait):
+            try:
+                wait(timeout=0.8)
+            except Exception:
+                killer = getattr(proc, "kill", None)
+                if callable(killer):
+                    killer()
+                try:
+                    wait(timeout=0.8)
+                except Exception:
+                    return False
+        is_running = getattr(proc, "is_running", None)
+        if callable(is_running):
+            try:
+                return not bool(is_running())
+            except Exception:
+                return True
         return True
     except Exception:
         return False

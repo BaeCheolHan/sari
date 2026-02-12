@@ -3,6 +3,16 @@ from typing import Dict, Tuple, Optional
 from sari.core.parsers.base import BaseHandler
 
 class JavaScriptHandler(BaseHandler):
+    @staticmethod
+    def _has_arrow_function(node: object) -> bool:
+        stack = [node]
+        while stack:
+            cur = stack.pop()
+            if getattr(cur, "type", "") == "arrow_function":
+                return True
+            stack.extend(getattr(cur, "children", []) or [])
+        return False
+
     def handle_node(self, node: object, get_t, find_id, ext: str, p_meta: Dict[str, object]) -> Tuple[Optional[str], Optional[str], Dict[str, object], bool]:
         n_type = node.type
         name = find_id(node)
@@ -43,9 +53,9 @@ class JavaScriptHandler(BaseHandler):
                     if d_name:
                         d_is_comp = d_name[0].isupper() and len(d_name) > 1
                         kind = "class" if d_is_comp else "function"
-                        return kind, d_name, {"arrow": "=>" in get_t(child)}, True
+                        return kind, d_name, {"arrow": self._has_arrow_function(child)}, True
 
-        if n_type == "variable_declarator" and "=>" in get_t(node):
+        if n_type == "variable_declarator" and self._has_arrow_function(node):
             kind = "class" if is_comp else "function"
             return kind, name, {"arrow": True}, True
 

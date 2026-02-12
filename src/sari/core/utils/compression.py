@@ -26,4 +26,10 @@ def _decompress(data: object) -> str:
     try:
         return zlib.decompress(raw_data).decode("utf-8", errors="ignore")
     except Exception:
+        if isinstance(data, (bytes, bytearray)):
+            raw = bytes(data)
+            try:
+                return raw.decode("utf-8")
+            except Exception:
+                return raw.decode("latin-1", errors="ignore")
         return str(data)

@@ -18,13 +18,19 @@ def compute_hash(content: str) -> str:
     return hashlib.sha1(content.encode("utf-8", errors="ignore")).hexdigest()
 
 
+def _read_text_best_effort(file_path: Path) -> str:
+    raw = file_path.read_bytes()
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        # Preserve byte fidelity for non-UTF-8 text files.
+        return raw.decode("latin-1")
+
+
 def compute_fast_signature(file_path: Path, size: int) -> str:
     try:
         if size < 8192:
-            return compute_hash(
-                file_path.read_text(
-                    encoding="utf-8",
-                    errors="ignore"))
+            return compute_hash(_read_text_best_effort(file_path))
         with open(file_path, "rb") as f:
             header = f.read(4096)
             f.seek(-4096, 2)
@@ -89,7 +95,7 @@ class IndexWorker:
                     root_id=root_id)
 
             # 3. Content Reading & Redaction
-            content = file_path.read_text(encoding="utf-8", errors="ignore")
+            content = _read_text_best_effort(file_path)
             if not content:
                 return self._skip_result(
                     db_path,
@@ -105,12 +111,13 @@ class IndexWorker:
                     type="unchanged", path=str(file_path), rel=db_path)
 
             repo = self._derive_repo_label(root, file_path, rel_to_root)
+            analysis_content = content
             if self.settings.get_bool("REDACT_ENABLED", True):
                 content = _redact(content)
 
             # 4. FTS and AST Processing
             enable_fts = self.settings.get_bool("ENABLE_FTS", True)
-            normalized = _normalize_engine_text(content) if enable_fts else ""
+            normalized = _normalize_engine_text(analysis_content) if enable_fts else ""
             fts_content = normalized[:self.settings.get_int(
                 "FTS_MAX_BYTES", 1000000)] if normalized else ""
 
@@ -120,12 +127,12 @@ class IndexWorker:
                 lang = ParserFactory.get_language(file_path.suffix.lower())
                 if lang:
                     tree = self.ast_engine.parse(
-                        lang, content, self._ast_cache_get(db_path))
+                        lang, analysis_content, self._ast_cache_get(db_path))
                     if tree:
                         ast_status, ast_reason = "ok", "none"
                         self._ast_cache_put(db_path, tree)
                         parse_result = self.ast_engine.extract_symbols(
-                            db_path, lang, content, tree=tree)
+                            db_path, lang, analysis_content, tree=tree)
                         symbols = parse_result.symbols or []
                         relations = parse_result.relations or []
                     else:

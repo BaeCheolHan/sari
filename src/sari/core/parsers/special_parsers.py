@@ -35,16 +35,26 @@ class SpecialParser:
     def parse_mybatis(path: str, content: str) -> List[ParserSymbol]:
         """MyBatis XML 파일에서 SQL 매핑 구문(select, insert 등)의 ID를 심볼로 추출합니다."""
         symbols = []
-        for i, line in enumerate(content.splitlines()):
-            m = re.search(r'<(select|insert|update|delete|sql)\s+id=["\']([^"\']+)["\']', line)
-            if m:
-                tag, name = m.group(1), m.group(2)
-                sid = _symbol_id(path, "method", name)
-                symbols.append(ParserSymbol(
-                    sid=sid, path=path, name=name, kind="method",
-                    line=i + 1, end_line=i + 1, content=line.strip(),
-                    meta={"mybatis_tag": tag, "framework": "MyBatis"}, qualname=name
-                ))
+        pattern = re.compile(
+            r"<(select|insert|update|delete|sql)\b(?P<attrs>[^>]*)>",
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        id_pattern = re.compile(r"""\bid\s*=\s*["']([^"']+)["']""", flags=re.IGNORECASE)
+        for m in pattern.finditer(content):
+            tag = m.group(1).lower()
+            attrs = m.group("attrs") or ""
+            id_match = id_pattern.search(attrs)
+            if not id_match:
+                continue
+            name = id_match.group(1)
+            sid = _symbol_id(path, "method", name)
+            start_line = content.count("\n", 0, m.start()) + 1
+            snippet = m.group(0).strip().replace("\n", " ")
+            symbols.append(ParserSymbol(
+                sid=sid, path=path, name=name, kind="method",
+                line=start_line, end_line=start_line, content=snippet,
+                meta={"mybatis_tag": tag, "framework": "MyBatis"}, qualname=name
+            ))
         return symbols
 
     @staticmethod

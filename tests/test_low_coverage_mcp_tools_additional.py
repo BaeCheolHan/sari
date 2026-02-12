@@ -345,6 +345,32 @@ def test_list_symbols_rejects_non_object_args():
     _assert_invalid_args_response(resp)
 
 
+def test_list_symbols_disambiguates_duplicate_parent_names(monkeypatch):
+    class _Conn:
+        def execute(self, _sql, _params):
+            class _Cur:
+                def fetchall(self_inner):
+                    return [
+                        {"name": "Service", "kind": "class", "line": 1, "end_line": 100, "parent": "", "qualname": "pkg1.Service"},
+                        {"name": "do", "kind": "method", "line": 5, "end_line": 10, "parent": "Service", "qualname": "pkg1.Service.do"},
+                        {"name": "Service", "kind": "class", "line": 200, "end_line": 300, "parent": "", "qualname": "pkg2.Service"},
+                        {"name": "run", "kind": "method", "line": 205, "end_line": 210, "parent": "Service", "qualname": "pkg2.Service.run"},
+                    ]
+
+            return _Cur()
+
+    db = MagicMock()
+    db.get_read_connection.return_value = _Conn()
+    monkeypatch.setattr("sari.mcp.tools.list_symbols.resolve_db_path", lambda *_a, **_k: "rid/file.py")
+
+    resp = execute_list_symbols({"path": "file.py"}, db, ["/tmp/ws"])
+    text = resp["content"][0]["text"]
+
+    # each method should appear once, not duplicated under both same-name parents
+    assert text.count("|do:5") == 1
+    assert text.count("|run:205") == 1
+
+
 @pytest.mark.read
 @pytest.mark.slow
 def test_read_file_invalid_offset_limit_types_are_handled(tmp_path, monkeypatch):

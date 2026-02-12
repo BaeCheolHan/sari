@@ -130,7 +130,7 @@ class Config:
 
         # db_path 검증
         db_path = data.get("db_path", "")
-        if path and db_path:
+        if db_path:
             cfg_abs = os.path.abspath(os.path.expanduser(cfg_path))
             db_abs = os.path.abspath(os.path.expanduser(db_path))
             if cfg_abs == db_abs:

@@ -1,0 +1,4 @@
+- Python project; keep changes aligned with existing module structure under `src/sari`.
+- Tests use pytest; markers defined in `pytest.ini` include `read`, `slow`, `e2e`, `stress`, `history`.
+- Prefer focused contract tests for MCP tool behavior and stabilization metadata.
+- Keep CLI/runtime compatibility in mind because installed `uv tool` runtime may differ from local checkout if not reinstalled.

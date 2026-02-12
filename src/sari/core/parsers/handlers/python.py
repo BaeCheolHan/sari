@@ -1,3 +1,4 @@
+import re
 from typing import Dict, Optional, Tuple, List
 from ..base import BaseHandler
 from sari.core.models import ParserRelation
@@ -21,7 +22,7 @@ class PythonHandler(BaseHandler):
         if n_type == "class_definition":
             kind, is_valid = "class", True
             name = find_id(node)
-        elif n_type == "function_definition":
+        elif n_type in {"function_definition", "async_function_definition"}:
             kind, is_valid = "function", True
             name = find_id(node)
             # Decorator Extraction (Look at parent decorated_definition)
@@ -44,16 +45,25 @@ class PythonHandler(BaseHandler):
             for c in node.children:
                 if c.type == "decorator":
                     txt = get_t(c)
-                    if any(r in txt for r in (".get(", ".post(", ".route(")):
+                    if any(r in txt for r in (".get(", ".post(", ".put(", ".patch(", ".delete(", ".route(")):
                         try:
-                            res["http_path"] = txt.split("(")[1].split(")")[
-                                0].strip("'\"")
+                            m = re.search(r"""['"]([^'"]+)['"]""", txt)
+                            if m:
+                                res["http_path"] = m.group(1)
                             if ".get" in txt:
-                                res["http_methods"] = ["GET"]
+                                res["http_methods"].append("GET")
                             elif ".post" in txt:
-                                res["http_methods"] = ["POST"]
+                                res["http_methods"].append("POST")
+                            elif ".put" in txt:
+                                res["http_methods"].append("PUT")
+                            elif ".patch" in txt:
+                                res["http_methods"].append("PATCH")
+                            elif ".delete" in txt:
+                                res["http_methods"].append("DELETE")
                         except Exception:
                             pass  # Still pass for minor parsing error but could log debug
+        if res["http_methods"]:
+            res["http_methods"] = list(dict.fromkeys(res["http_methods"]))
         return res
 
     def handle_relation(
@@ -102,10 +112,12 @@ class PythonHandler(BaseHandler):
                     if c.type == "identifier":
                         to_name = get_t(c)
                     elif c.type == "attribute":
-                        # Handle class A(module.B)
-                        for attr_c in c.children:
-                            if attr_c.type == "identifier":
-                                to_name = get_t(attr_c)
+                        # Preserve qualified base path when available (e.g., pkg.module.Base).
+                        to_name = get_t(c)
+                        if not to_name:
+                            for attr_c in c.children:
+                                if attr_c.type == "identifier":
+                                    to_name = get_t(attr_c)
 
                     if to_name:
                         relations.append(ParserRelation(

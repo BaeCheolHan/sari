@@ -1,0 +1,5 @@
+- Purpose: Sari is a local-first MCP server for large codebases, providing indexing/search, daemon lifecycle, multi-workspace registration, and dashboard observability.
+- Stack: Python (>=3.11), setuptools packaging, Click CLI, Starlette/Uvicorn HTTP, Peewee ORM, Tantivy + tree-sitter parsers.
+- Entry point: `sari` script (`sari.main:main`).
+- Main areas: `src/sari` (core + mcp tools), `tests`, `docs`, `tools`.
+- Runtime artifacts (from README): `~/.local/share/sari/index.db`, `~/.local/share/sari/logs/`, `~/.config/sari/config.json`, workspace `.sari/mcp-config.json`.

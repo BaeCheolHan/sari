@@ -125,3 +125,47 @@ def test_symbol_repository_fuzzy_and_importance(db):
 
     updated = repo.recalculate_symbol_importance()
     assert updated >= 1
+
+
+def test_symbol_repository_fuzzy_prefilters_candidates(monkeypatch, db):
+    repo: SymbolRepository = db.symbols
+    calls: list[tuple[str, object]] = []
+
+    class _Cur:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchall(self):
+            return self._rows
+
+    def _fake_execute(sql, params=None):
+        calls.append((sql, params))
+        if "SELECT DISTINCT name FROM symbols WHERE LOWER(name) LIKE ?" in sql:
+            return _Cur([{"name": "HelloService"}, {"name": "UserService"}])
+        if "WHERE s.name IN" in sql:
+            return _Cur([
+                {
+                    "symbol_id": "sid-hello",
+                    "path": "rid/h.py",
+                    "root_id": "rid",
+                    "repo": "repo",
+                    "name": "HelloService",
+                    "kind": "class",
+                    "line": 1,
+                    "end_line": 20,
+                    "content": "class HelloService",
+                    "parent": "",
+                    "meta_json": "{}",
+                    "doc_comment": "",
+                    "qualname": "HelloService",
+                    "importance_score": 1.0,
+                }
+            ])
+        raise AssertionError(f"unexpected SQL: {sql}")
+
+    monkeypatch.setattr(repo, "execute", _fake_execute)
+
+    hits = repo.fuzzy_search_symbols("HelloServcie", limit=3)
+    assert len(hits) == 1
+    assert hits[0].name == "HelloService"
+    assert any("SELECT DISTINCT name FROM symbols WHERE LOWER(name) LIKE ?" in sql for sql, _ in calls)

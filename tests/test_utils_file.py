@@ -9,6 +9,8 @@ def test_parse_size():
     assert _parse_size("1KB", 100) == 1024
     assert _parse_size("1mb", 100) == 1024 * 1024
     assert _parse_size("1GB", 100) == 1024 * 1024 * 1024
+    assert _parse_size("1TB", 100) == 1024 * 1024 * 1024 * 1024
+    assert _parse_size("1,024KB", 100) == 1024 * 1024
     assert _parse_size("0.5MB", 100) == 512 * 1024
     assert _parse_size("invalid", 100) == 100
 

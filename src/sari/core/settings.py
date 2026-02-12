@@ -92,8 +92,14 @@ class Settings(BaseSettings):
     def get_int(self, key: str, default: int) -> int:
         val = getattr(self, key, None)
         if val is not None:
-            return int(val)
-        return int(os.environ.get(f"SARI_{key}", default))
+            try:
+                return int(val)
+            except (TypeError, ValueError):
+                return int(default)
+        try:
+            return int(os.environ.get(f"SARI_{key}", default))
+        except (TypeError, ValueError):
+            return int(default)
 
     def get_bool(self, key: str, default: bool) -> bool:
         val = getattr(self, key, None)

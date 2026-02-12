@@ -1,5 +1,5 @@
 from typing import Dict, Optional, Tuple
-from .java import BaseHandler
+from ..base import BaseHandler
 
 class PHPHandler(BaseHandler):
     def handle_node(self, node: object, get_t: callable, find_id: callable, ext: str, p_meta: Dict) -> Tuple[Optional[str], Optional[str], Dict, bool]:
@@ -7,7 +7,7 @@ class PHPHandler(BaseHandler):
         kind, name, meta = None, None, {}
         is_valid = False
         
-        if n_type == "class_declaration":
+        if n_type in ("class_declaration", "interface_declaration", "trait_declaration"):
             kind, is_valid = "class", True
             # PHP 'name' node
             for c in node.children:

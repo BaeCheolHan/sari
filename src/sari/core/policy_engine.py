@@ -4,6 +4,7 @@ import json
 import os
 from dataclasses import dataclass
 from collections.abc import Mapping
+from threading import Lock
 
 
 @dataclass(frozen=True)
@@ -48,6 +49,11 @@ class DaemonRuntimeStatus:
     last_shutdown_reason: str = ""
     shutdown_reason: str = ""
     workers_alive: list[object] | None = None
+
+
+_JSON_LIST_CACHE: dict[str, tuple[object, ...]] = {}
+_JSON_LIST_CACHE_MAX = 64
+_JSON_LIST_CACHE_LOCK = Lock()
 
 
 def _env(environ: Mapping[str, str] | None) -> Mapping[str, str]:
@@ -175,11 +181,22 @@ def _json_list(env: Mapping[str, str], key: str) -> list[object]:
     raw = str(env.get(key, "") or "").strip()
     if not raw:
         return []
+    with _JSON_LIST_CACHE_LOCK:
+        cached = _JSON_LIST_CACHE.get(raw)
+    if cached is not None:
+        return list(cached)
     try:
         parsed = json.loads(raw)
     except Exception:
         return []
-    return list(parsed) if isinstance(parsed, list) else []
+    if not isinstance(parsed, list):
+        return []
+    frozen = tuple(parsed)
+    with _JSON_LIST_CACHE_LOCK:
+        _JSON_LIST_CACHE[raw] = frozen
+        if len(_JSON_LIST_CACHE) > _JSON_LIST_CACHE_MAX:
+            _JSON_LIST_CACHE.pop(next(iter(_JSON_LIST_CACHE)), None)
+    return list(frozen)
 
 
 def load_daemon_runtime_status(environ: Mapping[str, str] | None = None) -> DaemonRuntimeStatus:

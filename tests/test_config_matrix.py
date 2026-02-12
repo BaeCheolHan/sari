@@ -146,3 +146,40 @@ class TestConfigMatrix:
             res: IndexingResult = worker.process_file_task(root, f, f.stat(), int(time.time()), time.time(), False, root_id="root")
             assert res is not None
             assert res.repo == "workspaceC"
+
+    def test_worker_decodes_non_utf8_text_without_dropping_bytes(self, mock_db, mock_cfg, tmp_path):
+        from sari.core.settings import Settings
+        root = tmp_path / "workspace-enc"
+        root.mkdir(parents=True, exist_ok=True)
+        f = root / "latin1.txt"
+        f.write_bytes(b"caf\xe9")
+
+        with patch.dict("os.environ", {"SARI_STORE_CONTENT_COMPRESS": "0"}):
+            s = Settings()
+            worker = IndexWorker(mock_cfg, mock_db, None, lambda p, c: ([], []), settings_obj=s)
+            res: IndexingResult = worker.process_file_task(
+                root, f, f.stat(), int(time.time()), time.time(), False, root_id="root"
+            )
+        assert res is not None
+        assert isinstance(res.content, str)
+        assert res.content == "café"
+
+    def test_worker_applies_redaction_only_to_stored_content(self, mock_db, mock_cfg, tmp_path):
+        from sari.core.settings import Settings
+        root = tmp_path / "workspace-redact"
+        root.mkdir(parents=True, exist_ok=True)
+        f = root / "secret.txt"
+        f.write_text("token=SECRET", encoding="utf-8")
+
+        with patch.dict("os.environ", {"SARI_REDACT_ENABLED": "1", "SARI_STORE_CONTENT_COMPRESS": "0"}):
+            s = Settings()
+            worker = IndexWorker(mock_cfg, mock_db, None, lambda p, c: ([], []), settings_obj=s)
+            with patch("sari.core.indexer.worker._redact", return_value="token=[REDACTED]"):
+                res: IndexingResult = worker.process_file_task(
+                    root, f, f.stat(), int(time.time()), time.time(), False, root_id="root"
+                )
+
+        assert res is not None
+        assert isinstance(res.content, str)
+        assert res.content == "token=[REDACTED]"
+        assert "secret" in res.fts_content
