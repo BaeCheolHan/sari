@@ -5,6 +5,8 @@ import sqlite3
 from typing import Dict, List, Optional
 
 from .db import LocalSearchDB
+from .daemon_resolver import resolve_daemon_address
+from .server_registry import ServerRegistry
 from .workspace import WorkspaceManager
 
 
@@ -133,23 +135,25 @@ class SariDoctor:
 
     def check_daemon(self) -> bool:
         try:
-            from sari.mcp.cli import get_daemon_address, is_daemon_running, read_pid
-            host, port = get_daemon_address()
-            running = is_daemon_running(host, port)
+            host, port = resolve_daemon_address(self.workspace_root)
+            try:
+                with socket.create_connection((host, port), timeout=0.5):
+                    running = True
+            except Exception:
+                running = False
             if running:
-                pid = read_pid()
-                
-                # Enhanced: check metrics if running
-                metrics = {}
+                pid = None
                 try:
-                    from sari.mcp.cli import _request_mcp_status
-                    m_data = _request_mcp_status(host, port, self.workspace_root)
-                    if m_data:
-                        metrics = m_data
+                    reg = ServerRegistry()
+                    inst = reg.resolve_daemon_by_endpoint(str(host), int(port))
+                    if not inst:
+                        inst = reg.resolve_workspace_daemon(self.workspace_root)
+                    if inst and inst.get("pid"):
+                        pid = int(inst.get("pid"))
                 except Exception:
-                    pass
+                    pid = None
 
-                self._add_result("Sari Daemon", True, f"Running on {host}:{port} (PID: {pid})", details=metrics)
+                self._add_result("Sari Daemon", True, f"Running on {host}:{port} (PID: {pid})", details={})
                 return True
             else:
                 self._add_result("Sari Daemon", False, "Not running")
@@ -165,11 +169,9 @@ class SariDoctor:
         self._add_result("Virtualenv", True, "" if in_venv else "Not running in venv (ok)")
 
         # Runtime checks
-        from sari.mcp.cli import get_daemon_address
-        daemon_host, daemon_port = get_daemon_address()
+        _, daemon_port = resolve_daemon_address(self.workspace_root)
         inst = None
         try:
-            from sari.core.server_registry import ServerRegistry
             inst = ServerRegistry().resolve_workspace_daemon(self.workspace_root)
         except Exception:
             inst = None
@@ -182,7 +184,6 @@ class SariDoctor:
         self.check_network()
         
         try:
-            from sari.core.server_registry import ServerRegistry
             ws_info = ServerRegistry().get_workspace(self.workspace_root)
             if ws_info and ws_info.get("http_port"):
                 self.check_port_listening(int(ws_info.get("http_port")), label="HTTP API port")
