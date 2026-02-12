@@ -254,6 +254,38 @@ def test_event_drain_coalesces_tick_and_processes_non_tick():
     assert daemon.active_lease_count() == 1
 
 
+@pytest.mark.asyncio
+async def test_handle_client_emits_single_revoke_when_session_closes(monkeypatch):
+    daemon = SariDaemon(host="127.0.0.1", port=49985)
+    calls: list[tuple[str, str, str]] = []
+
+    def _record(event_type: str, *, lease_id: str, client_hint: str = "", reason: str = "") -> None:
+        calls.append((event_type, lease_id, reason))
+
+    monkeypatch.setattr(daemon, "_enqueue_lease_event", _record)
+
+    class _FakeWriter:
+        def get_extra_info(self, key, default=None):
+            if key == "peername":
+                return ("127.0.0.1", 54321)
+            return default
+
+    class _FakeSession:
+        def __init__(self, _reader, _writer, on_activity=None, on_connection_closed=None):
+            self._on_connection_closed = on_connection_closed
+
+        async def handle_connection(self):
+            if callable(self._on_connection_closed):
+                self._on_connection_closed()
+
+    monkeypatch.setattr(daemon_mod, "Session", _FakeSession)
+
+    await daemon.handle_client(object(), _FakeWriter())
+
+    revoke_events = [c for c in calls if c[0] == daemon_mod.EVENT_LEASE_REVOKE]
+    assert len(revoke_events) == 1
+
+
 def test_cleanup_old_logs_removes_only_stale_managed_logs(tmp_path):
     old_log = tmp_path / "daemon.log.1"
     new_log = tmp_path / "daemon.log"

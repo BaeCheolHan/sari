@@ -872,17 +872,27 @@ class SariDaemon:
         trace("daemon_client_accepted", addr=str(addr))
         self._inc_active_connections()
         lease_id = uuid7_hex()
+        revoke_seen = False
+
+        def _on_connection_closed() -> None:
+            nonlocal revoke_seen
+            if revoke_seen:
+                return
+            revoke_seen = True
+            self._enqueue_lease_event(EVENT_LEASE_REVOKE, lease_id=lease_id, reason="connection_closed")
+
         self._enqueue_lease_event(EVENT_LEASE_ISSUE, lease_id=lease_id, client_hint=str(addr))
         try:
             session = Session(
                 reader,
                 writer,
                 on_activity=lambda: self._enqueue_lease_event(EVENT_LEASE_RENEW, lease_id=lease_id),
-                on_connection_closed=lambda: self._enqueue_lease_event(EVENT_LEASE_REVOKE, lease_id=lease_id, reason="connection_closed"),
+                on_connection_closed=_on_connection_closed,
             )
             await session.handle_connection()
         finally:
-            self._enqueue_lease_event(EVENT_LEASE_REVOKE, lease_id=lease_id, reason="handle_client_finally")
+            if not revoke_seen:
+                self._enqueue_lease_event(EVENT_LEASE_REVOKE, lease_id=lease_id, reason="handle_client_finally")
             self._dec_active_connections()
             logger.info(f"Closed connection from {addr}")
             trace("daemon_client_closed", addr=str(addr))
