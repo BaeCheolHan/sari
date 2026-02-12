@@ -4,7 +4,6 @@ from typing import Tuple, Optional
 from sari.core.server_registry import ServerRegistry
 from sari.core.workspace import WorkspaceManager
 from sari.core.constants import DEFAULT_DAEMON_HOST, DEFAULT_DAEMON_PORT
-from sari.mcp.stabilization.warning_sink import warning_sink
 
 DEFAULT_HOST = DEFAULT_DAEMON_HOST
 DEFAULT_PORT = DEFAULT_DAEMON_PORT
@@ -75,12 +74,6 @@ def resolve_daemon_address(workspace_root: Optional[str] = None) -> Tuple[str, i
         logging.getLogger("sari.daemon_resolver").warning(
             "Failed to resolve daemon address from registry",
             exc_info=True,
-        )
-        warning_sink.warn(
-            reason_code="DAEMON_RESOLVE_FAILED",
-            where="daemon_resolver.resolve_daemon_address",
-            exc=e,
-            extra={"workspace_root": str(workspace_root or "")},
         )
         _set_resolver_status(False, str(e))
 
