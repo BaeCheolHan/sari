@@ -435,6 +435,30 @@ def test_controller_wakeup_drains_events_before_heartbeat_interval(monkeypatch):
     assert daemon._event_queue_depth == 0
 
 
+def test_issue_then_revoke_before_drain_is_coalesced():
+    daemon = SariDaemon(host="127.0.0.1", port=49982)
+
+    daemon._enqueue_lease_event("LEASE_ISSUE", lease_id="lease-coalesce", client_hint="cli")
+    daemon._enqueue_lease_event("LEASE_REVOKE", lease_id="lease-coalesce", reason="close")
+
+    # ISSUE event remains queued but paired REVOKE is absorbed before enqueue.
+    assert daemon._event_queue_depth == 1
+    daemon._apply_lease_events(max_events=64)
+    assert daemon._event_queue_depth == 0
+    assert daemon.active_lease_count() == 0
+
+
+def test_duplicate_revoke_events_are_coalesced():
+    daemon = SariDaemon(host="127.0.0.1", port=49981)
+
+    daemon._enqueue_lease_event("LEASE_REVOKE", lease_id="lease-r", reason="close1")
+    daemon._enqueue_lease_event("LEASE_REVOKE", lease_id="lease-r", reason="close2")
+
+    assert daemon._event_queue_depth == 1
+    daemon._apply_lease_events(max_events=64)
+    assert daemon._event_queue_depth == 0
+
+
 def test_worker_hang_with_reconnect_still_shuts_down_once(monkeypatch):
     daemon = SariDaemon(host="127.0.0.1", port=49986)
     daemon._autostop_no_client_since = time.time() - 60

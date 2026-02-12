@@ -246,6 +246,9 @@ class SariDaemon:
         self._event_queue_depth = 0
         self._heartbeat_event_pending = False
         self._pending_renew_lease_ids: set[str] = set()
+        self._pending_issue_lease_ids: set[str] = set()
+        self._pending_revoke_lease_ids: set[str] = set()
+        self._canceled_issue_lease_counts: dict[str, int] = {}
         self._last_event_ts = 0.0
         self._active_leases: dict[str, dict[str, object]] = {}
         self._recent_leases: deque[dict[str, object]] = deque(maxlen=50)
@@ -360,14 +363,38 @@ class SariDaemon:
     ) -> None:
         et = str(event_type or "")
         lid = str(lease_id or "")
-        if et == EVENT_LEASE_RENEW and lid:
+        if et == EVENT_LEASE_ISSUE and lid:
+            with self._events_lock:
+                if lid in self._pending_issue_lease_ids:
+                    return
+                # A previously queued revoke becomes stale when a new issue arrives.
+                self._pending_revoke_lease_ids.discard(lid)
+                self._pending_issue_lease_ids.add(lid)
+        elif et == EVENT_LEASE_RENEW and lid:
             with self._events_lock:
                 if lid in self._pending_renew_lease_ids:
                     return
                 self._pending_renew_lease_ids.add(lid)
-        elif et in {EVENT_LEASE_ISSUE, EVENT_LEASE_REVOKE, EVENT_CONN_CLOSED} and lid:
+        elif et == EVENT_LEASE_REVOKE and lid:
+            with self._events_lock:
+                # ISSUE then REVOKE before drain => net no-op for lease table.
+                if lid in self._pending_issue_lease_ids:
+                    self._pending_issue_lease_ids.discard(lid)
+                    self._canceled_issue_lease_counts[lid] = int(
+                        self._canceled_issue_lease_counts.get(lid, 0) or 0
+                    ) + 1
+                    self._pending_renew_lease_ids.discard(lid)
+                    return
+                if lid in self._pending_revoke_lease_ids:
+                    return
+                self._pending_revoke_lease_ids.add(lid)
+                self._pending_renew_lease_ids.discard(lid)
+        elif et == EVENT_CONN_CLOSED and lid:
             with self._events_lock:
                 self._pending_renew_lease_ids.discard(lid)
+                self._pending_issue_lease_ids.discard(lid)
+                self._pending_revoke_lease_ids.discard(lid)
+                self._canceled_issue_lease_counts.pop(lid, None)
         self._enqueue_event(
             DaemonEvent(
                 event_type=et,
@@ -393,10 +420,24 @@ class SariDaemon:
                 with self._events_lock:
                     self._event_queue_depth = max(0, self._event_queue_depth - 1)
                     event_type = str(getattr(ev, "event_type", ""))
+                    lid = str(getattr(ev, "lease_id", "") or "")
                     if event_type == EVENT_HEARTBEAT_TICK:
                         self._heartbeat_event_pending = False
+                    elif event_type == EVENT_LEASE_ISSUE:
+                        self._pending_issue_lease_ids.discard(lid)
+                        canceled_count = int(self._canceled_issue_lease_counts.get(lid, 0) or 0)
+                        if canceled_count > 0:
+                            if canceled_count <= 1:
+                                self._canceled_issue_lease_counts.pop(lid, None)
+                            else:
+                                self._canceled_issue_lease_counts[lid] = canceled_count - 1
+                            payload = dict(getattr(ev, "payload", {}) or {})
+                            payload["__skip__"] = True
+                            ev.payload = payload
                     elif event_type == EVENT_LEASE_RENEW:
-                        self._pending_renew_lease_ids.discard(str(getattr(ev, "lease_id", "") or ""))
+                        self._pending_renew_lease_ids.discard(lid)
+                    elif event_type == EVENT_LEASE_REVOKE:
+                        self._pending_revoke_lease_ids.discard(lid)
                 raw.append(ev)
             except queue.Empty:
                 break
@@ -421,6 +462,8 @@ class SariDaemon:
             client_hint = str(payload.get("client_hint", "") or "")
             reason = str(payload.get("reason", "") or "")
             applied += 1
+            if bool(payload.get("__skip__", False)):
+                continue
             if event_type == EVENT_HEARTBEAT_TICK:
                 continue
             if not lease_id:
