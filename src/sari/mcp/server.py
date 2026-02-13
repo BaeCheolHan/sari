@@ -41,6 +41,11 @@ from sari.mcp.server_worker import (
     submit_request_for_execution as _submit_request_for_execution_impl,
     worker_loop as _worker_loop_impl,
 )
+from sari.mcp.server_logging import (
+    log_debug_message as _log_debug_message_impl,
+    log_debug_request as _log_debug_request_impl,
+    log_debug_response as _log_debug_response_impl,
+)
 
 try:
     import orjson as _orjson
@@ -697,52 +702,28 @@ class LocalSearchMCPServer:
 
     def _log_debug(self, message: str) -> None:
         """Log MCP traffic to the structured logger."""
-        if not self._debug_enabled:
-            return
-        # Use a specific event name for raw string messages
-        self.struct_logger.debug("mcp_debug_log", message=message)
+        _log_debug_message_impl(self._debug_enabled, self.struct_logger, message)
 
     def _sanitize_value(self, value: object, key: str = "") -> object:
         return _sanitize_value_impl(value, self._SENSITIVE_KEYS, key)
 
     def _log_debug_request(self, mode: str, req: JsonMap) -> None:
-        if not self._debug_enabled:
-            return
-        summary: JsonMap = {
-            "id": req.get("id"),
-            "method": req.get("method"),
-            "mode": mode,
-            "keys": sorted([k for k in req.keys() if not str(k).startswith("_")]),
-        }
-        params = req.get("params") or {}
-        if req.get("method") == "tools/call" and isinstance(params, dict):
-            args = params.get("arguments") or {}
-            summary["tool"] = params.get("name")
-            if isinstance(args, dict):
-                summary["argument_keys"] = sorted(list(args.keys()))
-                summary["arguments"] = {
-                    k: self._sanitize_value(
-                        v, k) for k, v in args.items()}
-
-        # Log as structured event
-        self.struct_logger.debug("mcp_request", **summary)
+        _log_debug_request_impl(
+            debug_enabled=self._debug_enabled,
+            struct_logger=self.struct_logger,
+            mode=mode,
+            req=req,
+            sanitize_value=self._sanitize_value,
+        )
 
     def _log_debug_response(self, mode: str, resp: JsonMap) -> None:
-        if not self._debug_enabled:
-            return
-        summary: JsonMap = {
-            "id": resp.get("id"),
-            "mode": mode,
-            "has_result": "result" in resp,
-            "has_error": "error" in resp,
-        }
-        # Simplify summary logic for response logging
-        # We don't want to log generic outbound debug string if we can log
-        # structured data
-        if "error" in resp and isinstance(resp["error"], dict):
-            summary["error"] = self._sanitize_value(resp["error"])
-
-        self.struct_logger.debug("mcp_response", **summary)
+        _log_debug_response_impl(
+            debug_enabled=self._debug_enabled,
+            struct_logger=self.struct_logger,
+            mode=mode,
+            resp=resp,
+            sanitize_value=self._sanitize_value,
+        )
 
 
 def main(original_stdout: object = None) -> None:
