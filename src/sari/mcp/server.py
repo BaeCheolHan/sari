@@ -62,6 +62,7 @@ from sari.mcp.server_request_dispatch import (
 )
 from sari.mcp.server_transport_init import ensure_transport as _ensure_transport_impl
 from sari.mcp.server_shutdown import perform_shutdown as _perform_shutdown_impl
+from sari.mcp.server_entrypoint import run_entrypoint as _run_entrypoint_impl
 
 try:
     import orjson as _orjson
@@ -648,18 +649,14 @@ class LocalSearchMCPServer:
 
 
 def main(original_stdout: object = None) -> None:
-    # 1. Capture the pure, untouched stdout for MCP communication
-    mcp_out = original_stdout or sys.stdout.buffer
-
-    # 2. Immediately redirect global sys.stdout to sys.stderr to isolate side-effects
-    # This ensures that even accidental 'print()' calls go to logs, not the
-    # protocol.
-    sys.stdout = sys.stderr
-
-    server = LocalSearchMCPServer(WorkspaceManager.resolve_workspace_root())
-
-    # 3. Pass only the preserved stream to the server's run loop
-    server.run(mcp_out)
+    _run_entrypoint_impl(
+        original_stdout=original_stdout,
+        resolve_workspace_root=WorkspaceManager.resolve_workspace_root,
+        server_factory=LocalSearchMCPServer,
+        stdout_obj=sys.stdout,
+        stderr_obj=sys.stderr,
+        set_stdout=lambda value: setattr(sys, "stdout", value),
+    )
 
 
 if __name__ == "__main__":
