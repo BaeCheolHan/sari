@@ -7,6 +7,7 @@ import argparse
 from sari.core.constants import DEFAULT_DAEMON_HOST, DEFAULT_DAEMON_PORT
 from sari.core.daemon_resolver import resolve_daemon_address as get_daemon_address
 
+from ..daemon_lifecycle_lock import run_with_lifecycle_lock
 from ..daemon import is_daemon_running
 from ..mcp_client import identify_sari_daemon, ensure_workspace_http
 from ..smart_daemon import ensure_smart_daemon
@@ -21,7 +22,7 @@ def _ensure_daemon_running(h: str, p: int):
     return res_h, res_p, True
 
 
-def cmd_daemon_start(args):
+def _cmd_daemon_start_impl(args):
     from ..daemon import (
         extract_daemon_start_params,
         handle_existing_daemon,
@@ -42,10 +43,18 @@ def cmd_daemon_start(args):
     return start_daemon_in_foreground(params)
 
 
-def cmd_daemon_stop(args):
+def cmd_daemon_start(args):
+    return run_with_lifecycle_lock("start", lambda: _cmd_daemon_start_impl(args))
+
+
+def _cmd_daemon_stop_impl(args):
     from ..daemon import extract_daemon_stop_params, stop_daemon_process
 
     return stop_daemon_process(extract_daemon_stop_params(args))
+
+
+def cmd_daemon_stop(args):
+    return run_with_lifecycle_lock("stop", lambda: _cmd_daemon_stop_impl(args))
 
 
 def cmd_daemon_status(args):
@@ -98,19 +107,22 @@ def cmd_daemon_ensure(args):
 
 
 def cmd_daemon_refresh(args):
-    stop_args = argparse.Namespace(
-        daemon_host=_arg(args, "daemon_host"),
-        daemon_port=_arg(args, "daemon_port"),
-    )
-    stop_rc = cmd_daemon_stop(stop_args)
-    if stop_rc != 0:
-        return stop_rc
+    def _action() -> int:
+        stop_args = argparse.Namespace(
+            daemon_host=_arg(args, "daemon_host"),
+            daemon_port=_arg(args, "daemon_port"),
+        )
+        stop_rc = _cmd_daemon_stop_impl(stop_args)
+        if stop_rc != 0:
+            return stop_rc
 
-    start_args = argparse.Namespace(
-        daemonize=True,
-        daemon_host=_arg(args, "daemon_host", "") or "",
-        daemon_port=_arg(args, "daemon_port"),
-        http_host="",
-        http_port=None,
-    )
-    return cmd_daemon_start(start_args)
+        start_args = argparse.Namespace(
+            daemonize=True,
+            daemon_host=_arg(args, "daemon_host", "") or "",
+            daemon_port=_arg(args, "daemon_port"),
+            http_host="",
+            http_port=None,
+        )
+        return _cmd_daemon_start_impl(start_args)
+
+    return run_with_lifecycle_lock("refresh", _action)

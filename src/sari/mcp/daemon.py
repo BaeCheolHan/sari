@@ -767,6 +767,7 @@ class SariDaemon:
                 workspace_root=str(shared_state.workspace_root),
                 mcp_server=gateway_mcp_server,
                 shared_http_gateway=True,
+                boot_id=self.boot_id,
             )
             self.httpd = httpd
             self.http_host = host

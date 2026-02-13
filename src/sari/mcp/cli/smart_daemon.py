@@ -15,12 +15,125 @@ except ImportError:
     psutil = None
 
 from sari.core.daemon_resolver import resolve_daemon_address as get_daemon_address
+from sari.core.server_registry import ServerRegistry
 from sari.core.workspace import WorkspaceManager
 from sari.core.daemon_runtime_state import RUNTIME_HOST, RUNTIME_PORT
 from .mcp_client import probe_sari_daemon, ensure_workspace_http, identify_sari_daemon
 from .utils import get_local_version
 
 logger = logging.getLogger("sari.smart_daemon")
+
+
+def _bg_deploy_enabled() -> bool:
+    raw = str(os.environ.get("SARI_BG_DEPLOY", "") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _prepare_launch_env(host: str, port: int, workspace_root: Optional[str]) -> dict[str, str]:
+    import sari
+
+    sari_package_parent = str(Path(sari.__file__).parent.parent.resolve())
+    env = os.environ.copy()
+    if workspace_root:
+        env["SARI_WORKSPACE_ROOT"] = workspace_root
+    env[RUNTIME_PORT] = str(port)
+    env[RUNTIME_HOST] = host
+    env["SARI_DAEMON_OVERRIDE"] = "1"
+    existing_pythonpath = env.get("PYTHONPATH", "")
+    if sari_package_parent not in existing_pythonpath:
+        env["PYTHONPATH"] = sari_package_parent + (os.pathsep + existing_pythonpath if existing_pythonpath else "")
+    return env
+
+
+def _launch_daemon(host: str, port: int, workspace_root: Optional[str]) -> bool:
+    env = _prepare_launch_env(host, port, workspace_root)
+    try:
+        subprocess.Popen(
+            [sys.executable, "-m", "sari", "daemon", "start", "-d", "--daemon-port", str(port)],
+            env=env,
+            cwd=os.getcwd(),
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception as e:
+        logger.error(f"Failed to launch daemon: {e}")
+        return False
+
+    for _ in range(20):
+        if probe_sari_daemon(host, port, timeout=1.0):
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def _try_blue_green_upgrade(
+    *,
+    host: str,
+    port: int,
+    workspace_root: Optional[str],
+    identity: dict,
+) -> Optional[Tuple[str, int]]:
+    reg = ServerRegistry()
+    old_boot = str(identity.get("bootId") or "")
+    if not old_boot:
+        try:
+            inst = reg.resolve_daemon_by_endpoint(host, int(port)) or {}
+            old_boot = str(inst.get("boot_id") or "")
+        except Exception:
+            old_boot = ""
+    try:
+        candidate_port = int(reg.find_free_port(host=host, start_port=max(1, int(port) + 1)))
+    except Exception:
+        candidate_port = int(port) + 1
+    if candidate_port == int(port):
+        candidate_port = int(port) + 1
+
+    if not _launch_daemon(host, candidate_port, workspace_root):
+        return None
+
+    cand_ident = identify_sari_daemon(host, candidate_port) or {}
+    candidate_boot = str(cand_ident.get("bootId") or "")
+    if not candidate_boot:
+        return None
+
+    dep = reg.begin_deploy(candidate_boot, expected_active_boot_id=old_boot or None)
+    generation = int(dep.get("generation") or 0)
+    if generation <= 0:
+        return None
+
+    reg.mark_candidate_healthy(generation, candidate_boot)
+    switched = reg.switch_active(generation, candidate_boot)
+    if str(switched.get("active_boot_id") or "") != candidate_boot:
+        return None
+    if old_boot:
+        reg.set_daemon_draining(old_boot, True)
+
+    if not ensure_workspace_http(host, candidate_port, workspace_root):
+        reg.record_health_failure(generation, candidate_boot, reason="workspace_attach_failed")
+        reg.record_health_failure(generation, candidate_boot, reason="workspace_attach_failed")
+        reg.record_health_failure(generation, candidate_boot, reason="workspace_attach_failed")
+
+    fail_streak = 0
+    for _ in range(3):
+        if probe_sari_daemon(host, candidate_port, timeout=1.0):
+            fail_streak = 0
+        else:
+            fail_streak += 1
+            reg.record_health_failure(generation, candidate_boot, reason="post_switch_probe_failed")
+        if fail_streak >= 3:
+            reg.rollback_active(generation, old_boot, reason="post_switch_probe_failed_x3")
+            if old_boot:
+                reg.set_daemon_draining(old_boot, False)
+            try:
+                from . import cmd_daemon_stop
+                cmd_daemon_stop(argparse.Namespace(daemon_host=host, daemon_port=candidate_port))
+            except Exception:
+                pass
+            return (host, int(port))
+        time.sleep(0.2)
+
+    return (host, candidate_port)
 
 
 def is_port_in_use(host: str, port: int) -> bool:
@@ -138,6 +251,17 @@ def ensure_smart_daemon(host: Optional[str] = None,
             draining or (
                 existing_version and local_version and existing_version != local_version))
         if needs_replace:
+            if _bg_deploy_enabled() and (not draining):
+                switched = _try_blue_green_upgrade(
+                    host=host,
+                    port=port,
+                    workspace_root=workspace_root,
+                    identity=identity,
+                )
+                if switched is not None:
+                    next_host, next_port = switched
+                    ensure_workspace_http(next_host, next_port, workspace_root)
+                    return next_host, next_port
             try:
                 from . import cmd_daemon_stop
                 cmd_daemon_stop(
@@ -172,52 +296,10 @@ def ensure_smart_daemon(host: Optional[str] = None,
 
     # 3. Lazy Auto-Start
     logger.info(f"Lazy Auto-Start: Starting daemon on {host}:{port}")
-
-    # Ensure the daemon uses the same sari package as the current process
-    import sari
-    sari_package_parent = str(Path(sari.__file__).parent.parent.resolve())
-
-    env = os.environ.copy()
-    if workspace_root:
-        env["SARI_WORKSPACE_ROOT"] = workspace_root
-    # CRITICAL: Force the port for the new daemon
-    env[RUNTIME_PORT] = str(port)
-    env[RUNTIME_HOST] = host
-    env["SARI_DAEMON_OVERRIDE"] = "1"  # Force resolver to use these
-
-    # Prepend the current sari package location to PYTHONPATH to ensure
-    # version consistency
-    existing_pythonpath = env.get("PYTHONPATH", "")
-    if sari_package_parent not in existing_pythonpath:
-        env["PYTHONPATH"] = sari_package_parent + \
-            (os.pathsep + existing_pythonpath if existing_pythonpath else "")
-
-    try:
-        subprocess.Popen([sys.executable,
-                          "-m",
-                          "sari",
-                          "daemon",
-                          "start",
-                          "-d",
-                          "--daemon-port",
-                          str(port)],
-                         env=env,
-                         cwd=os.getcwd(),
-                         start_new_session=True,
-                         stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL)
-    except Exception as e:
-        logger.error(f"Failed to launch daemon: {e}")
+    if _launch_daemon(host, port, workspace_root):
+        logger.info("Daemon started and responsive.")
+        ensure_workspace_http(host, port, workspace_root)
         return host, port
-
-    # 4. Wait for it to come up
-    for _ in range(20):
-        if probe_sari_daemon(host, port, timeout=1.0):
-            logger.info("Daemon started and responsive.")
-            # Ensure workspace is initialized so HTTP server starts
-            ensure_workspace_http(host, port, workspace_root)
-            return host, port
-        time.sleep(0.5)
 
     logger.error("Daemon failed to become responsive after start.")
     return host, port

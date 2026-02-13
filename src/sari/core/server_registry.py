@@ -42,6 +42,7 @@ class RegistryData(TypedDict):
     version: str
     daemons: dict[str, DaemonEntry]
     workspaces: dict[str, WorkspaceEntry]
+    deployment: "DeploymentEntry"
 
 
 class DaemonWithBootId(DaemonEntry, total=False):
@@ -52,6 +53,17 @@ class WorkspaceHttpEndpoint(TypedDict):
     host: str
     port: int
     boot_id: Optional[str]
+
+
+class DeploymentEntry(TypedDict, total=False):
+    generation: int
+    active_boot_id: str
+    candidate_boot_id: str
+    old_boot_id: str
+    state: str
+    switch_ts: float
+    health_fail_streak: int
+    rollback_reason: str
 
 
 def _ensure_writable_dir(path: Path) -> bool:
@@ -113,7 +125,20 @@ class ServerRegistry:
         return self._lock
 
     def _empty(self) -> RegistryData:
-        return {"version": self.VERSION, "daemons": {}, "workspaces": {}}
+        return {"version": self.VERSION, "daemons": {}, "workspaces": {}, "deployment": self._empty_deployment()}
+
+    @staticmethod
+    def _empty_deployment() -> DeploymentEntry:
+        return {
+            "generation": 0,
+            "active_boot_id": "",
+            "candidate_boot_id": "",
+            "old_boot_id": "",
+            "state": "idle",
+            "switch_ts": 0.0,
+            "health_fail_streak": 0,
+            "rollback_reason": "",
+        }
 
     def _normalize_workspace_root(self, workspace_root: str) -> str:
         from sari.core.workspace import WorkspaceManager
@@ -170,6 +195,28 @@ class ServerRegistry:
                 out["last_active_ts"] = float(value["last_active_ts"])
             except (TypeError, ValueError):
                 pass
+        return out
+
+    def _coerce_deployment_entry(self, value: object) -> DeploymentEntry:
+        out = self._empty_deployment()
+        if not isinstance(value, dict):
+            return out
+        raw_state = str(value.get("state") or "").strip().lower()
+        out["state"] = raw_state if raw_state in {"idle", "starting", "ready", "switched", "rolling_back"} else "idle"
+        out["active_boot_id"] = str(value.get("active_boot_id") or "")
+        out["candidate_boot_id"] = str(value.get("candidate_boot_id") or "")
+        out["old_boot_id"] = str(value.get("old_boot_id") or "")
+        out["rollback_reason"] = str(value.get("rollback_reason") or "")
+        for field in ("generation", "health_fail_streak"):
+            raw = value.get(field)
+            try:
+                out[field] = max(0, int(raw or 0))  # type: ignore[literal-required]
+            except (TypeError, ValueError):
+                out[field] = 0  # type: ignore[literal-required]
+        try:
+            out["switch_ts"] = max(0.0, float(value.get("switch_ts") or 0.0))
+        except (TypeError, ValueError):
+            out["switch_ts"] = 0.0
         return out
 
     def _safe_load(self, content: str) -> RegistryData:
@@ -234,6 +281,7 @@ class ServerRegistry:
                     coerced = self._coerce_workspace_entry(info)
                     if coerced is not None:
                         normalized["workspaces"][ws] = coerced
+            normalized["deployment"] = self._coerce_deployment_entry(data.get("deployment"))
             return normalized
 
         # Migrate legacy schema (v1) if needed
@@ -261,6 +309,13 @@ class ServerRegistry:
                 }
                 migrated["workspaces"][ws_norm] = {
                     "boot_id": boot_id, "last_active_ts": now}
+            # Best-effort initialize active boot from most recent migrated daemon.
+            if migrated["daemons"]:
+                latest = max(
+                    migrated["daemons"].items(),
+                    key=lambda kv: float(kv[1].get("last_seen_ts") or 0.0),
+                )
+                migrated["deployment"]["active_boot_id"] = str(latest[0])
             return migrated
 
         return self._empty()
@@ -321,6 +376,16 @@ class ServerRegistry:
         }
         data["daemons"] = daemons
         data["workspaces"] = workspaces
+        deployment = self._coerce_deployment_entry(data.get("deployment"))
+        if deployment.get("active_boot_id") and deployment.get("active_boot_id") not in valid_boot_ids:
+            deployment["active_boot_id"] = ""
+            deployment["state"] = "idle"
+        if deployment.get("candidate_boot_id") and deployment.get("candidate_boot_id") not in valid_boot_ids:
+            deployment["candidate_boot_id"] = ""
+            deployment["state"] = "idle"
+        if deployment.get("old_boot_id") and deployment.get("old_boot_id") not in valid_boot_ids:
+            deployment["old_boot_id"] = ""
+        data["deployment"] = deployment
 
     def register_daemon(
         self,
@@ -407,6 +472,15 @@ class ServerRegistry:
             data["workspaces"] = {
                 ws: info for ws,
                 info in workspaces.items() if info.get("boot_id") != boot_id}
+            deployment = self._coerce_deployment_entry(data.get("deployment"))
+            if deployment.get("active_boot_id") == boot_id:
+                deployment["active_boot_id"] = ""
+                deployment["state"] = "idle"
+            if deployment.get("candidate_boot_id") == boot_id:
+                deployment["candidate_boot_id"] = ""
+            if deployment.get("old_boot_id") == boot_id:
+                deployment["old_boot_id"] = ""
+            data["deployment"] = deployment
         self._update(_upd)
 
     def set_daemon_draining(self, boot_id: str, draining: bool = True) -> None:
@@ -437,6 +511,16 @@ class ServerRegistry:
         data = self._load()
         daemons = data.get("daemons", {}) or {}
         workspaces = data.get("workspaces", {}) or {}
+        deployment = self._coerce_deployment_entry(data.get("deployment"))
+
+        active_boot = str(deployment.get("active_boot_id") or "")
+        if active_boot:
+            active_daemon = daemons.get(active_boot)
+            if active_daemon and self._is_process_alive(active_daemon.get("pid")):
+                if allow_draining or not active_daemon.get("draining"):
+                    res = dict(active_daemon)
+                    res["boot_id"] = active_boot
+                    return res
 
         if workspace_root:
             ws = self._normalize_workspace_root(workspace_root)
@@ -562,6 +646,10 @@ class ServerRegistry:
             payload["last_active_ts"] = time.time()
             workspaces[ws] = payload
             self._dedupe_nested_workspaces_locked(data, preferred_ws=ws)
+            deployment = self._coerce_deployment_entry(data.get("deployment"))
+            if not str(deployment.get("active_boot_id") or ""):
+                deployment["active_boot_id"] = str(boot_id or "")
+            data["deployment"] = deployment
         self._update(_upd)
 
     def set_daemon_http(
@@ -652,8 +740,162 @@ class ServerRegistry:
             if (not include_dead) and boot_id and boot_id not in valid_boot_ids:
                 continue
             workspaces[str(ws)] = dict(coerced)
+        deployment = self._coerce_deployment_entry(data.get("deployment"))
+        if deployment.get("active_boot_id") and deployment.get("active_boot_id") not in valid_boot_ids:
+            deployment["active_boot_id"] = ""
+        if deployment.get("candidate_boot_id") and deployment.get("candidate_boot_id") not in valid_boot_ids:
+            deployment["candidate_boot_id"] = ""
+        if deployment.get("old_boot_id") and deployment.get("old_boot_id") not in valid_boot_ids:
+            deployment["old_boot_id"] = ""
 
-        return {"version": self.VERSION, "daemons": daemons, "workspaces": workspaces}
+        return {"version": self.VERSION, "daemons": daemons, "workspaces": workspaces, "deployment": deployment}
+
+    def get_deployment_state(self) -> DeploymentEntry:
+        data = self._load()
+        return self._coerce_deployment_entry(data.get("deployment"))
+
+    def begin_deploy(self, candidate_boot_id: str, *, expected_active_boot_id: Optional[str] = None) -> DeploymentEntry:
+        out: DeploymentEntry = self._empty_deployment()
+
+        def _upd(data):
+            nonlocal out
+            self._prune_dead_locked(data)
+            daemons = data.get("daemons", {}) or {}
+            dep = self._coerce_deployment_entry(data.get("deployment"))
+            current_active = str(dep.get("active_boot_id") or "")
+            if expected_active_boot_id is not None and current_active != str(expected_active_boot_id):
+                out = dep
+                return
+            dep["generation"] = int(dep.get("generation") or 0) + 1
+            dep["candidate_boot_id"] = str(candidate_boot_id or "")
+            if dep["candidate_boot_id"] and dep["candidate_boot_id"] not in daemons:
+                dep["candidate_boot_id"] = ""
+            dep["old_boot_id"] = current_active
+            dep["state"] = "starting"
+            dep["health_fail_streak"] = 0
+            dep["rollback_reason"] = ""
+            dep["switch_ts"] = 0.0
+            data["deployment"] = dep
+            out = dep
+
+        self._update(_upd)
+        return out
+
+    def mark_candidate_healthy(self, generation: int, candidate_boot_id: str) -> DeploymentEntry:
+        out: DeploymentEntry = self._empty_deployment()
+
+        def _upd(data):
+            nonlocal out
+            dep = self._coerce_deployment_entry(data.get("deployment"))
+            if int(dep.get("generation") or 0) != int(generation):
+                out = dep
+                return
+            if str(dep.get("candidate_boot_id") or "") != str(candidate_boot_id or ""):
+                out = dep
+                return
+            dep["state"] = "ready"
+            data["deployment"] = dep
+            out = dep
+
+        self._update(_upd)
+        return out
+
+    def switch_active(self, generation: int, candidate_boot_id: str) -> DeploymentEntry:
+        out: DeploymentEntry = self._empty_deployment()
+
+        def _upd(data):
+            nonlocal out
+            self._prune_dead_locked(data)
+            daemons = data.get("daemons", {}) or {}
+            dep = self._coerce_deployment_entry(data.get("deployment"))
+            if int(dep.get("generation") or 0) != int(generation):
+                out = dep
+                return
+            candidate = str(candidate_boot_id or "")
+            if candidate != str(dep.get("candidate_boot_id") or ""):
+                out = dep
+                return
+            if candidate not in daemons:
+                out = dep
+                return
+            active_before = str(dep.get("active_boot_id") or "")
+            dep["old_boot_id"] = active_before
+            dep["active_boot_id"] = candidate
+            dep["state"] = "switched"
+            dep["switch_ts"] = time.time()
+            dep["health_fail_streak"] = 0
+            dep["rollback_reason"] = ""
+            for ws, info in (data.get("workspaces", {}) or {}).items():
+                if not isinstance(info, dict):
+                    continue
+                ws_boot = str(info.get("boot_id") or "")
+                if ws_boot in {"", active_before}:
+                    info["boot_id"] = candidate
+                    info["last_active_ts"] = time.time()
+                    data["workspaces"][ws] = info
+            data["deployment"] = dep
+            out = dep
+
+        self._update(_upd)
+        return out
+
+    def record_health_failure(
+        self,
+        generation: int,
+        candidate_boot_id: str,
+        *,
+        reason: str = "",
+    ) -> DeploymentEntry:
+        out: DeploymentEntry = self._empty_deployment()
+
+        def _upd(data):
+            nonlocal out
+            dep = self._coerce_deployment_entry(data.get("deployment"))
+            if int(dep.get("generation") or 0) != int(generation):
+                out = dep
+                return
+            if str(dep.get("active_boot_id") or "") != str(candidate_boot_id or ""):
+                out = dep
+                return
+            dep["health_fail_streak"] = int(dep.get("health_fail_streak") or 0) + 1
+            if reason:
+                dep["rollback_reason"] = str(reason)
+            data["deployment"] = dep
+            out = dep
+
+        self._update(_upd)
+        return out
+
+    def rollback_active(self, generation: int, restore_boot_id: str, *, reason: str = "") -> DeploymentEntry:
+        out: DeploymentEntry = self._empty_deployment()
+
+        def _upd(data):
+            nonlocal out
+            self._prune_dead_locked(data)
+            daemons = data.get("daemons", {}) or {}
+            dep = self._coerce_deployment_entry(data.get("deployment"))
+            if int(dep.get("generation") or 0) != int(generation):
+                out = dep
+                return
+            restore = str(restore_boot_id or "")
+            if restore and restore in daemons:
+                dep["active_boot_id"] = restore
+            dep["candidate_boot_id"] = ""
+            dep["state"] = "idle"
+            dep["health_fail_streak"] = 0
+            dep["rollback_reason"] = str(reason or dep.get("rollback_reason") or "")
+            for ws, info in (data.get("workspaces", {}) or {}).items():
+                if not isinstance(info, dict):
+                    continue
+                if restore:
+                    info["boot_id"] = restore
+                    info["last_active_ts"] = time.time()
+                    data["workspaces"][ws] = info
+            data["deployment"] = dep
+            out = dep
+
+        self._update(_upd)
+        return out
 
     def list_daemons(self, *, include_dead: bool = False) -> list[DaemonWithBootId]:
         """List daemon entries, optionally including dead processes."""
@@ -665,6 +907,11 @@ class ServerRegistry:
             out.append(row)
         out.sort(key=lambda x: float(x.get("last_seen_ts") or 0.0), reverse=True)
         return out
+
+    def get_active_daemons(self) -> list[DaemonWithBootId]:
+        """Return live non-draining daemon rows sorted by recency."""
+        rows = self.list_daemons(include_dead=False)
+        return [r for r in rows if not bool(r.get("draining"))]
 
     def reset_registry(self) -> None:
         """Reset registry to an empty v2 payload."""

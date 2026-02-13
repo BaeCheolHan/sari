@@ -4,6 +4,8 @@ import threading
 import mimetypes
 import time
 import logging
+import urllib.request
+import urllib.error
 from typing import Optional
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -67,6 +69,7 @@ class Handler(BaseHTTPRequestHandler):
     start_time: float = time.time()
     workspace_root: str = ""
     shared_http_gateway: bool = False
+    boot_id: str = ""
 
     def _init_request_status(self):
         self._status_warning_counts = {}
@@ -268,6 +271,85 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _should_enable_bg_proxy(self) -> bool:
+        raw = str(os.environ.get("SARI_BG_DEPLOY", "") or "").strip().lower()
+        return raw in {"1", "true", "yes", "on"}
+
+    def _resolve_active_proxy_target(self):
+        if not bool(self.shared_http_gateway):
+            return None
+        if not self._should_enable_bg_proxy():
+            return None
+        try:
+            from sari.core.server_registry import ServerRegistry
+            reg = ServerRegistry()
+            dep = reg.get_deployment_state()
+            active_boot = str(dep.get("active_boot_id") or "")
+            local_boot = str(getattr(self, "boot_id", "") or "")
+            if not active_boot or active_boot == local_boot:
+                return None
+            info = reg.get_daemon(active_boot) or {}
+            host = str(info.get("http_host") or info.get("host") or "").strip()
+            try:
+                port = int(info.get("http_port") or 0)
+            except (TypeError, ValueError):
+                port = 0
+            if not host or port <= 0:
+                return None
+            if host == str(self.server_host) and port == int(self.server_port):
+                return None
+            return host, port
+        except Exception:
+            return None
+
+    def _proxy_http_request(self, *, method: str, raw_path: str, body: bytes = b""):
+        target = self._resolve_active_proxy_target()
+        if not target:
+            return None
+        host, port = target
+        url = f"http://{host}:{port}{raw_path}"
+        headers = {}
+        try:
+            content_type = str(self.headers.get("Content-Type") or "").strip()
+            if content_type:
+                headers["Content-Type"] = content_type
+        except Exception:
+            pass
+        req = urllib.request.Request(
+            url=url,
+            data=body if method.upper() == "POST" else None,
+            headers=headers,
+            method=method.upper(),
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=3.0) as resp:
+                payload = resp.read()
+                status = int(getattr(resp, "status", 200) or 200)
+                content_type = str(resp.headers.get("Content-Type") or "application/json; charset=utf-8")
+                return {
+                    "status": status,
+                    "body": payload,
+                    "content_type": content_type,
+                    "proxied": True,
+                }
+        except urllib.error.HTTPError as e:
+            return {
+                "status": int(getattr(e, "code", 502) or 502),
+                "body": e.read() if hasattr(e, "read") else b"",
+                "content_type": str(getattr(getattr(e, "headers", None), "get", lambda *_: "application/json; charset=utf-8")("Content-Type")),
+                "proxied": True,
+            }
+        except Exception as e:
+            self._warn_status(
+                "BG_PROXY_FAILED",
+                "Active upstream proxy failed; serving local handler fallback",
+                method=method,
+                path=raw_path,
+                target=f"{host}:{port}",
+                error=repr(e),
+            )
+            return None
+
     def _registered_workspaces(self, workspace_root: str, db, indexer):
         worker_alive = False
         pending_rescan = False
@@ -297,6 +379,16 @@ class Handler(BaseHTTPRequestHandler):
         return
 
     def do_GET(self):
+        proxied = self._proxy_http_request(method="GET", raw_path=self.path, body=b"")
+        if proxied is not None:
+            body = proxied.get("body", b"") or b""
+            self.send_response(int(proxied.get("status", 200) or 200))
+            self.send_header("Content-Type", str(proxied.get("content_type") or "application/json; charset=utf-8"))
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
         parsed = urlparse(self.path)
         path = parsed.path
         qs = parse_qs(parsed.query)
@@ -416,6 +508,12 @@ class Handler(BaseHTTPRequestHandler):
             orphan_daemon_warnings = _build_orphan_daemon_warnings_impl(orphan_daemons)
             performance = _build_performance_payload_impl(indexer)
             queue_depths = _build_queue_depths_payload_impl(indexer, db, fallback=True)
+            deployment = {}
+            try:
+                from sari.core.server_registry import ServerRegistry
+                deployment = ServerRegistry().get_deployment_state()
+            except Exception:
+                deployment = {}
 
             workspaces_payload = self._registered_workspaces(workspace_root, db, indexer)
             workspaces = workspaces_payload.get("workspaces", [])
@@ -450,6 +548,7 @@ class Handler(BaseHTTPRequestHandler):
                     "row_parse_error_count": int(workspaces_payload.get("row_parse_error_count", 0) or 0),
                     "registry_resolve_failed": bool(registry_resolve_failed),
                     "workspace_root": workspace_root,
+                    "deployment": deployment,
                 },
             )
 
@@ -543,6 +642,19 @@ class Handler(BaseHTTPRequestHandler):
         return {"ok": False, "error": "not found", "status": 404}
 
     def do_POST(self):
+        if self.path.startswith("/mcp"):
+            length = int(self.headers.get("Content-Length", "0"))
+            body = self.rfile.read(length)
+            proxied = self._proxy_http_request(method="POST", raw_path=self.path, body=body)
+            if proxied is not None:
+                payload = proxied.get("body", b"") or b""
+                self.send_response(int(proxied.get("status", 200) or 200))
+                self.send_header("Content-Type", str(proxied.get("content_type") or "application/json; charset=utf-8"))
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                return
+
         parsed = urlparse(self.path)
         path = parsed.path
 
@@ -588,6 +700,7 @@ def serve_forever(
     cfg=None,
     mcp_server=None,
     shared_http_gateway: bool = False,
+    boot_id: str = "",
 ) -> tuple:
     import socket
     socket.AF_INET6 if ":" in host or host.lower() == "localhost" else socket.AF_INET
@@ -602,6 +715,7 @@ def serve_forever(
     BoundHandler.mcp_server = mcp_server
     BoundHandler.workspace_root = workspace_root
     BoundHandler.shared_http_gateway = bool(shared_http_gateway)
+    BoundHandler.boot_id = str(boot_id or "")
     try:
         from sari.core.workspace import WorkspaceManager
         BoundHandler.root_ids = [WorkspaceManager.root_id_for_workspace(

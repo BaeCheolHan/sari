@@ -206,8 +206,8 @@ def test_uninstall():
 
 def test_cmd_daemon_refresh_stops_all_then_starts():
     args = argparse.Namespace(daemon_host="127.0.0.1", daemon_port=47779)
-    with patch("sari.mcp.cli.commands.daemon_commands.cmd_daemon_stop", return_value=0) as mock_stop:
-        with patch("sari.mcp.cli.commands.daemon_commands.cmd_daemon_start", return_value=0) as mock_start:
+    with patch("sari.mcp.cli.commands.daemon_commands._cmd_daemon_stop_impl", return_value=0) as mock_stop:
+        with patch("sari.mcp.cli.commands.daemon_commands._cmd_daemon_start_impl", return_value=0) as mock_start:
             rc = cmd_daemon_refresh(args)
             assert rc == 0
             mock_stop.assert_called_once()
@@ -215,6 +215,35 @@ def test_cmd_daemon_refresh_stops_all_then_starts():
             assert stop_args.daemon_host == "127.0.0.1"
             assert stop_args.daemon_port == 47779
             mock_start.assert_called_once()
+
+
+def test_cmd_daemon_start_uses_lifecycle_lock():
+    args = argparse.Namespace(daemonize=True, daemon_host="", daemon_port=None, http_host="", http_port=None)
+    with patch("sari.mcp.cli.commands.daemon_commands.run_with_lifecycle_lock", return_value=7) as mock_lock:
+        from sari.mcp.cli.commands.daemon_commands import cmd_daemon_start
+        rc = cmd_daemon_start(args)
+        assert rc == 7
+        assert mock_lock.call_count == 1
+        assert mock_lock.call_args.args[0] == "start"
+
+
+def test_cmd_daemon_stop_uses_lifecycle_lock():
+    args = argparse.Namespace(all=True, daemon_host=None, daemon_port=None)
+    with patch("sari.mcp.cli.commands.daemon_commands.run_with_lifecycle_lock", return_value=9) as mock_lock:
+        from sari.mcp.cli.commands.daemon_commands import cmd_daemon_stop as _cmd_stop
+        rc = _cmd_stop(args)
+        assert rc == 9
+        assert mock_lock.call_count == 1
+        assert mock_lock.call_args.args[0] == "stop"
+
+
+def test_cmd_daemon_refresh_uses_single_lifecycle_lock():
+    args = argparse.Namespace(daemon_host="127.0.0.1", daemon_port=47779)
+    with patch("sari.mcp.cli.commands.daemon_commands.run_with_lifecycle_lock", return_value=0) as mock_lock:
+        rc = cmd_daemon_refresh(args)
+        assert rc == 0
+        assert mock_lock.call_count == 1
+        assert mock_lock.call_args.args[0] == "refresh"
 
 
 def test_legacy_commands_reexported_from_commands_modules():

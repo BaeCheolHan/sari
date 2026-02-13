@@ -94,6 +94,7 @@ async def test_status_contract_common_fields_sync_async(monkeypatch):
         "status_warning_counts",
         "warning_counts",
         "warnings_recent",
+        "deployment",
     }
     assert common_required.issubset(set(sync_payload.keys()))
     assert common_required.issubset(set(async_payload.keys()))
@@ -110,3 +111,4 @@ def test_sync_status_contract_specific_fields(monkeypatch):
     assert "workspace_root" in payload
     assert "workspaces" in payload
     assert "registry_resolve_failed" in payload
+    assert "deployment" in payload

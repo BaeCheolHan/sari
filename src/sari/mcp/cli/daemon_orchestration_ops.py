@@ -40,9 +40,19 @@ def handle_existing_daemon(
 
     if not force_start and not needs_upgrade_or_drain(identify):
         try:
-            ensure_workspace_http(host, port, workspace_root)
+            ensured = bool(ensure_workspace_http(host, port, workspace_root))
+            if not ensured:
+                print(
+                    f"❌ Running daemon {host}:{port} did not accept workspace attach: {workspace_root}",
+                    file=sys.stderr,
+                )
+                return 1
         except Exception:
-            pass
+            print(
+                f"❌ Running daemon {host}:{port} failed workspace attach: {workspace_root}",
+                file=sys.stderr,
+            )
+            return 1
         pid = read_pid(host, port)
         print(f"✅ Daemon already running on {host}:{port}")
         if pid:

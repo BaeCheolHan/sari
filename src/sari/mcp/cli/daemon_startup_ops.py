@@ -64,6 +64,12 @@ def check_port_availability(
     if strategy == "auto":
         fallback = _find_fallback_port(params, host, port)
         if fallback != port:
+            if bool(port_in_use(host, int(fallback))):
+                print(
+                    f"❌ Fallback port {fallback} is already in use.",
+                    file=stderr,
+                )
+                return 1
             params["port"] = fallback
             print(
                 f"⚠️ Port {port} is in use; falling back to {fallback}.",

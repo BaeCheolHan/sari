@@ -9,7 +9,6 @@ import os
 import asyncio
 import inspect
 import logging
-import time
 from contextlib import asynccontextmanager
 from typing import Optional, TypeAlias
 
@@ -287,6 +286,12 @@ class AsyncHttpServer:
         orphan_daemon_warnings = _build_orphan_daemon_warnings_impl(orphan_daemons)
         performance = _build_performance_payload_impl(self.indexer)
         queue_depths = _build_queue_depths_payload_impl(self.indexer, fallback=False)
+        deployment = {}
+        try:
+            from sari.core.server_registry import ServerRegistry
+            deployment = ServerRegistry().get_deployment_state()
+        except Exception:
+            deployment = {}
         
         return JSONResponse(
             _build_status_payload_base_impl(
@@ -318,6 +323,7 @@ class AsyncHttpServer:
                     "fts_enabled": self.db.fts_enabled,
                     "worker_count": getattr(self.indexer, "max_workers", 0),
                     "endpoint_ok": bool(getattr(self, "_endpoint_ok", True)),
+                    "deployment": deployment,
                 },
             )
         )

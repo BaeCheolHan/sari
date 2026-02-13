@@ -3,6 +3,52 @@ from types import SimpleNamespace
 from sari.core.http_server import Handler
 
 
+def test_resolve_active_proxy_target_uses_registry_active_boot(monkeypatch):
+    handler = Handler.__new__(Handler)
+    handler.shared_http_gateway = True
+    handler.server_host = "127.0.0.1"
+    handler.server_port = 47777
+    handler.boot_id = "boot-a"
+
+    monkeypatch.setenv("SARI_BG_DEPLOY", "1")
+
+    class _Reg:
+        def get_deployment_state(self):
+            return {"active_boot_id": "boot-b"}
+
+        def get_daemon(self, boot_id):
+            if boot_id == "boot-b":
+                return {"http_host": "127.0.0.1", "http_port": 47811}
+            return None
+
+    monkeypatch.setattr("sari.core.server_registry.ServerRegistry", lambda: _Reg())
+
+    target = Handler._resolve_active_proxy_target(handler)
+    assert target == ("127.0.0.1", 47811)
+
+
+def test_resolve_active_proxy_target_skips_when_active_is_local(monkeypatch):
+    handler = Handler.__new__(Handler)
+    handler.shared_http_gateway = True
+    handler.server_host = "127.0.0.1"
+    handler.server_port = 47777
+    handler.boot_id = "boot-a"
+
+    monkeypatch.setenv("SARI_BG_DEPLOY", "1")
+
+    class _Reg:
+        def get_deployment_state(self):
+            return {"active_boot_id": "boot-a"}
+
+        def get_daemon(self, _boot_id):
+            return {"http_host": "127.0.0.1", "http_port": 47811}
+
+    monkeypatch.setattr("sari.core.server_registry.ServerRegistry", lambda: _Reg())
+
+    target = Handler._resolve_active_proxy_target(handler)
+    assert target is None
+
+
 def test_status_routes_to_selected_workspace(monkeypatch):
     handler = Handler.__new__(Handler)
     handler.shared_http_gateway = True

@@ -10,7 +10,7 @@ def test_start_auto_switches_to_free_port_when_target_busy(monkeypatch):
         "registry": SimpleNamespace(find_free_port=lambda start_port: 47790),
     }
 
-    monkeypatch.setattr("sari.mcp.cli.utils.is_port_in_use", lambda h, p: True)
+    monkeypatch.setattr("sari.mcp.cli.utils.is_port_in_use", lambda h, p: p == 47779)
     monkeypatch.setattr("sari.mcp.cli.daemon.time.sleep", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("sari.mcp.cli.daemon.smart_kill_port_owner", lambda h, p: False)
     monkeypatch.delenv("SARI_DAEMON_PORT_STRATEGY", raising=False)
@@ -29,7 +29,7 @@ def test_start_strict_keeps_requested_port_when_target_busy(monkeypatch):
         "registry": SimpleNamespace(find_free_port=lambda start_port: 47790),
     }
 
-    monkeypatch.setattr("sari.mcp.cli.utils.is_port_in_use", lambda h, p: True)
+    monkeypatch.setattr("sari.mcp.cli.utils.is_port_in_use", lambda h, p: p == 47779)
     monkeypatch.setattr("sari.mcp.cli.daemon.time.sleep", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("sari.mcp.cli.daemon.smart_kill_port_owner", lambda h, p: False)
     monkeypatch.delenv("SARI_DAEMON_PORT_STRATEGY", raising=False)
