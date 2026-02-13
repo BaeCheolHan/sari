@@ -344,6 +344,25 @@ class LocalSearchMCPServer:
         self._ensure_initialized()
         return self.handle_tools_call({"name": "search", "arguments": args})
 
+    def _dispatch_methods(self) -> dict[str, object]:
+        return {
+            "initialize": self.handle_initialize,
+            "sari/identify": lambda _params: {
+                "name": self.SERVER_NAME,
+                "version": self.SERVER_VERSION,
+                "workspaceRoot": self.workspace_root,
+                "pid": os.getpid(),
+            },
+            "tools/list": lambda _params: {"tools": self.list_tools()},
+            "prompts/list": lambda _params: {"prompts": []},
+            "resources/list": lambda _params: {"resources": []},
+            "resources/templates/list": lambda _params: {"resourceTemplates": []},
+            "roots/list": lambda _params: {"roots": self.list_roots()},
+            "initialized": lambda _params: {},
+            "notifications/initialized": lambda _params: {},
+            "ping": lambda _params: {},
+        }
+
     def handle_request(
             self, request: object) -> Optional[JsonMap]:
         if not isinstance(request, Mapping):
@@ -385,26 +404,7 @@ class LocalSearchMCPServer:
             return None  # Ignore notifications for now
 
         try:
-            if method == "initialize":
-                result = self.handle_initialize(params)
-            elif method == "sari/identify":
-                result = {
-                    "name": self.SERVER_NAME,
-                    "version": self.SERVER_VERSION,
-                    "workspaceRoot": self.workspace_root,
-                    "pid": os.getpid()
-                }
-            elif method == "tools/list":
-                result = {"tools": self.list_tools()}
-            elif method == "prompts/list":
-                result = {"prompts": []}
-            elif method == "resources/list":
-                result = {"resources": []}
-            elif method == "resources/templates/list":
-                result = {"resourceTemplates": []}
-            elif method == "roots/list":
-                result = {"roots": self.list_roots()}
-            elif method == "tools/call":
+            if method == "tools/call":
                 result = self.handle_tools_call(params)
                 if isinstance(result, dict) and result.get("isError"):
                     err = result.get("error", {})
@@ -417,17 +417,16 @@ class LocalSearchMCPServer:
                             "data": result
                         }
                     }
-            elif method in {"initialized", "notifications/initialized"}:
-                result = {}
-            elif method == "ping":
-                result = {}
             else:
-                return {
-                    "jsonrpc": "2.0",
-                    "id": msg_id,
-                    "error": {
-                        "code": -32601,
-                        "message": f"Method not found: {method}"}}
+                handler = self._dispatch_methods().get(str(method))
+                if handler is None:
+                    return {
+                        "jsonrpc": "2.0",
+                        "id": msg_id,
+                        "error": {
+                            "code": -32601,
+                            "message": f"Method not found: {method}"}}
+                result = handler(params)
             resp = {"jsonrpc": "2.0", "id": msg_id, "result": result}
             trace("handle_request_exit", method=method, msg_id=msg_id, ok=True)
             return resp
