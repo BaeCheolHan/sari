@@ -10,6 +10,7 @@ import concurrent.futures
 from collections import OrderedDict
 from typing import Optional, Callable
 from pathlib import Path
+import uuid
 from sari.core.config.main import Config
 from sari.core.db.main import LocalSearchDB
 from .worker import IndexWorker
@@ -54,6 +55,25 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
     worker = IndexWorker(config, db, logger, None)
     max_workers = os.cpu_count() or 4
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+    try:
+        max_inflight = max(
+            int(max_workers),
+            int(os.environ.get("SARI_INDEXER_MAX_INFLIGHT", str(max_workers * 4)) or str(max_workers * 4)),
+        )
+    except Exception:
+        max_inflight = int(max_workers) * 4
+    try:
+        flush_file_rows = max(1, int(os.environ.get("SARI_INDEXER_FLUSH_FILE_ROWS", "200") or 200))
+    except Exception:
+        flush_file_rows = 200
+    try:
+        flush_symbol_rows = max(1, int(os.environ.get("SARI_INDEXER_FLUSH_SYMBOL_ROWS", "2000") or 2000))
+    except Exception:
+        flush_symbol_rows = 2000
+    try:
+        flush_rel_rows = max(1, int(os.environ.get("SARI_INDEXER_FLUSH_REL_ROWS", "4000") or 4000))
+    except Exception:
+        flush_rel_rows = 4000
     check_parent_alive = parent_alive_check or _is_pid_alive
     progress_every_files = max(1, int(os.environ.get("SARI_INDEXER_PROGRESS_EVERY_FILES", "200") or 200))
     progress_every_sec = max(0.2, float(os.environ.get("SARI_INDEXER_PROGRESS_EVERY_SEC", "1.5") or 1.5))
@@ -111,33 +131,41 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
                     if path.is_file() and config.should_index(str(path)):
                         yield root, path, rid
 
-        futures = []
+        pending: set[concurrent.futures.Future] = set()
         now = int(time.time())
-        for root, path, rid in _get_files_generator():
-            _ensure_parent_alive()
-            status["scanned_files"] += 1
-            _emit_progress(stage="enqueue")
-            try:
-                st = path.stat()
-                # 파일 처리 작업을 쓰레드 풀에 제출
-                futures.append(executor.submit(
-                    worker.process_file_task,
-                    root, path, st, now, st.st_mtime, True, root_id=rid
-                ))
-            except Exception:
-                status["errors"] += 1
-
         file_rows = []
         all_symbols = []
         all_relations = []
 
-        # 완료된 작업 결과 수집
-        for future in concurrent.futures.as_completed(futures):
+        def _flush_batches(force: bool = False) -> None:
+            if file_rows and (force or len(file_rows) >= flush_file_rows):
+                rows = list(file_rows)
+                file_rows.clear()
+                db.upsert_files_turbo(rows)
+                db.finalize_turbo_batch()
+            if all_symbols and (force or len(all_symbols) >= flush_symbol_rows):
+                unique_symbols = list(OrderedDict.fromkeys(all_symbols))
+                all_symbols.clear()
+                try:
+                    db.upsert_symbols_tx(None, unique_symbols)
+                except Exception as e:
+                    if logger:
+                        logger.error(f"Failed to store extracted symbols: {e}")
+            if all_relations and (force or len(all_relations) >= flush_rel_rows):
+                rows = list(all_relations)
+                all_relations.clear()
+                try:
+                    db.upsert_relations_tx(None, rows)
+                except Exception as e:
+                    if logger:
+                        logger.error(f"Failed to store extracted relations: {e}")
+
+        def _consume_future_result(future: concurrent.futures.Future) -> None:
             _ensure_parent_alive()
             try:
                 res: Optional[IndexingResult] = future.result()
                 if not res:
-                    continue
+                    return
 
                 if res.type in ("changed", "new"):
                     status["indexed_files"] += 1
@@ -185,27 +213,45 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
                 _emit_progress(stage="collect_error")
             else:
                 _emit_progress(stage="collect")
+                _flush_batches(force=False)
+
+        def _drain_pending(wait_one: bool) -> None:
+            if not pending:
+                return
+            if wait_one:
+                done, not_done = concurrent.futures.wait(
+                    pending,
+                    return_when=concurrent.futures.FIRST_COMPLETED,
+                )
+            else:
+                done, not_done = concurrent.futures.wait(pending)
+            pending.clear()
+            pending.update(not_done)
+            for fut in done:
+                _consume_future_result(fut)
+
+        for root, path, rid in _get_files_generator():
+            _ensure_parent_alive()
+            status["scanned_files"] += 1
+            _emit_progress(stage="enqueue")
+            try:
+                st = path.stat()
+                # 파일 처리 작업을 쓰레드 풀에 제출
+                fut = executor.submit(
+                    worker.process_file_task,
+                    root, path, st, now, st.st_mtime, True, root_id=rid
+                )
+                pending.add(fut)
+                if len(pending) >= max_inflight:
+                    _drain_pending(wait_one=True)
+            except Exception:
+                status["errors"] += 1
+
+        # 완료된 작업 결과 수집
+        _drain_pending(wait_one=False)
 
         # 데이터베이스 일괄 업데이트 (Batch Update)
-        if file_rows:
-            db.upsert_files_turbo(file_rows)
-        db.finalize_turbo_batch()
-
-        if all_symbols:
-            # 중복 심볼 제거 및 트랜잭션 처리
-            unique_symbols = list(OrderedDict.fromkeys(all_symbols))
-            try:
-                db.upsert_symbols_tx(None, unique_symbols)
-            except Exception as e:
-                if logger:
-                    logger.error(f"Failed to store extracted symbols: {e}")
-
-        if all_relations:
-            try:
-                db.upsert_relations_tx(None, all_relations)
-            except Exception as e:
-                if logger:
-                    logger.error(f"Failed to store extracted relations: {e}")
+        _flush_batches(force=True)
 
         status["scan_finished_ts"] = int(time.time())
         status["index_version"] = str(status["scan_finished_ts"])
@@ -566,8 +612,9 @@ class Indexer:
         self.status.index_ready = False
         self.status.last_error = ""
         self._worker_snapshot_path = self._snapshot_path()
-        self._worker_status_path = f"{self.db.db_path}.snapshot.status.json"
-        self._worker_log_path = f"{self.db.db_path}.snapshot.log"
+        token = f"{int(time.time() * 1000)}.{os.getpid()}.{uuid.uuid4().hex[:8]}"
+        self._worker_status_path = f"{self.db.db_path}.snapshot.{token}.status.json"
+        self._worker_log_path = f"{self.db.db_path}.snapshot.{token}.log"
         cfg = self._serialize_config()
         ctx = multiprocessing.get_context("spawn")
         self._worker_proc = ctx.Process(

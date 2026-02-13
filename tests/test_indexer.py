@@ -138,3 +138,35 @@ def test_indexer_runtime_status_prefers_worker_progress(tmp_path):
     assert runtime["indexed_files"] == 6
     assert runtime["symbols_extracted"] == 13
     assert runtime["errors"] == 1
+
+
+def test_scan_to_db_flushes_in_batches(tmp_path, monkeypatch):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    for i in range(5):
+        (ws / f"f{i}.py").write_text(f"print({i})\n", encoding="utf-8")
+    db = LocalSearchDB(str(tmp_path / "idx.db"))
+    cfg = Config(**Config.get_defaults(str(ws)))
+    monkeypatch.setenv("SARI_INDEXER_FLUSH_FILE_ROWS", "2")
+    monkeypatch.setenv("SARI_INDEXER_FLUSH_SYMBOL_ROWS", "2")
+    monkeypatch.setenv("SARI_INDEXER_FLUSH_REL_ROWS", "2")
+
+    calls = {"files": 0, "finalize": 0}
+    orig_upsert = db.upsert_files_turbo
+    orig_finalize = db.finalize_turbo_batch
+
+    def _count_upsert(rows):
+        calls["files"] += 1
+        return orig_upsert(rows)
+
+    def _count_finalize():
+        calls["finalize"] += 1
+        return orig_finalize()
+
+    monkeypatch.setattr(db, "upsert_files_turbo", _count_upsert)
+    monkeypatch.setattr(db, "finalize_turbo_batch", _count_finalize)
+
+    status = _scan_to_db(cfg, db, logging.getLogger("test"))
+    assert int(status["indexed_files"]) >= 5
+    assert calls["files"] >= 2
+    assert calls["finalize"] >= calls["files"]

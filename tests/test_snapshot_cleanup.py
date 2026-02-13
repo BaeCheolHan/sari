@@ -210,3 +210,38 @@ def test_finalize_worker_logs_payload_traceback(tmp_path):
     assert indexer.logger.error.called
     args = indexer.logger.error.call_args[0]
     assert "worker reported failure" in args[0]
+
+
+def test_start_worker_scan_uses_unique_status_path_suffix(tmp_path, monkeypatch):
+    indexer = _make_indexer(tmp_path)
+    started = []
+
+    class _DummyProcess:
+        def __init__(self, *args, **kwargs):
+            self.pid = 12345
+            started.append((args, kwargs))
+
+        def start(self):
+            return None
+
+        @staticmethod
+        def is_alive():
+            return True
+
+    class _DummyCtx:
+        @staticmethod
+        def Process(*args, **kwargs):
+            return _DummyProcess(*args, **kwargs)
+
+    monkeypatch.setattr("sari.core.indexer.main.multiprocessing.get_context", lambda _m: _DummyCtx())
+
+    indexer._start_worker_scan()
+    first_status = str(indexer._worker_status_path or "")
+    assert ".snapshot." in first_status
+    assert first_status.endswith(".status.json")
+
+    indexer._worker_proc = None
+    indexer._start_worker_scan()
+    second_status = str(indexer._worker_status_path or "")
+    assert second_status.endswith(".status.json")
+    assert first_status != second_status

@@ -106,6 +106,7 @@ def test_worker_git_root_cache_is_capped(monkeypatch):
         worker._git_cache_set(f"/tmp/p-{i}", f"/tmp/repo-{i}")
 
     assert len(worker._git_root_cache) <= 32
+    assert hasattr(worker, "_cache_lock")
 
 
 def test_db_writer_resilience_to_batch_failure():

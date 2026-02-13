@@ -1,6 +1,7 @@
 import os
 import json
 import subprocess
+import threading
 from collections import OrderedDict
 from pathlib import Path
 from typing import Optional
@@ -49,6 +50,7 @@ class IndexWorker:
         self.extractor_cb = extractor_cb
         self.settings = settings_obj or settings
         self.ast_engine = ASTEngine()
+        self._cache_lock = threading.Lock()
         self._ast_cache = OrderedDict()
         self._ast_cache_max = self.settings.AST_CACHE_ENTRIES
         self._git_root_cache: dict[str, str | None] = {}
@@ -63,9 +65,16 @@ class IndexWorker:
     def _git_cache_set(self, key: str, value: str | None) -> None:
         if not key:
             return
-        self._git_root_cache[key] = value
-        while len(self._git_root_cache) > int(self._git_root_cache_max or 0):
-            self._git_root_cache.pop(next(iter(self._git_root_cache)), None)
+        with self._cache_lock:
+            self._git_root_cache[key] = value
+            while len(self._git_root_cache) > int(self._git_root_cache_max or 0):
+                self._git_root_cache.pop(next(iter(self._git_root_cache)), None)
+
+    def _git_cache_get(self, key: str) -> str | None:
+        if not key:
+            return None
+        with self._cache_lock:
+            return self._git_root_cache.get(key)
 
     def process_file_task(
             self,
@@ -215,15 +224,13 @@ class IndexWorker:
         # root
         root_path = Path(root)
         root_str = str(root_path.resolve())
-        if root_str in self._git_root_cache:
-            res = self._git_root_cache[root_str]
-            if res:
-                return res
+        res = self._git_cache_get(root_str)
+        if res:
+            return res
 
         parent = str(file_path.parent.resolve())
-        if parent in self._git_root_cache:
-            git_root = self._git_root_cache[parent]
-        else:
+        git_root = self._git_cache_get(parent)
+        if git_root is None:
             try:
                 # Fast path: check if .git exists in parent or its parents up
                 # to root
@@ -318,15 +325,17 @@ class IndexWorker:
     def _ast_cache_get(self, path: str):
         if self._ast_cache_max <= 0:
             return None
-        tree = self._ast_cache.get(path)
-        if tree is not None:
-            self._ast_cache.move_to_end(path)
-        return tree
+        with self._cache_lock:
+            tree = self._ast_cache.get(path)
+            if tree is not None:
+                self._ast_cache.move_to_end(path)
+            return tree
 
     def _ast_cache_put(self, path: str, tree: object) -> None:
         if self._ast_cache_max <= 0:
             return
-        self._ast_cache[path] = tree
-        self._ast_cache.move_to_end(path)
-        while len(self._ast_cache) > self._ast_cache_max:
-            self._ast_cache.popitem(last=False)
+        with self._cache_lock:
+            self._ast_cache[path] = tree
+            self._ast_cache.move_to_end(path)
+            while len(self._ast_cache) > self._ast_cache_max:
+                self._ast_cache.popitem(last=False)

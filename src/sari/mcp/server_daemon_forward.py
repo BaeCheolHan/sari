@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Callable, Optional
 
 
 JsonMap = dict[str, object]
+
+_MAX_HEADER_LINES = 200
+_MAX_HEADER_BYTES = 64 * 1024
+_DEFAULT_MAX_CONTENT_LENGTH = 10 * 1024 * 1024
 
 
 def ensure_daemon_connection(
@@ -94,10 +99,16 @@ def forward_over_open_socket(
     )
 
     headers: dict[bytes, bytes] = {}
+    header_lines = 0
+    header_bytes = 0
     while True:
         line = f.readline()
         if not line:
             break
+        header_lines += 1
+        header_bytes += len(line)
+        if header_lines > _MAX_HEADER_LINES or header_bytes > _MAX_HEADER_BYTES:
+            raise ValueError("daemon response header too large")
         line = line.strip()
         if not line:
             break
@@ -105,14 +116,29 @@ def forward_over_open_socket(
             k, v = line.split(b":", 1)
             headers[k.strip().lower()] = v.strip()
 
-    content_length = int(headers.get(b"content-length", b"0"))
+    raw_length = headers.get(b"content-length", b"0")
+    try:
+        content_length = int(raw_length)
+    except Exception as exc:
+        raise ValueError("invalid content-length header") from exc
     if content_length <= 0:
         trace_fn("daemon_socket_no_content", msg_id=request.get("id"))
         return None
+    try:
+        max_content_length = int(
+            os.environ.get("SARI_DAEMON_MAX_CONTENT_LENGTH", str(_DEFAULT_MAX_CONTENT_LENGTH))
+            or str(_DEFAULT_MAX_CONTENT_LENGTH)
+        )
+    except Exception:
+        max_content_length = _DEFAULT_MAX_CONTENT_LENGTH
+    if content_length > max_content_length:
+        raise ValueError("daemon response content-length exceeds limit")
     resp_body = f.read(content_length)
     if not resp_body:
         trace_fn("daemon_socket_no_body", msg_id=request.get("id"))
         return None
+    if len(resp_body) != content_length:
+        raise ValueError("daemon response body truncated")
     resp = json.loads(resp_body.decode("utf-8"))
     trace_fn("daemon_socket_received", msg_id=request.get("id"), bytes=content_length)
     return resp
