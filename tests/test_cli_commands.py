@@ -8,6 +8,7 @@ from sari.main import main as sari_entry_main
 from sari.main import run_cmd as sari_run_cmd
 from sari.main import _dispatch_pre_stdio
 from sari.main import _parse_transport_args
+import sari.entry_commands as entry_commands_mod
 
 def test_cmd_daemon_status():
     args = argparse.Namespace(daemon_host="127.0.0.1", daemon_port=47779)
@@ -219,3 +220,14 @@ def test_cmd_status_prefers_registry_http_endpoint_for_selected_daemon():
                         rc = cmd_status(args)
                         assert rc == 0
                         mock_request_http.assert_called_once_with("/status", {}, "127.0.0.1", 58155)
+
+
+def test_entry_commands_resolve_handler_for_doctor():
+    handler = entry_commands_mod._resolve_command_handler(["doctor"])
+    assert handler is entry_commands_mod._dispatch_doctor
+
+
+def test_entry_commands_run_cmd_unknown_subcommand(capsys):
+    rc = entry_commands_mod.run_cmd(["does-not-exist"])
+    assert rc == 2
+    assert "Unknown subcommand: does-not-exist" in capsys.readouterr().err
