@@ -46,7 +46,13 @@ from sari.mcp.server_logging import (
     log_debug_request as _log_debug_request_impl,
     log_debug_response as _log_debug_response_impl,
 )
-from sari.mcp.server_bootstrap import build_runtime_options
+from sari.mcp.server_bootstrap import build_runtime_options, parse_truthy_flag
+from sari.mcp.server_initialize import (
+    build_initialize_result as _build_initialize_result_impl,
+    choose_target_uri as _choose_target_uri_impl,
+    iter_client_protocol_versions as _iter_client_protocol_versions_impl,
+    negotiate_protocol_version as _negotiate_protocol_version_impl,
+)
 
 try:
     import orjson as _orjson
@@ -170,16 +176,7 @@ class LocalSearchMCPServer:
             protocol_version=params.get("protocolVersion"),
             supported_versions=params.get("supportedProtocolVersions"),
         )
-        root_uri = params.get("rootUri") or params.get("rootPath")
-        workspace_folders = params.get("workspaceFolders", [])
-
-        # Primary workspace selection strategy:
-        # 1. Use rootUri if provided.
-        # 2. Otherwise, use the first workspaceFolder if available.
-        # 3. Fallback to CWD (handled in resolve_workspace_root).
-        target_uri = root_uri
-        if not target_uri and workspace_folders:
-            target_uri = workspace_folders[0].get("uri")
+        target_uri = _choose_target_uri_impl(params)
 
         if target_uri:
             # Update workspace if provided by client
@@ -193,59 +190,27 @@ class LocalSearchMCPServer:
         negotiated_version = self._negotiate_protocol_version(params)
         trace("initialize_negotiated_version", version=negotiated_version)
 
-        return {
-            "protocolVersion": negotiated_version,
-            "serverInfo": {"name": self.SERVER_NAME, "version": self.SERVER_VERSION},
-            # Be explicit about supported capability surfaces so strict MCP
-            # clients can finish startup without probing unknown methods.
-            "capabilities": {
-                "tools": {"listChanged": False},
-                "prompts": {"listChanged": False},
-                "resources": {"subscribe": False, "listChanged": False},
-                "roots": {"listChanged": False},
-            },
-        }
+        return _build_initialize_result_impl(
+            negotiated_version, self.SERVER_NAME, self.SERVER_VERSION
+        )
 
     def _iter_client_protocol_versions(
             self, params: Mapping[str, object]) -> list[str]:
-        versions: list[str] = []
-        seen = set()
-
-        def _append(v: object) -> None:
-            if not isinstance(v, str):
-                return
-            vv = v.strip()
-            if not vv or vv in seen:
-                return
-            seen.add(vv)
-            versions.append(vv)
-
-        _append(params.get("protocolVersion"))
-        for v in (params.get("supportedProtocolVersions") or []):
-            _append(v)
-        caps = params.get("capabilities")
-        if isinstance(caps, dict):
-            for v in (caps.get("protocolVersions") or []):
-                _append(v)
-
-        return versions
+        return _iter_client_protocol_versions_impl(params)
 
     def _negotiate_protocol_version(self, params: Mapping[str, object]) -> str:
-        client_versions = self._iter_client_protocol_versions(params)
-        for v in client_versions:
-            if v in self.SUPPORTED_VERSIONS:
-                return v
-
-        strict = (os.environ.get("SARI_STRICT_PROTOCOL")
-                  or "").strip().lower() in {"1", "true", "yes", "on"}
-        if strict and client_versions:
-            raise JsonRpcException(
+        strict = parse_truthy_flag(os.environ.get("SARI_STRICT_PROTOCOL"))
+        return _negotiate_protocol_version_impl(
+            params=params,
+            supported_versions=self.SUPPORTED_VERSIONS,
+            default_version=self.PROTOCOL_VERSION,
+            strict_protocol=strict,
+            error_builder=lambda supported: JsonRpcException(
                 -32602,
                 "Unsupported protocol version",
-                data={"supported": sorted(list(self.SUPPORTED_VERSIONS))}
-            )
-
-        return self.PROTOCOL_VERSION
+                data={"supported": supported},
+            ),
+        )
 
     def handle_initialized(self, params: Mapping[str, object]) -> None:
         """Called by client after initialize response is received."""
