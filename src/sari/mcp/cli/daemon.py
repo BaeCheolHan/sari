@@ -29,6 +29,17 @@ from sari.core.daemon_runtime_state import RUNTIME_HOST, RUNTIME_PORT
 from .utils import get_pid_file_path, get_local_version
 from .mcp_client import identify_sari_daemon, probe_sari_daemon
 from .smart_daemon import ensure_smart_daemon, smart_kill_port_owner
+from .daemon_lifecycle import (
+    extract_daemon_start_params as _extract_daemon_start_params_impl,
+    extract_daemon_stop_params as _extract_daemon_stop_params_impl,
+    needs_upgrade_or_drain as _needs_upgrade_or_drain_impl,
+)
+from .daemon_registry_ops import (
+    discover_daemon_endpoints_from_processes as _discover_daemon_endpoints_from_processes_impl,
+    get_registry_targets as _get_registry_targets_impl,
+    list_registry_daemon_endpoints as _list_registry_daemon_endpoints_impl,
+    list_registry_daemons as _list_registry_daemons_impl,
+)
 
 DEFAULT_HOST = DEFAULT_DAEMON_HOST
 DEFAULT_PORT = DEFAULT_DAEMON_PORT
@@ -182,13 +193,7 @@ def needs_upgrade_or_drain(identify: Optional[dict]) -> bool:
     Returns:
         True if upgrade needed or draining, False otherwise
     """
-    if not identify:
-        return False
-    existing_version = identify.get("version") or ""
-    local_version = get_local_version()
-    draining = bool(identify.get("draining"))
-    needs_upgrade = bool(existing_version and local_version and existing_version != local_version)
-    return bool(needs_upgrade or draining)
+    return _needs_upgrade_or_drain_impl(identify, local_version=get_local_version())
 
 
 def ensure_daemon_running(
@@ -202,36 +207,14 @@ def ensure_daemon_running(
     return host, port, True
 def extract_daemon_start_params(args: argparse.Namespace) -> DaemonParams:
     """Extract and validate daemon start parameters."""
-    def _arg(args, key):
-        return getattr(args, key, None)
-    
-    workspace_root = os.environ.get("SARI_WORKSPACE_ROOT") or WorkspaceManager.resolve_workspace_root()
-    registry = ServerRegistry()
-    
-    explicit_port = bool(_arg(args, "daemon_port"))
-    force_start = (os.environ.get("SARI_DAEMON_FORCE_START") or "").strip().lower() in {"1", "true", "yes", "on"}
-    
-    # Resolve host and port
-    if _arg(args, "daemon_host") or _arg(args, "daemon_port"):
-        host = _arg(args, "daemon_host") or DEFAULT_HOST
-        port = int(_arg(args, "daemon_port") or DEFAULT_PORT)
-    else:
-        inst = registry.resolve_workspace_daemon(str(workspace_root))
-        if inst and inst.get("port"):
-            host = inst.get("host") or DEFAULT_HOST
-            port = int(inst.get("port"))
-        else:
-            host, port = get_daemon_address()
-    
-    return {
-        "host": host,
-        "port": port,
-        "workspace_root": workspace_root,
-        "registry": registry,
-        "explicit_port": explicit_port,
-        "force_start": force_start,
-        "args": args,
-    }
+    return _extract_daemon_start_params_impl(
+        args,
+        workspace_root_resolver=WorkspaceManager.resolve_workspace_root,
+        registry_factory=ServerRegistry,
+        daemon_address_resolver=get_daemon_address,
+        default_host=DEFAULT_HOST,
+        default_port=DEFAULT_PORT,
+    )
 
 
 def handle_existing_daemon(params: DaemonParams) -> Optional[int]:
@@ -497,82 +480,30 @@ def get_registry_targets(host: str, port: int, pid_hint: Optional[int]) -> Tuple
     Returns:
         Tuple of (boot_ids, http_pids)
     """
-    boot_ids: Set[str] = set()
-    http_pids: Set[int] = set()
-    try:
-        reg = ServerRegistry()
-        data = reg.get_registry_snapshot(include_dead=True)
-        daemons = data.get("daemons", {}) or {}
-        workspaces = data.get("workspaces", {}) or {}
-        for boot_id, info in daemons.items():
-            if not isinstance(info, dict):
-                continue
-            if str(info.get("host") or DEFAULT_HOST) != str(host):
-                continue
-            if int(info.get("port") or 0) != int(port):
-                continue
-            if pid_hint and int(info.get("pid") or 0) not in {0, int(pid_hint)}:
-                continue
-            boot_ids.add(str(boot_id))
-        for ws_info in workspaces.values():
-            if not isinstance(ws_info, dict):
-                continue
-            if str(ws_info.get("boot_id") or "") not in boot_ids:
-                continue
-            http_pid = int(ws_info.get("http_pid") or 0)
-            if http_pid > 0:
-                http_pids.add(http_pid)
-    except Exception:
-        pass
-    return boot_ids, http_pids
+    return _get_registry_targets_impl(
+        host,
+        port,
+        pid_hint,
+        registry_factory=ServerRegistry,
+        default_host=DEFAULT_HOST,
+    )
 
 
 def list_registry_daemons() -> DaemonRows:
     """List all live daemon entries from registry."""
-    out: DaemonRows = []
-    try:
-        reg = ServerRegistry()
-        if hasattr(reg, "list_daemons"):
-            for info in reg.list_daemons(include_dead=False):
-                row = dict(info)
-                out.append(row)
-        else:
-            # Backward-compat for tests/stubs that only expose _load().
-            data = reg._load()
-            for boot_id, info in (data.get("daemons") or {}).items():
-                if not isinstance(info, dict):
-                    continue
-                pid = int(info.get("pid") or 0)
-                if pid <= 0:
-                    continue
-                try:
-                    os.kill(pid, 0)
-                except Exception:
-                    continue
-                row = dict(info)
-                row["boot_id"] = boot_id
-                out.append(row)
-    except Exception:
-        return []
-    out.sort(key=lambda x: float(x.get("last_seen_ts") or 0.0), reverse=True)
-    return out
+    return _list_registry_daemons_impl(
+        registry_factory=ServerRegistry,
+        kill_probe=lambda pid: os.kill(pid, 0),
+        default_host=DEFAULT_HOST,
+    )
 
 
 def list_registry_daemon_endpoints() -> list[Tuple[str, int]]:
     """List unique live daemon endpoints from registry."""
-    seen: Set[Tuple[str, int]] = set()
-    endpoints: list[Tuple[str, int]] = []
-    for row in list_registry_daemons():
-        host = str(row.get("host") or DEFAULT_HOST)
-        port = int(row.get("port") or 0)
-        if port <= 0:
-            continue
-        key = (host, port)
-        if key in seen:
-            continue
-        seen.add(key)
-        endpoints.append(key)
-    return endpoints
+    return _list_registry_daemon_endpoints_impl(
+        rows_provider=list_registry_daemons,
+        default_host=DEFAULT_HOST,
+    )
 
 
 def _discover_daemon_endpoints_from_processes() -> list[Tuple[str, int]]:
@@ -580,58 +511,19 @@ def _discover_daemon_endpoints_from_processes() -> list[Tuple[str, int]]:
     Best-effort fallback discovery when registry is stale.
     Scans local processes for Sari daemon listeners and verifies them via MCP ping.
     """
-    if psutil is None:
-        return []
-
-    seen: Set[Tuple[str, int]] = set()
-    endpoints: list[Tuple[str, int]] = []
-    for proc in psutil.process_iter(["pid", "cmdline"]):
-        try:
-            cmdline = " ".join(proc.cmdline()).lower()
-            if "sari" not in cmdline:
-                continue
-            if "daemon" not in cmdline:
-                continue
-            conns = proc.net_connections(kind="inet")
-            for conn in conns:
-                laddr = getattr(conn, "laddr", None)
-                if not laddr:
-                    continue
-                host = getattr(laddr, "ip", None)
-                port = getattr(laddr, "port", None)
-                if host is None and isinstance(laddr, tuple) and len(laddr) >= 2:
-                    host, port = laddr[0], laddr[1]
-                if not isinstance(port, int) or port <= 0:
-                    continue
-                probe_host = "127.0.0.1" if host in ("0.0.0.0", "::", "::1", "", None) else str(host)
-                key = (probe_host, port)
-                if key in seen:
-                    continue
-                if probe_sari_daemon(probe_host, port):
-                    seen.add(key)
-                    endpoints.append(key)
-        except Exception:
-            continue
-    return endpoints
+    return _discover_daemon_endpoints_from_processes_impl(
+        psutil_module=psutil,
+        probe_daemon=probe_sari_daemon,
+    )
 
 
 def extract_daemon_stop_params(args: argparse.Namespace) -> DaemonParams:
     """Extract stop parameters from args."""
-    def _arg(args, key):
-        return getattr(args, key, None)
-
-    if bool(_arg(args, "all")):
-        host, port = None, None
-        all_mode = True
-    elif _arg(args, "daemon_host") or _arg(args, "daemon_port"):
-        host = _arg(args, "daemon_host") or DEFAULT_HOST
-        port = int(_arg(args, "daemon_port") or DEFAULT_PORT)
-        all_mode = False
-    else:
-        host, port = None, None
-        all_mode = True
-        
-    return {"host": host, "port": port, "all": all_mode}
+    return _extract_daemon_stop_params_impl(
+        args,
+        default_host=DEFAULT_HOST,
+        default_port=DEFAULT_PORT,
+    )
 
 
 def kill_orphan_sari_workers(

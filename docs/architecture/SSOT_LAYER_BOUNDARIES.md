@@ -38,3 +38,8 @@ This document defines the current source-of-truth and dependency boundaries for 
 
 ## Operational Note for daemon.py
 `src/sari/mcp/cli/daemon.py` currently mixes lifecycle, registry resolution, process management, and CLI formatting in one module. It remains functional but is a high-complexity hotspot and should be split into focused modules (resolution, process control, reporting) in a follow-up refactor.
+
+Current split progress:
+- `src/sari/mcp/cli/daemon_lifecycle.py`: daemon lifecycle parameter/upgrade decisions
+- `src/sari/mcp/cli/daemon_registry_ops.py`: registry and process-discovery helper operations
+- `src/sari/mcp/cli/daemon.py`: compatibility facade and orchestration entrypoints
