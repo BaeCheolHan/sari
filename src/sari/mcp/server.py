@@ -53,6 +53,10 @@ from sari.mcp.server_initialize import (
     iter_client_protocol_versions as _iter_client_protocol_versions_impl,
     negotiate_protocol_version as _negotiate_protocol_version_impl,
 )
+from sari.mcp.server_tool_runtime import (
+    ensure_connection_id as _ensure_connection_id_impl,
+    resolve_tool_runtime as _resolve_tool_runtime_impl,
+)
 
 try:
     import orjson as _orjson
@@ -220,42 +224,28 @@ class LocalSearchMCPServer:
     def handle_tools_call(self, params: Mapping[str, object]) -> JsonMap:
         tool_name = params.get("name")
         raw_args = params.get("arguments", {})
-        args = dict(raw_args) if isinstance(raw_args, Mapping) else {}
-        args["connection_id"] = self._server_connection_id
-        cfg = self._injected_cfg
-
-        if self._injected_db is not None and self._injected_indexer is not None:
-            db = self._injected_db
-            indexer = self._injected_indexer
-            roots = list(
-                getattr(
-                    cfg,
-                    "workspace_roots",
-                    []) or [
-                    self.workspace_root])
-        else:
-            if self._session is None:
-                self._session = self.registry.get_or_create(
-                    self.workspace_root)
-                self._session_acquired = True
-            session = self._session
-            db = getattr(session, "db", None)
-            indexer = getattr(session, "indexer", None)
-            cfg_data = getattr(session, "config_data", {}) or {}
-            roots = list(
-                cfg_data.get(
-                    "workspace_roots", [
-                        self.workspace_root]))
-            if db is None:
-                raise JsonRpcException(-32000,
-                                       "tools/call failed: session.db is unavailable")
+        base_args = dict(raw_args) if isinstance(raw_args, Mapping) else {}
+        args = _ensure_connection_id_impl(base_args, self._server_connection_id)
+        runtime = _resolve_tool_runtime_impl(
+            injected_cfg=self._injected_cfg,
+            injected_db=self._injected_db,
+            injected_indexer=self._injected_indexer,
+            session=self._session,
+            registry=self.registry,
+            workspace_root=self.workspace_root,
+            error_builder=lambda msg: JsonRpcException(-32000, msg),
+        )
+        if runtime.session is not None:
+            self._session = runtime.session
+        if runtime.session_acquired:
+            self._session_acquired = True
 
         ctx = ToolContext(
-            db=db,
-            engine=getattr(db, "engine", None),
-            indexer=indexer,
-            roots=roots,
-            cfg=cfg,
+            db=runtime.db,
+            engine=getattr(runtime.db, "engine", None),
+            indexer=runtime.indexer,
+            roots=runtime.roots,
+            cfg=self._injected_cfg,
             logger=self.logger,
             workspace_root=self.workspace_root,
             server_version=self.SERVER_VERSION,
