@@ -94,3 +94,34 @@ def test_perform_shutdown_swallows_cleanup_errors():
     assert changed is True
     assert acquired is True
     assert session is existing_session
+
+
+def test_perform_shutdown_logs_each_cleanup_failure():
+    stop = threading.Event()
+    logs: list[str] = []
+
+    class _BoomExecutor:
+        def shutdown(self, wait=True, cancel_futures=False):
+            raise RuntimeError("executor boom")
+
+    changed, acquired, session = perform_shutdown(
+        stop_event=stop,
+        executor=_BoomExecutor(),
+        transport=type("T", (), {"close": lambda self: (_ for _ in ()).throw(RuntimeError("transport boom"))})(),
+        logger=type("L", (), {"stop": lambda self: (_ for _ in ()).throw(RuntimeError("logger boom"))})(),
+        close_all_daemon_connections=lambda: (_ for _ in ()).throw(RuntimeError("daemon boom")),
+        registry=type("R", (), {"release": lambda self, _ws: (_ for _ in ()).throw(RuntimeError("release boom"))})(),
+        workspace_root="/tmp/ws",
+        session_acquired=True,
+        session=object(),
+        trace_fn=lambda *_a, **_k: None,
+        log_debug=lambda msg: logs.append(msg),
+    )
+    assert changed is True
+    assert acquired is True
+    assert session is not None
+    assert any("Executor shutdown error" in m for m in logs)
+    assert any("Transport close error" in m for m in logs)
+    assert any("Logger stop error" in m for m in logs)
+    assert any("Daemon close-all error" in m for m in logs)
+    assert any("Registry release error" in m for m in logs)
