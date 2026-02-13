@@ -5,6 +5,7 @@ import pytest
 
 from sari.core.workspace import WorkspaceManager
 from sari.mcp.tools.read import execute_read
+import sari.mcp.tools.read as read_tool
 
 
 def _payload(resp: dict) -> dict:
@@ -502,3 +503,68 @@ def test_ast_edit_symbol_mode_replaces_tree_sitter_languages(
     assert keep_probe in after
     assert new_probe in after
     assert old_probe not in after
+
+
+def test_tree_sitter_symbol_span_prefers_qualified_name(monkeypatch):
+    source = (
+        "class A {\n"
+        "  int targetFn() { return 1; }\n"
+        "}\n"
+        "class B {\n"
+        "  int targetFn() { return 2; }\n"
+        "}\n"
+    )
+
+    class _Sym:
+        def __init__(self, name, qualname, line, end_line, kind="method"):
+            self.name = name
+            self.qualname = qualname
+            self.line = line
+            self.end_line = end_line
+            self.kind = kind
+
+    monkeypatch.setattr(
+        "sari.mcp.tools.read._extract_tree_sitter_symbols",
+        lambda _source, _path: [
+            _Sym("targetFn", "A.targetFn", 2, 2, "method"),
+            _Sym("targetFn", "B.targetFn", 5, 5, "method"),
+        ],
+        raising=False,
+    )
+    span = read_tool._tree_sitter_symbol_span(source, "/tmp/svc.java", "B.targetFn")
+    assert span == (5, 5)
+
+
+def test_ast_edit_symbol_mode_rejects_when_old_text_not_in_selected_symbol_block(monkeypatch, tmp_path):
+    monkeypatch.setenv("SARI_FORMAT", "json")
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    f = ws / "svc.go"
+    f.write_text(
+        "package svc\n\n"
+        "func targetFn() int {\n    return 1\n}\n",
+        encoding="utf-8",
+    )
+    db = _DummyDB()
+    original = f.read_text(encoding="utf-8")
+    monkeypatch.setattr(
+        "sari.mcp.tools.read._tree_sitter_symbol_span",
+        lambda _source, _path, sym: (3, 5) if sym == "targetFn" else None,
+        raising=False,
+    )
+    resp = execute_read(
+        {
+            "mode": "ast_edit",
+            "target": str(f),
+            "expected_version_hash": _hash12(original),
+            "symbol": "targetFn",
+            "old_text": "return 999",
+            "new_text": "func targetFn() int {\n    return 2\n}",
+        },
+        db,
+        [str(ws)],
+    )
+    payload = _payload(resp)
+    assert payload["isError"] is True
+    assert payload["error"]["code"] == "INVALID_ARGS"
+    assert "old_text was not found in selected symbol block" in payload["error"]["message"]

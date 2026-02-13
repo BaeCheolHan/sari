@@ -434,39 +434,86 @@ def _js_like_symbol_span(source: str, symbol: str) -> tuple[int, int] | None:
     return None
 
 
-def _tree_sitter_symbol_span(source: str, fs_path: str, symbol: str) -> tuple[int, int] | None:
-    if not symbol:
-        return None
+def _extract_tree_sitter_symbols(source: str, fs_path: str) -> list[object]:
     try:
         from sari.core.parsers.ast_engine import ASTEngine
         from sari.core.parsers.factory import ParserFactory
     except Exception:
-        return None
+        return []
 
     suffix = Path(fs_path).suffix.lower()
     language = ParserFactory.get_language(suffix)
     if not language:
-        return None
+        return []
 
     engine = ASTEngine()
     tree = engine.parse(language, source)
     if tree is None:
-        return None
-
+        return []
     try:
         parsed = engine.extract_symbols(fs_path, language, source, tree=tree)
     except Exception:
-        return None
+        return []
+    return list(getattr(parsed, "symbols", []) or [])
 
-    symbols = list(getattr(parsed, "symbols", []) or [])
+
+def _normalize_symbol_token(value: str) -> str:
+    return str(value or "").strip().replace("::", ".").replace("#", ".")
+
+
+def _tree_sitter_symbol_span(source: str, fs_path: str, symbol: str) -> tuple[int, int] | None:
+    if not symbol:
+        return None
+    symbols = _extract_tree_sitter_symbols(source, fs_path)
+    if not symbols:
+        return None
+    suffix = Path(fs_path).suffix.lower()
+    raw_symbol = str(symbol or "").strip()
+    normalized = _normalize_symbol_token(raw_symbol)
+    target_name = normalized.split(".")[-1] if normalized else raw_symbol
+    qualified_query = any(token in raw_symbol for token in (".", "::", "#"))
+
+    preferred_kinds: dict[str, tuple[str, ...]] = {
+        ".java": ("method", "function"),
+        ".kt": ("method", "function"),
+        ".go": ("function", "method"),
+        ".rs": ("function", "method"),
+    }
+    kinds = preferred_kinds.get(suffix, ("function", "method", "class"))
+
+    best: tuple[int, int, int] | None = None
     for sym in symbols:
         name = str(getattr(sym, "name", "") or "").strip()
-        if name != symbol:
-            continue
+        qualname = str(getattr(sym, "qualname", "") or "").strip()
+        norm_qual = _normalize_symbol_token(qualname)
         start = int(getattr(sym, "line", 0) or 0)
         end = int(getattr(sym, "end_line", 0) or 0)
-        if start > 0 and end >= start:
-            return (start, end)
+        if start <= 0 or end < start:
+            continue
+        kind = str(getattr(sym, "kind", "") or "").strip().lower()
+
+        score = 100
+        if qualname and (qualname == raw_symbol or norm_qual == normalized):
+            score = 0
+        elif qualified_query and norm_qual and norm_qual.endswith(f".{target_name}"):
+            score = 2
+        elif name == raw_symbol:
+            score = 4
+        elif name == target_name:
+            score = 6
+        else:
+            continue
+
+        try:
+            kind_penalty = kinds.index(kind)
+        except ValueError:
+            kind_penalty = len(kinds) + 1
+        candidate = (score, kind_penalty, start)
+        if best is None or candidate < best:
+            best = candidate
+            best_span = (start, end)
+    if best is not None:
+        return best_span
     return None
 
 
@@ -553,6 +600,10 @@ def _execute_ast_edit(args_map: Mapping[str, object], db: object, roots: list[st
         if not span:
             return _ast_edit_error(ErrorCode.INVALID_ARGS.value, f"symbol '{symbol}' was not found in target")
         start_line, end_line = span
+        if old_text:
+            selected = "".join(original.splitlines(keepends=True)[start_line - 1:end_line])
+            if old_text not in selected:
+                return _ast_edit_error(ErrorCode.INVALID_ARGS.value, "old_text was not found in selected symbol block")
         try:
             edited = _replace_line_span(original, start_line, end_line, new_text)
         except ValueError as exc:
