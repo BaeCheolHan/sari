@@ -57,6 +57,9 @@ from sari.mcp.server_tool_runtime import (
     ensure_connection_id as _ensure_connection_id_impl,
     resolve_tool_runtime as _resolve_tool_runtime_impl,
 )
+from sari.mcp.server_request_dispatch import (
+    execute_local_method as _execute_local_method_impl,
+)
 
 try:
     import orjson as _orjson
@@ -379,31 +382,19 @@ class LocalSearchMCPServer:
             return None  # Ignore notifications for now
 
         try:
-            if method == "tools/call":
-                result = self.handle_tools_call(params)
-                if isinstance(result, dict) and result.get("isError"):
-                    err = result.get("error", {})
-                    return {
-                        "jsonrpc": "2.0",
-                        "id": msg_id,
-                        "error": {
-                            "code": err.get("code", -32000),
-                            "message": err.get("message", "Unknown tool error"),
-                            "data": result
-                        }
-                    }
-            else:
-                handler = self._dispatch_methods().get(str(method))
-                if handler is None:
-                    return {
-                        "jsonrpc": "2.0",
-                        "id": msg_id,
-                        "error": {
-                            "code": -32601,
-                            "message": f"Method not found: {method}"}}
-                result = handler(params)
-            resp = {"jsonrpc": "2.0", "id": msg_id, "result": result}
-            trace("handle_request_exit", method=method, msg_id=msg_id, ok=True)
+            resp = _execute_local_method_impl(
+                method=method,
+                params=params if isinstance(params, Mapping) else {},
+                msg_id=msg_id,
+                handle_tools_call=self.handle_tools_call,
+                dispatch_methods=self._dispatch_methods(),
+            )
+            trace(
+                "handle_request_exit",
+                method=method,
+                msg_id=msg_id,
+                ok="error" not in resp,
+            )
             return resp
         except JsonRpcException as e:
             trace(
