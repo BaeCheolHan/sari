@@ -26,6 +26,13 @@ from sari.mcp.server_sanitize import (
     sanitize_for_llm_tools as _sanitize_for_llm_tools_impl,
     sanitize_value as _sanitize_value_impl,
 )
+from sari.mcp.server_daemon_forward import (
+    close_all_daemon_connections as _close_all_daemon_connections_impl,
+    close_daemon_connection as _close_daemon_connection_impl,
+    ensure_daemon_connection as _ensure_daemon_connection_impl,
+    forward_error_response as _forward_error_response_impl,
+    forward_over_open_socket as _forward_over_open_socket_impl,
+)
 
 try:
     import orjson as _orjson
@@ -491,108 +498,45 @@ class LocalSearchMCPServer:
                 "forward_to_daemon_error",
                 msg_id=request.get("id"),
                 error=str(e))
-            msg_id = request.get("id")
-            return {
-                "jsonrpc": "2.0",
-                "id": msg_id,
-                "error": {
-                    "code": -32002,
-                    "message": f"Failed to forward to daemon: {e}. Try 'sari daemon start'."
-                }
-            } if msg_id is not None else None
+            return _forward_error_response_impl(request, str(e))
 
     def _ensure_daemon_connection(self, tid: int):
-        with self._daemon_channels_lock:
-            ch = self._daemon_channels.get(tid)
-            if ch is not None:
-                trace("daemon_connection_reuse", tid=tid)
-                return ch
-        trace(
-            "daemon_connection_new",
+        return _ensure_daemon_connection_impl(
             tid=tid,
-            daemon_address=getattr(
-                self,
-                "_daemon_address",
-                None))
-        conn = socket.create_connection(
-            self._daemon_address,
-            timeout=settings.DAEMON_TIMEOUT_SEC)
-        f = conn.makefile("rb")
-        with self._daemon_channels_lock:
-            self._daemon_channels[tid] = (conn, f)
-        return conn, f
+            daemon_channels_lock=self._daemon_channels_lock,
+            daemon_channels=self._daemon_channels,
+            daemon_address=self._daemon_address,
+            timeout_sec=settings.DAEMON_TIMEOUT_SEC,
+            trace_fn=trace,
+            create_connection_fn=socket.create_connection,
+        )
 
     def _close_daemon_connection(self, tid: Optional[int] = None) -> None:
         if tid is None:
             self._close_all_daemon_connections()
             return
-        with self._daemon_channels_lock:
-            ch = self._daemon_channels.pop(tid, None)
-        if not ch:
-            return
-        trace("daemon_connection_close", tid=tid)
-        conn, f = ch
-        try:
-            f.close()
-        except Exception:
-            pass
-        try:
-            conn.close()
-        except Exception:
-            pass
+        _close_daemon_connection_impl(
+            tid=tid,
+            daemon_channels_lock=self._daemon_channels_lock,
+            daemon_channels=self._daemon_channels,
+            trace_fn=trace,
+        )
 
     def _close_all_daemon_connections(self) -> None:
-        with self._daemon_channels_lock:
-            items = list(self._daemon_channels.items())
-            self._daemon_channels.clear()
-        trace("daemon_connections_close_all", count=len(items))
-        for _tid, (conn, f) in items:
-            try:
-                f.close()
-            except Exception:
-                pass
-            try:
-                conn.close()
-            except Exception:
-                pass
+        _close_all_daemon_connections_impl(
+            daemon_channels_lock=self._daemon_channels_lock,
+            daemon_channels=self._daemon_channels,
+            trace_fn=trace,
+        )
 
     def _forward_over_open_socket(
             self, request: JsonMap, conn: object, f: object) -> Optional[JsonMap]:
-        body = json.dumps(request).encode("utf-8")
-        header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
-        conn.sendall(header + body)
-        trace(
-            "daemon_socket_sent",
-            msg_id=request.get("id"),
-            method=request.get("method"),
-            bytes=len(body))
-
-        headers: dict[bytes, bytes] = {}
-        while True:
-            line = f.readline()
-            if not line:
-                break
-            line = line.strip()
-            if not line:
-                break
-            if b":" in line:
-                k, v = line.split(b":", 1)
-                headers[k.strip().lower()] = v.strip()
-
-        content_length = int(headers.get(b"content-length", b"0"))
-        if content_length <= 0:
-            trace("daemon_socket_no_content", msg_id=request.get("id"))
-            return None
-        resp_body = f.read(content_length)
-        if not resp_body:
-            trace("daemon_socket_no_body", msg_id=request.get("id"))
-            return None
-        resp = json.loads(resp_body.decode("utf-8"))
-        trace(
-            "daemon_socket_received",
-            msg_id=request.get("id"),
-            bytes=content_length)
-        return resp
+        return _forward_over_open_socket_impl(
+            request=request,
+            conn=conn,
+            f=f,
+            trace_fn=trace,
+        )
 
     def run(self, output_stream: Optional[object] = None) -> None:
         """Standard MCP JSON-RPC loop with encapsulated transport."""
