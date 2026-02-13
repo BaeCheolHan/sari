@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import queue
 import threading
-from collections import defaultdict
+from collections import deque
 from typing import Mapping
 
 
 class AnalyticsQueue:
-    def __init__(self, *, maxsize: int = 2000):
+    def __init__(self, *, maxsize: int = 2000, max_drop_types: int = 128):
         self._queue: "queue.Queue[dict[str, object]]" = queue.Queue(maxsize=maxsize)
-        self._drop_count_by_type: dict[str, int] = defaultdict(int)
+        self._max_drop_types = max(1, int(max_drop_types))
+        self._drop_count_by_type: dict[str, int] = {}
+        self._drop_type_order: deque[str] = deque()
         self._lock = threading.RLock()
 
     def enqueue(self, event: Mapping[str, object]) -> bool:
@@ -19,6 +21,11 @@ class AnalyticsQueue:
             return True
         except queue.Full:
             with self._lock:
+                if event_type not in self._drop_count_by_type:
+                    while len(self._drop_count_by_type) >= self._max_drop_types and self._drop_type_order:
+                        oldest = self._drop_type_order.popleft()
+                        self._drop_count_by_type.pop(oldest, None)
+                    self._drop_type_order.append(event_type)
                 self._drop_count_by_type[event_type] = self._drop_count_by_type.get(event_type, 0) + 1
             return False
 

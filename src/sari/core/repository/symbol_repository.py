@@ -76,7 +76,7 @@ class SymbolRepository(BaseRepository):
                     # mapping)
                     vals = list(s)
                     if len(vals) >= 12:  # New format
-                        data = dict(zip(SYMBOL_COLUMNS, vals))
+                        data = dict(zip(SYMBOL_COLUMNS, vals, strict=False))
                     else:  # Old format fallback
                         while len(vals) < 12:
                             vals.append("")
@@ -168,8 +168,10 @@ class SymbolRepository(BaseRepository):
         for r in rels_list:
             vals = list(r)
             while len(vals) < 11:
-                vals.append("") if len(
-                    vals) != 9 else vals.append(0)  # line is int
+                if len(vals) == 9:
+                    vals.append(0)  # line is int
+                else:
+                    vals.append("")
             try:
                 line = int(vals[9]) if vals[9] not in (None, "") else None
             except Exception:

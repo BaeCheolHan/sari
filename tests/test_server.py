@@ -4,6 +4,7 @@ import threading
 import time
 import io
 from unittest.mock import MagicMock
+from types import SimpleNamespace
 from sari.mcp.server import LocalSearchMCPServer
 import sari.mcp.server as server_mod
 
@@ -48,6 +49,29 @@ def test_server_handle_request_prompts_and_resources_list():
     assert prompts_resp["result"] == {"prompts": []}
     assert resources_resp["result"] == {"resources": []}
     assert templates_resp["result"] == {"resourceTemplates": []}
+
+
+def test_server_roots_list_exposes_configured_multiple_roots(monkeypatch):
+    server = LocalSearchMCPServer("/tmp/ws", start_worker=False)
+    monkeypatch.setattr(server_mod.WorkspaceManager, "resolve_config_path", lambda _ws: "/tmp/cfg.json")
+    monkeypatch.setattr(
+        server_mod.WorkspaceManager,
+        "resolve_workspace_roots",
+        lambda _root_uri=None, config_roots=None: list(config_roots or []),
+    )
+    monkeypatch.setattr(
+        server_mod.Config,
+        "load",
+        lambda _cfg_path, workspace_root_override=None: SimpleNamespace(
+            workspace_roots=["/tmp/ws", "/tmp/ws2"]
+        ),
+    )
+    roots_resp = server.handle_request({"id": 9, "method": "roots/list", "params": {}})
+    assert roots_resp["result"]["roots"] == [
+        {"uri": "file:///tmp/ws", "name": "ws"},
+        {"uri": "file:///tmp/ws2", "name": "ws2"},
+    ]
+    server.shutdown()
 
 def test_server_worker_loop():
     # Test if worker loop processes a request from queue
@@ -139,20 +163,21 @@ def test_server_run_enables_jsonl_transport_when_format_json(monkeypatch):
 
 
 @pytest.mark.gate
-def test_server_tools_call_uses_session_and_returns_result():
+def test_server_tools_call_uses_session_and_returns_result(monkeypatch):
     server = LocalSearchMCPServer("/tmp/ws")
     fake_session = MagicMock()
     fake_session.db = MagicMock()
     fake_session.db.engine = MagicMock()
     fake_session.indexer = MagicMock()
     fake_session.config_data = {"workspace_roots": ["/tmp/ws"]}
-    server.registry.get_or_create = MagicMock(return_value=fake_session)
+    get_or_create_mock = MagicMock(return_value=fake_session)
+    monkeypatch.setattr(server.registry, "get_or_create", get_or_create_mock)
     server._tool_registry.execute = MagicMock(return_value={"ok": True})
 
     result = server.handle_tools_call({"name": "status", "arguments": {}})
 
     assert result == {"ok": True}
-    server.registry.get_or_create.assert_called_once_with("/tmp/ws")
+    get_or_create_mock.assert_called_once_with("/tmp/ws")
     server.shutdown()
 
 
@@ -208,3 +233,27 @@ def test_server_queue_overload_emits_error_response():
     assert payload["error"]["code"] == -32003
     assert mode == "jsonl"
     server.shutdown()
+
+
+def test_server_shutdown_does_not_globally_shutdown_registry_when_unacquired():
+    server = LocalSearchMCPServer("/tmp/ws", start_worker=False)
+
+    class _FakeRegistry:
+        def __init__(self):
+            self.shutdown_all_called = 0
+            self.release_called = 0
+
+        def shutdown_all(self):
+            self.shutdown_all_called += 1
+
+        def release(self, _workspace_root):
+            self.release_called += 1
+
+    fake = _FakeRegistry()
+    server.registry = fake
+    server._session_acquired = False
+
+    server.shutdown()
+
+    assert fake.shutdown_all_called == 0
+    assert fake.release_called == 0

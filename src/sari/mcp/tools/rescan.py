@@ -19,6 +19,9 @@ from sari.core.services.index_service import IndexService
 
 ToolResult: TypeAlias = dict[str, object]
 
+def _code_str(code: object) -> str:
+    return str(getattr(code, "value", code))
+
 
 def execute_rescan(args: object, indexer: Indexer) -> ToolResult:
     """
@@ -32,12 +35,13 @@ def execute_rescan(args: object, indexer: Indexer) -> ToolResult:
     result = svc.rescan()
     if not result.get("ok"):
         code = result.get("code", ErrorCode.INTERNAL)
+        code_text = _code_str(code)
         message = result.get("message", "indexer not available")
         data = result.get("data")
         return mcp_response(
             "rescan",
-            lambda: pack_error("rescan", code, message, fields=data),
-            lambda: {"error": {"code": code.value, "message": message, "data": data}, "isError": True},
+            lambda: pack_error("rescan", code_text, message, fields=data),
+            lambda: {"error": {"code": code_text, "message": message, "data": data}, "isError": True},
         )
 
     def build_json() -> ToolResult:

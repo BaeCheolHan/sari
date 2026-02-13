@@ -236,7 +236,7 @@ def test_local_db_swap_db_file_rolls_back_on_table_copy_failure(db, tmp_path):
     finally:
         snap.close_all()
 
-    with pytest.raises(Exception):
+    with pytest.raises(sqlite3.DatabaseError):
         db.swap_db_file(str(snapshot_path))
 
     # files copy must be rolled back as a unit

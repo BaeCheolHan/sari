@@ -50,3 +50,16 @@ def test_load_gitignore_uses_mtime_cache(tmp_path, monkeypatch):
     assert first == ["*.log"]
     assert second == ["*.log"]
     assert calls["n"] == 1
+
+
+def test_load_gitignore_cache_is_capped(tmp_path, monkeypatch):
+    _GITIGNORE_CACHE.clear()
+    monkeypatch.setattr("sari.core.utils.gitignore._GITIGNORE_CACHE_MAX", 16)
+
+    for i in range(200):
+        root = tmp_path / f"r-{i}"
+        root.mkdir(parents=True, exist_ok=True)
+        (root / ".gitignore").write_text(f"*.tmp{i}\n", encoding="utf-8")
+        _ = load_gitignore(root)
+
+    assert len(_GITIGNORE_CACHE) <= 16

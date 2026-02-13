@@ -1,4 +1,5 @@
 import socket
+import threading
 
 from sari.core.db.main import LocalSearchDB
 from sari.core.health import SariDoctor
@@ -46,3 +47,35 @@ def test_health_network_check_uses_socket_probe(monkeypatch):
     assert doc.check_network() is True
     assert any(r["name"] == "Network Check" and r["passed"] for r in doc.results)
 
+
+def test_health_check_daemon_rejects_non_sari_listener(monkeypatch):
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    host, port = listener.getsockname()
+
+    stop_evt = threading.Event()
+
+    def _serve_once() -> None:
+        while not stop_evt.is_set():
+            try:
+                listener.settimeout(0.1)
+                conn, _ = listener.accept()
+                conn.close()
+            except TimeoutError:
+                continue
+            except OSError:
+                return
+
+    th = threading.Thread(target=_serve_once, daemon=True)
+    th.start()
+
+    monkeypatch.setattr("sari.core.health.resolve_daemon_address", lambda _ws=None: (host, int(port)))
+
+    doc = SariDoctor(workspace_root="/tmp/fake-ws")
+    try:
+        assert doc.check_daemon() is False
+        assert any(r["name"] == "Sari Daemon" and not r["passed"] for r in doc.results)
+    finally:
+        stop_evt.set()
+        listener.close()

@@ -16,6 +16,7 @@ except ImportError:
 
 from sari.core.daemon_resolver import resolve_daemon_address as get_daemon_address
 from sari.core.workspace import WorkspaceManager
+from sari.core.daemon_runtime_state import RUNTIME_HOST, RUNTIME_PORT
 from .mcp_client import probe_sari_daemon, ensure_workspace_http, identify_sari_daemon
 from .utils import get_local_version
 
@@ -180,8 +181,8 @@ def ensure_smart_daemon(host: Optional[str] = None,
     if workspace_root:
         env["SARI_WORKSPACE_ROOT"] = workspace_root
     # CRITICAL: Force the port for the new daemon
-    env["SARI_DAEMON_PORT"] = str(port)
-    env["SARI_DAEMON_HOST"] = host
+    env[RUNTIME_PORT] = str(port)
+    env[RUNTIME_HOST] = host
     env["SARI_DAEMON_OVERRIDE"] = "1"  # Force resolver to use these
 
     # Prepend the current sari package location to PYTHONPATH to ensure

@@ -1,4 +1,3 @@
-import os
 from typing import Any
 
 try:
@@ -11,21 +10,7 @@ def _get_registry_daemon_pids() -> set[int]:
     try:
         from sari.core.server_registry import ServerRegistry
 
-        reg = ServerRegistry()
-        data = reg._load()
-        pids: set[int] = set()
-        for info in (data.get("daemons") or {}).values():
-            if not isinstance(info, dict):
-                continue
-            pid = int(info.get("pid") or 0)
-            if pid <= 0:
-                continue
-            try:
-                os.kill(pid, 0)
-            except Exception:
-                continue
-            pids.add(pid)
-        return pids
+        return ServerRegistry().get_live_daemon_pids()
     except Exception:
         return set()
 

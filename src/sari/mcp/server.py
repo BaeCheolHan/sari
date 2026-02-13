@@ -6,9 +6,11 @@ import queue
 import concurrent.futures
 import socket
 from uuid import uuid4
-from pathlib import Path
 from typing import Optional, Mapping, TypeAlias
-from sari.mcp.workspace_registry import Registry
+from sari.mcp.adapters.workspace_runtime import (
+    WorkspaceRuntime,
+    get_workspace_runtime,
+)
 from sari.core.workspace import WorkspaceManager
 from sari.core.settings import settings
 from sari.core.config import Config
@@ -19,6 +21,55 @@ from sari.mcp.telemetry import TelemetryLogger
 from sari.mcp.transport import McpTransport
 from sari.core.utils.logging import get_logger
 from sari.mcp.trace import trace
+from sari.mcp.server_sanitize import (
+    sanitize_for_llm_tools as _sanitize_for_llm_tools_impl,
+    sanitize_value as _sanitize_value_impl,
+)
+from sari.mcp.server_daemon_forward import (
+    close_all_daemon_connections as _close_all_daemon_connections_impl,
+    close_daemon_connection as _close_daemon_connection_impl,
+    ensure_daemon_connection as _ensure_daemon_connection_impl,
+    forward_error_response as _forward_error_response_impl,
+    forward_over_open_socket as _forward_over_open_socket_impl,
+)
+from sari.mcp.server_worker import (
+    drain_pending_requests as _drain_pending_requests_impl,
+    emit_queue_overload as _emit_queue_overload_impl,
+    enqueue_incoming_request as _enqueue_incoming_request_impl,
+    handle_and_respond as _handle_and_respond_impl,
+    submit_request_for_execution as _submit_request_for_execution_impl,
+    worker_loop as _worker_loop_impl,
+)
+from sari.mcp.server_logging import (
+    log_debug_message as _log_debug_message_impl,
+    log_debug_request as _log_debug_request_impl,
+    log_debug_response as _log_debug_response_impl,
+)
+from sari.mcp.server_bootstrap import build_runtime_options, parse_truthy_flag
+from sari.mcp.server_initialize import (
+    build_initialize_result as _build_initialize_result_impl,
+    choose_target_uri as _choose_target_uri_impl,
+    iter_client_protocol_versions as _iter_client_protocol_versions_impl,
+    negotiate_protocol_version as _negotiate_protocol_version_impl,
+)
+from sari.mcp.server_tool_runtime import (
+    ensure_connection_id as _ensure_connection_id_impl,
+    resolve_tool_runtime as _resolve_tool_runtime_impl,
+)
+from sari.mcp.server_request_dispatch import (
+    execute_local_method as _execute_local_method_impl,
+)
+from sari.mcp.server_transport_init import ensure_transport as _ensure_transport_impl
+from sari.mcp.server_shutdown import perform_shutdown as _perform_shutdown_impl
+from sari.mcp.server_entrypoint import run_entrypoint as _run_entrypoint_impl
+from sari.mcp.server_method_registry import (
+    build_dispatch_methods as _build_dispatch_methods_impl,
+    resolve_root_entries as _resolve_root_entries_impl,
+)
+from sari.mcp.server_session_state import (
+    ensure_initialized_session as _ensure_initialized_session_impl,
+)
+from sari.mcp.server_roots import collect_workspace_roots as _collect_workspace_roots_impl
 
 try:
     import orjson as _orjson
@@ -73,6 +124,7 @@ class LocalSearchMCPServer:
             cfg: object = None,
             db: object = None,
             indexer: object = None,
+            workspace_runtime: Optional[WorkspaceRuntime] = None,
             start_worker: bool = True):
         self.workspace_root = workspace_root
         trace(
@@ -88,23 +140,24 @@ class LocalSearchMCPServer:
         self._injected_cfg = cfg
         self._injected_db = db
         self._injected_indexer = indexer
-        self.registry = Registry.get_instance()
+        # Backward-compatible attribute name kept for tests and legacy code.
+        self.registry = workspace_runtime or get_workspace_runtime()
         self.policy_engine = PolicyEngine(mode=settings.SEARCH_FIRST_MODE)
         self.logger = TelemetryLogger(WorkspaceManager.get_global_log_dir())
         self.struct_logger = get_logger("sari.mcp.protocol")
         self._tool_registry = build_default_registry()
         self._middlewares = [PolicyMiddleware(self.policy_engine)]
-        self._debug_enabled = settings.DEBUG or os.environ.get(
-            "SARI_MCP_DEBUG", "0") == "1"
-        self._dev_jsonl = (
-            os.environ.get("SARI_DEV_JSONL") or "").strip().lower() in {
-            "1", "true", "yes", "on"}
-        self._force_content_length = (
-            os.environ.get("SARI_FORCE_CONTENT_LENGTH") or "").strip().lower() in {
-            "1", "true", "yes", "on"}
+        runtime_opts = build_runtime_options(
+            env=os.environ,
+            debug_default=settings.DEBUG,
+            queue_size=settings.get_int("MCP_QUEUE_SIZE", 1000),
+        )
+        self._debug_enabled = runtime_opts.debug_enabled
+        self._dev_jsonl = runtime_opts.dev_jsonl
+        self._force_content_length = runtime_opts.force_content_length
         # Add maxsize to prevent memory bloat under heavy load
         self._req_queue: "queue.Queue[JsonMap]" = queue.Queue(
-            maxsize=settings.get_int("MCP_QUEUE_SIZE", 1000))
+            maxsize=runtime_opts.queue_size)
         self._stop = threading.Event()
         self._stdout_lock = threading.Lock()
         self.transport = None
@@ -121,9 +174,8 @@ class LocalSearchMCPServer:
         self._daemon_sock = None
         self._server_connection_id = str(uuid4())
 
-        max_workers = int(os.environ.get("SARI_MCP_WORKERS", "4") or 4)
         self._executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=max_workers)
+            max_workers=runtime_opts.max_workers)
         self._worker = threading.Thread(target=self._worker_loop, daemon=True)
         if start_worker:
             self._worker.start()
@@ -141,16 +193,7 @@ class LocalSearchMCPServer:
             protocol_version=params.get("protocolVersion"),
             supported_versions=params.get("supportedProtocolVersions"),
         )
-        root_uri = params.get("rootUri") or params.get("rootPath")
-        workspace_folders = params.get("workspaceFolders", [])
-
-        # Primary workspace selection strategy:
-        # 1. Use rootUri if provided.
-        # 2. Otherwise, use the first workspaceFolder if available.
-        # 3. Fallback to CWD (handled in resolve_workspace_root).
-        target_uri = root_uri
-        if not target_uri and workspace_folders:
-            target_uri = workspace_folders[0].get("uri")
+        target_uri = _choose_target_uri_impl(params)
 
         if target_uri:
             # Update workspace if provided by client
@@ -164,59 +207,27 @@ class LocalSearchMCPServer:
         negotiated_version = self._negotiate_protocol_version(params)
         trace("initialize_negotiated_version", version=negotiated_version)
 
-        return {
-            "protocolVersion": negotiated_version,
-            "serverInfo": {"name": self.SERVER_NAME, "version": self.SERVER_VERSION},
-            # Be explicit about supported capability surfaces so strict MCP
-            # clients can finish startup without probing unknown methods.
-            "capabilities": {
-                "tools": {"listChanged": False},
-                "prompts": {"listChanged": False},
-                "resources": {"subscribe": False, "listChanged": False},
-                "roots": {"listChanged": False},
-            },
-        }
+        return _build_initialize_result_impl(
+            negotiated_version, self.SERVER_NAME, self.SERVER_VERSION
+        )
 
     def _iter_client_protocol_versions(
             self, params: Mapping[str, object]) -> list[str]:
-        versions: list[str] = []
-        seen = set()
-
-        def _append(v: object) -> None:
-            if not isinstance(v, str):
-                return
-            vv = v.strip()
-            if not vv or vv in seen:
-                return
-            seen.add(vv)
-            versions.append(vv)
-
-        _append(params.get("protocolVersion"))
-        for v in (params.get("supportedProtocolVersions") or []):
-            _append(v)
-        caps = params.get("capabilities")
-        if isinstance(caps, dict):
-            for v in (caps.get("protocolVersions") or []):
-                _append(v)
-
-        return versions
+        return _iter_client_protocol_versions_impl(params)
 
     def _negotiate_protocol_version(self, params: Mapping[str, object]) -> str:
-        client_versions = self._iter_client_protocol_versions(params)
-        for v in client_versions:
-            if v in self.SUPPORTED_VERSIONS:
-                return v
-
-        strict = (os.environ.get("SARI_STRICT_PROTOCOL")
-                  or "").strip().lower() in {"1", "true", "yes", "on"}
-        if strict and client_versions:
-            raise JsonRpcException(
+        strict = parse_truthy_flag(os.environ.get("SARI_STRICT_PROTOCOL"))
+        return _negotiate_protocol_version_impl(
+            params=params,
+            supported_versions=self.SUPPORTED_VERSIONS,
+            default_version=self.PROTOCOL_VERSION,
+            strict_protocol=strict,
+            error_builder=lambda supported: JsonRpcException(
                 -32602,
                 "Unsupported protocol version",
-                data={"supported": sorted(list(self.SUPPORTED_VERSIONS))}
-            )
-
-        return self.PROTOCOL_VERSION
+                data={"supported": supported},
+            ),
+        )
 
     def handle_initialized(self, params: Mapping[str, object]) -> None:
         """Called by client after initialize response is received."""
@@ -226,42 +237,28 @@ class LocalSearchMCPServer:
     def handle_tools_call(self, params: Mapping[str, object]) -> JsonMap:
         tool_name = params.get("name")
         raw_args = params.get("arguments", {})
-        args = dict(raw_args) if isinstance(raw_args, Mapping) else {}
-        args["connection_id"] = self._server_connection_id
-        cfg = self._injected_cfg
-
-        if self._injected_db is not None and self._injected_indexer is not None:
-            db = self._injected_db
-            indexer = self._injected_indexer
-            roots = list(
-                getattr(
-                    cfg,
-                    "workspace_roots",
-                    []) or [
-                    self.workspace_root])
-        else:
-            if self._session is None:
-                self._session = self.registry.get_or_create(
-                    self.workspace_root)
-                self._session_acquired = True
-            session = self._session
-            db = getattr(session, "db", None)
-            indexer = getattr(session, "indexer", None)
-            cfg_data = getattr(session, "config_data", {}) or {}
-            roots = list(
-                cfg_data.get(
-                    "workspace_roots", [
-                        self.workspace_root]))
-            if db is None:
-                raise JsonRpcException(-32000,
-                                       "tools/call failed: session.db is unavailable")
+        base_args = dict(raw_args) if isinstance(raw_args, Mapping) else {}
+        args = _ensure_connection_id_impl(base_args, self._server_connection_id)
+        runtime = _resolve_tool_runtime_impl(
+            injected_cfg=self._injected_cfg,
+            injected_db=self._injected_db,
+            injected_indexer=self._injected_indexer,
+            session=self._session,
+            registry=self.registry,
+            workspace_root=self.workspace_root,
+            error_builder=lambda msg: JsonRpcException(-32000, msg),
+        )
+        if runtime.session is not None:
+            self._session = runtime.session
+        if runtime.session_acquired:
+            self._session_acquired = True
 
         ctx = ToolContext(
-            db=db,
-            engine=getattr(db, "engine", None),
-            indexer=indexer,
-            roots=roots,
-            cfg=cfg,
+            db=runtime.db,
+            engine=getattr(runtime.db, "engine", None),
+            indexer=runtime.indexer,
+            roots=runtime.roots,
+            cfg=self._injected_cfg,
             logger=self.logger,
             workspace_root=self.workspace_root,
             server_version=self.SERVER_VERSION,
@@ -278,77 +275,19 @@ class LocalSearchMCPServer:
 
     def list_roots(self) -> list[dict[str, str]]:
         """Return configured workspace roots as MCP root objects."""
-        cfg = None
-        try:
-            cfg_path = WorkspaceManager.resolve_config_path(
-                self.workspace_root)
-            cfg = Config.load(
-                cfg_path, workspace_root_override=self.workspace_root)
-        except Exception:
-            cfg = None
-        config_roots = list(
-            getattr(
-                cfg,
-                "workspace_roots",
-                []) or []) if cfg else []
-        roots = WorkspaceManager.resolve_workspace_roots(
-            root_uri=f"file://{self.workspace_root}",
-            config_roots=config_roots,
+        roots = _collect_workspace_roots_impl(
+            workspace_root=self.workspace_root,
+            resolve_config_path=WorkspaceManager.resolve_config_path,
+            config_load=Config.load,
+            resolve_workspace_roots=WorkspaceManager.resolve_workspace_roots,
         )
-        result = []
-        for r in roots:
-            name = Path(r).name or r
-            result.append({"uri": f"file://{r}", "name": name})
-        return result
+        return _resolve_root_entries_impl(roots)
 
     @staticmethod
     def _sanitize_for_llm_tools(schema: dict) -> dict:
-        """
-        Make a Pydantic/JSON Schema object more compatible with various LLMs.
-        - 'integer' -> 'number' (+ multipleOf: 1)
-        - remove 'null' from union type arrays for better compatibility
-        """
-        from copy import deepcopy
-        s = deepcopy(schema)
-
-        def walk(node):
-            if not isinstance(node, dict):
-                return node
-            t = node.get("type")
-            if isinstance(t, str):
-                if t == "integer":
-                    node["type"] = "number"
-                    if "multipleOf" not in node:
-                        node["multipleOf"] = 1
-            elif isinstance(t, list):
-                t2 = [x if x != "integer" else "number" for x in t if x != "null"]
-                if not t2:
-                    t2 = ["object"]
-                node["type"] = t2[0] if len(t2) == 1 else t2
-                if "integer" in t or "number" in t2:
-                    node.setdefault("multipleOf", 1)
-
-            for key in (
-                "properties",
-                "patternProperties",
-                "definitions",
-                    "$defs"):
-                if key in node and isinstance(node[key], dict):
-                    for k, v in list(node[key].items()):
-                        node[key][k] = walk(v)
-            if "items" in node:
-                node["items"] = walk(node["items"])
-            return node
-        return walk(s)
+        return _sanitize_for_llm_tools_impl(schema)
 
     def list_tools(self) -> list[dict[str, object]]:
-        os.environ.get(
-            "SARI_EXPOSE_INTERNAL_TOOLS",
-            "").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on"}
         return [
             {
                 "name": t.name,
@@ -364,9 +303,13 @@ class LocalSearchMCPServer:
 
     def _ensure_initialized(self) -> None:
         """Test helper: Ensure session is initialized."""
-        if self._session is None and self._injected_db is None:
-            self._session = self.registry.get_or_create(self.workspace_root)
-            self._session_acquired = True
+        self._session, self._session_acquired = _ensure_initialized_session_impl(
+            session=self._session,
+            injected_db=self._injected_db,
+            registry=self.registry,
+            workspace_root=self.workspace_root,
+            session_acquired=self._session_acquired,
+        )
 
     def _tool_status(self, args: dict[str, object]) -> JsonMap:
         """Test helper: Execute status tool."""
@@ -377,6 +320,17 @@ class LocalSearchMCPServer:
         """Test helper: Execute search tool."""
         self._ensure_initialized()
         return self.handle_tools_call({"name": "search", "arguments": args})
+
+    def _dispatch_methods(self) -> dict[str, object]:
+        return _build_dispatch_methods_impl(
+            handle_initialize=self.handle_initialize,
+            list_tools=self.list_tools,
+            list_roots=self.list_roots,
+            server_name=self.SERVER_NAME,
+            server_version=self.SERVER_VERSION,
+            workspace_root=self.workspace_root,
+            pid=os.getpid(),
+        )
 
     def handle_request(
             self, request: object) -> Optional[JsonMap]:
@@ -419,51 +373,19 @@ class LocalSearchMCPServer:
             return None  # Ignore notifications for now
 
         try:
-            if method == "initialize":
-                result = self.handle_initialize(params)
-            elif method == "sari/identify":
-                result = {
-                    "name": self.SERVER_NAME,
-                    "version": self.SERVER_VERSION,
-                    "workspaceRoot": self.workspace_root,
-                    "pid": os.getpid()
-                }
-            elif method == "tools/list":
-                result = {"tools": self.list_tools()}
-            elif method == "prompts/list":
-                result = {"prompts": []}
-            elif method == "resources/list":
-                result = {"resources": []}
-            elif method == "resources/templates/list":
-                result = {"resourceTemplates": []}
-            elif method == "roots/list":
-                result = {"roots": self.list_roots()}
-            elif method == "tools/call":
-                result = self.handle_tools_call(params)
-                if isinstance(result, dict) and result.get("isError"):
-                    err = result.get("error", {})
-                    return {
-                        "jsonrpc": "2.0",
-                        "id": msg_id,
-                        "error": {
-                            "code": err.get("code", -32000),
-                            "message": err.get("message", "Unknown tool error"),
-                            "data": result
-                        }
-                    }
-            elif method in {"initialized", "notifications/initialized"}:
-                result = {}
-            elif method == "ping":
-                result = {}
-            else:
-                return {
-                    "jsonrpc": "2.0",
-                    "id": msg_id,
-                    "error": {
-                        "code": -32601,
-                        "message": f"Method not found: {method}"}}
-            resp = {"jsonrpc": "2.0", "id": msg_id, "result": result}
-            trace("handle_request_exit", method=method, msg_id=msg_id, ok=True)
+            resp = _execute_local_method_impl(
+                method=method,
+                params=params if isinstance(params, Mapping) else {},
+                msg_id=msg_id,
+                handle_tools_call=self.handle_tools_call,
+                dispatch_methods=self._dispatch_methods(),
+            )
+            trace(
+                "handle_request_exit",
+                method=method,
+                msg_id=msg_id,
+                ok="error" not in resp,
+            )
             return resp
         except JsonRpcException as e:
             trace(
@@ -526,108 +448,45 @@ class LocalSearchMCPServer:
                 "forward_to_daemon_error",
                 msg_id=request.get("id"),
                 error=str(e))
-            msg_id = request.get("id")
-            return {
-                "jsonrpc": "2.0",
-                "id": msg_id,
-                "error": {
-                    "code": -32002,
-                    "message": f"Failed to forward to daemon: {e}. Try 'sari daemon start'."
-                }
-            } if msg_id is not None else None
+            return _forward_error_response_impl(request, str(e))
 
     def _ensure_daemon_connection(self, tid: int):
-        with self._daemon_channels_lock:
-            ch = self._daemon_channels.get(tid)
-            if ch is not None:
-                trace("daemon_connection_reuse", tid=tid)
-                return ch
-        trace(
-            "daemon_connection_new",
+        return _ensure_daemon_connection_impl(
             tid=tid,
-            daemon_address=getattr(
-                self,
-                "_daemon_address",
-                None))
-        conn = socket.create_connection(
-            self._daemon_address,
-            timeout=settings.DAEMON_TIMEOUT_SEC)
-        f = conn.makefile("rb")
-        with self._daemon_channels_lock:
-            self._daemon_channels[tid] = (conn, f)
-        return conn, f
+            daemon_channels_lock=self._daemon_channels_lock,
+            daemon_channels=self._daemon_channels,
+            daemon_address=self._daemon_address,
+            timeout_sec=settings.DAEMON_TIMEOUT_SEC,
+            trace_fn=trace,
+            create_connection_fn=socket.create_connection,
+        )
 
     def _close_daemon_connection(self, tid: Optional[int] = None) -> None:
         if tid is None:
             self._close_all_daemon_connections()
             return
-        with self._daemon_channels_lock:
-            ch = self._daemon_channels.pop(tid, None)
-        if not ch:
-            return
-        trace("daemon_connection_close", tid=tid)
-        conn, f = ch
-        try:
-            f.close()
-        except Exception:
-            pass
-        try:
-            conn.close()
-        except Exception:
-            pass
+        _close_daemon_connection_impl(
+            tid=tid,
+            daemon_channels_lock=self._daemon_channels_lock,
+            daemon_channels=self._daemon_channels,
+            trace_fn=trace,
+        )
 
     def _close_all_daemon_connections(self) -> None:
-        with self._daemon_channels_lock:
-            items = list(self._daemon_channels.items())
-            self._daemon_channels.clear()
-        trace("daemon_connections_close_all", count=len(items))
-        for _tid, (conn, f) in items:
-            try:
-                f.close()
-            except Exception:
-                pass
-            try:
-                conn.close()
-            except Exception:
-                pass
+        _close_all_daemon_connections_impl(
+            daemon_channels_lock=self._daemon_channels_lock,
+            daemon_channels=self._daemon_channels,
+            trace_fn=trace,
+        )
 
     def _forward_over_open_socket(
             self, request: JsonMap, conn: object, f: object) -> Optional[JsonMap]:
-        body = json.dumps(request).encode("utf-8")
-        header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
-        conn.sendall(header + body)
-        trace(
-            "daemon_socket_sent",
-            msg_id=request.get("id"),
-            method=request.get("method"),
-            bytes=len(body))
-
-        headers: dict[bytes, bytes] = {}
-        while True:
-            line = f.readline()
-            if not line:
-                break
-            line = line.strip()
-            if not line:
-                break
-            if b":" in line:
-                k, v = line.split(b":", 1)
-                headers[k.strip().lower()] = v.strip()
-
-        content_length = int(headers.get(b"content-length", b"0"))
-        if content_length <= 0:
-            trace("daemon_socket_no_content", msg_id=request.get("id"))
-            return None
-        resp_body = f.read(content_length)
-        if not resp_body:
-            trace("daemon_socket_no_body", msg_id=request.get("id"))
-            return None
-        resp = json.loads(resp_body.decode("utf-8"))
-        trace(
-            "daemon_socket_received",
-            msg_id=request.get("id"),
-            bytes=content_length)
-        return resp
+        return _forward_over_open_socket_impl(
+            request=request,
+            conn=conn,
+            f=f,
+            trace_fn=trace,
+        )
 
     def run(self, output_stream: Optional[object] = None) -> None:
         """Standard MCP JSON-RPC loop with encapsulated transport."""
@@ -635,24 +494,15 @@ class LocalSearchMCPServer:
         trace("run_loop_start", workspace_root=self.workspace_root)
 
         if not self.transport:
-            input_stream = getattr(sys.stdin, "buffer", sys.stdin)
-
-            # Use injected stream, or fallback to server property, or finally
-            # sys.stdout.buffer
-            target_out = output_stream or getattr(
-                self, "_original_stdout", None) or getattr(
-                sys.stdout, "buffer", sys.stdout)
-
-            wire_format = (os.environ.get("SARI_FORMAT")
-                           or "pack").strip().lower()
-            # Accept JSONL input for compatibility, but default to
-            # Content-Length framing unless explicitly configured.
-            self.transport = McpTransport(
-                input_stream, target_out, allow_jsonl=True)
-            if wire_format == "json":
-                self.transport.default_mode = "jsonl"
-            else:
-                self.transport.default_mode = "content-length"
+            self.transport = _ensure_transport_impl(
+                transport=self.transport,
+                output_stream=output_stream,
+                original_stdout=getattr(self, "_original_stdout", None),
+                stdin_obj=sys.stdin,
+                stdout_obj=sys.stdout,
+                env=os.environ,
+                transport_factory=McpTransport,
+            )
             trace(
                 "transport_initialized",
                 wire_format=self.transport.default_mode,
@@ -690,231 +540,111 @@ class LocalSearchMCPServer:
 
     def shutdown(self) -> None:
         """Graceful shutdown of all resources."""
-        if self._stop.is_set():
+        changed, acquired, session = _perform_shutdown_impl(
+            stop_event=self._stop,
+            executor=self._executor,
+            transport=self.transport,
+            logger=self.logger,
+            close_all_daemon_connections=self._close_all_daemon_connections,
+            registry=self.registry,
+            workspace_root=self.workspace_root,
+            session_acquired=self._session_acquired,
+            session=self._session,
+            trace_fn=trace,
+            log_debug=self._log_debug,
+        )
+        if not changed:
             return
-        self._stop.set()
-        trace("server_shutdown_start")
-
-        # 1. Stop processing new requests and WAIT for current ones
-        try:
-            self._executor.shutdown(wait=True, cancel_futures=False)
-        except Exception as e:
-            self._log_debug(f"Executor shutdown error: {e}")
-
-        # 2. Cleanup all workspace resources (DB, Engine)
-        try:
-            self.registry.shutdown_all()
-        except Exception:
-            pass
-        try:
-            if self.transport and hasattr(self.transport, "close"):
-                self.transport.close()
-        except Exception:
-            pass
-        try:
-            if self.logger and hasattr(self.logger, "stop"):
-                self.logger.stop()
-        except Exception:
-            pass
-        try:
-            self._close_all_daemon_connections()
-        except Exception:
-            pass
-        try:
-            if self._session_acquired:
-                self.registry.release(self.workspace_root)
-                self._session_acquired = False
-                self._session = None
-        except Exception:
-            pass
-        trace("server_shutdown_done")
+        self._session_acquired = acquired
+        self._session = session
 
     def _worker_loop(self) -> None:
-        while not self._stop.is_set():
-            try:
-                req = self._req_queue.get(timeout=0.2)
-            except queue.Empty:
-                continue
-            except Exception as e:
-                # Queue access error - log and continue
-                self._log_debug(f"Queue access error in worker loop: {e}")
-                continue
-
-            should_break = False
-            try:
-                should_break = not self._submit_request_for_execution(req)
-            finally:
-                try:
-                    self._req_queue.task_done()
-                except Exception:
-                    pass
-            if should_break:
-                break
+        _worker_loop_impl(
+            stop_event=self._stop,
+            req_queue=self._req_queue,
+            submit_request_for_execution=self._submit_request_for_execution,
+            log_debug=self._log_debug,
+        )
 
     def _enqueue_incoming_request(self, req: JsonMap) -> None:
-        try:
-            # Non-blocking put to avoid hanging the main read loop if workers are slow.
-            # We use a short timeout to handle transient spikes.
-            self._req_queue.put(req, timeout=0.01)
-        except queue.Full:
-            self._emit_queue_overload(req)
-        except Exception as e:
-            self._log_debug(f"ERROR putting req to queue: {e}")
-            trace("run_loop_queue_error", error=str(e))
+        _enqueue_incoming_request_impl(
+            req_queue=self._req_queue,
+            req=req,
+            emit_queue_overload=self._emit_queue_overload,
+            log_debug=self._log_debug,
+            trace_fn=trace,
+        )
 
     def _emit_queue_overload(self, req: JsonMap) -> None:
-        msg_id = req.get("id")
-        if msg_id is not None:
-            error_resp = {
-                "jsonrpc": "2.0",
-                "id": msg_id,
-                "error": {
-                    "code": -32003,
-                    "message": "Server overloaded: request queue is full. Please try again later."
-                }
-            }
-            mode = req.get("_sari_framing_mode", "content-length")
-            with self._stdout_lock:
-                if self.transport is not None:
-                    self.transport.write_message(error_resp, mode=mode)
-        self._log_debug(
-            f"CRITICAL: MCP request queue is full! Dropping request {msg_id}")
-        trace("run_loop_queue_full", msg_id=msg_id)
+        _emit_queue_overload_impl(
+            req=req,
+            stdout_lock=self._stdout_lock,
+            transport=self.transport,
+            log_debug=self._log_debug,
+            trace_fn=trace,
+        )
 
     def _submit_request_for_execution(self, req: JsonMap) -> bool:
-        try:
-            self._executor.submit(self._handle_and_respond, req)
-            return True
-        except RuntimeError as e:
-            # Executor shutdown - graceful exit
-            self._log_debug(f"Executor shutdown during submit: {e}")
-            return False
-        except Exception as e:
-            # Unexpected error - log and continue
-            self._log_debug(f"Error submitting to executor: {e}")
-            return True
+        return _submit_request_for_execution_impl(
+            executor=self._executor,
+            handle_and_respond=self._handle_and_respond,
+            req=req,
+            log_debug=self._log_debug,
+        )
 
     def _drain_pending_requests(self) -> None:
-        while True:
-            try:
-                req = self._req_queue.get_nowait()
-            except queue.Empty:
-                break
-            try:
-                self._handle_and_respond(req)
-            finally:
-                try:
-                    self._req_queue.task_done()
-                except Exception:
-                    pass
+        _drain_pending_requests_impl(
+            req_queue=self._req_queue,
+            handle_and_respond=self._handle_and_respond,
+        )
 
     def _handle_and_respond(self, req: JsonMap) -> None:
-        try:
-            trace(
-                "handle_and_respond_enter",
-                msg_id=req.get("id"),
-                method=req.get("method"))
-            resp = self.handle_request(req)
-            if resp:
-                req_mode = req.get("_sari_framing_mode", "content-length")
-                if self._force_content_length and req_mode != "jsonl":
-                    mode = "content-length"
-                else:
-                    mode = req_mode
-                self._log_debug_response(mode, resp)
-                if self.transport is None:
-                    raise RuntimeError("transport is not initialized")
-                # Serialize writes to stdout transport to avoid frame
-                # interleaving.
-                with self._stdout_lock:
-                    self.transport.write_message(resp, mode=mode)
-                trace(
-                    "handle_and_respond_sent",
-                    msg_id=req.get("id"),
-                    mode=mode)
-        except Exception as e:
-            self._log_debug(f"ERROR in _handle_and_respond: {e}")
-            trace(
-                "handle_and_respond_error",
-                msg_id=req.get("id"),
-                error=str(e))
+        _handle_and_respond_impl(
+            req=req,
+            handle_request=self.handle_request,
+            force_content_length=self._force_content_length,
+            log_debug_response=self._log_debug_response,
+            transport=self.transport,
+            stdout_lock=self._stdout_lock,
+            log_debug=self._log_debug,
+            trace_fn=trace,
+        )
 
     def _log_debug(self, message: str) -> None:
         """Log MCP traffic to the structured logger."""
-        if not self._debug_enabled:
-            return
-        # Use a specific event name for raw string messages
-        self.struct_logger.debug("mcp_debug_log", message=message)
+        _log_debug_message_impl(self._debug_enabled, self.struct_logger, message)
 
     def _sanitize_value(self, value: object, key: str = "") -> object:
-        key_l = (key or "").lower()
-        if any(s in key_l for s in self._SENSITIVE_KEYS):
-            return "[REDACTED]"
-        if isinstance(value, dict):
-            return {k: self._sanitize_value(v, k) for k, v in value.items()}
-        if isinstance(value, list):
-            return [self._sanitize_value(v, key) for v in value[:20]]
-        if isinstance(value, str):
-            if key_l in {"content", "text", "source", "snippet", "body"}:
-                return f"[REDACTED_TEXT len={len(value)}]"
-            if len(value) > 200:
-                return value[:120] + "...[truncated]"
-            return value
-        return value
+        return _sanitize_value_impl(value, self._SENSITIVE_KEYS, key)
 
     def _log_debug_request(self, mode: str, req: JsonMap) -> None:
-        if not self._debug_enabled:
-            return
-        summary: JsonMap = {
-            "id": req.get("id"),
-            "method": req.get("method"),
-            "mode": mode,
-            "keys": sorted([k for k in req.keys() if not str(k).startswith("_")]),
-        }
-        params = req.get("params") or {}
-        if req.get("method") == "tools/call" and isinstance(params, dict):
-            args = params.get("arguments") or {}
-            summary["tool"] = params.get("name")
-            if isinstance(args, dict):
-                summary["argument_keys"] = sorted(list(args.keys()))
-                summary["arguments"] = {
-                    k: self._sanitize_value(
-                        v, k) for k, v in args.items()}
-
-        # Log as structured event
-        self.struct_logger.debug("mcp_request", **summary)
+        _log_debug_request_impl(
+            debug_enabled=self._debug_enabled,
+            struct_logger=self.struct_logger,
+            mode=mode,
+            req=req,
+            sanitize_value=self._sanitize_value,
+        )
 
     def _log_debug_response(self, mode: str, resp: JsonMap) -> None:
-        if not self._debug_enabled:
-            return
-        summary: JsonMap = {
-            "id": resp.get("id"),
-            "mode": mode,
-            "has_result": "result" in resp,
-            "has_error": "error" in resp,
-        }
-        # Simplify summary logic for response logging
-        # We don't want to log generic outbound debug string if we can log
-        # structured data
-        if "error" in resp and isinstance(resp["error"], dict):
-            summary["error"] = self._sanitize_value(resp["error"])
-
-        self.struct_logger.debug("mcp_response", **summary)
+        _log_debug_response_impl(
+            debug_enabled=self._debug_enabled,
+            struct_logger=self.struct_logger,
+            mode=mode,
+            resp=resp,
+            sanitize_value=self._sanitize_value,
+        )
 
 
 def main(original_stdout: object = None) -> None:
-    # 1. Capture the pure, untouched stdout for MCP communication
-    mcp_out = original_stdout or sys.stdout.buffer
-
-    # 2. Immediately redirect global sys.stdout to sys.stderr to isolate side-effects
-    # This ensures that even accidental 'print()' calls go to logs, not the
-    # protocol.
-    sys.stdout = sys.stderr
-
-    server = LocalSearchMCPServer(WorkspaceManager.resolve_workspace_root())
-
-    # 3. Pass only the preserved stream to the server's run loop
-    server.run(mcp_out)
+    _run_entrypoint_impl(
+        original_stdout=original_stdout,
+        resolve_workspace_root=WorkspaceManager.resolve_workspace_root,
+        server_factory=LocalSearchMCPServer,
+        stdout_obj=sys.stdout,
+        stderr_obj=sys.stderr,
+        set_stdout=lambda value: setattr(sys, "stdout", value),
+    )
 
 
 if __name__ == "__main__":

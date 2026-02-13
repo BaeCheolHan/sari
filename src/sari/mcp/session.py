@@ -7,14 +7,18 @@ import os
 import urllib.parse
 from uuid import uuid4
 from typing import Dict, Optional, Callable
-from .workspace_registry import Registry, SharedState
+from sari.mcp.workspace_registry import SharedState
+from sari.mcp.adapters.workspace_runtime import (
+    WorkspaceRuntime,
+    get_workspace_runtime,
+)
 from sari.core.settings import settings
 from sari.mcp.trace import trace
 
 _SARI_VERSION = settings.VERSION
 _SARI_PROTOCOL_VERSION = "2025-11-25"
 from sari.core.workspace import WorkspaceManager
-from sari.core.server_registry import ServerRegistry
+from sari.mcp.server_registry import ServerRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -32,12 +36,14 @@ class Session:
         writer: asyncio.StreamWriter,
         on_activity: Optional[Callable[[], None]] = None,
         on_connection_closed: Optional[Callable[[], None]] = None,
+        workspace_runtime: Optional[WorkspaceRuntime] = None,
     ):
         self.reader = reader
         self.writer = writer
         self.workspace_root: Optional[str] = None
         self.shared_state: Optional[SharedState] = None
-        self.registry = Registry.get_instance()
+        # Backward-compatible attribute name kept for tests.
+        self.registry = workspace_runtime or get_workspace_runtime()
         self.running = True
         self._preinit_server = None
         self.connection_id = str(uuid4())
@@ -49,8 +55,26 @@ class Session:
         if self._preinit_server is None:
             from sari.mcp.server import LocalSearchMCPServer
             workspace_root = WorkspaceManager.resolve_workspace_root()
-            self._preinit_server = LocalSearchMCPServer(workspace_root, start_worker=False)
+            self._preinit_server = LocalSearchMCPServer(
+                workspace_root,
+                workspace_runtime=self.registry,
+                start_worker=False,
+            )
         return self._preinit_server
+
+    def _shared_server(self):
+        if self.shared_state is None:
+            raise RuntimeError("shared_state is not bound")
+        server = getattr(self.shared_state, "server", None)
+        if server is None:
+            from sari.core.mcp_runtime import create_mcp_server
+            server = create_mcp_server(
+                str(self.shared_state.workspace_root),
+                db=getattr(self.shared_state, "db", None),
+                indexer=getattr(self.shared_state, "indexer", None),
+            )
+            self.shared_state.server = server
+        return server
 
     async def handle_connection(self):
         trace("session_handle_connection_start")
@@ -231,7 +255,7 @@ class Session:
                 loop = asyncio.get_event_loop()
                 await loop.run_in_executor(
                     None,
-                    self.shared_state.server.handle_initialized,
+                    self._shared_server().handle_initialized,
                     params
                 )
         elif method == "shutdown":
@@ -284,7 +308,7 @@ class Session:
             loop = asyncio.get_event_loop()
             response = await loop.run_in_executor(
                 None,
-                self.shared_state.server.handle_request,
+                self._shared_server().handle_request,
                 forwarded_request
             )
 
@@ -334,8 +358,26 @@ class Session:
         self.workspace_root = workspace_root
         persist_flag = params.get("sariPersist") or params.get("persist")
         persist = bool(persist_flag) or str(os.environ.get("SARI_PERSIST_WORKSPACE", "")).strip().lower() in {"1", "true", "yes", "on"}
-        self.shared_state = self.registry.get_or_create(self.workspace_root, persistent=persist)
-        self.registry.touch_workspace(self.workspace_root)
+        same_workspace_reinit = (
+            self.shared_state is not None
+            and self.workspace_root == workspace_root
+        )
+        if same_workspace_reinit:
+            # Keep one ref per live connection. Re-initialize on same root
+            # should not grow ref_count.
+            if persist:
+                try:
+                    self.shared_state = self.registry.get_or_create(
+                        self.workspace_root,
+                        persistent=True,
+                        track_ref=False,
+                    )
+                except TypeError:
+                    self.shared_state = self.registry.get_or_create(self.workspace_root, persistent=True)
+            self.registry.touch_workspace(self.workspace_root)
+        else:
+            self.shared_state = self.registry.get_or_create(self.workspace_root, persistent=persist)
+            self.registry.touch_workspace(self.workspace_root)
         trace("session_handle_initialize_bound", workspace_root=self.workspace_root)
 
         # Record workspace mapping in global registry so other clients can find us
@@ -366,7 +408,7 @@ class Session:
         # We need to construct the result based on server's response
         # LocalSearchMCPServer.handle_initialize returns the result dict directly
         try:
-            result = self.shared_state.server.handle_initialize(params)
+            result = self._shared_server().handle_initialize(params)
             response = {
                 "jsonrpc": "2.0",
                 "id": msg_id,
@@ -403,6 +445,13 @@ class Session:
         await self.send_json(response)
 
     def cleanup(self):
+        preinit = self._preinit_server
+        self._preinit_server = None
+        if preinit is not None and hasattr(preinit, "shutdown"):
+            try:
+                preinit.shutdown()
+            except Exception:
+                pass
         if self.workspace_root:
             self.registry.release(self.workspace_root)
             self.workspace_root = None

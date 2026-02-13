@@ -3,6 +3,7 @@ from collections.abc import Mapping
 from typing import TypeAlias
 
 from sari.core.queue_pipeline import FsEvent, FsEventKind
+from sari.core.services.error_codes import ServiceErrorCode
 
 ServiceResult: TypeAlias = dict[str, object]
 
@@ -19,13 +20,15 @@ class IndexService:
         self.indexer = indexer
 
     def _ensure_available(self) -> ServiceResult:
-        from sari.mcp.tools.protocol import ErrorCode
-
         if not self.indexer:
-            return {"ok": False, "code": ErrorCode.INTERNAL, "message": "indexer not available"}
+            return {"ok": False, "code": ServiceErrorCode.INTERNAL.value, "message": "indexer not available"}
         if not getattr(self.indexer, "indexing_enabled", True):
             mode = str(getattr(self.indexer, "indexer_mode", "off"))
-            code = ErrorCode.ERR_INDEXER_DISABLED if mode == "off" else ErrorCode.ERR_INDEXER_FOLLOWER
+            code = (
+                ServiceErrorCode.ERR_INDEXER_DISABLED.value
+                if mode == "off"
+                else ServiceErrorCode.ERR_INDEXER_FOLLOWER.value
+            )
             return {
                 "ok": False,
                 "code": code,
@@ -74,8 +77,6 @@ class IndexService:
         return {"ok": True, "scanned_files": scanned, "indexed_files": indexed}
 
     def rescan(self) -> ServiceResult:
-        from sari.mcp.tools.protocol import ErrorCode
-
         chk = self._ensure_available()
         if not chk.get("ok"):
             return chk
@@ -85,13 +86,15 @@ class IndexService:
         elif hasattr(self.indexer, "scan_once"):
             self.indexer.scan_once()
         else:
-            return {"ok": False, "code": ErrorCode.INTERNAL, "message": "indexer does not support rescan"}
+            return {
+                "ok": False,
+                "code": ServiceErrorCode.INTERNAL.value,
+                "message": "indexer does not support rescan",
+            }
 
         return {"ok": True}
 
     def index_file(self, fs_path: str) -> ServiceResult:
-        from sari.mcp.tools.protocol import ErrorCode
-
         chk = self._ensure_available()
         if not chk.get("ok"):
             return chk
@@ -101,4 +104,4 @@ class IndexService:
             self.indexer._enqueue_fsevent(evt)
             return {"ok": True}
         except Exception as e:
-            return {"ok": False, "code": ErrorCode.INTERNAL, "message": str(e)}
+            return {"ok": False, "code": ServiceErrorCode.INTERNAL.value, "message": str(e)}

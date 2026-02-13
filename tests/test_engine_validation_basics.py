@@ -50,3 +50,13 @@ def test_cjk_normalization_retains_korean_tokens():
     normalized = _normalize_engine_text(sample)
     assert "네이버" in normalized
     assert "레이아웃" in normalized
+
+
+def test_parser_factory_language_cache_is_capped(monkeypatch):
+    monkeypatch.setattr(ParserFactory, "_lang_cache_max", 32)
+    ParserFactory._lang_cache.clear()
+
+    for i in range(300):
+        ParserFactory.get_language(f".x{i}")
+
+    assert len(ParserFactory._lang_cache) <= 32

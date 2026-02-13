@@ -223,7 +223,7 @@ class ASTEngine:
             # Fix paths back to original .vue path
             for s in parse_result.symbols:
                 s.path = path
-            for r in parse_result.relations:
+            for _ in parse_result.relations:
                 # to_path is empty by default, but if it was set, we don't know where it points.
                 # However, for internal relations, we might need to fix them.
                 pass

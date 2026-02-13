@@ -1,5 +1,6 @@
 import sys
 import io
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 from sari.mcp.server import main as server_main
 
@@ -43,3 +44,11 @@ def test_dto_to_file_row_robustness():
     assert len(row) == 20 # 스키마 컬럼 개수와 일치해야 함
     assert row[0] == "/tmp/a.py"
     assert row[2] == "r1"
+
+
+def test_http_client_endpoint_resolution_contract_boundary():
+    repo_root = Path(__file__).resolve().parents[1]
+    http_client = repo_root / "src" / "sari" / "mcp" / "cli" / "http_client.py"
+    source = http_client.read_text(encoding="utf-8")
+    assert "from sari.core.endpoint_resolver import resolve_http_endpoint" in source
+    assert "return resolve_http_endpoint(" in source

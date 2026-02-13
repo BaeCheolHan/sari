@@ -143,6 +143,11 @@
 - sql: any `*.sql`
 
 ## Architecture
+### Runtime SSOT Rules
+- Daemon/HTTP endpoint resolution is centralized in `sari.core.endpoint_resolver`.
+- Runtime registry (`ServerRegistry`) is authoritative endpoint metadata.
+- Legacy workspace `server.json` is compatibility-only and can be disabled with `SARI_STRICT_SSOT=1`.
+
 ### Data Model
 - Single DB with `root_id` tenancy
 - Add `roots` table

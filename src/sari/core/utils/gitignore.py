@@ -1,9 +1,14 @@
 import fnmatch
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List
 
 _GITIGNORE_CACHE: dict[str, tuple[float, List[str]]] = {}
+try:
+    _GITIGNORE_CACHE_MAX = max(64, int(os.environ.get("SARI_GITIGNORE_CACHE_MAX", "2048") or "2048"))
+except Exception:
+    _GITIGNORE_CACHE_MAX = 2048
 
 
 @dataclass
@@ -29,6 +34,8 @@ def load_gitignore(root: Path) -> List[str]:
     try:
         lines = gitignore.read_text(encoding="utf-8").splitlines()
         _GITIGNORE_CACHE[key] = (mtime, list(lines))
+        if len(_GITIGNORE_CACHE) > _GITIGNORE_CACHE_MAX:
+            _GITIGNORE_CACHE.pop(next(iter(_GITIGNORE_CACHE)), None)
         return lines
     except Exception:
         return []

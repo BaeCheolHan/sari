@@ -1,4 +1,5 @@
 import pytest
+import sqlite3
 from unittest.mock import MagicMock
 from sari.core.indexer.main import Indexer
 from sari.core.db.main import LocalSearchDB
@@ -37,5 +38,5 @@ def test_db_turbo_rollback_on_failure():
     conn.execute("INSERT INTO staging_mem.files_temp VALUES ('bad')")
 
     # Attempting to finalize should fail gracefully (raise exception now)
-    with pytest.raises(Exception):
+    with pytest.raises(sqlite3.DatabaseError):
         db.finalize_turbo_batch()

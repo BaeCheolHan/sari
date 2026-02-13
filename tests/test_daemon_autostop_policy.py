@@ -4,7 +4,7 @@ import threading
 import time
 import sys
 
-from sari.mcp.daemon import SariDaemon, RuntimeStateProvider
+from sari.mcp.daemon import DaemonEvent, SariDaemon, RuntimeStateProvider
 from sari.mcp.workspace_registry import Registry
 
 
@@ -379,6 +379,94 @@ def test_event_burst_soak_drains_queue_without_state_corruption():
     assert daemon._event_queue_depth == 0
     assert daemon.active_lease_count() == 0
     assert daemon._suicide_state in {"idle", "grace", "stopping"}
+
+
+def test_lease_renew_events_are_coalesced_before_drain():
+    daemon = SariDaemon(host="127.0.0.1", port=49985)
+
+    daemon._enqueue_lease_event("LEASE_ISSUE", lease_id="lease-1", client_hint="cli")
+    for _ in range(100):
+        daemon._enqueue_lease_event("LEASE_RENEW", lease_id="lease-1")
+
+    # ISSUE(1) + coalesced RENEW(1)
+    assert daemon._event_queue_depth == 2
+    daemon._apply_lease_events(max_events=64)
+    assert daemon._event_queue_depth == 0
+
+
+def test_heartbeat_events_are_coalesced_before_drain():
+    daemon = SariDaemon(host="127.0.0.1", port=49984)
+
+    for _ in range(100):
+        daemon._enqueue_event(DaemonEvent(event_type="HEARTBEAT_TICK"))
+
+    assert daemon._event_queue_depth == 1
+    daemon._apply_lease_events(max_events=64)
+    assert daemon._event_queue_depth == 0
+
+
+def test_controller_wakeup_drains_events_before_heartbeat_interval(monkeypatch):
+    daemon = SariDaemon(host="127.0.0.1", port=49983)
+    fake_ws_reg = SimpleNamespace(
+        active_count=lambda: 0,
+        has_persistent=lambda: False,
+        has_indexing_activity=lambda: False,
+        get_last_activity_ts=lambda: time.time(),
+        reap_stale_refs=lambda _max_idle_sec: 0,
+    )
+    monkeypatch.setattr("sari.mcp.workspace_registry.Registry.get_instance", lambda: fake_ws_reg)
+    monkeypatch.setattr("sari.mcp.daemon.settings.DAEMON_HEARTBEAT_SEC", 5.0)
+    monkeypatch.setattr("sari.mcp.daemon.settings.DAEMON_AUTOSTOP", False)
+    monkeypatch.setattr(daemon._registry, "touch_daemon", lambda _boot_id: None)
+    monkeypatch.setattr(daemon._registry, "get_daemon", lambda _boot_id: {"draining": False})
+
+    t = threading.Thread(target=daemon._controller_loop, daemon=True)
+    t.start()
+    daemon._enqueue_lease_event("LEASE_ISSUE", lease_id="lease-early-drain", client_hint="cli")
+    daemon._enqueue_lease_event("LEASE_REVOKE", lease_id="lease-early-drain", reason="close")
+
+    deadline = time.time() + 0.5
+    while time.time() < deadline and daemon._event_queue_depth > 0:
+        time.sleep(0.01)
+
+    daemon._stop_event.set()
+    daemon._controller_wakeup.set()
+    t.join(timeout=1.0)
+    assert daemon._event_queue_depth == 0
+
+
+def test_issue_then_revoke_before_drain_is_coalesced():
+    daemon = SariDaemon(host="127.0.0.1", port=49982)
+
+    daemon._enqueue_lease_event("LEASE_ISSUE", lease_id="lease-coalesce", client_hint="cli")
+    daemon._enqueue_lease_event("LEASE_REVOKE", lease_id="lease-coalesce", reason="close")
+
+    # ISSUE event remains queued but paired REVOKE is absorbed before enqueue.
+    assert daemon._event_queue_depth == 1
+    daemon._apply_lease_events(max_events=64)
+    assert daemon._event_queue_depth == 0
+    assert daemon.active_lease_count() == 0
+
+
+def test_duplicate_revoke_events_are_coalesced():
+    daemon = SariDaemon(host="127.0.0.1", port=49981)
+
+    daemon._enqueue_lease_event("LEASE_REVOKE", lease_id="lease-r", reason="close1")
+    daemon._enqueue_lease_event("LEASE_REVOKE", lease_id="lease-r", reason="close2")
+
+    assert daemon._event_queue_depth == 1
+    daemon._apply_lease_events(max_events=64)
+    assert daemon._event_queue_depth == 0
+
+
+def test_event_queue_depth_is_capped_under_issue_burst(monkeypatch):
+    monkeypatch.setenv("SARI_DAEMON_EVENT_QUEUE_SIZE", "8")
+    daemon = SariDaemon(host="127.0.0.1", port=49980)
+
+    for i in range(200):
+        daemon._enqueue_lease_event("LEASE_ISSUE", lease_id=f"burst-{i}", client_hint="burst")
+
+    assert daemon._event_queue_depth <= 8
 
 
 def test_worker_hang_with_reconnect_still_shuts_down_once(monkeypatch):

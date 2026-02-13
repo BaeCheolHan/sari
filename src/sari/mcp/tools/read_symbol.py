@@ -81,7 +81,7 @@ def _symbol_candidates(
         "line",
         "end_line",
         "qualname"]
-    return [dict(zip(cols, r)) for r in rows]
+    return [dict(zip(cols, r, strict=False)) for r in rows]
 
 
 def execute_read_symbol(args: object,

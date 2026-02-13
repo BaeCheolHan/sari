@@ -9,8 +9,6 @@ import os
 import asyncio
 import inspect
 import logging
-import re
-import datetime as _dt
 import time
 from contextlib import asynccontextmanager
 from typing import Optional, TypeAlias
@@ -24,11 +22,25 @@ from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 from sari.version import __version__
 from sari.core.daemon_health import detect_orphan_daemons
+from sari.core.dashboard_html import get_dashboard_html
+from sari.core.http_error_feed import (
+    build_errors_payload as _build_errors_payload_impl,
+    parse_log_line_ts as _parse_log_line_ts_impl,
+    read_recent_log_error_entries as _read_recent_log_error_entries_impl,
+)
+from sari.core.http_workspace_feed import build_registered_workspaces_payload
+from sari.core.http_status_payload import (
+    build_orphan_daemon_warnings as _build_orphan_daemon_warnings_impl,
+    build_performance_payload as _build_performance_payload_impl,
+    build_queue_depths_payload as _build_queue_depths_payload_impl,
+    build_runtime_status as _build_runtime_status_impl,
+    build_status_payload_base as _build_status_payload_base_impl,
+)
+from sari.core.mcp_runtime import create_mcp_server
 from sari.core.policy_engine import load_daemon_runtime_status
-from sari.mcp.stabilization.warning_sink import warning_sink
+from sari.core.warning_sink import warning_sink
 
 JsonObject: TypeAlias = dict[str, object]
-JsonArray: TypeAlias = list[JsonObject]
 
 
 class AsyncHttpServer:
@@ -78,52 +90,22 @@ class AsyncHttpServer:
         return {str(k): int(v or 0) for k, v in self._status_warning_counts.items()}
 
     def _read_recent_log_errors(self, limit: int = 50) -> list[str]:
-        try:
-            from sari.core.workspace import WorkspaceManager
-            env_log_dir = os.environ.get("SARI_LOG_DIR")
-            log_dir = os.path.expanduser(env_log_dir) if env_log_dir else str(WorkspaceManager.get_global_log_dir())
-            log_file = os.path.join(log_dir, "daemon.log")
-            if not os.path.exists(log_file):
-                return []
-            file_size = os.path.getsize(log_file)
-            read_size = min(file_size, 1024 * 1024)
-            with open(log_file, "rb") as f:
-                if file_size > read_size:
-                    f.seek(file_size - read_size)
-                chunk = f.read().decode("utf-8", errors="ignore")
-            lines = chunk.splitlines()
-            out: list[str] = []
-            level_pat = re.compile(r"\b(ERROR|CRITICAL)\b")
-            for line in reversed(lines):
-                text = str(line or "").strip()
-                if not text:
-                    continue
-                if level_pat.search(text):
-                    out.append(text)
-                if len(out) >= max(1, int(limit)):
-                    break
-            out.reverse()
-            return out
-        except Exception:
-            return []
+        entries = _read_recent_log_error_entries_impl(
+            limit=limit,
+            parse_ts=self._parse_log_line_ts,
+        )
+        return [str(item.get("text") or "") for item in entries]
 
     @staticmethod
     def _parse_log_line_ts(text: str) -> float:
-        raw = str(text or "")
-        m = re.match(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:,\d{1,6})?)", raw)
-        if not m:
-            return 0.0
-        token = m.group(1)
-        for fmt in ("%Y-%m-%d %H:%M:%S,%f", "%Y-%m-%d %H:%M:%S"):
-            try:
-                return _dt.datetime.strptime(token, fmt).timestamp()
-            except Exception:
-                continue
-        return 0.0
+        return _parse_log_line_ts_impl(text)
 
     def _read_recent_log_error_entries(self, limit: int = 50) -> list[JsonObject]:
         lines = self._read_recent_log_errors(limit=limit)
-        return [{"text": str(line), "ts": float(self._parse_log_line_ts(str(line)) or 0.0)} for line in lines]
+        return [
+            {"text": str(line), "ts": float(self._parse_log_line_ts(str(line)) or 0.0)}
+            for line in lines
+        ]
 
     def _build_errors_payload(
         self,
@@ -132,50 +114,15 @@ class AsyncHttpServer:
         reason_codes: Optional[set[str]] = None,
         since_sec: int = 0,
     ) -> JsonObject:
-        lim = max(1, min(int(limit or 50), 200))
-        source_norm = str(source or "all").strip().lower()
-        if source_norm not in {"all", "log", "warning"}:
-            source_norm = "all"
-        reason_filter = {str(rc).strip() for rc in (reason_codes or set()) if str(rc).strip()}
-        since = max(0, int(since_sec or 0))
-        cutoff_ts = time.time() - since if since > 0 else 0.0
-        warnings_recent = warning_sink.warnings_recent()
-        if isinstance(warnings_recent, list):
-            filtered_warnings = []
-            for item in warnings_recent:
-                if not isinstance(item, dict):
-                    continue
-                code = str(item.get("reason_code") or "")
-                ts = float(item.get("ts") or 0.0)
-                if reason_filter and code not in reason_filter:
-                    continue
-                if cutoff_ts > 0 and ts > 0 and ts < cutoff_ts:
-                    continue
-                filtered_warnings.append(item)
-            warnings_recent = filtered_warnings
-        else:
-            warnings_recent = []
-        log_entries = self._read_recent_log_error_entries(limit=lim)
-        if cutoff_ts > 0:
-            log_entries = [e for e in log_entries if float(e.get("ts") or 0.0) >= cutoff_ts]
-        log_errors = [str(e.get("text") or "") for e in log_entries]
-        if source_norm == "log":
-            warnings_recent = []
-        elif source_norm == "warning":
-            log_entries = []
-            log_errors = []
-        return {
-            "ok": True,
-            "limit": lim,
-            "source": source_norm,
-            "reason_codes": sorted(list(reason_filter)),
-            "since_sec": since,
-            "warnings_recent": warnings_recent[-lim:] if isinstance(warnings_recent, list) else [],
-            "warning_counts": warning_sink.warning_counts(),
-            "status_warning_counts": self._warning_counts_json(),
-            "log_errors": log_errors[-lim:],
-            "log_error_entries": log_entries[-lim:],
-        }
+        return _build_errors_payload_impl(
+            limit=limit,
+            source=source,
+            reason_codes=reason_codes,
+            since_sec=since_sec,
+            warning_sink_obj=warning_sink,
+            read_log_entries=self._read_recent_log_error_entries,
+            status_warning_counts_provider=self._warning_counts_json,
+        )
 
     @staticmethod
     def _indexer_workspace_roots(indexer: object) -> list[str]:
@@ -266,17 +213,6 @@ class AsyncHttpServer:
                 "db_metrics_error_count": 1,
             }
 
-    @staticmethod
-    def _normalize_workspace_path(path: str) -> str:
-        if not path:
-            return ""
-        expanded = os.path.expanduser(str(path))
-        try:
-            from sari.core.workspace import WorkspaceManager
-            return WorkspaceManager.normalize_path(expanded)
-        except Exception:
-            return expanded.replace("\\", "/").rstrip("/")
-
     def _normalize_workspace_path_with_meta(self, path: str) -> tuple[str, str]:
         if not path:
             return "", "empty"
@@ -336,83 +272,55 @@ class AsyncHttpServer:
 
     async def dashboard(self, request: Request) -> HTMLResponse:
         """Serve dashboard HTML aligned with sync server."""
-        from sari.core.http_server import Handler
-
-        handler = Handler.__new__(Handler)
-        html = handler._get_dashboard_html()
-        return HTMLResponse(html, status_code=200)
+        return HTMLResponse(get_dashboard_html(), status_code=200)
     
     async def status(self, request: Request) -> JSONResponse:
         """Server status endpoint."""
         st = self.indexer.status
-        runtime_status = {}
-        if hasattr(self.indexer, "get_runtime_status"):
-            try:
-                raw_runtime = self.indexer.get_runtime_status()
-                if isinstance(raw_runtime, dict):
-                    runtime_status = raw_runtime
-            except Exception as e:
-                self._warn_status(
-                    "INDEXER_RUNTIME_STATUS_FAILED",
-                    "Failed to resolve indexer runtime status; using base status",
-                    error=repr(e),
-                )
+        runtime_status = _build_runtime_status_impl(self.indexer, warn_status=self._warn_status)
         daemon_status = load_daemon_runtime_status()
         repo_stats = {}
         if hasattr(self.db, "get_repo_stats"):
             repo_stats = self.db.get_repo_stats(root_ids=self.root_ids)
         total_db_files = sum(repo_stats.values()) if repo_stats else 0
         orphan_daemons = detect_orphan_daemons()
-        orphan_daemon_warnings = [
-            f"Orphan daemon PID {d.get('pid')} detected (not in registry)"
-            for d in orphan_daemons
-        ]
+        orphan_daemon_warnings = _build_orphan_daemon_warnings_impl(orphan_daemons)
+        performance = _build_performance_payload_impl(self.indexer)
+        queue_depths = _build_queue_depths_payload_impl(self.indexer, fallback=False)
         
-        return JSONResponse({
-            "ok": True,
-            "host": self.host,
-            "port": self.port,
-            "version": self.version,
-            "async_server": True,  # New flag to indicate async server
-            "index_ready": bool(runtime_status.get("index_ready", bool(getattr(st, "index_ready", False)))),
-            "last_scan_ts": int(runtime_status.get("scan_finished_ts", getattr(st, "scan_finished_ts", getattr(st, "last_scan_ts", 0))) or 0),
-            "last_commit_ts": self.indexer.get_last_commit_ts() if hasattr(self.indexer, "get_last_commit_ts") else 0,
-            "scanned_files": int(runtime_status.get("scanned_files", getattr(st, "scanned_files", 0)) or 0),
-            "indexed_files": int(runtime_status.get("indexed_files", getattr(st, "indexed_files", 0)) or 0),
-            "symbols_extracted": int(runtime_status.get("symbols_extracted", getattr(st, "symbols_extracted", 0)) or 0),
-            "total_files_db": total_db_files,
-            "errors": int(runtime_status.get("errors", getattr(st, "errors", 0)) or 0),
-            "status_source": str(runtime_status.get("status_source", "indexer_status") or "indexer_status"),
-            "orphan_daemon_count": len(orphan_daemons),
-            "orphan_daemon_warnings": orphan_daemon_warnings,
-            "signals_disabled": daemon_status.signals_disabled,
-            "shutdown_intent": daemon_status.shutdown_intent,
-            "suicide_state": daemon_status.suicide_state,
-            "active_leases_count": daemon_status.active_leases_count,
-            "leases": list(daemon_status.leases or []),
-            "last_reap_at": daemon_status.last_reap_at,
-            "reaper_last_run_at": daemon_status.reaper_last_run_at,
-            "no_client_since": daemon_status.no_client_since,
-            "grace_remaining": daemon_status.grace_remaining,
-            "grace_remaining_ms": daemon_status.grace_remaining_ms,
-            "shutdown_once_set": daemon_status.shutdown_once_set,
-            "last_event_ts": daemon_status.last_event_ts,
-            "event_queue_depth": daemon_status.event_queue_depth,
-            "last_shutdown_reason": daemon_status.last_shutdown_reason,
-            "shutdown_reason": daemon_status.shutdown_reason,
-            "workers_alive": list(daemon_status.workers_alive or []),
-            "fts_enabled": self.db.fts_enabled,
-            "worker_count": getattr(self.indexer, "max_workers", 0),
-            "performance": self.indexer.get_performance_metrics() if hasattr(self.indexer, "get_performance_metrics") else {},
-            "queue_depths": self.indexer.get_queue_depths() if hasattr(self.indexer, "get_queue_depths") else {},
-            "repo_stats": repo_stats,
-            "roots": self.db.get_roots() if hasattr(self.db, "get_roots") else [],
-            "system_metrics": self._get_system_metrics(),
-            "endpoint_ok": bool(getattr(self, "_endpoint_ok", True)),
-            "status_warning_counts": self._warning_counts_json(),
-            "warning_counts": warning_sink.warning_counts(),
-            "warnings_recent": warning_sink.warnings_recent(),
-        })
+        return JSONResponse(
+            _build_status_payload_base_impl(
+                host=self.host,
+                port=self.port,
+                version=self.version,
+                status_obj=st,
+                runtime_status=runtime_status,
+                base_last_scan_ts=int(
+                    getattr(st, "scan_finished_ts", getattr(st, "last_scan_ts", 0)) or 0
+                ),
+                total_db_files=total_db_files,
+                orphan_daemons=orphan_daemons,
+                orphan_daemon_warnings=orphan_daemon_warnings,
+                daemon_status=daemon_status,
+                performance=performance,
+                queue_depths=queue_depths,
+                repo_stats=repo_stats,
+                roots=self.db.get_roots() if hasattr(self.db, "get_roots") else [],
+                system_metrics=self._get_system_metrics(),
+                status_warning_counts=self._warning_counts_json(),
+                warning_counts=warning_sink.warning_counts(),
+                warnings_recent=warning_sink.warnings_recent(),
+                extra={
+                    "async_server": True,
+                    "last_commit_ts": self.indexer.get_last_commit_ts()
+                    if hasattr(self.indexer, "get_last_commit_ts")
+                    else 0,
+                    "fts_enabled": self.db.fts_enabled,
+                    "worker_count": getattr(self.indexer, "max_workers", 0),
+                    "endpoint_ok": bool(getattr(self, "_endpoint_ok", True)),
+                },
+            )
+        )
 
     async def errors(self, request: Request) -> JSONResponse:
         raw_limit = request.query_params.get("limit", "50")
@@ -591,190 +499,25 @@ class AsyncHttpServer:
 
     async def workspaces(self, request: Request) -> JSONResponse:
         """Registered workspace roots with health/indexing hints."""
-        configured_roots: list[str] = []
-        workspace_manager = None
-        try:
-            from sari.core.workspace import WorkspaceManager
-            from sari.core.config.main import Config
-
-            workspace_manager = WorkspaceManager
-            base_root = self.workspace_root or WorkspaceManager.resolve_workspace_root()
-            cfg_path = WorkspaceManager.resolve_config_path(base_root)
-            cfg = Config.load(cfg_path, workspace_root_override=base_root)
-            configured_roots = list(getattr(cfg, "workspace_roots", []) or [])
-        except Exception:
-            configured_roots = [self.workspace_root] if self.workspace_root else []
-
-        norm_roots: list[str] = []
-        seen: set[str] = set()
-        normalized_by_path: dict[str, str] = {}
-        normalize_fallback_count = 0
-        for root in configured_roots:
-            if not root:
-                continue
-            normalized, normalized_by = self._normalize_workspace_path_with_meta(str(root))
-            if normalized and normalized not in seen:
-                seen.add(normalized)
-                norm_roots.append(normalized)
-                normalized_by_path[normalized] = normalized_by
-            if normalized_by == "fallback":
-                normalize_fallback_count += 1
-
-        indexed_by_path: dict[str, JsonObject] = {}
-        row_parse_error_count = 0
-        if hasattr(self.db, "get_roots"):
-            try:
-                rows = self.db.get_roots() or []
-                for row in rows:
-                    if not isinstance(row, dict):
-                        continue
-                    try:
-                        p = row.get("path") or row.get("root_path") or row.get("real_path")
-                        if not p:
-                            continue
-                        normalized, normalized_by = self._normalize_workspace_path_with_meta(str(p))
-                        indexed_by_path[normalized] = row
-                        if normalized_by == "fallback":
-                            normalize_fallback_count += 1
-                    except Exception as row_error:
-                        row_parse_error_count += 1
-                        self._warn_status(
-                            "WORKSPACE_ROW_PARSE_FAILED",
-                            "Failed to parse workspace root row",
-                            error=repr(row_error),
-                            raw_row=repr(row),
-                        )
-            except Exception as e:
-                self._warn_status(
-                    "WORKSPACE_ROOTS_FETCH_FAILED",
-                    "Failed to load workspace roots from DB",
-                    error=repr(e),
-                )
-        failed_by_root: dict[str, JsonObject] = {}
-        if hasattr(self.db, "execute"):
-            try:
-                failed_rows = self.db.execute(
-                    """
-                    SELECT
-                        root_id,
-                        SUM(CASE WHEN attempts < 3 THEN 1 ELSE 0 END) AS pending_count,
-                        SUM(CASE WHEN attempts >= 3 THEN 1 ELSE 0 END) AS failed_count
-                    FROM failed_tasks
-                    GROUP BY root_id
-                    """
-                ).fetchall() or []
-                for row in failed_rows:
-                    if isinstance(row, dict):
-                        rid = str(row.get("root_id") or "")
-                        pending_count = int(row.get("pending_count") or 0)
-                        failed_count = int(row.get("failed_count") or 0)
-                    else:
-                        rid = str(getattr(row, "root_id", "") or "")
-                        if not rid and isinstance(row, (list, tuple)) and len(row) >= 1:
-                            rid = str(row[0] or "")
-                        pending_count = int(getattr(row, "pending_count", 0) or 0)
-                        failed_count = int(getattr(row, "failed_count", 0) or 0)
-                        if isinstance(row, (list, tuple)):
-                            if len(row) >= 2:
-                                pending_count = int(row[1] or 0)
-                            if len(row) >= 3:
-                                failed_count = int(row[2] or 0)
-                    if rid:
-                        failed_by_root[rid] = {
-                            "pending_count": pending_count,
-                            "failed_count": failed_count,
-                        }
-            except Exception as e:
-                self._warn_status(
-                    "FAILED_TASKS_AGGREGATE_FAILED",
-                    "Failed to aggregate failed task counts",
-                    error=repr(e),
-                )
-
-        watched_roots = set()
-        try:
-            cfg_roots = self._indexer_workspace_roots(self.indexer)
-            for root in cfg_roots:
-                normalized, normalized_by = self._normalize_workspace_path_with_meta(str(root))
-                watched_roots.add(normalized)
-                if normalized_by == "fallback":
-                    normalize_fallback_count += 1
-        except Exception as e:
-            self._warn_status(
-                "WATCHED_ROOTS_NORMALIZE_FAILED",
-                "Failed while normalizing watched roots",
-                error=repr(e),
-            )
-
-        workspaces: JsonArray = []
-        for root in norm_roots:
-            abs_path = os.path.expanduser(root)
-            exists = os.path.isdir(abs_path)
-            readable = os.access(abs_path, os.R_OK | os.X_OK) if exists else False
-            watched = root in watched_roots
-            indexed_row = indexed_by_path.get(root)
-            indexed = bool(indexed_row) and (
-                int((indexed_row or {}).get("file_count", 0) or 0) > 0
-                or int((indexed_row or {}).get("last_indexed_ts", 0) or 0) > 0
-                or int((indexed_row or {}).get("updated_ts", 0) or 0) > 0
-            )
-            computed_root_id = ""
-            if isinstance(indexed_row, dict):
-                computed_root_id = str(indexed_row.get("root_id", "") or "")
-            if not computed_root_id and workspace_manager is not None:
-                try:
-                    computed_root_id = str(workspace_manager.root_id_for_workspace(root))
-                except Exception:
-                    computed_root_id = ""
-            failed_counts = failed_by_root.get(computed_root_id, {})
-            if not exists:
-                status = "missing"
-                reason = "Path does not exist"
-                index_state = "Unavailable"
-            elif not readable:
-                status = "blocked"
-                reason = "Path is not readable"
-                index_state = "Blocked"
-            elif indexed and watched:
-                status = "indexed"
-                reason = "Indexed in DB and watched"
-                index_state = "Idle"
-            elif indexed and not watched:
-                status = "indexed_stale"
-                reason = "Indexed in DB but not currently watched"
-                index_state = "Stale"
-            elif watched:
-                status = "watching"
-                reason = "Watching workspace, awaiting first index"
-                index_state = "Initial Scan Pending"
-            else:
-                status = "registered"
-                reason = "Configured but not currently watched"
-                index_state = "Not Watching"
-
-            workspaces.append({
-                "path": root,
-                "normalized_by": normalized_by_path.get(root, "workspace_manager"),
-                "root_id": computed_root_id,
-                "exists": bool(exists),
-                "readable": bool(readable),
-                "watched": bool(watched),
-                "indexed": bool(indexed),
-                "status": status,
-                "reason": reason,
-                "index_state": index_state,
-                "file_count": int((indexed_row or {}).get("file_count", 0) or 0) if isinstance(indexed_row, dict) else 0,
-                "last_indexed_ts": int((indexed_row or {}).get("last_indexed_ts", 0) or (indexed_row or {}).get("updated_ts", 0) or 0) if isinstance(indexed_row, dict) else 0,
-                "pending_count": int(failed_counts.get("pending_count", 0) or 0),
-                "failed_count": int(failed_counts.get("failed_count", 0) or 0),
-            })
+        payload = build_registered_workspaces_payload(
+            workspace_root=self.workspace_root,
+            db=self.db,
+            indexer=self.indexer,
+            normalize_workspace_path_with_meta=self._normalize_workspace_path_with_meta,
+            indexer_workspace_roots=self._indexer_workspace_roots,
+            status_warning_counts_provider=self._warning_counts_json,
+            warn_status=self._warn_status,
+            watched_roots_warn_code="WATCHED_ROOTS_NORMALIZE_FAILED",
+            watched_roots_warn_message="Failed while normalizing watched roots",
+        )
+        workspaces = payload.get("workspaces", [])
 
         return JSONResponse({
             "ok": True,
             "workspace_root": self.workspace_root,
             "count": len(workspaces),
-            "normalization": {"fallback_count": int(normalize_fallback_count)},
-            "row_parse_error_count": int(row_parse_error_count),
+            "normalization": payload.get("normalization", {"fallback_count": 0}),
+            "row_parse_error_count": int(payload.get("row_parse_error_count", 0) or 0),
             "status_warning_counts": self._warning_counts_json(),
             "workspaces": workspaces,
         })
@@ -856,11 +599,12 @@ def serve_async(
     # Create MCP server if not provided
     if mcp_server is None:
         try:
-            from sari.mcp.server import LocalSearchMCPServer
-            if cfg is not None:
-                mcp_server = LocalSearchMCPServer(workspace_root, cfg=cfg, db=db, indexer=indexer)
-            else:
-                mcp_server = LocalSearchMCPServer(workspace_root)
+            mcp_server = create_mcp_server(
+                workspace_root=workspace_root,
+                cfg=cfg,
+                db=db,
+                indexer=indexer,
+            )
         except Exception:
             endpoint_ok = False
             endpoint_errors.append("MCP_SERVER_INIT_FAILED")
@@ -877,9 +621,9 @@ def serve_async(
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.bind((host, port))
         sock.close()
-    except OSError:
+    except OSError as err:
         if strategy == "strict":
-            raise RuntimeError(f"HTTP API port {port} unavailable")
+            raise RuntimeError(f"HTTP API port {port} unavailable") from err
         # Auto-assign port
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.bind((host, 0))
@@ -912,8 +656,8 @@ def serve_async(
         access_log=False,
     )
     uvicorn_server = uvicorn.Server(config)
-    setattr(uvicorn_server, "sari_endpoint_ok", endpoint_ok)
-    setattr(uvicorn_server, "sari_endpoint_errors", list(endpoint_errors))
+    uvicorn_server.sari_endpoint_ok = endpoint_ok
+    uvicorn_server.sari_endpoint_errors = list(endpoint_errors)
     
     shutdown_event = threading.Event()
     
@@ -921,10 +665,10 @@ def serve_async(
         try:
             asyncio.run(uvicorn_server.serve())
         except Exception:
-            setattr(uvicorn_server, "sari_endpoint_ok", False)
-            existing_errors = list(getattr(uvicorn_server, "sari_endpoint_errors", []))
+            uvicorn_server.sari_endpoint_ok = False
+            existing_errors = list(uvicorn_server.sari_endpoint_errors)
             existing_errors.append("ASYNC_SERVER_THREAD_FAILED")
-            setattr(uvicorn_server, "sari_endpoint_errors", existing_errors)
+            uvicorn_server.sari_endpoint_errors = existing_errors
             server._endpoint_ok = False
             server._warn_status(
                 "ASYNC_SERVER_THREAD_FAILED",

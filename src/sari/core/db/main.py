@@ -3,11 +3,19 @@ import time
 import logging
 import os
 import re
-import zlib
 import threading
 from typing import Dict, Iterable, List, Optional, Tuple
 from peewee import SqliteDatabase
 from .models import db_proxy
+from .query_utils import apply_root_filter as _apply_root_filter_impl
+from .row_codec import (
+    decode_file_content,
+    normalize_repo_stat_row,
+    normalize_root_row,
+    normalize_search_row,
+    row_content_value,
+)
+from .snapshot_merge import merge_snapshot_into_main
 from ..models import ContextDTO, FILE_COLUMNS, SearchOptions, SnippetDTO
 from .schema import init_schema
 from ..utils.path import PathUtils
@@ -156,7 +164,7 @@ class LocalSearchDB:
                     row_tuple = list(r)
                 while len(row_tuple) < len(FILE_COLUMNS):
                     row_tuple.append(None)
-                data = dict(zip(FILE_COLUMNS, row_tuple))
+                data = dict(zip(FILE_COLUMNS, row_tuple, strict=False))
                 path = data.get("path")
                 if not path:
                     continue
@@ -255,16 +263,7 @@ class LocalSearchDB:
             rows = self.execute(sql, tuple(params) if params else None).fetchall() or []
             out: Dict[str, int] = {}
             for row in rows:
-                if isinstance(row, sqlite3.Row):
-                    label = str(row["label"] or "")
-                    count = int(row["file_count"] or 0)
-                elif isinstance(row, (list, tuple)):
-                    label = str(row[0] or "")
-                    count = int(row[1] or 0)
-                else:
-                    row_dict = dict(row) if isinstance(row, dict) else {}
-                    label = str(row_dict.get("label") or "")
-                    count = int(row_dict.get("file_count") or 0)
+                label, count = normalize_repo_stat_row(row)
                 out[label] = count
             return out
         except Exception:
@@ -310,45 +309,7 @@ class LocalSearchDB:
             ORDER BY r.root_path
         """
         rows = self.execute(sql).fetchall() or []
-        results: List[Dict[str, object]] = []
-        for row in rows:
-            if isinstance(row, sqlite3.Row):
-                data = dict(row)
-            elif isinstance(row, dict):
-                data = dict(row)
-            else:
-                vals = list(row) if isinstance(row, (list, tuple)) else []
-                data = {
-                    "root_id": vals[0] if len(vals) > 0 else "",
-                    "root_path": vals[1] if len(vals) > 1 else "",
-                    "real_path": vals[2] if len(vals) > 2 else "",
-                    "label": vals[3] if len(vals) > 3 else "",
-                    "state": vals[4] if len(vals) > 4 else "",
-                    "created_ts": vals[5] if len(vals) > 5 else 0,
-                    "updated_ts": vals[6] if len(vals) > 6 else 0,
-                    "last_scan_ts": vals[7] if len(vals) > 7 else 0,
-                    "file_count": vals[8] if len(vals) > 8 else 0,
-                    "last_indexed_ts": vals[9] if len(vals) > 9 else 0,
-                    "symbol_count": vals[10] if len(vals) > 10 else 0,
-                }
-            root_path = str(data.get("root_path") or "")
-            real_path = str(data.get("real_path") or "")
-            path = root_path or real_path
-            results.append({
-                "root_id": str(data.get("root_id") or ""),
-                "path": path,
-                "root_path": root_path,
-                "real_path": real_path,
-                "label": str(data.get("label") or ""),
-                "state": str(data.get("state") or "ready"),
-                "file_count": int(data.get("file_count") or 0),
-                "symbol_count": int(data.get("symbol_count") or 0),
-                "created_ts": int(data.get("created_ts") or 0),
-                "updated_ts": int(data.get("updated_ts") or 0),
-                "last_scan_ts": int(data.get("last_scan_ts") or 0),
-                "last_indexed_ts": int(data.get("last_indexed_ts") or 0),
-            })
-        return results
+        return [normalize_root_row(row) for row in rows]
 
     def read_file(self, path: str) -> Optional[str]:
         """특정 경로의 파일 내용을 DB에서 읽어 반환합니다 (압축 해제 포함)."""
@@ -372,27 +333,12 @@ class LocalSearchDB:
         row = self.execute(sql, tuple(candidates + candidates)).fetchone()
         if not row:
             return None
-        if isinstance(row, sqlite3.Row):
-            content = row["content"]
-        elif isinstance(row, (list, tuple)):
-            content = row[0] if row else None
-        elif isinstance(row, dict):
-            content = row.get("content")
-        else:
-            content = getattr(row, "content", None)
-        if isinstance(content, bytes) and content.startswith(b"ZLIB\0"):
-            try:
-                content = zlib.decompress(content[5:])
-            except Exception as de:
-                self.logger.error("Decompression failed for %s: %s", db_path, de)
-                raise RuntimeError(f"Corrupted compressed content for path: {db_path}") from de
-        if isinstance(content, bytes):
-            try:
-                return content.decode("utf-8")
-            except UnicodeDecodeError:
-                # Lossless one-byte mapping fallback for binary payloads.
-                return content.decode("latin-1")
-        return str(content) if content is not None else None
+        content = row_content_value(row)
+        try:
+            return decode_file_content(content, db_path)
+        except RuntimeError as de:
+            self.logger.error("Decompression failed for %s: %s", db_path, de)
+            raise
 
     def search_files(self, query: str, limit: int = 50) -> List[Dict]:
         """파일 경로 또는 내용을 기준으로 단순 검색을 수행합니다."""
@@ -409,12 +355,9 @@ class LocalSearchDB:
         ).fetchall() or []
         out: List[Dict] = []
         for row in rows:
-            if isinstance(row, sqlite3.Row):
-                out.append(dict(row))
-            elif isinstance(row, dict):
-                out.append(dict(row))
-            elif isinstance(row, (list, tuple)):
-                out.append({k: row[idx] if idx < len(row) else None for idx, k in enumerate(FILE_COLUMNS)})
+            normalized = normalize_search_row(row, FILE_COLUMNS)
+            if normalized:
+                out.append(normalized)
         return out
 
     def list_files(self,
@@ -559,8 +502,12 @@ class LocalSearchDB:
     def search(self, opts: SearchOptions):
         """Canonical search interface (engine delegated or repository fallback)."""
         if self.engine:
-            if hasattr(self.engine, "search") and callable(getattr(self.engine, "search")):
-                return self.engine.search(opts)
+            try:
+                search_fn = self.engine.search
+            except AttributeError:
+                search_fn = None
+            if callable(search_fn):
+                return search_fn(opts)
         repo = self._search_repo()
         return repo.search(opts)
 
@@ -583,29 +530,7 @@ class LocalSearchDB:
 
     def apply_root_filter(
             self, sql: str, root_id: Optional[str]) -> Tuple[str, List[object]]:
-        sql = str(sql or "").strip()
-        if not sql:
-            return sql, []
-        lower_sql = sql.lower()
-        insert_pos = len(sql)
-        for token in (" group by ", " order by ", " limit ", " offset "):
-            idx = lower_sql.find(token)
-            if idx != -1:
-                insert_pos = min(insert_pos, idx)
-        head = sql[:insert_pos].rstrip()
-        tail = sql[insert_pos:].lstrip()
-        has_where = re.search(r"\bwhere\b", head, flags=re.IGNORECASE) is not None
-        params: List[object] = []
-        if root_id:
-            if has_where:
-                head += " AND root_id = ?"
-            else:
-                head += " WHERE root_id = ?"
-            params.append(str(root_id))
-        elif not has_where:
-            head += " WHERE 1=1"
-        sql = head if not tail else f"{head} {tail}"
-        return sql, params
+        return _apply_root_filter_impl(sql, root_id)
 
     def count_failed_tasks(self) -> Tuple[int, int]:
         return self.tasks.count_failed_tasks()
@@ -627,47 +552,19 @@ class LocalSearchDB:
         워커 프로세스에서 생성된 스냅샷 DB의 내용을 메인 DB로 병합합니다.
         ATTACH DATABASE를 사용하여 테이블 간 데이터 복사를 수행합니다.
         """
-        if not new_path or not os.path.exists(new_path):
-            return
         conn = self.db.connection()
-        attached = False
         try:
-            conn.execute("ATTACH DATABASE ? AS snapshot", (new_path,))
-            attached = True
-            conn.execute("BEGIN IMMEDIATE TRANSACTION")
-            try:
-                for tbl in [
-                    "roots",
-                    "files",
-                    "symbols",
-                    "symbol_relations",
-                    "snippets",
-                    "failed_tasks",
-                        "embeddings"]:
-                    if tbl == "files":
-                        cols = ", ".join(FILE_COLUMNS)
-                        conn.execute(
-                            f"INSERT OR REPLACE INTO main.files({cols}) SELECT {cols} FROM snapshot.files")
-                    else:
-                        conn.execute(
-                            f"INSERT OR REPLACE INTO main.{tbl} SELECT * FROM snapshot.{tbl}")
-                conn.execute("COMMIT")
-            except Exception:
-                try:
-                    conn.execute("ROLLBACK")
-                except Exception:
-                    pass
-                raise
-            self.update_stats()
+            merged = merge_snapshot_into_main(
+                conn=conn,
+                snapshot_path=new_path,
+                file_columns=FILE_COLUMNS,
+                logger=self.logger,
+            )
+            if merged:
+                self.update_stats()
         except Exception as e:
             self.logger.error("Failed to swap DB file: %s", e, exc_info=True)
             raise
-        finally:
-            if attached:
-                try:
-                    conn.execute("DETACH DATABASE snapshot")
-                except Exception as de:
-                    self.logger.debug("Failed to detach snapshot: %s", de)
 
     def get_connection(self): return self.db.connection()
 

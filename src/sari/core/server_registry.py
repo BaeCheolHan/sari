@@ -2,6 +2,7 @@ import json
 import os
 import time
 import socket
+import logging
 from pathlib import Path
 from typing import Optional, Iterable, Callable, TypedDict
 from filelock import FileLock
@@ -12,6 +13,8 @@ _FALLBACK_REGISTRY = Path(
     os.environ.get(
         "SARI_REGISTRY_FALLBACK",
         "/tmp/sari/server.json"))
+_logger = logging.getLogger("sari.server_registry")
+_FALLBACK_WARNED = False
 
 
 class DaemonEntry(TypedDict, total=False):
@@ -56,11 +59,13 @@ def _ensure_writable_dir(path: Path) -> bool:
         path.parent.mkdir(parents=True, exist_ok=True)
         return os.access(str(path.parent), os.W_OK)
     except Exception:
+        _logger.debug("Failed to ensure writable directory for registry path: %s", path, exc_info=True)
         return False
 
 
 def get_registry_path() -> Path:
     """Dynamically determine registry path from environment or default."""
+    global _FALLBACK_WARNED
     env_path = os.environ.get("SARI_REGISTRY_FILE")
     if env_path:
         return Path(env_path).resolve()
@@ -69,6 +74,12 @@ def get_registry_path() -> Path:
         return REGISTRY_FILE
     # Fallback to a temp location when home directory is not writable.
     _ensure_writable_dir(_FALLBACK_REGISTRY)
+    if not _FALLBACK_WARNED:
+        _logger.warning(
+            "Default registry path not writable; using fallback path: %s",
+            _FALLBACK_REGISTRY,
+        )
+        _FALLBACK_WARNED = True
     return _FALLBACK_REGISTRY.resolve()
 
 
@@ -165,6 +176,12 @@ class ServerRegistry:
         try:
             data = json.loads(content)
         except Exception:
+            preview = str(content or "").replace("\n", "\\n")[:160]
+            _logger.warning(
+                "Failed to parse registry JSON; resetting to empty schema. preview=%r",
+                preview,
+                exc_info=True,
+            )
             data = {}
         return self._ensure_v2(data)
 
@@ -612,3 +629,60 @@ class ServerRegistry:
     def prune_dead(self) -> None:
         """Public method to prune dead daemons and associated workspaces."""
         self._update(self._prune_dead_locked)
+
+    def get_registry_snapshot(self, *, include_dead: bool = False) -> RegistryData:
+        """Return a normalized registry snapshot via public API."""
+        data = self._load()
+        daemons: dict[str, DaemonEntry] = {}
+        for boot_id, info in (data.get("daemons") or {}).items():
+            coerced = self._coerce_daemon_entry(info)
+            if coerced is None:
+                continue
+            if (not include_dead) and (not self._is_process_alive(coerced.get("pid"))):
+                continue
+            daemons[str(boot_id)] = dict(coerced)
+
+        valid_boot_ids = set(daemons.keys())
+        workspaces: dict[str, WorkspaceEntry] = {}
+        for ws, info in (data.get("workspaces") or {}).items():
+            coerced = self._coerce_workspace_entry(info)
+            if coerced is None:
+                continue
+            boot_id = str(coerced.get("boot_id") or "")
+            if (not include_dead) and boot_id and boot_id not in valid_boot_ids:
+                continue
+            workspaces[str(ws)] = dict(coerced)
+
+        return {"version": self.VERSION, "daemons": daemons, "workspaces": workspaces}
+
+    def list_daemons(self, *, include_dead: bool = False) -> list[DaemonWithBootId]:
+        """List daemon entries, optionally including dead processes."""
+        data = self.get_registry_snapshot(include_dead=include_dead)
+        out: list[DaemonWithBootId] = []
+        for boot_id, info in (data.get("daemons") or {}).items():
+            row = dict(info)
+            row["boot_id"] = str(boot_id)
+            out.append(row)
+        out.sort(key=lambda x: float(x.get("last_seen_ts") or 0.0), reverse=True)
+        return out
+
+    def reset_registry(self) -> None:
+        """Reset registry to an empty v2 payload."""
+        self._save(self._empty())
+
+    def get_live_daemon_pids(self) -> set[int]:
+        """Return alive daemon PIDs currently tracked in registry."""
+        data = self.get_registry_snapshot(include_dead=False)
+        out: set[int] = set()
+        for info in (data.get("daemons") or {}).values():
+            if not isinstance(info, dict):
+                continue
+            try:
+                pid = int(info.get("pid") or 0)
+            except (TypeError, ValueError):
+                continue
+            if pid <= 0:
+                continue
+            if self._is_process_alive(pid):
+                out.add(pid)
+        return out

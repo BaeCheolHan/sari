@@ -12,6 +12,16 @@ Both servers share the same core components:
 
 The HTTP server is the primary runtime entrypoint. MCP is attached and shares the same DB + indexer instance.
 
+## Endpoint Resolution SSOT
+- Canonical resolver: `sari.core.endpoint_resolver`.
+- HTTP endpoint precedence:
+  1. Explicit override args
+  2. Environment override (`SARI_HTTP_API_HOST`/`SARI_HTTP_API_PORT`, `SARI_HTTP_HOST`/`SARI_HTTP_PORT`)
+  3. Registry (`ServerRegistry.resolve_workspace_http`)
+  4. Config/default
+- Legacy `<workspace>/.codex/tools/sari/data/server.json` is compatibility-only.
+- `SARI_STRICT_SSOT=1` disables legacy `server.json` reads.
+
 ## Role Separation (Target)
 - **HTTP server**: request/response only (search, read, tool execution).
 - **Daemon**: background indexing, file watching, and ingestion only.
@@ -30,7 +40,8 @@ This separation avoids blocking requests during heavy indexing and keeps the ser
 - Entry: `sari/mcp/server.py`
 - JSON-RPC loop on stdin/stdout.
 - Requests are queued and executed on a worker pool to avoid blocking the read loop.
-- Uses `WorkspaceRegistry` to lazily create workspace sessions.
+- Uses a workspace runtime adapter (`sari.mcp.adapters.workspace_runtime`) to acquire/release shared workspace state.
+- Adapter default wraps `WorkspaceRegistry` singleton, but protocol layer depends on adapter contract only.
 
 ### Indexer + Search Engine
 - `Indexer` performs scan + watch + parse.
@@ -66,3 +77,4 @@ This separation avoids blocking requests during heavy indexing and keeps the ser
 ## Separation Notes
 - In a fully separated design, the HTTP server would connect to a daemon-managed DB/indexer via IPC.
 - The daemon would be the only process mutating the index, with the HTTP/MCP layer purely read/command.
+- Current boundary rule: MCP/CLI endpoint discovery must go through `core.endpoint_resolver`, not protocol-local registry parsing.

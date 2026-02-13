@@ -130,6 +130,17 @@ sari daemon stop
 sari daemon refresh
 ```
 
+## Endpoint/SSOT 정책
+
+- 런타임 endpoint 해석은 `sari.core.endpoint_resolver`를 단일 경로로 사용합니다.
+- HTTP endpoint 우선순위:
+  1. 명시적 override 인자
+  2. 환경변수 (`SARI_HTTP_API_HOST/PORT`, `SARI_HTTP_HOST/PORT`)
+  3. Registry (`~/.local/share/sari/server.json`)
+  4. config/default
+- 레거시 `<workspace>/.codex/tools/sari/data/server.json`은 하위호환 전용입니다.
+- `SARI_STRICT_SSOT=1` 설정 시 레거시 `server.json` 읽기를 비활성화합니다.
+
 ## 대시보드 및 HTTP 엔드포인트
 
 데몬 HTTP가 활성화되면 다음 엔드포인트를 사용할 수 있습니다.
@@ -172,7 +183,7 @@ sari --cmd config show
 ## 데이터 경로
 
 - DB: `~/.local/share/sari/index.db`
-- Registry: `~/.local/share/sari/server.json`
+- Registry(SSOT): `~/.local/share/sari/server.json`
 - Logs: `~/.local/share/sari/logs/`
 - 전역 config: `~/.config/sari/config.json`
 - 워크스페이스 config: `<workspace>/.sari/mcp-config.json`

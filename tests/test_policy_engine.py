@@ -6,6 +6,11 @@ from sari.core.policy_engine import (
     load_read_policy,
 )
 import sari.core.policy_engine as policy_engine
+from sari.core.daemon_runtime_state import (
+    clear_daemon_runtime_state,
+    get_daemon_runtime_state_snapshot,
+    publish_daemon_runtime_state,
+)
 
 
 def test_load_read_policy_defaults():
@@ -108,3 +113,35 @@ def test_load_daemon_runtime_status_reuses_json_list_cache(monkeypatch):
 
     # without cache this is 4 calls (2 keys x 2 invocations)
     assert calls["n"] <= 2
+
+
+def test_load_daemon_runtime_status_reads_runtime_snapshot_when_environ_missing(monkeypatch):
+    clear_daemon_runtime_state()
+    monkeypatch.delenv("SARI_DAEMON_SUICIDE_STATE", raising=False)
+    publish_daemon_runtime_state(
+        {
+            "SARI_DAEMON_SUICIDE_STATE": "grace",
+            "SARI_DAEMON_ACTIVE_LEASES_COUNT": "5",
+        }
+    )
+    try:
+        status = load_daemon_runtime_status()
+        assert status.suicide_state == "grace"
+        assert status.active_leases_count == 5
+    finally:
+        clear_daemon_runtime_state()
+
+
+def test_publish_daemon_runtime_state_can_disable_env_mirror(monkeypatch):
+    clear_daemon_runtime_state()
+    monkeypatch.delenv("SARI_DAEMON_RUNTIME_ENV_MIRROR", raising=False)
+    monkeypatch.delenv("SARI_DAEMON_SUICIDE_STATE", raising=False)
+    publish_daemon_runtime_state({"SARI_DAEMON_SUICIDE_STATE": "grace"}, mirror_env=False)
+    try:
+        snap = get_daemon_runtime_state_snapshot()
+        assert snap.get("SARI_DAEMON_SUICIDE_STATE") == "grace"
+        assert "SARI_DAEMON_SUICIDE_STATE" not in policy_engine.os.environ
+        status = load_daemon_runtime_status()
+        assert status.suicide_state == "grace"
+    finally:
+        clear_daemon_runtime_state()

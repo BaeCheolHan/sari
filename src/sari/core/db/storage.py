@@ -103,6 +103,18 @@ class GlobalStorageManager:
                 cls._last_switch_block_ts = 0.0
             return cls._instance
 
+    @classmethod
+    def get_active_instance(cls):
+        with cls._lock:
+            return cls._instance
+
+    @classmethod
+    def get_switch_guard_status(cls) -> tuple[str, float]:
+        with cls._lock:
+            reason = str(cls._last_switch_block_reason or "")
+            ts = float(cls._last_switch_block_ts or 0.0)
+        return reason, ts
+
     def start(self):
         self.writer.start()
 
@@ -177,10 +189,19 @@ class GlobalStorageManager:
         qsize = self.writer.qsize()
         return min(1.0, qsize / 5000.0)
 
-    def get_recent_files(self, query: str, root_ids: Optional[List[str]] = None, limit: int = 10) -> List[RecentFileRow]:
+    def get_recent_files(
+        self,
+        query: str,
+        root_ids: Optional[List[str]] = None,
+        limit: int = 10,
+        root_id: Optional[str] = None,
+    ) -> List[RecentFileRow]:
         """Query the L2 memory overlay."""
         results: List[RecentFileRow] = []
         q = (query or "").lower()
+        effective_root_ids = list(root_ids or [])
+        if root_id:
+            effective_root_ids.append(str(root_id))
         with self._overlay_lock:
             for path, row in reversed(list(self._overlay_files.items())):
                 if len(results) >= limit:
@@ -192,7 +213,7 @@ class GlobalStorageManager:
                 row_size = int(row.get("size") or 0)
                 row_snippet = str(row.get("snippet") or "")
                 
-                if root_ids and row_root_id not in root_ids:
+                if effective_root_ids and row_root_id not in effective_root_ids:
                     continue
                 
                 content_match = False

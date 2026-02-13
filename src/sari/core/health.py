@@ -1,10 +1,13 @@
 import sys
 import socket
+import json
 import shutil
 import sqlite3
 from typing import Dict, List, Optional
 
 from .db import LocalSearchDB
+from .daemon_resolver import resolve_daemon_address
+from .server_registry import ServerRegistry
 from .workspace import WorkspaceManager
 
 
@@ -19,6 +22,54 @@ def _row_get(row: object, key: str, index: int, default: object = None) -> objec
     if isinstance(row, (list, tuple)) and len(row) > index:
         return row[index]
     return default
+
+
+def _probe_sari_daemon(host: str, port: int, timeout: float = 0.8) -> bool:
+    def _send_method(method: str) -> dict[str, object]:
+        with socket.create_connection((host, port), timeout=timeout) as sock:
+            sock.settimeout(timeout)
+            body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method}).encode("utf-8")
+            header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
+            sock.sendall(header + body)
+            f = sock.makefile("rb")
+            headers: dict[bytes, bytes] = {}
+            while True:
+                line = f.readline()
+                if not line:
+                    return {}
+                line = line.strip()
+                if not line:
+                    break
+                if b":" in line:
+                    k, v = line.split(b":", 1)
+                    headers[k.strip().lower()] = v.strip()
+            try:
+                content_length = int(headers.get(b"content-length", b"0"))
+            except ValueError:
+                return {}
+            if content_length <= 0:
+                return {}
+            payload = f.read(content_length)
+            return json.loads(payload.decode("utf-8")) if payload else {}
+
+    try:
+        identify = _send_method("sari/identify")
+        result = identify.get("result")
+        if isinstance(result, dict) and str(result.get("name") or "") == "sari":
+            return True
+    except Exception:
+        pass
+
+    try:
+        ping = _send_method("ping")
+        err = ping.get("error")
+        if isinstance(err, dict):
+            msg = str(err.get("message") or "").lower()
+            if "server not initialized" in msg:
+                return True
+    except Exception:
+        pass
+    return False
 
 
 class SariDoctor:
@@ -133,23 +184,21 @@ class SariDoctor:
 
     def check_daemon(self) -> bool:
         try:
-            from sari.mcp.cli import get_daemon_address, is_daemon_running, read_pid
-            host, port = get_daemon_address()
-            running = is_daemon_running(host, port)
+            host, port = resolve_daemon_address(self.workspace_root)
+            running = _probe_sari_daemon(host, port)
             if running:
-                pid = read_pid()
-                
-                # Enhanced: check metrics if running
-                metrics = {}
+                pid = None
                 try:
-                    from sari.mcp.cli import _request_mcp_status
-                    m_data = _request_mcp_status(host, port, self.workspace_root)
-                    if m_data:
-                        metrics = m_data
+                    reg = ServerRegistry()
+                    inst = reg.resolve_daemon_by_endpoint(str(host), int(port))
+                    if not inst:
+                        inst = reg.resolve_workspace_daemon(self.workspace_root)
+                    if inst and inst.get("pid"):
+                        pid = int(inst.get("pid"))
                 except Exception:
-                    pass
+                    pid = None
 
-                self._add_result("Sari Daemon", True, f"Running on {host}:{port} (PID: {pid})", details=metrics)
+                self._add_result("Sari Daemon", True, f"Running on {host}:{port} (PID: {pid})", details={})
                 return True
             else:
                 self._add_result("Sari Daemon", False, "Not running")
@@ -165,11 +214,9 @@ class SariDoctor:
         self._add_result("Virtualenv", True, "" if in_venv else "Not running in venv (ok)")
 
         # Runtime checks
-        from sari.mcp.cli import get_daemon_address
-        daemon_host, daemon_port = get_daemon_address()
+        _, daemon_port = resolve_daemon_address(self.workspace_root)
         inst = None
         try:
-            from sari.core.server_registry import ServerRegistry
             inst = ServerRegistry().resolve_workspace_daemon(self.workspace_root)
         except Exception:
             inst = None
@@ -182,7 +229,6 @@ class SariDoctor:
         self.check_network()
         
         try:
-            from sari.core.server_registry import ServerRegistry
             ws_info = ServerRegistry().get_workspace(self.workspace_root)
             if ws_info and ws_info.get("http_port"):
                 self.check_port_listening(int(ws_info.get("http_port")), label="HTTP API port")

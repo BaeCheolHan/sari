@@ -20,3 +20,16 @@ def test_analytics_queue_drain_preserves_fifo_order():
     assert [d["v"] for d in drained] == [1, 2]
     remainder = q.drain(limit=10)
     assert [d["v"] for d in remainder] == [3]
+
+
+def test_analytics_queue_drop_counts_are_bounded_by_type():
+    q = AnalyticsQueue(maxsize=1, max_drop_types=2)
+    assert q.enqueue({"event_type": "seed", "v": 0}) is True
+
+    assert q.enqueue({"event_type": "a"}) is False
+    assert q.enqueue({"event_type": "b"}) is False
+    assert q.enqueue({"event_type": "c"}) is False
+
+    counts = q.drop_counts()
+    assert len(counts) == 2
+    assert "c" in counts

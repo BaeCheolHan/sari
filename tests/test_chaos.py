@@ -1,6 +1,8 @@
 import pytest
 import os
+import sqlite3
 import time
+from peewee import DatabaseError as PeeweeDatabaseError
 from sari.core.db.main import LocalSearchDB
 from sari.core.indexer.main import Indexer
 from sari.core.config import Config
@@ -67,7 +69,7 @@ def test_chaos_db_file_corruption_recovery(tmp_path):
         pass
 
     # Sari must handle this as a failure state
-    with pytest.raises(Exception):
+    with pytest.raises((sqlite3.DatabaseError, PeeweeDatabaseError)):
         db.search_files("rel")
 
 

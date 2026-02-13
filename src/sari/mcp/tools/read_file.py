@@ -65,11 +65,19 @@ def execute_read_file(args: object, db: LocalSearchDB, roots: list[str]) -> Tool
         p_abs = Path(os.path.expanduser(path)).resolve()
         if p_abs.exists() and p_abs.is_file():
             # 디스크엔 있지만 수집되지 않은 경우 -> 등록 가이드 제공
-            msg = (
-                f"파일이 존재하지만 현재 분석 범위(인덱스)에 포함되어 있지 않습니다. "
-                f"이 파일을 분석하려면 'sari.json'이나 MCP 설정의 'roots'에 대상 프로젝트 루트를 "
-                f"추가하여 수집되도록 설정해 주세요."
-            )
+            if roots:
+                msg = (
+                    "파일이 존재하지만 현재 분석 범위(인덱스)에 포함되어 있지 않습니다. "
+                    "이 파일을 분석하려면 'sari.json'이나 MCP 설정의 'roots'에 대상 프로젝트 루트를 "
+                    "추가하여 수집되도록 설정해 주세요."
+                )
+            else:
+                suggested_root = str(p_abs.parent)
+                msg = (
+                    "파일이 존재하지만 현재 분석 범위(인덱스)에 포함되어 있지 않습니다. "
+                    "이 파일을 분석하려면 'sari.json'이나 MCP 설정의 'roots'에 대상 프로젝트 루트를 "
+                    f"추가하여 수집되도록 설정해 주세요. 예: {suggested_root}"
+                )
             return mcp_response(
                 "read_file",
                 lambda: pack_error("read_file", ErrorCode.ERR_ROOT_OUT_OF_SCOPE, msg),

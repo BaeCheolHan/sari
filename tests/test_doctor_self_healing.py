@@ -92,6 +92,22 @@ class TestDoctorSelfHealing:
                 policy_res = next(r for r in res.get("results", []) if r["name"] == "Daemon Policy")
                 assert "http=127.0.0.1:53305" in policy_res["error"]
 
+    def test_doctor_include_marker_adds_runtime_marker_result(self, doctor_env):
+        with patch.dict("os.environ", doctor_env):
+            res = execute_doctor(
+                {
+                    "include_marker": True,
+                    "include_db": False,
+                    "include_network": False,
+                    "include_port": False,
+                    "include_disk": False,
+                    "include_daemon": False,
+                }
+            )
+            marker_res = next(r for r in res.get("results", []) if r["name"] == "Daemon Runtime Markers")
+            assert marker_res["passed"] is True
+            assert "event_queue_depth=" in marker_res["error"]
+
     def test_doctor_log_health_ignores_errors_counter_text(self, doctor_env, tmp_path):
         log_dir = tmp_path / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -140,3 +156,19 @@ def test_doctor_db_path_autofix_requires_auto_fix_flag(tmp_path):
 
     raw_after_fix = json.loads(cfg_path.read_text(encoding="utf-8"))
     assert raw_after_fix["db_path"] == str(db_path)
+
+
+def test_doctor_tolerates_invalid_numeric_args():
+    res = execute_doctor(
+        {
+            "port": "not-a-number",
+            "min_disk_gb": "oops",
+            "include_network": False,
+            "include_port": False,
+            "include_db": False,
+            "include_disk": False,
+            "include_daemon": False,
+        }
+    )
+    text = res.get("content", [{}])[0].get("text", "")
+    assert "PACK1 tool=doctor ok=true" in text

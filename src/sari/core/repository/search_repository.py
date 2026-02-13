@@ -126,7 +126,7 @@ class SearchRepository(BaseRepository):
             else:
                 if len(vec) != len(q_vec):
                     continue
-                dot = sum(a * b for a, b in zip(q_vec, vec))
+                dot = sum(a * b for a, b in zip(q_vec, vec, strict=False))
                 v_norm = math.sqrt(sum(x * x for x in vec))
                 if v_norm == 0 or q_norm == 0:
                     continue

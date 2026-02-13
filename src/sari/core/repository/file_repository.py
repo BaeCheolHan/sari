@@ -36,7 +36,7 @@ class FileRepository(BaseRepository):
                 r_list = list(r)
                 while len(r_list) < len(FILE_COLUMNS):
                     r_list.append(None)
-                data = dict(zip(FILE_COLUMNS, r_list))
+                data = dict(zip(FILE_COLUMNS, r_list, strict=False))
 
             path = data.get("path")
             if not path:
@@ -93,7 +93,7 @@ class FileRepository(BaseRepository):
             """, 
             [
                 (row_dict["path"], row_dict["mtime"]) for row_dict in (
-                    dict(zip(FILE_COLUMNS, row_vals)) for row_vals in processed_rows
+                    dict(zip(FILE_COLUMNS, row_vals, strict=False)) for row_vals in processed_rows
                 )
             ],
         )

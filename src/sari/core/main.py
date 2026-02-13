@@ -16,12 +16,14 @@ try:
     from .http_server import serve_forever  # type: ignore
     from .indexer import Indexer  # type: ignore
     from .workspace import WorkspaceManager  # type: ignore
+    from .mcp_runtime import create_mcp_server  # type: ignore
 except ImportError:  # script mode
     from config import Config, resolve_config_path  # type: ignore
     from db import LocalSearchDB  # type: ignore
     from http_server import serve_forever  # type: ignore
     from indexer import Indexer  # type: ignore
     from workspace import WorkspaceManager  # type: ignore
+    from mcp_runtime import create_mcp_server  # type: ignore
 
 
 def _resolve_http_host(cfg_host: str, allow_non_loopback: bool) -> str:
@@ -49,8 +51,7 @@ def _resolve_version() -> str:
 
 def _create_mcp_server(workspace_root: str, cfg: Config, db: LocalSearchDB, indexer: Indexer):
     try:
-        from sari.mcp.server import LocalSearchMCPServer
-        return LocalSearchMCPServer(workspace_root, cfg=cfg, db=db, indexer=indexer)
+        return create_mcp_server(workspace_root, cfg=cfg, db=db, indexer=indexer)
     except Exception:
         return None
 

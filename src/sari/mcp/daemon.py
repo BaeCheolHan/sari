@@ -9,6 +9,7 @@ import threading
 import time
 import json
 import queue
+import gc
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,12 +17,40 @@ from pathlib import Path
 from sari.mcp.session import Session
 from sari.core.policy_engine import load_daemon_policy
 from sari.core.workspace import WorkspaceManager
-from sari.core.server_registry import ServerRegistry
+from sari.mcp.server_registry import ServerRegistry
 from sari.core.settings import settings
 from sari.core.constants import DEFAULT_DAEMON_HOST, DEFAULT_DAEMON_PORT
+from sari.core.daemon_runtime_state import (
+    clear_daemon_runtime_state,
+    RUNTIME_ACTIVE_LEASES_COUNT,
+    RUNTIME_EVENT_QUEUE_DEPTH,
+    RUNTIME_GRACE_REMAINING,
+    RUNTIME_GRACE_REMAINING_MS,
+    RUNTIME_HOST,
+    RUNTIME_LAST_EVENT_TS,
+    RUNTIME_LAST_REAP_AT,
+    RUNTIME_LAST_SHUTDOWN_REASON,
+    RUNTIME_LEASES,
+    RUNTIME_NO_CLIENT_SINCE,
+    RUNTIME_PORT,
+    RUNTIME_REAPER_LAST_RUN_AT,
+    RUNTIME_RSS_BYTES,
+    RUNTIME_RSS_MB,
+    RUNTIME_SIGNALS_DISABLED,
+    RUNTIME_SHUTDOWN_INTENT,
+    RUNTIME_SHUTDOWN_ONCE_SET,
+    RUNTIME_SHUTDOWN_REASON,
+    RUNTIME_SUICIDE_STATE,
+    RUNTIME_WORKERS_ALIVE,
+    publish_daemon_runtime_state,
+    update_daemon_runtime_state,
+)
 from sari.core.utils.uuid7 import uuid7_hex
 from sari.mcp.trace import trace
 from sari.mcp.stabilization.warning_sink import warning_sink, warn
+
+# Backward-compatible module-level handle used in tests/diagnostics.
+_warning_sink = warning_sink
 
 LOG_INIT_FAILED = "LOG_INIT_FAILED"
 PID_FILE_RESOLVE_FAILED = "PID_FILE_RESOLVE_FAILED"
@@ -38,6 +67,7 @@ EVENT_CONN_CLOSED = "CONN_CLOSED"
 EVENT_HEARTBEAT_TICK = "HEARTBEAT_TICK"
 EVENT_SHUTDOWN_REQUEST = "SHUTDOWN_REQUEST"
 DEFAULT_EVENT_DRAIN_MAX = 256
+DEFAULT_MEM_TELEMETRY_SEC = 60.0
 
 
 @dataclass(slots=True)
@@ -130,6 +160,8 @@ def _cleanup_old_logs(
 
 
 def _init_logging() -> None:
+    if getattr(_init_logging, "_initialized", False):
+        return
     log_dir = _resolve_log_dir()
     handlers = [logging.StreamHandler()]
     try:
@@ -175,8 +207,7 @@ def _init_logging() -> None:
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         handlers=handlers,
     )
-
-_init_logging()
+    setattr(_init_logging, "_initialized", True)
 logger = logging.getLogger("mcp-daemon")
 
 DEFAULT_HOST = DEFAULT_DAEMON_HOST
@@ -214,6 +245,7 @@ def _pid_file() -> Path:
 
 class SariDaemon:
     def __init__(self, host: str = None, port: int = None):
+        _init_logging()
         self.host = host or settings.DAEMON_HOST
         self.port = int(port or settings.DAEMON_PORT)
         self.server = None
@@ -242,6 +274,13 @@ class SariDaemon:
         self._events_lock = threading.Lock()
         self._controller_wakeup = threading.Event()
         self._event_queue_depth = 0
+        self._event_queue_max = max(1, int(settings.get_int("DAEMON_EVENT_QUEUE_SIZE", 4096) or 4096))
+        self._event_drop_count = 0
+        self._heartbeat_event_pending = False
+        self._pending_renew_lease_ids: set[str] = set()
+        self._pending_issue_lease_ids: set[str] = set()
+        self._pending_revoke_lease_ids: set[str] = set()
+        self._canceled_issue_lease_counts: dict[str, int] = {}
         self._last_event_ts = 0.0
         self._active_leases: dict[str, dict[str, object]] = {}
         self._recent_leases: deque[dict[str, object]] = deque(maxlen=50)
@@ -257,6 +296,7 @@ class SariDaemon:
         self._autostop_no_client_since = None  # backward-compat tests
         self._grace_deadline = 0.0
         self._shutdown_inhibit_since: float | None = None
+        self._last_mem_telemetry_at = 0.0
         trace("daemon_init", host=self.host, port=self.port)
 
     @property
@@ -334,12 +374,22 @@ class SariDaemon:
         self._emit_runtime_markers()
         return reaped
 
-    def _enqueue_event(self, event: DaemonEvent) -> None:
-        self._events.put(event)
+    def _enqueue_event(self, event: DaemonEvent) -> bool:
+        event_type = str(getattr(event, "event_type", ""))
         with self._events_lock:
+            if event_type == EVENT_HEARTBEAT_TICK:
+                if self._heartbeat_event_pending:
+                    return False
+            if self._event_queue_depth >= self._event_queue_max:
+                self._event_drop_count += 1
+                return False
+            if event_type == EVENT_HEARTBEAT_TICK:
+                self._heartbeat_event_pending = True
             self._event_queue_depth += 1
             self._last_event_ts = float(event.ts or time.time())
+        self._events.put(event)
         self._controller_wakeup.set()
+        return True
 
     def _enqueue_lease_event(
         self,
@@ -349,21 +399,74 @@ class SariDaemon:
         client_hint: str = "",
         reason: str = "",
     ) -> None:
-        self._enqueue_event(
+        et = str(event_type or "")
+        lid = str(lease_id or "")
+        if et == EVENT_LEASE_ISSUE and lid:
+            with self._events_lock:
+                if lid in self._pending_issue_lease_ids:
+                    return
+                # A previously queued revoke becomes stale when a new issue arrives.
+                self._pending_revoke_lease_ids.discard(lid)
+                self._pending_issue_lease_ids.add(lid)
+        elif et == EVENT_LEASE_RENEW and lid:
+            with self._events_lock:
+                if lid in self._pending_renew_lease_ids:
+                    return
+                self._pending_renew_lease_ids.add(lid)
+        elif et == EVENT_LEASE_REVOKE and lid:
+            with self._events_lock:
+                # ISSUE then REVOKE before drain => net no-op for lease table.
+                if lid in self._pending_issue_lease_ids:
+                    self._pending_issue_lease_ids.discard(lid)
+                    self._canceled_issue_lease_counts[lid] = int(
+                        self._canceled_issue_lease_counts.get(lid, 0) or 0
+                    ) + 1
+                    self._pending_renew_lease_ids.discard(lid)
+                    return
+                if lid in self._pending_revoke_lease_ids:
+                    return
+                self._pending_revoke_lease_ids.add(lid)
+                self._pending_renew_lease_ids.discard(lid)
+        elif et == EVENT_CONN_CLOSED and lid:
+            with self._events_lock:
+                self._pending_renew_lease_ids.discard(lid)
+                self._pending_issue_lease_ids.discard(lid)
+                self._pending_revoke_lease_ids.discard(lid)
+                self._canceled_issue_lease_counts.pop(lid, None)
+        accepted = self._enqueue_event(
             DaemonEvent(
-                event_type=str(event_type or ""),
-                lease_id=str(lease_id or ""),
+                event_type=et,
+                lease_id=lid,
                 payload={"client_hint": str(client_hint or ""), "reason": str(reason or "")},
             )
         )
+        if accepted:
+            return
+        enqueue_fallback_revoke = False
+        fallback_reason = reason or "revoked"
+        with self._events_lock:
+            if et == EVENT_LEASE_ISSUE and lid:
+                self._pending_issue_lease_ids.discard(lid)
+            elif et == EVENT_LEASE_RENEW and lid:
+                self._pending_renew_lease_ids.discard(lid)
+            elif et == EVENT_LEASE_REVOKE and lid:
+                self._pending_revoke_lease_ids.discard(lid)
+                enqueue_fallback_revoke = True
+            elif et == EVENT_CONN_CLOSED and lid:
+                enqueue_fallback_revoke = True
+        if enqueue_fallback_revoke and lid:
+            self._revoke_lease(lid, reason=fallback_reason)
 
     def _enqueue_shutdown_request(self, reason: str) -> None:
-        self._enqueue_event(
+        if self._enqueue_event(
             DaemonEvent(
                 event_type=EVENT_SHUTDOWN_REQUEST,
                 payload={"reason": str(reason or "manual")},
             )
-        )
+        ):
+            return
+        # Force shutdown intent to be visible even under event queue pressure.
+        self._controller_wakeup.set()
 
     def _drain_events(self, max_events: int) -> list[DaemonEvent]:
         limit = max(1, int(max_events or DEFAULT_EVENT_DRAIN_MAX))
@@ -373,6 +476,25 @@ class SariDaemon:
                 ev = self._events.get_nowait()
                 with self._events_lock:
                     self._event_queue_depth = max(0, self._event_queue_depth - 1)
+                    event_type = str(getattr(ev, "event_type", ""))
+                    lid = str(getattr(ev, "lease_id", "") or "")
+                    if event_type == EVENT_HEARTBEAT_TICK:
+                        self._heartbeat_event_pending = False
+                    elif event_type == EVENT_LEASE_ISSUE:
+                        self._pending_issue_lease_ids.discard(lid)
+                        canceled_count = int(self._canceled_issue_lease_counts.get(lid, 0) or 0)
+                        if canceled_count > 0:
+                            if canceled_count <= 1:
+                                self._canceled_issue_lease_counts.pop(lid, None)
+                            else:
+                                self._canceled_issue_lease_counts[lid] = canceled_count - 1
+                            payload = dict(getattr(ev, "payload", {}) or {})
+                            payload["__skip__"] = True
+                            ev.payload = payload
+                    elif event_type == EVENT_LEASE_RENEW:
+                        self._pending_renew_lease_ids.discard(lid)
+                    elif event_type == EVENT_LEASE_REVOKE:
+                        self._pending_revoke_lease_ids.discard(lid)
                 raw.append(ev)
             except queue.Empty:
                 break
@@ -397,6 +519,8 @@ class SariDaemon:
             client_hint = str(payload.get("client_hint", "") or "")
             reason = str(payload.get("reason", "") or "")
             applied += 1
+            if bool(payload.get("__skip__", False)):
+                continue
             if event_type == EVENT_HEARTBEAT_TICK:
                 continue
             if not lease_id:
@@ -450,28 +574,95 @@ class SariDaemon:
     def _emit_runtime_markers(self) -> None:
         now = time.time()
         grace_remaining = max(0.0, float(self._grace_deadline or 0.0) - now) if self._suicide_state == "grace" else 0.0
-        os.environ["SARI_DAEMON_ACTIVE_LEASES_COUNT"] = str(self.active_lease_count())
-        os.environ["SARI_DAEMON_LAST_REAP_AT"] = str(float(self._last_reap_at or 0.0))
-        os.environ["SARI_DAEMON_REAPER_LAST_RUN_AT"] = str(float(self._reaper_last_run_at or 0.0))
-        os.environ["SARI_DAEMON_SHUTDOWN_INTENT"] = "1" if self._shutdown_intent else ""
-        os.environ["SARI_DAEMON_LAST_SHUTDOWN_REASON"] = str(self._last_shutdown_reason or "")
-        os.environ["SARI_DAEMON_SHUTDOWN_REASON"] = str(self._last_shutdown_reason or "")
-        os.environ["SARI_DAEMON_SUICIDE_STATE"] = str(self._suicide_state or "idle")
-        os.environ["SARI_DAEMON_NO_CLIENT_SINCE"] = str(float(self._no_client_since or 0.0))
-        os.environ["SARI_DAEMON_GRACE_REMAINING"] = str(float(grace_remaining))
-        os.environ["SARI_DAEMON_GRACE_REMAINING_MS"] = str(int(max(0.0, float(grace_remaining)) * 1000.0))
-        os.environ["SARI_DAEMON_SHUTDOWN_ONCE_SET"] = "1" if self._shutdown_once.is_set() else ""
+        runtime_values = {
+            RUNTIME_ACTIVE_LEASES_COUNT: str(self.active_lease_count()),
+            RUNTIME_LAST_REAP_AT: str(float(self._last_reap_at or 0.0)),
+            RUNTIME_REAPER_LAST_RUN_AT: str(float(self._reaper_last_run_at or 0.0)),
+            RUNTIME_SHUTDOWN_INTENT: "1" if self._shutdown_intent else "",
+            RUNTIME_LAST_SHUTDOWN_REASON: str(self._last_shutdown_reason or ""),
+            RUNTIME_SHUTDOWN_REASON: str(self._last_shutdown_reason or ""),
+            RUNTIME_SUICIDE_STATE: str(self._suicide_state or "idle"),
+            RUNTIME_NO_CLIENT_SINCE: str(float(self._no_client_since or 0.0)),
+            RUNTIME_GRACE_REMAINING: str(float(grace_remaining)),
+            RUNTIME_GRACE_REMAINING_MS: str(int(max(0.0, float(grace_remaining)) * 1000.0)),
+            RUNTIME_SHUTDOWN_ONCE_SET: "1" if self._shutdown_once.is_set() else "",
+        }
         with self._events_lock:
-            os.environ["SARI_DAEMON_LAST_EVENT_TS"] = str(float(self._last_event_ts or 0.0))
-            os.environ["SARI_DAEMON_EVENT_QUEUE_DEPTH"] = str(int(self._event_queue_depth or 0))
+            runtime_values[RUNTIME_LAST_EVENT_TS] = str(float(self._last_event_ts or 0.0))
+            runtime_values[RUNTIME_EVENT_QUEUE_DEPTH] = str(int(self._event_queue_depth or 0))
         try:
-            os.environ["SARI_DAEMON_LEASES"] = json.dumps(self.leases_snapshot(), ensure_ascii=True)
+            runtime_values[RUNTIME_LEASES] = json.dumps(self.leases_snapshot(), ensure_ascii=True)
         except Exception:
-            os.environ["SARI_DAEMON_LEASES"] = "[]"
+            runtime_values[RUNTIME_LEASES] = "[]"
         try:
-            os.environ["SARI_DAEMON_WORKERS_ALIVE"] = json.dumps(self._workers_alive(), ensure_ascii=True)
+            runtime_values[RUNTIME_WORKERS_ALIVE] = json.dumps(self._workers_alive(), ensure_ascii=True)
         except Exception:
-            os.environ["SARI_DAEMON_WORKERS_ALIVE"] = "[]"
+            runtime_values[RUNTIME_WORKERS_ALIVE] = "[]"
+        publish_daemon_runtime_state(runtime_values)
+
+    @staticmethod
+    def _process_rss_bytes() -> int:
+        try:
+            import psutil  # type: ignore
+            return int(psutil.Process(os.getpid()).memory_info().rss or 0)
+        except Exception:
+            pass
+        try:
+            import resource  # type: ignore
+            v = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss or 0)
+            if v <= 0:
+                return 0
+            # macOS reports bytes, Linux reports KiB.
+            if v < 10_000_000:
+                return v * 1024
+            return v
+        except Exception:
+            return 0
+
+    def _emit_memory_telemetry(
+        self,
+        *,
+        active_count: int,
+        socket_active: int,
+        lease_active: int,
+        workers_inflight: int,
+    ) -> None:
+        try:
+            interval = float(
+                os.environ.get("SARI_DAEMON_MEM_TELEMETRY_SEC", str(DEFAULT_MEM_TELEMETRY_SEC))
+                or DEFAULT_MEM_TELEMETRY_SEC
+            )
+        except Exception:
+            interval = DEFAULT_MEM_TELEMETRY_SEC
+        interval = max(5.0, interval)
+        now = time.time()
+        if now - float(self._last_mem_telemetry_at or 0.0) < interval:
+            return
+        self._last_mem_telemetry_at = now
+
+        rss_bytes = self._process_rss_bytes()
+        rss_mb = float(rss_bytes) / (1024.0 * 1024.0) if rss_bytes > 0 else 0.0
+        gc0, gc1, gc2 = gc.get_count()
+        with self._events_lock:
+            q_depth = int(self._event_queue_depth or 0)
+        update_daemon_runtime_state(
+            {
+                RUNTIME_RSS_BYTES: str(int(rss_bytes or 0)),
+                RUNTIME_RSS_MB: f"{rss_mb:.2f}",
+            }
+        )
+        logger.info(
+            "daemon_runtime rss_mb=%.2f q_depth=%d active=%d sockets=%d leases=%d workers=%d gc=(%d,%d,%d)",
+            rss_mb,
+            q_depth,
+            int(active_count),
+            int(socket_active),
+            int(lease_active),
+            int(workers_inflight),
+            int(gc0),
+            int(gc1),
+            int(gc2),
+        )
 
     def _request_shutdown(self, reason: str) -> None:
         self._set_suicide_state("stopping")
@@ -479,7 +670,7 @@ class SariDaemon:
 
     def mark_signals_disabled(self) -> None:
         self._signals_disabled = True
-        os.environ["SARI_DAEMON_SIGNALS_DISABLED"] = "1"
+        update_daemon_runtime_state({RUNTIME_SIGNALS_DISABLED: "1"})
         warn(
             SIGNAL_HANDLER_REG_FAILED,
             "SariDaemon.mark_signals_disabled",
@@ -553,9 +744,18 @@ class SariDaemon:
             return
         try:
             from sari.core.http_server import serve_forever
+            from sari.core.mcp_runtime import create_mcp_server
 
             host = "127.0.0.1"
             port = int(settings.HTTP_API_PORT)
+            gateway_mcp_server = getattr(shared_state, "server", None)
+            if gateway_mcp_server is None:
+                gateway_mcp_server = create_mcp_server(
+                    str(shared_state.workspace_root),
+                    db=getattr(shared_state, "db", None),
+                    indexer=getattr(shared_state, "indexer", None),
+                )
+                shared_state.server = gateway_mcp_server
             httpd, actual_port = serve_forever(
                 host,
                 port,
@@ -563,7 +763,7 @@ class SariDaemon:
                 shared_state.indexer,
                 version=settings.VERSION,
                 workspace_root=str(shared_state.workspace_root),
-                mcp_server=shared_state.server,
+                mcp_server=gateway_mcp_server,
                 shared_http_gateway=True,
             )
             self.httpd = httpd
@@ -661,6 +861,12 @@ class SariDaemon:
                         )
 
                 active_count = max(active_count, socket_active, lease_active)
+                self._emit_memory_telemetry(
+                    active_count=active_count,
+                    socket_active=socket_active,
+                    lease_active=lease_active,
+                    workers_inflight=workers_inflight,
+                )
 
                 if self._suicide_state == "stopping":
                     pass
@@ -712,9 +918,17 @@ class SariDaemon:
             except Exception as e:
                 logger.error(f"Controller loop failed: {e}")
 
-            self._stop_event.wait(interval)
+            deadline = time.monotonic() + max(0.01, float(interval or 0.0))
+            while not self._stop_event.is_set():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                if self._controller_wakeup.wait(timeout=min(remaining, 0.1)):
+                    self._controller_wakeup.clear()
+                    break
 
     async def start_async(self):
+        clear_daemon_runtime_state()
         host = (self.host or "127.0.0.1").strip()
         try:
             is_loopback = host.lower() == "localhost" or ipaddress.ip_address(host).is_loopback
@@ -737,8 +951,7 @@ class SariDaemon:
         self.server = await asyncio.start_server(
             self.handle_client, self.host, self.port
         )
-        os.environ["SARI_DAEMON_HOST"] = host
-        os.environ["SARI_DAEMON_PORT"] = str(self.port)
+        update_daemon_runtime_state({RUNTIME_HOST: host, RUNTIME_PORT: str(self.port)})
         self._loop = asyncio.get_running_loop()
         self._register_daemon()
         self._autostart_workspace()
@@ -775,17 +988,27 @@ class SariDaemon:
         trace("daemon_client_accepted", addr=str(addr))
         self._inc_active_connections()
         lease_id = uuid7_hex()
+        revoke_seen = False
+
+        def _on_connection_closed() -> None:
+            nonlocal revoke_seen
+            if revoke_seen:
+                return
+            revoke_seen = True
+            self._enqueue_lease_event(EVENT_LEASE_REVOKE, lease_id=lease_id, reason="connection_closed")
+
         self._enqueue_lease_event(EVENT_LEASE_ISSUE, lease_id=lease_id, client_hint=str(addr))
         try:
             session = Session(
                 reader,
                 writer,
                 on_activity=lambda: self._enqueue_lease_event(EVENT_LEASE_RENEW, lease_id=lease_id),
-                on_connection_closed=lambda: self._enqueue_lease_event(EVENT_LEASE_REVOKE, lease_id=lease_id, reason="connection_closed"),
+                on_connection_closed=_on_connection_closed,
             )
             await session.handle_connection()
         finally:
-            self._enqueue_lease_event(EVENT_LEASE_REVOKE, lease_id=lease_id, reason="handle_client_finally")
+            if not revoke_seen:
+                self._enqueue_lease_event(EVENT_LEASE_REVOKE, lease_id=lease_id, reason="handle_client_finally")
             self._dec_active_connections()
             logger.info(f"Closed connection from {addr}")
             trace("daemon_client_closed", addr=str(addr))
@@ -799,6 +1022,7 @@ class SariDaemon:
             return
         self._shutdown_once.set()
         self._stop_event.set()
+        self._controller_wakeup.set()
         self._shutdown_intent = True
         self._last_shutdown_reason = str(reason or "manual")
         self._set_suicide_state("stopping")
@@ -810,7 +1034,16 @@ class SariDaemon:
         # 1. Stop Server Loop
         if self.server:
             try:
-                self.server.close()
+                close_result = self.server.close()
+                if inspect.isawaitable(close_result):
+                    try:
+                        if self._loop and self._loop.is_running():
+                            fut = asyncio.run_coroutine_threadsafe(close_result, self._loop)
+                            fut.result(timeout=5.0)
+                        else:
+                            asyncio.run(close_result)
+                    except Exception:
+                        logger.warning("Failed awaiting daemon server close", exc_info=True)
                 wait_closed = getattr(self.server, "wait_closed", None)
                 if callable(wait_closed):
                     close_result = wait_closed()

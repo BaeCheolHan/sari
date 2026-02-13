@@ -6,6 +6,9 @@ from sari.mcp.cli import cmd_daemon_status, cmd_init, cmd_prune, cmd_status, mai
 from sari.mcp.cli.commands.maintenance_commands import cmd_vacuum
 from sari.main import main as sari_entry_main
 from sari.main import run_cmd as sari_run_cmd
+from sari.main import _dispatch_pre_stdio
+from sari.main import _parse_transport_args
+import sari.entry_commands as entry_commands_mod
 
 def test_cmd_daemon_status():
     args = argparse.Namespace(daemon_host="127.0.0.1", daemon_port=47779)
@@ -73,24 +76,23 @@ def test_cli_main_help():
         assert e.value.code == 0
 
 
-def test_cli_main_cmd_search_routes_to_legacy_cli():
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["sari", "--cmd", "search", "--query", "needle", "--limit", "3"],
+        ["sari", "--cmd", "status"],
+    ],
+)
+def test_cli_main_cmd_routes_to_legacy_cli(argv):
     with patch("sari.mcp.cli.main", return_value=0) as mock_legacy:
-        with patch("sys.argv", ["sari", "--cmd", "search", "--query", "needle", "--limit", "3"]):
-            rc = sari_entry_main()
-            assert rc == 0
-            mock_legacy.assert_called_once()
-
-
-def test_cli_main_cmd_status_routes_to_legacy_cli():
-    with patch("sari.mcp.cli.main", return_value=0) as mock_legacy:
-        with patch("sys.argv", ["sari", "--cmd", "status"]):
+        with patch("sys.argv", argv):
             rc = sari_entry_main()
             assert rc == 0
             mock_legacy.assert_called_once()
 
 
 def test_cli_main_daemon_stop_all_parses():
-    with patch("sari.mcp.cli.legacy_cli.cmd_daemon_stop", return_value=0) as mock_stop:
+    with patch("sari.mcp.cli.cmd_daemon_stop", return_value=0) as mock_stop:
         with patch("sys.argv", ["sari", "daemon", "stop", "--all"]):
             rc = main()
             assert rc == 0
@@ -107,8 +109,51 @@ def test_run_cmd_does_not_mutate_sys_argv_for_legacy_routing():
             assert sys.argv == ["sari", "--sentinel"]
 
 
+def test_dispatch_pre_stdio_delegates_cli_commands():
+    with patch("sari.mcp.cli.main", return_value=0) as mock_cli:
+        rc = _dispatch_pre_stdio(["status"])
+        assert rc == 0
+        mock_cli.assert_called_once_with(["status"])
+
+
+def test_dispatch_pre_stdio_routes_cmd_passthrough_to_run_cmd():
+    with patch("sari.main.run_cmd", return_value=0) as mock_run_cmd:
+        rc = _dispatch_pre_stdio(["--cmd", "doctor"])
+        assert rc == 0
+        mock_run_cmd.assert_called_once_with(["doctor"])
+
+
+def test_dispatch_pre_stdio_returns_none_for_stdio_path():
+    assert _dispatch_pre_stdio([]) is None
+
+
+def test_parse_transport_args_defaults():
+    ns = _parse_transport_args([])
+    assert ns.transport == "stdio"
+    assert ns.format == "pack"
+    assert ns.http_api is False
+
+
+def test_entry_bootstrap_dispatch_routes_cmd_passthrough_to_run_cmd():
+    from sari.entry_bootstrap import dispatch_pre_stdio
+
+    with patch("sari.entry_bootstrap.run_cmd", return_value=0) as mock_run_cmd:
+        rc = dispatch_pre_stdio(["--cmd", "doctor"])
+        assert rc == 0
+        mock_run_cmd.assert_called_once_with(["doctor"])
+
+
+def test_entry_bootstrap_parse_transport_args_defaults():
+    from sari.entry_bootstrap import parse_transport_args
+
+    ns = parse_transport_args([])
+    assert ns.transport == "stdio"
+    assert ns.format == "pack"
+    assert ns.http_api is False
+
+
 def test_cli_main_search_command_dispatches_to_cmd_search():
-    with patch("sari.mcp.cli.legacy_cli.cmd_search", return_value=0) as mock_search:
+    with patch("sari.mcp.cli.cmd_search", return_value=0) as mock_search:
         with patch("sys.argv", ["sari", "search", "--query", "needle", "--limit", "5"]):
             rc = main()
             assert rc == 0
@@ -127,7 +172,7 @@ def test_cmd_status_uses_resolved_non_default_daemon_port():
     )
     with patch('sari.mcp.cli.commands.status_commands.get_daemon_address', return_value=("127.0.0.1", 47879)):
         with patch('sari.mcp.cli.commands.status_commands.is_daemon_running', return_value=True):
-            with patch('sari.mcp.cli.commands.status_commands._get_http_host_port', return_value=("127.0.0.1", 47777)):
+            with patch('sari.mcp.cli.commands.status_commands._resolve_http_endpoint_for_daemon', return_value=("127.0.0.1", 47777)):
                 with patch('sari.mcp.cli.commands.status_commands._is_http_running', return_value=False):
                     with patch('sari.mcp.cli.commands.status_commands._ensure_workspace_http') as mock_ensure_ws:
                         with patch('sari.mcp.cli.commands.status_commands._request_mcp_status', return_value={"ok": True, "source": "mcp"}):
@@ -146,7 +191,7 @@ def test_cmd_status_starts_daemon_on_resolved_non_default_port():
     )
     with patch('sari.mcp.cli.commands.status_commands.get_daemon_address', return_value=("127.0.0.1", 47879)):
         with patch('sari.mcp.cli.commands.status_commands.is_daemon_running', return_value=False):
-            with patch('sari.mcp.cli.commands.status_commands._get_http_host_port', return_value=("127.0.0.1", 47777)):
+            with patch('sari.mcp.cli.commands.status_commands._resolve_http_endpoint_for_daemon', return_value=("127.0.0.1", 47777)):
                 with patch('sari.mcp.cli.commands.status_commands._is_http_running', return_value=False):
                     with patch('sari.mcp.cli.commands.status_commands._ensure_daemon_running', return_value=("127.0.0.1", 47879, True)) as mock_ensure:
                         with patch('sari.mcp.cli.commands.status_commands._request_mcp_status', return_value={"ok": True, "source": "mcp"}):
@@ -166,13 +211,31 @@ def test_cmd_status_prefers_registry_http_endpoint_for_selected_daemon():
     )
     with patch("sari.mcp.cli.commands.status_commands.get_daemon_address", return_value=("127.0.0.1", 47879)):
         with patch("sari.mcp.cli.commands.status_commands.is_daemon_running", return_value=True):
-            with patch("sari.mcp.cli.commands.status_commands._get_http_host_port", return_value=("127.0.0.1", 47777)):
-                with patch(
-                    "sari.mcp.cli.commands.status_commands.ServerRegistry.resolve_daemon_by_endpoint",
-                    return_value={"host": "127.0.0.1", "port": 47879, "http_host": "127.0.0.1", "http_port": 58155},
-                ):
-                    with patch("sari.mcp.cli.commands.status_commands._is_http_running", return_value=True):
-                        with patch("sari.mcp.cli.commands.status_commands._request_http", return_value={"ok": True}) as mock_request_http:
-                            rc = cmd_status(args)
-                            assert rc == 0
-                            mock_request_http.assert_called_once_with("/status", {}, "127.0.0.1", 58155)
+            with patch(
+                "sari.mcp.cli.commands.status_commands._resolve_http_endpoint_for_daemon",
+                return_value=("127.0.0.1", 58155),
+            ):
+                with patch("sari.mcp.cli.commands.status_commands._is_http_running", return_value=True):
+                    with patch("sari.mcp.cli.commands.status_commands._request_http", return_value={"ok": True}) as mock_request_http:
+                        rc = cmd_status(args)
+                        assert rc == 0
+                        mock_request_http.assert_called_once_with("/status", {}, "127.0.0.1", 58155)
+
+
+def test_entry_commands_resolve_handler_for_doctor():
+    handler = entry_commands_mod._resolve_command_handler(["doctor"])
+    assert handler is entry_commands_mod._dispatch_doctor
+
+
+def test_entry_commands_run_cmd_unknown_subcommand(capsys):
+    rc = entry_commands_mod.run_cmd(["does-not-exist"])
+    assert rc == 2
+    assert "Unknown subcommand: does-not-exist" in capsys.readouterr().err
+
+
+def test_entry_commands_index_handler_is_externalized():
+    assert entry_commands_mod._cmd_index.__module__ == "sari.entry_commands_index"
+
+
+def test_entry_commands_uninstall_handler_is_externalized():
+    assert entry_commands_mod._cmd_uninstall.__module__ == "sari.entry_commands_uninstall"
