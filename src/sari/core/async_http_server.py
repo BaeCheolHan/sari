@@ -9,8 +9,6 @@ import os
 import asyncio
 import inspect
 import logging
-import re
-import datetime as _dt
 import time
 from contextlib import asynccontextmanager
 from typing import Optional, TypeAlias
@@ -24,6 +22,11 @@ from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 from sari.version import __version__
 from sari.core.daemon_health import detect_orphan_daemons
+from sari.core.http_error_feed import (
+    build_errors_payload as _build_errors_payload_impl,
+    parse_log_line_ts as _parse_log_line_ts_impl,
+    read_recent_log_error_entries as _read_recent_log_error_entries_impl,
+)
 from sari.core.http_workspace_feed import build_registered_workspaces_payload
 from sari.core.mcp_runtime import create_mcp_server
 from sari.core.policy_engine import load_daemon_runtime_status
@@ -79,52 +82,22 @@ class AsyncHttpServer:
         return {str(k): int(v or 0) for k, v in self._status_warning_counts.items()}
 
     def _read_recent_log_errors(self, limit: int = 50) -> list[str]:
-        try:
-            from sari.core.workspace import WorkspaceManager
-            env_log_dir = os.environ.get("SARI_LOG_DIR")
-            log_dir = os.path.expanduser(env_log_dir) if env_log_dir else str(WorkspaceManager.get_global_log_dir())
-            log_file = os.path.join(log_dir, "daemon.log")
-            if not os.path.exists(log_file):
-                return []
-            file_size = os.path.getsize(log_file)
-            read_size = min(file_size, 1024 * 1024)
-            with open(log_file, "rb") as f:
-                if file_size > read_size:
-                    f.seek(file_size - read_size)
-                chunk = f.read().decode("utf-8", errors="ignore")
-            lines = chunk.splitlines()
-            out: list[str] = []
-            level_pat = re.compile(r"\b(ERROR|CRITICAL)\b")
-            for line in reversed(lines):
-                text = str(line or "").strip()
-                if not text:
-                    continue
-                if level_pat.search(text):
-                    out.append(text)
-                if len(out) >= max(1, int(limit)):
-                    break
-            out.reverse()
-            return out
-        except Exception:
-            return []
+        entries = _read_recent_log_error_entries_impl(
+            limit=limit,
+            parse_ts=self._parse_log_line_ts,
+        )
+        return [str(item.get("text") or "") for item in entries]
 
     @staticmethod
     def _parse_log_line_ts(text: str) -> float:
-        raw = str(text or "")
-        m = re.match(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:,\d{1,6})?)", raw)
-        if not m:
-            return 0.0
-        token = m.group(1)
-        for fmt in ("%Y-%m-%d %H:%M:%S,%f", "%Y-%m-%d %H:%M:%S"):
-            try:
-                return _dt.datetime.strptime(token, fmt).timestamp()
-            except Exception:
-                continue
-        return 0.0
+        return _parse_log_line_ts_impl(text)
 
     def _read_recent_log_error_entries(self, limit: int = 50) -> list[JsonObject]:
         lines = self._read_recent_log_errors(limit=limit)
-        return [{"text": str(line), "ts": float(self._parse_log_line_ts(str(line)) or 0.0)} for line in lines]
+        return [
+            {"text": str(line), "ts": float(self._parse_log_line_ts(str(line)) or 0.0)}
+            for line in lines
+        ]
 
     def _build_errors_payload(
         self,
@@ -133,50 +106,15 @@ class AsyncHttpServer:
         reason_codes: Optional[set[str]] = None,
         since_sec: int = 0,
     ) -> JsonObject:
-        lim = max(1, min(int(limit or 50), 200))
-        source_norm = str(source or "all").strip().lower()
-        if source_norm not in {"all", "log", "warning"}:
-            source_norm = "all"
-        reason_filter = {str(rc).strip() for rc in (reason_codes or set()) if str(rc).strip()}
-        since = max(0, int(since_sec or 0))
-        cutoff_ts = time.time() - since if since > 0 else 0.0
-        warnings_recent = warning_sink.warnings_recent()
-        if isinstance(warnings_recent, list):
-            filtered_warnings = []
-            for item in warnings_recent:
-                if not isinstance(item, dict):
-                    continue
-                code = str(item.get("reason_code") or "")
-                ts = float(item.get("ts") or 0.0)
-                if reason_filter and code not in reason_filter:
-                    continue
-                if cutoff_ts > 0 and ts > 0 and ts < cutoff_ts:
-                    continue
-                filtered_warnings.append(item)
-            warnings_recent = filtered_warnings
-        else:
-            warnings_recent = []
-        log_entries = self._read_recent_log_error_entries(limit=lim)
-        if cutoff_ts > 0:
-            log_entries = [e for e in log_entries if float(e.get("ts") or 0.0) >= cutoff_ts]
-        log_errors = [str(e.get("text") or "") for e in log_entries]
-        if source_norm == "log":
-            warnings_recent = []
-        elif source_norm == "warning":
-            log_entries = []
-            log_errors = []
-        return {
-            "ok": True,
-            "limit": lim,
-            "source": source_norm,
-            "reason_codes": sorted(list(reason_filter)),
-            "since_sec": since,
-            "warnings_recent": warnings_recent[-lim:] if isinstance(warnings_recent, list) else [],
-            "warning_counts": warning_sink.warning_counts(),
-            "status_warning_counts": self._warning_counts_json(),
-            "log_errors": log_errors[-lim:],
-            "log_error_entries": log_entries[-lim:],
-        }
+        return _build_errors_payload_impl(
+            limit=limit,
+            source=source,
+            reason_codes=reason_codes,
+            since_sec=since_sec,
+            warning_sink_obj=warning_sink,
+            read_log_entries=self._read_recent_log_error_entries,
+            status_warning_counts_provider=self._warning_counts_json,
+        )
 
     @staticmethod
     def _indexer_workspace_roots(indexer: object) -> list[str]:
