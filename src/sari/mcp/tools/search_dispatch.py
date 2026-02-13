@@ -48,7 +48,7 @@ def execute_core_search_raw(
     roots: SearchRoots,
 ) -> ToolResult:
     try:
-        opts = parse_search_options(args, roots)
+        opts = parse_search_options(args, roots, db=db)
         search_fn = getattr(db, "search", None)
         if not callable(search_fn):
             raise RuntimeError("No search backend available (search)")

@@ -1,6 +1,7 @@
 import re
 import time
 import unicodedata
+import fnmatch
 from pathlib import Path
 from typing import List
 
@@ -30,6 +31,22 @@ def glob_to_like(pattern: str) -> str:
     while "%%" in res:
         res = res.replace("%%", "%")
     return res
+
+
+def _normalize_match_path(value: str) -> str:
+    text = str(value or "").replace("\\", "/")
+    return text.lstrip("./")
+
+
+def match_path_pattern(path: str, rel_path: str, pattern: str) -> bool:
+    if not pattern:
+        return True
+    pat = _normalize_match_path(pattern)
+    norm_path = _normalize_match_path(path)
+    norm_rel_path = _normalize_match_path(rel_path or norm_path)
+    rel_from_root = norm_rel_path.split("/", 1)[1] if "/" in norm_rel_path else norm_rel_path
+    candidates = (norm_rel_path, norm_path, rel_from_root)
+    return any(fnmatch.fnmatchcase(candidate, pat) for candidate in candidates if candidate)
 
 
 def get_file_extension(path: str) -> str:

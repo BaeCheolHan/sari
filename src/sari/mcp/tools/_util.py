@@ -129,7 +129,7 @@ def _intersect_preserve_order(base: list[str], rhs: list[str]) -> list[str]:
     return [x for x in base if x in rhs_set]
 
 
-def parse_search_options(args: ArgMap, roots: list[str]) -> object:
+def parse_search_options(args: ArgMap, roots: list[str], db: object = None) -> object:
     from sari.core.models import SearchOptions
 
     root_ids = resolve_root_ids(roots)
@@ -140,12 +140,15 @@ def parse_search_options(args: ArgMap, roots: list[str]) -> object:
 
     repo_raw = args.get("scope") or args.get("repo")
     repo_value = str(repo_raw).strip() if repo_raw is not None else None
+    resolved_repo, repo_root_ids = resolve_repo_scope(repo_value, roots, db=db)
+    if repo_root_ids:
+        root_ids = _intersect_preserve_order(root_ids, repo_root_ids) if root_ids else list(repo_root_ids)
     path_pattern_raw = args.get("path_pattern")
     path_pattern = str(path_pattern_raw) if path_pattern_raw is not None else None
 
     return SearchOptions(
         query=str(args.get("query") or "").strip(),
-        repo=repo_value or None,
+        repo=resolved_repo or None,
         limit=max(1, min(int(args.get("limit", 8) or 8), 100)),
         offset=max(int(args.get("offset", 0) or 0), 0),
         snippet_lines=min(max(int(args.get("context_lines", 5) or 5), 1), 20),

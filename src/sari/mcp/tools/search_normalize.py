@@ -55,10 +55,11 @@ def normalize_results(
                 if not isinstance(r, dict):
                     warnings.append("Dropped non-object api result during normalization.")
                     continue
+                api_path = r.get("path") or r.get("file") or ""
                 matches.append(
                     {
                         "type": "api",
-                        "path": r.get("file", ""),
+                        "path": api_path,
                         "identity": r.get("path", ""),
                         "location": {"line": r.get("line", 0)},
                         "extra": {"method": r.get("method"), "handler": r.get("handler")},

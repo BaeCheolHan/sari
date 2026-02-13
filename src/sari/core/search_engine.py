@@ -1,11 +1,10 @@
 import sqlite3
 import re
-import fnmatch
 import zlib
 import hashlib
 from typing import Dict, List, Optional, Tuple
 from .models import SearchHit, SearchOptions
-from .ranking import snippet_around, get_file_extension
+from .ranking import snippet_around, get_file_extension, match_path_pattern
 from .scoring import ScoringPolicy
 from .engine.tantivy_engine import TantivyEngine
 
@@ -134,13 +133,8 @@ class SearchEngine:
                             if hit_type not in allowed_types:
                                 continue
                         if opts.path_pattern:
-                            rel_path = sqlite_hit.path.split(
-                                "/", 1)[1] if "/" in sqlite_hit.path else sqlite_hit.path
-                            if not fnmatch.fnmatch(
-                                    sqlite_hit.path,
-                                    opts.path_pattern) and not fnmatch.fnmatch(
-                                    rel_path,
-                                    opts.path_pattern):
+                            rel_path = sqlite_hit.path.split("/", 1)[1] if "/" in sqlite_hit.path else sqlite_hit.path
+                            if not match_path_pattern(sqlite_hit.path, rel_path, opts.path_pattern):
                                 continue
                         if sqlite_hit.path in seen_paths:
                             continue
@@ -177,7 +171,6 @@ class SearchEngine:
             self,
             rows: List[object],
             opts: SearchOptions) -> List[SearchHit]:
-        import fnmatch
         hits: List[SearchHit] = []
         for r in rows:
             row = self._row_to_mapping(r)
@@ -213,13 +206,7 @@ class SearchEngine:
 
             # Path Pattern Filter (Glob)
             if opts.path_pattern:
-                pat = opts.path_pattern
-                # Match against rel_path or path
-                if not fnmatch.fnmatch(
-                        rel_path,
-                        pat) and not fnmatch.fnmatch(
-                        path,
-                        pat):
+                if not match_path_pattern(path, rel_path, opts.path_pattern):
                     continue
 
             hits.append(SearchHit(
@@ -239,7 +226,6 @@ class SearchEngine:
             self,
             hits: List[Dict[str, object]],
             opts: SearchOptions) -> List[SearchHit]:
-        import fnmatch
         results: List[SearchHit] = []
         for h in hits:
             path = h.get("path", "")
@@ -258,11 +244,7 @@ class SearchEngine:
 
             # Path Pattern Filter
             if opts.path_pattern:
-                if not fnmatch.fnmatch(
-                        rel_path,
-                        opts.path_pattern) and not fnmatch.fnmatch(
-                        path,
-                        opts.path_pattern):
+                if not match_path_pattern(path, rel_path, opts.path_pattern):
                     continue
 
             # Double check with DB to filter out deleted files not yet purged

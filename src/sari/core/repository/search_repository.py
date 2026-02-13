@@ -5,7 +5,7 @@ import zlib
 from typing import Dict, List, Optional, Tuple
 
 from sari.core.models import SearchHit, SearchOptions
-from sari.core.ranking import glob_to_like
+from sari.core.ranking import glob_to_like, match_path_pattern
 
 from .base import BaseRepository
 
@@ -157,6 +157,8 @@ class SearchRepository(BaseRepository):
             return [], {
                 "total": 0, "total_mode": getattr(
                     opts, "total_mode", "exact")}
+        if bool(getattr(opts, "use_regex", False)):
+            raise ValueError("use_regex is not supported for repository code search path")
 
         # Extract search parameters
         params = self._extract_search_params(opts, query)
@@ -165,7 +167,7 @@ class SearchRepository(BaseRepository):
         rows = self._execute_search_query(params)
 
         # Process results into SearchHits
-        hits = self._process_search_results(rows, query)
+        hits = self._process_search_results(rows, query, opts)
 
         # Calculate total count if requested
         total = self._calculate_total_count(params, hits)
@@ -273,7 +275,8 @@ class SearchRepository(BaseRepository):
     def _process_search_results(
             self,
             rows: List[Tuple],
-            query: str) -> List[SearchHit]:
+            query: str,
+            opts: Optional[SearchOptions] = None) -> List[SearchHit]:
         """Process database rows into SearchHit objects with snippets."""
         hits: List[SearchHit] = []
 
@@ -283,8 +286,13 @@ class SearchRepository(BaseRepository):
             mtime = self._row_val(r, "mtime", 2, 0)
             raw_size = self._row_val(r, "size", 3, 0)
             fts_content = self._row_val(r, "fts_content", 4, "")
+            rel_path = self._row_val(r, "rel_path", 5, path)
             content_blob = self._row_val(r, "content", 6, "")
             importance = self._row_val(r, "importance", 7, 0.0)
+
+            path_pattern = str(getattr(opts, "path_pattern", "") or "")
+            if path_pattern and not match_path_pattern(str(path), str(rel_path), path_pattern):
+                continue
 
             # Safe integer conversion for size
             try:
