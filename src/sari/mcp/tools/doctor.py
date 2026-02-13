@@ -6,12 +6,8 @@ ANSI 코드나 print 문을 사용하지 않고 순수 데이터 형태로 결�
 """
 import json
 import os
-import socket
-import shutil
 import sys
 import importlib
-import re
-from pathlib import Path
 from typing import Mapping, Optional, TypeAlias
 from sari.core.cjk import lindera_available, lindera_dict_uri, lindera_error
 from sari.core.config import Config
@@ -49,6 +45,14 @@ from sari.mcp.tools.doctor_checks_db import (
     check_fts_rebuild_policy as _check_fts_rebuild_policy,
     check_storage_switch_guard as _check_storage_switch_guard,
     check_writer_health as _check_writer_health,
+)
+from sari.mcp.tools.doctor_checks_system import (
+    check_disk_space as _check_disk_space,
+    check_log_errors as _check_log_errors,
+    check_network as _check_network,
+    check_port as _check_port,
+    check_process_resources as _check_process_resources,
+    check_system_env as _check_system_env,
 )
 
 DoctorResult: TypeAlias = dict[str, object]
@@ -163,158 +167,6 @@ def _check_windows_write_lock_support() -> DoctorResult:
 def _check_lindera_dictionary() -> DoctorResult:
     # Merged into CJK Tokenizer check above
     return _check_engine_tokenizer_data()
-
-
-def _check_port(port: int, label: str) -> DoctorResult:
-    """특정 포트의 가용성을 확인합니다."""
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        s.bind(("127.0.0.1", port))
-        return _result(f"{label} Port {port} Availability", True)
-    except OSError as e:
-        return _result(
-            f"{label} Port {port} Availability",
-            False,
-            f"Address in use or missing permission: {e}")
-    finally:
-        try:
-            s.close()
-        except Exception:
-            pass
-
-
-def _check_network() -> DoctorResult:
-    """외부 네트워크(Google DNS) 연결을 확인합니다."""
-    try:
-        socket.create_connection(("8.8.8.8", 53), timeout=3)
-        return _result("Network Check", True)
-    except OSError as e:
-        return _result("Network Check", False, f"Unreachable: {e}")
-
-
-def _check_disk_space(ws_root: str, min_gb: float) -> DoctorResult:
-    """워크스페이스 경로의 디스크 여유 공간을 확인합니다."""
-    try:
-        total, used, free = shutil.disk_usage(ws_root)
-        free_gb = free / (1024**3)
-        if free_gb < min_gb:
-            return _result(
-                "Disk Space",
-                False,
-                f"Low space: {free_gb:.2f} GB (Min: {min_gb} GB)")
-        return _result("Disk Space", True)
-    except Exception as e:
-        return _result("Disk Space", False, str(e))
-
-
-def _check_log_errors() -> DoctorResult:
-    """
-    최근 로그 파일에서 ERROR 또는 CRITICAL 패턴을 스캔합니다.
-    OOM 방지를 위해 마지막 1MB만 읽고 최근 500줄만 검사합니다.
-    """
-    try:
-        env_log_dir = os.environ.get("SARI_LOG_DIR")
-        log_dir = Path(env_log_dir).expanduser().resolve(
-        ) if env_log_dir else WorkspaceManager.get_global_log_dir()
-        log_file = log_dir / "daemon.log"
-        if not log_file.exists():
-            return _result("Log Health", True, "No log file yet")
-
-        errors = []
-        level_pat = re.compile(
-            r"(?:^|\s-\s)(ERROR|CRITICAL)(?:\s-\s|$)|\[(ERROR|CRITICAL)\]"
-        )
-        # 안전 장치: 파일의 마지막 1MB만 읽음
-        file_size = log_file.stat().st_size
-        read_size = min(file_size, 1024 * 1024)  # 1MB
-
-        with open(log_file, "rb") as f:
-            if file_size > read_size:
-                f.seek(file_size - read_size)
-            chunk = f.read().decode("utf-8", errors="ignore")
-            lines = chunk.splitlines()
-            # 마지막 500줄에서만 에러 검색
-            for line in lines[-500:]:
-                if level_pat.search(str(line)):
-                    errors.append(line.strip())
-
-        if not errors:
-            return _result("Log Health", True, "No recent errors")
-
-        # 중복 에러 메시지 제거 (증상 요약)
-        unique_errs = []
-        for e in errors:
-            msg = e.split(" - ")[-1] if " - " in e else e
-            if msg not in unique_errs:
-                unique_errs.append(msg)
-
-        return _result(
-            "Log Health",
-            False,
-            f"Found {len(errors)} error(s). Symptoms: {', '.join(unique_errs[:3])}")
-    except (PermissionError, OSError) as e:
-        return _result("Log Health", False, f"Log file inaccessible: {e}")
-    except Exception as e:
-        return _result("Log Health", True, f"Scan skipped: {e}", warn=True)
-
-
-def _check_system_env() -> DoctorResults:
-    """시스템 환경 정보(플랫폼, Python 버전, 주요 환경변수)를 확인합니다."""
-    import platform
-    results = []
-    results.append(
-        _result(
-            "Platform",
-            True,
-            f"{platform.system()} {platform.release()} ({platform.machine()})"))
-    results.append(_result("Python", True, sys.version.split()[0]))
-
-    # 중요 환경변수 확인
-    roots = os.environ.get("SARI_WORKSPACE_ROOT")
-    results.append(
-        _result(
-            "Env: SARI_WORKSPACE_ROOT",
-            bool(roots),
-            roots or "Not set"))
-
-    try:
-        reg_path = str(get_registry_path())
-        results.append(_result("Registry Path", True, reg_path))
-        # 쓰기 권한 확인
-        if os.path.exists(reg_path):
-            if not os.access(reg_path, os.W_OK):
-                results.append(
-                    _result(
-                        "Registry Access",
-                        False,
-                        "Registry file is read-only"))
-        elif not os.access(os.path.dirname(reg_path), os.W_OK):
-            results.append(
-                _result(
-                    "Registry Access",
-                    False,
-                    "Registry directory is not writable"))
-    except Exception as e:
-        results.append(
-            _result(
-                "Registry Path",
-                False,
-                f"Could not determine registry: {e}"))
-
-    return results
-
-
-def _check_process_resources(pid: int) -> DoctorResult:
-    """특정 프로세스의 리소스 사용량(메모리, CPU)을 확인합니다."""
-    try:
-        import psutil
-        proc = psutil.Process(pid)
-        with proc.oneshot():
-            mem = proc.memory_info().rss / (1024 * 1024)
-            cpu = proc.cpu_percent(interval=0.1)
-            return {"mem_mb": round(mem, 1), "cpu_pct": cpu}
-    except Exception:
-        return {}
 
 
 def _check_daemon() -> DoctorResult:
