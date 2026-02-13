@@ -60,6 +60,7 @@ from sari.mcp.server_tool_runtime import (
 from sari.mcp.server_request_dispatch import (
     execute_local_method as _execute_local_method_impl,
 )
+from sari.mcp.server_transport_init import ensure_transport as _ensure_transport_impl
 
 try:
     import orjson as _orjson
@@ -503,24 +504,15 @@ class LocalSearchMCPServer:
         trace("run_loop_start", workspace_root=self.workspace_root)
 
         if not self.transport:
-            input_stream = getattr(sys.stdin, "buffer", sys.stdin)
-
-            # Use injected stream, or fallback to server property, or finally
-            # sys.stdout.buffer
-            target_out = output_stream or getattr(
-                self, "_original_stdout", None) or getattr(
-                sys.stdout, "buffer", sys.stdout)
-
-            wire_format = (os.environ.get("SARI_FORMAT")
-                           or "pack").strip().lower()
-            # Accept JSONL input for compatibility, but default to
-            # Content-Length framing unless explicitly configured.
-            self.transport = McpTransport(
-                input_stream, target_out, allow_jsonl=True)
-            if wire_format == "json":
-                self.transport.default_mode = "jsonl"
-            else:
-                self.transport.default_mode = "content-length"
+            self.transport = _ensure_transport_impl(
+                transport=self.transport,
+                output_stream=output_stream,
+                original_stdout=getattr(self, "_original_stdout", None),
+                stdin_obj=sys.stdin,
+                stdout_obj=sys.stdout,
+                env=os.environ,
+                transport_factory=McpTransport,
+            )
             trace(
                 "transport_initialized",
                 wire_format=self.transport.default_mode,
