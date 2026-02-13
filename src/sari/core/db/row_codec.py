@@ -78,3 +78,18 @@ def normalize_search_row(row: object, file_columns: List[str]) -> Dict[str, obje
     if isinstance(row, (list, tuple)):
         return {k: row[idx] if idx < len(row) else None for idx, k in enumerate(file_columns)}
     return {}
+
+
+def normalize_repo_stat_row(row: object) -> tuple[str, int]:
+    if isinstance(row, sqlite3.Row):
+        label = str(row["label"] or "")
+        count = int(row["file_count"] or 0)
+        return label, count
+    if isinstance(row, (list, tuple)):
+        label = str(row[0] or "")
+        count = int(row[1] or 0)
+        return label, count
+    row_dict = dict(row) if isinstance(row, dict) else {}
+    label = str(row_dict.get("label") or "")
+    count = int(row_dict.get("file_count") or 0)
+    return label, count

@@ -7,6 +7,7 @@ import pytest
 
 from sari.core.db.row_codec import (
     decode_file_content,
+    normalize_repo_stat_row,
     normalize_root_row,
     normalize_search_row,
     row_content_value,
@@ -64,3 +65,8 @@ def test_row_content_value_reads_sqlite_row():
     assert row is not None
     assert row_content_value(row) == "abc"
     conn.close()
+
+
+def test_normalize_repo_stat_row_supports_tuple_and_dict():
+    assert normalize_repo_stat_row(("repo1", 3)) == ("repo1", 3)
+    assert normalize_repo_stat_row({"label": "repo2", "file_count": 7}) == ("repo2", 7)
