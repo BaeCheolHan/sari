@@ -22,6 +22,7 @@ from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 from sari.version import __version__
 from sari.core.daemon_health import detect_orphan_daemons
+from sari.core.dashboard_html import get_dashboard_html
 from sari.core.http_error_feed import (
     build_errors_payload as _build_errors_payload_impl,
     parse_log_line_ts as _parse_log_line_ts_impl,
@@ -264,11 +265,7 @@ class AsyncHttpServer:
 
     async def dashboard(self, request: Request) -> HTMLResponse:
         """Serve dashboard HTML aligned with sync server."""
-        from sari.core.http_server import Handler
-
-        handler = Handler.__new__(Handler)
-        html = handler._get_dashboard_html()
-        return HTMLResponse(html, status_code=200)
+        return HTMLResponse(get_dashboard_html(), status_code=200)
     
     async def status(self, request: Request) -> JSONResponse:
         """Server status endpoint."""
