@@ -46,3 +46,18 @@ Current split progress:
 - `src/sari/mcp/cli/daemon_startup_ops.py`: startup environment and background/foreground launch helpers
 - `src/sari/mcp/cli/daemon_orchestration_ops.py`: existing-daemon replacement decision and singleton orchestration
 - `src/sari/mcp/cli/daemon.py`: compatibility facade and orchestration entrypoints
+
+## HTTP Status/Feed SSOT Modules
+- `src/sari/core/http_error_feed.py`: `/errors` payload assembly SSOT (sync/async shared).
+- `src/sari/core/http_workspace_feed.py`: `/workspaces` status assembly SSOT (sync/async shared).
+- `src/sari/core/http_status_payload.py`: `/status` runtime/performance/queue/orphan warning assembly helpers (sync/async shared).
+- `src/sari/core/dashboard_html.py`: dashboard HTML/script generation SSOT (sync/async shared).
+
+## Doctor Layer Decomposition
+- `src/sari/mcp/tools/doctor.py`: orchestrator and compatibility wrapper surface.
+- `src/sari/mcp/tools/doctor_common.py`: common result/parse safety helpers.
+- `src/sari/mcp/tools/doctor_daemon_endpoint.py`: daemon/http endpoint resolution helpers.
+- `src/sari/mcp/tools/doctor_checks_db.py`: DB and engine runtime checks.
+- `src/sari/mcp/tools/doctor_checks_system.py`: system/network/log/disk checks.
+- `src/sari/mcp/tools/doctor_checks_daemon.py`: daemon/policy/http runtime marker checks.
+- `src/sari/mcp/tools/doctor_actions.py`: recommendations and auto-fix/rescan workflow.

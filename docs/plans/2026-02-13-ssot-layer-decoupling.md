@@ -31,6 +31,15 @@
   - `tests/test_daemon_facade_contract.py`
 
 ### Key Commit Trail (Most Recent First)
+- `2c87179` refactor(doctor): extract daemon and runtime checks with compatibility wrappers
+- `b747eac` refactor(doctor): extract system and log checks into dedicated module
+- `503478e` refactor(doctor): split db and engine checks into dedicated module
+- `5aa3bf0` refactor(doctor): split recommendations and autofix workflow from main tool
+- `6d278bb` refactor(http): share status payload helpers across sync and async servers
+- `683380d` refactor(http): decouple dashboard rendering from server handlers
+- `27ef626` refactor(async-http): reuse shared error feed helpers with legacy hook compatibility
+- `9f8deb2` refactor(http): share workspace status builder across sync and async servers
+- `105e80d` refactor(http): extract error feed helpers from http server handler
 - `9a4b50f` test(daemon): add facade delegation contract coverage
 - `38217b0` refactor(daemon): extract existing-daemon orchestration decisions
 - `97daf47` refactor(daemon): extract startup environment and launch operations
@@ -44,7 +53,7 @@
 
 ### Verification Snapshot
 - Latest full regression run: `pytest -q`
-- Result: `780 passed, 1 skipped, 6 deselected`
+- Result: `784 passed, 1 skipped, 6 deselected`
 
 ---
 
