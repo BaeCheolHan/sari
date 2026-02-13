@@ -11,15 +11,12 @@ import urllib.request
 from typing import Optional
 
 from sari.core.workspace import WorkspaceManager
-from sari.mcp.server_registry import ServerRegistry
+from sari.core.endpoint_resolver import resolve_http_endpoint
 from sari.core.constants import (
-    DEFAULT_HTTP_HOST,
-    DEFAULT_HTTP_PORT,
     HTTP_CHECK_TIMEOUT_SECONDS,
 )
 
-from .utils import load_config, enforce_loopback
-from .registry import load_server_info
+from .utils import enforce_loopback
 
 
 def get_http_host_port(
@@ -43,59 +40,12 @@ def get_http_host_port(
     Returns:
         Tuple of (host, port)
     """
-    env_host = os.environ.get("SARI_HTTP_API_HOST") or os.environ.get("SARI_HTTP_HOST")
-    env_port = os.environ.get("SARI_HTTP_API_PORT") or os.environ.get("SARI_HTTP_PORT")
-    
-    # Respect SARI_WORKSPACE_ROOT environment variable for testing
     workspace_root = os.environ.get("SARI_WORKSPACE_ROOT") or WorkspaceManager.resolve_workspace_root()
-    cfg = load_config(str(workspace_root))
-
-    # Priority: config (lowest) → registry → server.json → env → override (highest)
-    host = cfg.http_api_host or DEFAULT_HTTP_HOST
-    port = int(cfg.http_api_port or DEFAULT_HTTP_PORT)
-
-    try:
-        resolved = ServerRegistry().resolve_workspace_http(str(workspace_root))
-        if resolved:
-            if resolved.get("host"):
-                host = str(resolved.get("host"))
-            if resolved.get("port"):
-                port = int(resolved.get("port"))
-        else:
-            # Backward-compat: workspace-level endpoint
-            ws_info = ServerRegistry().get_workspace(str(workspace_root))
-            if ws_info:
-                if ws_info.get("http_host"):
-                    host = str(ws_info.get("http_host"))
-                if ws_info.get("http_port"):
-                    port = int(ws_info.get("http_port"))
-    except Exception:
-        pass
-
-    server_info = load_server_info(str(workspace_root))
-    if server_info:
-        try:
-            if server_info.get("host"):
-                host = str(server_info.get("host"))
-            if server_info.get("port"):
-                port = int(server_info.get("port"))
-        except Exception:
-            pass
-
-    if env_host:
-        host = env_host
-    if env_port:
-        try:
-            port = int(env_port)
-        except (TypeError, ValueError):
-            pass
-
-    if host_override:
-        host = host_override
-    if port_override is not None:
-        port = int(port_override)
-
-    return host, port
+    return resolve_http_endpoint(
+        workspace_root=str(workspace_root),
+        host_override=host_override,
+        port_override=port_override,
+    )
 
 
 def request_http(

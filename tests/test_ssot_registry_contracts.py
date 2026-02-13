@@ -32,7 +32,7 @@ def test_http_endpoint_resolution_prefers_registry_over_legacy_server_json(monke
     registry.set_workspace(str(workspace_root), "boot-1")
     monkeypatch.setattr(registry, "_is_process_alive", lambda pid: True)
     monkeypatch.setattr(
-        "sari.mcp.cli.http_client.ServerRegistry",
+        "sari.core.endpoint_resolver.ServerRegistry",
         lambda: registry,
     )
     monkeypatch.setattr(
@@ -63,3 +63,20 @@ def test_load_server_info_keeps_legacy_when_registry_missing(monkeypatch, tmp_pa
     info = load_server_info(str(workspace_root))
     assert info is not None
     assert info.get("port") == 62002
+
+
+def test_load_server_info_ignores_legacy_when_strict_ssot_enabled(monkeypatch, tmp_path):
+    from sari.mcp.cli.registry import load_server_info
+
+    workspace_root = tmp_path / "ws"
+    workspace_root.mkdir()
+    data_dir = workspace_root / ".codex" / "tools" / "sari" / "data"
+    data_dir.mkdir(parents=True)
+    (data_dir / "server.json").write_text(
+        json.dumps({"host": "127.0.0.1", "port": 62002}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("SARI_STRICT_SSOT", "1")
+    info = load_server_info(str(workspace_root))
+    assert info is None

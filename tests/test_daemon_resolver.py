@@ -69,3 +69,20 @@ def test_resolver_exposes_failure_state_on_registry_exception(monkeypatch):
     assert port == DEFAULT_PORT
     assert status["resolver_ok"] is False
     assert "resolver boom" in str(status.get("error", ""))
+
+
+def test_resolver_status_recovers_after_success(monkeypatch):
+    monkeypatch.setattr(
+        "sari.core.daemon_resolver.resolve_registry_daemon_address",
+        lambda workspace_root=None: ("127.0.0.1", 47779),
+    )
+    monkeypatch.delenv("SARI_DAEMON_PORT", raising=False)
+    monkeypatch.delenv("SARI_DAEMON_OVERRIDE", raising=False)
+
+    host, port = resolve_daemon_address("/tmp/fake-root")
+    status = resolver_mod.get_last_resolver_status()
+
+    assert host == "127.0.0.1"
+    assert port == 47779
+    assert status["resolver_ok"] is True
+    assert status["error"] == ""

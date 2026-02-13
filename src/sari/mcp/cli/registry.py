@@ -5,6 +5,7 @@ This module handles server registry and server info operations.
 """
 
 import json
+import os
 from pathlib import Path
 from typing import Optional, TypeAlias
 
@@ -41,6 +42,12 @@ def load_server_info(workspace_root: str) -> Optional[dict]:
     Returns:
         Server info dict or None if not found
     """
+    strict_ssot = (os.environ.get("SARI_STRICT_SSOT") or "").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+    if strict_ssot:
+        return None
+
     server_json = Path(workspace_root) / ".codex" / "tools" / "sari" / "data" / "server.json"
     if not server_json.exists():
         return None
