@@ -418,6 +418,17 @@ def test_registry_includes_unified_read_schema_with_required_constraints():
     ):
         assert key in props
         assert "description" in props[key]
+    assert props["symbol_kind"]["type"] == "string"
+    assert props["symbol_kind"]["enum"] == [
+        "function",
+        "method",
+        "class",
+        "interface",
+        "struct",
+        "trait",
+        "enum",
+        "module",
+    ]
 
     assert read_schema["required"] == ["mode"]
 

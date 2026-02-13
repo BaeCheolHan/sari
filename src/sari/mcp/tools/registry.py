@@ -328,7 +328,11 @@ def _register_file_tools(reg: ToolRegistry):
                 "new_text": {"type": "string", "description": "Replacement text for mode=ast_edit."},
                 "symbol": {"type": "string", "description": "Symbol name for block replacement in mode=ast_edit (Python/JS or tree-sitter-backed languages)."},
                 "symbol_qualname": {"type": "string", "description": "Qualified symbol hint (e.g. Class.method) for tree-sitter disambiguation in mode=ast_edit."},
-                "symbol_kind": {"type": "string", "description": "Symbol kind hint (e.g. function/method/class) for tree-sitter disambiguation in mode=ast_edit."},
+                "symbol_kind": {
+                    "type": "string",
+                    "enum": ["function", "method", "class", "interface", "struct", "trait", "enum", "module"],
+                    "description": "Symbol kind hint for tree-sitter disambiguation in mode=ast_edit.",
+                },
             },
             "required": ["mode"],
         },

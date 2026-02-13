@@ -39,6 +39,7 @@ ToolResult: TypeAlias = dict[str, object]
 
 _MODES = {"file", "symbol", "snippet", "diff_preview", "ast_edit"}
 _DIFF_BASELINES = {"HEAD", "WORKTREE", "INDEX"}
+_SYMBOL_KIND_ENUM = ("function", "method", "class", "interface", "struct", "trait", "enum", "module")
 
 
 def _invalid_mode_param(param: str, mode: str) -> ToolResult:
@@ -571,7 +572,7 @@ def _execute_ast_edit(args_map: Mapping[str, object], db: object, roots: list[st
     new_text = str(args_map.get("new_text") or "")
     symbol = str(args_map.get("symbol") or "").strip()
     symbol_qualname = str(args_map.get("symbol_qualname") or "").strip()
-    symbol_kind = str(args_map.get("symbol_kind") or "").strip()
+    symbol_kind = str(args_map.get("symbol_kind") or "").strip().lower()
     sync_timeout_ms = int(args_map.get("sync_timeout_ms") or 500)
     if not target:
         return _ast_edit_error(ErrorCode.INVALID_ARGS.value, "target is required for mode=ast_edit")
@@ -579,6 +580,9 @@ def _execute_ast_edit(args_map: Mapping[str, object], db: object, roots: list[st
         return _ast_edit_error(ErrorCode.INVALID_ARGS.value, "expected_version_hash is required for mode=ast_edit")
     if old_text == "" and not symbol:
         return _ast_edit_error(ErrorCode.INVALID_ARGS.value, "old_text is required for mode=ast_edit")
+    if symbol_kind and symbol_kind not in _SYMBOL_KIND_ENUM:
+        allowed = ", ".join(_SYMBOL_KIND_ENUM)
+        return _ast_edit_error("SYMBOL_KIND_INVALID", f"symbol_kind must be one of: {allowed}")
 
     db_path = resolve_db_path(target, roots, db=db)
     if not db_path:
@@ -616,17 +620,17 @@ def _execute_ast_edit(args_map: Mapping[str, object], db: object, roots: list[st
             )
             if not span:
                 return _ast_edit_error(
-                    ErrorCode.INVALID_ARGS.value,
+                    "SYMBOL_RESOLUTION_FAILED",
                     f"symbol-based ast_edit could not resolve symbol '{symbol}' in {suffix or 'target'} "
                     "(tree-sitter parser/runtime unavailable or symbol missing)",
                 )
         if not span:
-            return _ast_edit_error(ErrorCode.INVALID_ARGS.value, f"symbol '{symbol}' was not found in target")
+            return _ast_edit_error("SYMBOL_NOT_FOUND", f"symbol '{symbol}' was not found in target")
         start_line, end_line = span
         if old_text:
             selected = "".join(original.splitlines(keepends=True)[start_line - 1:end_line])
             if old_text not in selected:
-                return _ast_edit_error(ErrorCode.INVALID_ARGS.value, "old_text was not found in selected symbol block")
+                return _ast_edit_error("SYMBOL_BLOCK_MISMATCH", "old_text was not found in selected symbol block")
         try:
             edited = _replace_line_span(original, start_line, end_line, new_text)
         except ValueError as exc:

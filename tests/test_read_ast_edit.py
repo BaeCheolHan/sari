@@ -630,7 +630,7 @@ def test_ast_edit_symbol_mode_rejects_when_old_text_not_in_selected_symbol_block
     )
     payload = _payload(resp)
     assert payload["isError"] is True
-    assert payload["error"]["code"] == "INVALID_ARGS"
+    assert payload["error"]["code"] == "SYMBOL_BLOCK_MISMATCH"
     assert "old_text was not found in selected symbol block" in payload["error"]["message"]
 
 
@@ -647,3 +647,103 @@ def test_tree_sitter_symbol_span_runtime_smoke_for_languages(ext, lang_module, s
     pytest.importorskip(lang_module)
     span = read_tool._tree_sitter_symbol_span(source, f"/tmp/svc{ext}", symbol)
     assert span is not None
+
+
+def test_ast_edit_rejects_invalid_symbol_kind(monkeypatch, tmp_path):
+    monkeypatch.setenv("SARI_FORMAT", "json")
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    f = ws / "svc.go"
+    f.write_text(
+        "package svc\n\n"
+        "func targetFn() int {\n    return 1\n}\n",
+        encoding="utf-8",
+    )
+    db = _DummyDB()
+    original = f.read_text(encoding="utf-8")
+    resp = execute_read(
+        {
+            "mode": "ast_edit",
+            "target": str(f),
+            "expected_version_hash": _hash12(original),
+            "symbol": "targetFn",
+            "symbol_kind": "banana",
+            "new_text": "func targetFn() int {\n    return 2\n}",
+        },
+        db,
+        [str(ws)],
+    )
+    payload = _payload(resp)
+    assert payload["isError"] is True
+    assert payload["error"]["code"] == "SYMBOL_KIND_INVALID"
+
+
+def test_ast_edit_symbol_resolution_failure_uses_specific_error(monkeypatch, tmp_path):
+    monkeypatch.setenv("SARI_FORMAT", "json")
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    f = ws / "svc.go"
+    f.write_text(
+        "package svc\n\n"
+        "func targetFn() int {\n    return 1\n}\n",
+        encoding="utf-8",
+    )
+    db = _DummyDB()
+    original = f.read_text(encoding="utf-8")
+    monkeypatch.setattr(
+        "sari.mcp.tools.read._tree_sitter_symbol_span",
+        lambda _source, _path, sym, symbol_qualname="", symbol_kind="": None,
+        raising=False,
+    )
+    resp = execute_read(
+        {
+            "mode": "ast_edit",
+            "target": str(f),
+            "expected_version_hash": _hash12(original),
+            "symbol": "targetFn",
+            "new_text": "func targetFn() int {\n    return 2\n}",
+        },
+        db,
+        [str(ws)],
+    )
+    payload = _payload(resp)
+    assert payload["isError"] is True
+    assert payload["error"]["code"] == "SYMBOL_RESOLUTION_FAILED"
+
+
+@pytest.mark.parametrize(
+    ("ext", "lang_module", "before", "symbol", "replacement", "old_probe", "new_probe"),
+    [
+        (".java", "tree_sitter_java", "class Svc {\n  int target() { return 1; }\n}\n", "target", "int target() { return 2; }", "return 1;", "return 2;"),
+        (".kt", "tree_sitter_kotlin", "class Svc {\n  fun target(): Int = 1\n}\n", "target", "fun target(): Int = 2", "Int = 1", "Int = 2"),
+        (".rs", "tree_sitter_rust", "fn target() -> i32 {\n    1\n}\n", "target", "fn target() -> i32 {\n    2\n}", "\n    1\n", "\n    2\n"),
+    ],
+)
+def test_ast_edit_execute_read_runtime_e2e_tree_sitter_languages(
+    monkeypatch, tmp_path, ext, lang_module, before, symbol, replacement, old_probe, new_probe
+):
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip(lang_module)
+    monkeypatch.setenv("SARI_FORMAT", "json")
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    f = ws / f"svc{ext}"
+    f.write_text(before, encoding="utf-8")
+    db = _DummyDB()
+    original = f.read_text(encoding="utf-8")
+    resp = execute_read(
+        {
+            "mode": "ast_edit",
+            "target": str(f),
+            "expected_version_hash": _hash12(original),
+            "symbol": symbol,
+            "new_text": replacement,
+        },
+        db,
+        [str(ws)],
+    )
+    payload = _payload(resp)
+    assert payload.get("isError") is not True
+    after = f.read_text(encoding="utf-8")
+    assert new_probe in after
+    assert old_probe not in after
