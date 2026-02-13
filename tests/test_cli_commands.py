@@ -231,3 +231,11 @@ def test_entry_commands_run_cmd_unknown_subcommand(capsys):
     rc = entry_commands_mod.run_cmd(["does-not-exist"])
     assert rc == 2
     assert "Unknown subcommand: does-not-exist" in capsys.readouterr().err
+
+
+def test_entry_commands_index_handler_is_externalized():
+    assert entry_commands_mod._cmd_index.__module__ == "sari.entry_commands_index"
+
+
+def test_entry_commands_uninstall_handler_is_externalized():
+    assert entry_commands_mod._cmd_uninstall.__module__ == "sari.entry_commands_uninstall"

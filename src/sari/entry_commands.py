@@ -1,8 +1,7 @@
 import argparse
-import json
-import os
 from typing import Callable, List
 
+from sari.entry_command_context import CommandContext
 from sari.entry_commands_doctor import _cmd_doctor
 from sari.entry_commands_engine import (
     _cmd_engine_install,
@@ -10,30 +9,16 @@ from sari.entry_commands_engine import (
     _cmd_engine_status,
     _cmd_engine_verify,
 )
+from sari.entry_commands_index import _cmd_index
 from sari.entry_commands_install import _cmd_install
+from sari.entry_commands_legacy import _dispatch_legacy_cli
 from sari.entry_commands_roots import (
     _cmd_config_show,
     _cmd_roots_add,
     _cmd_roots_list,
     _cmd_roots_remove,
 )
-
-
-def _cmd_index() -> int:
-    try:
-        from sari.mcp.cli import _request_http
-        _request_http("/rescan", {})
-        print(json.dumps({"requested": True}))
-        return 0
-    except Exception as e:
-        print(json.dumps({"requested": False, "error": str(e)}))
-        return 1
-
-
-def _dispatch_legacy_cli(argv: List[str]) -> int:
-    from sari.mcp.cli import main as mcp_cli_main
-
-    return mcp_cli_main(argv)
+from sari.entry_commands_uninstall import _cmd_uninstall
 
 
 def _dispatch_doctor(_argv: List[str]) -> int:
@@ -47,9 +32,9 @@ def _dispatch_config(argv: List[str]) -> int | None:
 
 
 def _dispatch_roots(argv: List[str]) -> int | None:
+    ctx = CommandContext()
     if len(argv) < 2:
-        print("roots add|remove|list", file=os.sys.stderr)
-        return 2
+        return ctx.usage_error("roots add|remove|list")
     action = argv[1]
     if action == "list":
         return _cmd_roots_list()
@@ -73,9 +58,9 @@ def _dispatch_install(argv: List[str]) -> int:
 
 
 def _dispatch_engine(argv: List[str]) -> int | None:
+    ctx = CommandContext()
     if len(argv) < 2:
-        print("engine status|install|rebuild|verify", file=os.sys.stderr)
-        return 2
+        return ctx.usage_error("engine status|install|rebuild|verify")
     action = argv[1]
     handlers: dict[str, Callable[[], int]] = {
         "status": _cmd_engine_status,
@@ -90,9 +75,7 @@ def _dispatch_engine(argv: List[str]) -> int | None:
 
 
 def _dispatch_uninstall(argv: List[str]) -> int:
-    from sari import uninstall as uninstall_mod
-
-    return uninstall_mod.main(argv[1:])
+    return _cmd_uninstall(argv)
 
 
 _PRIMARY_DISPATCHERS: dict[str, Callable[[List[str]], int | None]] = {
@@ -115,13 +98,12 @@ def _resolve_command_handler(argv: List[str]) -> Callable[[List[str]], int | Non
 
 
 def run_cmd(argv: List[str]) -> int:
+    ctx = CommandContext()
     if not argv:
-        print("missing subcommand", file=os.sys.stderr)
-        return 2
+        return ctx.usage_error("missing subcommand")
     handler = _resolve_command_handler(argv)
     if handler is not None:
         result = handler(argv)
         if result is not None:
             return result
-    print(f"Unknown subcommand: {argv[0]}", file=os.sys.stderr)
-    return 2
+    return ctx.usage_error(f"Unknown subcommand: {argv[0]}")

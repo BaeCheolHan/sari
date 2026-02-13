@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 from unittest.mock import patch
 
 
@@ -25,3 +26,25 @@ def test_command_context_normalize_existing_dir(tmp_path):
         ctx = CommandContext(cwd=tmp_path)
         assert ctx.normalize_existing_dir(str(existing)) == str(existing)
         assert ctx.normalize_existing_dir(str(missing)) is None
+
+
+def test_command_context_usage_error_policy(capsys):
+    from sari.entry_command_context import CommandContext
+
+    ctx = CommandContext()
+    rc = ctx.usage_error("invalid command")
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "invalid command" in captured.err
+
+
+def test_command_context_error_json_policy(capsys):
+    from sari.entry_command_context import CommandContext
+
+    ctx = CommandContext()
+    rc = ctx.error_json("boom")
+    captured = capsys.readouterr()
+    assert rc == 1
+    payload = json.loads(captured.out)
+    assert payload["ok"] is False
+    assert payload["error"] == "boom"

@@ -7,6 +7,10 @@ from typing import TextIO
 
 from sari.core.workspace import WorkspaceManager
 
+EXIT_OK = 0
+EXIT_ERROR = 1
+EXIT_USAGE = 2
+
 
 @dataclass
 class CommandContext:
@@ -45,6 +49,17 @@ class CommandContext:
 
     def print_err(self, text: str) -> None:
         print(text, file=self.stderr)
+
+    def usage_error(self, message: str) -> int:
+        self.print_err(message)
+        return EXIT_USAGE
+
+    def error_json(self, message: str, *, extra: dict | None = None, code: int = EXIT_ERROR) -> int:
+        payload = {"ok": False, "error": message}
+        if extra:
+            payload.update(extra)
+        self.print_json(payload)
+        return code
 
     def env(self, key: str, default: str | None = None) -> str | None:
         return os.environ.get(key, default)
