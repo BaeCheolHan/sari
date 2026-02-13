@@ -217,7 +217,7 @@ def test_cmd_daemon_refresh_stops_all_then_starts():
             mock_start.assert_called_once()
 
 
-def test_cmd_daemon_start_uses_lifecycle_lock():
+def test_cmd_daemon_start_daemonized_uses_lifecycle_lock():
     args = argparse.Namespace(daemonize=True, daemon_host="", daemon_port=None, http_host="", http_port=None)
     with patch("sari.mcp.cli.commands.daemon_commands.run_with_lifecycle_lock", return_value=7) as mock_lock:
         from sari.mcp.cli.commands.daemon_commands import cmd_daemon_start
@@ -225,6 +225,17 @@ def test_cmd_daemon_start_uses_lifecycle_lock():
         assert rc == 7
         assert mock_lock.call_count == 1
         assert mock_lock.call_args.args[0] == "start"
+
+
+def test_cmd_daemon_start_foreground_bypasses_lifecycle_lock():
+    args = argparse.Namespace(daemonize=False, daemon_host="", daemon_port=None, http_host="", http_port=None)
+    with patch("sari.mcp.cli.commands.daemon_commands.run_with_lifecycle_lock", return_value=7) as mock_lock:
+        with patch("sari.mcp.cli.commands.daemon_commands._cmd_daemon_start_impl", return_value=0) as mock_start:
+            from sari.mcp.cli.commands.daemon_commands import cmd_daemon_start
+            rc = cmd_daemon_start(args)
+            assert rc == 0
+            assert mock_lock.call_count == 0
+            mock_start.assert_called_once_with(args)
 
 
 def test_cmd_daemon_stop_uses_lifecycle_lock():

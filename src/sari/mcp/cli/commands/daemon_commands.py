@@ -44,7 +44,11 @@ def _cmd_daemon_start_impl(args):
 
 
 def cmd_daemon_start(args):
-    return run_with_lifecycle_lock("start", lambda: _cmd_daemon_start_impl(args))
+    # Foreground start is a long-lived process; holding lifecycle lock for its
+    # whole lifetime blocks stop/refresh from other terminals.
+    if _arg(args, "daemonize"):
+        return run_with_lifecycle_lock("start", lambda: _cmd_daemon_start_impl(args))
+    return _cmd_daemon_start_impl(args)
 
 
 def _cmd_daemon_stop_impl(args):
