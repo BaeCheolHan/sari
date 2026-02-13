@@ -2,6 +2,7 @@ import json
 import os
 import time
 import socket
+import logging
 from pathlib import Path
 from typing import Optional, Iterable, Callable, TypedDict
 from filelock import FileLock
@@ -12,6 +13,8 @@ _FALLBACK_REGISTRY = Path(
     os.environ.get(
         "SARI_REGISTRY_FALLBACK",
         "/tmp/sari/server.json"))
+_logger = logging.getLogger("sari.server_registry")
+_FALLBACK_WARNED = False
 
 
 class DaemonEntry(TypedDict, total=False):
@@ -56,11 +59,13 @@ def _ensure_writable_dir(path: Path) -> bool:
         path.parent.mkdir(parents=True, exist_ok=True)
         return os.access(str(path.parent), os.W_OK)
     except Exception:
+        _logger.debug("Failed to ensure writable directory for registry path: %s", path, exc_info=True)
         return False
 
 
 def get_registry_path() -> Path:
     """Dynamically determine registry path from environment or default."""
+    global _FALLBACK_WARNED
     env_path = os.environ.get("SARI_REGISTRY_FILE")
     if env_path:
         return Path(env_path).resolve()
@@ -69,6 +74,12 @@ def get_registry_path() -> Path:
         return REGISTRY_FILE
     # Fallback to a temp location when home directory is not writable.
     _ensure_writable_dir(_FALLBACK_REGISTRY)
+    if not _FALLBACK_WARNED:
+        _logger.warning(
+            "Default registry path not writable; using fallback path: %s",
+            _FALLBACK_REGISTRY,
+        )
+        _FALLBACK_WARNED = True
     return _FALLBACK_REGISTRY.resolve()
 
 
@@ -165,6 +176,12 @@ class ServerRegistry:
         try:
             data = json.loads(content)
         except Exception:
+            preview = str(content or "").replace("\n", "\\n")[:160]
+            _logger.warning(
+                "Failed to parse registry JSON; resetting to empty schema. preview=%r",
+                preview,
+                exc_info=True,
+            )
             data = {}
         return self._ensure_v2(data)
 
