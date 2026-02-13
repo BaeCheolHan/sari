@@ -34,6 +34,7 @@ from sari.core.http_status_payload import (
     build_performance_payload as _build_performance_payload_impl,
     build_queue_depths_payload as _build_queue_depths_payload_impl,
     build_runtime_status as _build_runtime_status_impl,
+    build_status_payload_base as _build_status_payload_base_impl,
 )
 from sari.core.mcp_runtime import create_mcp_server
 from sari.core.policy_engine import load_daemon_runtime_status
@@ -287,51 +288,39 @@ class AsyncHttpServer:
         performance = _build_performance_payload_impl(self.indexer)
         queue_depths = _build_queue_depths_payload_impl(self.indexer, fallback=False)
         
-        return JSONResponse({
-            "ok": True,
-            "host": self.host,
-            "port": self.port,
-            "version": self.version,
-            "async_server": True,  # New flag to indicate async server
-            "index_ready": bool(runtime_status.get("index_ready", bool(getattr(st, "index_ready", False)))),
-            "last_scan_ts": int(runtime_status.get("scan_finished_ts", getattr(st, "scan_finished_ts", getattr(st, "last_scan_ts", 0))) or 0),
-            "last_commit_ts": self.indexer.get_last_commit_ts() if hasattr(self.indexer, "get_last_commit_ts") else 0,
-            "scanned_files": int(runtime_status.get("scanned_files", getattr(st, "scanned_files", 0)) or 0),
-            "indexed_files": int(runtime_status.get("indexed_files", getattr(st, "indexed_files", 0)) or 0),
-            "symbols_extracted": int(runtime_status.get("symbols_extracted", getattr(st, "symbols_extracted", 0)) or 0),
-            "total_files_db": total_db_files,
-            "errors": int(runtime_status.get("errors", getattr(st, "errors", 0)) or 0),
-            "status_source": str(runtime_status.get("status_source", "indexer_status") or "indexer_status"),
-            "orphan_daemon_count": len(orphan_daemons),
-            "orphan_daemon_warnings": orphan_daemon_warnings,
-            "signals_disabled": daemon_status.signals_disabled,
-            "shutdown_intent": daemon_status.shutdown_intent,
-            "suicide_state": daemon_status.suicide_state,
-            "active_leases_count": daemon_status.active_leases_count,
-            "leases": list(daemon_status.leases or []),
-            "last_reap_at": daemon_status.last_reap_at,
-            "reaper_last_run_at": daemon_status.reaper_last_run_at,
-            "no_client_since": daemon_status.no_client_since,
-            "grace_remaining": daemon_status.grace_remaining,
-            "grace_remaining_ms": daemon_status.grace_remaining_ms,
-            "shutdown_once_set": daemon_status.shutdown_once_set,
-            "last_event_ts": daemon_status.last_event_ts,
-            "event_queue_depth": daemon_status.event_queue_depth,
-            "last_shutdown_reason": daemon_status.last_shutdown_reason,
-            "shutdown_reason": daemon_status.shutdown_reason,
-            "workers_alive": list(daemon_status.workers_alive or []),
-            "fts_enabled": self.db.fts_enabled,
-            "worker_count": getattr(self.indexer, "max_workers", 0),
-            "performance": performance,
-            "queue_depths": queue_depths,
-            "repo_stats": repo_stats,
-            "roots": self.db.get_roots() if hasattr(self.db, "get_roots") else [],
-            "system_metrics": self._get_system_metrics(),
-            "endpoint_ok": bool(getattr(self, "_endpoint_ok", True)),
-            "status_warning_counts": self._warning_counts_json(),
-            "warning_counts": warning_sink.warning_counts(),
-            "warnings_recent": warning_sink.warnings_recent(),
-        })
+        return JSONResponse(
+            _build_status_payload_base_impl(
+                host=self.host,
+                port=self.port,
+                version=self.version,
+                status_obj=st,
+                runtime_status=runtime_status,
+                base_last_scan_ts=int(
+                    getattr(st, "scan_finished_ts", getattr(st, "last_scan_ts", 0)) or 0
+                ),
+                total_db_files=total_db_files,
+                orphan_daemons=orphan_daemons,
+                orphan_daemon_warnings=orphan_daemon_warnings,
+                daemon_status=daemon_status,
+                performance=performance,
+                queue_depths=queue_depths,
+                repo_stats=repo_stats,
+                roots=self.db.get_roots() if hasattr(self.db, "get_roots") else [],
+                system_metrics=self._get_system_metrics(),
+                status_warning_counts=self._warning_counts_json(),
+                warning_counts=warning_sink.warning_counts(),
+                warnings_recent=warning_sink.warnings_recent(),
+                extra={
+                    "async_server": True,
+                    "last_commit_ts": self.indexer.get_last_commit_ts()
+                    if hasattr(self.indexer, "get_last_commit_ts")
+                    else 0,
+                    "fts_enabled": self.db.fts_enabled,
+                    "worker_count": getattr(self.indexer, "max_workers", 0),
+                    "endpoint_ok": bool(getattr(self, "_endpoint_ok", True)),
+                },
+            )
+        )
 
     async def errors(self, request: Request) -> JSONResponse:
         raw_limit = request.query_params.get("limit", "50")
