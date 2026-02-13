@@ -13,7 +13,7 @@ import importlib
 import time
 import re
 from pathlib import Path
-from typing import Mapping, Optional, Tuple, TypeAlias
+from typing import Mapping, Optional, TypeAlias
 from sari.core.cjk import lindera_available, lindera_dict_uri, lindera_error
 from sari.core.db import LocalSearchDB
 from sari.core.config import Config
@@ -21,122 +21,29 @@ from sari.core.settings import settings
 from sari.core.workspace import WorkspaceManager
 from sari.mcp.server_registry import ServerRegistry, get_registry_path
 from sari.core.policy_engine import load_daemon_policy, load_daemon_runtime_status
-from sari.mcp.cli.mcp_client import identify_sari_daemon, probe_sari_daemon, is_http_running as _is_http_running
+from sari.mcp.cli.mcp_client import probe_sari_daemon, is_http_running as _is_http_running
 from sari.core.daemon_resolver import resolve_daemon_address as get_daemon_address
 from sari.core.daemon_runtime_state import RUNTIME_HOST, RUNTIME_PORT
+from sari.mcp.tools.doctor_common import (
+    result as _result,
+    row_get as _row_get,
+    safe_float as _safe_float,
+    safe_int as _safe_int,
+    safe_pragma_table_name as _safe_pragma_table_name,
+)
+from sari.mcp.tools.doctor_daemon_endpoint import (
+    get_http_host_port as _get_http_host_port,
+    identify as _identify_sari_daemon,
+    read_pid as _read_pid,
+    resolve_http_endpoint_for_daemon as _resolve_http_endpoint_for_daemon,
+)
 
 DoctorResult: TypeAlias = dict[str, object]
 DoctorResults: TypeAlias = list[DoctorResult]
 ActionItem: TypeAlias = dict[str, str]
 ActionItems: TypeAlias = list[ActionItem]
 
-
-def _read_pid(host: str, port: int) -> Optional[int]:
-    try:
-        # Prefer direct module import to avoid pulling full CLI package graph.
-        from sari.mcp.cli.daemon import read_pid as cli_read_pid
-        pid = cli_read_pid(host, port)
-        if pid:
-            return int(pid)
-    except Exception:
-        try:
-            # Backward-compat fallback for tests patching sari.mcp.cli.read_pid.
-            from sari.mcp.cli import read_pid as cli_read_pid
-            pid = cli_read_pid(host, port)
-            if pid:
-                return int(pid)
-        except Exception:
-            pass
-    try:
-        reg = ServerRegistry()
-        inst = reg.resolve_daemon_by_endpoint(host, port)
-        return int(inst["pid"]) if inst and inst.get("pid") else None
-    except Exception:
-        return None
-
-
-def _get_http_host_port(
-        port_override: Optional[int] = None) -> Tuple[str, int]:
-    # Simplified logic for doctor to avoid cli dependency
-    from sari.core.constants import DEFAULT_HTTP_HOST, DEFAULT_HTTP_PORT
-    host = os.environ.get("SARI_HTTP_HOST") or DEFAULT_HTTP_HOST
-    port = port_override or int(os.environ.get(
-        "SARI_HTTP_PORT") or DEFAULT_HTTP_PORT)
-    return host, port
-
-
-def _resolve_http_endpoint_for_daemon(
-        daemon_host: str, daemon_port: int, port_override: Optional[int] = None) -> Tuple[str, int]:
-    host, port = _get_http_host_port(port_override=port_override)
-    try:
-        reg = ServerRegistry()
-        inst = reg.resolve_daemon_by_endpoint(daemon_host, daemon_port)
-        if inst:
-            if inst.get("http_host"):
-                host = str(inst.get("http_host"))
-            if inst.get("http_port"):
-                port = int(inst.get("http_port"))
-    except Exception:
-        pass
-    return host, port
-
-
-def _identify_sari_daemon(host: str, port: int):
-    return identify_sari_daemon(host, port)
-
-
 _cli_identify = _identify_sari_daemon
-
-
-def _result(name: str, passed: bool, error: str = "",
-            warn: bool = False) -> DoctorResult:
-    """진단 결과를 딕셔너리 형태로 반환합니다."""
-    return {"name": name, "passed": passed, "error": error, "warn": warn}
-
-
-def _row_get(row: object, key: str, index: int, default: object = None) -> object:
-    if row is None:
-        return default
-    try:
-        if hasattr(row, "keys"):
-            return row[key]
-    except Exception:
-        pass
-    if isinstance(row, (list, tuple)) and len(row) > index:
-        return row[index]
-    return default
-
-
-def _safe_int(value: object, default: int) -> int:
-    try:
-        return int(value)
-    except Exception:
-        return int(default)
-
-
-def _safe_float(value: object, default: float) -> float:
-    try:
-        return float(value)
-    except Exception:
-        return float(default)
-
-
-def _safe_pragma_table_name(name: str) -> str:
-    """PRAGMA 쿼리에 안전한 테이블 이름인지 확인합니다."""
-    # 화이트리스트 기반 검증
-    allowed = {
-        "symbols",
-        "symbol_relations",
-        "files",
-        "roots",
-        "failed_tasks",
-        "snippets",
-        "snippet_versions",
-        "contexts",
-    }
-    if name in allowed:
-        return name
-    raise ValueError(f"Unsafe or unauthorized table name for PRAGMA: {name}")
 
 
 def _check_db(ws_root: str, *, allow_config_autofix: bool = False) -> DoctorResults:
