@@ -6,6 +6,7 @@ from sari.mcp.cli import cmd_daemon_status, cmd_init, cmd_prune, cmd_status, mai
 from sari.mcp.cli.commands.maintenance_commands import cmd_vacuum
 from sari.main import main as sari_entry_main
 from sari.main import run_cmd as sari_run_cmd
+from sari.main import _dispatch_pre_stdio
 
 def test_cmd_daemon_status():
     args = argparse.Namespace(daemon_host="127.0.0.1", daemon_port=47779)
@@ -104,6 +105,24 @@ def test_run_cmd_does_not_mutate_sys_argv_for_legacy_routing():
             assert rc == 0
             assert mock_legacy.called
             assert sys.argv == ["sari", "--sentinel"]
+
+
+def test_dispatch_pre_stdio_delegates_cli_commands():
+    with patch("sari.mcp.cli.main", return_value=0) as mock_cli:
+        rc = _dispatch_pre_stdio(["status"])
+        assert rc == 0
+        mock_cli.assert_called_once_with(["status"])
+
+
+def test_dispatch_pre_stdio_routes_cmd_passthrough_to_run_cmd():
+    with patch("sari.main.run_cmd", return_value=0) as mock_run_cmd:
+        rc = _dispatch_pre_stdio(["--cmd", "doctor"])
+        assert rc == 0
+        mock_run_cmd.assert_called_once_with(["doctor"])
+
+
+def test_dispatch_pre_stdio_returns_none_for_stdio_path():
+    assert _dispatch_pre_stdio([]) is None
 
 
 def test_cli_main_search_command_dispatches_to_cmd_search():

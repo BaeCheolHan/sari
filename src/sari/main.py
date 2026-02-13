@@ -418,6 +418,30 @@ def run_cmd(argv: List[str]) -> int:
     return 2
 
 
+def _dispatch_pre_stdio(argv: List[str]) -> int | None:
+    """Handle CLI subcommands before stdio/http transport bootstrap.
+
+    Returns command exit code when routed, or None when caller should
+    continue with stdio/http startup path.
+    """
+    if not argv:
+        return None
+
+    if argv[0] in {"doctor", "roots", "config", "index", "engine", "uninstall"}:
+        return run_cmd(argv)
+
+    if argv[0] in {"daemon", "proxy", "status", "search", "init", "auto"}:
+        from sari.mcp.cli import main as mcp_cli_main
+        return mcp_cli_main(argv)
+
+    if "--cmd" in argv:
+        idx = argv.index("--cmd")
+        cmd_args = argv[idx + 1:]
+        return run_cmd(cmd_args)
+
+    return None
+
+
 def main(argv: List[str] | None = None, original_stdout: object | None = None) -> int:
     # Ensure global config exists before doing anything else
     WorkspaceManager.ensure_global_config()
@@ -432,22 +456,9 @@ def main(argv: List[str] | None = None, original_stdout: object | None = None) -
     # Enable via SARI_ASYNC_MCP=1 or --async-mcp flag (handled below)
     use_async = os.environ.get("SARI_ASYNC_MCP", "").strip().lower() in {"1", "true", "yes", "on"}
 
-    # Default to stdio server if no arguments provided, or if explicitly requested
-    if not argv:
-        # Instead of run_cmd(["status"]), we fall through to the stdio server start
-        pass
-    else:
-        # Integrated command handling
-        if argv[0] in {"doctor", "roots", "config", "index", "engine", "uninstall"}:
-            return run_cmd(argv)
-        
-        if argv[0] in {"daemon", "proxy", "status", "search", "init", "auto"}:
-            from sari.mcp.cli import main as legacy_main
-            return legacy_main(argv)
-        if "--cmd" in argv:
-            idx = argv.index("--cmd")
-            cmd_args = argv[idx + 1 :]
-            return run_cmd(cmd_args)
+    routed = _dispatch_pre_stdio(argv)
+    if routed is not None:
+        return routed
 
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--transport", default="stdio", choices=["stdio", "http"])
