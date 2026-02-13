@@ -46,6 +46,7 @@ from sari.mcp.server_logging import (
     log_debug_request as _log_debug_request_impl,
     log_debug_response as _log_debug_response_impl,
 )
+from sari.mcp.server_bootstrap import build_runtime_options
 
 try:
     import orjson as _orjson
@@ -123,17 +124,17 @@ class LocalSearchMCPServer:
         self.struct_logger = get_logger("sari.mcp.protocol")
         self._tool_registry = build_default_registry()
         self._middlewares = [PolicyMiddleware(self.policy_engine)]
-        self._debug_enabled = settings.DEBUG or os.environ.get(
-            "SARI_MCP_DEBUG", "0") == "1"
-        self._dev_jsonl = (
-            os.environ.get("SARI_DEV_JSONL") or "").strip().lower() in {
-            "1", "true", "yes", "on"}
-        self._force_content_length = (
-            os.environ.get("SARI_FORCE_CONTENT_LENGTH") or "").strip().lower() in {
-            "1", "true", "yes", "on"}
+        runtime_opts = build_runtime_options(
+            env=os.environ,
+            debug_default=settings.DEBUG,
+            queue_size=settings.get_int("MCP_QUEUE_SIZE", 1000),
+        )
+        self._debug_enabled = runtime_opts.debug_enabled
+        self._dev_jsonl = runtime_opts.dev_jsonl
+        self._force_content_length = runtime_opts.force_content_length
         # Add maxsize to prevent memory bloat under heavy load
         self._req_queue: "queue.Queue[JsonMap]" = queue.Queue(
-            maxsize=settings.get_int("MCP_QUEUE_SIZE", 1000))
+            maxsize=runtime_opts.queue_size)
         self._stop = threading.Event()
         self._stdout_lock = threading.Lock()
         self.transport = None
@@ -150,9 +151,8 @@ class LocalSearchMCPServer:
         self._daemon_sock = None
         self._server_connection_id = str(uuid4())
 
-        max_workers = int(os.environ.get("SARI_MCP_WORKERS", "4") or 4)
         self._executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=max_workers)
+            max_workers=runtime_opts.max_workers)
         self._worker = threading.Thread(target=self._worker_loop, daemon=True)
         if start_worker:
             self._worker.start()
