@@ -16,6 +16,20 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("sari.tools.smoke")
 
 
+def _filter_test_cases_by_registry(
+    test_cases: List[Tuple[str, Dict[str, Any]]],
+    available_tools: set[str],
+) -> Tuple[List[Tuple[str, Dict[str, Any]]], List[str]]:
+    filtered: List[Tuple[str, Dict[str, Any]]] = []
+    skipped: List[str] = []
+    for name, args in test_cases:
+        if name in available_tools:
+            filtered.append((name, args))
+        else:
+            skipped.append(name)
+    return filtered, skipped
+
+
 def run_tools_smoke(workspace: str, limit: int) -> Dict[str, Any]:
     created_temp = not bool(workspace)
     tmp_dir = tempfile.mkdtemp(prefix="sari_tools_smoke_") if created_temp else ""
@@ -72,6 +86,8 @@ def run_tools_smoke(workspace: str, limit: int) -> Dict[str, Any]:
         ("get_context", {"topic": "smoke_test"}),
         ("dry_run_diff", {"path": "README.md", "content": "# Hello\nThis is a MODIFIED test."}),
     ][: max(1, int(limit))]
+    available = {tool.name for tool in reg.list_tools_raw()}
+    test_cases, skipped_tools = _filter_test_cases_by_registry(test_cases, available)
 
     results: Dict[str, str] = {}
     for name, args in test_cases:
@@ -91,6 +107,7 @@ def run_tools_smoke(workspace: str, limit: int) -> Dict[str, Any]:
     details = {
         "workspace": str(ws_root),
         "tools_checked": len(test_cases),
+        "skipped_unavailable_tools": skipped_tools,
         "results": results,
         "root_id_matches_workspace": root_ok,
         "crashes": [k for k, v in results.items() if v.startswith("CRASH:")],

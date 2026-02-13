@@ -37,7 +37,7 @@ class ConfigManager:
         self.final_extensions: Set[str] = set()
         self.final_filenames: Set[str] = set()
         self.final_exclude_dirs: Set[str] = {
-            ".git", "node_modules", ".venv", "dist", "build"}
+            ".git", "node_modules", ".worktrees", ".venv", "dist", "build"}
         self.final_exclude_globs: Set[str] = set()
 
     def _load_sariignore(self) -> List[str]:

@@ -1,4 +1,4 @@
-from sari.core.ranking import count_matches, glob_to_like, snippet_around
+from sari.core.ranking import count_matches, glob_to_like, match_path_pattern, snippet_around
 
 
 def test_snippet_around_tolerates_non_text_content():
@@ -24,3 +24,13 @@ def test_snippet_around_handles_max_lines_greater_than_file_lines():
 
 def test_glob_to_like_exact_path_without_wildcard_is_not_contains_match():
     assert glob_to_like("src/main.py") == "src/main.py"
+
+
+def test_match_path_pattern_supports_db_style_path_with_root_prefix():
+    assert match_path_pattern("rid/src/app/main.py", "src/app/main.py", "src/**") is True
+    assert match_path_pattern("rid/src/app/main.py", "src/app/main.py", "rid/src/**") is True
+
+
+def test_match_path_pattern_can_match_from_rel_path_without_first_segment():
+    assert match_path_pattern("rid/src/.idea/workspace.xml", "src/.idea/workspace.xml", ".idea/**") is True
+    assert match_path_pattern("rid/libs/.venv/site.py", "libs/.venv/site.py", ".venv/**") is True

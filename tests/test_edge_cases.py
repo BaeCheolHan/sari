@@ -67,3 +67,4 @@ class TestCommunicationEdgeCases:
         assert ".git" in scanner.hard_exclude_dirs
         assert "node_modules" in scanner.hard_exclude_dirs
         assert "site-packages" in scanner.hard_exclude_dirs
+        assert ".worktrees" in scanner.hard_exclude_dirs

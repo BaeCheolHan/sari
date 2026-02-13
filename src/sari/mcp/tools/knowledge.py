@@ -646,8 +646,21 @@ def execute_knowledge(args: object, db: object, roots: list[str], indexer: objec
         payload = _json_error(ErrorCode.DB_ERROR, str(exc))
 
     if payload.get("isError"):
-        code = str(payload.get("error", {}).get("code") or ErrorCode.INTERNAL.value)
-        msg = str(payload.get("error", {}).get("message") or "unknown error")
+        error_obj = payload.get("error", {})
+        if not isinstance(error_obj, Mapping):
+            error_obj = {}
+        raw_code = str(error_obj.get("code") or "").strip()
+        raw_message = str(error_obj.get("message") or "").strip()
+        code = raw_code or ErrorCode.INTERNAL.value
+        msg = raw_message or "Knowledge operation failed"
+        payload = {
+            **payload,
+            "error": {
+                "code": code,
+                "message": msg,
+            },
+            "isError": True,
+        }
         return mcp_response(
             "knowledge",
             lambda: pack_error("knowledge", code, msg),

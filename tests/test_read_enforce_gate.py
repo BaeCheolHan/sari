@@ -52,6 +52,7 @@ def test_read_gate_blocks_when_no_search_context(tmp_path, monkeypatch):
     blocked = execute_read({"mode": "file", "target": target}, db, [str(tmp_path)])
     payload = _payload(blocked)
     assert payload["error"]["code"] == "SEARCH_FIRST_REQUIRED"
+    assert "Run search(query=" in payload["error"]["message"]
 
 
 def test_read_gate_blocks_when_candidate_ref_missing(tmp_path, monkeypatch):
@@ -63,6 +64,7 @@ def test_read_gate_blocks_when_candidate_ref_missing(tmp_path, monkeypatch):
     blocked = execute_read({"session_id": "g-1", "mode": "file", "target": target}, db, [str(tmp_path)])
     payload = _payload(blocked)
     assert payload["error"]["code"] == "SEARCH_REF_REQUIRED"
+    assert "SARI_NEXT" in payload["error"]["message"]
 
 
 def test_read_gate_allows_candidate_ref(tmp_path, monkeypatch):
@@ -85,14 +87,17 @@ def test_read_gate_allows_precision_read_under_cap(tmp_path, monkeypatch):
     assert ok.get("isError") is not True
 
 
-def test_read_gate_blocks_precision_read_over_cap(tmp_path, monkeypatch):
+def test_read_gate_auto_chunks_precision_read_over_cap(tmp_path, monkeypatch):
     monkeypatch.setenv("SARI_FORMAT", "json")
     reset_session_metrics_for_tests()
     target = str(tmp_path / "a.py")
     db = StubDB(target=target)
-    blocked = execute_read({"mode": "file", "target": target, "offset": 0, "limit": 500}, db, [str(tmp_path)])
-    payload = _payload(blocked)
-    assert payload["error"]["code"] == "SEARCH_REF_REQUIRED"
+    result = execute_read({"mode": "file", "target": target, "offset": 0, "limit": 500}, db, [str(tmp_path)])
+    payload = _payload(result)
+    assert "error" not in payload
+    assert payload["metadata"]["limit"] == 200
+    warnings = payload["meta"]["stabilization"]["warnings"]
+    assert any("Auto-chunked read limit to max_range_lines=200" in w for w in warnings)
 
 
 def test_read_gate_allows_precision_read_exact_cap(tmp_path, monkeypatch):
@@ -104,14 +109,15 @@ def test_read_gate_allows_precision_read_exact_cap(tmp_path, monkeypatch):
     assert ok.get("isError") is not True
 
 
-def test_read_gate_blocks_precision_read_over_default_cap_by_one(tmp_path, monkeypatch):
+def test_read_gate_auto_chunks_precision_read_over_default_cap_by_one(tmp_path, monkeypatch):
     monkeypatch.setenv("SARI_FORMAT", "json")
     reset_session_metrics_for_tests()
     target = str(tmp_path / "a.py")
     db = StubDB(target=target)
-    blocked = execute_read({"mode": "file", "target": target, "offset": 0, "limit": 201}, db, [str(tmp_path)])
-    payload = _payload(blocked)
-    assert payload["error"]["code"] == "SEARCH_REF_REQUIRED"
+    result = execute_read({"mode": "file", "target": target, "offset": 0, "limit": 201}, db, [str(tmp_path)])
+    payload = _payload(result)
+    assert "error" not in payload
+    assert payload["metadata"]["limit"] == 200
 
 
 def test_read_gate_warn_mode_allows_without_ref_and_emits_reason(tmp_path, monkeypatch):
@@ -148,6 +154,7 @@ def test_read_gate_blocks_candidate_id_target_mismatch(tmp_path, monkeypatch):
     blocked = execute_read({"session_id": "g-3", "mode": "file", "target": other, "candidate_id": candidate_id}, db, [str(tmp_path)])
     payload = _payload(blocked)
     assert payload["error"]["code"] == "CANDIDATE_REF_REQUIRED"
+    assert "SARI_NEXT" in payload["error"]["message"]
 
 
 def test_read_gate_blocks_symbol_candidate_when_path_mismatch(tmp_path, monkeypatch):

@@ -1,7 +1,10 @@
 import pytest
 import os
 import threading
+import re
+import json
 from sari.mcp.tools.search import execute_search
+from sari.mcp.tools.search_dispatch import execute_core_search_raw
 from sari.mcp.tools._util import resolve_root_ids
 from sari.mcp.tools.search_normalize import normalize_results
 
@@ -97,7 +100,7 @@ def test_search_limit_contract_allows_100_without_runtime_clamp(roots):
 
 
 def test_search_normalizes_core_errors_to_mcp_response(roots):
-    os.environ['SARI_FORMAT'] = 'pack'
+    os.environ['SARI_FORMAT'] = 'json'
 
     class ErrorDB(MockDB):
         def search(self, opts):
@@ -106,7 +109,21 @@ def test_search_normalizes_core_errors_to_mcp_response(roots):
     db = ErrorDB()
     result = execute_search({'query': 'test', 'search_type': 'code'}, db, None, roots)
     assert result.get("isError") is True
-    assert "PACK1 tool=search ok=false code=INTERNAL" in result["content"][0]["text"]
+    assert result["error"]["code"] == "INTERNAL"
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["meta"]["stabilization"]["reason_codes"] == ["INTERNAL"]
+
+
+def test_search_dispatch_error_includes_code(roots):
+    class ErrorDB:
+        @staticmethod
+        def search(_opts):
+            raise RuntimeError("boom")
+
+    result = execute_core_search_raw({"query": "q", "search_type": "code"}, ErrorDB(), roots)
+    assert result["isError"] is True
+    assert result["error"]["code"] == "INTERNAL"
+    assert result["error"]["message"] == "boom"
 
 
 def test_search_pack_emits_single_sari_next_line_for_top_hit(db, roots):
@@ -114,8 +131,20 @@ def test_search_pack_emits_single_sari_next_line_for_top_hit(db, roots):
     result = execute_search({"query": "test", "search_type": "code"}, db, None, roots)
     text = result["content"][0]["text"]
     assert "PACK1 tool=search ok=true" in text
+    assert "r:t=code p=test.py cid=cand_" in text
     assert "\nSARI_NEXT: read(" in text
     assert text.count("\nSARI_NEXT: ") == 1
+
+
+def test_search_pack_top_record_cid_matches_sari_next_candidate_id(db, roots):
+    os.environ["SARI_FORMAT"] = "pack"
+    result = execute_search({"query": "test", "search_type": "code"}, db, None, roots)
+    text = result["content"][0]["text"]
+    top = re.search(r"^r:t=code p=test\.py cid=(cand_[a-f0-9]+)\b", text, flags=re.MULTILINE)
+    next_hint = re.search(r"SARI_NEXT: read\([^)]*candidate_id=(cand_[a-f0-9]+)\)", text)
+    assert top is not None
+    assert next_hint is not None
+    assert top.group(1) == next_hint.group(1)
 
 
 def test_search_pack_sari_next_skips_noisy_paths(roots):

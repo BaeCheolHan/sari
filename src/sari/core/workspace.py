@@ -270,6 +270,7 @@ class WorkspaceManager:
                 "exclude_dirs": [
                     ".git",
                     "node_modules",
+                    ".worktrees",
                     ".venv",
                     "build",
                     "target",

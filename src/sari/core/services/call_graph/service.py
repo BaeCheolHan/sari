@@ -50,9 +50,14 @@ class CallGraphService:
         scope_reason = f"root_ids={params['root_ids'] or 'any'}; repo={params['repo'] or 'any'}"
 
         # 정확한 일치가 없으면 퍼지 검색 시도
-        if not matches and params["name"]:
+        if not matches and params["name"] and not params["symbol_id"]:
             matches, scope_reason = self._try_fuzzy_fallback(
-                params["name"], scope_reason)
+                params["name"],
+                scope_reason,
+                params["path"],
+                params["root_ids"],
+                params["repo"],
+            )
 
         if not matches:
             return self._empty_result(params, scope_reason)
@@ -72,12 +77,12 @@ class CallGraphService:
         upstream = self._build_tree(
             target["name"], target["path"], target.get("symbol_id"),
             min(params["depth"], params["max_depth"]), "up",
-            set(), budget, allow_fn, params["root_ids"], params["sort_by"]
+            set(), budget, allow_fn, params["root_ids"], params["sort_by"], params["include_builtins"]
         )
         downstream = self._build_tree(
             target["name"], target["path"], target.get("symbol_id"),
             min(params["depth"], params["max_depth"]), "down",
-            set(), budget, allow_fn, params["root_ids"], params["sort_by"]
+            set(), budget, allow_fn, params["root_ids"], params["sort_by"], params["include_builtins"]
         )
 
         # 4. 결과 조립
@@ -108,7 +113,43 @@ class CallGraphService:
             "repo": str(args.get("repo") or "").strip() or None,
             "include_paths": [str(p) for p in (args.get("include_paths") or [])],
             "exclude_paths": [str(p) for p in (args.get("exclude_paths") or [])],
-            "root_ids": self._resolve_root_ids(args.get("root_ids") or [])
+            "root_ids": self._resolve_root_ids(args.get("root_ids") or []),
+            "include_builtins": bool(args.get("include_builtins") or args.get("include_builtin") or False),
+        }
+
+    @staticmethod
+    def _is_builtin_symbol(name: str) -> bool:
+        s = str(name or "").strip()
+        if not s:
+            return False
+        if s.startswith("__") and s.endswith("__"):
+            return True
+        return s in {
+            "print",
+            "len",
+            "range",
+            "sum",
+            "min",
+            "max",
+            "sorted",
+            "map",
+            "filter",
+            "zip",
+            "list",
+            "dict",
+            "set",
+            "tuple",
+            "str",
+            "int",
+            "float",
+            "bool",
+            "open",
+            "type",
+            "isinstance",
+            "issubclass",
+            "enumerate",
+            "any",
+            "all",
         }
 
     def _resolve_root_ids(self, req_root_ids: list[object]) -> list[str]:
@@ -142,17 +183,41 @@ class CallGraphService:
         return known_roots
 
     def _try_fuzzy_fallback(
-            self, name: str, scope_reason: str) -> Tuple[Rows, str]:
+            self,
+            name: str,
+            scope_reason: str,
+            path: Optional[str],
+            root_ids: list[str],
+            repo: Optional[str]) -> Tuple[Rows, str]:
         """정확한 이름 매칭 실패 시 유사 심볼을 찾습니다."""
         fuzzy = self.db.symbols.fuzzy_search_symbols(name, limit=3)
         if fuzzy:
-            target_cand = fuzzy[0]
-            matches = [
-                target_cand.model_dump() if hasattr(
-                    target_cand,
-                    "model_dump") else target_cand]
-            scope_reason += f" (exact match failed, using fuzzy match for '{target_cand.name}')"
-            return matches, scope_reason
+            normalized: Rows = []
+            for cand in fuzzy:
+                if hasattr(cand, "model_dump"):
+                    cdict = cand.model_dump()
+                elif isinstance(cand, Mapping):
+                    cdict = dict(cand)
+                else:
+                    continue
+                normalized.append(self._symbol_row_to_dict(cdict))
+
+            scoped: Rows = []
+            for cand in normalized:
+                c_path = str(cand.get("path") or "")
+                if path and c_path != path:
+                    continue
+                if root_ids and not any(c_path == rid or c_path.startswith(rid + "/") for rid in root_ids):
+                    continue
+                if repo and not self._path_matches_repo(c_path, repo):
+                    continue
+                scoped.append(cand)
+
+            if scoped:
+                target_cand = scoped[0]
+                cand_name = str(target_cand.get("name") or "")
+                scope_reason += f" (exact match failed, using fuzzy match for '{cand_name}')"
+                return [target_cand], scope_reason
         return [], scope_reason
 
     def _create_allow_filter(
@@ -230,7 +295,8 @@ class CallGraphService:
             budget: GraphBudget,
             allow: Callable,
             root_ids: list[str],
-            sort_by: str) -> Node:
+            sort_by: str,
+            params_include_builtins: bool) -> Node:
         """재귀적으로 호출 그래프 트리를 구축합니다."""
         node = {
             "name": name,
@@ -275,6 +341,8 @@ class CallGraphService:
             conf = n.get("confidence", 0.5)
             if conf < 0.05 or not allow(c_path):
                 continue
+            if not params_include_builtins and self._is_builtin_symbol(c_name):
+                continue
 
             if not budget.can_add_edge() or not budget.can_add_node():
                 break
@@ -291,7 +359,8 @@ class CallGraphService:
                 budget,
                 allow,
                 root_ids,
-                sort_by)
+                sort_by,
+                params_include_builtins)
             child.update({"line": int(n.get("line") or 0), "rel_type": n.get(
                 "rel_type") or "", "confidence": conf})
             node["children"].append(child)

@@ -317,3 +317,39 @@ def test_knowledge_recall_cross_scope_requires_explicit_workspace_refs(monkeypat
     assert payload["isError"] is True
     assert payload["error"]["code"] == "INVALID_ARGS"
     assert "workspace_refs" in payload["error"]["message"]
+
+
+def test_knowledge_error_fallback_uses_concrete_message_and_code(monkeypatch):
+    monkeypatch.setenv("SARI_FORMAT", "json")
+    monkeypatch.setattr(
+        "sari.mcp.tools.knowledge._execute_save",
+        lambda *_args, **_kwargs: {"isError": True, "error": {}},
+    )
+    db = MagicMock()
+    root = "/tmp/ws"
+    root_id = WorkspaceManager.root_id_for_workspace(root)
+    content = "critical context"
+    token = issue_context_ref(
+        {
+            "ws": root_id,
+            "kind": "file",
+            "path": f"{root_id}/src/app.py",
+            "span": [1, 3],
+            "ch": _sha12(content),
+        }
+    )
+    resp = execute_knowledge(
+        {
+            "action": "save",
+            "type": "context",
+            "context_ref": token,
+            "key": "topic-a",
+            "content": content,
+        },
+        db,
+        [root],
+    )
+    payload = _json_payload(resp)
+    assert payload["isError"] is True
+    assert payload["error"]["code"] == "INTERNAL"
+    assert payload["error"]["message"] == "Knowledge operation failed"

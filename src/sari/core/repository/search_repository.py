@@ -18,6 +18,44 @@ class SearchRepository(BaseRepository):
     키워드 검색, 시맨틱(벡터) 검색, 그리고 저장소 후보 탐색 기능을 포함합니다.
     """
 
+    @staticmethod
+    def _default_noise_exclude_patterns() -> list[str]:
+        return [
+            "**/.idea/**",
+            "**/.vscode/**",
+            "**/.venv/**",
+            "**/venv/**",
+            "**/site-packages/**",
+            "**/__pycache__/**",
+            "**/node_modules/**",
+        ]
+
+    @classmethod
+    def _normalize_exclude_patterns(cls, raw_excludes: list[str]) -> list[str]:
+        patterns: list[str] = []
+        seen: set[str] = set()
+        for raw in raw_excludes + cls._default_noise_exclude_patterns():
+            pat = str(raw or "").strip().replace("\\", "/").lstrip("./")
+            if not pat:
+                continue
+            candidates = [pat]
+            if "/" in pat and not pat.startswith("**/"):
+                candidates.append(f"**/{pat}")
+            for cand in candidates:
+                if cand not in seen:
+                    seen.add(cand)
+                    patterns.append(cand)
+        return patterns
+
+    @staticmethod
+    def _is_excluded(path: str, rel_path: str, patterns: list[str]) -> bool:
+        if not patterns:
+            return False
+        for pat in patterns:
+            if match_path_pattern(path, rel_path, pat):
+                return True
+        return False
+
     def repo_candidates(self, q: str, limit: int = 3,
                         root_ids: Optional[List[str]] = None) -> List[Dict[str, object]]:
         """
@@ -180,8 +218,9 @@ class SearchRepository(BaseRepository):
         file_types = [str(value).strip().lower().lstrip(".")
                       for value in raw_file_types if str(value).strip()]
         raw_excludes = getattr(opts, "exclude_patterns", None) or []
-        exclude_patterns = [str(value).strip()
-                            for value in raw_excludes if str(value).strip()]
+        exclude_patterns = self._normalize_exclude_patterns(
+            [str(value).strip() for value in raw_excludes if str(value).strip()]
+        )
         return {
             "query": query,
             "like_query": f"%{query}%",
@@ -279,6 +318,12 @@ class SearchRepository(BaseRepository):
             opts: Optional[SearchOptions] = None) -> List[SearchHit]:
         """Process database rows into SearchHit objects with snippets."""
         hits: List[SearchHit] = []
+        exclude_patterns: list[str] = []
+        if opts is not None:
+            raw_excludes = getattr(opts, "exclude_patterns", None) or []
+            exclude_patterns = self._normalize_exclude_patterns(
+                [str(value).strip() for value in raw_excludes if str(value).strip()]
+            )
 
         for r in rows:
             path = self._row_val(r, "path", 0, "")
@@ -292,6 +337,8 @@ class SearchRepository(BaseRepository):
 
             path_pattern = str(getattr(opts, "path_pattern", "") or "")
             if path_pattern and not match_path_pattern(str(path), str(rel_path), path_pattern):
+                continue
+            if exclude_patterns and self._is_excluded(str(path), str(rel_path), exclude_patterns):
                 continue
 
             # Safe integer conversion for size

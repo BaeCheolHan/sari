@@ -35,6 +35,40 @@ def _build_pack_next_hint(results: list[dict[str, object]]) -> str | None:
     return None
 
 
+def _search_symbol_candidates(
+    db: object,
+    query: str,
+    limit: int,
+    root_ids: list[str],
+    repo: str,
+) -> list[dict[str, object]]:
+    symbols_repo = getattr(db, "symbols", None)
+    search_fn = getattr(symbols_repo, "search_symbols", None)
+    if not callable(search_fn) or not query:
+        return []
+    kwargs: dict[str, object] = {}
+    if root_ids:
+        kwargs["root_ids"] = root_ids
+    if repo:
+        kwargs["repo"] = repo
+    try:
+        rows = search_fn(query, limit=limit, **kwargs)
+    except Exception:
+        return []
+    out: list[dict[str, object]] = []
+    for row in rows or []:
+        out.append(
+            {
+                "implementer_path": str(getattr(row, "path", "") or (row.get("path") if isinstance(row, Mapping) else "") or ""),
+                "implementer_symbol": str(getattr(row, "name", "") or (row.get("name") if isinstance(row, Mapping) else "") or ""),
+                "implementer_sid": str(getattr(row, "symbol_id", "") or (row.get("symbol_id") if isinstance(row, Mapping) else "") or ""),
+                "rel_type": "search_fallback",
+                "line": int(getattr(row, "line", 0) or (row.get("line") if isinstance(row, Mapping) else 0) or 0),
+            }
+        )
+    return out
+
+
 def execute_get_implementations(args: object, db: object, roots: list[str]) -> ToolResult:
     """
     SymbolService를 사용하여 특정 심볼을 구현(implements)하거나 상속(extends)하는 심볼들을 찾습니다.
@@ -83,6 +117,8 @@ def execute_get_implementations(args: object, db: object, roots: list[str]) -> T
         limit=limit,
         root_ids=effective_root_ids
     )
+    if not results and target_symbol:
+        results = _search_symbol_candidates(db, target_symbol, limit, effective_root_ids, repo)
 
     def build_pack() -> str:
         header_params = {

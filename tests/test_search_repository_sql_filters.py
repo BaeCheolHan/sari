@@ -174,3 +174,153 @@ def test_process_search_results_tolerates_non_numeric_size(db, monkeypatch):
     hits = repo._process_search_results(rows, "token")
     assert len(hits) == 1
     assert hits[0].size == 0
+
+
+def test_sqlite_search_exclude_patterns_match_nested_dot_dirs(db):
+    rid = "root-1"
+    db.upsert_root(rid, "/tmp/ws", "/tmp/ws")
+    cur = db._write.cursor()
+    rows = [
+        (
+            f"{rid}/src/main.py",
+            "src/main.py",
+            rid,
+            "repo",
+            11,
+            20,
+            "def main(): pass",
+            "h1",
+            "main token",
+            0,
+            0,
+            "ok",
+            "",
+            "ok",
+            "",
+            "none",
+            "none",
+            0,
+            0,
+            "{}",
+        ),
+        (
+            f"{rid}/src/.idea/workspace.xml",
+            "src/.idea/workspace.xml",
+            rid,
+            "repo",
+            11,
+            20,
+            "<xml/>",
+            "h2",
+            "token",
+            0,
+            0,
+            "ok",
+            "",
+            "ok",
+            "",
+            "none",
+            "none",
+            0,
+            0,
+            "{}",
+        ),
+        (
+            f"{rid}/lib/.venv/site.py",
+            "lib/.venv/site.py",
+            rid,
+            "repo",
+            11,
+            20,
+            "x=1",
+            "h3",
+            "token",
+            0,
+            0,
+            "ok",
+            "",
+            "ok",
+            "",
+            "none",
+            "none",
+            0,
+            0,
+            "{}",
+        ),
+    ]
+    for row in rows:
+        _insert_file_row(cur, row)
+    db._write.commit()
+
+    opts = SearchOptions(
+        query="token",
+        exclude_patterns=[".idea/**", ".venv/**"],
+        limit=20,
+        root_ids=[rid],
+    )
+    hits, _meta = db._search_sqlite(opts)
+    paths = [hit.path for hit in hits]
+    assert f"{rid}/src/main.py" in paths
+    assert f"{rid}/src/.idea/workspace.xml" not in paths
+    assert f"{rid}/lib/.venv/site.py" not in paths
+
+
+def test_sqlite_search_applies_default_noise_excludes(db):
+    rid = "root-1"
+    db.upsert_root(rid, "/tmp/ws", "/tmp/ws")
+    cur = db._write.cursor()
+    rows = [
+        (
+            f"{rid}/src/main.py",
+            "src/main.py",
+            rid,
+            "repo",
+            11,
+            20,
+            "def main(): pass",
+            "h1",
+            "token",
+            0,
+            0,
+            "ok",
+            "",
+            "ok",
+            "",
+            "none",
+            "none",
+            0,
+            0,
+            "{}",
+        ),
+        (
+            f"{rid}/.venv/lib/python3.11/site-packages/pkg.py",
+            ".venv/lib/python3.11/site-packages/pkg.py",
+            rid,
+            "repo",
+            11,
+            20,
+            "x=1",
+            "h2",
+            "token",
+            0,
+            0,
+            "ok",
+            "",
+            "ok",
+            "",
+            "none",
+            "none",
+            0,
+            0,
+            "{}",
+        ),
+    ]
+    for row in rows:
+        _insert_file_row(cur, row)
+    db._write.commit()
+
+    opts = SearchOptions(query="token", limit=20, root_ids=[rid])
+    hits, _meta = db._search_sqlite(opts)
+    paths = [hit.path for hit in hits]
+    assert f"{rid}/src/main.py" in paths
+    assert f"{rid}/.venv/lib/python3.11/site-packages/pkg.py" not in paths

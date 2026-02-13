@@ -98,7 +98,8 @@ def execute_core_search_raw(
             )
         return {"results": results, "meta": meta}
     except Exception as e:
-        return {"isError": True, "error": {"message": str(e)}}
+        message = str(e).strip() or "Search failed"
+        return {"isError": True, "error": {"code": "INTERNAL", "message": message}}
 
 
 def dispatch_search(

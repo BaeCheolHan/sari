@@ -8,6 +8,7 @@ from sari.mcp.tools.scan_once import execute_scan_once
 from sari.mcp.tools.read_symbol import execute_read_symbol
 from sari.mcp.tools.get_callers import execute_get_callers
 from sari.mcp.tools.get_implementations import execute_get_implementations
+from sari.mcp.tools.get_implementations import execute_get_implementations
 from sari.mcp.tools.repo_candidates import execute_repo_candidates
 from sari.mcp.tools.save_snippet import execute_save_snippet
 from sari.mcp.tools.dry_run_diff import execute_dry_run_diff
@@ -599,6 +600,70 @@ def test_get_callers_rejects_non_object_args():
     text = resp["content"][0]["text"]
     assert "PACK1 tool=get_callers ok=false code=INVALID_ARGS" in text
     assert resp.get("isError") is True
+
+
+def test_get_callers_uses_search_fallback_when_call_graph_is_empty(monkeypatch):
+    class _Conn:
+        def execute(self, *_args, **_kwargs):
+            class _Rows:
+                def fetchall(self_non):
+                    return []
+            return _Rows()
+
+    class _SymbolDTO:
+        def __init__(self):
+            self.path = "rid-x/a.py"
+            self.name = "target_caller"
+            self.symbol_id = "sid-caller"
+            self.line = 7
+
+    class _Symbols:
+        def search_symbols(self, _query, limit=20, **_kwargs):
+            return [_SymbolDTO()]
+
+    class _DB:
+        _read = _Conn()
+        symbols = _Symbols()
+
+    monkeypatch.setattr(
+        "sari.mcp.tools.get_callers.build_call_graph",
+        lambda _args, _db, _roots: {"upstream": {"children": []}},
+    )
+    resp = execute_get_callers({"name": "target", "limit": 10}, _DB(), ["/tmp/ws"])
+    text = resp["content"][0]["text"]
+    assert "PACK1 tool=get_callers ok=true" in text
+    assert "caller_symbol=target_caller" in text
+    assert "rel_type=search_fallback" in text
+
+
+def test_get_implementations_uses_search_fallback_when_service_returns_empty(monkeypatch):
+    class _Svc:
+        def __init__(self, _db):
+            pass
+
+        def get_implementations(self, **_kwargs):
+            return []
+
+    class _SymbolDTO:
+        def __init__(self):
+            self.path = "rid-x/impl.py"
+            self.name = "TargetImpl"
+            self.symbol_id = "sid-impl"
+            self.line = 11
+
+    class _Symbols:
+        def search_symbols(self, _query, limit=20, **_kwargs):
+            return [_SymbolDTO()]
+
+    class _DB:
+        symbols = _Symbols()
+
+    monkeypatch.setattr("sari.mcp.tools.get_implementations.SymbolService", _Svc)
+    resp = execute_get_implementations({"name": "Target", "limit": 10}, _DB(), ["/tmp/ws"])
+    text = resp["content"][0]["text"]
+    assert "PACK1 tool=get_implementations ok=true" in text
+    assert "implementer_symbol=TargetImpl" in text
+    assert "rel_type=search_fallback" in text
 
 
 def test_get_callers_repo_filter_applied():

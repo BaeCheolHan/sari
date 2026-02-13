@@ -1,4 +1,4 @@
-from collections.abc import Mapping
+from collections.abc import Mapping, MutableMapping
 import ast
 import difflib
 import hashlib
@@ -1044,6 +1044,14 @@ def _build_search_next_calls(target: str) -> list[dict[str, object]]:
     ]
 
 
+def _search_retry_hint(target: str) -> str:
+    q = str(target or "").strip()
+    if "/" in q:
+        q = q.rsplit("/", 1)[-1]
+    q = q or "target"
+    return f"Run search(query={q}, search_type=code, limit=5) first."
+
+
 def _enforce_search_ref_gate(
     mode: str,
     args_map: Mapping[str, object],
@@ -1055,7 +1063,7 @@ def _enforce_search_ref_gate(
         if search_count > 0:
             return (True, None, [], [])
         reason = ReasonCode.SEARCH_FIRST_REQUIRED
-        message = "Snippet read requires search context first."
+        message = f"Snippet read requires search context first. {_search_retry_hint(str(args_map.get('target') or 'snippet'))}"
         if policy.gate_mode == "warn":
             return (True, None, [reason.value], [message])
         return (
@@ -1075,6 +1083,13 @@ def _enforce_search_ref_gate(
     if precision_allowed:
         return (True, None, [], [])
     if precision_overflow:
+        if mode == "file" and isinstance(args_map, MutableMapping):
+            requested_limit = _to_int(args_map.get("limit"))
+            if requested_limit is not None and requested_limit > max_lines:
+                args_map["limit"] = max_lines
+            msg = f"Auto-chunked read limit to max_range_lines={max_lines} for this request."
+            return (True, None, [], [msg])
+
         msg = (
             f"Precision read range exceeds max_range_lines={max_lines}. "
             "Split into smaller windows or use search-based candidate read."
@@ -1103,7 +1118,10 @@ def _enforce_search_ref_gate(
         path_arg = str(args_map.get("path") or "").strip()
         if matched and (not target or target == matched or path_arg == matched):
             return (True, None, [], [])
-        message = "Candidate ref is invalid for this session target. Use search and retry with returned candidate_id."
+        message = (
+            "Candidate ref is invalid for this session target. "
+            "Use candidate_id from latest search SARI_NEXT hint after re-running search."
+        )
         return (
             False,
             _stabilization_error(
@@ -1119,9 +1137,9 @@ def _enforce_search_ref_gate(
 
     reason = ReasonCode.SEARCH_FIRST_REQUIRED if search_count <= 0 else ReasonCode.SEARCH_REF_REQUIRED
     message = (
-        "Read requires search context first."
+        f"Read requires search context first. {_search_retry_hint(target)}"
         if reason == ReasonCode.SEARCH_FIRST_REQUIRED
-        else "Read requires candidate_id from latest search response."
+        else "Read requires candidate_id from latest search response. Use candidate_id from SARI_NEXT."
     )
     if policy.gate_mode == "warn":
         return (True, None, [reason.value], [message])

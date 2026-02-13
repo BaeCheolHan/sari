@@ -5,6 +5,7 @@ import json
 from sari.core.indexer.main import Indexer, _scan_to_db, _worker_build_snapshot
 from sari.core.db.main import LocalSearchDB
 from sari.core.config import Config
+from sari.core.models import IndexingResult
 
 @pytest.fixture
 def test_context(tmp_path):
@@ -170,3 +171,42 @@ def test_scan_to_db_flushes_in_batches(tmp_path, monkeypatch):
     assert int(status["indexed_files"]) >= 5
     assert calls["files"] >= 2
     assert calls["finalize"] >= calls["files"]
+
+
+def test_scan_to_db_marks_excluded_legacy_rows_deleted(tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "main.py").write_text("print('x')\n", encoding="utf-8")
+    db = LocalSearchDB(str(tmp_path / "idx.db"))
+    cfg = Config(**Config.get_defaults(str(ws)))
+    rid = cfg.workspace_roots and cfg.workspace_roots[0]
+    from sari.core.workspace import WorkspaceManager
+    root_id = WorkspaceManager.root_id(rid)
+    db.ensure_root(root_id, str(ws))
+
+    legacy = IndexingResult(
+        path=f"{root_id}/.venv/lib/site.py",
+        rel=".venv/lib/site.py",
+        root_id=root_id,
+        repo="repo",
+        type="new",
+        content="x=1",
+        fts_content="x=1",
+        mtime=1,
+        size=3,
+        content_hash="h-legacy",
+        scan_ts=1,
+        metadata_json="{}",
+    )
+    db.upsert_files_turbo([legacy.to_file_row()])
+    db.finalize_turbo_batch()
+
+    before = db.execute("SELECT deleted_ts FROM files WHERE path = ?", (legacy.path,)).fetchone()
+    assert int(before[0] if not hasattr(before, "keys") else before["deleted_ts"]) == 0
+
+    _scan_to_db(cfg, db, logging.getLogger("test"))
+
+    after = db.execute("SELECT deleted_ts FROM files WHERE path = ?", (legacy.path,)).fetchone()
+    assert after is not None
+    deleted_ts = int(after[0] if not hasattr(after, "keys") else after["deleted_ts"])
+    assert deleted_ts > 0

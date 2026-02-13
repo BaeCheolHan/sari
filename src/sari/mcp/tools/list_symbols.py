@@ -1,8 +1,10 @@
 from collections.abc import Mapping
 from bisect import bisect_left
+from pathlib import Path
 from typing import TypeAlias
 
 from sari.core.db.main import LocalSearchDB
+from sari.core.parsers.factory import ParserFactory
 from sari.mcp.tools._util import (
     ErrorCode,
     mcp_response,
@@ -15,6 +17,49 @@ from sari.mcp.tools._util import (
 )
 
 ToolResult: TypeAlias = dict[str, object]
+
+
+def _classify_empty_symbols_reason(path: object, db_path: str, conn: object) -> tuple[str, str] | None:
+    row = conn.execute(
+        "SELECT parse_status, parse_error, ast_status, ast_reason FROM files WHERE path = ? OR rel_path = ? LIMIT 1",
+        (db_path, db_path),
+    ).fetchone()
+    if not row:
+        return ("NOT_INDEXED", f"File not found or not indexed: {db_path}")
+
+    parse_status = str(row["parse_status"] or "").strip().lower()
+    parse_error = str(row["parse_error"] or "").strip().lower()
+    ast_status = str(row["ast_status"] or "").strip().lower()
+    ast_reason = str(row["ast_reason"] or "").strip().lower()
+    ext = Path(str(path or db_path)).suffix.lower()
+
+    unsupported_reasons = {
+        "unsupported",
+        "unsupported_extension",
+        "unsupported_language",
+        "unsupported_filetype",
+        "no_parser",
+        "no_language",
+    }
+    parse_failure_reasons = {"parse_error", "syntax_error", "ast_parse_error", "failed"}
+
+    if (
+        parse_status in {"failed", "error"}
+        or ast_status == "failed"
+        or parse_error in parse_failure_reasons
+        or ast_reason in parse_failure_reasons
+    ):
+        return ("PARSE_FAILED", f"Symbol extraction failed for {db_path} (parse/ast failure)")
+
+    if (
+        parse_error in unsupported_reasons
+        or ast_reason in unsupported_reasons
+        or (parse_status == "skipped" and parse_error in unsupported_reasons)
+        or ParserFactory.get_parser(ext) is None
+    ):
+        return ("UNSUPPORTED_LANGUAGE", f"Symbol extraction is not supported for this language: {ext or 'unknown'}")
+
+    return None
 
 
 def execute_list_symbols(args: object, db: LocalSearchDB, roots: list[str]) -> ToolResult:
@@ -55,6 +100,16 @@ def execute_list_symbols(args: object, db: LocalSearchDB, roots: list[str]) -> T
             "parent": row["parent"],
             "qual": row["qualname"],
         })
+
+    if not symbols:
+        classified = _classify_empty_symbols_reason(path, db_path, conn)
+        if classified:
+            code, message = classified
+            return mcp_response(
+                "list_symbols",
+                lambda: pack_error("list_symbols", code, message),
+                lambda: {"error": {"code": code, "message": message}, "isError": True},
+            )
 
     def _node_id(n: dict[str, object]) -> str:
         qual = str(n.get("qual") or "").strip()

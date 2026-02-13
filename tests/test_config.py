@@ -10,6 +10,7 @@ def test_config_defaults():
     assert "server_port" in defaults
     assert ".py" in defaults["include_ext"]
     assert "site-packages" in defaults["exclude_dirs"]
+    assert ".worktrees" in defaults["exclude_dirs"]
 
 def test_config_post_init():
     cfg = Config(
@@ -138,6 +139,44 @@ def test_config_should_index_excludes_site_packages(tmp_path):
     pkg.parent.mkdir(parents=True, exist_ok=True)
     pkg.write_text("print('x')", encoding="utf-8")
     assert cfg.should_index(str(pkg)) is False
+
+
+def test_config_should_index_exclude_glob_matches_nested_dot_idea(tmp_path):
+    cfg = Config(
+        workspace_root=str(tmp_path),
+        workspace_roots=[str(tmp_path)],
+        include_ext=[".py", ".xml"],
+        include_files=[],
+        exclude_dirs=[],
+        exclude_globs=[".idea/**"],
+    )
+    f = tmp_path / "src" / ".idea" / "workspace.xml"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text("<xml/>", encoding="utf-8")
+    assert cfg.should_index(str(f)) is False
+
+
+def test_config_should_index_exclude_glob_matches_nested_dot_venv(tmp_path):
+    cfg = Config(
+        workspace_root=str(tmp_path),
+        workspace_roots=[str(tmp_path)],
+        include_ext=[".py"],
+        include_files=[],
+        exclude_dirs=[],
+        exclude_globs=[".venv/**"],
+    )
+    f = tmp_path / "libs" / ".venv" / "site.py"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text("x=1", encoding="utf-8")
+    assert cfg.should_index(str(f)) is False
+
+
+def test_config_should_index_excludes_worktrees(tmp_path):
+    cfg = Config.load(None, workspace_root_override=str(tmp_path))
+    f = tmp_path / ".worktrees" / "feature-a" / "main.py"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text("print('x')", encoding="utf-8")
+    assert cfg.should_index(str(f)) is False
 
 
 def test_resolve_config_path_prefers_workspace_mcp_config(tmp_path, monkeypatch):

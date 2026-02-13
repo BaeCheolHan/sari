@@ -252,6 +252,62 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
 
         # 데이터베이스 일괄 업데이트 (Batch Update)
         _flush_batches(force=True)
+        # 현재 스캔에서 관측되지 않은 과거 row는 soft-delete 처리한다.
+        # exclude 정책 변경 시 기존 노이즈(.venv/.idea 등)가 검색에 남지 않도록 보장한다.
+        try:
+            scanned_root_ids = []
+            for root in config.workspace_roots:
+                try:
+                    scanned_root_ids.append(WorkspaceManager.root_id(str(root)))
+                except Exception:
+                    continue
+            scanned_root_ids = [rid for rid in scanned_root_ids if rid]
+            if scanned_root_ids:
+                placeholders = ",".join(["?"] * len(scanned_root_ids))
+                deleted_ts = int(time.time())
+                db.execute(
+                    f"""
+                    UPDATE files
+                       SET deleted_ts = ?, status = 'deleted'
+                     WHERE deleted_ts = 0
+                       AND last_seen_ts < ?
+                       AND root_id IN ({placeholders})
+                    """,
+                    tuple([deleted_ts, now] + scanned_root_ids),
+                )
+                # deleted files에 대한 심볼/관계 노이즈도 제거한다.
+                db.execute(
+                    f"""
+                    DELETE FROM symbols
+                     WHERE root_id IN ({placeholders})
+                       AND path IN (
+                            SELECT path FROM files
+                             WHERE deleted_ts > 0
+                               AND root_id IN ({placeholders})
+                       )
+                    """,
+                    tuple(scanned_root_ids + scanned_root_ids),
+                )
+                db.execute(
+                    f"""
+                    DELETE FROM symbol_relations
+                     WHERE (from_root_id IN ({placeholders}) AND from_path IN (
+                                SELECT path FROM files
+                                 WHERE deleted_ts > 0
+                                   AND root_id IN ({placeholders})
+                            ))
+                        OR (to_root_id IN ({placeholders}) AND to_path IN (
+                                SELECT path FROM files
+                                 WHERE deleted_ts > 0
+                                   AND root_id IN ({placeholders})
+                            ))
+                    """,
+                    tuple(scanned_root_ids + scanned_root_ids + scanned_root_ids + scanned_root_ids),
+                )
+                db.update_stats()
+        except Exception:
+            if logger:
+                logger.debug("legacy-row soft-delete cleanup skipped", exc_info=True)
 
         status["scan_finished_ts"] = int(time.time())
         status["index_version"] = str(status["scan_finished_ts"])

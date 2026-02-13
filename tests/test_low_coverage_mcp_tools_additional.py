@@ -203,19 +203,29 @@ def test_get_context_topic_and_query_paths(monkeypatch):
 def test_list_files_summary_and_json_detail(monkeypatch):
     db = MagicMock()
     db.get_repo_stats.return_value = {"repo1": 2}
-    db.list_files.return_value = [{"path": "a.py", "repo": "repo1", "size": 10}]
+    db.list_files.return_value = [
+        {"path": "rid/src/a.py", "repo": "repo1", "size": 10},
+        {"path": "rid/src/b.py", "repo": "repo1", "size": 12},
+        {"path": "rid/tests/t_a.py", "repo": "repo1", "size": 8},
+    ]
 
     monkeypatch.setenv("SARI_FORMAT", "pack")
     summary_resp = execute_list_files({}, db, MagicMock(), ["/tmp/ws"])
     summary_text = summary_resp["content"][0]["text"]
     assert "mode=summary" in summary_text
-    assert "f:path=a.py repo=repo1" in summary_text
+    assert "f:path=rid/src/a.py repo=repo1" in summary_text
+    assert "d:dir=src file_count=2" in summary_text
 
     monkeypatch.setenv("SARI_FORMAT", "json")
+    summary_json_resp = execute_list_files({}, db, MagicMock(), ["/tmp/ws"])
+    summary_payload = json.loads(summary_json_resp["content"][0]["text"])
+    assert summary_payload["directories"][0]["dir"] == "src"
+    assert summary_payload["directories"][0]["file_count"] == 2
+
     detail_resp = execute_list_files({"repo": "repo1", "limit": 1}, db, MagicMock(), ["/tmp/ws"])
     detail_payload = json.loads(detail_resp["content"][0]["text"])
     assert detail_payload["repo"] == "repo1"
-    assert detail_payload["files"][0]["path"] == "a.py"
+    assert detail_payload["files"][0]["path"] == "rid/src/a.py"
 
 
 def test_list_files_invalid_limit_is_handled(monkeypatch):
@@ -369,6 +379,106 @@ def test_list_symbols_disambiguates_duplicate_parent_names(monkeypatch):
     # each method should appear once, not duplicated under both same-name parents
     assert text.count("|do:5") == 1
     assert text.count("|run:205") == 1
+
+
+def test_list_symbols_classifies_not_indexed_when_file_row_missing(monkeypatch):
+    class _Conn:
+        def execute(self, sql, _params):
+            class _Cur:
+                def __init__(self, q: str):
+                    self._q = q
+
+                def fetchall(self_inner):
+                    if "FROM symbols" in self_inner._q:
+                        return []
+                    return []
+
+                def fetchone(self_inner):
+                    if "FROM files" in self_inner._q:
+                        return None
+                    return None
+
+            return _Cur(sql)
+
+    monkeypatch.setenv("SARI_FORMAT", "pack")
+    db = MagicMock()
+    db.get_read_connection.return_value = _Conn()
+    monkeypatch.setattr("sari.mcp.tools.list_symbols.resolve_db_path", lambda *_a, **_k: "rid/missing.py")
+
+    resp = execute_list_symbols({"path": "missing.py"}, db, ["/tmp/ws"])
+    text = resp["content"][0]["text"]
+    assert "ok=false" in text
+    assert "code=NOT_INDEXED" in text
+
+
+def test_list_symbols_classifies_parse_failed(monkeypatch):
+    class _Conn:
+        def execute(self, sql, _params):
+            class _Cur:
+                def __init__(self, q: str):
+                    self._q = q
+
+                def fetchall(self_inner):
+                    if "FROM symbols" in self_inner._q:
+                        return []
+                    return []
+
+                def fetchone(self_inner):
+                    if "FROM files" in self_inner._q:
+                        return {
+                            "parse_status": "failed",
+                            "parse_error": "syntax_error",
+                            "ast_status": "failed",
+                            "ast_reason": "parse_error",
+                        }
+                    return None
+
+            return _Cur(sql)
+
+    monkeypatch.setenv("SARI_FORMAT", "pack")
+    db = MagicMock()
+    db.get_read_connection.return_value = _Conn()
+    monkeypatch.setattr("sari.mcp.tools.list_symbols.resolve_db_path", lambda *_a, **_k: "rid/broken.py")
+
+    resp = execute_list_symbols({"path": "broken.py"}, db, ["/tmp/ws"])
+    text = resp["content"][0]["text"]
+    assert "ok=false" in text
+    assert "code=PARSE_FAILED" in text
+
+
+def test_list_symbols_classifies_unsupported_language(monkeypatch):
+    class _Conn:
+        def execute(self, sql, _params):
+            class _Cur:
+                def __init__(self, q: str):
+                    self._q = q
+
+                def fetchall(self_inner):
+                    if "FROM symbols" in self_inner._q:
+                        return []
+                    return []
+
+                def fetchone(self_inner):
+                    if "FROM files" in self_inner._q:
+                        return {
+                            "parse_status": "skipped",
+                            "parse_error": "unsupported_extension",
+                            "ast_status": "skipped",
+                            "ast_reason": "disabled",
+                        }
+                    return None
+
+            return _Cur(sql)
+
+    monkeypatch.setenv("SARI_FORMAT", "pack")
+    db = MagicMock()
+    db.get_read_connection.return_value = _Conn()
+    monkeypatch.setattr("sari.mcp.tools.list_symbols.resolve_db_path", lambda *_a, **_k: "rid/nope.abc")
+
+    resp = execute_list_symbols({"path": "nope.abc"}, db, ["/tmp/ws"])
+    text = resp["content"][0]["text"]
+    assert "ok=false" in text
+    assert "code=UNSUPPORTED_LANGUAGE" in text
 
 
 @pytest.mark.read

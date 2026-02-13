@@ -77,7 +77,7 @@ def _search_error_response(code: str, message: str, *, query: str = "target") ->
             "error": {"code": code, "message": message},
             "meta": {
                 "stabilization": {
-                    "reason_codes": [str(code or "UNKNOWN")],
+                    "reason_codes": [str(code)],
                     "suggested_next_action": "search",
                     "warnings": [str(message or "search failed")],
                     "next_calls": next_calls,
@@ -227,12 +227,14 @@ def execute_search(
         lines = [header]
         lines.append(pack_line("m", {k: str(v) for k, v in v3_meta.items() if v is not None}))
         for m in normalized_matches:
+            cid = str(m.get("candidate_id") or "").strip()
             lines.append(
                 pack_line(
                     "r",
                     {
                         "t": m["type"],
                         "p": pack_encode_id(m["path"]),
+                        "cid": pack_encode_id(cid) if cid else "",
                         "i": pack_encode_text(m["identity"]),
                         "l": str(m["location"].get("line", 0)),
                         "s": pack_encode_text(m.get("snippet", "")) if preview_mode != "none" else "",
