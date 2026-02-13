@@ -10,12 +10,10 @@ import socket
 import shutil
 import sys
 import importlib
-import time
 import re
 from pathlib import Path
 from typing import Mapping, Optional, TypeAlias
 from sari.core.cjk import lindera_available, lindera_dict_uri, lindera_error
-from sari.core.db import LocalSearchDB
 from sari.core.config import Config
 from sari.core.settings import settings
 from sari.core.workspace import WorkspaceManager
@@ -26,13 +24,11 @@ from sari.core.daemon_resolver import resolve_daemon_address as get_daemon_addre
 from sari.core.daemon_runtime_state import RUNTIME_HOST, RUNTIME_PORT
 from sari.mcp.tools.doctor_common import (
     result as _result,
-    row_get as _row_get,
     safe_float as _safe_float,
     safe_int as _safe_int,
     safe_pragma_table_name as _safe_pragma_table_name,
 )
 from sari.mcp.tools.doctor_daemon_endpoint import (
-    get_http_host_port as _get_http_host_port,
     identify as _identify_sari_daemon,
     read_pid as _read_pid,
     resolve_http_endpoint_for_daemon as _resolve_http_endpoint_for_daemon,
@@ -44,175 +40,21 @@ from sari.mcp.tools.doctor_actions import (
     run_auto_fixes as _run_auto_fixes,
     run_rescan as _run_rescan,
 )
+from sari.mcp.tools.doctor_checks_db import (
+    check_db as _check_db,
+    check_db_integrity as _check_db_integrity,
+    check_db_migration_safety as _check_db_migration_safety,
+    check_engine_runtime as _check_engine_runtime,
+    check_engine_sync_dlq as _check_engine_sync_dlq,
+    check_fts_rebuild_policy as _check_fts_rebuild_policy,
+    check_storage_switch_guard as _check_storage_switch_guard,
+    check_writer_health as _check_writer_health,
+)
 
 DoctorResult: TypeAlias = dict[str, object]
 DoctorResults: TypeAlias = list[DoctorResult]
-ActionItem: TypeAlias = dict[str, str]
-ActionItems: TypeAlias = list[ActionItem]
 
 _cli_identify = _identify_sari_daemon
-
-
-def _check_db(ws_root: str, *, allow_config_autofix: bool = False) -> DoctorResults:
-    """데이터베이스 설정, 접근 권한, 스키마 등을 검사합니다."""
-    results: DoctorResults = []
-    cfg_path = WorkspaceManager.resolve_config_path(ws_root)
-    cfg = Config.load(cfg_path, workspace_root_override=ws_root)
-    # Optional auto-fix: persist missing db_path only when explicitly enabled.
-    try:
-        if cfg_path and Path(cfg_path).exists():
-            raw = json.loads(Path(cfg_path).read_text(encoding="utf-8"))
-            if isinstance(raw, dict) and not raw.get(
-                    "db_path") and cfg.db_path:
-                if allow_config_autofix:
-                    raw["db_path"] = cfg.db_path
-                    Path(cfg_path).parent.mkdir(parents=True, exist_ok=True)
-                    Path(cfg_path).write_text(
-                        json.dumps(
-                            raw,
-                            ensure_ascii=False,
-                            indent=2) + "\n",
-                        encoding="utf-8")
-                    results.append(
-                        _result(
-                            "DB Path AutoFix",
-                            True,
-                            f"db_path set to {cfg.db_path}"))
-                else:
-                    results.append(
-                        _result(
-                            "DB Path AutoFix",
-                            True,
-                            "skipped (auto_fix=false)",
-                            warn=True))
-    except Exception as e:
-        results.append(_result("DB Path AutoFix", False, f"failed: {e}"))
-    db_path = Path(cfg.db_path)
-    if not db_path.exists():
-        results.append(
-            _result(
-                "DB Existence",
-                False,
-                f"DB not found at {db_path}"))
-        return results
-
-    try:
-        db = LocalSearchDB(str(db_path))
-    except Exception as e:
-        results.append(_result("DB Access", False, str(e)))
-        return results
-
-    # FTS5 모듈 지원 여부 확인
-    fts_ok = False
-    try:
-        cursor = db.db.connection().execute("PRAGMA compile_options")
-        options = [str(_row_get(r, "compile_options", 0, "") or "") for r in cursor.fetchall()]
-        fts_ok = "ENABLE_FTS5" in options
-    except Exception:
-        fts_ok = False
-
-    results.append(
-        _result(
-            "DB FTS5 Support",
-            fts_ok,
-            "FTS5 module missing in SQLite" if not fts_ok else ""))
-    try:
-        def _cols(table: str) -> list[str]:
-            safe_name = _safe_pragma_table_name(table)
-            row = db.db.connection().execute(f"PRAGMA table_info({safe_name})")
-            return [str(_row_get(r, "name", 1, "") or "") for r in row.fetchall()]
-
-        # 주요 테이블 컬럼 존재 여부 확인 (스키마 검증)
-        symbols_cols = _cols("symbols")
-        if "end_line" in symbols_cols:
-            results.append(_result("DB Schema", True))
-        else:
-            results.append(
-                _result(
-                    "DB Schema",
-                    False,
-                    "Column 'end_line' missing in 'symbols'. Run update."))
-        if "qualname" in symbols_cols and "symbol_id" in symbols_cols:
-            results.append(_result("DB Schema Symbol IDs", True))
-        else:
-            results.append(
-                _result(
-                    "DB Schema Symbol IDs",
-                    False,
-                    "Missing qualname/symbol_id in 'symbols'."))
-        rel_cols = _cols("symbol_relations")
-        if "from_symbol_id" in rel_cols and "to_symbol_id" in rel_cols:
-            results.append(_result("DB Schema Relations IDs", True))
-        else:
-            results.append(
-                _result(
-                    "DB Schema Relations IDs",
-                    False,
-                    "Missing from_symbol_id/to_symbol_id in 'symbol_relations'."))
-        snippet_cols = _cols("snippets")
-        if "anchor_before" in snippet_cols and "anchor_after" in snippet_cols:
-            results.append(_result("DB Schema Snippet Anchors", True))
-        else:
-            results.append(
-                _result(
-                    "DB Schema Snippet Anchors",
-                    False,
-                    "Missing anchor_before/anchor_after in 'snippets'."))
-        ctx_cols = _cols("contexts")
-        if all(
-            c in ctx_cols for c in (
-                "source",
-                "valid_from",
-                "valid_until",
-                "deprecated")):
-            results.append(_result("DB Schema Context Validity", True))
-        else:
-            results.append(
-                _result(
-                    "DB Schema Context Validity",
-                    False,
-                    "Missing validity columns in 'contexts'."))
-        row = db.db.connection().execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='snippet_versions'"
-        ).fetchone()
-        results.append(
-            _result(
-                "DB Schema Snippet Versions",
-                bool(row),
-                "snippet_versions table missing" if not row else ""))
-        row = db.db.connection().execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='failed_tasks'"
-        ).fetchone()
-        results.append(
-            _result(
-                "DB Schema Failed Tasks",
-                bool(row),
-                "failed_tasks table missing" if not row else ""))
-
-        # 실패한 작업(DLQ) 상태 확인
-        if row:
-            total_failed, high_failed = db.count_failed_tasks()
-            if high_failed >= 3:
-                results.append(
-                    _result(
-                        "Failed Tasks (DLQ)",
-                        False,
-                        f"{high_failed} tasks exceeded retry threshold"))
-            else:
-                results.append(
-                    _result(
-                        "Failed Tasks (DLQ)",
-                        True,
-                        f"pending={total_failed}"))
-    except Exception as e:
-        results.append(_result("DB Schema Check", False, str(e)))
-    finally:
-        try:
-            db.close()
-        except Exception:
-            pass
-
-    return results
 
 
 def _platform_tokenizer_tag() -> str:
@@ -318,178 +160,6 @@ def _check_windows_write_lock_support() -> DoctorResult:
         return _result("Windows Write Lock", False, f"{type(e).__name__}: {e}")
 
 
-def _check_db_migration_safety() -> DoctorResult:
-    """DB 마이그레이션 도구(peewee 등)의 안전성을 확인합니다."""
-    # Legacy check removed as we moved to peewee + init_schema
-    return _result(
-        "DB Migration Safety",
-        True,
-        "using peewee init_schema (idempotent)")
-
-
-def _check_engine_sync_dlq(ws_root: str) -> DoctorResult:
-    """엔진 동기화 실패 기록(DLQ)이 있는지 확인합니다."""
-    try:
-        cfg_path = WorkspaceManager.resolve_config_path(ws_root)
-        cfg = Config.load(cfg_path, workspace_root_override=ws_root)
-        db = LocalSearchDB(cfg.db_path)
-        try:
-            row = db.db.connection().execute(
-                "SELECT COUNT(*), COALESCE(MAX(attempts),0) FROM failed_tasks WHERE error LIKE 'engine_sync_error:%'"
-            ).fetchone()
-            count = int(_row_get(row, "COUNT(*)", 0, 0) or 0)
-            max_attempts = int(_row_get(row, "COALESCE(MAX(attempts),0)", 1, 0) or 0)
-            if count == 0:
-                return _result(
-                    "Engine Sync DLQ",
-                    True,
-                    "no pending engine_sync_error tasks")
-            return _result(
-                "Engine Sync DLQ",
-                False,
-                f"pending={count} max_attempts={max_attempts}")
-        finally:
-            try:
-                db.close()
-            except Exception:
-                pass
-    except Exception as e:
-        return _result("Engine Sync DLQ", False, str(e))
-
-
-def _check_writer_health(db: object = None) -> DoctorResult:
-    """DB Writer 스레드의 상태를 확인합니다."""
-    try:
-        from sari.core.db.storage import GlobalStorageManager
-        sm = GlobalStorageManager.get_active_instance()
-        if sm is None:
-            return _result("Writer Health", True, "no active storage manager")
-        writer = getattr(sm, "writer", None)
-        if writer is None:
-            return _result(
-                "Writer Health",
-                False,
-                "storage manager has no writer")
-        thread_obj = getattr(writer, "_thread", None)
-        alive = bool(thread_obj and thread_obj.is_alive())
-        qsize = int(writer.qsize()) if hasattr(writer, "qsize") else -1
-        last_commit = int(getattr(writer, "last_commit_ts", 0) or 0)
-        age = int(time.time()) - last_commit if last_commit > 0 else -1
-        if not alive:
-            return _result(
-                "Writer Health",
-                False,
-                f"writer thread not alive (queue={qsize})")
-        if qsize > 1000:
-            return _result(
-                "Writer Health",
-                True,
-                f"writer alive but queue high={qsize}",
-                warn=True)
-        if qsize > 0 and age > 120:
-            return _result(
-                "Writer Health",
-                True,
-                f"writer alive with stale commits age_sec={age}",
-                warn=True)
-        detail = f"alive=true queue={qsize}"
-        if age >= 0:
-            detail += f" last_commit_age_sec={age}"
-        return _result("Writer Health", True, detail)
-    except Exception as e:
-        return _result("Writer Health", False, str(e))
-
-
-def _check_storage_switch_guard() -> DoctorResult:
-    """스토리지 전환이 차단되어 있는지 확인합니다."""
-    try:
-        from sari.core.db.storage import GlobalStorageManager
-        reason, ts = GlobalStorageManager.get_switch_guard_status()
-        if not reason:
-            return _result("Storage Switch Guard", True, "no blocked switch")
-        age = int(time.time() - ts) if ts > 0 else -1
-        msg = f"switch blocked: {reason}"
-        if age >= 0:
-            msg += f" age_sec={age}"
-        return _result("Storage Switch Guard", False, msg)
-    except Exception as e:
-        return _result("Storage Switch Guard", False, str(e))
-
-
-def _check_fts_rebuild_policy() -> DoctorResult:
-    """FTS 재구축 정책 설정을 확인합니다."""
-    if settings.FTS_REBUILD_ON_START:
-        return _result(
-            "FTS Rebuild Policy",
-            True,
-            "FTS_REBUILD_ON_START=true may increase startup latency",
-            warn=True)
-    return _result("FTS Rebuild Policy", True, "FTS_REBUILD_ON_START=false")
-
-
-def _check_engine_runtime(ws_root: str) -> DoctorResult:
-    """현재 실행 중인 검색 엔진의 상태를 확인합니다."""
-    try:
-        cfg_path = WorkspaceManager.resolve_config_path(ws_root)
-        cfg = Config.load(cfg_path, workspace_root_override=ws_root)
-        db_path = Path(str(cfg.db_path or "")).expanduser()
-        try:
-            max_db_mb = float(
-                os.environ.get("SARI_DOCTOR_ENGINE_RUNTIME_MAX_DB_MB", "128") or "128"
-            )
-        except Exception:
-            max_db_mb = 128.0
-        if max_db_mb > 0 and db_path.exists():
-            db_size_mb = float(db_path.stat().st_size) / (1024.0 * 1024.0)
-            if db_size_mb > max_db_mb:
-                return _result(
-                    "Engine Runtime",
-                    True,
-                    f"skipped (db_size_mb={db_size_mb:.1f} > max_db_mb={max_db_mb:.1f})",
-                    warn=True,
-                )
-
-        db = LocalSearchDB(cfg.db_path)
-        try:
-            from sari.core.settings import settings as _settings
-            db.set_settings(_settings)
-        except Exception:
-            pass
-        try:
-            from sari.core.engine_registry import get_default_engine
-            engine = get_default_engine(db, cfg, cfg.workspace_roots)
-            db.set_engine(engine)
-            if hasattr(engine, "status"):
-                st = engine.status()
-                mode = getattr(st, "engine_mode", "unknown")
-                ready = bool(getattr(st, "engine_ready", False))
-                reason = str(getattr(st, "reason", "") or "")
-                hint = str(getattr(st, "hint", "") or "")
-                detail = f"mode={mode} ready={str(ready).lower()}"
-                if reason:
-                    detail += f" reason={reason}"
-                if hint:
-                    detail += f" hint={hint}"
-                passed = ready if mode == "embedded" else True
-                return _result("Search Engine Runtime", passed, detail)
-            return _result(
-                "Search Engine Runtime",
-                False,
-                "engine has no status()")
-        finally:
-            try:
-                if hasattr(db, "engine") and hasattr(db.engine, "close"):
-                    db.engine.close()
-            except Exception:
-                pass
-            try:
-                db.close()
-            except Exception:
-                pass
-    except Exception as e:
-        return _result("Search Engine Runtime", False, str(e))
-
-
 def _check_lindera_dictionary() -> DoctorResult:
     # Merged into CJK Tokenizer check above
     return _check_engine_tokenizer_data()
@@ -535,64 +205,6 @@ def _check_disk_space(ws_root: str, min_gb: float) -> DoctorResult:
         return _result("Disk Space", True)
     except Exception as e:
         return _result("Disk Space", False, str(e))
-
-
-def _check_db_integrity(ws_root: str) -> DoctorResult:
-    """SQLite DB 무결성 검사.
-
-    Default `light` mode avoids expensive full-table scans on large DBs.
-    Set `SARI_DOCTOR_DB_INTEGRITY_MODE=quick|deep` for stronger checks.
-    """
-    try:
-        cfg_path = WorkspaceManager.resolve_config_path(ws_root)
-        cfg = Config.load(cfg_path, workspace_root_override=ws_root)
-        db_path = Path(cfg.db_path)
-
-        if not db_path.exists():
-            return _result("DB Integrity", False, "DB file missing")
-        if db_path.stat().st_size == 0:
-            return _result("DB Integrity", False, "DB file is 0 bytes (empty)")
-
-        import sqlite3
-        mode = str(
-            os.environ.get("SARI_DOCTOR_DB_INTEGRITY_MODE")
-            or os.environ.get("SARI_DOCTOR_DEEP_DB_CHECK")
-            or "light"
-        ).strip().lower()
-        if mode in {"1", "true", "yes", "on"}:
-            mode = "deep"
-
-        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
-            if mode not in {"quick", "deep"}:
-                # Lightweight liveness probe only (fast on large FTS DBs).
-                conn.execute("PRAGMA schema_version").fetchone()
-                return _result(
-                    "DB Integrity",
-                    True,
-                    "SQLite connectivity ok (integrity scan skipped; set SARI_DOCTOR_DB_INTEGRITY_MODE=quick|deep)",
-                    warn=True,
-                )
-
-            quick = conn.execute("PRAGMA quick_check(1)").fetchone()
-            quick_res = str(next(iter(quick), "")) if quick else ""
-            if quick_res != "ok":
-                return _result("DB Integrity", False, f"Corruption detected (quick_check): {quick_res}")
-
-            if mode != "deep":
-                return _result(
-                    "DB Integrity",
-                    True,
-                    "SQLite quick_check ok",
-                )
-
-            cursor = conn.execute("PRAGMA integrity_check(10)")
-            row = cursor.fetchone()
-            res = str(next(iter(row), "")) if row else ""
-            if res == "ok":
-                return _result("DB Integrity", True, "SQLite integrity_check ok")
-            return _result("DB Integrity", False, f"Corruption detected: {res}")
-    except Exception as e:
-        return _result("DB Integrity", False, f"Check failed: {e}")
 
 
 def _check_log_errors() -> DoctorResult:
