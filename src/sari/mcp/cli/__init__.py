@@ -62,12 +62,12 @@ from .commands.maintenance_commands import (
 
 
 def cmd_proxy(args):
-    from .legacy_cli import cmd_proxy as _cmd_proxy
+    from .compat_cli import cmd_proxy as _cmd_proxy
     return _cmd_proxy(args)
 
 
 def cmd_auto(args):
-    from .legacy_cli import cmd_auto as _cmd_auto
+    from .compat_cli import cmd_auto as _cmd_auto
     return _cmd_auto(args)
 
 

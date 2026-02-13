@@ -12,7 +12,7 @@ def test_legacy_cli_get_http_host_port_delegates_to_core_resolver(monkeypatch):
         return "127.0.0.1", 60001
 
     monkeypatch.setenv("SARI_WORKSPACE_ROOT", "/tmp/ws")
-    monkeypatch.setattr("sari.mcp.cli.legacy_cli.resolve_http_endpoint", _fake_resolver)
+    monkeypatch.setattr("sari.mcp.cli.compat_cli.resolve_http_endpoint", _fake_resolver)
 
     host, port = legacy_cli._get_http_host_port("127.0.0.1", 60001)
     assert called["ok"] is True
