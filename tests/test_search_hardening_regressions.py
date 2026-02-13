@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import pytest
 
 from sari.core.models import SearchOptions
 from sari.core.ranking import snippet_around
@@ -135,6 +136,61 @@ def test_repository_path_pattern_matches_db_path_style_rel_path(db):
     db._write.commit()
     hits, _ = db.search_repo.search(SearchOptions(query="logic", path_pattern="src/**", root_ids=[rid], limit=10))
     assert any("logic.py" in h.path for h in hits)
+
+
+def test_repository_path_pattern_regex_contract_is_explicit_and_deterministic(db):
+    rid = "rid-path-regex"
+    ws = Path("/tmp/ws-path-regex")
+    db.upsert_root(rid, str(ws), str(ws))
+    cur = db._write.cursor()
+    _insert_file(
+        cur,
+        (
+            str(ws / "src" / "logic.py"),
+            f"{rid}/src/logic.py",
+            rid,
+            "repo",
+            1,
+            10,
+            "def logic(): pass",
+            "h",
+            "logic",
+            0,
+            0,
+            "ok",
+            "",
+            "ok",
+            "",
+            "none",
+            "none",
+            0,
+            0,
+            "{}",
+        ),
+    )
+    db._write.commit()
+
+    literal_hits, _ = db.search_repo.search(
+        SearchOptions(
+            query="logic",
+            path_pattern=r"src/.*\\.py",
+            use_regex=False,
+            root_ids=[rid],
+            limit=10,
+        )
+    )
+    assert literal_hits == []
+
+    with pytest.raises(ValueError, match="use_regex"):
+        db.search_repo.search(
+            SearchOptions(
+                query="logic",
+                path_pattern=r"src/.*\\.py",
+                use_regex=True,
+                root_ids=[rid],
+                limit=10,
+            )
+        )
 
 
 def test_repository_snippet_falls_back_to_content_when_fts_content_empty(db):

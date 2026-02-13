@@ -3,6 +3,7 @@ import os
 import threading
 from sari.mcp.tools.search import execute_search
 from sari.mcp.tools._util import resolve_root_ids
+from sari.mcp.tools.search_normalize import normalize_results
 
 class MockSymbols:
     def search_symbols(self, query, limit=20, **kwargs):
@@ -179,3 +180,20 @@ def test_search_tolerates_none_hits_from_backend(roots):
     result = execute_search({"query": "a", "search_type": "code"}, NoneDB(), None, roots)
     assert result.get("ok") is True
     assert result["matches"] == []
+
+
+def test_api_normalization_prefers_path_then_falls_back_to_legacy_file_key():
+    matches, total, warnings = normalize_results(
+        "api",
+        {
+            "results": [
+                {"path": "src/api/users.py", "method": "GET", "handler": "list_users", "line": 12},
+                {"file": "legacy/api/orders.py", "method": "POST", "handler": "create_order", "line": 20},
+            ]
+        },
+    )
+
+    assert total == 2
+    assert warnings == []
+    assert matches[0]["path"] == "src/api/users.py"
+    assert matches[1]["path"] == "legacy/api/orders.py"
