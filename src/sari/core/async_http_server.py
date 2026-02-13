@@ -24,12 +24,12 @@ from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 from sari.version import __version__
 from sari.core.daemon_health import detect_orphan_daemons
+from sari.core.http_workspace_feed import build_registered_workspaces_payload
 from sari.core.mcp_runtime import create_mcp_server
 from sari.core.policy_engine import load_daemon_runtime_status
 from sari.core.warning_sink import warning_sink
 
 JsonObject: TypeAlias = dict[str, object]
-JsonArray: TypeAlias = list[JsonObject]
 
 
 class AsyncHttpServer:
@@ -592,190 +592,25 @@ class AsyncHttpServer:
 
     async def workspaces(self, request: Request) -> JSONResponse:
         """Registered workspace roots with health/indexing hints."""
-        configured_roots: list[str] = []
-        workspace_manager = None
-        try:
-            from sari.core.workspace import WorkspaceManager
-            from sari.core.config.main import Config
-
-            workspace_manager = WorkspaceManager
-            base_root = self.workspace_root or WorkspaceManager.resolve_workspace_root()
-            cfg_path = WorkspaceManager.resolve_config_path(base_root)
-            cfg = Config.load(cfg_path, workspace_root_override=base_root)
-            configured_roots = list(getattr(cfg, "workspace_roots", []) or [])
-        except Exception:
-            configured_roots = [self.workspace_root] if self.workspace_root else []
-
-        norm_roots: list[str] = []
-        seen: set[str] = set()
-        normalized_by_path: dict[str, str] = {}
-        normalize_fallback_count = 0
-        for root in configured_roots:
-            if not root:
-                continue
-            normalized, normalized_by = self._normalize_workspace_path_with_meta(str(root))
-            if normalized and normalized not in seen:
-                seen.add(normalized)
-                norm_roots.append(normalized)
-                normalized_by_path[normalized] = normalized_by
-            if normalized_by == "fallback":
-                normalize_fallback_count += 1
-
-        indexed_by_path: dict[str, JsonObject] = {}
-        row_parse_error_count = 0
-        if hasattr(self.db, "get_roots"):
-            try:
-                rows = self.db.get_roots() or []
-                for row in rows:
-                    if not isinstance(row, dict):
-                        continue
-                    try:
-                        p = row.get("path") or row.get("root_path") or row.get("real_path")
-                        if not p:
-                            continue
-                        normalized, normalized_by = self._normalize_workspace_path_with_meta(str(p))
-                        indexed_by_path[normalized] = row
-                        if normalized_by == "fallback":
-                            normalize_fallback_count += 1
-                    except Exception as row_error:
-                        row_parse_error_count += 1
-                        self._warn_status(
-                            "WORKSPACE_ROW_PARSE_FAILED",
-                            "Failed to parse workspace root row",
-                            error=repr(row_error),
-                            raw_row=repr(row),
-                        )
-            except Exception as e:
-                self._warn_status(
-                    "WORKSPACE_ROOTS_FETCH_FAILED",
-                    "Failed to load workspace roots from DB",
-                    error=repr(e),
-                )
-        failed_by_root: dict[str, JsonObject] = {}
-        if hasattr(self.db, "execute"):
-            try:
-                failed_rows = self.db.execute(
-                    """
-                    SELECT
-                        root_id,
-                        SUM(CASE WHEN attempts < 3 THEN 1 ELSE 0 END) AS pending_count,
-                        SUM(CASE WHEN attempts >= 3 THEN 1 ELSE 0 END) AS failed_count
-                    FROM failed_tasks
-                    GROUP BY root_id
-                    """
-                ).fetchall() or []
-                for row in failed_rows:
-                    if isinstance(row, dict):
-                        rid = str(row.get("root_id") or "")
-                        pending_count = int(row.get("pending_count") or 0)
-                        failed_count = int(row.get("failed_count") or 0)
-                    else:
-                        rid = str(getattr(row, "root_id", "") or "")
-                        if not rid and isinstance(row, (list, tuple)) and len(row) >= 1:
-                            rid = str(row[0] or "")
-                        pending_count = int(getattr(row, "pending_count", 0) or 0)
-                        failed_count = int(getattr(row, "failed_count", 0) or 0)
-                        if isinstance(row, (list, tuple)):
-                            if len(row) >= 2:
-                                pending_count = int(row[1] or 0)
-                            if len(row) >= 3:
-                                failed_count = int(row[2] or 0)
-                    if rid:
-                        failed_by_root[rid] = {
-                            "pending_count": pending_count,
-                            "failed_count": failed_count,
-                        }
-            except Exception as e:
-                self._warn_status(
-                    "FAILED_TASKS_AGGREGATE_FAILED",
-                    "Failed to aggregate failed task counts",
-                    error=repr(e),
-                )
-
-        watched_roots = set()
-        try:
-            cfg_roots = self._indexer_workspace_roots(self.indexer)
-            for root in cfg_roots:
-                normalized, normalized_by = self._normalize_workspace_path_with_meta(str(root))
-                watched_roots.add(normalized)
-                if normalized_by == "fallback":
-                    normalize_fallback_count += 1
-        except Exception as e:
-            self._warn_status(
-                "WATCHED_ROOTS_NORMALIZE_FAILED",
-                "Failed while normalizing watched roots",
-                error=repr(e),
-            )
-
-        workspaces: JsonArray = []
-        for root in norm_roots:
-            abs_path = os.path.expanduser(root)
-            exists = os.path.isdir(abs_path)
-            readable = os.access(abs_path, os.R_OK | os.X_OK) if exists else False
-            watched = root in watched_roots
-            indexed_row = indexed_by_path.get(root)
-            indexed = bool(indexed_row) and (
-                int((indexed_row or {}).get("file_count", 0) or 0) > 0
-                or int((indexed_row or {}).get("last_indexed_ts", 0) or 0) > 0
-                or int((indexed_row or {}).get("updated_ts", 0) or 0) > 0
-            )
-            computed_root_id = ""
-            if isinstance(indexed_row, dict):
-                computed_root_id = str(indexed_row.get("root_id", "") or "")
-            if not computed_root_id and workspace_manager is not None:
-                try:
-                    computed_root_id = str(workspace_manager.root_id_for_workspace(root))
-                except Exception:
-                    computed_root_id = ""
-            failed_counts = failed_by_root.get(computed_root_id, {})
-            if not exists:
-                status = "missing"
-                reason = "Path does not exist"
-                index_state = "Unavailable"
-            elif not readable:
-                status = "blocked"
-                reason = "Path is not readable"
-                index_state = "Blocked"
-            elif indexed and watched:
-                status = "indexed"
-                reason = "Indexed in DB and watched"
-                index_state = "Idle"
-            elif indexed and not watched:
-                status = "indexed_stale"
-                reason = "Indexed in DB but not currently watched"
-                index_state = "Stale"
-            elif watched:
-                status = "watching"
-                reason = "Watching workspace, awaiting first index"
-                index_state = "Initial Scan Pending"
-            else:
-                status = "registered"
-                reason = "Configured but not currently watched"
-                index_state = "Not Watching"
-
-            workspaces.append({
-                "path": root,
-                "normalized_by": normalized_by_path.get(root, "workspace_manager"),
-                "root_id": computed_root_id,
-                "exists": bool(exists),
-                "readable": bool(readable),
-                "watched": bool(watched),
-                "indexed": bool(indexed),
-                "status": status,
-                "reason": reason,
-                "index_state": index_state,
-                "file_count": int((indexed_row or {}).get("file_count", 0) or 0) if isinstance(indexed_row, dict) else 0,
-                "last_indexed_ts": int((indexed_row or {}).get("last_indexed_ts", 0) or (indexed_row or {}).get("updated_ts", 0) or 0) if isinstance(indexed_row, dict) else 0,
-                "pending_count": int(failed_counts.get("pending_count", 0) or 0),
-                "failed_count": int(failed_counts.get("failed_count", 0) or 0),
-            })
+        payload = build_registered_workspaces_payload(
+            workspace_root=self.workspace_root,
+            db=self.db,
+            indexer=self.indexer,
+            normalize_workspace_path_with_meta=self._normalize_workspace_path_with_meta,
+            indexer_workspace_roots=self._indexer_workspace_roots,
+            status_warning_counts_provider=self._warning_counts_json,
+            warn_status=self._warn_status,
+            watched_roots_warn_code="WATCHED_ROOTS_NORMALIZE_FAILED",
+            watched_roots_warn_message="Failed while normalizing watched roots",
+        )
+        workspaces = payload.get("workspaces", [])
 
         return JSONResponse({
             "ok": True,
             "workspace_root": self.workspace_root,
             "count": len(workspaces),
-            "normalization": {"fallback_count": int(normalize_fallback_count)},
-            "row_parse_error_count": int(row_parse_error_count),
+            "normalization": payload.get("normalization", {"fallback_count": 0}),
+            "row_parse_error_count": int(payload.get("row_parse_error_count", 0) or 0),
             "status_warning_counts": self._warning_counts_json(),
             "workspaces": workspaces,
         })
