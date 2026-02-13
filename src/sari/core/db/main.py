@@ -70,6 +70,13 @@ class LocalSearchDB:
                 exc_info=True)
             raise
 
+    def set_settings(self, settings_obj: object) -> None:
+        """
+        Store runtime settings for compatibility with daemon/http bootstrap code.
+        Kept intentionally side-effect free for DB initialization safety.
+        """
+        self.settings = settings_obj
+
     def _init_mem_staging(self, force=True):
         """
         대량 삽입 성능을 위해 인메모리 스테이징(staging) 테이블을 초기화합니다.

@@ -49,7 +49,7 @@ def _launch_daemon(host: str, port: int, workspace_root: Optional[str]) -> bool:
     env = _prepare_launch_env(host, port, workspace_root)
     try:
         subprocess.Popen(
-            [sys.executable, "-m", "sari", "daemon", "start", "-d", "--daemon-port", str(port)],
+            [sys.executable, "-m", "sari.mcp.daemon"],
             env=env,
             cwd=os.getcwd(),
             start_new_session=True,
@@ -109,10 +109,23 @@ def _try_blue_green_upgrade(
     if old_boot:
         reg.set_daemon_draining(old_boot, True)
 
+    def _rollback_candidate(reason: str) -> Tuple[str, int]:
+        reg.record_health_failure(generation, candidate_boot, reason=reason)
+        reg.record_health_failure(generation, candidate_boot, reason=reason)
+        reg.record_health_failure(generation, candidate_boot, reason=reason)
+        reg.rollback_active(generation, old_boot, reason=reason)
+        if old_boot:
+            reg.set_daemon_draining(old_boot, False)
+        try:
+            from . import cmd_daemon_stop
+
+            cmd_daemon_stop(argparse.Namespace(daemon_host=host, daemon_port=candidate_port))
+        except Exception:
+            pass
+        return (host, int(port))
+
     if not ensure_workspace_http(host, candidate_port, workspace_root):
-        reg.record_health_failure(generation, candidate_boot, reason="workspace_attach_failed")
-        reg.record_health_failure(generation, candidate_boot, reason="workspace_attach_failed")
-        reg.record_health_failure(generation, candidate_boot, reason="workspace_attach_failed")
+        return _rollback_candidate("workspace_attach_failed")
 
     fail_streak = 0
     for _ in range(3):
@@ -122,15 +135,7 @@ def _try_blue_green_upgrade(
             fail_streak += 1
             reg.record_health_failure(generation, candidate_boot, reason="post_switch_probe_failed")
         if fail_streak >= 3:
-            reg.rollback_active(generation, old_boot, reason="post_switch_probe_failed_x3")
-            if old_boot:
-                reg.set_daemon_draining(old_boot, False)
-            try:
-                from . import cmd_daemon_stop
-                cmd_daemon_stop(argparse.Namespace(daemon_host=host, daemon_port=candidate_port))
-            except Exception:
-                pass
-            return (host, int(port))
+            return _rollback_candidate("post_switch_probe_failed_x3")
         time.sleep(0.2)
 
     return (host, candidate_port)
@@ -259,9 +264,7 @@ def ensure_smart_daemon(host: Optional[str] = None,
                     identity=identity,
                 )
                 if switched is not None:
-                    next_host, next_port = switched
-                    ensure_workspace_http(next_host, next_port, workspace_root)
-                    return next_host, next_port
+                    return switched
             try:
                 from . import cmd_daemon_stop
                 cmd_daemon_stop(

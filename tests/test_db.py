@@ -97,3 +97,9 @@ def test_schema_has_symbol_relations_unique_index(db):
     rows = db.execute("PRAGMA index_list('symbol_relations')").fetchall()
     names = [str(r[1]) for r in rows]
     assert "ux_symbol_relations_identity" in names
+
+
+def test_db_set_settings_is_available_for_runtime_bootstrap(db):
+    marker = object()
+    db.set_settings(marker)
+    assert getattr(db, "settings", None) is marker
