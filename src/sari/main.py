@@ -2,11 +2,9 @@
 # CRITICAL: Install stdout guard at entry point to protect MCP protocol
 # This prevents third-party library noise from breaking JSON-RPC communication
 from sari.mcp.stdout_guard import install_guard, get_real_stdout
-_original_stdout = install_guard()
 
 # Initialize structured logging early
 from sari.core.utils.logging import configure_logging
-configure_logging()
 
 import argparse
 import json
@@ -23,6 +21,17 @@ from sari.core.workspace import WorkspaceManager
 from sari.core.config import Config, validate_config_file
 from sari.core.db import LocalSearchDB
 from sari.core.engine_registry import get_default_engine
+
+_RUNTIME_BOOTSTRAPPED = False
+
+
+def _bootstrap_runtime() -> None:
+    global _RUNTIME_BOOTSTRAPPED
+    if _RUNTIME_BOOTSTRAPPED:
+        return
+    install_guard()
+    configure_logging()
+    _RUNTIME_BOOTSTRAPPED = True
 
 
 def _write_toml_block(cfg_path: Path, command: str, args: List[str], env: dict) -> None:
@@ -442,7 +451,27 @@ def _dispatch_pre_stdio(argv: List[str]) -> int | None:
     return None
 
 
+def _build_transport_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--transport", default="stdio", choices=["stdio", "http"])
+    parser.add_argument("--format", default="pack", choices=["pack", "json"])
+    parser.add_argument("--http-api", action="store_true")
+    parser.add_argument("--http-api-port")
+    parser.add_argument("--http-daemon", action="store_true")
+    parser.add_argument("--version", action="store_true")
+    parser.add_argument("--help", action="store_true")
+    return parser
+
+
+def _parse_transport_args(argv: List[str]) -> argparse.Namespace:
+    parser = _build_transport_parser()
+    ns, _ = parser.parse_known_args(argv)
+    return ns
+
+
 def main(argv: List[str] | None = None, original_stdout: object | None = None) -> int:
+    _bootstrap_runtime()
+
     # Ensure global config exists before doing anything else
     WorkspaceManager.ensure_global_config()
 
@@ -460,15 +489,7 @@ def main(argv: List[str] | None = None, original_stdout: object | None = None) -
     if routed is not None:
         return routed
 
-    parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--transport", default="stdio", choices=["stdio", "http"])
-    parser.add_argument("--format", default="pack", choices=["pack", "json"])
-    parser.add_argument("--http-api", action="store_true")
-    parser.add_argument("--http-api-port")
-    parser.add_argument("--http-daemon", action="store_true")
-    parser.add_argument("--version", action="store_true")
-    parser.add_argument("--help", action="store_true")
-    ns, _ = parser.parse_known_args(argv)
+    ns = _parse_transport_args(argv)
 
     if ns.help:
         print("sari [--transport stdio|http] [--format pack|json] [--http-api] [--http-api-port PORT] [--http-daemon] [--cmd <subcommand>]")

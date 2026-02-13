@@ -7,6 +7,7 @@ from sari.mcp.cli.commands.maintenance_commands import cmd_vacuum
 from sari.main import main as sari_entry_main
 from sari.main import run_cmd as sari_run_cmd
 from sari.main import _dispatch_pre_stdio
+from sari.main import _parse_transport_args
 
 def test_cmd_daemon_status():
     args = argparse.Namespace(daemon_host="127.0.0.1", daemon_port=47779)
@@ -123,6 +124,13 @@ def test_dispatch_pre_stdio_routes_cmd_passthrough_to_run_cmd():
 
 def test_dispatch_pre_stdio_returns_none_for_stdio_path():
     assert _dispatch_pre_stdio([]) is None
+
+
+def test_parse_transport_args_defaults():
+    ns = _parse_transport_args([])
+    assert ns.transport == "stdio"
+    assert ns.format == "pack"
+    assert ns.http_api is False
 
 
 def test_cli_main_search_command_dispatches_to_cmd_search():
