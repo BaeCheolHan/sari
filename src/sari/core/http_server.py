@@ -152,20 +152,6 @@ class Handler(BaseHTTPRequestHandler):
                 "db_metrics_error_count": 1,
             }
 
-    def _get_db_size(self, db_obj=None):
-        return int(self._get_db_storage_metrics(db_obj).get("db_size", 0))
-
-    @staticmethod
-    def _normalize_workspace_path(path: str) -> str:
-        if not path:
-            return ""
-        expanded = os.path.expanduser(str(path))
-        try:
-            from sari.core.workspace import WorkspaceManager
-            return WorkspaceManager.normalize_path(expanded)
-        except Exception:
-            return expanded.replace("\\", "/").rstrip("/")
-
     def _normalize_workspace_path_with_meta(self, path: str):
         if not path:
             return "", "empty"
