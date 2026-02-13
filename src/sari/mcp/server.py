@@ -69,6 +69,7 @@ from sari.mcp.server_method_registry import (
 from sari.mcp.server_session_state import (
     ensure_initialized_session as _ensure_initialized_session_impl,
 )
+from sari.mcp.server_roots import collect_workspace_roots as _collect_workspace_roots_impl
 
 try:
     import orjson as _orjson
@@ -274,22 +275,11 @@ class LocalSearchMCPServer:
 
     def list_roots(self) -> list[dict[str, str]]:
         """Return configured workspace roots as MCP root objects."""
-        cfg = None
-        try:
-            cfg_path = WorkspaceManager.resolve_config_path(
-                self.workspace_root)
-            cfg = Config.load(
-                cfg_path, workspace_root_override=self.workspace_root)
-        except Exception:
-            cfg = None
-        config_roots = list(
-            getattr(
-                cfg,
-                "workspace_roots",
-                []) or []) if cfg else []
-        roots = WorkspaceManager.resolve_workspace_roots(
-            root_uri=f"file://{self.workspace_root}",
-            config_roots=config_roots,
+        roots = _collect_workspace_roots_impl(
+            workspace_root=self.workspace_root,
+            resolve_config_path=WorkspaceManager.resolve_config_path,
+            config_load=Config.load,
+            resolve_workspace_roots=WorkspaceManager.resolve_workspace_roots,
         )
         return _resolve_root_entries_impl(roots)
 
