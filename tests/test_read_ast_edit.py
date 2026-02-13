@@ -383,3 +383,41 @@ def test_ast_edit_focus_indexing_reports_sync_complete(monkeypatch, tmp_path):
     assert payload.get("isError") is not True
     assert payload["focus_indexing"] == "triggered"
     assert payload["focus_sync_state"] == "complete"
+
+
+def test_ast_edit_symbol_mode_replaces_go_function_block_via_tree_sitter(monkeypatch, tmp_path):
+    monkeypatch.setenv("SARI_FORMAT", "json")
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    f = ws / "svc.go"
+    f.write_text(
+        "package svc\n\n"
+        "func keep() int {\n    return 0\n}\n\n"
+        "func targetFn() int {\n    return 1\n}\n",
+        encoding="utf-8",
+    )
+    db = _DummyDB()
+    original = f.read_text(encoding="utf-8")
+    monkeypatch.setattr(
+        "sari.mcp.tools.read._tree_sitter_symbol_span",
+        lambda _source, _path, sym: (7, 9) if sym == "targetFn" else None,
+        raising=False,
+    )
+
+    resp = execute_read(
+        {
+            "mode": "ast_edit",
+            "target": str(f),
+            "expected_version_hash": _hash12(original),
+            "symbol": "targetFn",
+            "new_text": "func targetFn() int {\n    return 2\n}",
+        },
+        db,
+        [str(ws)],
+    )
+    payload = _payload(resp)
+    assert payload.get("isError") is not True
+    after = f.read_text(encoding="utf-8")
+    assert "func keep() int" in after
+    assert "return 2" in after
+    assert "return 1" not in after

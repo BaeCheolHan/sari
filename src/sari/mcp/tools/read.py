@@ -434,6 +434,42 @@ def _js_like_symbol_span(source: str, symbol: str) -> tuple[int, int] | None:
     return None
 
 
+def _tree_sitter_symbol_span(source: str, fs_path: str, symbol: str) -> tuple[int, int] | None:
+    if not symbol:
+        return None
+    try:
+        from sari.core.parsers.ast_engine import ASTEngine
+        from sari.core.parsers.factory import ParserFactory
+    except Exception:
+        return None
+
+    suffix = Path(fs_path).suffix.lower()
+    language = ParserFactory.get_language(suffix)
+    if not language:
+        return None
+
+    engine = ASTEngine()
+    tree = engine.parse(language, source)
+    if tree is None:
+        return None
+
+    try:
+        parsed = engine.extract_symbols(fs_path, language, source, tree=tree)
+    except Exception:
+        return None
+
+    symbols = list(getattr(parsed, "symbols", []) or [])
+    for sym in symbols:
+        name = str(getattr(sym, "name", "") or "").strip()
+        if name != symbol:
+            continue
+        start = int(getattr(sym, "line", 0) or 0)
+        end = int(getattr(sym, "end_line", 0) or 0)
+        if start > 0 and end >= start:
+            return (start, end)
+    return None
+
+
 def _replace_line_span(source: str, start_line: int, end_line: int, new_block: str) -> str:
     lines = source.splitlines(keepends=True)
     if start_line <= 0 or end_line < start_line or end_line > len(lines):
@@ -507,7 +543,13 @@ def _execute_ast_edit(args_map: Mapping[str, object], db: object, roots: list[st
         elif suffix in {".js", ".jsx", ".ts", ".tsx"}:
             span = _js_like_symbol_span(original, symbol)
         else:
-            return _ast_edit_error(ErrorCode.INVALID_ARGS.value, "symbol-based ast_edit is supported for .py/.js/.jsx/.ts/.tsx")
+            span = _tree_sitter_symbol_span(original, str(path_obj), symbol)
+            if not span:
+                return _ast_edit_error(
+                    ErrorCode.INVALID_ARGS.value,
+                    f"symbol-based ast_edit could not resolve symbol '{symbol}' in {suffix or 'target'} "
+                    "(tree-sitter parser/runtime unavailable or symbol missing)",
+                )
         if not span:
             return _ast_edit_error(ErrorCode.INVALID_ARGS.value, f"symbol '{symbol}' was not found in target")
         start_line, end_line = span

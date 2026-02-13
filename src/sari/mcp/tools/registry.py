@@ -326,7 +326,7 @@ def _register_file_tools(reg: ToolRegistry):
                 "expected_version_hash": {"type": "string", "description": "Required optimistic-lock hash for mode=ast_edit."},
                 "old_text": {"type": "string", "description": "Text to replace once for mode=ast_edit."},
                 "new_text": {"type": "string", "description": "Replacement text for mode=ast_edit."},
-                "symbol": {"type": "string", "description": "Python symbol name for AST block replacement in mode=ast_edit."},
+                "symbol": {"type": "string", "description": "Symbol name for block replacement in mode=ast_edit (Python/JS or tree-sitter-backed languages)."},
             },
             "required": ["mode"],
         },
