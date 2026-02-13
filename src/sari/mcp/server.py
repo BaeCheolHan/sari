@@ -33,6 +33,14 @@ from sari.mcp.server_daemon_forward import (
     forward_error_response as _forward_error_response_impl,
     forward_over_open_socket as _forward_over_open_socket_impl,
 )
+from sari.mcp.server_worker import (
+    drain_pending_requests as _drain_pending_requests_impl,
+    emit_queue_overload as _emit_queue_overload_impl,
+    enqueue_incoming_request as _enqueue_incoming_request_impl,
+    handle_and_respond as _handle_and_respond_impl,
+    submit_request_for_execution as _submit_request_for_execution_impl,
+    worker_loop as _worker_loop_impl,
+)
 
 try:
     import orjson as _orjson
@@ -636,114 +644,56 @@ class LocalSearchMCPServer:
         trace("server_shutdown_done")
 
     def _worker_loop(self) -> None:
-        while not self._stop.is_set():
-            try:
-                req = self._req_queue.get(timeout=0.2)
-            except queue.Empty:
-                continue
-            except Exception as e:
-                # Queue access error - log and continue
-                self._log_debug(f"Queue access error in worker loop: {e}")
-                continue
-
-            should_break = False
-            try:
-                should_break = not self._submit_request_for_execution(req)
-            finally:
-                try:
-                    self._req_queue.task_done()
-                except Exception:
-                    pass
-            if should_break:
-                break
+        _worker_loop_impl(
+            stop_event=self._stop,
+            req_queue=self._req_queue,
+            submit_request_for_execution=self._submit_request_for_execution,
+            log_debug=self._log_debug,
+        )
 
     def _enqueue_incoming_request(self, req: JsonMap) -> None:
-        try:
-            # Non-blocking put to avoid hanging the main read loop if workers are slow.
-            # We use a short timeout to handle transient spikes.
-            self._req_queue.put(req, timeout=0.01)
-        except queue.Full:
-            self._emit_queue_overload(req)
-        except Exception as e:
-            self._log_debug(f"ERROR putting req to queue: {e}")
-            trace("run_loop_queue_error", error=str(e))
+        _enqueue_incoming_request_impl(
+            req_queue=self._req_queue,
+            req=req,
+            emit_queue_overload=self._emit_queue_overload,
+            log_debug=self._log_debug,
+            trace_fn=trace,
+        )
 
     def _emit_queue_overload(self, req: JsonMap) -> None:
-        msg_id = req.get("id")
-        if msg_id is not None:
-            error_resp = {
-                "jsonrpc": "2.0",
-                "id": msg_id,
-                "error": {
-                    "code": -32003,
-                    "message": "Server overloaded: request queue is full. Please try again later."
-                }
-            }
-            mode = req.get("_sari_framing_mode", "content-length")
-            with self._stdout_lock:
-                if self.transport is not None:
-                    self.transport.write_message(error_resp, mode=mode)
-        self._log_debug(
-            f"CRITICAL: MCP request queue is full! Dropping request {msg_id}")
-        trace("run_loop_queue_full", msg_id=msg_id)
+        _emit_queue_overload_impl(
+            req=req,
+            stdout_lock=self._stdout_lock,
+            transport=self.transport,
+            log_debug=self._log_debug,
+            trace_fn=trace,
+        )
 
     def _submit_request_for_execution(self, req: JsonMap) -> bool:
-        try:
-            self._executor.submit(self._handle_and_respond, req)
-            return True
-        except RuntimeError as e:
-            # Executor shutdown - graceful exit
-            self._log_debug(f"Executor shutdown during submit: {e}")
-            return False
-        except Exception as e:
-            # Unexpected error - log and continue
-            self._log_debug(f"Error submitting to executor: {e}")
-            return True
+        return _submit_request_for_execution_impl(
+            executor=self._executor,
+            handle_and_respond=self._handle_and_respond,
+            req=req,
+            log_debug=self._log_debug,
+        )
 
     def _drain_pending_requests(self) -> None:
-        while True:
-            try:
-                req = self._req_queue.get_nowait()
-            except queue.Empty:
-                break
-            try:
-                self._handle_and_respond(req)
-            finally:
-                try:
-                    self._req_queue.task_done()
-                except Exception:
-                    pass
+        _drain_pending_requests_impl(
+            req_queue=self._req_queue,
+            handle_and_respond=self._handle_and_respond,
+        )
 
     def _handle_and_respond(self, req: JsonMap) -> None:
-        try:
-            trace(
-                "handle_and_respond_enter",
-                msg_id=req.get("id"),
-                method=req.get("method"))
-            resp = self.handle_request(req)
-            if resp:
-                req_mode = req.get("_sari_framing_mode", "content-length")
-                if self._force_content_length and req_mode != "jsonl":
-                    mode = "content-length"
-                else:
-                    mode = req_mode
-                self._log_debug_response(mode, resp)
-                if self.transport is None:
-                    raise RuntimeError("transport is not initialized")
-                # Serialize writes to stdout transport to avoid frame
-                # interleaving.
-                with self._stdout_lock:
-                    self.transport.write_message(resp, mode=mode)
-                trace(
-                    "handle_and_respond_sent",
-                    msg_id=req.get("id"),
-                    mode=mode)
-        except Exception as e:
-            self._log_debug(f"ERROR in _handle_and_respond: {e}")
-            trace(
-                "handle_and_respond_error",
-                msg_id=req.get("id"),
-                error=str(e))
+        _handle_and_respond_impl(
+            req=req,
+            handle_request=self.handle_request,
+            force_content_length=self._force_content_length,
+            log_debug_response=self._log_debug_response,
+            transport=self.transport,
+            stdout_lock=self._stdout_lock,
+            log_debug=self._log_debug,
+            trace_fn=trace,
+        )
 
     def _log_debug(self, message: str) -> None:
         """Log MCP traffic to the structured logger."""
