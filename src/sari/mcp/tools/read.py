@@ -25,7 +25,9 @@ from sari.mcp.tools._util import (
     invalid_args_response,
     mcp_response,
     pack_error,
+    resolve_root_ids,
 )
+from sari.mcp.tools.crypto import issue_context_ref
 
 ToolResult: TypeAlias = dict[str, object]
 
@@ -184,6 +186,35 @@ def _extract_evidence_refs(
         }
     )
     return [fallback_ref]
+
+
+def _attach_context_refs(evidence_refs: list[dict[str, object]], roots: list[str]) -> list[dict[str, object]]:
+    if not evidence_refs:
+        return evidence_refs
+    root_ids = resolve_root_ids(roots)
+    default_ws = root_ids[0] if root_ids else ""
+    attached: list[dict[str, object]] = []
+    for ref in evidence_refs:
+        out = dict(ref)
+        path = str(out.get("path") or "").strip()
+        ws = default_ws
+        for rid in root_ids:
+            if path == rid or path.startswith(f"{rid}/"):
+                ws = rid
+                break
+        payload = {
+            "ws": ws,
+            "kind": str(out.get("kind") or "file"),
+            "path": path,
+            "span": [int(out.get("start_line") or 0), int(out.get("end_line") or 0)],
+            "ch": str(out.get("content_hash") or ""),
+        }
+        try:
+            out["context_ref"] = issue_context_ref(payload)
+        except Exception:
+            pass
+        attached.append(out)
+    return attached
 
 
 def _env_any(key: str, default: str = "") -> str:
@@ -551,6 +582,7 @@ def _finalize_read_response(
         args_map,
         str(bundle_meta.get("context_bundle_id") or ""),
     )
+    evidence_refs = _attach_context_refs(evidence_refs, roots)
     if relevance_alternatives:
         extra["alternatives"] = relevance_alternatives
     if relevance_state == "LOW_RELEVANCE":

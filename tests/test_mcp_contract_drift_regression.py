@@ -133,11 +133,11 @@ def test_registry_smoke_for_contract_drift_tools(db, tmp_path):
         {"path": str(file_path), "tag": "drift_tag", "start_line": 1, "end_line": 1},
     )
     assert isinstance(res_save, dict)
-    assert not res_save.get("isError", False)
+    assert res_save.get("isError", False)
 
     res_get_snippet = reg.execute("get_snippet", ctx, {"tag": "drift_tag"})
     assert isinstance(res_get_snippet, dict)
-    assert not res_get_snippet.get("isError", False)
+    assert res_get_snippet.get("isError", False)
 
     res_archive = reg.execute(
         "archive_context",
@@ -145,8 +145,8 @@ def test_registry_smoke_for_contract_drift_tools(db, tmp_path):
         {"topic": "drift-topic", "content": "drift-content"},
     )
     assert isinstance(res_archive, dict)
-    assert not res_archive.get("isError", False)
+    assert res_archive.get("isError", False)
 
     res_context = reg.execute("get_context", ctx, {"topic": "drift-topic"})
     assert isinstance(res_context, dict)
-    assert not res_context.get("isError", False)
+    assert res_context.get("isError", False)

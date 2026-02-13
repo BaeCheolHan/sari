@@ -4,6 +4,7 @@ import pytest
 
 from sari.mcp.stabilization.aggregation import reset_bundles_for_tests
 from sari.mcp.stabilization.session_state import reset_session_metrics_for_tests
+from sari.mcp.tools.crypto import verify_context_ref
 from sari.mcp.tools.read import execute_read
 
 
@@ -67,6 +68,11 @@ def test_read_file_injects_evidence_refs_with_offset_limit(monkeypatch):
     assert evidence[0]["end_line"] == 3
     assert evidence[0]["candidate_id"] == "cand-1"
     assert evidence[0]["content_hash"] == _hash12("beta\ngamma")
+    assert str(evidence[0].get("context_ref", "")).startswith("ctx_")
+    decoded = verify_context_ref(str(evidence[0]["context_ref"]))
+    assert decoded["path"] == target
+    assert decoded["kind"] == "file"
+    assert decoded["ch"] == _hash12("beta\ngamma")
 
 
 def test_read_symbol_injects_evidence_refs_from_payload_lines(monkeypatch):

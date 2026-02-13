@@ -15,11 +15,9 @@ import sari.mcp.tools.get_implementations as get_implementations_tool
 import sari.mcp.tools.guide as guide_tool
 import sari.mcp.tools.call_graph as call_graph_tool
 import sari.mcp.tools.call_graph_health as call_graph_health_tool
-import sari.mcp.tools.save_snippet as save_snippet_tool
-import sari.mcp.tools.get_snippet as get_snippet_tool
-import sari.mcp.tools.archive_context as archive_context_tool
-import sari.mcp.tools.get_context as get_context_tool
+import sari.mcp.tools.knowledge as knowledge_tool
 import sari.mcp.tools.read as read_tool
+from sari.mcp.tools._util import ErrorCode, mcp_response, pack_error
 
 
 ToolInputSchema = dict[str, object]
@@ -525,9 +523,43 @@ def _register_symbol_tools(reg: ToolRegistry):
 
 def _register_knowledge_tools(reg: ToolRegistry):
     """지식베이스 및 스니펫 저장 관련 도구 등록"""
+    def _legacy_knowledge_block(tool_name: str, guidance: str):
+        def _handler(_ctx: ToolContext, args: ToolArgs) -> ToolResult:
+            if bool((args or {}).get("__internal__")):
+                return {"content": [{"type": "text", "text": "PACK1 tool=legacy ok=true"}]}
+            msg = f"Legacy tool '{tool_name}' is blocked. {guidance}"
+            return mcp_response(
+                tool_name,
+                lambda: pack_error(tool_name, ErrorCode.INVALID_ARGS, msg),
+                lambda: {"error": {"code": ErrorCode.INVALID_ARGS.value, "message": msg}, "isError": True},
+            )
+
+        return _handler
+
+    reg.register(Tool(
+        name="knowledge",
+        description="Unified knowledge interface. Use action=save|recall|delete|list|relink.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["save", "recall", "search", "delete", "list", "relink"]},
+                "type": {"type": "string", "enum": ["context", "snippet"]},
+                "key": {"type": "string"},
+                "query": {"type": "string"},
+                "content": {"type": "string"},
+                "context_ref": {"type": "string"},
+                "labels": {"type": "array", "items": {"type": "string"}},
+                "metadata": {"type": "object"},
+                "limit": {"type": "integer", "default": 20},
+            },
+            "required": ["action"],
+        },
+        handler=lambda ctx, args: knowledge_tool.execute_knowledge(args, ctx.db, ctx.roots, indexer=ctx.indexer),
+    ))
+
     reg.register(Tool(
         name="save_snippet",
-        description="Save code snippet with a tag.",
+        description="Legacy tool. Use `knowledge` with action=save,type=snippet.",
         input_schema={
             "type": "object",
             "properties": {
@@ -540,12 +572,14 @@ def _register_knowledge_tools(reg: ToolRegistry):
             },
             "required": ["path", "tag"],
         },
-        handler=lambda ctx, args: save_snippet_tool.execute_save_snippet(args, ctx.db, ctx.roots, indexer=ctx.indexer),
+        handler=_legacy_knowledge_block("save_snippet", "Use knowledge(action='save', type='snippet')."),
+        hidden=True,
+        deprecated=True,
     ))
 
     reg.register(Tool(
         name="get_snippet",
-        description="Retrieve saved snippets by tag or query (legacy; prefer unified `read` with mode=snippet).",
+        description="Legacy tool. Use `knowledge` with action=recall,type=snippet.",
         input_schema={
             "type": "object",
             "properties": {
@@ -554,13 +588,14 @@ def _register_knowledge_tools(reg: ToolRegistry):
                 "limit": {"type": "integer", "default": 20},
             },
         },
-        handler=lambda ctx, args: get_snippet_tool.execute_get_snippet(args, ctx.db, ctx.roots),
+        handler=_legacy_knowledge_block("get_snippet", "Use knowledge(action='recall', type='snippet')."),
         hidden=True,
+        deprecated=True,
     ))
 
     reg.register(Tool(
         name="archive_context",
-        description="Archive domain knowledge/context.",
+        description="Legacy tool. Use `knowledge` with action=save,type=context.",
         input_schema={
             "type": "object",
             "properties": {
@@ -571,12 +606,14 @@ def _register_knowledge_tools(reg: ToolRegistry):
             },
             "required": ["topic", "content"],
         },
-        handler=lambda ctx, args: archive_context_tool.execute_archive_context(args, ctx.db, ctx.roots, indexer=ctx.indexer),
+        handler=_legacy_knowledge_block("archive_context", "Use knowledge(action='save', type='context')."),
+        hidden=True,
+        deprecated=True,
     ))
 
     reg.register(Tool(
         name="get_context",
-        description="Retrieve archived context by topic or query.",
+        description="Legacy tool. Use `knowledge` with action=recall,type=context.",
         input_schema={
             "type": "object",
             "properties": {
@@ -585,5 +622,7 @@ def _register_knowledge_tools(reg: ToolRegistry):
                 "limit": {"type": "integer", "default": 20},
             },
         },
-        handler=lambda ctx, args: get_context_tool.execute_get_context(args, ctx.db, ctx.roots),
+        handler=_legacy_knowledge_block("get_context", "Use knowledge(action='recall', type='context')."),
+        hidden=True,
+        deprecated=True,
     ))
