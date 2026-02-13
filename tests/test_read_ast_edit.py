@@ -63,6 +63,7 @@ def test_ast_edit_rejects_version_conflict(monkeypatch, tmp_path):
     payload = _payload(resp)
     assert payload["isError"] is True
     assert payload["error"]["code"] == "VERSION_CONFLICT"
+    assert payload["error"]["client_action"] == "re_read"
 
 
 def test_ast_edit_updates_file_and_emits_test_next_call(monkeypatch, tmp_path):
@@ -105,6 +106,36 @@ def test_ast_edit_updates_file_and_emits_test_next_call(monkeypatch, tmp_path):
     assert "pytest -q" in stabilization["next_calls"][0]["arguments"]["command"]
     assert payload["focus_indexing"] == "deferred"
     assert stabilization["warnings"]
+
+
+def test_ast_edit_preview_does_not_write_file_and_returns_diff(monkeypatch, tmp_path):
+    monkeypatch.setenv("SARI_FORMAT", "json")
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    f = ws / "a.py"
+    before = "x = 1\n"
+    f.write_text(before, encoding="utf-8")
+    db = _DummyDB()
+
+    resp = execute_read(
+        {
+            "mode": "ast_edit",
+            "target": str(f),
+            "expected_version_hash": _hash12(before),
+            "old_text": "x = 1",
+            "new_text": "x = 2",
+            "ast_edit_preview": True,
+        },
+        db,
+        [str(ws)],
+    )
+    payload = _payload(resp)
+    assert payload.get("isError") is not True
+    assert payload["preview"] is True
+    assert payload["updated"] is False
+    assert "--- " in payload["change_preview"]
+    assert "+++ " in payload["change_preview"]
+    assert f.read_text(encoding="utf-8") == before
 
 
 def test_ast_edit_triggers_focus_indexing_when_indexer_is_available(monkeypatch, tmp_path):
@@ -676,6 +707,43 @@ def test_ast_edit_rejects_invalid_symbol_kind(monkeypatch, tmp_path):
     payload = _payload(resp)
     assert payload["isError"] is True
     assert payload["error"]["code"] == "SYMBOL_KIND_INVALID"
+    assert payload["error"]["client_action"] == "fix_args"
+
+
+def test_ast_edit_normalizes_symbol_kind_synonym(monkeypatch, tmp_path):
+    monkeypatch.setenv("SARI_FORMAT", "json")
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    f = ws / "svc.go"
+    f.write_text(
+        "package svc\n\n"
+        "func targetFn() int {\n    return 1\n}\n",
+        encoding="utf-8",
+    )
+    db = _DummyDB()
+    original = f.read_text(encoding="utf-8")
+    captured = {}
+
+    def _capture(_source: str, _path: str, symbol: str, symbol_qualname: str = "", symbol_kind: str = ""):
+        captured["symbol_kind"] = symbol_kind
+        return (3, 5)
+
+    monkeypatch.setattr("sari.mcp.tools.read._tree_sitter_symbol_span", _capture, raising=False)
+    resp = execute_read(
+        {
+            "mode": "ast_edit",
+            "target": str(f),
+            "expected_version_hash": _hash12(original),
+            "symbol": "targetFn",
+            "symbol_kind": "func",
+            "new_text": "func targetFn() int {\n    return 2\n}",
+        },
+        db,
+        [str(ws)],
+    )
+    payload = _payload(resp)
+    assert payload.get("isError") is not True
+    assert captured["symbol_kind"] == "function"
 
 
 def test_ast_edit_symbol_resolution_failure_uses_specific_error(monkeypatch, tmp_path):

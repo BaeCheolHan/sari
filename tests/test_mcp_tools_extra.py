@@ -412,6 +412,7 @@ def test_registry_includes_unified_read_schema_with_required_constraints():
         "expected_version_hash",
         "old_text",
         "new_text",
+        "ast_edit_preview",
         "symbol",
         "symbol_qualname",
         "symbol_kind",

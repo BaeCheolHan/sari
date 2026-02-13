@@ -35,3 +35,38 @@ jobs:
             tests/test_stability.py \
             tests/test_architecture_modern.py \
             tests/test_symbol_algorithms.py
+
+  treesitter-language-gates:
+    name: Tree-sitter Runtime Gate (${{ matrix.lang }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lang: java
+            pkg: tree-sitter-java
+          - lang: kotlin
+            pkg: tree-sitter-kotlin
+          - lang: rust
+            pkg: tree-sitter-rust
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --extra test
+
+      - name: Install tree-sitter language runtime
+        run: uv pip install tree-sitter ${{ matrix.pkg }}
+
+      - name: Run ast_edit runtime e2e gate
+        run: |
+          uv run pytest -q \
+            tests/test_read_ast_edit.py::test_ast_edit_execute_read_runtime_e2e_tree_sitter_languages

@@ -1,5 +1,6 @@
 from collections.abc import Mapping
 import ast
+import difflib
 import hashlib
 import json
 import os
@@ -40,6 +41,35 @@ ToolResult: TypeAlias = dict[str, object]
 _MODES = {"file", "symbol", "snippet", "diff_preview", "ast_edit"}
 _DIFF_BASELINES = {"HEAD", "WORKTREE", "INDEX"}
 _SYMBOL_KIND_ENUM = ("function", "method", "class", "interface", "struct", "trait", "enum", "module")
+
+_SYMBOL_KIND_ALIASES: dict[str, str] = {
+    "func": "function",
+    "fn": "function",
+    "functions": "function",
+    "methods": "method",
+    "clazz": "class",
+    "type": "class",
+    "iface": "interface",
+    "interfaces": "interface",
+    "structures": "struct",
+    "structs": "struct",
+    "traits": "trait",
+    "enums": "enum",
+    "mod": "module",
+    "mods": "module",
+    "namespace": "module",
+}
+
+_AST_EDIT_ERROR_GUIDANCE: dict[str, tuple[str, str]] = {
+    "VERSION_CONFLICT": ("re_read", "Re-run read to get latest version_hash and retry ast_edit."),
+    "SYMBOL_KIND_INVALID": ("fix_args", "Use supported symbol_kind enum values."),
+    "SYMBOL_RESOLUTION_FAILED": ("search_symbol", "Run search/read_symbol to refresh symbol target and hints."),
+    "SYMBOL_NOT_FOUND": ("search_symbol", "Verify symbol name or pass symbol_qualname hint."),
+    "SYMBOL_BLOCK_MISMATCH": ("adjust_old_text", "Set old_text from selected symbol block or omit old_text."),
+    ErrorCode.INVALID_ARGS.value: ("fix_args", "Fix request arguments and retry."),
+    ErrorCode.NOT_INDEXED.value: ("reindex", "Ensure target is inside workspace and indexed."),
+    ErrorCode.IO_ERROR.value: ("retry", "Retry after checking file permission or transient IO state."),
+}
 
 
 def _invalid_mode_param(param: str, mode: str) -> ToolResult:
@@ -254,11 +284,50 @@ def _extract_json_payload(response: ToolResult) -> dict[str, object] | None:
 
 
 def _ast_edit_error(code: str, message: str) -> ToolResult:
+    action, hint = _AST_EDIT_ERROR_GUIDANCE.get(code, ("fix_args", "Review request and retry."))
     return mcp_response(
         "read",
         lambda: pack_error("read", code, message),
-        lambda: {"error": {"code": code, "message": message}, "isError": True},
+        lambda: {
+            "error": {
+                "code": code,
+                "message": message,
+                "client_action": action,
+                "hint": hint,
+            },
+            "meta": {
+                "stabilization": {
+                    "reason_codes": [code],
+                    "warnings": [message],
+                    "evidence_refs": [],
+                    "suggested_next_action": action,
+                }
+            },
+            "isError": True,
+        },
     )
+
+
+def _normalize_symbol_kind(value: str) -> str:
+    token = str(value or "").strip().lower()
+    if not token:
+        return ""
+    return _SYMBOL_KIND_ALIASES.get(token, token)
+
+
+def _build_change_preview(before: str, after: str, path: str, max_lines: int = 80) -> str:
+    diff = list(
+        difflib.unified_diff(
+            before.splitlines(),
+            after.splitlines(),
+            fromfile=f"{path}:before",
+            tofile=f"{path}:after",
+            lineterm="",
+        )
+    )
+    if len(diff) > max_lines:
+        diff = diff[:max_lines] + [f"... ({len(diff) - max_lines} more lines)"]
+    return "\n".join(diff)
 
 
 def _build_edit_test_next_calls(target_fs_path: str, roots: list[str]) -> list[dict[str, object]]:
@@ -572,7 +641,9 @@ def _execute_ast_edit(args_map: Mapping[str, object], db: object, roots: list[st
     new_text = str(args_map.get("new_text") or "")
     symbol = str(args_map.get("symbol") or "").strip()
     symbol_qualname = str(args_map.get("symbol_qualname") or "").strip()
-    symbol_kind = str(args_map.get("symbol_kind") or "").strip().lower()
+    symbol_kind_raw = str(args_map.get("symbol_kind") or "").strip()
+    symbol_kind = _normalize_symbol_kind(symbol_kind_raw)
+    preview = bool(args_map.get("ast_edit_preview", False))
     sync_timeout_ms = int(args_map.get("sync_timeout_ms") or 500)
     if not target:
         return _ast_edit_error(ErrorCode.INVALID_ARGS.value, "target is required for mode=ast_edit")
@@ -644,12 +715,59 @@ def _execute_ast_edit(args_map: Mapping[str, object], db: object, roots: list[st
             ast.parse(edited)
         except Exception as exc:
             return _ast_edit_error(ErrorCode.INVALID_ARGS.value, f"edited python source is invalid syntax: {exc}")
+    new_hash = _compute_content_hash(edited)
+    if preview:
+        change_preview = _build_change_preview(original, edited, db_path)
+        return mcp_response(
+            "read",
+            lambda: "\n".join(
+                [
+                    f"PACK1 tool=read ok=true mode=ast_edit path={db_path} preview=true returned=1",
+                    f"m:next_call=apply read(ast_edit) with expected_version_hash={current_hash}",
+                ]
+            ),
+            lambda: {
+                "mode": "ast_edit",
+                "path": db_path,
+                "preview": True,
+                "updated": False,
+                "focus_indexing": "skipped",
+                "focus_sync_state": "not_requested",
+                "previous_version_hash": current_hash,
+                "version_hash": current_hash,
+                "preview_version_hash": new_hash,
+                "change_preview": change_preview,
+                "meta": {
+                    "stabilization": {
+                        "reason_codes": ["AST_EDIT_PREVIEW"],
+                        "warnings": [],
+                        "evidence_refs": [],
+                        "suggested_next_action": "read",
+                        "next_calls": [
+                            {
+                                "tool": "read",
+                                "arguments": {
+                                    "mode": "ast_edit",
+                                    "target": target,
+                                    "expected_version_hash": current_hash,
+                                    "old_text": old_text,
+                                    "new_text": new_text,
+                                    "symbol": symbol,
+                                    "symbol_qualname": symbol_qualname,
+                                    "symbol_kind": symbol_kind,
+                                },
+                            }
+                        ],
+                    }
+                },
+            },
+        )
+
     try:
         path_obj.write_text(edited, encoding="utf-8")
     except Exception as exc:
         return _ast_edit_error(ErrorCode.IO_ERROR.value, f"failed to write target: {exc}")
 
-    new_hash = _compute_content_hash(edited)
     focus_indexing = "deferred"
     focus_sync_state = "not_requested"
     warnings: list[str] = []

@@ -290,7 +290,7 @@ def _register_file_tools(reg: ToolRegistry):
                 "symbol->target(+path/include_context), "
                 "snippet->target(+start_line/end_line/context_lines), "
                 "diff_preview->target(+against=HEAD|WORKTREE|INDEX), "
-                "ast_edit->target(+expected_version_hash/+old_text/+new_text)."
+                "ast_edit->target(+expected_version_hash/+old_text/+new_text/+ast_edit_preview)."
             ),
             "properties": {
                 "mode": {
@@ -326,6 +326,7 @@ def _register_file_tools(reg: ToolRegistry):
                 "expected_version_hash": {"type": "string", "description": "Required optimistic-lock hash for mode=ast_edit."},
                 "old_text": {"type": "string", "description": "Text to replace once for mode=ast_edit."},
                 "new_text": {"type": "string", "description": "Replacement text for mode=ast_edit."},
+                "ast_edit_preview": {"type": "boolean", "description": "If true, return preview diff without writing file for mode=ast_edit."},
                 "symbol": {"type": "string", "description": "Symbol name for block replacement in mode=ast_edit (Python/JS or tree-sitter-backed languages)."},
                 "symbol_qualname": {"type": "string", "description": "Qualified symbol hint (e.g. Class.method) for tree-sitter disambiguation in mode=ast_edit."},
                 "symbol_kind": {
