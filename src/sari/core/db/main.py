@@ -15,6 +15,7 @@ from .row_codec import (
     normalize_search_row,
     row_content_value,
 )
+from .snapshot_merge import merge_snapshot_into_main
 from ..models import ContextDTO, FILE_COLUMNS, SearchOptions, SnippetDTO
 from .schema import init_schema
 from ..utils.path import PathUtils
@@ -551,47 +552,19 @@ class LocalSearchDB:
         워커 프로세스에서 생성된 스냅샷 DB의 내용을 메인 DB로 병합합니다.
         ATTACH DATABASE를 사용하여 테이블 간 데이터 복사를 수행합니다.
         """
-        if not new_path or not os.path.exists(new_path):
-            return
         conn = self.db.connection()
-        attached = False
         try:
-            conn.execute("ATTACH DATABASE ? AS snapshot", (new_path,))
-            attached = True
-            conn.execute("BEGIN IMMEDIATE TRANSACTION")
-            try:
-                for tbl in [
-                    "roots",
-                    "files",
-                    "symbols",
-                    "symbol_relations",
-                    "snippets",
-                    "failed_tasks",
-                        "embeddings"]:
-                    if tbl == "files":
-                        cols = ", ".join(FILE_COLUMNS)
-                        conn.execute(
-                            f"INSERT OR REPLACE INTO main.files({cols}) SELECT {cols} FROM snapshot.files")
-                    else:
-                        conn.execute(
-                            f"INSERT OR REPLACE INTO main.{tbl} SELECT * FROM snapshot.{tbl}")
-                conn.execute("COMMIT")
-            except Exception:
-                try:
-                    conn.execute("ROLLBACK")
-                except Exception:
-                    pass
-                raise
-            self.update_stats()
+            merged = merge_snapshot_into_main(
+                conn=conn,
+                snapshot_path=new_path,
+                file_columns=FILE_COLUMNS,
+                logger=self.logger,
+            )
+            if merged:
+                self.update_stats()
         except Exception as e:
             self.logger.error("Failed to swap DB file: %s", e, exc_info=True)
             raise
-        finally:
-            if attached:
-                try:
-                    conn.execute("DETACH DATABASE snapshot")
-                except Exception as de:
-                    self.logger.debug("Failed to detach snapshot: %s", de)
 
     def get_connection(self): return self.db.connection()
 
