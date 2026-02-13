@@ -6,7 +6,6 @@ import queue
 import concurrent.futures
 import socket
 from uuid import uuid4
-from pathlib import Path
 from typing import Optional, Mapping, TypeAlias
 from sari.mcp.adapters.workspace_runtime import (
     WorkspaceRuntime,
@@ -63,6 +62,13 @@ from sari.mcp.server_request_dispatch import (
 from sari.mcp.server_transport_init import ensure_transport as _ensure_transport_impl
 from sari.mcp.server_shutdown import perform_shutdown as _perform_shutdown_impl
 from sari.mcp.server_entrypoint import run_entrypoint as _run_entrypoint_impl
+from sari.mcp.server_method_registry import (
+    build_dispatch_methods as _build_dispatch_methods_impl,
+    resolve_root_entries as _resolve_root_entries_impl,
+)
+from sari.mcp.server_session_state import (
+    ensure_initialized_session as _ensure_initialized_session_impl,
+)
 
 try:
     import orjson as _orjson
@@ -285,11 +291,7 @@ class LocalSearchMCPServer:
             root_uri=f"file://{self.workspace_root}",
             config_roots=config_roots,
         )
-        result = []
-        for r in roots:
-            name = Path(r).name or r
-            result.append({"uri": f"file://{r}", "name": name})
-        return result
+        return _resolve_root_entries_impl(roots)
 
     @staticmethod
     def _sanitize_for_llm_tools(schema: dict) -> dict:
@@ -311,9 +313,13 @@ class LocalSearchMCPServer:
 
     def _ensure_initialized(self) -> None:
         """Test helper: Ensure session is initialized."""
-        if self._session is None and self._injected_db is None:
-            self._session = self.registry.get_or_create(self.workspace_root)
-            self._session_acquired = True
+        self._session, self._session_acquired = _ensure_initialized_session_impl(
+            session=self._session,
+            injected_db=self._injected_db,
+            registry=self.registry,
+            workspace_root=self.workspace_root,
+            session_acquired=self._session_acquired,
+        )
 
     def _tool_status(self, args: dict[str, object]) -> JsonMap:
         """Test helper: Execute status tool."""
@@ -326,23 +332,15 @@ class LocalSearchMCPServer:
         return self.handle_tools_call({"name": "search", "arguments": args})
 
     def _dispatch_methods(self) -> dict[str, object]:
-        return {
-            "initialize": self.handle_initialize,
-            "sari/identify": lambda _params: {
-                "name": self.SERVER_NAME,
-                "version": self.SERVER_VERSION,
-                "workspaceRoot": self.workspace_root,
-                "pid": os.getpid(),
-            },
-            "tools/list": lambda _params: {"tools": self.list_tools()},
-            "prompts/list": lambda _params: {"prompts": []},
-            "resources/list": lambda _params: {"resources": []},
-            "resources/templates/list": lambda _params: {"resourceTemplates": []},
-            "roots/list": lambda _params: {"roots": self.list_roots()},
-            "initialized": lambda _params: {},
-            "notifications/initialized": lambda _params: {},
-            "ping": lambda _params: {},
-        }
+        return _build_dispatch_methods_impl(
+            handle_initialize=self.handle_initialize,
+            list_tools=self.list_tools,
+            list_roots=self.list_roots,
+            server_name=self.SERVER_NAME,
+            server_version=self.SERVER_VERSION,
+            workspace_root=self.workspace_root,
+            pid=os.getpid(),
+        )
 
     def handle_request(
             self, request: object) -> Optional[JsonMap]:
