@@ -229,7 +229,8 @@ class Registry:
             self,
             workspace_root: str,
             persistent: bool = False,
-            track_ref: bool = True) -> SharedState:
+            track_ref: bool = True,
+            force_baseline: bool = False) -> SharedState:
         workspace_key = self._workspace_key(workspace_root)
         with self._lock:
             if workspace_key not in self._sessions:
@@ -239,6 +240,11 @@ class Registry:
                 self._sessions[workspace_key] = session
             elif persistent:
                 self._sessions[workspace_key].persistent = True
+            if force_baseline:
+                try:
+                    self._sessions[workspace_key].indexer.request_rescan()
+                except Exception:
+                    pass
             if track_ref:
                 self._sessions[workspace_key].ref_count += 1
             self._sessions[workspace_key].touch()

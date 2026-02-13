@@ -19,6 +19,22 @@ from sari.core.services.symbol_service import SymbolService
 ToolResult: TypeAlias = dict[str, object]
 
 
+def _is_next_candidate_path(path: str) -> bool:
+    p = str(path or "").strip().lower()
+    if not p:
+        return False
+    blocked_tokens = ("/.idea/", "/.vscode/", "/.venv", "/venv/", "/site-packages/", "/__pycache__/")
+    return not any(token in p for token in blocked_tokens)
+
+
+def _build_pack_next_hint(results: list[dict[str, object]]) -> str | None:
+    for row in results:
+        top_path = str(row.get("implementer_path") or "").strip()
+        if _is_next_candidate_path(top_path):
+            return f"SARI_NEXT: read(mode=file,target={pack_encode_id(top_path)})"
+    return None
+
+
 def execute_get_implementations(args: object, db: object, roots: list[str]) -> ToolResult:
     """
     SymbolService를 사용하여 특정 심볼을 구현(implements)하거나 상속(extends)하는 심볼들을 찾습니다.
@@ -85,6 +101,9 @@ def execute_get_implementations(args: object, db: object, roots: list[str]) -> T
                 "line": str(r["line"]),
             }
             lines.append(pack_line("r", kv))
+        next_line = _build_pack_next_hint(results)
+        if next_line:
+            lines.append(next_line)
         return "\n".join(lines)
 
     return mcp_response(

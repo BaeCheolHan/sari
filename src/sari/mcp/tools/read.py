@@ -29,6 +29,8 @@ from sari.mcp.tools._util import (
     ErrorCode,
     invalid_args_response,
     mcp_response,
+    pack_encode_id,
+    pack_encode_text,
     pack_error,
     resolve_db_path,
     resolve_fs_path,
@@ -925,6 +927,34 @@ def _inject_stabilization(
     return response
 
 
+def _inject_pack_next_hint(
+    response: ToolResult,
+    *,
+    mode: str,
+    args_map: Mapping[str, object],
+) -> ToolResult:
+    if mode != "symbol":
+        return response
+    content = response.get("content")
+    if not isinstance(content, list) or not content or not isinstance(content[0], Mapping):
+        return response
+    text = str(content[0].get("text") or "")
+    if not text.startswith("PACK1 "):
+        return response
+    if "\nSARI_NEXT:" in text:
+        return response
+    symbol = str(args_map.get("target") or args_map.get("name") or "").strip()
+    if not symbol:
+        return response
+    path = str(args_map.get("path") or "").strip()
+    args = [f"name={pack_encode_text(symbol)}"]
+    if path:
+        args.append(f"path={pack_encode_id(path)}")
+    next_line = f"SARI_NEXT: get_callers({','.join(args)})"
+    content[0]["text"] = f"{text.rstrip()}\n{next_line}"
+    return response
+
+
 def _budget_exceeded_response() -> ToolResult:
     msg = "Read budget exceeded. Use search to narrow scope: run search before additional reads."
     return mcp_response(
@@ -1128,6 +1158,8 @@ def _finalize_read_response(
         return response
     payload = _extract_json_payload(response)
     session_key = get_session_key(args_map, roots)
+    if payload is None:
+        return _inject_pack_next_hint(response, mode=mode, args_map=args_map)
     if payload is not None:
         read_lines, read_chars, read_span = _derive_read_metrics(mode, payload)
     else:

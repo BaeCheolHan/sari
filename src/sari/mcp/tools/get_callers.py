@@ -20,6 +20,22 @@ from sari.core.models import CallerHitDTO
 ToolResult: TypeAlias = dict[str, object]
 
 
+def _is_next_candidate_path(path: str) -> bool:
+    p = str(path or "").strip().lower()
+    if not p:
+        return False
+    blocked_tokens = ("/.idea/", "/.vscode/", "/.venv", "/venv/", "/site-packages/", "/__pycache__/")
+    return not any(token in p for token in blocked_tokens)
+
+
+def _build_pack_next_hint(results: list[dict[str, object]]) -> str | None:
+    for row in results:
+        top_path = str(row.get("caller_path") or "").strip()
+        if _is_next_candidate_path(top_path):
+            return f"SARI_NEXT: read(mode=file,target={pack_encode_id(top_path)})"
+    return None
+
+
 def execute_get_callers(args: object, db: object, roots: list[str]) -> ToolResult:
     """
     특정 심볼을 호출하는 다른 심볼들을 높은 정확도로 검색합니다.
@@ -124,6 +140,9 @@ def execute_get_callers(args: object, db: object, roots: list[str]) -> ToolResul
                 "rel_type": pack_encode_id(r["rel_type"]),
             }
             lines.append(pack_line("r", kv))
+        next_line = _build_pack_next_hint(results)
+        if next_line:
+            lines.append(next_line)
         return "\n".join(lines)
 
     return mcp_response(

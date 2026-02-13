@@ -12,6 +12,7 @@ class WorkspaceRuntime(Protocol):
         workspace_root: str,
         persistent: bool = False,
         track_ref: bool = True,
+        force_baseline: bool = False,
     ) -> object:
         ...
 
@@ -33,11 +34,13 @@ class RegistryWorkspaceRuntime:
         workspace_root: str,
         persistent: bool = False,
         track_ref: bool = True,
+        force_baseline: bool = False,
     ) -> object:
         return self._registry.get_or_create(
             workspace_root,
             persistent=persistent,
             track_ref=track_ref,
+            force_baseline=force_baseline,
         )
 
     def touch_workspace(self, workspace_root: str) -> None:

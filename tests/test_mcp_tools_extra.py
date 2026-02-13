@@ -273,13 +273,18 @@ def test_registry_hides_internal_tools_by_default(monkeypatch):
     assert "call_graph_health" not in names
 
 
-def test_registry_exposes_deprecated_flag_for_legacy_tools(monkeypatch):
+def test_registry_hides_deprecated_legacy_tools_even_when_internal_exposed(monkeypatch):
     monkeypatch.setenv("SARI_EXPOSE_INTERNAL_TOOLS", "1")
     reg = build_default_registry()
     tools = {t["name"]: t for t in reg.list_tools()}
-    assert tools["read_file"]["deprecated"] is True
-    assert tools["read_symbol"]["deprecated"] is True
-    assert tools["dry_run_diff"]["deprecated"] is True
+    assert "read_file" not in tools
+    assert "read_symbol" not in tools
+    assert "dry_run_diff" not in tools
+    assert "save_snippet" not in tools
+    assert "get_snippet" not in tools
+    assert "archive_context" not in tools
+    assert "get_context" not in tools
+    assert "call_graph_health" not in tools
 
 
 def test_registry_legacy_read_file_routes_to_unified_read(monkeypatch):
@@ -360,26 +365,25 @@ def test_registry_legacy_dry_run_diff_routes_to_unified_read(monkeypatch):
 
 
 def test_registry_symbol_tool_schemas_match_runtime_flexibility(monkeypatch):
-    monkeypatch.setenv("SARI_EXPOSE_INTERNAL_TOOLS", "1")
     reg = build_default_registry()
-    tools = {t["name"]: t for t in reg.list_tools()}
+    tools = {t.name: t for t in reg.list_tools_raw()}
 
     # read_symbol supports symbol_id/sid without forcing path+name.
-    read_symbol_schema = tools["read_symbol"]["inputSchema"]
+    read_symbol_schema = tools["read_symbol"].input_schema
     assert "symbol_id" in read_symbol_schema["properties"]
     assert "sid" in read_symbol_schema["properties"]
     assert "required" not in read_symbol_schema or not read_symbol_schema["required"]
 
     # caller/implementation tools accept name OR symbol_id-style calls.
-    callers_schema = tools["get_callers"]["inputSchema"]
-    impl_schema = tools["get_implementations"]["inputSchema"]
+    callers_schema = tools["get_callers"].input_schema
+    impl_schema = tools["get_implementations"].input_schema
     assert "symbol_id" in callers_schema["properties"]
     assert "sid" in callers_schema["properties"]
     assert "symbol_id" in impl_schema["properties"]
     assert "sid" in impl_schema["properties"]
 
     # call_graph should allow symbol alias and sid alias.
-    cg_schema = tools["call_graph"]["inputSchema"]
+    cg_schema = tools["call_graph"].input_schema
     assert "symbol" in cg_schema["properties"]
     assert "name" in cg_schema["properties"]
     assert "symbol_id" in cg_schema["properties"]
@@ -586,6 +590,8 @@ def test_get_callers_falls_back_to_call_graph(monkeypatch):
     text = resp["content"][0]["text"]
     assert "PACK1 tool=get_callers ok=true" in text
     assert "caller_symbol=callerA" in text
+    assert "\nSARI_NEXT: read(" in text
+    assert text.count("\nSARI_NEXT: ") == 1
 
 
 def test_get_callers_rejects_non_object_args():
@@ -620,6 +626,28 @@ def test_get_callers_repo_filter_applied():
     assert f"caller_path={rid}/A.java" in text
 
 
+def test_get_callers_sari_next_skips_noisy_candidate_path():
+    class _Conn:
+        def execute(self, *_args, **_kwargs):
+            class _Rows:
+                def fetchall(self_non):
+                    return [
+                        ("/repo/.venv/lib/a.py", "a", "sid-a", 1, "calls"),
+                        ("/repo/src/b.py", "b", "sid-b", 2, "calls"),
+                    ]
+
+            return _Rows()
+
+    class _DB:
+        _read = _Conn()
+
+    resp = execute_get_callers({"name": "foo"}, _DB(), ["/tmp/ws"])
+    text = resp["content"][0]["text"]
+    assert "\nSARI_NEXT: read(" in text
+    assert "/repo/src/b.py" in text
+    assert "/repo/.venv/lib/a.py" not in text.split("SARI_NEXT: ", 1)[1]
+
+
 def test_get_implementations_falls_back_to_file_content():
     class _Conn:
         def execute(self, sql, _params=None):
@@ -645,6 +673,8 @@ def test_get_implementations_falls_back_to_file_content():
     text = resp["content"][0]["text"]
     assert "PACK1 tool=get_implementations ok=true" in text
     assert "implementer_symbol=Repo" in text
+    assert "\nSARI_NEXT: read(" in text
+    assert text.count("\nSARI_NEXT: ") == 1
 
 
 def test_get_implementations_rejects_non_object_args():
@@ -693,6 +723,25 @@ def test_get_implementations_repo_filter_applied():
         {"name": "JpaRepository", "repo": "target-repo"}, _DB(), [repo_root])
     text = resp["content"][0]["text"]
     assert f"implementer_path={rid}/Repo.java" in text
+
+
+def test_get_implementations_sari_next_skips_noisy_candidate_path(monkeypatch):
+    class _Svc:
+        def __init__(self, _db):
+            pass
+
+        def get_implementations(self, **_kwargs):
+            return [
+                {"implementer_path": "/repo/site-packages/a.py", "implementer_symbol": "A", "implementer_sid": "sid-a", "rel_type": "impl", "line": 1},
+                {"implementer_path": "/repo/src/service.py", "implementer_symbol": "Svc", "implementer_sid": "sid-s", "rel_type": "impl", "line": 2},
+            ]
+
+    monkeypatch.setattr("sari.mcp.tools.get_implementations.SymbolService", _Svc)
+    resp = execute_get_implementations({"name": "Iface"}, MagicMock(), ["/tmp/ws"])
+    text = resp["content"][0]["text"]
+    assert "\nSARI_NEXT: read(" in text
+    assert "/repo/src/service.py" in text
+    assert "/repo/site-packages/a.py" not in text.split("SARI_NEXT: ", 1)[1]
 
 
 def test_resolve_repo_scope_prefers_workspace_name(tmp_path):

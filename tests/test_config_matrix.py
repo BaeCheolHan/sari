@@ -147,6 +147,36 @@ class TestConfigMatrix:
             assert res is not None
             assert res.repo == "workspaceC"
 
+    def test_repo_label_is_not_cached_globally_per_workspace_root(self, mock_db, mock_cfg, tmp_path):
+        from sari.core.settings import Settings
+        s = Settings()
+        worker = IndexWorker(mock_cfg, mock_db, None, lambda p, c: ([], []), settings_obj=s)
+
+        root = tmp_path / "repositories"
+        file_a = root / "repo-a" / "src" / "a.py"
+        file_b = root / "repo-b" / "src" / "b.py"
+        file_a.parent.mkdir(parents=True, exist_ok=True)
+        file_b.parent.mkdir(parents=True, exist_ok=True)
+        file_a.write_text("print('a')", encoding="utf-8")
+        file_b.write_text("print('b')", encoding="utf-8")
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(returncode=0, stdout=str(root / "repo-a")),
+                MagicMock(returncode=0, stdout=str(root / "repo-b")),
+            ]
+            res_a: IndexingResult = worker.process_file_task(
+                root, file_a, file_a.stat(), int(time.time()), time.time(), False, root_id="root"
+            )
+            res_b: IndexingResult = worker.process_file_task(
+                root, file_b, file_b.stat(), int(time.time()), time.time(), False, root_id="root"
+            )
+
+        assert res_a is not None
+        assert res_b is not None
+        assert res_a.repo == "repo-a"
+        assert res_b.repo == "repo-b"
+
     def test_worker_decodes_non_utf8_text_without_dropping_bytes(self, mock_db, mock_cfg, tmp_path):
         from sari.core.settings import Settings
         root = tmp_path / "workspace-enc"

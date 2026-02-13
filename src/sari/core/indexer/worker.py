@@ -76,6 +76,14 @@ class IndexWorker:
         with self._cache_lock:
             return self._git_root_cache.get(key)
 
+    def _git_cache_lookup(self, key: str) -> tuple[bool, str | None]:
+        if not key:
+            return False, None
+        with self._cache_lock:
+            if key not in self._git_root_cache:
+                return False, None
+            return True, self._git_root_cache.get(key)
+
     def process_file_task(
             self,
             root: Path,
@@ -220,17 +228,10 @@ class IndexWorker:
             root: Path,
             file_path: Path,
             rel_to_root: str) -> str:
-        # Optimization: Check if we already found a repo for this workspace
-        # root
         root_path = Path(root)
-        root_str = str(root_path.resolve())
-        res = self._git_cache_get(root_str)
-        if res:
-            return res
-
         parent = str(file_path.parent.resolve())
-        git_root = self._git_cache_get(parent)
-        if git_root is None:
+        has_cached, git_root = self._git_cache_lookup(parent)
+        if not has_cached:
             try:
                 # Fast path: check if .git exists in parent or its parents up
                 # to root
@@ -238,7 +239,7 @@ class IndexWorker:
                 found_git = False
                 target_root = root_path.resolve()
                 while curr.parts and str(curr).startswith(str(target_root)):
-                    if (curr / ".git").is_dir():
+                    if (curr / ".git").exists():
                         found_git = True
                         git_root = str(curr)
                         break
@@ -263,8 +264,6 @@ class IndexWorker:
 
         if git_root:
             repo_name = Path(git_root).name
-            # Cache for this workspace root
-            self._git_cache_set(root_str, repo_name)
             return repo_name
         return Path(root).name or "root"
 

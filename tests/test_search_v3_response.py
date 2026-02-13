@@ -109,6 +109,35 @@ def test_search_normalizes_core_errors_to_mcp_response(roots):
     assert "PACK1 tool=search ok=false code=INTERNAL" in result["content"][0]["text"]
 
 
+def test_search_pack_emits_single_sari_next_line_for_top_hit(db, roots):
+    os.environ["SARI_FORMAT"] = "pack"
+    result = execute_search({"query": "test", "search_type": "code"}, db, None, roots)
+    text = result["content"][0]["text"]
+    assert "PACK1 tool=search ok=true" in text
+    assert "\nSARI_NEXT: read(" in text
+    assert text.count("\nSARI_NEXT: ") == 1
+
+
+def test_search_pack_sari_next_skips_noisy_paths(roots):
+    os.environ["SARI_FORMAT"] = "pack"
+
+    class NoisyDB:
+        @staticmethod
+        def search(_opts):
+            from sari.core.models import SearchHit
+
+            return [
+                SearchHit(path="/repo/.idea/workspace.xml", repo="root", score=1.0, snippet="x"),
+                SearchHit(path="/repo/src/app.py", repo="root", score=0.9, snippet="y"),
+            ], {"total": 2}
+
+    result = execute_search({"query": "test", "search_type": "code", "limit": 2}, NoisyDB(), None, roots)
+    text = result["content"][0]["text"]
+    assert "\nSARI_NEXT: read(" in text
+    assert "/repo/src/app.py" in text
+    assert ".idea/workspace.xml" not in text.split("SARI_NEXT: ", 1)[1]
+
+
 def test_search_emits_normalization_warnings_in_meta(roots, monkeypatch):
     os.environ['SARI_FORMAT'] = 'json'
 

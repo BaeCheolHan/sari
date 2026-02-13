@@ -124,3 +124,23 @@ def test_registry_reap_stale_refs_reaps_zero_ref_sessions():
     assert reaped == 1
     assert stopped["count"] == 1
     assert not reg._sessions
+
+
+def test_registry_get_or_create_force_baseline_requests_rescan_on_existing_session():
+    called = {"rescan": 0}
+
+    state = SimpleNamespace(
+        ref_count=0,
+        persistent=False,
+        touch=lambda: None,
+        indexer=SimpleNamespace(
+            request_rescan=lambda: called.__setitem__("rescan", called["rescan"] + 1)
+        ),
+    )
+    reg = Registry()
+    reg._sessions["/tmp/ws"] = state
+
+    out = reg.get_or_create("/tmp/ws", track_ref=False, force_baseline=True)
+
+    assert out is state
+    assert called["rescan"] == 1

@@ -722,6 +722,7 @@ class SariDaemon:
                 workspace_root,
                 persistent=False,
                 track_ref=False,
+                force_baseline=True,
             )
             self._pinned_workspace_root = workspace_root
             self._start_http_gateway(shared)

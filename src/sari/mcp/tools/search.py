@@ -44,6 +44,25 @@ _clip_text = clip_text
 _safe_int = safe_int
 
 
+def _is_visible_result_path(path: str) -> bool:
+    p = str(path or "").strip().lower()
+    if not p:
+        return False
+    blocked_tokens = (
+        "/.idea/",
+        "/.vscode/",
+        "/.venv",
+        "/venv/",
+        "/site-packages/",
+        "/__pycache__/",
+    )
+    if any(token in p for token in blocked_tokens):
+        return False
+    if p.endswith("/workspace.xml") or p.endswith(".iml"):
+        return False
+    return True
+
+
 def _search_error_response(code: str, message: str, *, query: str = "target") -> ToolResult:
     next_calls = [
         {
@@ -114,6 +133,10 @@ def execute_search(
 
     latency_ms = int((time.time() - start_ts) * 1000)
     normalized_matches, total, normalization_warnings = normalize_results(resolved_type, raw_result)
+    normalized_matches = [
+        m for m in normalized_matches
+        if _is_visible_result_path(str(m.get("path") or ""))
+    ]
 
     preview_mode = str(args.get("preview_mode", "snippet")).lower()
     pm = PreviewManager(limit)
@@ -163,7 +186,7 @@ def execute_search(
     )
 
     v3_meta = {
-        "total": total,
+        "total": len(normalized_matches),
         "latency_ms": latency_ms,
         "preview_degraded": pm.degraded,
         "requested_type": requested_type,
@@ -181,7 +204,7 @@ def execute_search(
     json_meta = dict(v3_meta)
     json_meta["stabilization"] = {
         "budget_state": "NORMAL",
-        "suggested_next_action": "read" if total > 0 else "search",
+        "suggested_next_action": "read" if normalized_matches else "search",
         "warnings": [],
         "reason_codes": reason_codes,
         "bundle_id": bundle,
@@ -200,7 +223,7 @@ def execute_search(
         }
 
     def build_pack() -> str:
-        header = pack_header("search", {"q": pack_encode_text(query)}, returned=len(normalized_matches), total=total)
+        header = pack_header("search", {"q": pack_encode_text(query)}, returned=len(normalized_matches), total=len(normalized_matches))
         lines = [header]
         lines.append(pack_line("m", {k: str(v) for k, v in v3_meta.items() if v is not None}))
         for m in normalized_matches:
@@ -219,6 +242,26 @@ def execute_search(
         if repo_suggestions and resolved_type != "repo":
             for rs in repo_suggestions:
                 lines.append(pack_line("repo_hint", {"name": rs.get("repo", ""), "score": str(rs.get("score", 0))}))
+        next_line = _build_pack_next_hint(normalized_matches)
+        if next_line:
+            lines.append(next_line)
         return "\n".join(lines)
 
     return mcp_response("search", build_pack, build_json)
+
+
+def _build_pack_next_hint(matches: list[dict[str, object]]) -> str | None:
+    selected: dict[str, object] | None = None
+    for m in matches:
+        p = str(m.get("path") or "").strip()
+        if _is_visible_result_path(p):
+            selected = m
+            break
+    if selected is None:
+        return None
+    path = str(selected.get("path") or "").strip()
+    cid = str(selected.get("candidate_id") or "").strip()
+    args = [f"mode=file", f"target={pack_encode_id(path)}"]
+    if cid:
+        args.append(f"candidate_id={pack_encode_id(cid)}")
+    return f"SARI_NEXT: read({','.join(args)})"

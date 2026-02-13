@@ -443,11 +443,28 @@ def test_call_graph_list_logger_roots_and_db_error(monkeypatch):
             self.roots = roots
 
         def build(self, _args):
-            return {"symbol": "S", "tree": "T", "meta": {"nodes": 1, "edges": 0}, "truncated": False, "graph_quality": "good"}
+            return {
+                "symbol": "S",
+                "tree": "T",
+                "meta": {"nodes": 1, "edges": 0},
+                "truncated": False,
+                "graph_quality": "good",
+                "upstream": {
+                    "children": [
+                        {"path": "/repo/.venv/lib/python3.11/site-packages/x.py", "name": "noisy", "line": 1},
+                        {"path": "rid/a.py", "name": "caller", "line": 2},
+                    ]
+                },
+            }
 
     monkeypatch.setattr("sari.mcp.tools.call_graph.CallGraphService", _SvcOK)
     ok = execute_call_graph({"symbol": "S"}, MagicMock(), ["/tmp/ws"])
-    assert "PACK1 tool=call_graph ok=true" in ok["content"][0]["text"]
+    text = ok["content"][0]["text"]
+    assert "PACK1 tool=call_graph ok=true" in text
+    assert "\nSARI_NEXT: read(" in text
+    assert text.count("\nSARI_NEXT: ") == 1
+    assert "rid/a.py" in text
+    assert "site-packages/x.py" not in text.split("SARI_NEXT: ", 1)[1]
 
     class _SvcErr:
         def __init__(self, _db, _roots):

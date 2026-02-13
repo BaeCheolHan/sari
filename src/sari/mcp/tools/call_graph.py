@@ -35,6 +35,31 @@ def execute_call_graph(
         roots, logger = logger, None
     if not isinstance(args, Mapping):
         return invalid_args_response("call_graph", "args must be an object")
+
+    def _is_next_candidate_path(path: str) -> bool:
+        p = str(path or "").strip().lower()
+        if not p:
+            return False
+        blocked_tokens = ("/.idea/", "/.vscode/", "/.venv", "/venv/", "/site-packages/", "/__pycache__/")
+        return not any(token in p for token in blocked_tokens)
+
+    def _build_pack_next_hint(payload: Mapping[str, object]) -> str | None:
+        upstream = payload.get("upstream")
+        downstream = payload.get("downstream")
+        candidates: list[Mapping[str, object]] = []
+        if isinstance(upstream, Mapping):
+            children = upstream.get("children")
+            if isinstance(children, list):
+                candidates.extend([c for c in children if isinstance(c, Mapping)])
+        if not candidates and isinstance(downstream, Mapping):
+            children = downstream.get("children")
+            if isinstance(children, list):
+                candidates.extend([c for c in children if isinstance(c, Mapping)])
+        for cand in candidates:
+            top_path = str(cand.get("path") or "").strip()
+            if _is_next_candidate_path(top_path):
+                return f"SARI_NEXT: read(mode=file,target={pack_encode_id(top_path)})"
+        return None
     
     def build_pack(payload: ToolResult) -> str:
         """PACK1 형식의 응답을 생성합니다."""
@@ -52,6 +77,9 @@ def execute_call_graph(
             pack_line("m", {"scope_reason": pack_encode_text(payload.get("scope_reason", ""))}),
             pack_line("m", {"nodes": str(meta.get("nodes", 0)), "edges": str(meta.get("edges", 0))}),
         ]
+        next_line = _build_pack_next_hint(payload)
+        if next_line:
+            lines.append(next_line)
         return "\n".join(lines)
 
     try:

@@ -30,15 +30,15 @@ def test_registry_exposes_knowledge_and_hides_legacy_by_default(monkeypatch):
     assert "get_snippet" not in names
 
 
-def test_registry_marks_legacy_knowledge_tools_deprecated_when_internal_exposed(monkeypatch):
+def test_registry_hides_legacy_knowledge_tools_when_internal_exposed(monkeypatch):
     monkeypatch.setenv("SARI_EXPOSE_INTERNAL_TOOLS", "1")
     reg = build_default_registry()
     tools = {tool["name"]: tool for tool in reg.list_tools()}
 
-    assert tools["save_snippet"]["deprecated"] is True
-    assert tools["archive_context"]["deprecated"] is True
-    assert tools["get_context"]["deprecated"] is True
-    assert tools["get_snippet"]["deprecated"] is True
+    assert "save_snippet" not in tools
+    assert "archive_context" not in tools
+    assert "get_context" not in tools
+    assert "get_snippet" not in tools
 
 
 def test_knowledge_recall_accepts_search_alias_once_with_warning(monkeypatch):

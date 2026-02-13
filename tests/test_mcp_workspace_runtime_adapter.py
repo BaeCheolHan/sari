@@ -19,7 +19,9 @@ def test_registry_workspace_runtime_delegates_calls():
     runtime.release("/tmp/ws")
 
     assert state is not None
-    fake_registry.get_or_create.assert_called_once_with("/tmp/ws", persistent=True, track_ref=False)
+    fake_registry.get_or_create.assert_called_once_with(
+        "/tmp/ws", persistent=True, track_ref=False, force_baseline=False
+    )
     fake_registry.touch_workspace.assert_called_once_with("/tmp/ws")
     fake_registry.release.assert_called_once_with("/tmp/ws")
 

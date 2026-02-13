@@ -28,10 +28,11 @@ def test_daemon_autostart_workspace_is_not_persistent_and_not_tracked(monkeypatc
 
     calls = {}
 
-    def _fake_get_or_create(workspace_root, persistent=False, track_ref=True):
+    def _fake_get_or_create(workspace_root, persistent=False, track_ref=True, force_baseline=False):
         calls["workspace_root"] = workspace_root
         calls["persistent"] = persistent
         calls["track_ref"] = track_ref
+        calls["force_baseline"] = force_baseline
         return SimpleNamespace(workspace_root=workspace_root)
 
     mock_registry.get_or_create = _fake_get_or_create
@@ -47,6 +48,7 @@ def test_daemon_autostart_workspace_is_not_persistent_and_not_tracked(monkeypatc
     assert calls["workspace_root"] == "/tmp/ws"
     assert calls["persistent"] is False
     assert calls["track_ref"] is False
+    assert calls["force_baseline"] is True
 
 
 def test_runtime_state_provider_collects_controller_signals(monkeypatch):
