@@ -310,3 +310,76 @@ def test_ast_edit_next_calls_uses_db_callers_when_available(monkeypatch, tmp_pat
     assert payload.get("isError") is not True
     cmd = payload["meta"]["stabilization"]["next_calls"][0]["arguments"]["command"]
     assert "test_from_caller.py" in cmd
+
+
+def test_ast_edit_symbol_mode_replaces_javascript_function_block(monkeypatch, tmp_path):
+    monkeypatch.setenv("SARI_FORMAT", "json")
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    f = ws / "mod.js"
+    f.write_text(
+        "function keep() {\n  return 0;\n}\n\n"
+        "function targetFn() {\n  return 1;\n}\n",
+        encoding="utf-8",
+    )
+    db = _DummyDB()
+    original = f.read_text(encoding="utf-8")
+    resp = execute_read(
+        {
+            "mode": "ast_edit",
+            "target": str(f),
+            "expected_version_hash": _hash12(original),
+            "symbol": "targetFn",
+            "new_text": "function targetFn() {\n  return 2;\n}",
+        },
+        db,
+        [str(ws)],
+    )
+    payload = _payload(resp)
+    assert payload.get("isError") is not True
+    after = f.read_text(encoding="utf-8")
+    assert "function keep()" in after
+    assert "return 2;" in after
+    assert "return 1;" not in after
+
+
+def test_ast_edit_focus_indexing_reports_sync_complete(monkeypatch, tmp_path):
+    monkeypatch.setenv("SARI_FORMAT", "json")
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    f = ws / "sync.py"
+    f.write_text("n = 1\n", encoding="utf-8")
+    db = _DummyDB()
+
+    class _Indexer:
+        def __init__(self):
+            self._ticks = 0
+
+        def index_file(self, _path: str):
+            return {"ok": True}
+
+        def get_queue_depths(self):
+            self._ticks += 1
+            if self._ticks < 3:
+                return {"fair_queue": 1, "priority_queue": 0, "db_writer": 1}
+            return {"fair_queue": 0, "priority_queue": 0, "db_writer": 0}
+
+    indexer = _Indexer()
+    original = f.read_text(encoding="utf-8")
+    resp = execute_read(
+        {
+            "mode": "ast_edit",
+            "target": str(f),
+            "expected_version_hash": _hash12(original),
+            "old_text": "n = 1",
+            "new_text": "n = 2",
+            "__indexer__": indexer,
+            "sync_timeout_ms": 500,
+        },
+        db,
+        [str(ws)],
+    )
+    payload = _payload(resp)
+    assert payload.get("isError") is not True
+    assert payload["focus_indexing"] == "triggered"
+    assert payload["focus_sync_state"] == "complete"

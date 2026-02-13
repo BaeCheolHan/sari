@@ -4,6 +4,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
+import time
 from typing import TypeAlias
 
 from sari.core.policy_engine import ReadPolicy, load_read_policy
@@ -399,6 +401,39 @@ def _python_symbol_span(source: str, symbol: str) -> tuple[int, int] | None:
     return None
 
 
+def _js_like_symbol_span(source: str, symbol: str) -> tuple[int, int] | None:
+    if not symbol:
+        return None
+    lines = source.splitlines()
+    if not lines:
+        return None
+    patterns = [
+        re.compile(rf"^\s*function\s+{re.escape(symbol)}\s*\("),
+        re.compile(rf"^\s*(const|let|var)\s+{re.escape(symbol)}\s*=\s*(async\s*)?\("),
+        re.compile(rf"^\s*(export\s+)?(async\s+)?function\s+{re.escape(symbol)}\s*\("),
+        re.compile(rf"^\s*(export\s+)?(const|let|var)\s+{re.escape(symbol)}\s*=\s*"),
+    ]
+    start_idx = -1
+    for i, line in enumerate(lines):
+        if any(p.search(line) for p in patterns):
+            start_idx = i
+            break
+    if start_idx < 0:
+        return None
+
+    depth = 0
+    opened = False
+    for j in range(start_idx, len(lines)):
+        line = lines[j]
+        depth += line.count("{")
+        if line.count("{") > 0:
+            opened = True
+        depth -= line.count("}")
+        if opened and depth <= 0:
+            return (start_idx + 1, j + 1)
+    return None
+
+
 def _replace_line_span(source: str, start_line: int, end_line: int, new_block: str) -> str:
     lines = source.splitlines(keepends=True)
     if start_line <= 0 or end_line < start_line or end_line > len(lines):
@@ -411,12 +446,33 @@ def _replace_line_span(source: str, start_line: int, end_line: int, new_block: s
     return "".join(out)
 
 
+def _wait_focus_sync(indexer: object, timeout_ms: int) -> tuple[str, str]:
+    getter = getattr(indexer, "get_queue_depths", None)
+    if not callable(getter):
+        return ("unsupported", "focus sync check unsupported: no get_queue_depths")
+    deadline = time.time() + max(1, int(timeout_ms)) / 1000.0
+    while time.time() < deadline:
+        try:
+            depths_raw = getter()
+        except Exception:
+            return ("failed", "focus sync check failed while reading queue depths")
+        depths = depths_raw if isinstance(depths_raw, Mapping) else {}
+        fair = int(depths.get("fair_queue", 0) or 0)
+        priority = int(depths.get("priority_queue", 0) or 0)
+        writer = int(depths.get("db_writer", 0) or 0)
+        if fair == 0 and priority == 0 and writer == 0:
+            return ("complete", "")
+        time.sleep(0.05)
+    return ("timeout", "focus sync timeout; indexing queue still busy")
+
+
 def _execute_ast_edit(args_map: Mapping[str, object], db: object, roots: list[str]) -> ToolResult:
     target = str(args_map.get("target") or "").strip()
     expected_hash = str(args_map.get("expected_version_hash") or "").strip()
     old_text = str(args_map.get("old_text") or "")
     new_text = str(args_map.get("new_text") or "")
     symbol = str(args_map.get("symbol") or "").strip()
+    sync_timeout_ms = int(args_map.get("sync_timeout_ms") or 500)
     if not target:
         return _ast_edit_error(ErrorCode.INVALID_ARGS.value, "target is required for mode=ast_edit")
     if not expected_hash:
@@ -444,9 +500,14 @@ def _execute_ast_edit(args_map: Mapping[str, object], db: object, roots: list[st
         return _ast_edit_error("VERSION_CONFLICT", "version_hash mismatch; re-read target before editing")
     edited = ""
     if symbol:
-        if not str(path_obj).endswith(".py"):
-            return _ast_edit_error(ErrorCode.INVALID_ARGS.value, "symbol-based ast_edit is only supported for .py files")
-        span = _python_symbol_span(original, symbol)
+        suffix = path_obj.suffix.lower()
+        span = None
+        if suffix == ".py":
+            span = _python_symbol_span(original, symbol)
+        elif suffix in {".js", ".jsx", ".ts", ".tsx"}:
+            span = _js_like_symbol_span(original, symbol)
+        else:
+            return _ast_edit_error(ErrorCode.INVALID_ARGS.value, "symbol-based ast_edit is supported for .py/.js/.jsx/.ts/.tsx")
         if not span:
             return _ast_edit_error(ErrorCode.INVALID_ARGS.value, f"symbol '{symbol}' was not found in target")
         start_line, end_line = span
@@ -470,6 +531,7 @@ def _execute_ast_edit(args_map: Mapping[str, object], db: object, roots: list[st
 
     new_hash = _compute_content_hash(edited)
     focus_indexing = "deferred"
+    focus_sync_state = "not_requested"
     warnings: list[str] = []
     indexer = args_map.get("__indexer__")
     if indexer is not None:
@@ -478,17 +540,26 @@ def _execute_ast_edit(args_map: Mapping[str, object], db: object, roots: list[st
                 res = indexer.index_file(str(path_obj))
                 if isinstance(res, Mapping) and not bool(res.get("ok", True)):
                     focus_indexing = "failed"
+                    focus_sync_state = "skipped"
                     warnings.append(str(res.get("message") or "focus indexing failed"))
                 else:
                     focus_indexing = "triggered"
+                    focus_sync_state, sync_warning = _wait_focus_sync(indexer, sync_timeout_ms)
+                    if sync_warning:
+                        warnings.append(sync_warning)
             elif hasattr(indexer, "request_reindex"):
                 indexer.request_reindex(str(path_obj))
                 focus_indexing = "triggered"
+                focus_sync_state, sync_warning = _wait_focus_sync(indexer, sync_timeout_ms)
+                if sync_warning:
+                    warnings.append(sync_warning)
             else:
                 focus_indexing = "deferred"
+                focus_sync_state = "unsupported"
                 warnings.append("focus indexing deferred: indexer has no index_file/request_reindex")
         except Exception:
             focus_indexing = "failed"
+            focus_sync_state = "failed"
             warnings.append("focus indexing failed due to indexer exception")
     else:
         warnings.append("focus indexing deferred: indexer unavailable")
@@ -516,6 +587,7 @@ def _execute_ast_edit(args_map: Mapping[str, object], db: object, roots: list[st
             "path": db_path,
             "updated": True,
             "focus_indexing": focus_indexing,
+            "focus_sync_state": focus_sync_state,
             "previous_version_hash": current_hash,
             "version_hash": new_hash,
             "meta": {
