@@ -401,7 +401,7 @@ def test_ast_edit_symbol_mode_replaces_go_function_block_via_tree_sitter(monkeyp
     original = f.read_text(encoding="utf-8")
     monkeypatch.setattr(
         "sari.mcp.tools.read._tree_sitter_symbol_span",
-        lambda _source, _path, sym: (7, 9) if sym == "targetFn" else None,
+        lambda _source, _path, sym, symbol_qualname="", symbol_kind="": (7, 9) if sym == "targetFn" else None,
         raising=False,
     )
 
@@ -479,7 +479,7 @@ def test_ast_edit_symbol_mode_replaces_tree_sitter_languages(
     db = _DummyDB()
     original = f.read_text(encoding="utf-8")
 
-    def _fake_span(_source: str, path: str, sym: str):
+    def _fake_span(_source: str, path: str, sym: str, symbol_qualname: str = "", symbol_kind: str = ""):
         if path.endswith(filename) and sym == symbol:
             return target_span
         return None
@@ -531,8 +531,72 @@ def test_tree_sitter_symbol_span_prefers_qualified_name(monkeypatch):
         ],
         raising=False,
     )
-    span = read_tool._tree_sitter_symbol_span(source, "/tmp/svc.java", "B.targetFn")
+    span = read_tool._tree_sitter_symbol_span(source, "/tmp/svc.java", "targetFn", symbol_qualname="B.targetFn")
     assert span == (5, 5)
+
+
+def test_tree_sitter_symbol_span_prefers_kind_hint(monkeypatch):
+    source = "fn target() -> i32 { 1 }\nstruct target {}\n"
+
+    class _Sym:
+        def __init__(self, name, qualname, line, end_line, kind):
+            self.name = name
+            self.qualname = qualname
+            self.line = line
+            self.end_line = end_line
+            self.kind = kind
+
+    monkeypatch.setattr(
+        "sari.mcp.tools.read._extract_tree_sitter_symbols",
+        lambda _source, _path: [
+            _Sym("target", "mod.target", 1, 1, "function"),
+            _Sym("target", "mod.target", 2, 2, "class"),
+        ],
+        raising=False,
+    )
+    span = read_tool._tree_sitter_symbol_span(source, "/tmp/svc.rs", "target", symbol_kind="function")
+    assert span == (1, 1)
+
+
+def test_ast_edit_symbol_mode_forwards_qualname_and_kind_hints(monkeypatch, tmp_path):
+    monkeypatch.setenv("SARI_FORMAT", "json")
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    f = ws / "svc.go"
+    f.write_text(
+        "package svc\n\n"
+        "func targetFn() int {\n    return 1\n}\n",
+        encoding="utf-8",
+    )
+    db = _DummyDB()
+    original = f.read_text(encoding="utf-8")
+    captured = {}
+
+    def _capture(_source: str, _path: str, symbol: str, symbol_qualname: str = "", symbol_kind: str = ""):
+        captured["symbol"] = symbol
+        captured["symbol_qualname"] = symbol_qualname
+        captured["symbol_kind"] = symbol_kind
+        return (3, 5)
+
+    monkeypatch.setattr("sari.mcp.tools.read._tree_sitter_symbol_span", _capture, raising=False)
+    resp = execute_read(
+        {
+            "mode": "ast_edit",
+            "target": str(f),
+            "expected_version_hash": _hash12(original),
+            "symbol": "targetFn",
+            "symbol_qualname": "svc.targetFn",
+            "symbol_kind": "function",
+            "new_text": "func targetFn() int {\n    return 2\n}",
+        },
+        db,
+        [str(ws)],
+    )
+    payload = _payload(resp)
+    assert payload.get("isError") is not True
+    assert captured["symbol"] == "targetFn"
+    assert captured["symbol_qualname"] == "svc.targetFn"
+    assert captured["symbol_kind"] == "function"
 
 
 def test_ast_edit_symbol_mode_rejects_when_old_text_not_in_selected_symbol_block(monkeypatch, tmp_path):
@@ -549,7 +613,7 @@ def test_ast_edit_symbol_mode_rejects_when_old_text_not_in_selected_symbol_block
     original = f.read_text(encoding="utf-8")
     monkeypatch.setattr(
         "sari.mcp.tools.read._tree_sitter_symbol_span",
-        lambda _source, _path, sym: (3, 5) if sym == "targetFn" else None,
+        lambda _source, _path, sym, symbol_qualname="", symbol_kind="": (3, 5) if sym == "targetFn" else None,
         raising=False,
     )
     resp = execute_read(
@@ -568,3 +632,18 @@ def test_ast_edit_symbol_mode_rejects_when_old_text_not_in_selected_symbol_block
     assert payload["isError"] is True
     assert payload["error"]["code"] == "INVALID_ARGS"
     assert "old_text was not found in selected symbol block" in payload["error"]["message"]
+
+
+@pytest.mark.parametrize(
+    ("ext", "lang_module", "source", "symbol"),
+    [
+        (".java", "tree_sitter_java", "class Svc {\n  int target() { return 1; }\n}\n", "target"),
+        (".kt", "tree_sitter_kotlin", "class Svc {\n  fun target(): Int = 1\n}\n", "target"),
+        (".rs", "tree_sitter_rust", "fn target() -> i32 {\n    1\n}\n", "target"),
+    ],
+)
+def test_tree_sitter_symbol_span_runtime_smoke_for_languages(ext, lang_module, source, symbol):
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip(lang_module)
+    span = read_tool._tree_sitter_symbol_span(source, f"/tmp/svc{ext}", symbol)
+    assert span is not None

@@ -413,6 +413,8 @@ def test_registry_includes_unified_read_schema_with_required_constraints():
         "old_text",
         "new_text",
         "symbol",
+        "symbol_qualname",
+        "symbol_kind",
     ):
         assert key in props
         assert "description" in props[key]

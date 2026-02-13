@@ -461,7 +461,13 @@ def _normalize_symbol_token(value: str) -> str:
     return str(value or "").strip().replace("::", ".").replace("#", ".")
 
 
-def _tree_sitter_symbol_span(source: str, fs_path: str, symbol: str) -> tuple[int, int] | None:
+def _tree_sitter_symbol_span(
+    source: str,
+    fs_path: str,
+    symbol: str,
+    symbol_qualname: str = "",
+    symbol_kind: str = "",
+) -> tuple[int, int] | None:
     if not symbol:
         return None
     symbols = _extract_tree_sitter_symbols(source, fs_path)
@@ -472,6 +478,8 @@ def _tree_sitter_symbol_span(source: str, fs_path: str, symbol: str) -> tuple[in
     normalized = _normalize_symbol_token(raw_symbol)
     target_name = normalized.split(".")[-1] if normalized else raw_symbol
     qualified_query = any(token in raw_symbol for token in (".", "::", "#"))
+    qual_hint = _normalize_symbol_token(str(symbol_qualname or "").strip())
+    kind_hint = str(symbol_kind or "").strip().lower()
 
     preferred_kinds: dict[str, tuple[str, ...]] = {
         ".java": ("method", "function"),
@@ -493,7 +501,9 @@ def _tree_sitter_symbol_span(source: str, fs_path: str, symbol: str) -> tuple[in
         kind = str(getattr(sym, "kind", "") or "").strip().lower()
 
         score = 100
-        if qualname and (qualname == raw_symbol or norm_qual == normalized):
+        if qual_hint and norm_qual and norm_qual == qual_hint:
+            score = -2
+        elif qualname and (qualname == raw_symbol or norm_qual == normalized):
             score = 0
         elif qualified_query and norm_qual and norm_qual.endswith(f".{target_name}"):
             score = 2
@@ -508,6 +518,11 @@ def _tree_sitter_symbol_span(source: str, fs_path: str, symbol: str) -> tuple[in
             kind_penalty = kinds.index(kind)
         except ValueError:
             kind_penalty = len(kinds) + 1
+        if kind_hint:
+            if kind == kind_hint:
+                kind_penalty -= 1
+            else:
+                kind_penalty += len(kinds) + 2
         candidate = (score, kind_penalty, start)
         if best is None or candidate < best:
             best = candidate
@@ -555,6 +570,8 @@ def _execute_ast_edit(args_map: Mapping[str, object], db: object, roots: list[st
     old_text = str(args_map.get("old_text") or "")
     new_text = str(args_map.get("new_text") or "")
     symbol = str(args_map.get("symbol") or "").strip()
+    symbol_qualname = str(args_map.get("symbol_qualname") or "").strip()
+    symbol_kind = str(args_map.get("symbol_kind") or "").strip()
     sync_timeout_ms = int(args_map.get("sync_timeout_ms") or 500)
     if not target:
         return _ast_edit_error(ErrorCode.INVALID_ARGS.value, "target is required for mode=ast_edit")
@@ -590,7 +607,13 @@ def _execute_ast_edit(args_map: Mapping[str, object], db: object, roots: list[st
         elif suffix in {".js", ".jsx", ".ts", ".tsx"}:
             span = _js_like_symbol_span(original, symbol)
         else:
-            span = _tree_sitter_symbol_span(original, str(path_obj), symbol)
+            span = _tree_sitter_symbol_span(
+                original,
+                str(path_obj),
+                symbol,
+                symbol_qualname=symbol_qualname,
+                symbol_kind=symbol_kind,
+            )
             if not span:
                 return _ast_edit_error(
                     ErrorCode.INVALID_ARGS.value,
