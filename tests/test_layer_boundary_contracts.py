@@ -6,6 +6,7 @@ from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _CORE_ROOT = _REPO_ROOT / "src" / "sari" / "core"
+_MCP_ROOT = _REPO_ROOT / "src" / "sari" / "mcp"
 
 _ALLOWED_CORE_TO_MCP_IMPORTS: set[tuple[str, str]] = set()
 
@@ -62,3 +63,22 @@ def test_core_layer_boundary_scanner_health_is_debt_neutral(tmp_path: Path) -> N
 
     violations = _iter_core_to_mcp_imports(core_root=core_root, repo_root=tmp_path)
     assert ("src/sari/core/sample.py", 1, "sari.mcp.tools.protocol") in violations
+
+
+def test_mcp_layer_does_not_parse_registry_instances_schema_directly() -> None:
+    offenders: list[str] = []
+    allowed = {"src/sari/mcp/cli/registry.py"}
+
+    for py_file in sorted(_MCP_ROOT.rglob("*.py")):
+        rel_path = py_file.relative_to(_REPO_ROOT).as_posix()
+        if rel_path in allowed:
+            continue
+        source = py_file.read_text(encoding="utf-8")
+        if '.get("instances"' in source or ".get('instances'" in source:
+            offenders.append(rel_path)
+
+    assert not offenders, (
+        "Direct registry schema parsing (.get('instances')) is restricted to CLI registry adapter.\n"
+        "Unexpected files:\n"
+        + "\n".join(f"- {path}" for path in offenders)
+    )
