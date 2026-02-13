@@ -54,6 +54,12 @@ from sari.mcp.tools.doctor_checks_system import (
     check_process_resources as _check_process_resources,
     check_system_env as _check_system_env,
 )
+from sari.mcp.tools.doctor_checks_daemon import (
+    check_daemon as _check_daemon_impl,
+    check_daemon_policy as _check_daemon_policy_impl,
+    check_daemon_runtime_markers as _check_daemon_runtime_markers_impl,
+    check_http_service as _check_http_service_impl,
+)
 
 DoctorResult: TypeAlias = dict[str, object]
 DoctorResults: TypeAlias = list[DoctorResult]
@@ -170,118 +176,43 @@ def _check_lindera_dictionary() -> DoctorResult:
 
 
 def _check_daemon() -> DoctorResult:
-    """Sari 데몬 프로세스의 실행 여부와 상태를 점검합니다."""
-    host, port = get_daemon_address()
-    identify = _identify_sari_daemon(host, port)
-    running = identify is not None
-
-    local_version = settings.VERSION
-    details = {}
-
-    if running:
-        pid = _read_pid(host, port)
-        remote_version = identify.get("version", "unknown")
-        draining = identify.get("draining", False)
-
-        if pid:
-            details = _check_process_resources(pid)
-
-        status_msg = f"Running on {host}:{port} (PID: {pid}, v{remote_version})"
-        if draining:
-            status_msg += " [DRAINING]"
-        if details:
-            status_msg += f" [Mem: {details.get('mem_mb')}MB, CPU: {details.get('cpu_pct')}%]"
-
-        if remote_version != local_version:
-            return _result(
-                "Sari Daemon",
-                False,
-                f"Version mismatch: local=v{local_version}, remote=v{remote_version}. {status_msg}")
-
-        return _result("Sari Daemon", True, status_msg)
-
-    try:
-        reg = ServerRegistry()
-        data = reg.get_registry_snapshot(include_dead=True)
-        for info in (data.get("daemons") or {}).values():
-            if str(info.get("host") or "") != str(host):
-                continue
-            if int(info.get("port") or 0) != int(port):
-                continue
-            pid = int(info.get("pid") or 0)
-            if pid <= 0:
-                continue
-            try:
-                os.kill(pid, 0)
-                return _result(
-                    "Sari Daemon",
-                    False,
-                    f"Not responding on {host}:{port} but PID {pid} is alive. Possible zombie or port conflict.")
-            except Exception:
-                return _result(
-                    "Sari Daemon",
-                    False,
-                    f"Not running, but stale registry entry exists (PID: {pid}).")
-    except Exception:
-        pass
-
-    return _result("Sari Daemon", False, "Not running")
+    return _check_daemon_impl(
+        result_fn=_result,
+        get_daemon_address=get_daemon_address,
+        identify_daemon=_identify_sari_daemon,
+        read_pid=_read_pid,
+        process_resources=_check_process_resources,
+        local_version=str(settings.VERSION),
+        server_registry_cls=ServerRegistry,
+    )
 
 
 def _check_daemon_policy() -> DoctorResult:
-    policy = load_daemon_policy(settings_obj=settings)
-    daemon_host, daemon_port = get_daemon_address()
-    http_host, http_port = _resolve_http_endpoint_for_daemon(daemon_host, daemon_port)
-    override_keys = (
-        "SARI_DAEMON_HEARTBEAT_SEC",
-        "SARI_DAEMON_IDLE_SEC",
-        "SARI_DAEMON_IDLE_WITH_ACTIVE",
-        "SARI_DAEMON_DRAIN_GRACE_SEC",
-        "SARI_DAEMON_AUTOSTOP",
-        "SARI_DAEMON_AUTOSTOP_GRACE_SEC",
-        "SARI_DAEMON_SHUTDOWN_INHIBIT_MAX_SEC",
-        "SARI_DAEMON_LEASE_TTL_SEC",
-        RUNTIME_HOST,
-        RUNTIME_PORT,
-        "SARI_HTTP_HOST",
-        "SARI_HTTP_PORT",
+    return _check_daemon_policy_impl(
+        result_fn=_result,
+        load_policy=load_daemon_policy,
+        settings_obj=settings,
+        get_daemon_address=get_daemon_address,
+        resolve_http_endpoint_for_daemon=_resolve_http_endpoint_for_daemon,
+        runtime_host_env=RUNTIME_HOST,
+        runtime_port_env=RUNTIME_PORT,
     )
-    overrides = [k for k in override_keys if os.environ.get(k) not in (None, "")]
-    detail = (
-        f"daemon={daemon_host}:{daemon_port} http={http_host}:{http_port} "
-        f"heartbeat_sec={policy.heartbeat_sec} idle_sec={policy.idle_sec} "
-        f"idle_with_active={str(policy.idle_with_active).lower()} "
-        f"autostop_enabled={str(policy.autostop_enabled).lower()} "
-        f"autostop_grace_sec={policy.autostop_grace_sec} "
-        f"shutdown_inhibit_max_sec={policy.shutdown_inhibit_max_sec} "
-        f"lease_ttl_sec={policy.lease_ttl_sec} "
-        f"overrides={','.join(overrides) if overrides else 'none'}"
-    )
-    return _result("Daemon Policy", True, detail)
 
 
 def _check_http_service(host: str, port: int) -> DoctorResult:
-    """HTTP API 서버의 실행 여부를 확인합니다."""
-    running = _is_http_running(host, port)
-    if running:
-        return _result("HTTP API", True, f"Running on {host}:{port}")
-    return _result("HTTP API", False, f"Not running on {host}:{port}")
+    return _check_http_service_impl(
+        host,
+        port,
+        result_fn=_result,
+        is_http_running=_is_http_running,
+    )
 
 
 def _check_daemon_runtime_markers() -> DoctorResult:
-    """런타임 마커(daemon_runtime_state) 스냅샷을 점검합니다."""
-    try:
-        status = load_daemon_runtime_status()
-        detail = (
-            f"shutdown_intent={str(bool(status.shutdown_intent)).lower()} "
-            f"suicide_state={status.suicide_state} "
-            f"active_leases={int(status.active_leases_count)} "
-            f"event_queue_depth={int(status.event_queue_depth)} "
-            f"workers_alive={len(list(status.workers_alive or []))}"
-        )
-        return _result("Daemon Runtime Markers", True, detail)
-    except Exception as e:
-        return _result("Daemon Runtime Markers", False, str(e))
+    return _check_daemon_runtime_markers_impl(
+        result_fn=_result,
+        load_runtime_status=load_daemon_runtime_status,
+    )
 
 
 def _check_search_first_usage(
