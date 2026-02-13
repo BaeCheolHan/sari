@@ -38,11 +38,8 @@ def resolve_legacy_module(name: str):
         )
     return importlib.import_module(target)
 
-
 for _name in LEGACY_MODULE_MAP:
-    _mod = resolve_legacy_module(_name)
-    sys.modules[f"app.{_name}"] = _mod
-    globals()[_name] = _mod
+    sys.modules[f"app.{_name}"] = resolve_legacy_module(_name)
 
 
 def __getattr__(name: str):

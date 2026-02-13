@@ -160,6 +160,8 @@ def _cleanup_old_logs(
 
 
 def _init_logging() -> None:
+    if getattr(_init_logging, "_initialized", False):
+        return
     log_dir = _resolve_log_dir()
     handlers = [logging.StreamHandler()]
     try:
@@ -205,8 +207,7 @@ def _init_logging() -> None:
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         handlers=handlers,
     )
-
-_init_logging()
+    setattr(_init_logging, "_initialized", True)
 logger = logging.getLogger("mcp-daemon")
 
 DEFAULT_HOST = DEFAULT_DAEMON_HOST
@@ -244,6 +245,7 @@ def _pid_file() -> Path:
 
 class SariDaemon:
     def __init__(self, host: str = None, port: int = None):
+        _init_logging()
         self.host = host or settings.DAEMON_HOST
         self.port = int(port or settings.DAEMON_PORT)
         self.server = None

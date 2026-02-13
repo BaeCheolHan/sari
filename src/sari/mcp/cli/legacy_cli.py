@@ -1,14 +1,33 @@
-"""
-Backward-compatibility shim for the old module name.
+"""Backward-compatibility shim for old CLI module path."""
 
-Use `sari.mcp.cli.compat_cli` for new code.
-"""
+from .compat_cli import (
+    _get_http_host_port,
+    cmd_daemon_ensure,
+    cmd_daemon_refresh,
+    cmd_daemon_start,
+    cmd_daemon_status,
+    cmd_daemon_stop,
+    cmd_doctor,
+    cmd_init,
+    cmd_prune,
+    cmd_search,
+    cmd_status,
+    cmd_vacuum,
+    get_daemon_address,
+)
 
-from . import compat_cli as _compat_cli
-
-for _name in dir(_compat_cli):
-    if _name.startswith("__"):
-        continue
-    globals()[_name] = getattr(_compat_cli, _name)
-
-__all__ = [name for name in globals() if not name.startswith("__")]
+__all__ = [
+    "_get_http_host_port",
+    "cmd_daemon_ensure",
+    "cmd_daemon_refresh",
+    "cmd_daemon_start",
+    "cmd_daemon_status",
+    "cmd_daemon_stop",
+    "cmd_doctor",
+    "cmd_init",
+    "cmd_prune",
+    "cmd_search",
+    "cmd_status",
+    "cmd_vacuum",
+    "get_daemon_address",
+]
