@@ -40,6 +40,13 @@ from .daemon_registry_ops import (
     list_registry_daemon_endpoints as _list_registry_daemon_endpoints_impl,
     list_registry_daemons as _list_registry_daemons_impl,
 )
+from .daemon_process_ops import (
+    kill_orphan_sari_daemons as _kill_orphan_sari_daemons_impl,
+    kill_orphan_sari_workers as _kill_orphan_sari_workers_impl,
+    kill_pid_immediate as _kill_pid_immediate_impl,
+    stop_daemon_process as _stop_daemon_process_impl,
+    stop_one_endpoint as _stop_one_endpoint_impl,
+)
 
 DEFAULT_HOST = DEFAULT_DAEMON_HOST
 DEFAULT_PORT = DEFAULT_DAEMON_PORT
@@ -278,20 +285,10 @@ def kill_orphan_sari_daemons() -> int:
         from sari.core.daemon_health import detect_orphan_daemons
     except Exception:
         return 0
-
-    killed = 0
-    for item in detect_orphan_daemons():
-        try:
-            pid = int(item.get("pid") or 0)
-        except Exception:
-            pid = 0
-        if pid <= 0:
-            continue
-        if kill_pid_immediate(pid, "orphan-daemon"):
-            killed += 1
-    if killed > 0:
-        print(f"🧹 Reaped {killed} orphan daemon process(es).")
-    return killed
+    return _kill_orphan_sari_daemons_impl(
+        detect_orphan_daemons=detect_orphan_daemons,
+        kill_pid=kill_pid_immediate,
+    )
 
 
 def check_port_availability(params: DaemonParams) -> Optional[int]:
@@ -444,28 +441,14 @@ def kill_pid_immediate(pid: int, label: str) -> bool:
     Returns:
         True if kill command sent, False on permission error
     """
-    if not pid:
-        return False
-    try:
-        if os.name == "nt":
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True, check=False)
-            print(f"Executed taskkill for {label} PID {pid}")
-            return True
-        # User-requested fast stop path: no long graceful wait.
-        os.kill(pid, signal.SIGTERM)
-        time.sleep(0.15)
-        try:
-            os.kill(pid, 0)
-            os.kill(pid, signal.SIGKILL)
-            print(f"Sent SIGKILL to {label} PID {pid}")
-        except OSError:
-            print(f"Stopped {label} PID {pid}")
-        return True
-    except ProcessLookupError:
-        return True
-    except PermissionError:
-        print(f"Permission denied while stopping {label} PID {pid}")
-        return False
+    return _kill_pid_immediate_impl(
+        pid,
+        label,
+        os_module=os,
+        signal_module=signal,
+        time_module=time,
+        subprocess_module=subprocess,
+    )
 
 
 def get_registry_targets(host: str, port: int, pid_hint: Optional[int]) -> Tuple[Set[str], Set[int]]:
@@ -542,168 +525,46 @@ def kill_orphan_sari_workers(
     Returns:
         Number of worker processes terminated.
     """
-    del host  # Reserved for future use.
-    if psutil is None:
-        return 0
-
-    target_port = int(port) if port is not None else None
-    target_root = os.path.realpath(workspace_root) if workspace_root else None
-    this_pid = os.getpid()
-    killed = 0
-
-    for proc in psutil.process_iter(["pid", "ppid", "cmdline", "name"]):
-        try:
-            info = getattr(proc, "info", {}) or {}
-            pid = int(info.get("pid") or 0)
-            if pid <= 0 or pid == this_pid:
-                continue
-            ppid = int(info.get("ppid") or 0)
-            if ppid not in {0, 1}:
-                continue
-
-            cmdline = info.get("cmdline") or []
-            line = " ".join(str(v) for v in cmdline).lower()
-            if not line:
-                continue
-            if "multiprocessing.spawn" not in line and "--multiprocessing-fork" not in line:
-                continue
-
-            env = {}
-            try:
-                env = proc.environ() or {}
-            except Exception:
-                env = {}
-
-            env_root = str(env.get("SARI_WORKSPACE_ROOT") or "").strip()
-            env_port_raw = str(env.get(RUNTIME_PORT) or "").strip()
-            env_port = None
-            if env_port_raw:
-                try:
-                    env_port = int(env_port_raw)
-                except ValueError:
-                    env_port = None
-
-            if target_port is not None and env_port not in {None, target_port}:
-                continue
-            if target_root and env_root and os.path.realpath(env_root) != target_root:
-                continue
-
-            # Require at least one Sari marker to avoid killing unrelated orphan workers.
-            if not (env_root or env_port_raw or "sari" in line):
-                continue
-
-            proc.terminate()
-            try:
-                proc.wait(timeout=0.4)
-            except Exception:
-                try:
-                    proc.kill()
-                    proc.wait(timeout=0.3)
-                except Exception:
-                    pass
-            killed += 1
-        except Exception:
-            continue
-
-    if killed > 0:
-        print(f"🧹 Reaped {killed} orphan worker process(es).")
-    return killed
+    return _kill_orphan_sari_workers_impl(
+        host,
+        port,
+        workspace_root,
+        psutil_module=psutil,
+        runtime_port_key=RUNTIME_PORT,
+        os_module=os,
+        getpid=os.getpid,
+    )
 
 
 def stop_one_endpoint(host: str, port: int) -> int:
     """Stop daemon and related HTTP process for one endpoint."""
-    
-    if not is_daemon_running(host, port):
-        kill_orphan_sari_workers(host=host, port=port)
-        print("Daemon is not running")
-        remove_pid()
-        return 0
-
-    pid = read_pid(host, port)
-    if not pid:
-        try:
-            reg = ServerRegistry()
-            inst = reg.resolve_daemon_by_endpoint(str(host), int(port))
-            if inst and inst.get("pid"):
-                pid = int(inst.get("pid"))
-        except Exception:
-            pid = None
-
-    boot_ids, http_pids = get_registry_targets(host, port, pid)
-    
-    # Kill HTTP servers first
-    for http_pid in sorted(http_pids):
-        kill_pid_immediate(http_pid, "http")
-
-    if pid:
-        try:
-            kill_pid_immediate(pid, "daemon")
-            for _ in range(10):
-                if not is_daemon_running(host, port):
-                    break
-                time.sleep(0.1)
-                
-            reg = ServerRegistry()
-            for boot_id in boot_ids:
-                reg.unregister_daemon(boot_id)
-
-            kill_orphan_sari_workers(host=host, port=port)
-                
-            if is_daemon_running(host, port):
-                print("⚠️  Daemon port still responds after stop attempt.")
-            else:
-                print("✅ Daemon stopped")
-            return 0
-
-        except (ProcessLookupError, PermissionError):
-            print("PID not found or permission denied, daemon may have crashed or locked")
-            return 0
-    else:
-        # No PID available: clean stale registry mappings and attempt smart-kill fallback.
-        try:
-            reg = ServerRegistry()
-            for boot_id in boot_ids:
-                reg.unregister_daemon(boot_id)
-        except Exception:
-            pass
-        if smart_kill_port_owner(host, port):
-            for _ in range(10):
-                if not is_daemon_running(host, port):
-                    break
-                time.sleep(0.1)
-            if not is_daemon_running(host, port):
-                remove_pid()
-                kill_orphan_sari_workers(host=host, port=port)
-                print("✅ Daemon stopped (fallback smart-kill)")
-                return 0
-        remove_pid()
-        kill_orphan_sari_workers(host=host, port=port)
-        print("No daemon PID resolved from registry. Cleaned matching registry entries.")
-        return 0
+    return _stop_one_endpoint_impl(
+        host,
+        port,
+        is_daemon_running=is_daemon_running,
+        kill_orphan_workers=kill_orphan_sari_workers,
+        remove_pid=remove_pid,
+        read_pid=read_pid,
+        registry_factory=ServerRegistry,
+        get_registry_targets=get_registry_targets,
+        kill_pid=kill_pid_immediate,
+        smart_kill_port_owner=smart_kill_port_owner,
+        sleep_fn=time.sleep,
+    )
 
 
 def stop_daemon_process(params: DaemonParams) -> int:
     """Stop daemon process(es) and cleanup."""
-    if params.get("all"):
-        kill_orphan_sari_daemons()
-        endpoints = list_registry_daemon_endpoints()
-        if not endpoints:
-            endpoints = _discover_daemon_endpoints_from_processes()
-        if not endpoints:
-            host, port = get_daemon_address()
-            if is_daemon_running(host, port):
-                endpoints = [(host, port)]
-        if not endpoints:
-            kill_orphan_sari_workers()
-            print("Daemon is not running")
-            remove_pid()
-            return 0
-        rc = 0
-        for host, port in endpoints:
-            rc = max(rc, stop_one_endpoint(host, port))
-        kill_orphan_sari_workers()
-        return rc
-
-    host = str(params["host"] or DEFAULT_HOST)
-    port = int(params["port"] or DEFAULT_PORT)
-    return stop_one_endpoint(host, port)
+    return _stop_daemon_process_impl(
+        params,
+        kill_orphan_daemons=kill_orphan_sari_daemons,
+        list_registry_daemon_endpoints=list_registry_daemon_endpoints,
+        discover_endpoints_from_processes=_discover_daemon_endpoints_from_processes,
+        get_daemon_address=get_daemon_address,
+        is_daemon_running=is_daemon_running,
+        kill_orphan_workers=kill_orphan_sari_workers,
+        remove_pid=remove_pid,
+        stop_one_endpoint=stop_one_endpoint,
+        default_host=DEFAULT_HOST,
+        default_port=DEFAULT_PORT,
+    )
