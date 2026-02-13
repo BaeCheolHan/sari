@@ -108,9 +108,15 @@ def cmd_daemon_ensure(args):
 
 def cmd_daemon_refresh(args):
     def _action() -> int:
+        if _arg(args, "daemon_host") or _arg(args, "daemon_port"):
+            target_host = _arg(args, "daemon_host") or DEFAULT_DAEMON_HOST
+            target_port = int(_arg(args, "daemon_port") or DEFAULT_DAEMON_PORT)
+        else:
+            target_host, target_port = get_daemon_address()
+
         stop_args = argparse.Namespace(
-            daemon_host=_arg(args, "daemon_host"),
-            daemon_port=_arg(args, "daemon_port"),
+            daemon_host=target_host,
+            daemon_port=target_port,
         )
         stop_rc = _cmd_daemon_stop_impl(stop_args)
         if stop_rc != 0:
@@ -118,8 +124,8 @@ def cmd_daemon_refresh(args):
 
         start_args = argparse.Namespace(
             daemonize=True,
-            daemon_host=_arg(args, "daemon_host", "") or "",
-            daemon_port=_arg(args, "daemon_port"),
+            daemon_host=target_host,
+            daemon_port=target_port,
             http_host="",
             http_port=None,
         )
