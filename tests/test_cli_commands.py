@@ -133,6 +133,24 @@ def test_parse_transport_args_defaults():
     assert ns.http_api is False
 
 
+def test_entry_bootstrap_dispatch_routes_cmd_passthrough_to_run_cmd():
+    from sari.entry_bootstrap import dispatch_pre_stdio
+
+    with patch("sari.entry_bootstrap.run_cmd", return_value=0) as mock_run_cmd:
+        rc = dispatch_pre_stdio(["--cmd", "doctor"])
+        assert rc == 0
+        mock_run_cmd.assert_called_once_with(["doctor"])
+
+
+def test_entry_bootstrap_parse_transport_args_defaults():
+    from sari.entry_bootstrap import parse_transport_args
+
+    ns = parse_transport_args([])
+    assert ns.transport == "stdio"
+    assert ns.format == "pack"
+    assert ns.http_api is False
+
+
 def test_cli_main_search_command_dispatches_to_cmd_search():
     with patch("sari.mcp.cli.cmd_search", return_value=0) as mock_search:
         with patch("sys.argv", ["sari", "search", "--query", "needle", "--limit", "5"]):

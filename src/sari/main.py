@@ -18,7 +18,9 @@ from typing import List
 
 from sari.core.workspace import WorkspaceManager
 from sari.core.config import validate_config_file
-from sari.entry_commands import run_cmd, _cmd_roots_add
+from sari.entry_bootstrap import dispatch_pre_stdio, parse_transport_args
+from sari.entry_commands import run_cmd
+from sari.entry_commands_roots import _cmd_roots_add
 
 _RUNTIME_BOOTSTRAPPED = False
 
@@ -99,46 +101,12 @@ def _spawn_http_daemon(ns: argparse.Namespace) -> int:
     return 0
 
 
-def _dispatch_pre_stdio(argv: List[str]) -> int | None:
-    """Handle CLI subcommands before stdio/http transport bootstrap.
-
-    Returns command exit code when routed, or None when caller should
-    continue with stdio/http startup path.
-    """
-    if not argv:
-        return None
-
-    if argv[0] in {"doctor", "roots", "config", "index", "engine", "uninstall"}:
-        return run_cmd(argv)
-
-    if argv[0] in {"daemon", "proxy", "status", "search", "init", "auto"}:
-        from sari.mcp.cli import main as mcp_cli_main
-        return mcp_cli_main(argv)
-
-    if "--cmd" in argv:
-        idx = argv.index("--cmd")
-        cmd_args = argv[idx + 1:]
-        return run_cmd(cmd_args)
-
-    return None
-
-
-def _build_transport_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--transport", default="stdio", choices=["stdio", "http"])
-    parser.add_argument("--format", default="pack", choices=["pack", "json"])
-    parser.add_argument("--http-api", action="store_true")
-    parser.add_argument("--http-api-port")
-    parser.add_argument("--http-daemon", action="store_true")
-    parser.add_argument("--version", action="store_true")
-    parser.add_argument("--help", action="store_true")
-    return parser
-
-
 def _parse_transport_args(argv: List[str]) -> argparse.Namespace:
-    parser = _build_transport_parser()
-    ns, _ = parser.parse_known_args(argv)
-    return ns
+    return parse_transport_args(argv)
+
+
+def _dispatch_pre_stdio(argv: List[str]) -> int | None:
+    return dispatch_pre_stdio(argv, run_cmd_fn=run_cmd)
 
 
 def main(argv: List[str] | None = None, original_stdout: object | None = None) -> int:
