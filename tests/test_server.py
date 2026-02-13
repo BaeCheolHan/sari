@@ -4,6 +4,7 @@ import threading
 import time
 import io
 from unittest.mock import MagicMock
+from types import SimpleNamespace
 from sari.mcp.server import LocalSearchMCPServer
 import sari.mcp.server as server_mod
 
@@ -48,6 +49,29 @@ def test_server_handle_request_prompts_and_resources_list():
     assert prompts_resp["result"] == {"prompts": []}
     assert resources_resp["result"] == {"resources": []}
     assert templates_resp["result"] == {"resourceTemplates": []}
+
+
+def test_server_roots_list_exposes_configured_multiple_roots(monkeypatch):
+    server = LocalSearchMCPServer("/tmp/ws", start_worker=False)
+    monkeypatch.setattr(server_mod.WorkspaceManager, "resolve_config_path", lambda _ws: "/tmp/cfg.json")
+    monkeypatch.setattr(
+        server_mod.WorkspaceManager,
+        "resolve_workspace_roots",
+        lambda _root_uri=None, config_roots=None: list(config_roots or []),
+    )
+    monkeypatch.setattr(
+        server_mod.Config,
+        "load",
+        lambda _cfg_path, workspace_root_override=None: SimpleNamespace(
+            workspace_roots=["/tmp/ws", "/tmp/ws2"]
+        ),
+    )
+    roots_resp = server.handle_request({"id": 9, "method": "roots/list", "params": {}})
+    assert roots_resp["result"]["roots"] == [
+        {"uri": "file:///tmp/ws", "name": "ws"},
+        {"uri": "file:///tmp/ws2", "name": "ws2"},
+    ]
+    server.shutdown()
 
 def test_server_worker_loop():
     # Test if worker loop processes a request from queue
