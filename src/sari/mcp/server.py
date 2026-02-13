@@ -61,6 +61,7 @@ from sari.mcp.server_request_dispatch import (
     execute_local_method as _execute_local_method_impl,
 )
 from sari.mcp.server_transport_init import ensure_transport as _ensure_transport_impl
+from sari.mcp.server_shutdown import perform_shutdown as _perform_shutdown_impl
 
 try:
     import orjson as _orjson
@@ -550,41 +551,23 @@ class LocalSearchMCPServer:
 
     def shutdown(self) -> None:
         """Graceful shutdown of all resources."""
-        if self._stop.is_set():
+        changed, acquired, session = _perform_shutdown_impl(
+            stop_event=self._stop,
+            executor=self._executor,
+            transport=self.transport,
+            logger=self.logger,
+            close_all_daemon_connections=self._close_all_daemon_connections,
+            registry=self.registry,
+            workspace_root=self.workspace_root,
+            session_acquired=self._session_acquired,
+            session=self._session,
+            trace_fn=trace,
+            log_debug=self._log_debug,
+        )
+        if not changed:
             return
-        self._stop.set()
-        trace("server_shutdown_start")
-
-        # 1. Stop processing new requests and WAIT for current ones
-        try:
-            self._executor.shutdown(wait=True, cancel_futures=False)
-        except Exception as e:
-            self._log_debug(f"Executor shutdown error: {e}")
-
-        # 2. Release only this server's acquired workspace ref.
-        # Global registry shutdown here can tear down unrelated sessions.
-        try:
-            if self.transport and hasattr(self.transport, "close"):
-                self.transport.close()
-        except Exception:
-            pass
-        try:
-            if self.logger and hasattr(self.logger, "stop"):
-                self.logger.stop()
-        except Exception:
-            pass
-        try:
-            self._close_all_daemon_connections()
-        except Exception:
-            pass
-        try:
-            if self._session_acquired:
-                self.registry.release(self.workspace_root)
-                self._session_acquired = False
-                self._session = None
-        except Exception:
-            pass
-        trace("server_shutdown_done")
+        self._session_acquired = acquired
+        self._session = session
 
     def _worker_loop(self) -> None:
         _worker_loop_impl(
