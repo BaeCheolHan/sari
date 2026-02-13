@@ -4,6 +4,8 @@ Sari CLI package.
 This package contains the modular CLI implementation split from the monolithic cli.py.
 """
 
+import argparse
+
 from sari.core.daemon_resolver import resolve_daemon_address as get_daemon_address
 
 # Re-export key utilities for backward compatibility
@@ -69,9 +71,90 @@ def cmd_auto(args):
     return _cmd_auto(args)
 
 
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="sari",
+        description="Sari CLI",
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+    subparsers = parser.add_subparsers(dest="command", help="Commands")
+
+    d_parser = subparsers.add_parser("daemon", help="Daemon").add_subparsers(dest="daemon_command")
+    start = d_parser.add_parser("start", help="Start")
+    start.add_argument("-d", "--daemonize", action="store_true")
+    start.add_argument("--daemon-host", default="")
+    start.add_argument("--daemon-port", type=int)
+    start.set_defaults(func=cmd_daemon_start)
+
+    stop = d_parser.add_parser("stop", help="Stop")
+    stop.add_argument("--daemon-host", default="")
+    stop.add_argument("--daemon-port", type=int)
+    stop.add_argument("--all", action="store_true")
+    stop.set_defaults(func=cmd_daemon_stop)
+
+    status = d_parser.add_parser("status", help="Status")
+    status.add_argument("--daemon-host", default="")
+    status.add_argument("--daemon-port", type=int)
+    status.set_defaults(func=cmd_daemon_status)
+
+    ensure = d_parser.add_parser("ensure", help="Ensure")
+    ensure.add_argument("--daemon-host", default="")
+    ensure.add_argument("--daemon-port", type=int)
+    ensure.set_defaults(func=cmd_daemon_ensure)
+
+    refresh = d_parser.add_parser("refresh", help="Refresh")
+    refresh.add_argument("--daemon-host", default="")
+    refresh.add_argument("--daemon-port", type=int)
+    refresh.set_defaults(func=cmd_daemon_refresh)
+
+    subparsers.add_parser("proxy", help="Proxy").set_defaults(func=cmd_proxy)
+    subparsers.add_parser("auto", help="Auto").set_defaults(func=cmd_auto)
+
+    st = subparsers.add_parser("status", help="HTTP Status")
+    st.add_argument("--daemon-host", default="")
+    st.add_argument("--daemon-port", type=int)
+    st.add_argument("--http-host", default="")
+    st.add_argument("--http-port", type=int)
+    st.set_defaults(func=cmd_status)
+
+    search = subparsers.add_parser("search", help="HTTP Search")
+    search.add_argument("--query", required=True)
+    search.add_argument("--limit", type=int, default=8)
+    search.add_argument("--repo", default=None)
+    search.set_defaults(func=cmd_search)
+
+    doc = subparsers.add_parser("doctor", help="Doctor")
+    doc.add_argument("--auto-fix", action="store_true")
+    doc.add_argument("--auto-fix_rescan", action="store_true")
+    doc.add_argument("--no-network", action="store_true")
+    doc.add_argument("--no-db", action="store_true")
+    doc.add_argument("--no-port", action="store_true")
+    doc.add_argument("--no-disk", action="store_true")
+    doc.add_argument("--min-disk-gb", type=float, default=1.0)
+    doc.set_defaults(func=cmd_doctor)
+
+    init = subparsers.add_parser("init", help="Init")
+    init.add_argument("--workspace", default="")
+    init.add_argument("--force", action="store_true")
+    init.set_defaults(func=cmd_init)
+
+    prune = subparsers.add_parser("prune", help="Prune")
+    prune.add_argument("--days", type=int)
+    prune.add_argument("--table", choices=["snippets", "failed_tasks", "contexts"])
+    prune.add_argument("--workspace", default="")
+    prune.set_defaults(func=cmd_prune)
+
+    vacuum = subparsers.add_parser("vacuum", help="VACUUM sqlite database")
+    vacuum.add_argument("--workspace", default="")
+    vacuum.set_defaults(func=cmd_vacuum)
+
+    return parser
+
+
 def main(argv=None):
-    from .legacy_cli import main as _legacy_main
-    return _legacy_main(argv)
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    return args.func(args) if hasattr(args, "func") else 0
 
 # Aliases for backward compatibility with underscore-prefixed names
 _get_http_host_port = get_http_host_port

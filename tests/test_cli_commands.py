@@ -89,7 +89,7 @@ def test_cli_main_cmd_routes_to_legacy_cli(argv):
 
 
 def test_cli_main_daemon_stop_all_parses():
-    with patch("sari.mcp.cli.legacy_cli.cmd_daemon_stop", return_value=0) as mock_stop:
+    with patch("sari.mcp.cli.cmd_daemon_stop", return_value=0) as mock_stop:
         with patch("sys.argv", ["sari", "daemon", "stop", "--all"]):
             rc = main()
             assert rc == 0
@@ -107,7 +107,7 @@ def test_run_cmd_does_not_mutate_sys_argv_for_legacy_routing():
 
 
 def test_cli_main_search_command_dispatches_to_cmd_search():
-    with patch("sari.mcp.cli.legacy_cli.cmd_search", return_value=0) as mock_search:
+    with patch("sari.mcp.cli.cmd_search", return_value=0) as mock_search:
         with patch("sys.argv", ["sari", "search", "--query", "needle", "--limit", "5"]):
             rc = main()
             assert rc == 0

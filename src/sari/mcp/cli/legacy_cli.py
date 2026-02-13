@@ -34,10 +34,7 @@ from sari.mcp.server_registry import ServerRegistry
 from sari.core.config import Config
 from sari.core.db import LocalSearchDB
 from sari.core.daemon_resolver import resolve_daemon_address as get_daemon_address
-from sari.core.constants import (
-    DEFAULT_HTTP_HOST,
-    DEFAULT_HTTP_PORT,
-)
+from sari.core.endpoint_resolver import resolve_http_endpoint
 
 from .mcp_client import (
     identify_sari_daemon,
@@ -94,17 +91,13 @@ def _enforce_loopback(host: str) -> None:
 
 def _get_http_host_port(
         host_override: Optional[str] = None, port_override: Optional[int] = None) -> tuple[str, int]:
-    env_host = os.environ.get(
-        "SARI_HTTP_API_HOST") or os.environ.get("SARI_HTTP_HOST")
-    env_port = os.environ.get(
-        "SARI_HTTP_API_PORT") or os.environ.get("SARI_HTTP_PORT")
     workspace_root = os.environ.get(
         "SARI_WORKSPACE_ROOT") or WorkspaceManager.resolve_workspace_root()
-    cfg = _load_config(str(workspace_root))
-    host = host_override or env_host or cfg.http_api_host or DEFAULT_HTTP_HOST
-    port = int(
-        port_override or env_port or cfg.http_api_port or DEFAULT_HTTP_PORT)
-    return host, port
+    return resolve_http_endpoint(
+        workspace_root=str(workspace_root),
+        host_override=host_override,
+        port_override=port_override,
+    )
 
 
 def _resolve_http_endpoint_for_daemon(
