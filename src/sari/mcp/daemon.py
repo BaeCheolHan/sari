@@ -1,6 +1,7 @@
 # ruff: noqa: E402
 import asyncio
 import inspect
+import errno
 import os
 import signal
 import logging
@@ -931,6 +932,7 @@ class SariDaemon:
     async def start_async(self):
         clear_daemon_runtime_state()
         host = (self.host or "127.0.0.1").strip()
+        requested_port = int(self.port)
         try:
             is_loopback = host.lower() == "localhost" or ipaddress.ip_address(host).is_loopback
         except ValueError:
@@ -943,15 +945,38 @@ class SariDaemon:
             )
 
         # Prevent duplicate starts on the same endpoint
-        existing = self._registry.resolve_daemon_by_endpoint(host, self.port)
+        existing = self._registry.resolve_daemon_by_endpoint(host, requested_port)
         if existing:
-            raise SystemExit(f"sari daemon already running on {host}:{self.port} (PID: {existing['pid']})")
+            raise SystemExit(f"sari daemon already running on {host}:{requested_port} (PID: {existing['pid']})")
 
         self._cleanup_legacy_pid_file()
-        trace("daemon_start_async", host=host, port=self.port)
-        self.server = await asyncio.start_server(
-            self.handle_client, self.host, self.port
-        )
+        trace("daemon_start_async", host=host, port=requested_port)
+        strategy = (os.environ.get("SARI_DAEMON_PORT_STRATEGY") or "").strip().lower()
+        if strategy not in {"auto", "strict"}:
+            strategy = "auto"
+        try:
+            self.server = await asyncio.start_server(
+                self.handle_client, self.host, requested_port
+            )
+            self.port = requested_port
+        except OSError as e:
+            in_use = getattr(e, "errno", None) in {
+                errno.EADDRINUSE,
+                48,      # macOS
+                98,      # Linux
+                10048,   # Windows
+            }
+            if strategy != "auto" or not in_use:
+                raise
+            self.server = await asyncio.start_server(
+                self.handle_client, self.host, 0
+            )
+            self.port = int(self.server.sockets[0].getsockname()[1])
+            logger.warning(
+                "Daemon port %s busy; auto-fallback to %s",
+                requested_port,
+                self.port,
+            )
         update_daemon_runtime_state({RUNTIME_HOST: host, RUNTIME_PORT: str(self.port)})
         self._loop = asyncio.get_running_loop()
         self._register_daemon()

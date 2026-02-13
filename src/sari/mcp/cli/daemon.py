@@ -42,7 +42,7 @@ from .daemon_startup_ops import (
     start_daemon_in_background as _start_daemon_in_background_impl,
     start_daemon_in_foreground as _start_daemon_in_foreground_impl,
 )
-from .mcp_client import identify_sari_daemon, probe_sari_daemon
+from .mcp_client import identify_sari_daemon, probe_sari_daemon, ensure_workspace_http
 from .smart_daemon import ensure_smart_daemon, smart_kill_port_owner
 from .utils import get_local_version, get_pid_file_path
 
@@ -153,6 +153,7 @@ def handle_existing_daemon(params: DaemonParams) -> Optional[int]:
         needs_upgrade_or_drain=needs_upgrade_or_drain,
         read_pid=read_pid,
         stop_daemon=cmd_daemon_stop,
+        ensure_workspace_http=ensure_workspace_http,
     )
 
 def kill_orphan_sari_daemons() -> int:

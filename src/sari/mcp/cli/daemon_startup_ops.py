@@ -1,11 +1,39 @@
 import asyncio
 import os
+import socket
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
 from typing import Callable, Optional
+
+
+def _daemon_port_strategy(params: dict[str, object]) -> str:
+    raw = (os.environ.get("SARI_DAEMON_PORT_STRATEGY") or "").strip().lower()
+    if raw in {"auto", "strict"}:
+        return raw
+    # Explicitly requested port keeps strict behavior unless overridden.
+    if bool(params.get("explicit_port")):
+        return "strict"
+    return "auto"
+
+
+def _find_fallback_port(params: dict[str, object], host: str, port: int) -> int:
+    registry = params.get("registry")
+    try:
+        finder = getattr(registry, "find_free_port", None)
+        if callable(finder):
+            start = max(1, int(port) + 1)
+            try:
+                return int(finder(host=host, start_port=start))
+            except TypeError:
+                return int(finder(start))
+    except Exception:
+        pass
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind((host, 0))
+        return int(s.getsockname()[1])
 
 
 def check_port_availability(
@@ -18,6 +46,7 @@ def check_port_availability(
 ) -> Optional[int]:
     host = str(params["host"])
     port = int(params["port"])
+    strategy = _daemon_port_strategy(params)
 
     attempts = 8
     for _ in range(attempts):
@@ -31,6 +60,16 @@ def check_port_availability(
                 return None
     except Exception:
         pass
+
+    if strategy == "auto":
+        fallback = _find_fallback_port(params, host, port)
+        if fallback != port:
+            params["port"] = fallback
+            print(
+                f"⚠️ Port {port} is in use; falling back to {fallback}.",
+                file=stderr,
+            )
+            return None
 
     print(f"❌ Port {port} is already in use by another process.", file=stderr)
     return 1

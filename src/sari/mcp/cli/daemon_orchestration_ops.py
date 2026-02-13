@@ -11,6 +11,7 @@ def handle_existing_daemon(
     needs_upgrade_or_drain: Callable[[Optional[dict]], bool],
     read_pid: Callable[[str, int], Optional[int]],
     stop_daemon: Callable[[argparse.Namespace], int],
+    ensure_workspace_http: Callable[[str, int, Optional[str]], bool],
 ) -> Optional[int]:
     kill_orphan_daemons()
 
@@ -29,14 +30,19 @@ def handle_existing_daemon(
         ws_inst = registry.resolve_workspace_daemon(str(workspace_root))
         same_instance = bool(ws_inst and int(ws_inst.get("port", 0)) == int(port))
         if not same_instance:
-            stop_args = argparse.Namespace(daemon_host=host, daemon_port=port)
-            stop_daemon(stop_args)
-            identify = identify_daemon(host, port)
-            if identify:
-                print(f"❌ Port {port} is occupied by another running daemon.", file=sys.stderr)
-                return 1
+            if force_start or needs_upgrade_or_drain(identify):
+                stop_args = argparse.Namespace(daemon_host=host, daemon_port=port)
+                stop_daemon(stop_args)
+                identify = identify_daemon(host, port)
+                if identify:
+                    print(f"❌ Port {port} is occupied by another running daemon.", file=sys.stderr)
+                    return 1
 
     if not force_start and not needs_upgrade_or_drain(identify):
+        try:
+            ensure_workspace_http(host, port, workspace_root)
+        except Exception:
+            pass
         pid = read_pid(host, port)
         print(f"✅ Daemon already running on {host}:{port}")
         if pid:

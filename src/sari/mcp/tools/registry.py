@@ -79,7 +79,13 @@ class ToolRegistry:
         `SARI_EXPOSE_INTERNAL_TOOLS` 설정에 따라 숨겨진 도구 노출 여부를 결정합니다.
         """
         expose_internal = os.environ.get("SARI_EXPOSE_INTERNAL_TOOLS", "").strip().lower() in {"1", "true", "yes", "on"}
-        never_exposed = {"call_graph_health"}
+        never_exposed = {
+            "archive_context",
+            "call_graph_health",
+            "get_context",
+            "get_snippet",
+            "save_snippet",
+        }
         return [
             {
                 "name": t.name,

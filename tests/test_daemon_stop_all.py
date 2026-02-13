@@ -71,3 +71,30 @@ def test_handle_existing_daemon_reaps_orphans_before_return_when_no_identify(mon
 
     assert rc is None
     assert called["reap"] == 1
+
+
+def test_handle_existing_daemon_reuses_running_daemon_for_other_workspace(monkeypatch):
+    params = {
+        "host": "127.0.0.1",
+        "port": 47779,
+        "workspace_root": "/tmp/ws-b",
+        "registry": type("R", (), {"resolve_workspace_daemon": lambda self, ws: None})(),
+        "explicit_port": True,
+        "force_start": False,
+        "args": argparse.Namespace(),
+    }
+    calls = {"stop": 0, "ensure_ws": 0}
+    monkeypatch.setattr(d, "kill_orphan_sari_daemons", lambda: 0)
+    monkeypatch.setattr(d, "identify_sari_daemon", lambda _h, _p: {"version": d.get_local_version(), "draining": False})
+    monkeypatch.setattr(d, "read_pid", lambda _h, _p: 12345)
+    monkeypatch.setattr("sari.mcp.cli.cmd_daemon_stop", lambda _args: calls.__setitem__("stop", calls["stop"] + 1) or 0)
+    monkeypatch.setattr(
+        "sari.mcp.cli.daemon.ensure_workspace_http",
+        lambda _h, _p, _ws: calls.__setitem__("ensure_ws", calls["ensure_ws"] + 1) or True,
+    )
+
+    rc = d.handle_existing_daemon(params)
+
+    assert rc == 0
+    assert calls["stop"] == 0
+    assert calls["ensure_ws"] == 1

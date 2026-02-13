@@ -288,13 +288,15 @@ class LocalSearchMCPServer:
         return _sanitize_for_llm_tools_impl(schema)
 
     def list_tools(self) -> list[dict[str, object]]:
+        tools = self._tool_registry.list_tools()
         return [
             {
-                "name": t.name,
-                "description": t.description,
-                "inputSchema": self._sanitize_for_llm_tools(t.input_schema),
+                "name": str(t.get("name", "")),
+                "description": str(t.get("description", "")),
+                "inputSchema": self._sanitize_for_llm_tools(dict(t.get("inputSchema") or {})),
+                **({"deprecated": True} if bool(t.get("deprecated")) else {}),
             }
-            for t in self._tool_registry.list_tools_raw()
+            for t in tools
         ]
 
     def handle_tools_list(self, params: Mapping[str, object]) -> JsonMap:
