@@ -22,6 +22,10 @@ from sari.mcp.telemetry import TelemetryLogger
 from sari.mcp.transport import McpTransport
 from sari.core.utils.logging import get_logger
 from sari.mcp.trace import trace
+from sari.mcp.server_sanitize import (
+    sanitize_for_llm_tools as _sanitize_for_llm_tools_impl,
+    sanitize_value as _sanitize_value_impl,
+)
 
 try:
     import orjson as _orjson
@@ -308,43 +312,7 @@ class LocalSearchMCPServer:
 
     @staticmethod
     def _sanitize_for_llm_tools(schema: dict) -> dict:
-        """
-        Make a Pydantic/JSON Schema object more compatible with various LLMs.
-        - 'integer' -> 'number' (+ multipleOf: 1)
-        - remove 'null' from union type arrays for better compatibility
-        """
-        from copy import deepcopy
-        s = deepcopy(schema)
-
-        def walk(node):
-            if not isinstance(node, dict):
-                return node
-            t = node.get("type")
-            if isinstance(t, str):
-                if t == "integer":
-                    node["type"] = "number"
-                    if "multipleOf" not in node:
-                        node["multipleOf"] = 1
-            elif isinstance(t, list):
-                t2 = [x if x != "integer" else "number" for x in t if x != "null"]
-                if not t2:
-                    t2 = ["object"]
-                node["type"] = t2[0] if len(t2) == 1 else t2
-                if "integer" in t or "number" in t2:
-                    node.setdefault("multipleOf", 1)
-
-            for key in (
-                "properties",
-                "patternProperties",
-                "definitions",
-                    "$defs"):
-                if key in node and isinstance(node[key], dict):
-                    for k, v in list(node[key].items()):
-                        node[key][k] = walk(v)
-            if "items" in node:
-                node["items"] = walk(node["items"])
-            return node
-        return walk(s)
+        return _sanitize_for_llm_tools_impl(schema)
 
     def list_tools(self) -> list[dict[str, object]]:
         return [
@@ -842,20 +810,7 @@ class LocalSearchMCPServer:
         self.struct_logger.debug("mcp_debug_log", message=message)
 
     def _sanitize_value(self, value: object, key: str = "") -> object:
-        key_l = (key or "").lower()
-        if any(s in key_l for s in self._SENSITIVE_KEYS):
-            return "[REDACTED]"
-        if isinstance(value, dict):
-            return {k: self._sanitize_value(v, k) for k, v in value.items()}
-        if isinstance(value, list):
-            return [self._sanitize_value(v, key) for v in value[:20]]
-        if isinstance(value, str):
-            if key_l in {"content", "text", "source", "snippet", "body"}:
-                return f"[REDACTED_TEXT len={len(value)}]"
-            if len(value) > 200:
-                return value[:120] + "...[truncated]"
-            return value
-        return value
+        return _sanitize_value_impl(value, self._SENSITIVE_KEYS, key)
 
     def _log_debug_request(self, mode: str, req: JsonMap) -> None:
         if not self._debug_enabled:
