@@ -158,7 +158,11 @@ def test_knowledge_list_delete_and_relink_context(monkeypatch):
     db._write = conn
     db.contexts.get_context_by_topic.return_value = MagicMock(related_files=[], topic="topic-a")
 
-    list_resp = execute_knowledge({"action": "list", "type": "context", "limit": 5}, db, [root])
+    list_resp = execute_knowledge(
+        {"action": "list", "type": "context", "limit": 5, "options": {"include_orphaned": True}},
+        db,
+        [root],
+    )
     list_payload = _json_payload(list_resp)
     assert list_payload["count"] == 1
     assert list_payload["results"][0]["memory_ref"] == "context:topic-a"
@@ -182,6 +186,7 @@ def test_knowledge_list_delete_and_relink_context(monkeypatch):
             "type": "context",
             "memory_ref": "context:topic-a",
             "new_context_ref": token,
+            "confirm": True,
         },
         db,
         [root],
@@ -211,3 +216,104 @@ def test_legacy_knowledge_tools_are_blocked_and_guide_to_unified_tool(monkeypatc
         assert payload["isError"] is True
         assert payload["error"]["code"] == "INVALID_ARGS"
         assert "Use knowledge(" in payload["error"]["message"]
+
+
+def test_knowledge_relink_requires_manual_confirm(monkeypatch):
+    monkeypatch.setenv("SARI_FORMAT", "json")
+    root = "/tmp/ws"
+    root_id = WorkspaceManager.root_id_for_workspace(root)
+    token = issue_context_ref(
+        {
+            "ws": root_id,
+            "kind": "file",
+            "path": f"{root_id}/src/new.py",
+            "span": [2, 4],
+            "ch": _sha12("abc"),
+        }
+    )
+    db = MagicMock()
+    resp = execute_knowledge(
+        {
+            "action": "relink",
+            "type": "context",
+            "memory_ref": "context:topic-a",
+            "new_context_ref": token,
+        },
+        db,
+        [root],
+    )
+    payload = _json_payload(resp)
+    assert payload["isError"] is True
+    assert payload["error"]["code"] == "INVALID_ARGS"
+    assert "confirm=true" in payload["error"]["message"]
+
+
+def test_knowledge_recall_snippet_strict_scope_local_and_include_orphaned(monkeypatch, tmp_path):
+    monkeypatch.setenv("SARI_FORMAT", "json")
+    ws_root = str(tmp_path / "ws")
+    (tmp_path / "ws").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "ws" / "alive.py").write_text("print('ok')\n", encoding="utf-8")
+    ws_id = WorkspaceManager.root_id_for_workspace(ws_root)
+    in_scope_alive = {
+        "id": 1,
+        "tag": "t",
+        "path": f"{ws_id}/alive.py",
+        "root_id": ws_id,
+        "start_line": 1,
+        "end_line": 1,
+        "content": "print('ok')",
+    }
+    in_scope_orphan = {
+        "id": 2,
+        "tag": "t",
+        "path": f"{ws_id}/missing.py",
+        "root_id": ws_id,
+        "start_line": 1,
+        "end_line": 1,
+        "content": "print('missing')",
+    }
+    out_scope = {
+        "id": 3,
+        "tag": "t",
+        "path": "/other/root/file.py",
+        "root_id": "/other/root",
+        "start_line": 1,
+        "end_line": 1,
+        "content": "x",
+    }
+    db = MagicMock()
+    db.search_snippets.return_value = [in_scope_alive, in_scope_orphan, out_scope]
+
+    resp_default = execute_knowledge(
+        {"action": "recall", "type": "snippet", "query": "t"},
+        db,
+        [ws_root],
+    )
+    payload_default = _json_payload(resp_default)
+    assert payload_default["count"] == 1
+    assert payload_default["results"][0]["id"] == 1
+    assert payload_default["results"][0]["orphaned"] is False
+
+    resp_with_orphaned = execute_knowledge(
+        {"action": "recall", "type": "snippet", "query": "t", "options": {"include_orphaned": True}},
+        db,
+        [ws_root],
+    )
+    payload_with_orphaned = _json_payload(resp_with_orphaned)
+    ids = {r["id"] for r in payload_with_orphaned["results"]}
+    assert ids == {1, 2}
+
+
+def test_knowledge_recall_cross_scope_requires_explicit_workspace_refs(monkeypatch):
+    monkeypatch.setenv("SARI_FORMAT", "json")
+    db = MagicMock()
+    db.search_snippets.return_value = []
+    resp = execute_knowledge(
+        {"action": "recall", "type": "snippet", "query": "x", "options": {"scope": "cross"}},
+        db,
+        ["/tmp/ws"],
+    )
+    payload = _json_payload(resp)
+    assert payload["isError"] is True
+    assert payload["error"]["code"] == "INVALID_ARGS"
+    assert "workspace_refs" in payload["error"]["message"]

@@ -395,9 +395,25 @@ def test_registry_includes_unified_read_schema_with_required_constraints():
     props = read_schema["properties"]
 
     assert props["mode"]["type"] == "string"
-    assert props["mode"]["enum"] == ["file", "symbol", "snippet", "diff_preview"]
+    assert props["mode"]["enum"] == ["file", "symbol", "snippet", "diff_preview", "ast_edit"]
 
-    for key in ("target", "path", "name", "symbol_id", "sid", "tag", "query", "content", "offset", "limit", "against"):
+    for key in (
+        "target",
+        "path",
+        "name",
+        "symbol_id",
+        "sid",
+        "tag",
+        "query",
+        "content",
+        "offset",
+        "limit",
+        "against",
+        "expected_version_hash",
+        "old_text",
+        "new_text",
+        "symbol",
+    ):
         assert key in props
         assert "description" in props[key]
 

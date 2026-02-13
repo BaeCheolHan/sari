@@ -3,6 +3,7 @@ import json
 import threading
 import time
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import TypeAlias
 
 from sari.mcp.tools._util import (
@@ -15,6 +16,7 @@ from sari.mcp.tools._util import (
     pack_header,
     pack_line,
     require_db_schema,
+    resolve_fs_path,
     resolve_root_ids,
 )
 from sari.mcp.tools.crypto import verify_context_ref
@@ -246,6 +248,11 @@ def _execute_recall(args: Mapping[str, object], db: object, roots: list[str], al
     if type_name not in {"context", "snippet"}:
         return _json_error(ErrorCode.INVALID_ARGS, "type must be one of: context, snippet")
 
+    include_orphaned = _parse_include_orphaned(args)
+    scope_root_ids, scope_err = _resolve_scope_root_ids(args, roots)
+    if scope_err:
+        return _json_error(ErrorCode.INVALID_ARGS, scope_err)
+
     if type_name == "context":
         guard = require_db_schema(db, "knowledge", "contexts", ["topic", "content"])
         if guard:
@@ -258,6 +265,7 @@ def _execute_recall(args: Mapping[str, object], db: object, roots: list[str], al
         else:
             return _json_error(ErrorCode.INVALID_ARGS, "key or query is required for recall")
         results = [r.model_dump() if hasattr(r, "model_dump") else dict(r) for r in rows]
+        results = _apply_context_scope_and_orphan_filter(results, scope_root_ids, roots, include_orphaned)
     else:
         guard = require_db_schema(db, "knowledge", "snippets", ["tag", "path", "content"])
         if guard:
@@ -279,7 +287,7 @@ def _execute_recall(args: Mapping[str, object], db: object, roots: list[str], al
                 norm.append(dict(row))
             else:
                 norm.append({})
-        results = norm
+        results = _apply_snippet_scope_and_orphan_filter(norm, scope_root_ids, roots, include_orphaned)
 
     return {
         "action": "recall",
@@ -300,9 +308,100 @@ def _parse_memory_ref(memory_ref: str) -> tuple[str, str]:
     return kind.strip().lower(), ident.strip()
 
 
-def _execute_list(args: Mapping[str, object], db: object) -> ToolResult:
+def _parse_include_orphaned(args: Mapping[str, object]) -> bool:
+    raw = args.get("include_orphaned")
+    if raw is None and isinstance(args.get("options"), Mapping):
+        raw = args["options"].get("include_orphaned")
+    return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _resolve_scope_root_ids(args: Mapping[str, object], roots: list[str]) -> tuple[set[str], str | None]:
+    allowed = set(resolve_root_ids(roots))
+    options = args.get("options")
+    options_map = options if isinstance(options, Mapping) else {}
+    scope = str(options_map.get("scope") or "local").strip().lower()
+    if scope not in {"local", "cross"}:
+        return set(), "options.scope must be one of: local, cross"
+    if scope == "local":
+        return allowed, None
+
+    refs = _string_list(options_map.get("workspace_refs"))
+    if not refs:
+        return set(), "options.workspace_refs is required when options.scope='cross'"
+    requested = set(refs)
+    if allowed and not requested.issubset(allowed):
+        return set(), "options.workspace_refs includes out-of-scope root_id"
+    return requested, None
+
+
+def _is_orphaned_path(path: str, roots: list[str]) -> bool:
+    db_path = str(path or "").strip()
+    if not db_path:
+        return True
+    fs_path = resolve_fs_path(db_path, roots)
+    if not fs_path:
+        return True
+    return not Path(fs_path).exists()
+
+
+def _apply_snippet_scope_and_orphan_filter(
+    rows: list[dict[str, object]],
+    scope_root_ids: set[str],
+    roots: list[str],
+    include_orphaned: bool,
+) -> list[dict[str, object]]:
+    out: list[dict[str, object]] = []
+    for row in rows:
+        item = dict(row)
+        root_id = str(item.get("root_id") or "")
+        if scope_root_ids and root_id and root_id not in scope_root_ids:
+            continue
+        orphaned = _is_orphaned_path(str(item.get("path") or ""), roots)
+        item["orphaned"] = orphaned
+        if orphaned and not include_orphaned:
+            continue
+        out.append(item)
+    return out
+
+
+def _apply_context_scope_and_orphan_filter(
+    rows: list[dict[str, object]],
+    scope_root_ids: set[str],
+    roots: list[str],
+    include_orphaned: bool,
+) -> list[dict[str, object]]:
+    out: list[dict[str, object]] = []
+    for row in rows:
+        item = dict(row)
+        related = _string_list(item.get("related_files"))
+        if scope_root_ids and related:
+            in_scope = False
+            for path in related:
+                for rid in scope_root_ids:
+                    if path == rid or path.startswith(f"{rid}/"):
+                        in_scope = True
+                        break
+                if in_scope:
+                    break
+            if not in_scope:
+                continue
+        orphaned = True
+        if related:
+            orphaned = all(_is_orphaned_path(path, roots) for path in related)
+        item["orphaned"] = orphaned
+        if orphaned and not include_orphaned:
+            continue
+        out.append(item)
+    return out
+
+
+def _execute_list(args: Mapping[str, object], db: object, roots: list[str]) -> ToolResult:
     type_name = str(args.get("type") or "").strip().lower()
     limit = _coerce_limit(args.get("limit"), 20)
+    include_orphaned = _parse_include_orphaned(args)
+    scope_root_ids, scope_err = _resolve_scope_root_ids(args, roots)
+    if scope_err:
+        return _json_error(ErrorCode.INVALID_ARGS, scope_err)
     if type_name not in {"context", "snippet"}:
         return _json_error(ErrorCode.INVALID_ARGS, "type must be one of: context, snippet")
 
@@ -320,7 +419,7 @@ def _execute_list(args: Mapping[str, object], db: object) -> ToolResult:
             """,
             (limit,),
         ).fetchall()
-        results = [
+        rows_norm = [
             {
                 "memory_ref": f"context:{str(r['topic']) if isinstance(r, Mapping) else str(r[0])}",
                 "topic": str(r["topic"]) if isinstance(r, Mapping) else str(r[0]),
@@ -330,6 +429,7 @@ def _execute_list(args: Mapping[str, object], db: object) -> ToolResult:
             }
             for r in rows
         ]
+        results = _apply_context_scope_and_orphan_filter(rows_norm, scope_root_ids, roots, include_orphaned)
     else:
         rows = conn.execute(
             """
@@ -340,7 +440,7 @@ def _execute_list(args: Mapping[str, object], db: object) -> ToolResult:
             """,
             (limit,),
         ).fetchall()
-        results = [
+        rows_norm = [
             {
                 "memory_ref": f"snippet:{int(r['id']) if isinstance(r, Mapping) else int(r[0])}",
                 "id": int(r["id"]) if isinstance(r, Mapping) else int(r[0]),
@@ -352,6 +452,7 @@ def _execute_list(args: Mapping[str, object], db: object) -> ToolResult:
             }
             for r in rows
         ]
+        results = _apply_snippet_scope_and_orphan_filter(rows_norm, scope_root_ids, roots, include_orphaned)
 
     return {
         "action": "list",
@@ -425,6 +526,9 @@ def _execute_relink(args: Mapping[str, object], db: object, roots: list[str]) ->
     new_context_ref = str(args.get("new_context_ref") or "").strip()
     if not memory_ref or not new_context_ref:
         return _json_error(ErrorCode.INVALID_ARGS, "memory_ref and new_context_ref are required")
+    confirm = str(args.get("confirm") or "").strip().lower() in {"1", "true", "yes", "on"}
+    if not confirm:
+        return _json_error(ErrorCode.INVALID_ARGS, "relink requires confirm=true")
     if type_name not in {"context", "snippet"}:
         return _json_error(ErrorCode.INVALID_ARGS, "type must be one of: context, snippet")
     try:
@@ -531,7 +635,7 @@ def execute_knowledge(args: object, db: object, roots: list[str], indexer: objec
         elif action == "recall":
             payload = _execute_recall(args, db, roots, alias_used)
         elif action == "list":
-            payload = _execute_list(args, db)
+            payload = _execute_list(args, db, roots)
         elif action == "delete":
             payload = _execute_delete(args, db)
         elif action == "relink":

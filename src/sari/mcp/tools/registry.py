@@ -281,7 +281,7 @@ def _register_file_tools(reg: ToolRegistry):
     """파일 리스팅 및 읽기 관련 도구 등록"""
     reg.register(Tool(
         name="read",
-        description="Unified read interface for file/symbol/snippet/diff preview modes.",
+        description="Unified read interface for file/symbol/snippet/diff preview/ast_edit modes.",
         input_schema={
             "type": "object",
             "description": (
@@ -289,12 +289,13 @@ def _register_file_tools(reg: ToolRegistry):
                 "file->target(+offset/limit), "
                 "symbol->target(+path/include_context), "
                 "snippet->target(+start_line/end_line/context_lines), "
-                "diff_preview->target(+against=HEAD|WORKTREE|INDEX)."
+                "diff_preview->target(+against=HEAD|WORKTREE|INDEX), "
+                "ast_edit->target(+expected_version_hash/+old_text/+new_text)."
             ),
             "properties": {
                 "mode": {
                     "type": "string",
-                    "enum": ["file", "symbol", "snippet", "diff_preview"],
+                    "enum": ["file", "symbol", "snippet", "diff_preview", "ast_edit"],
                     "description": "Read mode selector.",
                 },
                 "target": {"type": "string", "description": "Primary lookup target (path/symbol/snippet selector)."},
@@ -322,10 +323,19 @@ def _register_file_tools(reg: ToolRegistry):
                 "max_preview_chars": {"type": "integer", "description": "Hard cap for preview payload size."},
                 "offset": {"type": "integer", "description": "Line offset for paginated reads."},
                 "limit": {"type": "integer", "description": "Maximum items/lines to return."},
+                "expected_version_hash": {"type": "string", "description": "Required optimistic-lock hash for mode=ast_edit."},
+                "old_text": {"type": "string", "description": "Text to replace once for mode=ast_edit."},
+                "new_text": {"type": "string", "description": "Replacement text for mode=ast_edit."},
+                "symbol": {"type": "string", "description": "Python symbol name for AST block replacement in mode=ast_edit."},
             },
             "required": ["mode"],
         },
-        handler=lambda ctx, args: read_tool.execute_read(args, ctx.db, ctx.roots, ctx.logger),
+        handler=lambda ctx, args: read_tool.execute_read(
+            {**(args if isinstance(args, dict) else {}), "__indexer__": ctx.indexer},
+            ctx.db,
+            ctx.roots,
+            ctx.logger,
+        ),
     ))
 
     reg.register(Tool(

@@ -1,7 +1,9 @@
 from collections.abc import Mapping
+import ast
 import hashlib
 import json
 import os
+from pathlib import Path
 from typing import TypeAlias
 
 from sari.core.policy_engine import ReadPolicy, load_read_policy
@@ -25,13 +27,15 @@ from sari.mcp.tools._util import (
     invalid_args_response,
     mcp_response,
     pack_error,
+    resolve_db_path,
+    resolve_fs_path,
     resolve_root_ids,
 )
 from sari.mcp.tools.crypto import issue_context_ref
 
 ToolResult: TypeAlias = dict[str, object]
 
-_MODES = {"file", "symbol", "snippet", "diff_preview"}
+_MODES = {"file", "symbol", "snippet", "diff_preview", "ast_edit"}
 _DIFF_BASELINES = {"HEAD", "WORKTREE", "INDEX"}
 
 
@@ -244,6 +248,287 @@ def _extract_json_payload(response: ToolResult) -> dict[str, object] | None:
     except Exception:
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def _ast_edit_error(code: str, message: str) -> ToolResult:
+    return mcp_response(
+        "read",
+        lambda: pack_error("read", code, message),
+        lambda: {"error": {"code": code, "message": message}, "isError": True},
+    )
+
+
+def _build_edit_test_next_calls(target_fs_path: str, roots: list[str]) -> list[dict[str, object]]:
+    fs_path = Path(target_fs_path)
+    test_candidates: list[Path] = []
+    if fs_path.name.endswith(".py"):
+        stem = fs_path.stem
+        test_candidates.extend(
+            [
+                fs_path.parent / f"test_{stem}.py",
+                fs_path.parent.parent / "tests" / f"test_{stem}.py",
+            ]
+        )
+        for root in roots:
+            root_path = Path(root)
+            if root_path.exists():
+                test_candidates.append(root_path / "tests" / f"test_{stem}.py")
+    for cand in test_candidates:
+        if cand.exists():
+            return [{"tool": "execute_shell_command", "arguments": {"command": f"pytest -q {cand}"}}]
+    return [{"tool": "execute_shell_command", "arguments": {"command": "pytest -q"}}]
+
+
+def _infer_symbol_name(args_map: Mapping[str, object], new_text: str) -> str:
+    symbol = str(args_map.get("symbol") or "").strip()
+    if symbol:
+        return symbol
+    text = str(new_text or "").strip()
+    if not text:
+        return ""
+    try:
+        module = ast.parse(text)
+    except Exception:
+        return ""
+    for node in module.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            return str(getattr(node, "name", "") or "").strip()
+    return ""
+
+
+def _build_symbol_test_next_calls(target_fs_path: str, roots: list[str], symbol: str) -> list[dict[str, object]]:
+    if not symbol:
+        return _build_edit_test_next_calls(target_fs_path, roots)
+    found: list[Path] = []
+    for root in roots:
+        root_path = Path(root)
+        if not root_path.exists():
+            continue
+        tests_dir = root_path / "tests"
+        if not tests_dir.exists():
+            continue
+        for cand in tests_dir.rglob("test_*.py"):
+            try:
+                text = cand.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                continue
+            if symbol in text:
+                found.append(cand)
+            if len(found) >= 3:
+                break
+        if len(found) >= 3:
+            break
+    if not found:
+        return _build_edit_test_next_calls(target_fs_path, roots)
+    cmd = "pytest -q " + " ".join(str(p) for p in found)
+    return [{"tool": "execute_shell_command", "arguments": {"command": cmd}}]
+
+
+def _caller_paths_from_db(db: object, symbol: str, limit: int = 20) -> list[str]:
+    if not symbol:
+        return []
+    conn = None
+    if hasattr(db, "get_read_connection"):
+        try:
+            conn = db.get_read_connection()
+        except Exception:
+            conn = None
+    if conn is None:
+        conn = getattr(db, "_read", None)
+    if conn is None:
+        return []
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT from_path FROM symbol_relations WHERE to_symbol = ? ORDER BY from_path LIMIT ?",
+            (symbol, int(limit)),
+        ).fetchall()
+    except Exception:
+        return []
+
+    out: list[str] = []
+    for row in rows:
+        if isinstance(row, Mapping):
+            out.append(str(row.get("from_path") or ""))
+        elif isinstance(row, (list, tuple)) and row:
+            out.append(str(row[0] or ""))
+        else:
+            try:
+                out.append(str(row["from_path"]))
+            except Exception:
+                pass
+    return [p for p in out if p]
+
+
+def _candidate_test_paths_from_callers(db: object, roots: list[str], symbol: str) -> list[Path]:
+    callers = _caller_paths_from_db(db, symbol, limit=40)
+    if not callers:
+        return []
+    candidates: list[Path] = []
+    for caller_db_path in callers:
+        fs = resolve_fs_path(caller_db_path, roots)
+        if not fs:
+            continue
+        p = Path(fs)
+        if "tests" in p.parts and p.exists() and p.name.startswith("test_") and p.suffix == ".py":
+            candidates.append(p)
+    # Dedup while preserving order
+    seen: set[str] = set()
+    out: list[Path] = []
+    for p in candidates:
+        key = str(p)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(p)
+    return out[:3]
+
+
+def _python_symbol_span(source: str, symbol: str) -> tuple[int, int] | None:
+    if not symbol:
+        return None
+    try:
+        module = ast.parse(source)
+    except Exception:
+        return None
+    for node in ast.walk(module):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and getattr(node, "name", "") == symbol:
+            start = int(getattr(node, "lineno", 0) or 0)
+            end = int(getattr(node, "end_lineno", 0) or 0)
+            if start > 0 and end >= start:
+                return (start, end)
+    return None
+
+
+def _replace_line_span(source: str, start_line: int, end_line: int, new_block: str) -> str:
+    lines = source.splitlines(keepends=True)
+    if start_line <= 0 or end_line < start_line or end_line > len(lines):
+        raise ValueError("invalid replacement span")
+    block = str(new_block or "")
+    if block and not block.endswith("\n"):
+        block += "\n"
+    replacement_lines = block.splitlines(keepends=True)
+    out = lines[: start_line - 1] + replacement_lines + lines[end_line:]
+    return "".join(out)
+
+
+def _execute_ast_edit(args_map: Mapping[str, object], db: object, roots: list[str]) -> ToolResult:
+    target = str(args_map.get("target") or "").strip()
+    expected_hash = str(args_map.get("expected_version_hash") or "").strip()
+    old_text = str(args_map.get("old_text") or "")
+    new_text = str(args_map.get("new_text") or "")
+    symbol = str(args_map.get("symbol") or "").strip()
+    if not target:
+        return _ast_edit_error(ErrorCode.INVALID_ARGS.value, "target is required for mode=ast_edit")
+    if not expected_hash:
+        return _ast_edit_error(ErrorCode.INVALID_ARGS.value, "expected_version_hash is required for mode=ast_edit")
+    if old_text == "" and not symbol:
+        return _ast_edit_error(ErrorCode.INVALID_ARGS.value, "old_text is required for mode=ast_edit")
+
+    db_path = resolve_db_path(target, roots, db=db)
+    if not db_path:
+        return _ast_edit_error(ErrorCode.NOT_INDEXED.value, "target is not indexed or out of workspace scope")
+    fs_path = resolve_fs_path(db_path, roots)
+    if not fs_path:
+        return _ast_edit_error(ErrorCode.NOT_INDEXED.value, "unable to resolve target filesystem path")
+    path_obj = Path(fs_path)
+    if not path_obj.exists():
+        return _ast_edit_error(ErrorCode.NOT_INDEXED.value, "target file does not exist")
+
+    try:
+        original = path_obj.read_text(encoding="utf-8")
+    except Exception as exc:
+        return _ast_edit_error(ErrorCode.IO_ERROR.value, f"failed to read target: {exc}")
+
+    current_hash = _compute_content_hash(original)
+    if current_hash != expected_hash:
+        return _ast_edit_error("VERSION_CONFLICT", "version_hash mismatch; re-read target before editing")
+    edited = ""
+    if symbol:
+        if not str(path_obj).endswith(".py"):
+            return _ast_edit_error(ErrorCode.INVALID_ARGS.value, "symbol-based ast_edit is only supported for .py files")
+        span = _python_symbol_span(original, symbol)
+        if not span:
+            return _ast_edit_error(ErrorCode.INVALID_ARGS.value, f"symbol '{symbol}' was not found in target")
+        start_line, end_line = span
+        try:
+            edited = _replace_line_span(original, start_line, end_line, new_text)
+        except ValueError as exc:
+            return _ast_edit_error(ErrorCode.INVALID_ARGS.value, str(exc))
+    else:
+        if old_text not in original:
+            return _ast_edit_error(ErrorCode.INVALID_ARGS.value, "old_text was not found in target")
+        edited = original.replace(old_text, new_text, 1)
+    if str(path_obj).endswith(".py"):
+        try:
+            ast.parse(edited)
+        except Exception as exc:
+            return _ast_edit_error(ErrorCode.INVALID_ARGS.value, f"edited python source is invalid syntax: {exc}")
+    try:
+        path_obj.write_text(edited, encoding="utf-8")
+    except Exception as exc:
+        return _ast_edit_error(ErrorCode.IO_ERROR.value, f"failed to write target: {exc}")
+
+    new_hash = _compute_content_hash(edited)
+    focus_indexing = "deferred"
+    warnings: list[str] = []
+    indexer = args_map.get("__indexer__")
+    if indexer is not None:
+        try:
+            if hasattr(indexer, "index_file"):
+                res = indexer.index_file(str(path_obj))
+                if isinstance(res, Mapping) and not bool(res.get("ok", True)):
+                    focus_indexing = "failed"
+                    warnings.append(str(res.get("message") or "focus indexing failed"))
+                else:
+                    focus_indexing = "triggered"
+            elif hasattr(indexer, "request_reindex"):
+                indexer.request_reindex(str(path_obj))
+                focus_indexing = "triggered"
+            else:
+                focus_indexing = "deferred"
+                warnings.append("focus indexing deferred: indexer has no index_file/request_reindex")
+        except Exception:
+            focus_indexing = "failed"
+            warnings.append("focus indexing failed due to indexer exception")
+    else:
+        warnings.append("focus indexing deferred: indexer unavailable")
+    symbol_for_tests = _infer_symbol_name(args_map, new_text) or symbol
+    caller_tests = _candidate_test_paths_from_callers(db, roots, symbol_for_tests)
+    if caller_tests:
+        next_calls = [
+            {
+                "tool": "execute_shell_command",
+                "arguments": {"command": "pytest -q " + " ".join(str(p) for p in caller_tests)},
+            }
+        ]
+    else:
+        next_calls = _build_symbol_test_next_calls(str(path_obj), roots, symbol_for_tests)
+    return mcp_response(
+        "read",
+        lambda: "\n".join(
+            [
+                f"PACK1 tool=read ok=true mode=ast_edit path={db_path} version_hash={new_hash} returned=1",
+                f"m:next_call={next_calls[0]['arguments']['command']}",
+            ]
+        ),
+        lambda: {
+            "mode": "ast_edit",
+            "path": db_path,
+            "updated": True,
+            "focus_indexing": focus_indexing,
+            "previous_version_hash": current_hash,
+            "version_hash": new_hash,
+            "meta": {
+                "stabilization": {
+                    "reason_codes": ["AST_EDIT_APPLIED"],
+                    "warnings": warnings,
+                    "evidence_refs": [],
+                    "suggested_next_action": "execute_shell_command",
+                    "next_calls": next_calls,
+                }
+            },
+        },
+    )
 
 
 def _derive_read_metrics(mode: str, payload: Mapping[str, object]) -> tuple[int, int, int]:
@@ -617,11 +902,11 @@ def execute_read(args: object, db: object, roots: list[str], logger: object = No
     if mode not in _MODES:
         return mcp_response(
             "read",
-            lambda: pack_error("read", ErrorCode.INVALID_ARGS, "'mode' must be one of: file, symbol, snippet, diff_preview"),
+            lambda: pack_error("read", ErrorCode.INVALID_ARGS, "'mode' must be one of: file, symbol, snippet, diff_preview, ast_edit"),
             lambda: {
                 "error": {
                     "code": ErrorCode.INVALID_ARGS.value,
-                    "message": "'mode' must be one of: file, symbol, snippet, diff_preview",
+                    "message": "'mode' must be one of: file, symbol, snippet, diff_preview, ast_edit",
                 },
                 "isError": True,
             },
@@ -643,6 +928,9 @@ def execute_read(args: object, db: object, roots: list[str], logger: object = No
                     "isError": True,
                 },
             )
+
+    if mode == "ast_edit":
+        return _execute_ast_edit(args_map, db, roots)
 
     for key in ("start_line", "end_line", "context_lines"):
         if key in args_map and mode != "snippet":
