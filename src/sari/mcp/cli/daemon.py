@@ -11,8 +11,6 @@ import time
 import signal
 import argparse
 import subprocess
-import threading
-from pathlib import Path
 from typing import Optional, Tuple, Set, TypeAlias
 
 try:
@@ -46,6 +44,12 @@ from .daemon_process_ops import (
     kill_pid_immediate as _kill_pid_immediate_impl,
     stop_daemon_process as _stop_daemon_process_impl,
     stop_one_endpoint as _stop_one_endpoint_impl,
+)
+from .daemon_startup_ops import (
+    check_port_availability as _check_port_availability_impl,
+    prepare_daemon_environment as _prepare_daemon_environment_impl,
+    start_daemon_in_background as _start_daemon_in_background_impl,
+    start_daemon_in_foreground as _start_daemon_in_foreground_impl,
 )
 
 DEFAULT_HOST = DEFAULT_DAEMON_HOST
@@ -294,138 +298,49 @@ def kill_orphan_sari_daemons() -> int:
 def check_port_availability(params: DaemonParams) -> Optional[int]:
     """Check if port is available, return exit code if should exit early."""
     from .utils import is_port_in_use as port_in_use
-    
-    host = params["host"]
-    port = params["port"]
-    params["explicit_port"]
-    params["registry"]
-    
-    # stop/replace 직후에는 소켓 정리 타이밍 때문에 짧게 EADDRINUSE가 튈 수 있어
-    # 제한된 재시도 후 최종 판단한다.
-    attempts = 8
-    last_in_use = False
-    for _ in range(attempts):
-        last_in_use = bool(port_in_use(host, port))
-        if not last_in_use:
-            return None
-        time.sleep(0.1)
-
-    # 포트가 여전히 점유되어 있으면 stale Sari 프로세스 회수 1회 시도
-    try:
-        if smart_kill_port_owner(host, port):
-            if not port_in_use(host, port):
-                return None
-    except Exception:
-        pass
-
-    print(f"❌ Port {port} is already in use by another process.", file=sys.stderr)
-    return 1
+    return _check_port_availability_impl(
+        params,
+        port_in_use=port_in_use,
+        smart_kill_port_owner=smart_kill_port_owner,
+        sleep_fn=time.sleep,
+        stderr=sys.stderr,
+    )
 
 
 def prepare_daemon_environment(params: DaemonParams) -> dict[str, str]:
     """Prepare environment variables for daemon process."""
     from .utils import get_arg as _arg
-    
-    args = params["args"]
-    workspace_root = params["workspace_root"]
-    port = params["port"]
-    
-    # Go up 3 levels: sari/mcp/cli.py -> sari/mcp -> sari/ -> (repo root)
-    repo_root = Path(__file__).parent.parent.parent.resolve()
-    
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(repo_root) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
-    env["SARI_DAEMON_AUTOSTART"] = "1"
-    env["SARI_WORKSPACE_ROOT"] = workspace_root
-    env[RUNTIME_PORT] = str(port)
-    
-    if _arg(args, "daemon_host"):
-        env[RUNTIME_HOST] = _arg(args, "daemon_host")
-    if _arg(args, "daemon_port"):
-        env[RUNTIME_PORT] = str(_arg(args, "daemon_port"))
-    if _arg(args, "http_host"):
-        env["SARI_HTTP_API_HOST"] = _arg(args, "http_host")
-    if _arg(args, "http_port") is not None:
-        env["SARI_HTTP_API_PORT"] = str(_arg(args, "http_port"))
-    
-    params["env"] = env
-    params["repo_root"] = repo_root
-    return env
+    return _prepare_daemon_environment_impl(
+        params,
+        get_arg=_arg,
+        runtime_host_key=RUNTIME_HOST,
+        runtime_port_key=RUNTIME_PORT,
+        environ=os.environ.copy(),
+    )
 
 
 def start_daemon_in_background(params: DaemonParams) -> int:
     """Start daemon process in background."""
-    def _reap_child(proc: subprocess.Popen) -> None:
-        try:
-            proc.wait()
-        except Exception:
-            pass
-    
-    host = params["host"]
-    port = params["port"]
-    env = params["env"]
-    repo_root = params["repo_root"]
-    
-    print(f"Starting daemon on {host}:{port} (background)...")
-    
-    # --- ENRICH ENVIRONMENT ---
-    sari_root = str(repo_root.parent)
-    env["PYTHONPATH"] = f"{sari_root}:{env.get('PYTHONPATH', '')}"
-
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "sari.mcp.daemon"],
-        cwd=repo_root.parent,
-        start_new_session=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        env=env,
+    return _start_daemon_in_background_impl(
+        params,
+        is_daemon_running=is_daemon_running,
+        popen_factory=subprocess.Popen,
+        sleep_fn=time.sleep,
+        stderr=sys.stderr,
     )
-    # Reap child when it exits to prevent zombie processes in long-lived callers.
-    threading.Thread(target=_reap_child, args=(proc,), daemon=True).start()
-
-    # Wait for startup
-    for _ in range(30):
-        if is_daemon_running(host, port):
-            print(f"✅ Daemon started (PID: {proc.pid})")
-            return 0
-        time.sleep(0.1)
-
-    print("❌ Daemon failed to start", file=sys.stderr)
-    return 1
 
 
 def start_daemon_in_foreground(params: DaemonParams) -> int:
     """Start daemon process in foreground."""
     from .utils import get_arg as _arg
-    
-    host = params["host"]
-    port = params["port"]
-    workspace_root = params["workspace_root"]
-    args = params["args"]
-    repo_root = params["repo_root"]
-    
-    print(f"Starting daemon on {host}:{port} (foreground, Ctrl+C to stop)...")
-
-    try:
-        # Import and run directly
-        os.environ["SARI_DAEMON_AUTOSTART"] = "1"
-        os.environ["SARI_WORKSPACE_ROOT"] = workspace_root
-        os.environ["PYTHONPATH"] = str(repo_root) + (os.pathsep + os.environ["PYTHONPATH"] if os.environ.get("PYTHONPATH") else "")
-        if _arg(args, "daemon_host"):
-            os.environ[RUNTIME_HOST] = _arg(args, "daemon_host")
-        if _arg(args, "daemon_port"):
-            os.environ[RUNTIME_PORT] = str(_arg(args, "daemon_port"))
-        if _arg(args, "http_host"):
-            os.environ["SARI_HTTP_API_HOST"] = _arg(args, "http_host")
-        if _arg(args, "http_port") is not None:
-            os.environ["SARI_HTTP_API_PORT"] = str(_arg(args, "http_port"))
-        from sari.mcp.daemon import main as daemon_main
-        import asyncio
-        asyncio.run(daemon_main())
-    except KeyboardInterrupt:
-        print("\nDaemon stopped.")
-
-    return 0
+    return _start_daemon_in_foreground_impl(
+        params,
+        get_arg=_arg,
+        runtime_host_key=RUNTIME_HOST,
+        runtime_port_key=RUNTIME_PORT,
+        daemon_main_provider=lambda: __import__("sari.mcp.daemon", fromlist=["main"]).main,
+        environ=os.environ,
+    )
 
 
 # --- Stop Daemon Helpers ---

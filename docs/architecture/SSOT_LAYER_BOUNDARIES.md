@@ -43,4 +43,5 @@ Current split progress:
 - `src/sari/mcp/cli/daemon_lifecycle.py`: daemon lifecycle parameter/upgrade decisions
 - `src/sari/mcp/cli/daemon_registry_ops.py`: registry and process-discovery helper operations
 - `src/sari/mcp/cli/daemon_process_ops.py`: process termination and stop orchestration helpers
+- `src/sari/mcp/cli/daemon_startup_ops.py`: startup environment and background/foreground launch helpers
 - `src/sari/mcp/cli/daemon.py`: compatibility facade and orchestration entrypoints
