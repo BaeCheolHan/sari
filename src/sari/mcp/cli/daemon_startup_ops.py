@@ -90,6 +90,7 @@ def prepare_daemon_environment(
     environ: dict[str, str] | None = None,
 ) -> dict[str, str]:
     args = params["args"]
+    host = str(params["host"])
     workspace_root = str(params["workspace_root"])
     port = int(params["port"])
     repo_root = Path(__file__).parent.parent.parent.resolve()
@@ -98,12 +99,9 @@ def prepare_daemon_environment(
     env["PYTHONPATH"] = str(repo_root) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     env["SARI_DAEMON_AUTOSTART"] = "1"
     env["SARI_WORKSPACE_ROOT"] = workspace_root
+    env[runtime_host_key] = host
     env[runtime_port_key] = str(port)
 
-    if get_arg(args, "daemon_host"):
-        env[runtime_host_key] = str(get_arg(args, "daemon_host"))
-    if get_arg(args, "daemon_port"):
-        env[runtime_port_key] = str(get_arg(args, "daemon_port"))
     if get_arg(args, "http_host"):
         env["SARI_HTTP_API_HOST"] = str(get_arg(args, "http_host"))
     if get_arg(args, "http_port") is not None:
@@ -167,6 +165,7 @@ def start_daemon_in_foreground(
     daemon_main_provider: Callable[[], Callable[[], object]],
     environ: dict[str, str] | None = None,
 ) -> int:
+    del runtime_host_key, runtime_port_key
     host = str(params["host"])
     port = int(params["port"])
     workspace_root = str(params["workspace_root"])
@@ -179,11 +178,9 @@ def start_daemon_in_foreground(
     try:
         env["SARI_DAEMON_AUTOSTART"] = "1"
         env["SARI_WORKSPACE_ROOT"] = workspace_root
+        env["SARI_DAEMON_HOST"] = host
+        env["SARI_DAEMON_PORT"] = str(port)
         env["PYTHONPATH"] = str(repo_root) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
-        if get_arg(args, "daemon_host"):
-            env[runtime_host_key] = str(get_arg(args, "daemon_host"))
-        if get_arg(args, "daemon_port"):
-            env[runtime_port_key] = str(get_arg(args, "daemon_port"))
         if get_arg(args, "http_host"):
             env["SARI_HTTP_API_HOST"] = str(get_arg(args, "http_host"))
         if get_arg(args, "http_port") is not None:

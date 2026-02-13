@@ -1,5 +1,7 @@
 from types import SimpleNamespace
+from pathlib import Path
 import sari.mcp.cli.daemon as d
+import sari.mcp.cli.daemon_startup_ops as startup_ops
 
 
 def test_start_auto_switches_to_free_port_when_target_busy(monkeypatch):
@@ -88,3 +90,62 @@ def test_check_port_availability_auto_kills_stale_owner_before_fallback(monkeypa
     assert rc is None
     assert calls["kill"] == 1
     assert params["port"] == 47779
+
+
+def test_prepare_daemon_environment_uses_resolved_port_not_stale_arg_port():
+    args = SimpleNamespace(
+        daemon_host="127.0.0.1",
+        daemon_port=47779,
+        http_host="",
+        http_port=None,
+    )
+    params = {
+        "args": args,
+        "host": "127.0.0.1",
+        "port": 47780,  # resolved fallback port
+        "workspace_root": "/tmp/ws",
+    }
+
+    env = startup_ops.prepare_daemon_environment(
+        params,
+        get_arg=lambda obj, key: getattr(obj, key, None),
+        runtime_host_key="SARI_DAEMON_HOST",
+        runtime_port_key="SARI_DAEMON_PORT",
+        environ={},
+    )
+
+    assert env["SARI_DAEMON_HOST"] == "127.0.0.1"
+    assert env["SARI_DAEMON_PORT"] == "47780"
+
+
+def test_start_daemon_in_foreground_uses_resolved_port_not_stale_arg_port():
+    args = SimpleNamespace(
+        daemon_host="127.0.0.1",
+        daemon_port=47779,
+        http_host="",
+        http_port=None,
+    )
+    params = {
+        "args": args,
+        "host": "127.0.0.1",
+        "port": 47780,  # resolved fallback port
+        "workspace_root": "/tmp/ws",
+        "repo_root": Path("/tmp/repo"),
+    }
+    env = {"PYTHONPATH": ""}
+
+    async def _fake_daemon_main():
+        return None
+
+    rc = startup_ops.start_daemon_in_foreground(
+        params,
+        get_arg=lambda obj, key: getattr(obj, key, None),
+        runtime_host_key="SARI_DAEMON_HOST",
+        runtime_port_key="SARI_DAEMON_PORT",
+        daemon_main_provider=lambda: _fake_daemon_main,
+        environ=env,
+    )
+
+    assert rc == 0
+    assert env["SARI_DAEMON_HOST"] == "127.0.0.1"
+    assert env["SARI_DAEMON_PORT"] == "47780"
