@@ -421,3 +421,84 @@ def test_ast_edit_symbol_mode_replaces_go_function_block_via_tree_sitter(monkeyp
     assert "func keep() int" in after
     assert "return 2" in after
     assert "return 1" not in after
+
+
+@pytest.mark.parametrize(
+    ("filename", "before", "symbol", "replacement", "target_span", "keep_probe", "old_probe", "new_probe"),
+    [
+        (
+            "svc.java",
+            "class Svc {\n  int keep() { return 0; }\n  int targetFn() { return 1; }\n}\n",
+            "targetFn",
+            "int targetFn() { return 2; }",
+            (3, 3),
+            "keep()",
+            "return 1;",
+            "return 2;",
+        ),
+        (
+            "svc.rs",
+            "fn keep() -> i32 {\n    0\n}\n\nfn target_fn() -> i32 {\n    1\n}\n",
+            "target_fn",
+            "fn target_fn() -> i32 {\n    2\n}",
+            (5, 7),
+            "fn keep()",
+            "\n    1\n",
+            "\n    2\n",
+        ),
+        (
+            "svc.kt",
+            "class Svc {\n    fun keep(): Int = 0\n    fun targetFn(): Int = 1\n}\n",
+            "targetFn",
+            "fun targetFn(): Int = 2",
+            (3, 3),
+            "keep()",
+            "Int = 1",
+            "Int = 2",
+        ),
+    ],
+)
+def test_ast_edit_symbol_mode_replaces_tree_sitter_languages(
+    monkeypatch,
+    tmp_path,
+    filename,
+    before,
+    symbol,
+    replacement,
+    target_span,
+    keep_probe,
+    old_probe,
+    new_probe,
+):
+    monkeypatch.setenv("SARI_FORMAT", "json")
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    f = ws / filename
+    f.write_text(before, encoding="utf-8")
+    db = _DummyDB()
+    original = f.read_text(encoding="utf-8")
+
+    def _fake_span(_source: str, path: str, sym: str):
+        if path.endswith(filename) and sym == symbol:
+            return target_span
+        return None
+
+    monkeypatch.setattr("sari.mcp.tools.read._tree_sitter_symbol_span", _fake_span, raising=False)
+
+    resp = execute_read(
+        {
+            "mode": "ast_edit",
+            "target": str(f),
+            "expected_version_hash": _hash12(original),
+            "symbol": symbol,
+            "new_text": replacement,
+        },
+        db,
+        [str(ws)],
+    )
+    payload = _payload(resp)
+    assert payload.get("isError") is not True
+    after = f.read_text(encoding="utf-8")
+    assert keep_probe in after
+    assert new_probe in after
+    assert old_probe not in after

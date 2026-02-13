@@ -137,6 +137,48 @@ def _check_tree_sitter() -> DoctorResult:
         return _result("Tree-sitter Support", False, str(e))
 
 
+def _check_tree_sitter_language_runtime() -> DoctorResult:
+    """파서 팩토리 기준 언어별 tree-sitter 런타임 지원 상태를 보고합니다."""
+    try:
+        from sari.core.parsers.ast_engine import ASTEngine
+        from sari.core.parsers.factory import ParserFactory
+    except Exception as e:
+        return _result("Tree-sitter Language Runtime", False, str(e))
+
+    engine = ASTEngine()
+    if not engine.enabled:
+        return _result(
+            "Tree-sitter Language Runtime",
+            False,
+            "core 'tree-sitter' package not installed (optional)",
+        )
+
+    lang_map = getattr(ParserFactory, "_lang_map", {}) or {}
+    configured = sorted({str(v).strip() for v in lang_map.values() if str(v).strip()})
+    if not configured:
+        return _result("Tree-sitter Language Runtime", True, "no configured parser languages")
+
+    available: list[str] = []
+    missing: list[str] = []
+    for lang in configured:
+        if engine._get_language(lang):
+            available.append(lang)
+        else:
+            missing.append(lang)
+
+    if not missing:
+        return _result(
+            "Tree-sitter Language Runtime",
+            True,
+            "all configured parser languages have runtime support",
+        )
+    detail = (
+        f"available={', '.join(available) if available else '-'}; "
+        f"missing={', '.join(missing)}"
+    )
+    return _result("Tree-sitter Language Runtime", False, detail)
+
+
 def _check_embedded_engine_module() -> DoctorResult:
     """내장 엔진 모듈(tantivy)이 임포트 가능한지 확인합니다."""
     try:
@@ -346,6 +388,7 @@ def execute_doctor(
         results.append(_check_engine_runtime(ws_root))
         results.append(_check_engine_tokenizer_data())
         results.append(_check_tree_sitter())
+        results.append(_check_tree_sitter_language_runtime())
         results.append(_check_fts_rebuild_policy())
         results.append(_check_writer_health(db))
         results.append(_check_storage_switch_guard())
