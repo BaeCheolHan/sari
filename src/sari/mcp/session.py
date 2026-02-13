@@ -7,7 +7,11 @@ import os
 import urllib.parse
 from uuid import uuid4
 from typing import Dict, Optional, Callable
-from sari.mcp.workspace_registry import Registry, SharedState
+from sari.mcp.workspace_registry import SharedState
+from sari.mcp.adapters.workspace_runtime import (
+    WorkspaceRuntime,
+    get_workspace_runtime,
+)
 from sari.core.settings import settings
 from sari.mcp.trace import trace
 
@@ -32,12 +36,14 @@ class Session:
         writer: asyncio.StreamWriter,
         on_activity: Optional[Callable[[], None]] = None,
         on_connection_closed: Optional[Callable[[], None]] = None,
+        workspace_runtime: Optional[WorkspaceRuntime] = None,
     ):
         self.reader = reader
         self.writer = writer
         self.workspace_root: Optional[str] = None
         self.shared_state: Optional[SharedState] = None
-        self.registry = Registry.get_instance()
+        # Backward-compatible attribute name kept for tests.
+        self.registry = workspace_runtime or get_workspace_runtime()
         self.running = True
         self._preinit_server = None
         self.connection_id = str(uuid4())
@@ -49,7 +55,11 @@ class Session:
         if self._preinit_server is None:
             from sari.mcp.server import LocalSearchMCPServer
             workspace_root = WorkspaceManager.resolve_workspace_root()
-            self._preinit_server = LocalSearchMCPServer(workspace_root, start_worker=False)
+            self._preinit_server = LocalSearchMCPServer(
+                workspace_root,
+                workspace_runtime=self.registry,
+                start_worker=False,
+            )
         return self._preinit_server
 
     def _shared_server(self):

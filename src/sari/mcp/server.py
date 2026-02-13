@@ -8,7 +8,10 @@ import socket
 from uuid import uuid4
 from pathlib import Path
 from typing import Optional, Mapping, TypeAlias
-from sari.mcp.workspace_registry import Registry
+from sari.mcp.adapters.workspace_runtime import (
+    WorkspaceRuntime,
+    get_workspace_runtime,
+)
 from sari.core.workspace import WorkspaceManager
 from sari.core.settings import settings
 from sari.core.config import Config
@@ -73,6 +76,7 @@ class LocalSearchMCPServer:
             cfg: object = None,
             db: object = None,
             indexer: object = None,
+            workspace_runtime: Optional[WorkspaceRuntime] = None,
             start_worker: bool = True):
         self.workspace_root = workspace_root
         trace(
@@ -88,7 +92,8 @@ class LocalSearchMCPServer:
         self._injected_cfg = cfg
         self._injected_db = db
         self._injected_indexer = indexer
-        self.registry = Registry.get_instance()
+        # Backward-compatible attribute name kept for tests and legacy code.
+        self.registry = workspace_runtime or get_workspace_runtime()
         self.policy_engine = PolicyEngine(mode=settings.SEARCH_FIRST_MODE)
         self.logger = TelemetryLogger(WorkspaceManager.get_global_log_dir())
         self.struct_logger = get_logger("sari.mcp.protocol")
