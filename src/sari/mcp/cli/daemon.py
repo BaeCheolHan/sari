@@ -51,6 +51,9 @@ from .daemon_startup_ops import (
     start_daemon_in_background as _start_daemon_in_background_impl,
     start_daemon_in_foreground as _start_daemon_in_foreground_impl,
 )
+from .daemon_orchestration_ops import (
+    handle_existing_daemon as _handle_existing_daemon_impl,
+)
 
 DEFAULT_HOST = DEFAULT_DAEMON_HOST
 DEFAULT_PORT = DEFAULT_DAEMON_PORT
@@ -216,6 +219,8 @@ def ensure_daemon_running(
 ) -> Tuple[str, int, bool]:
     host, port = ensure_smart_daemon(daemon_host, daemon_port)
     return host, port, True
+
+
 def extract_daemon_start_params(args: argparse.Namespace) -> DaemonParams:
     """Extract and validate daemon start parameters."""
     return _extract_daemon_start_params_impl(
@@ -230,52 +235,16 @@ def extract_daemon_start_params(args: argparse.Namespace) -> DaemonParams:
 
 def handle_existing_daemon(params: DaemonParams) -> Optional[int]:
     """Handle existing daemon instance, return exit code if should exit early."""
-    # Always reap stale/orphan daemon processes first so new start path is clean.
-    kill_orphan_sari_daemons()
-    
-    host = params["host"]
-    port = params["port"]
-    workspace_root = params["workspace_root"]
-    registry = params["registry"]
-    explicit_port = params["explicit_port"]
-    force_start = params["force_start"]
-    params["args"]
-    
-    identify = identify_sari_daemon(host, port)
-    if not identify:
-        return None  # No existing daemon, continue
-    
-    # Handle explicit port conflicts
-    if explicit_port:
-        ws_inst = registry.resolve_workspace_daemon(str(workspace_root))
-        same_instance = bool(ws_inst and int(ws_inst.get("port", 0)) == int(port))
-        if not same_instance:
-            # Requested explicit port is occupied by another daemon instance.
-            from . import cmd_daemon_stop
-            stop_args = argparse.Namespace(daemon_host=host, daemon_port=port)
-            cmd_daemon_stop(stop_args)
-            identify = identify_sari_daemon(host, port)
-            if identify:
-                print(f"❌ Port {port} is occupied by another running daemon.", file=sys.stderr)
-                return 1
-    
-    # Check if we need to upgrade or if daemon is already running
-    if not force_start and not needs_upgrade_or_drain(identify):
-        pid = read_pid(host, port)
-        print(f"✅ Daemon already running on {host}:{port}")
-        if pid:
-            print(f"   PID: {pid}")
-        return 0
-
-    # Strict singleton policy: replace existing daemon at the same endpoint.
     from . import cmd_daemon_stop
-    stop_args = argparse.Namespace(daemon_host=host, daemon_port=port)
-    cmd_daemon_stop(stop_args)
-    identify = identify_sari_daemon(host, port)
-    if identify:
-        print(f"❌ Failed to replace existing daemon on {host}:{port}.", file=sys.stderr)
-        return 1
-    return None
+
+    return _handle_existing_daemon_impl(
+        params,
+        kill_orphan_daemons=kill_orphan_sari_daemons,
+        identify_daemon=identify_sari_daemon,
+        needs_upgrade_or_drain=needs_upgrade_or_drain,
+        read_pid=read_pid,
+        stop_daemon=cmd_daemon_stop,
+    )
 
 
 def kill_orphan_sari_daemons() -> int:
