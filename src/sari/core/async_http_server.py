@@ -29,6 +29,12 @@ from sari.core.http_error_feed import (
     read_recent_log_error_entries as _read_recent_log_error_entries_impl,
 )
 from sari.core.http_workspace_feed import build_registered_workspaces_payload
+from sari.core.http_status_payload import (
+    build_orphan_daemon_warnings as _build_orphan_daemon_warnings_impl,
+    build_performance_payload as _build_performance_payload_impl,
+    build_queue_depths_payload as _build_queue_depths_payload_impl,
+    build_runtime_status as _build_runtime_status_impl,
+)
 from sari.core.mcp_runtime import create_mcp_server
 from sari.core.policy_engine import load_daemon_runtime_status
 from sari.core.warning_sink import warning_sink
@@ -270,28 +276,16 @@ class AsyncHttpServer:
     async def status(self, request: Request) -> JSONResponse:
         """Server status endpoint."""
         st = self.indexer.status
-        runtime_status = {}
-        if hasattr(self.indexer, "get_runtime_status"):
-            try:
-                raw_runtime = self.indexer.get_runtime_status()
-                if isinstance(raw_runtime, dict):
-                    runtime_status = raw_runtime
-            except Exception as e:
-                self._warn_status(
-                    "INDEXER_RUNTIME_STATUS_FAILED",
-                    "Failed to resolve indexer runtime status; using base status",
-                    error=repr(e),
-                )
+        runtime_status = _build_runtime_status_impl(self.indexer, warn_status=self._warn_status)
         daemon_status = load_daemon_runtime_status()
         repo_stats = {}
         if hasattr(self.db, "get_repo_stats"):
             repo_stats = self.db.get_repo_stats(root_ids=self.root_ids)
         total_db_files = sum(repo_stats.values()) if repo_stats else 0
         orphan_daemons = detect_orphan_daemons()
-        orphan_daemon_warnings = [
-            f"Orphan daemon PID {d.get('pid')} detected (not in registry)"
-            for d in orphan_daemons
-        ]
+        orphan_daemon_warnings = _build_orphan_daemon_warnings_impl(orphan_daemons)
+        performance = _build_performance_payload_impl(self.indexer)
+        queue_depths = _build_queue_depths_payload_impl(self.indexer, fallback=False)
         
         return JSONResponse({
             "ok": True,
@@ -328,8 +322,8 @@ class AsyncHttpServer:
             "workers_alive": list(daemon_status.workers_alive or []),
             "fts_enabled": self.db.fts_enabled,
             "worker_count": getattr(self.indexer, "max_workers", 0),
-            "performance": self.indexer.get_performance_metrics() if hasattr(self.indexer, "get_performance_metrics") else {},
-            "queue_depths": self.indexer.get_queue_depths() if hasattr(self.indexer, "get_queue_depths") else {},
+            "performance": performance,
+            "queue_depths": queue_depths,
             "repo_stats": repo_stats,
             "roots": self.db.get_roots() if hasattr(self.db, "get_roots") else [],
             "system_metrics": self._get_system_metrics(),

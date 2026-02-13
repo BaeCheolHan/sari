@@ -18,6 +18,12 @@ from sari.core.http_error_feed import (
 from sari.core.http_workspace_feed import (
     build_registered_workspaces_payload as _build_registered_workspaces_payload_impl,
 )
+from sari.core.http_status_payload import (
+    build_orphan_daemon_warnings as _build_orphan_daemon_warnings_impl,
+    build_performance_payload as _build_performance_payload_impl,
+    build_queue_depths_payload as _build_queue_depths_payload_impl,
+    build_runtime_status as _build_runtime_status_impl,
+)
 from sari.core.dashboard_html import (
     get_dashboard_component,
     get_dashboard_head,
@@ -400,59 +406,15 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/status":
             daemon_status = load_daemon_runtime_status()
             st = indexer.status
-            runtime_status = {}
-            if hasattr(indexer, "get_runtime_status"):
-                try:
-                    raw_runtime = indexer.get_runtime_status()
-                    if isinstance(raw_runtime, dict):
-                        runtime_status = raw_runtime
-                except Exception as e:
-                    self._warn_status(
-                        "INDEXER_RUNTIME_STATUS_FAILED",
-                        "Failed to resolve indexer runtime status; using base status",
-                        error=repr(e),
-                    )
+            runtime_status = _build_runtime_status_impl(indexer, warn_status=self._warn_status)
             repo_stats = db.get_repo_stats(
                 root_ids=root_ids) if hasattr(
                 db, "get_repo_stats") else {}
             total_db_files = sum(repo_stats.values()) if repo_stats else 0
             orphan_daemons = detect_orphan_daemons()
-            orphan_daemon_warnings = [
-                f"Orphan daemon PID {d.get('pid')} detected (not in registry)"
-                for d in orphan_daemons
-            ]
-            performance = {}
-            if hasattr(indexer, "get_performance_metrics"):
-                try:
-                    raw_perf = indexer.get_performance_metrics()
-                    if isinstance(raw_perf, dict):
-                        performance = raw_perf
-                except Exception:
-                    performance = {}
-
-            queue_depths = {}
-            if hasattr(indexer, "get_queue_depths"):
-                try:
-                    raw_depths = indexer.get_queue_depths()
-                    if isinstance(raw_depths, dict):
-                        queue_depths = {
-                            str(k): int(v or 0)
-                            for k, v in raw_depths.items()
-                            if isinstance(k, str)
-                        }
-                except Exception:
-                    queue_depths = {}
-            if not queue_depths:
-                writer = getattr(db, "writer", None)
-                if writer is not None and hasattr(writer, "qsize"):
-                    try:
-                        queue_depths["db_writer"] = int(writer.qsize() or 0)
-                    except Exception:
-                        pass
-                worker_proc = getattr(indexer, "_worker_proc", None)
-                worker_alive = bool(worker_proc and worker_proc.is_alive())
-                queue_depths["index_worker"] = 1 if worker_alive else 0
-                queue_depths["rescan_pending"] = 1 if bool(getattr(indexer, "_pending_rescan", False)) else 0
+            orphan_daemon_warnings = _build_orphan_daemon_warnings_impl(orphan_daemons)
+            performance = _build_performance_payload_impl(indexer)
+            queue_depths = _build_queue_depths_payload_impl(indexer, db, fallback=True)
 
             workspaces_payload = self._registered_workspaces(workspace_root, db, indexer)
             workspaces = workspaces_payload.get("workspaces", [])
