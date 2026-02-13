@@ -34,7 +34,7 @@ from sari.mcp.server_registry import ServerRegistry
 from sari.core.config import Config
 from sari.core.db import LocalSearchDB
 from sari.core.daemon_resolver import resolve_daemon_address as get_daemon_address
-from sari.core.endpoint_resolver import resolve_http_endpoint
+from sari.core.endpoint_resolver import resolve_http_endpoint, resolve_http_endpoint_for_daemon
 
 from .mcp_client import (
     identify_sari_daemon,
@@ -104,25 +104,12 @@ def _resolve_http_endpoint_for_daemon(
         args: object, daemon_host: str, daemon_port: int) -> tuple[str, int]:
     host_override = _arg(args, "http_host")
     port_override = _arg(args, "http_port")
-    if host_override or port_override is not None:
-        return _get_http_host_port(host_override, port_override)
-
-    host, port = _get_http_host_port(None, None)
-    try:
-        reg = ServerRegistry()
-        inst = reg.resolve_daemon_by_endpoint(daemon_host, daemon_port)
-        if not inst:
-            ws_root = os.environ.get(
-                "SARI_WORKSPACE_ROOT") or WorkspaceManager.resolve_workspace_root()
-            inst = reg.resolve_workspace_daemon(str(ws_root))
-        if inst:
-            if inst.get("http_host"):
-                host = str(inst.get("http_host"))
-            if inst.get("http_port"):
-                port = int(inst.get("http_port"))
-    except Exception:
-        pass
-    return host, port
+    return resolve_http_endpoint_for_daemon(
+        daemon_host=daemon_host,
+        daemon_port=daemon_port,
+        host_override=host_override,
+        port_override=port_override,
+    )
 
 
 def _request_http(

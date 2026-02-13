@@ -138,6 +138,38 @@ def resolve_http_endpoint(
     return host, port
 
 
+def resolve_http_endpoint_for_daemon(
+    daemon_host: str,
+    daemon_port: int,
+    workspace_root: Optional[str] = None,
+    host_override: Optional[str] = None,
+    port_override: Optional[int] = None,
+) -> Tuple[str, int]:
+    root = workspace_root or os.environ.get("SARI_WORKSPACE_ROOT") or WorkspaceManager.resolve_workspace_root()
+
+    if host_override or port_override is not None:
+        return resolve_http_endpoint(
+            workspace_root=str(root),
+            host_override=host_override,
+            port_override=port_override,
+        )
+
+    host, port = resolve_http_endpoint(workspace_root=str(root))
+    try:
+        reg = ServerRegistry()
+        inst = reg.resolve_daemon_by_endpoint(daemon_host, daemon_port)
+        if not inst:
+            inst = reg.resolve_workspace_daemon(str(root))
+        if inst:
+            if inst.get("http_host"):
+                host = str(inst.get("http_host"))
+            if inst.get("http_port"):
+                port = int(inst.get("http_port"))
+    except Exception:
+        pass
+    return host, port
+
+
 def resolve_registry_daemon_address(
     workspace_root: Optional[str] = None,
 ) -> Optional[Tuple[str, int]]:

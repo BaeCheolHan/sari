@@ -126,7 +126,7 @@ def test_cmd_status_uses_resolved_non_default_daemon_port():
     )
     with patch('sari.mcp.cli.commands.status_commands.get_daemon_address', return_value=("127.0.0.1", 47879)):
         with patch('sari.mcp.cli.commands.status_commands.is_daemon_running', return_value=True):
-            with patch('sari.mcp.cli.commands.status_commands._get_http_host_port', return_value=("127.0.0.1", 47777)):
+            with patch('sari.mcp.cli.commands.status_commands._resolve_http_endpoint_for_daemon', return_value=("127.0.0.1", 47777)):
                 with patch('sari.mcp.cli.commands.status_commands._is_http_running', return_value=False):
                     with patch('sari.mcp.cli.commands.status_commands._ensure_workspace_http') as mock_ensure_ws:
                         with patch('sari.mcp.cli.commands.status_commands._request_mcp_status', return_value={"ok": True, "source": "mcp"}):
@@ -145,7 +145,7 @@ def test_cmd_status_starts_daemon_on_resolved_non_default_port():
     )
     with patch('sari.mcp.cli.commands.status_commands.get_daemon_address', return_value=("127.0.0.1", 47879)):
         with patch('sari.mcp.cli.commands.status_commands.is_daemon_running', return_value=False):
-            with patch('sari.mcp.cli.commands.status_commands._get_http_host_port', return_value=("127.0.0.1", 47777)):
+            with patch('sari.mcp.cli.commands.status_commands._resolve_http_endpoint_for_daemon', return_value=("127.0.0.1", 47777)):
                 with patch('sari.mcp.cli.commands.status_commands._is_http_running', return_value=False):
                     with patch('sari.mcp.cli.commands.status_commands._ensure_daemon_running', return_value=("127.0.0.1", 47879, True)) as mock_ensure:
                         with patch('sari.mcp.cli.commands.status_commands._request_mcp_status', return_value={"ok": True, "source": "mcp"}):
@@ -165,13 +165,12 @@ def test_cmd_status_prefers_registry_http_endpoint_for_selected_daemon():
     )
     with patch("sari.mcp.cli.commands.status_commands.get_daemon_address", return_value=("127.0.0.1", 47879)):
         with patch("sari.mcp.cli.commands.status_commands.is_daemon_running", return_value=True):
-            with patch("sari.mcp.cli.commands.status_commands._get_http_host_port", return_value=("127.0.0.1", 47777)):
-                with patch(
-                    "sari.mcp.cli.commands.status_commands.ServerRegistry.resolve_daemon_by_endpoint",
-                    return_value={"host": "127.0.0.1", "port": 47879, "http_host": "127.0.0.1", "http_port": 58155},
-                ):
-                    with patch("sari.mcp.cli.commands.status_commands._is_http_running", return_value=True):
-                        with patch("sari.mcp.cli.commands.status_commands._request_http", return_value={"ok": True}) as mock_request_http:
-                            rc = cmd_status(args)
-                            assert rc == 0
-                            mock_request_http.assert_called_once_with("/status", {}, "127.0.0.1", 58155)
+            with patch(
+                "sari.mcp.cli.commands.status_commands._resolve_http_endpoint_for_daemon",
+                return_value=("127.0.0.1", 58155),
+            ):
+                with patch("sari.mcp.cli.commands.status_commands._is_http_running", return_value=True):
+                    with patch("sari.mcp.cli.commands.status_commands._request_http", return_value={"ok": True}) as mock_request_http:
+                        rc = cmd_status(args)
+                        assert rc == 0
+                        mock_request_http.assert_called_once_with("/status", {}, "127.0.0.1", 58155)
