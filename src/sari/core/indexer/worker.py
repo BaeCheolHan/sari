@@ -111,7 +111,8 @@ class IndexWorker:
             now: float,
             excluded: bool,
             root_id: Optional[str] = None,
-            force: bool = False) -> Optional[IndexingResult]:
+            force: bool = False,
+            extract_symbols: bool = True) -> Optional[IndexingResult]:
         try:
             db_path = self._encode_db_path(root, file_path, root_id=root_id)
             rel_to_root = PathUtils.to_relative(str(file_path), str(root))
@@ -172,7 +173,7 @@ class IndexWorker:
 
             symbols, relations = [], []
             ast_status, ast_reason = "skipped", "disabled"
-            if size <= self.settings.MAX_AST_BYTES and self.ast_engine.enabled:
+            if extract_symbols and size <= self.settings.MAX_AST_BYTES and self.ast_engine.enabled:
                 lang = ParserFactory.get_language(file_path.suffix.lower())
                 if lang:
                     tree = self.ast_engine.parse(

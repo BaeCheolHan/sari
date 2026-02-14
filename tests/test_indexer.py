@@ -256,7 +256,9 @@ def test_scan_to_db_replaces_outgoing_relations_when_result_has_no_relations(tmp
         ],
     )
 
-    def _no_relation_result(self, root, path, st, now, mtime, include_content, root_id=None):
+    def _no_relation_result(
+        self, root, path, st, now, mtime, include_content, root_id=None, extract_symbols=True
+    ):
         return IndexingResult(
             type="changed",
             path=str(path),
@@ -343,7 +345,9 @@ def test_scan_to_db_flushes_relation_replace_sources_without_relations(tmp_path,
     monkeypatch.setenv("SARI_INDEXER_FLUSH_REL_ROWS", "10000")
     monkeypatch.setenv("SARI_INDEXER_FLUSH_REL_REPLACE_ROWS", "2")
 
-    def _no_relation_result(self, root, path, st, now, mtime, include_content, root_id=None):
+    def _no_relation_result(
+        self, root, path, st, now, mtime, include_content, root_id=None, extract_symbols=True
+    ):
         return IndexingResult(
             type="changed",
             path=str(path),
@@ -402,3 +406,22 @@ def test_scan_to_db_flushes_files_before_symbols_to_preserve_fk(tmp_path, monkey
     _scan_to_db(cfg, db, logging.getLogger("test"))
     row = db.execute("SELECT COUNT(1) FROM symbols").fetchone()
     assert int(row[0]) >= 1
+
+
+def test_scan_to_db_fast_mode_defers_symbols_and_relations(tmp_path, monkeypatch):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "main.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    db = LocalSearchDB(str(tmp_path / "idx.db"))
+    cfg = Config(**Config.get_defaults(str(ws)))
+    monkeypatch.setenv("SARI_INDEXER_PHASE_MODE", "fast")
+
+    status = _scan_to_db(cfg, db, logging.getLogger("test"))
+    files = db.execute("SELECT COUNT(1) FROM files WHERE deleted_ts = 0").fetchone()
+    symbols = db.execute("SELECT COUNT(1) FROM symbols").fetchone()
+    rels = db.execute("SELECT COUNT(1) FROM symbol_relations").fetchone()
+
+    assert int(files[0]) >= 1
+    assert int(symbols[0]) == 0
+    assert int(rels[0]) == 0
+    assert int(status.get("symbols_deferred_files", 0) or 0) >= 1

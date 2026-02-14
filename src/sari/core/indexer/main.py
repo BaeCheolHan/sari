@@ -147,6 +147,7 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
         "scanned_files": 0,
         "indexed_files": 0,
         "symbols_extracted": 0,
+        "symbols_deferred_files": 0,
         "errors": 0,
         "index_version": "",
         "adaptive_flush_enabled": False,
@@ -190,6 +191,8 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
     adaptive_flush_enabled = str(
         os.environ.get("SARI_INDEXER_ADAPTIVE_FLUSH", "1")
     ).strip().lower() in {"1", "true", "yes", "on"}
+    phase_mode = str(os.environ.get("SARI_INDEXER_PHASE_MODE", "full") or "full").strip().lower()
+    extract_symbols_enabled = phase_mode != "fast"
     status["adaptive_flush_enabled"] = bool(adaptive_flush_enabled)
     last_progress_ts = time.time()
     flush_state: dict[str, int] = {
@@ -401,6 +404,8 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
                                     s.doc,
                                     s.qualname))
                         status["symbols_extracted"] += len(res.symbols)
+                    elif not extract_symbols_enabled:
+                        status["symbols_deferred_files"] += 1
 
                     if res.relations:
                         for r in res.relations:
@@ -453,7 +458,7 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
                 # 파일 처리 작업을 쓰레드 풀에 제출
                 fut = executor.submit(
                     worker.process_file_task,
-                    root, path, st, now, st.st_mtime, True, root_id=rid
+                    root, path, st, now, st.st_mtime, True, root_id=rid, extract_symbols=extract_symbols_enabled
                 )
                 pending.add(fut)
                 if len(pending) >= max_inflight:

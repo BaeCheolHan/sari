@@ -39,3 +39,12 @@ def test_summarize_trials_detects_integrity_mismatch():
     ]
     summary = ab.summarize_trials(trials)
     assert summary["gates"]["integrity_ok"] is False
+
+
+def test_summarize_trials_file_scope_integrity_allows_symbol_diff():
+    trials = [
+        {"mode": "A", "wall_s": 10.0, "cpu_s": 5.0, "maxrss_kib_delta": 1000, "files": 100, "symbols": 200, "relations": 300},
+        {"mode": "B", "wall_s": 6.0, "cpu_s": 3.0, "maxrss_kib_delta": 900, "files": 100, "symbols": 0, "relations": 0},
+    ]
+    summary = ab.summarize_trials(trials, integrity_scope="files")
+    assert summary["gates"]["integrity_ok"] is True

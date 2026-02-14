@@ -13,11 +13,13 @@ fi
 
 MODE_A_ENV="${MODE_A_ENV:-SARI_INDEXER_ADAPTIVE_FLUSH=0}"
 MODE_B_ENV="${MODE_B_ENV:-SARI_INDEXER_ADAPTIVE_FLUSH=1}"
+INTEGRITY_SCOPE="${INTEGRITY_SCOPE:-full}"
 
 CMD=(
   uv run python tools/manual/benchmark_ab_indexing.py
   --workspace "$WORKSPACE_PATH"
   --repeats "$REPEATS"
+  --integrity-scope "$INTEGRITY_SCOPE"
 )
 
 if [[ -n "$OUT_DIR" ]]; then
@@ -37,4 +39,5 @@ done
 cd "$ROOT_DIR"
 echo "[A/B] MODE_A_ENV=$MODE_A_ENV"
 echo "[A/B] MODE_B_ENV=$MODE_B_ENV"
+echo "[A/B] INTEGRITY_SCOPE=$INTEGRITY_SCOPE"
 "${CMD[@]}"

@@ -164,7 +164,7 @@ def _run_single_trial(
     }
 
 
-def summarize_trials(trials: List[Dict[str, Any]]) -> Dict[str, Any]:
+def summarize_trials(trials: List[Dict[str, Any]], *, integrity_scope: str = "full") -> Dict[str, Any]:
     grouped = {"A": [], "B": []}
     for row in trials:
         mode = str(row.get("mode", "")).upper()
@@ -196,13 +196,17 @@ def summarize_trials(trials: List[Dict[str, Any]]) -> Dict[str, Any]:
     wall_improve = _improvement_pct(float(a["wall_s_median"]), float(b["wall_s_median"]))
     cpu_improve = _improvement_pct(float(a["cpu_s_median"]), float(b["cpu_s_median"]))
 
-    integrity_ok = (
-        bool(a["files_set"])
-        and bool(b["files_set"])
-        and a["files_set"] == b["files_set"]
-        and a["symbols_set"] == b["symbols_set"]
-        and a["relations_set"] == b["relations_set"]
-    )
+    scope = str(integrity_scope or "full").strip().lower()
+    if scope == "files":
+        integrity_ok = bool(a["files_set"]) and bool(b["files_set"]) and a["files_set"] == b["files_set"]
+    else:
+        integrity_ok = (
+            bool(a["files_set"])
+            and bool(b["files_set"])
+            and a["files_set"] == b["files_set"]
+            and a["symbols_set"] == b["symbols_set"]
+            and a["relations_set"] == b["relations_set"]
+        )
     load_guard_ok = (
         float(b["cpu_s_p95"]) <= (float(a["cpu_s_p95"]) * 1.10 if float(a["cpu_s_p95"]) > 0 else float(b["cpu_s_p95"]))
         and float(b["maxrss_kib_p95"])
@@ -220,6 +224,7 @@ def summarize_trials(trials: List[Dict[str, Any]]) -> Dict[str, Any]:
             "integrity_ok": bool(integrity_ok),
             "load_guard_ok": bool(load_guard_ok),
         },
+        "integrity_scope": scope,
     }
 
 
@@ -264,6 +269,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--out-dir", default="", help="Output directory for jsonl/json/md.")
     p.add_argument("--mode-a-env", action="append", default=[], help="Mode A env override (KEY=VALUE).")
     p.add_argument("--mode-b-env", action="append", default=[], help="Mode B env override (KEY=VALUE).")
+    p.add_argument("--integrity-scope", default="full", choices=["full", "files"], help="Integrity gate scope.")
     return p.parse_args()
 
 
@@ -301,7 +307,7 @@ def main() -> int:
         for row in trials:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
-    summary = summarize_trials(trials)
+    summary = summarize_trials(trials, integrity_scope=str(args.integrity_scope))
     summary_path = out_dir / "summary.json"
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
 
