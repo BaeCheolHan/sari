@@ -11,6 +11,7 @@ from ._util import (
     ErrorCode,
     invalid_args_response,
     internal_error_response,
+    require_repo_arg,
 )
 from sari.core.services.call_graph.service import CallGraphService
 
@@ -36,6 +37,10 @@ def execute_call_graph(
         roots, logger = logger, None
     if not isinstance(args, Mapping):
         return invalid_args_response("call_graph", "args must be an object")
+    if bool(args.get("__enforce_repo__", False)):
+        repo_err = require_repo_arg(args, "call_graph")
+        if repo_err:
+            return repo_err
 
     def _is_next_candidate_path(path: str) -> bool:
         p = str(path or "").strip().lower()

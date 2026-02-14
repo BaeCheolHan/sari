@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from typing import Mapping
 
-from sari.mcp.tools._util import internal_error_response, parse_search_options
+from sari.mcp.tools.candidate_search import execute_candidate_search_raw
 from sari.mcp.tools.inference import resolve_search_intent
 from sari.mcp.tools.repo_candidates import execute_repo_candidates
 from sari.mcp.tools.search_api_endpoints import execute_search_api_endpoints
 from sari.mcp.tools.search_normalize import is_empty_result
 from sari.mcp.tools.search_symbols import execute_search_symbols
+from sari.mcp.tools.symbol_resolve import execute_symbol_resolve
 
 SearchArgs = dict[str, object]
 ToolResult = dict[str, object]
@@ -15,6 +16,11 @@ SearchRoots = list[str]
 
 
 def validate_search_args(args: Mapping[str, object]) -> str | None:
+    if bool(args.get("__enforce_repo__", False)):
+        repo = args.get("scope") or args.get("repo")
+        if not isinstance(repo, str) or not repo.strip():
+            return "repo is required."
+
     search_type = str(args.get("search_type", "code")).lower()
     allowed_types = {"code", "symbol", "api", "repo", "auto"}
     if search_type not in allowed_types:
@@ -42,72 +48,9 @@ def validate_search_args(args: Mapping[str, object]) -> str | None:
     return None
 
 
-def execute_core_search_raw(
-    args: SearchArgs,
-    db: object,
-    roots: SearchRoots,
-) -> ToolResult:
-    try:
-        opts = parse_search_options(args, roots, db=db)
-        search_fn = getattr(db, "search", None)
-        if not callable(search_fn):
-            raise RuntimeError("No search backend available (search)")
-        hits, meta = search_fn(opts)
-        if hits is None:
-            normalized_hits: list[object] = []
-        elif isinstance(hits, Mapping):
-            normalized_hits = [hits]
-        elif isinstance(hits, (list, tuple)):
-            normalized_hits = list(hits)
-        else:
-            try:
-                normalized_hits = list(hits)
-            except TypeError:
-                normalized_hits = []
-        results = []
-        for h in normalized_hits:
-            if isinstance(h, Mapping):
-                path = h.get("path", "")
-                repo = h.get("repo", "")
-                score = h.get("score", 0.0)
-                snippet = h.get("snippet", "")
-                mtime = h.get("mtime", 0)
-                size = h.get("size", 0)
-                file_type = h.get("file_type", "")
-                hit_reason = h.get("hit_reason", "")
-            else:
-                path = getattr(h, "path", "")
-                repo = getattr(h, "repo", "")
-                score = getattr(h, "score", 0.0)
-                snippet = getattr(h, "snippet", "")
-                mtime = getattr(h, "mtime", 0)
-                size = getattr(h, "size", 0)
-                file_type = getattr(h, "file_type", "")
-                hit_reason = getattr(h, "hit_reason", "")
-            results.append(
-                {
-                    "path": path,
-                    "repo": repo,
-                    "score": score,
-                    "snippet": snippet,
-                    "mtime": mtime,
-                    "size": size,
-                    "file_type": file_type,
-                    "hit_reason": hit_reason,
-                }
-            )
-        return {"results": results, "meta": meta}
-    except Exception as e:
-        return internal_error_response(
-            "search",
-            e,
-            reason_code="SEARCH_EXECUTION_FAILED",
-            data={
-                "search_type": str(args.get("search_type", "code")).lower(),
-                "query": str(args.get("query", ""))[:120],
-            },
-            fallback_message="Search failed",
-        )
+def execute_core_search_raw(args: SearchArgs, db: object, roots: SearchRoots) -> ToolResult:
+    # Backward-compatible alias for existing callers/tests.
+    return execute_candidate_search_raw(args, db, roots)
 
 
 def dispatch_search(
@@ -134,7 +77,9 @@ def dispatch_search(
     raw_result: ToolResult
     if requested_type == "auto" and resolved_type in ("symbol", "api"):
         if resolved_type == "symbol":
-            raw_result = symbol_executor(args, db, logger, roots)
+            raw_result = execute_symbol_resolve(
+                args, db=db, logger=logger, roots=roots, symbol_executor=symbol_executor
+            )
         else:
             api_args = dict(args)
             if "query" in api_args and "path" not in api_args:
@@ -143,9 +88,11 @@ def dispatch_search(
         if raw_result.get("isError") or is_empty_result(raw_result):
             fallback_used = True
             resolved_type = "code"
-            raw_result = execute_core_search_raw(args, db, roots)
+            raw_result = execute_candidate_search_raw(args, db, roots)
     elif resolved_type == "symbol":
-        raw_result = symbol_executor(args, db, logger, roots)
+        raw_result = execute_symbol_resolve(
+            args, db=db, logger=logger, roots=roots, symbol_executor=symbol_executor
+        )
     elif resolved_type == "api":
         api_args = dict(args)
         if "query" in api_args and "path" not in api_args:
@@ -157,6 +104,6 @@ def dispatch_search(
             repo_args["root_ids"] = args["root_ids"]
         raw_result = repo_executor(repo_args, db, logger, roots)
     else:
-        raw_result = execute_core_search_raw(args, db, roots)
+        raw_result = execute_candidate_search_raw(args, db, roots)
 
     return raw_result, resolved_type, inference_blocked_reason, fallback_used, limit

@@ -100,6 +100,10 @@ def execute_search(
     if not isinstance(args, Mapping):
         return _search_error_response(ErrorCode.INVALID_ARGS.value, "args must be an object")
     args = dict(args)
+    # Compatibility: strict repo gate for minimal/legacy calls (no explicit search_type),
+    # permissive when caller intentionally selects search_type.
+    if "__enforce_repo__" not in args:
+        args["__enforce_repo__"] = "search_type" not in args
     validation_err = validate_search_args(args)
     if validation_err:
         return _search_error_response(ErrorCode.INVALID_ARGS.value, validation_err)

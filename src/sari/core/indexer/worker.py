@@ -5,14 +5,60 @@ import threading
 from collections import OrderedDict
 from pathlib import Path
 from typing import Optional
+from sari.core.config.main import Config
 from sari.core.settings import settings
-from sari.core.parsers.factory import ParserFactory
-from sari.core.parsers.ast_engine import ASTEngine
 from sari.core.utils.path import PathUtils
 import hashlib
 import zlib
 from sari.core.utils import _redact, _normalize_engine_text
 from sari.core.models import IndexingResult
+
+
+class _NoopDB:
+    def get_file_meta(self, _path: str):
+        return None
+    def is_payload_deferred(self, _path: str) -> bool:
+        return False
+
+
+class _SimpleStat:
+    __slots__ = ("st_mtime", "st_size")
+
+    def __init__(self, st_mtime: int, st_size: int):
+        self.st_mtime = int(st_mtime)
+        self.st_size = int(st_size)
+
+
+_PROCESS_WORKER: Optional["IndexWorker"] = None
+
+
+def init_process_worker(cfg_dict: dict[str, object]) -> None:
+    global _PROCESS_WORKER
+    _PROCESS_WORKER = IndexWorker(Config(**cfg_dict), _NoopDB(), None, None)
+
+
+def process_file_task_in_process(
+    payload: tuple[str, str, int, int, int, float, str, bool, bool],
+) -> Optional[dict[str, object]]:
+    global _PROCESS_WORKER
+    if _PROCESS_WORKER is None:
+        raise RuntimeError("process worker is not initialized")
+    root_str, file_str, mtime, size, scan_ts, now, root_id, extract_symbols, split_value_payload = payload
+    res = _PROCESS_WORKER.process_file_task(
+        Path(root_str),
+        Path(file_str),
+        _SimpleStat(mtime, size),
+        int(scan_ts),
+        float(now),
+        True,
+        root_id=str(root_id or "root"),
+        skip_prev_lookup=True,
+        extract_symbols=bool(extract_symbols),
+        split_value_payload=bool(split_value_payload),
+    )
+    if not res:
+        return None
+    return res.model_dump(mode="python")
 
 
 def compute_hash(content: str) -> str:
@@ -49,10 +95,7 @@ class IndexWorker:
         self.logger = logger
         self.extractor_cb = extractor_cb
         self.settings = settings_obj or settings
-        self.ast_engine = ASTEngine()
         self._cache_lock = threading.Lock()
-        self._ast_cache = OrderedDict()
-        self._ast_cache_max = self.settings.AST_CACHE_ENTRIES
         self._git_root_cache: dict[str, str | None] = {}
         self._root_git_probe_cache: dict[str, str | None] = {}
         try:
@@ -111,24 +154,33 @@ class IndexWorker:
             now: float,
             excluded: bool,
             root_id: Optional[str] = None,
-            force: bool = False) -> Optional[IndexingResult]:
+            force: bool = False,
+            skip_prev_lookup: bool = False,
+            extract_symbols: bool = True,
+            split_value_payload: bool = False) -> Optional[IndexingResult]:
         try:
             db_path = self._encode_db_path(root, file_path, root_id=root_id)
             rel_to_root = PathUtils.to_relative(str(file_path), str(root))
 
             # 1. Delta Check (Metadata)
-            prev = self.db.get_file_meta(db_path)
+            prev = None if skip_prev_lookup else self.db.get_file_meta(db_path)
+            deferred_payload = False
+            if not force and prev:
+                try:
+                    deferred_payload = bool(self.db.is_payload_deferred(db_path))
+                except Exception:
+                    deferred_payload = False
             if not force and prev and int(
                 st.st_mtime) == int(
                 prev[0]) and int(
                 st.st_size) == int(
-                    prev[1]):
+                    prev[1]) and not deferred_payload:
                 return IndexingResult(
                     type="unchanged", path=str(file_path), rel=db_path)
 
             # 2. Fast Signature Check
             size = st.st_size
-            if not force and prev and size == int(prev[1]):
+            if not force and prev and size == int(prev[1]) and not deferred_payload:
                 sig = compute_fast_signature(file_path, size)
                 if sig and sig == prev[2]:
                     return IndexingResult(
@@ -155,7 +207,7 @@ class IndexWorker:
                     root_id=root_id)
 
             current_hash = compute_hash(content)
-            if prev and prev[2] == current_hash:
+            if (not force) and prev and prev[2] == current_hash and not deferred_payload:
                 return IndexingResult(
                     type="unchanged", path=str(file_path), rel=db_path)
 
@@ -164,33 +216,39 @@ class IndexWorker:
             if self.settings.get_bool("REDACT_ENABLED", True):
                 content = _redact(content)
 
-            # 4. FTS and AST Processing
-            enable_fts = self.settings.get_bool("ENABLE_FTS", True)
+            # 4. FTS processing
+            enable_fts = self.settings.get_bool("ENABLE_FTS", True) and not split_value_payload
             normalized = _normalize_engine_text(analysis_content) if enable_fts else ""
             fts_content = normalized[:self.settings.get_int(
                 "FTS_MAX_BYTES", 1000000)] if normalized else ""
 
             symbols, relations = [], []
-            ast_status, ast_reason = "skipped", "disabled"
-            if size <= self.settings.MAX_AST_BYTES and self.ast_engine.enabled:
-                lang = ParserFactory.get_language(file_path.suffix.lower())
-                if lang:
-                    tree = self.ast_engine.parse(
-                        lang, analysis_content, self._ast_cache_get(db_path))
-                    if tree:
+            ast_status, ast_reason = "skipped", "lsp_pending"
+            if extract_symbols:
+                if file_path.suffix.lower() == ".py":
+                    try:
+                        if not hasattr(self, "_python_parser"):
+                            from sari.core.parsers.python import PythonParser
+
+                            self._python_parser = PythonParser()
+                        parsed = self._python_parser.extract(db_path, analysis_content)
+                        symbols = list(getattr(parsed, "symbols", []) or [])
+                        relations = list(getattr(parsed, "relations", []) or [])
                         ast_status, ast_reason = "ok", "none"
-                        self._ast_cache_put(db_path, tree)
-                        parse_result = self.ast_engine.extract_symbols(
-                            db_path, lang, analysis_content, tree=tree)
-                        symbols = parse_result.symbols or []
-                        relations = parse_result.relations or []
-                    else:
-                        ast_status, ast_reason = "failed", "parse_error"
+                    except Exception:
+                        symbols, relations = [], []
+                        ast_status, ast_reason = "error", "py_extract_failed"
+                else:
+                    ast_status, ast_reason = "skipped", "unsupported_lang"
 
             # 5. Storage & Result Assembly
-            store_content = getattr(self.cfg, "store_content", True)
+            store_content = getattr(self.cfg, "store_content", True) and not split_value_payload
             stored_content = content if store_content else ""
-            metadata = {"stored": store_content}
+            metadata = {
+                "stored": store_content,
+                "content_hash": current_hash,
+                "deferred_payload": bool(split_value_payload),
+            }
 
             if store_content and self.settings.STORE_CONTENT_COMPRESS:
                 raw_bytes = stored_content.encode("utf-8", errors="ignore")
@@ -289,6 +347,31 @@ class IndexWorker:
                         root_git = proc.stdout.strip() if proc.returncode == 0 else None
                         self._root_probe_set(root_key, root_git)
                     git_root = root_git
+
+                    # Root-level cached git root can be stale/wrong for
+                    # multi-repo workspaces. If it does not contain this file,
+                    # probe from the file parent once to resolve correctly.
+                    if git_root:
+                        try:
+                            Path(file_path.resolve()).relative_to(
+                                Path(git_root).resolve())
+                        except Exception:
+                            proc = subprocess.run(
+                                [
+                                    "git",
+                                    "-C",
+                                    parent,
+                                    "rev-parse",
+                                    "--show-toplevel",
+                                ],
+                                capture_output=True,
+                                text=True,
+                                check=False,
+                                timeout=0.5,
+                            )
+                            scoped_git = proc.stdout.strip() if proc.returncode == 0 else None
+                            if scoped_git:
+                                git_root = scoped_git
             except Exception:
                 git_root = None
             self._git_cache_set(parent, git_root)

@@ -1,10 +1,20 @@
 import fnmatch
 import os
 import re
+import logging
 from pathlib import Path
 from typing import Iterable, List, Tuple, Optional
 from sari.core.utils.gitignore import GitignoreMatcher
 from sari.core.utils.path_trie import PathTrie
+from .rust_scanner import iter_rust_scan_entries
+
+
+class _LiteStat:
+    __slots__ = ("st_mtime", "st_size")
+
+    def __init__(self, st_mtime: int, st_size: int):
+        self.st_mtime = int(st_mtime)
+        self.st_size = int(st_size)
 
 
 class Scanner:
@@ -34,6 +44,7 @@ class Scanner:
         self.include_files = set(getattr(self.cfg, "include_files", []))
         self.include_all = not self.include_ext and not self.include_files
         self.follow_symlinks = getattr(self.settings, "FOLLOW_SYMLINKS", False)
+        self.backend = str(os.environ.get("SARI_SCANNER_BACKEND", "python") or "python").strip().lower()
 
         # O(1) match optimization
         user_exclude_dirs = set(getattr(self.cfg, "exclude_dirs", []))
@@ -132,7 +143,64 @@ class Scanner:
                           apply_exclude: bool = True) -> Iterable[Tuple[Path,
                                                                         os.stat_result,
                                                                         bool]]:
+        if self.backend == "rust":
+            try:
+                yield from self._scan_via_rust(root, apply_exclude=apply_exclude)
+                return
+            except Exception as e:
+                logging.getLogger("sari.indexer.scanner").warning(
+                    "rust scanner failed; fallback to python scanner: %s", e
+                )
         yield from self._scan_recursive(root, root, depth=0, follow_symlinks=self.follow_symlinks, apply_exclude=apply_exclude, visited=set())
+
+    def _scan_via_rust(self, root: Path, apply_exclude: bool) -> Iterable[Tuple[Path, os.stat_result, bool]]:
+        gitignore = self._gitignore
+        for p, mtime, size in iter_rust_scan_entries(
+            root,
+            max_depth=self.max_depth,
+            follow_symlinks=self.follow_symlinks,
+            exclude_dirs=self.exclude_dir_patterns,
+        ):
+            try:
+                rel = str(p.absolute().relative_to(root))
+            except (ValueError, RuntimeError):
+                continue
+            fn = p.name
+            excluded = False
+            if self.exclude_glob_regex and (
+                self.exclude_glob_regex.match(fn) or self.exclude_glob_regex.match(rel)
+            ):
+                excluded = True
+            if not excluded and gitignore:
+                rel_posix = rel.replace(os.sep, "/")
+                if gitignore.is_ignored(rel_posix, is_dir=False):
+                    excluded = True
+            if not excluded and self.exclude_dir_regex:
+                rel_parts = rel.split(os.sep)
+                for part in rel_parts:
+                    if self.exclude_dir_regex.match(part):
+                        excluded = True
+                        break
+
+            st = _LiteStat(mtime, size)
+
+            if not self.include_all:
+                rel_posix = rel.replace(os.sep, "/")
+                ext = p.suffix.lower()
+                included = False
+                if self.include_files:
+                    for pattern in self.include_files:
+                        if fnmatch.fnmatch(fn, pattern) or fnmatch.fnmatch(rel_posix, pattern):
+                            included = True
+                            break
+                if not included and self.include_ext and ext in self.include_ext:
+                    included = True
+                if not included:
+                    continue
+
+            if apply_exclude and excluded:
+                continue
+            yield p, st, excluded
 
     def _scan_recursive(self,
                         root: Path,

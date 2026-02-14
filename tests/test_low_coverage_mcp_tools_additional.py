@@ -60,7 +60,7 @@ def test_search_parse_error_returns_invalid_args(monkeypatch):
     monkeypatch.setenv("SARI_FORMAT", "pack")
     db = MagicMock()
 
-    resp = execute_search({"query": "x", "limit": "bad"}, db, MagicMock(), ["/tmp/ws"])
+    resp = execute_search({"query": "x", "repo": "repo1", "limit": "bad"}, db, MagicMock(), ["/tmp/ws"])
 
     text = resp["content"][0]["text"] if "content" in resp else str(resp)
     assert resp.get("isError") is True
@@ -73,7 +73,7 @@ def test_search_db_error_returns_engine_query(monkeypatch):
     db = MagicMock()
     db.search.side_effect = RuntimeError("boom")
 
-    resp = execute_search({"query": "x"}, db, MagicMock(), ["/tmp/ws"])
+    resp = execute_search({"query": "x", "repo": "repo1"}, db, MagicMock(), ["/tmp/ws"])
 
     text = resp["content"][0]["text"] if "content" in resp else str(resp)
     assert resp.get("isError") is True
@@ -107,7 +107,7 @@ def test_search_json_and_importance_tags(monkeypatch):
     db.search.return_value = ([obj_hit2, obj_hit], {"total": 2, "engine": "embedded"})
 
     resp = execute_search(
-        {"query": "x", "search_type": "code", "limit": 10, "max_preview_chars": 120},
+        {"query": "x", "search_type": "code", "repo": "repo1", "limit": 10, "max_preview_chars": 120},
         db,
         MagicMock(),
         ["/tmp/ws"],
@@ -156,7 +156,7 @@ def test_search_json_and_importance_tags(monkeypatch):
         [pack_hit1, pack_hit2, pack_hit3],
         {"total": 3, "engine": "embedded"},
     )
-    pack_resp = execute_search({"query": "x", "search_type": "code", "limit": 10}, db, MagicMock(), ["/tmp/ws"])
+    pack_resp = execute_search({"query": "x", "search_type": "code", "repo": "repo1", "limit": 10}, db, MagicMock(), ["/tmp/ws"])
     text = pack_resp["content"][0]["text"]
 
     assert "PACK1 tool=search ok=true" in text
@@ -215,15 +215,14 @@ def test_list_files_summary_and_json_detail(monkeypatch):
     monkeypatch.setenv("SARI_FORMAT", "pack")
     summary_resp = execute_list_files({}, db, MagicMock(), ["/tmp/ws"])
     summary_text = summary_resp["content"][0]["text"]
-    assert "mode=summary" in summary_text
-    assert "f:path=rid/src/a.py repo=repo1" in summary_text
-    assert "d:dir=src file_count=2" in summary_text
+    assert "code=INVALID_ARGS" in summary_text
+    assert "repo%20is%20required" in summary_text
 
     monkeypatch.setenv("SARI_FORMAT", "json")
     summary_json_resp = execute_list_files({}, db, MagicMock(), ["/tmp/ws"])
-    summary_payload = json.loads(summary_json_resp["content"][0]["text"])
-    assert summary_payload["directories"][0]["dir"] == "src"
-    assert summary_payload["directories"][0]["file_count"] == 2
+    summary_payload = summary_json_resp if "files" in summary_json_resp else json.loads(summary_json_resp["content"][0]["text"])
+    assert summary_payload["isError"] is True
+    assert summary_payload["error"]["code"] == "INVALID_ARGS"
 
     detail_resp = execute_list_files({"repo": "repo1", "limit": 1}, db, MagicMock(), ["/tmp/ws"])
     detail_payload = json.loads(detail_resp["content"][0]["text"])
@@ -365,7 +364,7 @@ def test_read_file_rejects_blank_path():
 
 
 def test_list_symbols_rejects_blank_path():
-    resp = execute_list_symbols({"path": "   "}, MagicMock(), ["/tmp/ws"])
+    resp = execute_list_symbols({"path": "   ", "repo": "repo1"}, MagicMock(), ["/tmp/ws"])
     text = resp["content"][0]["text"]
     assert "code=INVALID_ARGS" in text
 
@@ -388,7 +387,7 @@ def test_list_symbols_disambiguates_duplicate_parent_names(monkeypatch):
     db.get_read_connection.return_value = _Conn()
     monkeypatch.setattr("sari.mcp.tools.list_symbols.resolve_db_path", lambda *_a, **_k: "rid/file.py")
 
-    resp = execute_list_symbols({"path": "file.py"}, db, ["/tmp/ws"])
+    resp = execute_list_symbols({"path": "file.py", "repo": "repo1"}, db, ["/tmp/ws"])
     text = resp["content"][0]["text"]
 
     # each method should appear once, not duplicated under both same-name parents
@@ -420,7 +419,7 @@ def test_list_symbols_classifies_not_indexed_when_file_row_missing(monkeypatch):
     db.get_read_connection.return_value = _Conn()
     monkeypatch.setattr("sari.mcp.tools.list_symbols.resolve_db_path", lambda *_a, **_k: "rid/missing.py")
 
-    resp = execute_list_symbols({"path": "missing.py"}, db, ["/tmp/ws"])
+    resp = execute_list_symbols({"path": "missing.py", "repo": "repo1"}, db, ["/tmp/ws"])
     text = resp["content"][0]["text"]
     assert "ok=false" in text
     assert "code=NOT_INDEXED" in text
@@ -455,7 +454,7 @@ def test_list_symbols_classifies_parse_failed(monkeypatch):
     db.get_read_connection.return_value = _Conn()
     monkeypatch.setattr("sari.mcp.tools.list_symbols.resolve_db_path", lambda *_a, **_k: "rid/broken.py")
 
-    resp = execute_list_symbols({"path": "broken.py"}, db, ["/tmp/ws"])
+    resp = execute_list_symbols({"path": "broken.py", "repo": "repo1"}, db, ["/tmp/ws"])
     text = resp["content"][0]["text"]
     assert "ok=false" in text
     assert "code=PARSE_FAILED" in text
@@ -490,7 +489,7 @@ def test_list_symbols_classifies_unsupported_language(monkeypatch):
     db.get_read_connection.return_value = _Conn()
     monkeypatch.setattr("sari.mcp.tools.list_symbols.resolve_db_path", lambda *_a, **_k: "rid/nope.abc")
 
-    resp = execute_list_symbols({"path": "nope.abc"}, db, ["/tmp/ws"])
+    resp = execute_list_symbols({"path": "nope.abc", "repo": "repo1"}, db, ["/tmp/ws"])
     text = resp["content"][0]["text"]
     assert "ok=false" in text
     assert "code=UNSUPPORTED_LANGUAGE" in text
@@ -507,7 +506,7 @@ def test_list_symbols_returns_db_error_when_symbol_query_fails(monkeypatch):
     db.get_read_connection.return_value = _Conn()
     monkeypatch.setattr("sari.mcp.tools.list_symbols.resolve_db_path", lambda *_a, **_k: "rid/file.py")
 
-    resp = execute_list_symbols({"path": "file.py"}, db, ["/tmp/ws"])
+    resp = execute_list_symbols({"path": "file.py", "repo": "repo1"}, db, ["/tmp/ws"])
     assert resp["isError"] is True
     assert resp["error"]["code"] == "DB_ERROR"
 
@@ -599,7 +598,7 @@ def test_call_graph_list_logger_roots_and_db_error(monkeypatch):
             }
 
     monkeypatch.setattr("sari.mcp.tools.call_graph.CallGraphService", _SvcOK)
-    ok = execute_call_graph({"symbol": "S"}, MagicMock(), ["/tmp/ws"])
+    ok = execute_call_graph({"symbol": "S", "repo": "repo1"}, MagicMock(), ["/tmp/ws"])
     text = ok["content"][0]["text"]
     assert "PACK1 tool=call_graph ok=true" in text
     assert "\nSARI_NEXT: read(" in text
@@ -615,7 +614,7 @@ def test_call_graph_list_logger_roots_and_db_error(monkeypatch):
             raise RuntimeError("db exploded")
 
     monkeypatch.setattr("sari.mcp.tools.call_graph.CallGraphService", _SvcErr)
-    bad = execute_call_graph({"symbol": "S"}, MagicMock(), MagicMock(), ["/tmp/ws"])
+    bad = execute_call_graph({"symbol": "S", "repo": "repo1"}, MagicMock(), MagicMock(), ["/tmp/ws"])
     assert "code=DB_ERROR" in bad["content"][0]["text"]
 
 
@@ -888,7 +887,7 @@ def test_get_implementations_service_error_has_reason_code(monkeypatch):
             raise RuntimeError("db fail")
 
     monkeypatch.setattr("sari.mcp.tools.get_implementations.SymbolService", _Svc)
-    out = execute_get_implementations({"name": "Iface"}, MagicMock(), ["/tmp/ws"])
+    out = execute_get_implementations({"name": "Iface", "repo": "repo1"}, MagicMock(), ["/tmp/ws"])
     assert out["isError"] is True
     assert out["error"]["code"] == "DB_ERROR"
     assert out["error"]["data"]["reason_code"] == "GET_IMPLEMENTATIONS_QUERY_FAILED"
@@ -905,7 +904,7 @@ def test_call_graph_error_does_not_leak_traceback(monkeypatch):
             raise RuntimeError("db exploded")
 
     monkeypatch.setattr("sari.mcp.tools.call_graph.CallGraphService", _SvcErr)
-    out = execute_call_graph({"symbol": "S"}, MagicMock(), MagicMock(), ["/tmp/ws"])
+    out = execute_call_graph({"symbol": "S", "repo": "repo1"}, MagicMock(), MagicMock(), ["/tmp/ws"])
     text = out["content"][0]["text"]
     assert "code=DB_ERROR" in text
     assert "trace=" not in text

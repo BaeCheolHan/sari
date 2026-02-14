@@ -1,4 +1,5 @@
 from collections.abc import Mapping
+import os
 from typing import TypeAlias
 
 from sari.mcp.tools._util import (
@@ -11,9 +12,11 @@ from sari.mcp.tools._util import (
     pack_error,
     ErrorCode,
     parse_int_arg,
+    require_repo_arg,
     invalid_args_response,
 )
 from sari.core.services.symbol_service import SymbolService
+from sari.mcp.tools._symbol_hydration import hydrate_symbols_for_search
 
 ToolResult: TypeAlias = dict[str, object]
 
@@ -25,6 +28,11 @@ def execute_search_symbols(args: object, db: object, logger: object, roots: list
     """
     if not isinstance(args, Mapping):
         return invalid_args_response("search_symbols", "args must be an object")
+    enforce_repo = bool(args.get("__enforce_repo__", str(os.environ.get("SARI_FORMAT", "pack")).strip().lower() == "pack"))
+    if enforce_repo:
+        repo_err = require_repo_arg(args, "search_symbols")
+        if repo_err:
+            return repo_err
 
     query = str(args.get("query", "")).strip()
     if not query:
@@ -39,7 +47,7 @@ def execute_search_symbols(args: object, db: object, logger: object, roots: list
         return err
     if limit is None:
         return invalid_args_response("search_symbols", "'limit' must be an integer")
-    repo = args.get("repo")
+    repo = str(args.get("repo", "")).strip()
     kinds = args.get("kinds")
     
     # 1. 범위(Scope) 해석
@@ -59,6 +67,22 @@ def execute_search_symbols(args: object, db: object, logger: object, roots: list
         repo=repo,
         kinds=kinds
     )
+
+    if not results:
+        hydrate_symbols_for_search(
+            db=db,
+            roots=roots,
+            repo=repo,
+            query=query,
+            max_files=max(4, min(limit, 24)),
+        )
+        results = svc.search(
+            query=query,
+            limit=limit,
+            root_ids=root_ids,
+            repo=repo,
+            kinds=kinds,
+        )
 
     def build_pack() -> str:
         header_params = {

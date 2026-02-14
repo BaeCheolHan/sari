@@ -21,6 +21,10 @@ from .schema import init_schema
 from ..utils.path import PathUtils
 
 logger = logging.getLogger("sari.db")
+try:
+    import psutil as _psutil  # type: ignore
+except Exception:
+    _psutil = None
 
 
 class LocalSearchDB:
@@ -47,6 +51,33 @@ class LocalSearchDB:
         self.engine = None
         self._lock = threading.Lock()
         self._writer_thread_id: Optional[int] = None
+        self._turbo_update_stats_enabled = True
+        self._wal_idle_checkpoint_enabled = str(
+            os.environ.get("SARI_WAL_IDLE_CHECKPOINT", "1")
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        self._last_wal_checkpoint_ts = 0.0
+        try:
+            self._wal_checkpoint_min_interval_sec = max(
+                0.5,
+                float(os.environ.get("SARI_WAL_CHECKPOINT_MIN_INTERVAL_SEC", "2.0") or 2.0),
+            )
+        except Exception:
+            self._wal_checkpoint_min_interval_sec = 2.0
+        try:
+            self._wal_checkpoint_min_pages = max(
+                128,
+                int(os.environ.get("SARI_WAL_CHECKPOINT_MIN_PAGES", "2048") or 2048),
+            )
+        except Exception:
+            self._wal_checkpoint_min_pages = 2048
+        try:
+            self._wal_idle_cpu_threshold = max(
+                1.0,
+                float(os.environ.get("SARI_WAL_IDLE_CPU_THRESHOLD", "45.0") or 45.0),
+            )
+        except Exception:
+            self._wal_idle_cpu_threshold = 45.0
+        self._sqlite_page_size = 4096
         try:
             # SQLite 최적화 설정
             self.db = SqliteDatabase(db_path, pragmas={
@@ -63,12 +94,60 @@ class LocalSearchDB:
             self.db.connect()
             init_schema(self.db.connection())
             self._init_mem_staging()
+            self._configure_wal_checkpoint_policy()
         except Exception as e:
             self.logger.error(
                 "Failed to initialize database: %s",
                 e,
                 exc_info=True)
             raise
+
+    def _configure_wal_checkpoint_policy(self) -> None:
+        conn = self.db.connection()
+        try:
+            page_size_row = conn.execute("PRAGMA page_size").fetchone()
+            if page_size_row:
+                self._sqlite_page_size = int(page_size_row[0] or 4096)
+        except Exception:
+            self._sqlite_page_size = 4096
+        if not self._wal_idle_checkpoint_enabled:
+            return
+        try:
+            conn.execute("PRAGMA wal_autocheckpoint=0")
+        except Exception:
+            self.logger.debug("failed to disable wal_autocheckpoint", exc_info=True)
+
+    def maybe_checkpoint_wal(self, *, force: bool = False) -> bool:
+        if not self._wal_idle_checkpoint_enabled:
+            return False
+        conn = self.db.connection()
+        now = time.time()
+        if not force and (now - float(self._last_wal_checkpoint_ts or 0.0)) < float(
+            self._wal_checkpoint_min_interval_sec
+        ):
+            return False
+        wal_path = f"{self.db_path}-wal"
+        try:
+            wal_bytes = int(os.path.getsize(wal_path))
+        except Exception:
+            wal_bytes = 0
+        min_bytes = int(self._wal_checkpoint_min_pages) * int(self._sqlite_page_size or 4096)
+        if not force and wal_bytes < min_bytes:
+            return False
+        if not force and _psutil is not None:
+            try:
+                cpu = float(_psutil.cpu_percent(interval=None))
+                if cpu > float(self._wal_idle_cpu_threshold):
+                    return False
+            except Exception:
+                pass
+        try:
+            conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            self._last_wal_checkpoint_ts = now
+            return True
+        except Exception:
+            self.logger.debug("wal passive checkpoint failed", exc_info=True)
+            return False
 
     def set_settings(self, settings_obj: object) -> None:
         """
@@ -241,7 +320,9 @@ class LocalSearchDB:
                 conn.execute("DELETE FROM staging_mem.files_temp")
                 if started_tx:
                     conn.execute("COMMIT")
-                self.update_stats()
+                if bool(getattr(self, "_turbo_update_stats_enabled", True)):
+                    self.update_stats()
+                self.maybe_checkpoint_wal(force=False)
             except Exception as te:
                 self.logger.error(
                     "Database merge failed: %s", te, exc_info=True)
@@ -254,6 +335,10 @@ class LocalSearchDB:
         except Exception as e:
             self.logger.error("Critical error in finalize_turbo_batch: %s", e)
             raise
+
+    def set_turbo_update_stats_enabled(self, enabled: bool) -> None:
+        """Control whether finalize_turbo_batch() updates root stats on each flush."""
+        self._turbo_update_stats_enabled = bool(enabled)
 
     def update_stats(self):
         """루트별 파일 및 심볼 통계를 갱신합니다."""
@@ -393,6 +478,12 @@ class LocalSearchDB:
             self.logger.debug("Failed to get file meta for %s: %s", path, e)
             return None
 
+    def is_payload_deferred(self, path: str) -> bool:
+        try:
+            return bool(self._file_repo().is_payload_deferred(self._resolve_db_path(path)))
+        except Exception:
+            return False
+
     def upsert_symbols_tx(self, cur, rows: List[object], root_id: str = "root"):
         """심볼 정보를 트랜잭션 내에서 일괄 삽입합니다."""
         if not rows:
@@ -437,6 +528,39 @@ class LocalSearchDB:
                 conn.execute("BEGIN IMMEDIATE TRANSACTION")
             self._symbol_repo(tx_cur).upsert_relations_tx(
                 tx_cur, rows, replace_sources=replace_sources)
+            if started_tx:
+                conn.execute("COMMIT")
+        except Exception:
+            if started_tx:
+                try:
+                    conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+            raise
+
+    def upsert_symbols_and_relations_tx(
+        self,
+        symbol_rows: List[object],
+        relation_rows: List[object],
+        replace_sources: Optional[List[Tuple[str, str]]] = None,
+    ) -> None:
+        """Persist symbols and relations within one transaction to reduce write overhead."""
+        if not symbol_rows and not relation_rows and not replace_sources:
+            return
+        conn = self.db.connection()
+        started_tx = not bool(getattr(conn, "in_transaction", False))
+        tx_cur = conn.cursor()
+        try:
+            if started_tx:
+                conn.execute("BEGIN IMMEDIATE TRANSACTION")
+            if symbol_rows:
+                self._symbol_repo(tx_cur).upsert_symbols_tx(tx_cur, symbol_rows)
+            if relation_rows or replace_sources:
+                self._symbol_repo(tx_cur).upsert_relations_tx(
+                    tx_cur,
+                    relation_rows,
+                    replace_sources=replace_sources,
+                )
             if started_tx:
                 conn.execute("COMMIT")
         except Exception:
@@ -548,6 +672,88 @@ class LocalSearchDB:
         if cur is None:
             cur = self.db.connection().cursor()
         self._file_repo(cur).update_last_seen_tx(cur, paths, ts)
+
+    def mark_lsp_dirty(self, path: str, root_id: str = "", reason: str = "") -> None:
+        normalized = self._resolve_db_path(path)
+        rid = str(root_id or (normalized.split("/", 1)[0] if "/" in normalized else "root"))
+        now = int(time.time())
+        conn = self.db.connection()
+        try:
+            conn.execute(
+                """
+                INSERT INTO lsp_indexed_files(path, root_id, dirty, error, updated_ts, created_ts)
+                VALUES(?, ?, 1, ?, ?, ?)
+                ON CONFLICT(path) DO UPDATE SET
+                  root_id=excluded.root_id,
+                  dirty=1,
+                  error=excluded.error,
+                  updated_ts=excluded.updated_ts
+                """,
+                (normalized, rid, str(reason or ""), now, now),
+            )
+        except Exception:
+            # Keep watcher/indexer path non-blocking.
+            self.logger.debug("mark_lsp_dirty failed for %s", normalized, exc_info=True)
+
+    def mark_lsp_clean(self, path: str, error: str = "") -> None:
+        normalized = self._resolve_db_path(path)
+        now = int(time.time())
+        conn = self.db.connection()
+        try:
+            conn.execute(
+                """
+                INSERT INTO lsp_indexed_files(path, root_id, dirty, error, updated_ts, created_ts)
+                VALUES(?, ?, 0, ?, ?, ?)
+                ON CONFLICT(path) DO UPDATE SET
+                  dirty=0,
+                  error=excluded.error,
+                  updated_ts=excluded.updated_ts
+                """,
+                (
+                    normalized,
+                    normalized.split("/", 1)[0] if "/" in normalized else "root",
+                    str(error or ""),
+                    now,
+                    now,
+                ),
+            )
+        except Exception:
+            self.logger.debug("mark_lsp_clean failed for %s", normalized, exc_info=True)
+
+    def get_lsp_dirty_candidates(self, limit: int = 32) -> List[Dict[str, object]]:
+        limit_value = max(1, int(limit or 32))
+        rows = self.execute(
+            """
+            SELECT f.path, f.rel_path, f.root_id, f.repo, r.root_path
+            FROM files f
+            LEFT JOIN roots r ON r.root_id = f.root_id
+            LEFT JOIN lsp_indexed_files l ON l.path = f.path
+            WHERE f.deleted_ts = 0
+              AND COALESCE(l.dirty, 1) = 1
+            ORDER BY COALESCE(l.updated_ts, 0) ASC, f.path ASC
+            LIMIT ?
+            """,
+            (limit_value,),
+        ).fetchall()
+        out: List[Dict[str, object]] = []
+        for row in rows or []:
+            d = dict(row) if isinstance(row, sqlite3.Row) else {
+                "path": row[0] if len(row) > 0 else "",
+                "rel_path": row[1] if len(row) > 1 else "",
+                "root_id": row[2] if len(row) > 2 else "",
+                "repo": row[3] if len(row) > 3 else "",
+                "root_path": row[4] if len(row) > 4 else "",
+            }
+            out.append(
+                {
+                    "path": str(d.get("path") or ""),
+                    "rel_path": str(d.get("rel_path") or ""),
+                    "root_id": str(d.get("root_id") or ""),
+                    "repo": str(d.get("repo") or ""),
+                    "root_path": str(d.get("root_path") or ""),
+                }
+            )
+        return out
 
     def search_symbols(
             self,

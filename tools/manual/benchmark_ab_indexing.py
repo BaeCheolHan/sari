@@ -1,0 +1,444 @@
+import argparse
+import contextlib
+import json
+import logging
+import os
+import statistics
+import time
+from pathlib import Path
+from typing import Any, Dict, Iterable, Iterator, List
+
+from sari.core.config import Config
+from sari.core.db.main import LocalSearchDB
+from sari.core.indexer.main import _scan_to_db
+from sari.core.workspace import WorkspaceManager
+
+
+def _percentile(values: List[float], p: float) -> float:
+    if not values:
+        return 0.0
+    if len(values) == 1:
+        return float(values[0])
+    ordered = sorted(float(v) for v in values)
+    k = (len(ordered) - 1) * max(0.0, min(100.0, float(p))) / 100.0
+    f = int(k)
+    c = min(f + 1, len(ordered) - 1)
+    if f == c:
+        return ordered[f]
+    return ordered[f] + (ordered[c] - ordered[f]) * (k - f)
+
+
+def _safe_median(values: List[float]) -> float:
+    if not values:
+        return 0.0
+    return float(statistics.median(values))
+
+
+def _improvement_pct(a: float, b: float) -> float:
+    # Positive means B is better (smaller metric value than A).
+    if a <= 0:
+        return 0.0
+    return ((a - b) / a) * 100.0
+
+
+def _parse_env_overrides(items: Iterable[str]) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for item in items:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        if "=" not in text:
+            raise ValueError(f"invalid env override: {text} (expected KEY=VALUE)")
+        key, value = text.split("=", 1)
+        k = key.strip()
+        if not k:
+            raise ValueError(f"invalid env override key: {text}")
+        out[k] = value
+    return out
+
+
+@contextlib.contextmanager
+def _patch_env(overrides: Dict[str, str]) -> Iterator[None]:
+    old: Dict[str, str | None] = {}
+    try:
+        for k, v in overrides.items():
+            old[k] = os.environ.get(k)
+            os.environ[k] = str(v)
+        yield
+    finally:
+        for k, prev in old.items():
+            if prev is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = prev
+
+
+def _get_rss_kib_current() -> int:
+    try:
+        import psutil  # type: ignore
+
+        return int(psutil.Process(os.getpid()).memory_info().rss // 1024)
+    except Exception:
+        pass
+    try:
+        import resource
+
+        return int(getattr(resource.getrusage(resource.RUSAGE_SELF), "ru_maxrss", 0) or 0)
+    except Exception:
+        return 0
+
+
+def _get_maxrss_kib() -> int:
+    try:
+        import resource
+
+        return int(getattr(resource.getrusage(resource.RUSAGE_SELF), "ru_maxrss", 0) or 0)
+    except Exception:
+        return 0
+
+
+def _run_single_trial(
+    *,
+    mode: str,
+    trial_no: int,
+    workspaces: List[Path],
+    out_dir: Path,
+    env_overrides: Dict[str, str],
+    mode_b_backfill_full: bool = False,
+) -> Dict[str, Any]:
+    db_path = out_dir / f"ab_{mode.lower()}_{trial_no}.db"
+    if db_path.exists():
+        db_path.unlink()
+
+    primary_workspace = workspaces[0]
+    defaults = Config.get_defaults(str(primary_workspace))
+    defaults["workspace_root"] = str(primary_workspace)
+    defaults["workspace_roots"] = [str(p) for p in workspaces]
+    defaults["db_path"] = str(db_path)
+    cfg = Config(**defaults)
+
+    logger = logging.getLogger("sari.ab_benchmark")
+    db = LocalSearchDB(str(db_path), logger=logger)
+    root_ids: List[str] = []
+    for workspace in workspaces:
+        root_id = WorkspaceManager.root_id(str(workspace))
+        root_ids.append(root_id)
+        db.upsert_root(root_id, str(workspace), str(workspace), label=workspace.name)
+
+    start_wall = time.perf_counter()
+    start_cpu = time.process_time()
+    start_rss = _get_rss_kib_current()
+    standby_wall_s = 0.0
+    standby_cpu_s = 0.0
+    with _patch_env(env_overrides):
+        status = _scan_to_db(cfg, db, logger)
+        standby_wall_s = time.perf_counter() - start_wall
+        standby_cpu_s = time.process_time() - start_cpu
+    backfill_status: Dict[str, Any] | None = None
+    if mode.upper() == "B" and mode_b_backfill_full:
+        backfill_env = dict(env_overrides)
+        backfill_env["SARI_INDEXER_PHASE_MODE"] = "full"
+        backfill_env["SARI_INDEXER_FORCE_REPARSE"] = "1"
+        with _patch_env(backfill_env):
+            backfill_status = _scan_to_db(cfg, db, logger)
+    full_wall_s = time.perf_counter() - start_wall
+    full_cpu_s = time.process_time() - start_cpu
+    end_rss = _get_rss_kib_current()
+
+    placeholders = ",".join("?" for _ in root_ids)
+    files = int(
+        db.execute(
+            f"SELECT COUNT(1) FROM files WHERE deleted_ts = 0 AND root_id IN ({placeholders})",
+            tuple(root_ids),
+        ).fetchone()[0]
+        or 0
+    )
+    symbols = int(
+        db.execute(
+            f"SELECT COUNT(1) FROM symbols WHERE root_id IN ({placeholders})",
+            tuple(root_ids),
+        ).fetchone()[0]
+        or 0
+    )
+    relations = int(
+        db.execute(
+            f"SELECT COUNT(1) FROM symbol_relations WHERE from_root_id IN ({placeholders}) OR to_root_id IN ({placeholders})",
+            tuple(root_ids) + tuple(root_ids),
+        ).fetchone()[0]
+        or 0
+    )
+
+    root_metrics: List[Dict[str, Any]] = []
+    for ws, rid in zip(workspaces, root_ids):
+        files_by_root = int(
+            db.execute(
+                "SELECT COUNT(1) FROM files WHERE deleted_ts = 0 AND root_id = ?",
+                (rid,),
+            ).fetchone()[0]
+            or 0
+        )
+        symbols_by_root = int(
+            db.execute(
+                "SELECT COUNT(1) FROM symbols WHERE root_id = ?",
+                (rid,),
+            ).fetchone()[0]
+            or 0
+        )
+        relations_by_root = int(
+            db.execute(
+                "SELECT COUNT(1) FROM symbol_relations WHERE from_root_id = ? OR to_root_id = ?",
+                (rid, rid),
+            ).fetchone()[0]
+            or 0
+        )
+        root_metrics.append(
+            {
+                "workspace": str(ws),
+                "root_id": rid,
+                "files": files_by_root,
+                "symbols": symbols_by_root,
+                "relations": relations_by_root,
+            }
+        )
+    db.close_all()
+
+    return {
+        "mode": mode,
+        "trial": int(trial_no),
+        "workspaces": [str(p) for p in workspaces],
+        # Backward-compatible aliases for existing consumers.
+        "wall_s": round(float(full_wall_s), 6),
+        "cpu_s": round(float(full_cpu_s), 6),
+        "standby_wall_s": round(float(standby_wall_s), 6),
+        "full_wall_s": round(float(full_wall_s), 6),
+        "standby_cpu_s": round(float(standby_cpu_s), 6),
+        "full_cpu_s": round(float(full_cpu_s), 6),
+        "maxrss_kib_delta": max(0, int(end_rss - start_rss)),
+        "files": files,
+        "symbols": symbols,
+        "relations": relations,
+        "root_metrics": root_metrics,
+        "mode_b_backfill_full": bool(mode.upper() == "B" and mode_b_backfill_full),
+        "status": {
+            "scanned_files": int(status.get("scanned_files", 0) or 0),
+            "indexed_files": int(status.get("indexed_files", 0) or 0),
+            "symbols_extracted": int(status.get("symbols_extracted", 0) or 0),
+            "errors": int(status.get("errors", 0) or 0),
+        },
+        "backfill_status": {
+            "scanned_files": int((backfill_status or {}).get("scanned_files", 0) or 0),
+            "indexed_files": int((backfill_status or {}).get("indexed_files", 0) or 0),
+            "symbols_extracted": int((backfill_status or {}).get("symbols_extracted", 0) or 0),
+            "errors": int((backfill_status or {}).get("errors", 0) or 0),
+        } if backfill_status is not None else None,
+    }
+
+
+def summarize_trials(trials: List[Dict[str, Any]], *, integrity_scope: str = "full") -> Dict[str, Any]:
+    grouped = {"A": [], "B": []}
+    for row in trials:
+        mode = str(row.get("mode", "")).upper()
+        if mode in grouped:
+            grouped[mode].append(row)
+
+    def _mode_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+        standby_wall = [float(r.get("standby_wall_s", r.get("wall_s", 0.0)) or 0.0) for r in rows]
+        full_wall = [float(r.get("full_wall_s", r.get("wall_s", 0.0)) or 0.0) for r in rows]
+        standby_cpu = [float(r.get("standby_cpu_s", r.get("cpu_s", 0.0)) or 0.0) for r in rows]
+        full_cpu = [float(r.get("full_cpu_s", r.get("cpu_s", 0.0)) or 0.0) for r in rows]
+        rss = [float(r.get("maxrss_kib_delta", 0) or 0) for r in rows]
+        files = [int(r.get("files", 0) or 0) for r in rows]
+        symbols = [int(r.get("symbols", 0) or 0) for r in rows]
+        relations = [int(r.get("relations", 0) or 0) for r in rows]
+        roots: Dict[str, Dict[str, List[int]]] = {}
+        for row in rows:
+            for item in list(row.get("root_metrics") or []):
+                ws = str(item.get("workspace") or "")
+                if not ws:
+                    continue
+                bucket = roots.setdefault(
+                    ws, {"files": [], "symbols": [], "relations": []}
+                )
+                bucket["files"].append(int(item.get("files", 0) or 0))
+                bucket["symbols"].append(int(item.get("symbols", 0) or 0))
+                bucket["relations"].append(int(item.get("relations", 0) or 0))
+        roots_summary: Dict[str, Dict[str, Any]] = {}
+        for ws, bucket in roots.items():
+            roots_summary[ws] = {
+                "files_set": sorted(set(bucket["files"])),
+                "symbols_set": sorted(set(bucket["symbols"])),
+                "relations_set": sorted(set(bucket["relations"])),
+            }
+        return {
+            "runs": len(rows),
+            # Backward-compatible aliases: wall/cpu now represent full completion.
+            "wall_s_median": round(_safe_median(full_wall), 6),
+            "wall_s_p95": round(_percentile(full_wall, 95), 6),
+            "cpu_s_median": round(_safe_median(full_cpu), 6),
+            "cpu_s_p95": round(_percentile(full_cpu, 95), 6),
+            "standby_wall_s_median": round(_safe_median(standby_wall), 6),
+            "standby_wall_s_p95": round(_percentile(standby_wall, 95), 6),
+            "full_wall_s_median": round(_safe_median(full_wall), 6),
+            "full_wall_s_p95": round(_percentile(full_wall, 95), 6),
+            "standby_cpu_s_median": round(_safe_median(standby_cpu), 6),
+            "standby_cpu_s_p95": round(_percentile(standby_cpu, 95), 6),
+            "full_cpu_s_median": round(_safe_median(full_cpu), 6),
+            "full_cpu_s_p95": round(_percentile(full_cpu, 95), 6),
+            "maxrss_kib_median": int(_safe_median(rss)),
+            "maxrss_kib_p95": int(_percentile(rss, 95)),
+            "files_set": sorted(set(files)),
+            "symbols_set": sorted(set(symbols)),
+            "relations_set": sorted(set(relations)),
+            "roots": roots_summary,
+        }
+
+    a = _mode_summary(grouped["A"])
+    b = _mode_summary(grouped["B"])
+    wall_improve = _improvement_pct(float(a["wall_s_median"]), float(b["wall_s_median"]))
+    cpu_improve = _improvement_pct(float(a["cpu_s_median"]), float(b["cpu_s_median"]))
+    standby_wall_improve = _improvement_pct(float(a["standby_wall_s_median"]), float(b["standby_wall_s_median"]))
+    full_wall_improve = _improvement_pct(float(a["full_wall_s_median"]), float(b["full_wall_s_median"]))
+
+    scope = str(integrity_scope or "full").strip().lower()
+    if scope == "files":
+        integrity_ok = bool(a["files_set"]) and bool(b["files_set"]) and a["files_set"] == b["files_set"]
+    else:
+        integrity_ok = (
+            bool(a["files_set"])
+            and bool(b["files_set"])
+            and a["files_set"] == b["files_set"]
+            and a["symbols_set"] == b["symbols_set"]
+            and a["relations_set"] == b["relations_set"]
+        )
+    load_guard_ok = (
+        float(b["cpu_s_p95"]) <= (float(a["cpu_s_p95"]) * 1.10 if float(a["cpu_s_p95"]) > 0 else float(b["cpu_s_p95"]))
+        and float(b["maxrss_kib_p95"])
+        <= (float(a["maxrss_kib_p95"]) * 1.10 if float(a["maxrss_kib_p95"]) > 0 else float(b["maxrss_kib_p95"]))
+    )
+
+    return {
+        "mode_A": a,
+        "mode_B": b,
+        "improvement_pct": {
+            "wall_s_median": round(wall_improve, 3),
+            "cpu_s_median": round(cpu_improve, 3),
+            "standby_wall_s_median": round(standby_wall_improve, 3),
+            "full_wall_s_median": round(full_wall_improve, 3),
+        },
+        "gates": {
+            "integrity_ok": bool(integrity_ok),
+            "load_guard_ok": bool(load_guard_ok),
+        },
+        "integrity_scope": scope,
+    }
+
+
+def _render_markdown(summary: Dict[str, Any], *, workspaces: List[Path], repeats: int) -> str:
+    imp = summary.get("improvement_pct", {})
+    gates = summary.get("gates", {})
+    a = summary.get("mode_A", {})
+    b = summary.get("mode_B", {})
+    return "\n".join(
+        [
+            "# A/B Initial Indexing Benchmark Report",
+            "",
+            "- Workspaces:",
+            *[f"  - `{ws}`" for ws in workspaces],
+            f"- Repeats per mode: `{int(repeats)}`",
+            "",
+            "## Improvement",
+            f"- Standby wall median improvement (B vs A): `{imp.get('standby_wall_s_median', 0)}%`",
+            f"- Full wall median improvement (B vs A): `{imp.get('full_wall_s_median', 0)}%`",
+            f"- Wall median improvement (compat alias, full): `{imp.get('wall_s_median', 0)}%`",
+            f"- CPU median improvement (B vs A): `{imp.get('cpu_s_median', 0)}%`",
+            "",
+            "## Gates",
+            f"- Integrity OK: `{gates.get('integrity_ok', False)}`",
+            f"- Load Guard OK: `{gates.get('load_guard_ok', False)}`",
+            "",
+            "## Mode A",
+            f"- standby wall median/p95: `{a.get('standby_wall_s_median', 0)}` / `{a.get('standby_wall_s_p95', 0)}`",
+            f"- full wall median/p95: `{a.get('full_wall_s_median', 0)}` / `{a.get('full_wall_s_p95', 0)}`",
+            f"- wall median/p95: `{a.get('wall_s_median', 0)}` / `{a.get('wall_s_p95', 0)}`",
+            f"- cpu median/p95: `{a.get('cpu_s_median', 0)}` / `{a.get('cpu_s_p95', 0)}`",
+            f"- rss median/p95 (KiB): `{a.get('maxrss_kib_median', 0)}` / `{a.get('maxrss_kib_p95', 0)}`",
+            f"- files/symbols/relations sets: `{a.get('files_set', [])}` / `{a.get('symbols_set', [])}` / `{a.get('relations_set', [])}`",
+            "",
+            "## Mode B",
+            f"- standby wall median/p95: `{b.get('standby_wall_s_median', 0)}` / `{b.get('standby_wall_s_p95', 0)}`",
+            f"- full wall median/p95: `{b.get('full_wall_s_median', 0)}` / `{b.get('full_wall_s_p95', 0)}`",
+            f"- wall median/p95: `{b.get('wall_s_median', 0)}` / `{b.get('wall_s_p95', 0)}`",
+            f"- cpu median/p95: `{b.get('cpu_s_median', 0)}` / `{b.get('cpu_s_p95', 0)}`",
+            f"- rss median/p95 (KiB): `{b.get('maxrss_kib_median', 0)}` / `{b.get('maxrss_kib_p95', 0)}`",
+            f"- files/symbols/relations sets: `{b.get('files_set', [])}` / `{b.get('symbols_set', [])}` / `{b.get('relations_set', [])}`",
+            "",
+        ]
+    )
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="A/B benchmark for initial indexing.")
+    p.add_argument("--workspace", action="append", required=True, help="Workspace path to benchmark (repeatable).")
+    p.add_argument("--repeats", type=int, default=5, help="Repeats per mode (A and B).")
+    p.add_argument("--out-dir", default="", help="Output directory for jsonl/json/md.")
+    p.add_argument("--mode-a-env", action="append", default=[], help="Mode A env override (KEY=VALUE).")
+    p.add_argument("--mode-b-env", action="append", default=[], help="Mode B env override (KEY=VALUE).")
+    p.add_argument(
+        "--mode-b-backfill-full",
+        action="store_true",
+        help="When mode=B, run a second pass with SARI_INDEXER_PHASE_MODE=full and include it in measured time.",
+    )
+    p.add_argument("--integrity-scope", default="full", choices=["full", "files"], help="Integrity gate scope.")
+    return p.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    workspaces = [Path(p).resolve() for p in args.workspace]
+    for workspace in workspaces:
+        if not workspace.exists() or not workspace.is_dir():
+            raise SystemExit(f"workspace not found: {workspace}")
+
+    repeats = max(1, int(args.repeats))
+    out_dir = Path(args.out_dir).resolve() if args.out_dir else workspaces[0] / ".sari-ab-bench"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    mode_a_env = _parse_env_overrides(args.mode_a_env)
+    mode_b_env = _parse_env_overrides(args.mode_b_env)
+
+    trials: List[Dict[str, Any]] = []
+    sequence: List[str] = []
+    for _ in range(repeats):
+        sequence.extend(["A", "B"])
+
+    for idx, mode in enumerate(sequence, start=1):
+        envs = mode_a_env if mode == "A" else mode_b_env
+        row = _run_single_trial(
+            mode=mode,
+            trial_no=idx,
+            workspaces=workspaces,
+            out_dir=out_dir,
+            env_overrides=envs,
+            mode_b_backfill_full=bool(args.mode_b_backfill_full),
+        )
+        trials.append(row)
+
+    jsonl_path = out_dir / "trials.jsonl"
+    with jsonl_path.open("w", encoding="utf-8") as f:
+        for row in trials:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+    summary = summarize_trials(trials, integrity_scope=str(args.integrity_scope))
+    summary_path = out_dir / "summary.json"
+    summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    report = _render_markdown(summary, workspaces=workspaces, repeats=repeats)
+    report_path = out_dir / "report.md"
+    report_path.write_text(report, encoding="utf-8")
+
+    print(json.dumps({"trials": str(jsonl_path), "summary": str(summary_path), "report": str(report_path)}, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

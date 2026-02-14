@@ -86,11 +86,11 @@ def test_drift_sensitive_tools_do_not_crash_on_schema_names(db, tmp_path):
     ws_root, _, file_path = _seed_workspace_and_symbol(db, tmp_path)
     roots = [str(ws_root)]
 
-    list_symbols_res = execute_list_symbols({"path": str(file_path)}, db, roots)
+    list_symbols_res = execute_list_symbols({"path": str(file_path), "repo": "repo1"}, db, roots)
     assert isinstance(list_symbols_res, dict)
     assert not list_symbols_res.get("isError", False)
 
-    api_res = execute_search_api_endpoints({"path": "/api/users"}, db, roots)
+    api_res = execute_search_api_endpoints({"path": "/api/users", "repo": "repo1"}, db, roots)
     assert isinstance(api_res, dict)
     assert not api_res.get("isError", False)
 
@@ -111,15 +111,15 @@ def test_registry_smoke_for_contract_drift_tools(db, tmp_path):
         policy_engine=None,
     )
 
-    res_repo = reg.execute("search", ctx, {"query": "api", "search_type": "repo", "root_ids": [rid]})
+    res_repo = reg.execute("search", ctx, {"query": "api", "search_type": "repo", "root_ids": [rid], "repo": "repo1"})
     assert isinstance(res_repo, dict)
     assert not res_repo.get("isError", False)
 
-    res_list = reg.execute("list_symbols", ctx, {"path": str(file_path)})
+    res_list = reg.execute("list_symbols", ctx, {"path": str(file_path), "repo": "repo1"})
     assert isinstance(res_list, dict)
     assert not res_list.get("isError", False)
 
-    res_api = reg.execute("search", ctx, {"query": "/api/users", "search_type": "api"})
+    res_api = reg.execute("search", ctx, {"query": "/api/users", "search_type": "api", "repo": "repo1"})
     assert isinstance(res_api, dict)
     assert not res_api.get("isError", False)
 

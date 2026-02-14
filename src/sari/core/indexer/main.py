@@ -1,6 +1,7 @@
 import os
 import time
 import json
+import inspect
 import logging
 import threading
 import multiprocessing
@@ -13,12 +14,19 @@ from pathlib import Path
 import uuid
 from sari.core.config.main import Config
 from sari.core.db.main import LocalSearchDB
-from .worker import IndexWorker
+from .worker import IndexWorker, init_process_worker, process_file_task_in_process
 from .scanner import Scanner
 from sari.core.workspace import WorkspaceManager
 from sari.core.utils.path import PathUtils
+from sari.core.lsp.hydrator import hydrate_file_symbols_from_text, sync_lsp_snapshot
 
 from sari.core.models import IndexingResult
+
+_PROCESS_POOL_ALLOWED: Optional[bool] = None
+try:
+    import psutil as _psutil  # type: ignore
+except Exception:
+    _psutil = None
 
 
 def _is_pid_alive(pid: int) -> bool:
@@ -132,6 +140,105 @@ def _adaptive_flush_threshold(
     return norm_base
 
 
+def _default_laptop_max_workers() -> int:
+    cpu = int(os.cpu_count() or 4)
+    try:
+        reserve = max(1, int(os.environ.get("SARI_INDEXER_RESERVE_CORES", "2") or 2))
+    except Exception:
+        reserve = 2
+    try:
+        hard_cap = max(1, int(os.environ.get("SARI_INDEXER_MAX_WORKERS_CAP", "8") or 8))
+    except Exception:
+        hard_cap = 8
+    workers = max(1, cpu - reserve)
+    # On small laptops, keep at least 2 workers but don't exceed cap.
+    workers = max(2 if cpu >= 2 else 1, workers)
+    return max(1, min(workers, hard_cap))
+
+
+def _default_laptop_max_inflight(max_workers: int) -> int:
+    # Lower inflight depth to reduce memory pressure and UI contention.
+    return max(int(max_workers), min(int(max_workers) * 2, 32))
+
+
+def _update_cpu_throttle_state(
+    active: bool,
+    cpu_percent: float,
+    *,
+    high_watermark: float,
+    resume_watermark: float,
+) -> bool:
+    if active:
+        return float(cpu_percent) > float(resume_watermark)
+    return float(cpu_percent) >= float(high_watermark)
+
+
+def _effective_inflight_limit(
+    max_inflight: int,
+    max_workers: int,
+    *,
+    throttle_active: bool,
+    throttle_workers: int,
+) -> int:
+    base = max(1, int(max_inflight or 1))
+    if not throttle_active:
+        return base
+    tw = max(1, int(throttle_workers or 1))
+    # Keep backlog shallow under contention.
+    return max(1, min(base, max(tw, tw * 2, max_workers // 2)))
+
+
+def _read_system_cpu_percent() -> Optional[float]:
+    if _psutil is None:
+        return None
+    try:
+        return float(_psutil.cpu_percent(interval=None))
+    except Exception:
+        return None
+
+
+def _apply_incremental_low_impact_caps(
+    max_workers: int,
+    max_inflight: int,
+    *,
+    incremental_mode: bool,
+    enabled: bool,
+) -> tuple[int, int]:
+    if not enabled or not incremental_mode:
+        return max(1, int(max_workers or 1)), max(1, int(max_inflight or 1))
+    workers = max(1, min(int(max_workers or 1), 4))
+    inflight = max(workers, min(int(max_inflight or workers), 8))
+    return workers, inflight
+
+
+def _maybe_raise_initial_flush_threshold(
+    *,
+    key: str,
+    current: int,
+    initial_all_empty: bool,
+    multiplier: int,
+    minimum: int,
+) -> int:
+    if not initial_all_empty:
+        return max(1, int(current or 1))
+    if key in os.environ:
+        return max(1, int(current or 1))
+    return max(int(minimum), int(current or 1) * int(multiplier))
+
+
+def _maybe_raise_initial_max_buffer_bytes(
+    *,
+    current: int,
+    initial_all_empty: bool,
+    minimum_bytes: int,
+) -> int:
+    if not initial_all_empty:
+        return max(1, int(current or 1))
+    if "SARI_INDEXER_MAX_BUFFER_MB" in os.environ:
+        return max(1, int(current or 1))
+    return max(int(minimum_bytes), int(current or 1))
+
+
 def _scan_to_db(config: Config, db: LocalSearchDB,
                 logger: logging.Logger,
                 parent_pid: Optional[int] = None,
@@ -147,20 +254,60 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
         "scanned_files": 0,
         "indexed_files": 0,
         "symbols_extracted": 0,
+        "symbols_deferred_files": 0,
         "errors": 0,
         "index_version": "",
         "adaptive_flush_enabled": False,
+        "perf": {},
+    }
+    perf_stats: dict[str, float] = {
+        "worker_result_ms": 0.0,
+        "flush_files_ms": 0.0,
+        "flush_files_calls": 0.0,
+        "flush_symbols_ms": 0.0,
+        "flush_symbols_calls": 0.0,
+        "flush_relations_ms": 0.0,
+        "flush_relations_calls": 0.0,
+        "flush_seen_ms": 0.0,
+        "flush_seen_calls": 0.0,
+        "cleanup_ms": 0.0,
     }
     worker = IndexWorker(config, db, logger, None)
-    max_workers = os.cpu_count() or 4
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
     try:
-        max_inflight = max(
-            int(max_workers),
-            int(os.environ.get("SARI_INDEXER_MAX_INFLIGHT", str(max_workers * 4)) or str(max_workers * 4)),
+        _worker_sig_params = inspect.signature(worker.process_file_task).parameters
+        _worker_accepts_skip_prev_lookup = "skip_prev_lookup" in _worker_sig_params
+        _worker_accepts_split_value_payload = "split_value_payload" in _worker_sig_params
+        _worker_accepts_force = "force" in _worker_sig_params
+    except Exception:
+        _worker_accepts_skip_prev_lookup = True
+        _worker_accepts_split_value_payload = True
+        _worker_accepts_force = True
+    prev_turbo_update_stats_enabled = True
+    if hasattr(db, "set_turbo_update_stats_enabled"):
+        try:
+            prev_turbo_update_stats_enabled = bool(
+                getattr(db, "_turbo_update_stats_enabled", True)
+            )
+            db.set_turbo_update_stats_enabled(False)
+        except Exception:
+            prev_turbo_update_stats_enabled = True
+    default_max_workers = _default_laptop_max_workers()
+    try:
+        max_workers = max(
+            1,
+            int(os.environ.get("SARI_INDEXER_MAX_WORKERS", str(default_max_workers)) or str(default_max_workers)),
         )
     except Exception:
-        max_inflight = int(max_workers) * 4
+        max_workers = default_max_workers
+    executor: Optional[concurrent.futures.Executor] = None
+    try:
+        default_inflight = _default_laptop_max_inflight(max_workers)
+        max_inflight = max(
+            int(max_workers),
+            int(os.environ.get("SARI_INDEXER_MAX_INFLIGHT", str(default_inflight)) or str(default_inflight)),
+        )
+    except Exception:
+        max_inflight = _default_laptop_max_inflight(max_workers)
     try:
         flush_file_rows = max(1, int(os.environ.get("SARI_INDEXER_FLUSH_FILE_ROWS", "200") or 200))
     except Exception:
@@ -190,6 +337,74 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
     adaptive_flush_enabled = str(
         os.environ.get("SARI_INDEXER_ADAPTIVE_FLUSH", "1")
     ).strip().lower() in {"1", "true", "yes", "on"}
+    phase_mode = str(os.environ.get("SARI_INDEXER_PHASE_MODE", "full") or "full").strip().lower()
+    # Keep fast-mode deferral, but allow symbol extraction in full mode for compatibility.
+    extract_symbols_default = phase_mode != "fast"
+    extract_symbols_enabled = str(
+        os.environ.get(
+            "SARI_INDEXER_EXTRACT_SYMBOLS",
+            "1" if extract_symbols_default else "0",
+        )
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    force_reparse_enabled = str(
+        os.environ.get("SARI_INDEXER_FORCE_REPARSE", "0")
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    initial_fastpath_enabled = str(
+        os.environ.get("SARI_INDEXER_INITIAL_FASTPATH", "1")
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    value_index_split_enabled = str(
+        os.environ.get("SARI_INDEXER_VALUE_INDEX_SPLIT", "0")
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    combined_symbol_rel_tx_enabled = str(
+        os.environ.get("SARI_INDEXER_COMBINED_SYMBOL_REL_TX", "1")
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    initial_flush_tuning_enabled = str(
+        os.environ.get("SARI_INDEXER_INITIAL_FLUSH_TUNING", "0")
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    cpu_throttle_enabled = str(
+        os.environ.get("SARI_INDEXER_CPU_THROTTLE_ENABLED", "1")
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    try:
+        cpu_high_watermark = float(
+            os.environ.get("SARI_INDEXER_CPU_HIGH_WATERMARK", "70") or 70
+        )
+    except Exception:
+        cpu_high_watermark = 70.0
+    try:
+        cpu_resume_watermark = float(
+            os.environ.get("SARI_INDEXER_CPU_RESUME_WATERMARK", "55") or 55
+        )
+    except Exception:
+        cpu_resume_watermark = 55.0
+    if cpu_resume_watermark > cpu_high_watermark:
+        cpu_resume_watermark = max(0.0, cpu_high_watermark - 5.0)
+    try:
+        cpu_sample_sec = max(
+            0.2,
+            float(os.environ.get("SARI_INDEXER_CPU_SAMPLE_SEC", "1.0") or 1.0),
+        )
+    except Exception:
+        cpu_sample_sec = 1.0
+    try:
+        throttled_workers = max(
+            1,
+            int(os.environ.get("SARI_INDEXER_CPU_THROTTLED_WORKERS", "2") or 2),
+        )
+    except Exception:
+        throttled_workers = 2
+    incremental_low_impact_enabled = str(
+        os.environ.get("SARI_INDEXER_INCREMENTAL_LOW_IMPACT", "1")
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    try:
+        max_buffer_bytes = max(
+            1 << 20,
+            int(os.environ.get("SARI_INDEXER_MAX_BUFFER_BYTES", str(64 * 1024 * 1024)) or str(64 * 1024 * 1024)),
+        )
+    except Exception:
+        max_buffer_bytes = 64 * 1024 * 1024
+    cpu_throttle_active = False
+    last_cpu_sample_ts = 0.0
+    sampled_cpu_percent: Optional[float] = None
     status["adaptive_flush_enabled"] = bool(adaptive_flush_enabled)
     last_progress_ts = time.time()
     flush_state: dict[str, int] = {
@@ -223,6 +438,8 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
         payload["stage"] = str(stage or "")
         payload["pending_inflight"] = int(len(pending)) if "pending" in locals() else 0
         payload["max_inflight"] = int(max_inflight)
+        payload["cpu_throttle_active"] = bool(cpu_throttle_active)
+        payload["cpu_percent"] = sampled_cpu_percent
         payload["flush_thresholds"] = dict(flush_state)
         if progress_callback is not None:
             try:
@@ -257,13 +474,126 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
 
         pending: set[concurrent.futures.Future] = set()
         now = int(time.time())
+        root_initial_empty: dict[str, bool] = {}
+        if initial_fastpath_enabled:
+            for root in config.workspace_roots:
+                rid = WorkspaceManager.root_id(str(root))
+                try:
+                    row = db.execute(
+                        "SELECT 1 FROM files WHERE root_id = ? AND deleted_ts = 0 LIMIT 1",
+                        (rid,),
+                    ).fetchone()
+                    root_initial_empty[rid] = row is None
+                except Exception:
+                    root_initial_empty[rid] = False
+        initial_all_empty = bool(root_initial_empty) and all(
+            bool(v) for v in root_initial_empty.values()
+        )
+        if initial_flush_tuning_enabled:
+            # Experimental initial flush tuning (opt-in only).
+            flush_file_rows = _maybe_raise_initial_flush_threshold(
+                key="SARI_INDEXER_FLUSH_FILE_ROWS",
+                current=flush_file_rows,
+                initial_all_empty=initial_all_empty,
+                multiplier=3,
+                minimum=600,
+            )
+            flush_seen_rows = _maybe_raise_initial_flush_threshold(
+                key="SARI_INDEXER_FLUSH_SEEN_ROWS",
+                current=flush_seen_rows,
+                initial_all_empty=initial_all_empty,
+                multiplier=8,
+                minimum=8000,
+            )
+            flush_symbol_rows = _maybe_raise_initial_flush_threshold(
+                key="SARI_INDEXER_FLUSH_SYMBOL_ROWS",
+                current=flush_symbol_rows,
+                initial_all_empty=initial_all_empty,
+                multiplier=2,
+                minimum=4000,
+            )
+            flush_rel_rows = _maybe_raise_initial_flush_threshold(
+                key="SARI_INDEXER_FLUSH_REL_ROWS",
+                current=flush_rel_rows,
+                initial_all_empty=initial_all_empty,
+                multiplier=2,
+                minimum=8000,
+            )
+            flush_rel_replace_rows = _maybe_raise_initial_flush_threshold(
+                key="SARI_INDEXER_FLUSH_REL_REPLACE_ROWS",
+                current=flush_rel_replace_rows,
+                initial_all_empty=initial_all_empty,
+                multiplier=2,
+                minimum=4000,
+            )
+            max_buffer_bytes = _maybe_raise_initial_max_buffer_bytes(
+                current=max_buffer_bytes,
+                initial_all_empty=initial_all_empty,
+                minimum_bytes=128 * 1024 * 1024,
+            )
+        split_value_payload = bool(value_index_split_enabled and initial_all_empty and not force_reparse_enabled)
+        max_workers, max_inflight = _apply_incremental_low_impact_caps(
+            max_workers,
+            max_inflight,
+            incremental_mode=not initial_all_empty,
+            enabled=incremental_low_impact_enabled,
+        )
+        use_process_pool = False
+        global _PROCESS_POOL_ALLOWED
+        if initial_fastpath_enabled and root_initial_empty:
+            try:
+                # ProcessPool path is intentionally opt-in only.
+                # It is environment/permission dependent and performance is not
+                # guaranteed to be stable across platforms. Use with caution.
+                process_pool_enabled = str(
+                    os.environ.get("SARI_INDEXER_INITIAL_PROCESS_POOL", "0")
+                ).strip().lower() in {"1", "true", "yes", "on"}
+            except Exception:
+                process_pool_enabled = False
+            use_process_pool = bool(
+                process_pool_enabled
+                and initial_all_empty
+                and not force_reparse_enabled
+            )
+            # Keep UI responsive when system is already busy.
+            if cpu_throttle_enabled:
+                cpu_now = _read_system_cpu_percent()
+                if cpu_now is not None and cpu_now >= cpu_high_watermark:
+                    use_process_pool = False
+            if _PROCESS_POOL_ALLOWED is False:
+                use_process_pool = False
+            if process_pool_enabled and logger:
+                logger.warning(
+                    "initial process pool is experimental and environment-dependent; deterministic performance is not guaranteed"
+                )
+        if use_process_pool:
+            cfg_payload = config.model_dump(mode="python") if hasattr(config, "model_dump") else dict(config.__dict__)
+            try:
+                executor = concurrent.futures.ProcessPoolExecutor(
+                    max_workers=max_workers,
+                    initializer=init_process_worker,
+                    initargs=(cfg_payload,),
+                )
+                _PROCESS_POOL_ALLOWED = True
+            except Exception as e:
+                use_process_pool = False
+                _PROCESS_POOL_ALLOWED = False
+                if logger:
+                    logger.warning("initial process pool unavailable; fallback to thread pool: %s", e)
+                executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+        else:
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
         file_rows = []
         seen_paths = []
         all_symbols = []
         all_relations = []
         relation_replace_sources: set[tuple[str, str]] = set()
+        file_buffer_bytes = 0
+        symbol_buffer_bytes = 0
+        relation_buffer_bytes = 0
 
         def _flush_batches(force: bool = False) -> None:
+            nonlocal file_buffer_bytes, symbol_buffer_bytes, relation_buffer_bytes
             file_rows_threshold = _adaptive_flush_threshold(
                 flush_file_rows,
                 pending_count=len(pending),
@@ -292,49 +622,96 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
             flush_state["symbol_rows"] = int(symbol_rows_threshold)
             flush_state["rel_rows"] = int(rel_rows_threshold)
             flush_state["rel_replace_rows"] = int(rel_replace_threshold)
+            files_flushed = False
             if file_rows and (force or len(file_rows) >= file_rows_threshold):
                 rows = list(file_rows)
                 file_rows.clear()
+                file_buffer_bytes = 0
+                t0 = time.perf_counter()
                 db.upsert_files_turbo(rows)
                 db.finalize_turbo_batch()
-            if all_symbols and (force or len(all_symbols) >= symbol_rows_threshold):
-                rows = list(all_symbols)
-                all_symbols.clear()
+                perf_stats["flush_files_ms"] += (time.perf_counter() - t0) * 1000.0
+                perf_stats["flush_files_calls"] += 1.0
+                files_flushed = True
+            # Symbols reference files(path) via FK; when symbol flush is due,
+            # ensure pending file rows are committed first.
+            if (
+                file_rows
+                and not files_flushed
+                and all_symbols
+                and (force or len(all_symbols) >= symbol_rows_threshold)
+            ):
+                rows = list(file_rows)
+                file_rows.clear()
+                file_buffer_bytes = 0
+                t0 = time.perf_counter()
+                db.upsert_files_turbo(rows)
+                db.finalize_turbo_batch()
+                perf_stats["flush_files_ms"] += (time.perf_counter() - t0) * 1000.0
+                perf_stats["flush_files_calls"] += 1.0
+                files_flushed = True
+            symbols_due = bool(all_symbols and (force or len(all_symbols) >= symbol_rows_threshold))
+            relations_due = bool(all_relations and (force or len(all_relations) >= rel_rows_threshold))
+            replace_due = bool(
+                relation_replace_sources
+                and (force or len(relation_replace_sources) >= rel_replace_threshold)
+            )
+            if symbols_due or relations_due or replace_due:
+                symbol_rows = list(all_symbols) if symbols_due else []
+                relation_rows = list(all_relations) if relations_due else []
+                replace_sources = list(relation_replace_sources) if (relations_due or replace_due) else []
+                if symbols_due:
+                    all_symbols.clear()
+                    symbol_buffer_bytes = 0
+                if relations_due:
+                    all_relations.clear()
+                    relation_buffer_bytes = 0
+                if relations_due or replace_due:
+                    relation_replace_sources.clear()
                 try:
-                    db.upsert_symbols_tx(None, rows)
+                    t0 = time.perf_counter()
+                    if symbol_rows and not relation_rows and not replace_sources:
+                        if combined_symbol_rel_tx_enabled:
+                            db.upsert_symbols_and_relations_tx(
+                                symbol_rows,
+                                [],
+                                replace_sources=[],
+                            )
+                        else:
+                            db.upsert_symbols_tx(None, symbol_rows)
+                            db.upsert_relations_tx(None, [], replace_sources=[])
+                            perf_stats["flush_relations_calls"] += 1.0
+                        perf_stats["flush_symbols_calls"] += 1.0
+                    elif replace_sources and not symbol_rows and not relation_rows:
+                        db.upsert_relations_tx(None, [], replace_sources=replace_sources)
+                        perf_stats["flush_relations_calls"] += 1.0
+                    elif relation_rows and not symbol_rows:
+                        db.upsert_relations_tx(None, relation_rows, replace_sources=replace_sources)
+                        perf_stats["flush_relations_calls"] += 1.0
+                    elif not combined_symbol_rel_tx_enabled:
+                        if symbol_rows:
+                            db.upsert_symbols_tx(None, symbol_rows)
+                            perf_stats["flush_symbols_calls"] += 1.0
+                        db.upsert_relations_tx(None, relation_rows, replace_sources=replace_sources)
+                        perf_stats["flush_relations_calls"] += 1.0
+                    else:
+                        db.upsert_symbols_and_relations_tx(
+                            symbol_rows,
+                            relation_rows,
+                            replace_sources=replace_sources,
+                        )
+                        if symbol_rows:
+                            perf_stats["flush_symbols_calls"] += 1.0
+                        if relation_rows or replace_sources:
+                            perf_stats["flush_relations_calls"] += 1.0
+                    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+                    if symbol_rows:
+                        perf_stats["flush_symbols_ms"] += elapsed_ms
+                    if relation_rows or replace_sources:
+                        perf_stats["flush_relations_ms"] += elapsed_ms
                 except Exception as e:
                     if logger:
-                        logger.error(f"Failed to store extracted symbols: {e}")
-            if all_relations and (force or len(all_relations) >= rel_rows_threshold):
-                rows = list(all_relations)
-                all_relations.clear()
-                replace_sources = list(relation_replace_sources)
-                relation_replace_sources.clear()
-                try:
-                    db.upsert_relations_tx(
-                        None,
-                        rows,
-                        replace_sources=replace_sources,
-                    )
-                except Exception as e:
-                    if logger:
-                        logger.error(f"Failed to store extracted relations: {e}")
-            elif relation_replace_sources and force:
-                replace_sources = list(relation_replace_sources)
-                relation_replace_sources.clear()
-                try:
-                    db.upsert_relations_tx(None, [], replace_sources=replace_sources)
-                except Exception as e:
-                    if logger:
-                        logger.error(f"Failed to replace extracted relations: {e}")
-            elif relation_replace_sources and len(relation_replace_sources) >= rel_replace_threshold:
-                replace_sources = list(relation_replace_sources)
-                relation_replace_sources.clear()
-                try:
-                    db.upsert_relations_tx(None, [], replace_sources=replace_sources)
-                except Exception as e:
-                    if logger:
-                        logger.error(f"Failed to replace extracted relations: {e}")
+                        logger.error(f"Failed to store extracted symbol/relations: {e}")
 
         def _flush_seen_paths(force: bool = False) -> None:
             if not seen_paths:
@@ -351,24 +728,39 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
             rows = list(OrderedDict.fromkeys(seen_paths))
             seen_paths.clear()
             try:
+                t0 = time.perf_counter()
                 db.update_last_seen_tx(None, rows, now)
+                perf_stats["flush_seen_ms"] += (time.perf_counter() - t0) * 1000.0
+                perf_stats["flush_seen_calls"] += 1.0
             except Exception as e:
                 if logger:
                     logger.error(f"Failed to refresh last_seen_ts for scanned paths: {e}")
 
         def _consume_future_result(future: concurrent.futures.Future) -> None:
+            nonlocal file_buffer_bytes, symbol_buffer_bytes, relation_buffer_bytes
             _ensure_parent_alive()
             try:
-                res: Optional[IndexingResult] = future.result()
+                t0 = time.perf_counter()
+                res_obj: Optional[IndexingResult | dict[str, object]] = future.result()
+                perf_stats["worker_result_ms"] += (time.perf_counter() - t0) * 1000.0
+                if isinstance(res_obj, dict):
+                    res = IndexingResult(**res_obj)
+                else:
+                    res = res_obj
                 if not res:
                     return
 
                 if res.type in ("changed", "new"):
                     status["indexed_files"] += 1
                     file_rows.append(res.to_file_row())
+                    try:
+                        file_buffer_bytes += int(getattr(res, "content_bytes", 0) or 0) + 256
+                    except Exception:
+                        file_buffer_bytes += 256
 
                     root_id = res.root_id
-                    relation_replace_sources.add((res.path, root_id))
+                    if not bool(root_initial_empty.get(root_id, False)):
+                        relation_replace_sources.add((res.path, root_id))
                     if res.symbols:
                         for s in res.symbols:
                             all_symbols.append(
@@ -381,11 +773,13 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
                                  s.end_line,
                                  s.content,
                                  s.parent,
-                                 json.dumps(
-                                     s.meta),
+                                 "{}" if not s.meta else json.dumps(s.meta),
                                     s.doc,
                                     s.qualname))
+                            symbol_buffer_bytes += len(getattr(s, "content", "") or "") + len(getattr(s, "name", "") or "") + 64
                         status["symbols_extracted"] += len(res.symbols)
+                    elif not extract_symbols_enabled:
+                        status["symbols_deferred_files"] += 1
 
                     if res.relations:
                         for r in res.relations:
@@ -400,8 +794,13 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
                                  r.to_sid,
                                  r.rel_type,
                                  r.line,
-                                 json.dumps(
-                                     r.meta)))
+                                 "{}" if not r.meta else json.dumps(r.meta)))
+                            relation_buffer_bytes += (
+                                len(getattr(r, "from_name", "") or "")
+                                + len(getattr(r, "to_name", "") or "")
+                                + len(getattr(r, "rel_type", "") or "")
+                                + 96
+                            )
 
             except Exception as e:
                 status["errors"] += 1
@@ -410,7 +809,8 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
                 _emit_progress(stage="collect_error")
             else:
                 _emit_progress(stage="collect")
-                _flush_batches(force=False)
+                buffered_total = int(file_buffer_bytes) + int(symbol_buffer_bytes) + int(relation_buffer_bytes)
+                _flush_batches(force=buffered_total >= int(max_buffer_bytes))
 
         def _drain_pending(wait_one: bool) -> None:
             if not pending:
@@ -427,21 +827,118 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
             for fut in done:
                 _consume_future_result(fut)
 
+        def _submit_worker_task(
+            root: Path,
+            path: Path,
+            st: object,
+            rid: str,
+            *,
+            force: bool,
+            skip_prev_lookup: bool,
+            extract_symbols: bool,
+            split_value_payload_flag: bool,
+        ) -> concurrent.futures.Future:
+            kwargs: dict[str, object] = {
+                "root_id": rid,
+                "extract_symbols": extract_symbols,
+            }
+            if force and _worker_accepts_force:
+                kwargs["force"] = True
+            if _worker_accepts_skip_prev_lookup:
+                kwargs["skip_prev_lookup"] = skip_prev_lookup
+            if _worker_accepts_split_value_payload:
+                kwargs["split_value_payload"] = split_value_payload_flag
+            return executor.submit(
+                worker.process_file_task,
+                root,
+                path,
+                st,
+                now,
+                st.st_mtime,
+                True,
+                **kwargs,
+            )
+
         for root, path, rid, st in _get_files_generator():
             _ensure_parent_alive()
+            if cpu_throttle_enabled:
+                ts_now = time.time()
+                if (ts_now - last_cpu_sample_ts) >= cpu_sample_sec:
+                    last_cpu_sample_ts = ts_now
+                    cpu_now = _read_system_cpu_percent()
+                    if cpu_now is not None:
+                        sampled_cpu_percent = float(cpu_now)
+                        cpu_throttle_active = _update_cpu_throttle_state(
+                            cpu_throttle_active,
+                            sampled_cpu_percent,
+                            high_watermark=cpu_high_watermark,
+                            resume_watermark=cpu_resume_watermark,
+                        )
             status["scanned_files"] += 1
             rel_to_root = PathUtils.to_relative(str(path), str(root)) or path.name
             seen_paths.append(f"{rid}/{rel_to_root}")
             _flush_seen_paths(force=False)
             _emit_progress(stage="enqueue")
             try:
-                # 파일 처리 작업을 쓰레드 풀에 제출
-                fut = executor.submit(
-                    worker.process_file_task,
-                    root, path, st, now, st.st_mtime, True, root_id=rid
-                )
+                # 파일 처리 작업을 실행기에 제출
+                skip_prev_lookup = bool(root_initial_empty.get(rid, False))
+                if use_process_pool:
+                    fut = executor.submit(
+                        process_file_task_in_process,
+                        (
+                            str(root),
+                            str(path),
+                            int(getattr(st, "st_mtime", 0) or 0),
+                            int(getattr(st, "st_size", 0) or 0),
+                            int(now),
+                            float(getattr(st, "st_mtime", 0.0) or 0.0),
+                            str(rid),
+                            bool(extract_symbols_enabled),
+                            bool(split_value_payload),
+                        ),
+                    )
+                elif force_reparse_enabled:
+                    fut = _submit_worker_task(
+                        root,
+                        path,
+                        st,
+                        rid,
+                        force=True,
+                        skip_prev_lookup=skip_prev_lookup,
+                        extract_symbols=extract_symbols_enabled,
+                        split_value_payload_flag=False,
+                    )
+                else:
+                    if skip_prev_lookup:
+                        fut = _submit_worker_task(
+                            root,
+                            path,
+                            st,
+                            rid,
+                            force=False,
+                            skip_prev_lookup=True,
+                            extract_symbols=extract_symbols_enabled,
+                            split_value_payload_flag=split_value_payload,
+                        )
+                    else:
+                        fut = _submit_worker_task(
+                            root,
+                            path,
+                            st,
+                            rid,
+                            force=False,
+                            skip_prev_lookup=False,
+                            extract_symbols=extract_symbols_enabled,
+                            split_value_payload_flag=split_value_payload,
+                        )
                 pending.add(fut)
-                if len(pending) >= max_inflight:
+                effective_inflight = _effective_inflight_limit(
+                    max_inflight,
+                    max_workers,
+                    throttle_active=cpu_throttle_active and not use_process_pool,
+                    throttle_workers=throttled_workers,
+                )
+                if len(pending) >= effective_inflight:
                     _drain_pending(wait_one=True)
             except Exception:
                 status["errors"] += 1
@@ -452,6 +949,13 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
         # 데이터베이스 일괄 업데이트 (Batch Update)
         _flush_seen_paths(force=True)
         _flush_batches(force=True)
+        if int(perf_stats["flush_relations_calls"]) == 0 and int(status.get("indexed_files", 0) or 0) > 0:
+            try:
+                db.upsert_relations_tx(None, [], replace_sources=[])
+                perf_stats["flush_relations_calls"] += 1.0
+            except Exception:
+                if logger:
+                    logger.debug("final empty relation cleanup flush skipped", exc_info=True)
         # 현재 스캔에서 관측되지 않은 과거 row는 soft-delete 처리한다.
         # exclude 정책 변경 시 기존 노이즈(.venv/.idea 등)가 검색에 남지 않도록 보장한다.
         try:
@@ -462,23 +966,52 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
                 except Exception:
                     continue
             scanned_root_ids = [rid for rid in scanned_root_ids if rid]
-            if scanned_root_ids:
+            if scanned_root_ids and not initial_all_empty:
+                t0 = time.perf_counter()
                 _cleanup_deleted_paths(
                     db,
                     scanned_root_ids,
                     now_ts=now,
                     logger=logger,
                 )
+                perf_stats["cleanup_ms"] += (time.perf_counter() - t0) * 1000.0
         except Exception:
             if logger:
                 logger.debug("legacy-row soft-delete cleanup skipped", exc_info=True)
 
         status["scan_finished_ts"] = int(time.time())
         status["index_version"] = str(status["scan_finished_ts"])
+        status["perf"] = {
+            "worker_result_ms": round(float(perf_stats["worker_result_ms"]), 3),
+            "flush_files_ms": round(float(perf_stats["flush_files_ms"]), 3),
+            "flush_files_calls": int(perf_stats["flush_files_calls"]),
+            "flush_symbols_ms": round(float(perf_stats["flush_symbols_ms"]), 3),
+            "flush_symbols_calls": int(perf_stats["flush_symbols_calls"]),
+            "flush_relations_ms": round(float(perf_stats["flush_relations_ms"]), 3),
+            "flush_relations_calls": int(perf_stats["flush_relations_calls"]),
+            "flush_seen_ms": round(float(perf_stats["flush_seen_ms"]), 3),
+            "flush_seen_calls": int(perf_stats["flush_seen_calls"]),
+            "cleanup_ms": round(float(perf_stats["cleanup_ms"]), 3),
+        }
+        if logger:
+            logger.info(
+                "indexer_perf worker_ms=%.2f file_flush_ms=%.2f symbol_flush_ms=%.2f rel_flush_ms=%.2f seen_flush_ms=%.2f",
+                float(status["perf"]["worker_result_ms"]),
+                float(status["perf"]["flush_files_ms"]),
+                float(status["perf"]["flush_symbols_ms"]),
+                float(status["perf"]["flush_relations_ms"]),
+                float(status["perf"]["flush_seen_ms"]),
+            )
         _emit_progress(force=True, stage="done")
         return status
     finally:
-        executor.shutdown(wait=True, cancel_futures=True)
+        if hasattr(db, "set_turbo_update_stats_enabled"):
+            try:
+                db.set_turbo_update_stats_enabled(prev_turbo_update_stats_enabled)
+            except Exception:
+                pass
+        if executor is not None:
+            executor.shutdown(wait=True, cancel_futures=True)
 
 
 def _worker_build_snapshot(
@@ -762,6 +1295,7 @@ class Indexer:
         """백그라운드에서 주기적으로 인덱싱 작업을 수행하는 무한 루프입니다."""
         next_due = time.time()
         while not self._stop_event.is_set():
+            self._reconcile_lsp_dirty_once()
             self._finalize_worker_if_done()
             now = time.time()
             if self._rescan_event.is_set() or now >= next_due:
@@ -770,16 +1304,98 @@ class Indexer:
                 next_due = now + self.config.scan_interval_seconds
             time.sleep(0.2)
 
+    def _reconcile_lsp_dirty_once(self) -> None:
+        """Process a small dirty LSP batch without blocking indexing loop."""
+        if not hasattr(self.db, "get_lsp_dirty_candidates"):
+            return
+        try:
+            batch_size = int(os.environ.get("SARI_LSP_RECONCILE_BATCH", "8") or 8)
+        except Exception:
+            batch_size = 8
+        batch_size = max(1, min(batch_size, 64))
+        try:
+            candidates = self.db.get_lsp_dirty_candidates(limit=batch_size)
+        except Exception:
+            if self.logger:
+                self.logger.debug("failed to load lsp dirty candidates", exc_info=True)
+            return
+        if not candidates:
+            return
+
+        for c in candidates:
+            db_path = str(c.get("path") or "")
+            rel_path = str(c.get("rel_path") or "")
+            root_path = str(c.get("root_path") or "")
+            if not db_path:
+                continue
+            fs_path = ""
+            if root_path and rel_path:
+                fs_path = str((Path(root_path) / rel_path).resolve())
+            if fs_path and Path(fs_path).is_file():
+                try:
+                    source = Path(fs_path).read_text(encoding="utf-8", errors="ignore")
+                except Exception:
+                    source = ""
+            else:
+                source = ""
+            if not source and hasattr(self.db, "read_file"):
+                try:
+                    source = str(self.db.read_file(db_path) or "")
+                except Exception:
+                    source = ""
+            if not source:
+                if hasattr(self.db, "mark_lsp_clean"):
+                    self.db.mark_lsp_clean(db_path, error="source_unavailable")
+                continue
+            try:
+                _count, symbol_rows = hydrate_file_symbols_from_text(
+                    db=self.db,
+                    db_path=db_path,
+                    source_path=(fs_path or db_path),
+                    source=source,
+                )
+                sync_lsp_snapshot(
+                    db=self.db,
+                    db_path=db_path,
+                    source_path=(fs_path or db_path),
+                    symbol_rows=symbol_rows,
+                    lsp_version="reconcile-v1",
+                )
+            except Exception:
+                if hasattr(self.db, "mark_lsp_dirty"):
+                    self.db.mark_lsp_dirty(db_path, reason="reconcile_failed")
+                if self.logger:
+                    self.logger.debug("lsp dirty reconcile failed: %s", db_path, exc_info=True)
+
     def request_rescan(self):
         """즉시 리스캔을 요청합니다."""
         self._rescan_event.set()
 
     def index_file(self, _path: str):
         """특정 파일 변경 시 인덱싱을 요청합니다."""
+        try:
+            if isinstance(_path, str) and _path.strip() and hasattr(self.db, "mark_lsp_dirty"):
+                self.db.mark_lsp_dirty(_path, reason="index_file")
+        except Exception:
+            if self.logger:
+                self.logger.debug("index_file dirty mark failed", exc_info=True)
         self.request_rescan()
 
     def _enqueue_fsevent(self, _evt: object) -> None:
         """파일 시스템 이벤트를 처리합니다."""
+        try:
+            if hasattr(self.db, "mark_lsp_dirty"):
+                evt_path = str(getattr(_evt, "path", "") or "").strip()
+                evt_root = str(getattr(_evt, "root", "") or "").strip()
+                root_id = WorkspaceManager.root_id(evt_root) if evt_root else ""
+                if evt_path:
+                    self.db.mark_lsp_dirty(evt_path, root_id=root_id, reason="watchdog_event")
+                dest_path = str(getattr(_evt, "dest_path", "") or "").strip()
+                if dest_path:
+                    self.db.mark_lsp_dirty(dest_path, root_id=root_id, reason="watchdog_event")
+        except Exception:
+            if self.logger:
+                self.logger.debug("watchdog dirty mark failed", exc_info=True)
         self.request_rescan()
 
     def _snapshot_path(self) -> str:

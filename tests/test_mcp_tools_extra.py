@@ -484,7 +484,7 @@ def test_registry_includes_unified_read_schema_with_required_constraints():
         "module",
     ]
 
-    assert read_schema["required"] == ["mode"]
+    assert read_schema["required"] == ["mode", "repo"]
 
 
 def test_registry_read_tool_delegates_to_read_file():
@@ -505,7 +505,7 @@ def test_registry_read_tool_delegates_to_read_file():
     resp = reg.execute(
         "read",
         ctx,
-        {"mode": "file", "target": f"{rid}/a.py", "offset": 0, "limit": 1},
+        {"mode": "file", "target": f"{rid}/a.py", "offset": 0, "limit": 1, "repo": "repo1"},
     )
     text = resp["content"][0]["text"]
     assert "PACK1 tool=read_file ok=true" in text
@@ -535,7 +535,7 @@ def test_registry_read_tool_delegates_to_get_snippet(monkeypatch):
         "content": "x = 1\\ny = 2",
         "id": 1,
     }]
-    resp = reg.execute("read", ctx, {"mode": "snippet", "target": "demo"})
+    resp = reg.execute("read", ctx, {"mode": "snippet", "target": "demo", "repo": "repo1"})
     text = resp["content"][0]["text"]
     assert "PACK1 tool=get_snippet ok=true" in text
 
@@ -685,7 +685,7 @@ def test_get_callers_falls_back_to_call_graph(monkeypatch):
                         "line": 10,
                         "rel_type": "calls_heuristic"}]}},
     )
-    resp = execute_get_callers({"name": "target"}, _DB(), ["/tmp/ws"])
+    resp = execute_get_callers({"name": "target", "repo": "repo1"}, _DB(), ["/tmp/ws"])
     text = resp["content"][0]["text"]
     assert "PACK1 tool=get_callers ok=true" in text
     assert "caller_symbol=callerA" in text
@@ -727,7 +727,7 @@ def test_get_callers_uses_search_fallback_when_call_graph_is_empty(monkeypatch):
         "sari.mcp.tools.get_callers.build_call_graph",
         lambda _args, _db, _roots: {"upstream": {"children": []}},
     )
-    resp = execute_get_callers({"name": "target", "limit": 10}, _DB(), ["/tmp/ws"])
+    resp = execute_get_callers({"name": "target", "repo": "repo1", "limit": 10}, _DB(), ["/tmp/ws"])
     text = resp["content"][0]["text"]
     assert "PACK1 tool=get_callers ok=true" in text
     assert "caller_symbol=target_caller" in text
@@ -761,7 +761,7 @@ def test_get_callers_search_fallback_tolerates_non_integer_line(monkeypatch):
         "sari.mcp.tools.get_callers.build_call_graph",
         lambda _args, _db, _roots: {"upstream": {"children": []}},
     )
-    resp = execute_get_callers({"name": "target", "limit": 10}, _DB(), ["/tmp/ws"])
+    resp = execute_get_callers({"name": "target", "repo": "repo1", "limit": 10}, _DB(), ["/tmp/ws"])
     text = resp["content"][0]["text"]
     assert "PACK1 tool=get_callers ok=true" in text
     assert "rel_type=search_fallback" in text
@@ -790,7 +790,7 @@ def test_get_implementations_uses_search_fallback_when_service_returns_empty(mon
         symbols = _Symbols()
 
     monkeypatch.setattr("sari.mcp.tools.get_implementations.SymbolService", _Svc)
-    resp = execute_get_implementations({"name": "Target", "limit": 10}, _DB(), ["/tmp/ws"])
+    resp = execute_get_implementations({"name": "Target", "repo": "repo1", "limit": 10}, _DB(), ["/tmp/ws"])
     text = resp["content"][0]["text"]
     assert "PACK1 tool=get_implementations ok=true" in text
     assert "implementer_symbol=TargetImpl" in text
@@ -820,7 +820,7 @@ def test_get_implementations_search_fallback_tolerates_non_integer_line(monkeypa
         symbols = _Symbols()
 
     monkeypatch.setattr("sari.mcp.tools.get_implementations.SymbolService", _Svc)
-    resp = execute_get_implementations({"name": "Target", "limit": 10}, _DB(), ["/tmp/ws"])
+    resp = execute_get_implementations({"name": "Target", "repo": "repo1", "limit": 10}, _DB(), ["/tmp/ws"])
     text = resp["content"][0]["text"]
     assert "PACK1 tool=get_implementations ok=true" in text
     assert "rel_type=search_fallback" in text
@@ -866,7 +866,7 @@ def test_get_callers_sari_next_skips_noisy_candidate_path():
     class _DB:
         _read = _Conn()
 
-    resp = execute_get_callers({"name": "foo"}, _DB(), ["/tmp/ws"])
+    resp = execute_get_callers({"name": "foo", "repo": "repo1"}, _DB(), ["/tmp/ws"])
     text = resp["content"][0]["text"]
     assert "\nSARI_NEXT: read(" in text
     assert "/repo/src/b.py" in text
@@ -894,7 +894,7 @@ def test_get_implementations_falls_back_to_file_content():
         _read = _Conn()
 
     resp = execute_get_implementations(
-        {"name": "JpaRepository"}, _DB(), ["/tmp/ws"])
+        {"name": "JpaRepository", "repo": "repo1"}, _DB(), ["/tmp/ws"])
     text = resp["content"][0]["text"]
     assert "PACK1 tool=get_implementations ok=true" in text
     assert "implementer_symbol=Repo" in text
@@ -962,7 +962,7 @@ def test_get_implementations_sari_next_skips_noisy_candidate_path(monkeypatch):
             ]
 
     monkeypatch.setattr("sari.mcp.tools.get_implementations.SymbolService", _Svc)
-    resp = execute_get_implementations({"name": "Iface"}, MagicMock(), ["/tmp/ws"])
+    resp = execute_get_implementations({"name": "Iface", "repo": "repo1"}, MagicMock(), ["/tmp/ws"])
     text = resp["content"][0]["text"]
     assert "\nSARI_NEXT: read(" in text
     assert "/repo/src/service.py" in text

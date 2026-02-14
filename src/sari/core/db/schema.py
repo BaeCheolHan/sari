@@ -2,7 +2,7 @@ import sqlite3
 import time
 import logging
 
-CURRENT_SCHEMA_VERSION = 5
+CURRENT_SCHEMA_VERSION = 6
 logger = logging.getLogger("sari.db.schema")
 
 
@@ -71,6 +71,13 @@ def init_schema(conn: sqlite3.Connection):
             except Exception as e:
                 logger.debug("Migration v5 failed: %s", e)
 
+        # v6 마이그레이션: LSP 우선 아키텍처용 상태/캐시 테이블 추가
+        if v < 6:
+            try:
+                _create_lsp_tables(cur)
+            except Exception as e:
+                logger.debug("Migration v6 failed: %s", e)
+
         # metadata_json 컬럼 존재 여부 강제 확인 (복구용)
         try:
             cur.execute("SELECT metadata_json FROM files LIMIT 1")
@@ -112,6 +119,7 @@ def _create_all_tables(cur: sqlite3.Cursor):
     _create_failed_tasks_table(cur)
     _create_embeddings_table(cur)
     _create_meta_stats_table(cur)
+    _create_lsp_tables(cur)
 
 
 def _create_roots_table(cur: sqlite3.Cursor):
@@ -262,6 +270,86 @@ def _deduplicate_symbol_relations(cur: sqlite3.Cursor):
         )
         """
     )
+
+
+def _create_lsp_tables(cur: sqlite3.Cursor):
+    """LSP 기반 심볼/관계 캐시 및 동기화 상태 테이블을 생성합니다."""
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS lsp_indexed_files (
+            path TEXT PRIMARY KEY,
+            root_id TEXT NOT NULL,
+            language TEXT DEFAULT '',
+            content_hash TEXT DEFAULT '',
+            row_version INTEGER NOT NULL DEFAULT 0,
+            dirty INTEGER NOT NULL DEFAULT 1,
+            last_lsp_ts INTEGER DEFAULT 0,
+            lsp_version TEXT DEFAULT '',
+            error TEXT DEFAULT '',
+            updated_ts INTEGER NOT NULL DEFAULT 0,
+            created_ts INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY(path) REFERENCES files(path) ON DELETE CASCADE
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_lsp_indexed_files_root ON lsp_indexed_files(root_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_lsp_indexed_files_dirty ON lsp_indexed_files(dirty, updated_ts)")
+
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS lsp_symbols (
+            symbol_id TEXT PRIMARY KEY,
+            path TEXT NOT NULL,
+            root_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            line INTEGER NOT NULL,
+            end_line INTEGER NOT NULL,
+            detail TEXT,
+            qualname TEXT,
+            row_version INTEGER NOT NULL DEFAULT 0,
+            lsp_ts INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY(path) REFERENCES files(path) ON DELETE CASCADE
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_lsp_symbols_path ON lsp_symbols(path)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_lsp_symbols_name ON lsp_symbols(name)")
+
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS lsp_relations (
+            from_path TEXT NOT NULL,
+            from_root_id TEXT NOT NULL,
+            from_symbol TEXT NOT NULL,
+            to_path TEXT NOT NULL,
+            to_root_id TEXT NOT NULL,
+            to_symbol TEXT NOT NULL,
+            rel_type TEXT NOT NULL,
+            line INTEGER,
+            row_version INTEGER NOT NULL DEFAULT 0,
+            lsp_ts INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_lsp_relations_identity
+        ON lsp_relations(
+            from_path,
+            from_root_id,
+            from_symbol,
+            to_path,
+            to_root_id,
+            to_symbol,
+            rel_type,
+            IFNULL(line, -1),
+            row_version
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_lsp_relations_from ON lsp_relations(from_path, from_symbol)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_lsp_relations_to ON lsp_relations(to_path, to_symbol)")
 
 
 def _create_contexts_table(cur: sqlite3.Cursor):

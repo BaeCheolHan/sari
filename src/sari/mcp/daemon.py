@@ -725,6 +725,13 @@ class SariDaemon:
                 track_ref=False,
                 force_baseline=True,
             )
+            try:
+                from sari.core.lsp.hub import prewarm_lsp_hub_from_db
+
+                started = prewarm_lsp_hub_from_db(getattr(shared, "db", None), top_n=3)
+                logger.info("LSP prewarm started=%s workspace=%s", int(started or 0), workspace_root)
+            except Exception as e:
+                logger.debug("LSP prewarm skipped: %s", e)
             self._pinned_workspace_root = workspace_root
             self._start_http_gateway(shared)
             logger.info(f"Auto-started workspace session for {workspace_root}")

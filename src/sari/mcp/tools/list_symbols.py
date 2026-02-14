@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import TypeAlias
 
 from sari.core.db.main import LocalSearchDB
-from sari.core.parsers.factory import ParserFactory
 from sari.mcp.tools._util import (
     ErrorCode,
     mcp_response,
@@ -14,7 +13,9 @@ from sari.mcp.tools._util import (
     handle_db_path_error,
     pack_encode_id,
     invalid_args_response,
+    require_repo_arg,
 )
+from sari.mcp.tools._symbol_hydration import hydrate_file_symbols
 
 ToolResult: TypeAlias = dict[str, object]
 
@@ -29,8 +30,6 @@ def _classify_empty_symbols_reason(path: object, db_path: str, conn: object) -> 
 
     parse_status = str(row["parse_status"] or "").strip().lower()
     parse_error = str(row["parse_error"] or "").strip().lower()
-    ast_status = str(row["ast_status"] or "").strip().lower()
-    ast_reason = str(row["ast_reason"] or "").strip().lower()
     ext = Path(str(path or db_path)).suffix.lower()
 
     unsupported_reasons = {
@@ -45,17 +44,18 @@ def _classify_empty_symbols_reason(path: object, db_path: str, conn: object) -> 
 
     if (
         parse_status in {"failed", "error"}
-        or ast_status == "failed"
         or parse_error in parse_failure_reasons
-        or ast_reason in parse_failure_reasons
     ):
-        return ("PARSE_FAILED", f"Symbol extraction failed for {db_path} (parse/ast failure)")
+        return ("PARSE_FAILED", f"Symbol extraction failed for {db_path} (parse failure)")
 
+    lsp_lang_exts = {
+        ".py", ".js", ".jsx", ".ts", ".tsx", ".java", ".kt", ".go",
+        ".rs", ".rb", ".php", ".cs", ".cpp", ".c", ".h", ".hpp", ".swift",
+    }
     if (
         parse_error in unsupported_reasons
-        or ast_reason in unsupported_reasons
         or (parse_status == "skipped" and parse_error in unsupported_reasons)
-        or ParserFactory.get_parser(ext) is None
+        or (ext and ext not in lsp_lang_exts)
     ):
         return ("UNSUPPORTED_LANGUAGE", f"Symbol extraction is not supported for this language: {ext or 'unknown'}")
 
@@ -69,6 +69,9 @@ def execute_list_symbols(args: object, db: LocalSearchDB, roots: list[str]) -> T
     """
     if not isinstance(args, Mapping):
         return invalid_args_response("list_symbols", "args must be an object")
+    repo_err = require_repo_arg(args, "list_symbols")
+    if repo_err:
+        return repo_err
 
     path = args.get("path")
     if not isinstance(path, str) or not path.strip():
@@ -108,6 +111,26 @@ def execute_list_symbols(args: object, db: LocalSearchDB, roots: list[str]) -> T
             "parent": row["parent"],
             "qual": row["qualname"],
         })
+
+    if not symbols:
+        repo = str(args.get("repo", "")).strip()
+        _, inserted = hydrate_file_symbols(db=db, roots=roots, repo=repo, path=str(path))
+        if inserted > 0:
+            rows = conn.execute(
+                "SELECT name, kind, line, end_line, parent, qualname FROM symbols WHERE path = ? ORDER BY line ASC",
+                (db_path,),
+            ).fetchall()
+            symbols = [
+                {
+                    "name": row["name"],
+                    "kind": row["kind"],
+                    "line": row["line"],
+                    "end_line": row["end_line"],
+                    "parent": row["parent"],
+                    "qual": row["qualname"],
+                }
+                for row in rows
+            ]
 
     if not symbols:
         classified = _classify_empty_symbols_reason(path, db_path, conn)

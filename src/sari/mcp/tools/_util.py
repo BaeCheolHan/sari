@@ -210,6 +210,13 @@ def parse_search_options(args: ArgMap, roots: list[str], db: object = None) -> o
     )
 
 
+def require_repo_arg(args: ArgMap, tool: str) -> ToolResult | None:
+    repo_raw = args.get("scope") or args.get("repo")
+    if isinstance(repo_raw, str) and repo_raw.strip():
+        return None
+    return invalid_args_response(tool, "repo is required")
+
+
 __all__ = [
     "ErrorCode",
     "mcp_response",
@@ -230,6 +237,7 @@ __all__ = [
     "get_data_attr",
     "parse_timestamp",
     "parse_search_options",
+    "require_repo_arg",
     "sanitize_error_message",
     "internal_error_response",
 ]

@@ -213,6 +213,7 @@ def _register_search_tools(reg: ToolRegistry):
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "검색어"},
+                "repo": {"type": "string", "description": "검색 대상 저장소(필수)"},
                 "search_type": {
                     "type": "string",
                     "enum": ["code", "symbol", "api", "repo", "auto"],
@@ -280,7 +281,7 @@ def _register_search_tools(reg: ToolRegistry):
                     "description": "결과 0건일 때 repo 추천 첨부",
                 },
             },
-            "required": ["query"],
+            "required": ["query", "repo"],
         },
         handler=lambda ctx, args: search_tool.execute_search(args, ctx.db, ctx.logger, ctx.roots, engine=ctx.engine, indexer=ctx.indexer),
     ))
@@ -307,6 +308,7 @@ def _register_file_tools(reg: ToolRegistry):
                     "enum": ["file", "symbol", "snippet", "diff_preview", "ast_edit"],
                     "description": "Read mode selector.",
                 },
+                "repo": {"type": "string", "description": "Repository scope (required for read tool)."},
                 "target": {"type": "string", "description": "Primary lookup target (path/symbol/snippet selector)."},
                 "path": {"type": "string", "description": "Disambiguation path for symbol mode."},
                 "name": {"type": "string", "description": "Symbol name for symbol mode."},
@@ -344,10 +346,10 @@ def _register_file_tools(reg: ToolRegistry):
                     "description": "Symbol kind hint for tree-sitter disambiguation in mode=ast_edit.",
                 },
             },
-            "required": ["mode"],
+            "required": ["mode", "repo"],
         },
         handler=lambda ctx, args: read_tool.execute_read(
-            {**(args if isinstance(args, dict) else {}), "__indexer__": ctx.indexer},
+            {**(args if isinstance(args, dict) else {}), "__indexer__": ctx.indexer, "__enforce_repo__": True},
             ctx.db,
             ctx.roots,
             ctx.logger,
@@ -356,7 +358,7 @@ def _register_file_tools(reg: ToolRegistry):
 
     reg.register(Tool(
         name="list_files",
-        description="List indexed files with filters. If repo is omitted, returns repo summary only.",
+        description="List indexed files with filters (repo is required).",
         input_schema={
             "type": "object",
             "properties": {
@@ -368,6 +370,7 @@ def _register_file_tools(reg: ToolRegistry):
                 "limit": {"type": "integer", "default": 100},
                 "offset": {"type": "integer", "default": 0},
             },
+            "required": ["repo"],
         },
         handler=lambda ctx, args: list_files_tool.execute_list_files(args, ctx.db, ctx.logger, ctx.roots),
     ))
@@ -434,8 +437,9 @@ def _register_symbol_tools(reg: ToolRegistry):
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "Relative path to the file"},
+                "repo": {"type": "string", "description": "Repository scope (required)"},
             },
-            "required": ["path"],
+            "required": ["path", "repo"],
         },
         handler=lambda ctx, args: list_symbols_tool.execute_list_symbols(args, ctx.db, ctx.roots),
     ))
@@ -485,6 +489,7 @@ def _register_symbol_tools(reg: ToolRegistry):
                 "repo": {"type": "string", "description": "Filter results by repository"},
                 "limit": {"type": "integer", "default": 100},
             },
+            "required": ["repo"],
             "description": "Provide name or symbol_id/sid.",
         },
         handler=lambda ctx, args: get_callers_tool.execute_get_callers(args, ctx.db, ctx.roots),
@@ -503,6 +508,7 @@ def _register_symbol_tools(reg: ToolRegistry):
                 "repo": {"type": "string", "description": "Filter results by repository"},
                 "limit": {"type": "integer", "default": 100},
             },
+            "required": ["repo"],
             "description": "Provide name or symbol_id/sid.",
         },
         handler=lambda ctx, args: get_implementations_tool.execute_get_implementations(args, ctx.db, ctx.roots),
@@ -533,6 +539,7 @@ def _register_symbol_tools(reg: ToolRegistry):
                 "max_time_ms": {"type": "integer", "default": 2000},
                 "quality_score": {"type": "number"},
             },
+            "required": ["repo"],
             "description": "Provide symbol/name or symbol_id/sid.",
         },
         handler=lambda ctx, args: call_graph_tool.execute_call_graph(args, ctx.db, ctx.roots),

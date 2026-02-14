@@ -12,6 +12,7 @@ from sari.mcp.tools._util import (
     pack_error,
     ErrorCode,
     invalid_args_response,
+    require_repo_arg,
 )
 
 ToolResult: TypeAlias = dict[str, object]
@@ -23,6 +24,9 @@ def execute_search_api_endpoints(args: object, db: object, roots: list[str]) -> 
     """
     if not isinstance(args, Mapping):
         return invalid_args_response("search_api_endpoints", "args must be an object")
+    repo_err = require_repo_arg(args, "search_api_endpoints")
+    if repo_err:
+        return repo_err
 
     path_query = str(args.get("path", "")).strip()
     if not path_query:
@@ -32,7 +36,7 @@ def execute_search_api_endpoints(args: object, db: object, roots: list[str]) -> 
             lambda: {"error": {"code": ErrorCode.INVALID_ARGS.value, "message": "Path query is required"}, "isError": True},
         )
 
-    repo = args.get("repo")
+    repo = str(args.get("repo", "")).strip()
 
     # 메타데이터에 경로가 포함된 심볼 검색
     # SQLite JSON 지원 버전의 한계로 인해, 메타데이터 텍스트에 대해 LIKE 검색을 수행한 후 Python에서 필터링합니다.
@@ -81,8 +85,6 @@ def execute_search_api_endpoints(args: object, db: object, roots: list[str]) -> 
     def build_pack() -> str:
         """PACK1 형식의 응답을 생성합니다."""
         lines = [pack_header("search_api_endpoints", {"q": pack_encode_text(path_query)}, returned=len(results))]
-        if not repo:
-            lines.append(pack_line("m", {"hint": pack_encode_text("Narrow scope using repo or root_ids")}))
         for r in results:
             kv = {
                 "path": pack_encode_id(r["path"]),
@@ -98,5 +100,5 @@ def execute_search_api_endpoints(args: object, db: object, roots: list[str]) -> 
     return mcp_response(
         "search_api_endpoints",
         build_pack,
-        lambda: {"query": path_query, "repo": repo or "", "results": results, "count": len(results), "meta": {"hint": "Narrow scope using repo or root_ids" if not repo else ""}},
+        lambda: {"query": path_query, "repo": repo, "results": results, "count": len(results), "meta": {}},
     )
