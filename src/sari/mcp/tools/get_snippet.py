@@ -14,12 +14,20 @@ from sari.mcp.tools._util import (
     ErrorCode,
     resolve_fs_path,
     require_db_schema,
+    internal_error_response,
 )
 
 RowData: TypeAlias = dict[str, object]
 Rows: TypeAlias = list[RowData]
 SnippetArgs: TypeAlias = dict[str, object]
 ToolResult: TypeAlias = dict[str, object]
+
+
+def _safe_int(value: object, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _as_row_dict(row: object) -> RowData:
@@ -118,8 +126,8 @@ def _remap_snippet(lines: list[str], stored: RowData) -> RowData:
     앵커(Anchor)나 내용 매칭을 통해 현재 파일에서의 새로운 위치를 찾습니다.
     (Self-healing Location Remapping)
     """
-    start = int(stored.get("start_line") or 0)
-    end = int(stored.get("end_line") or 0)
+    start = _safe_int(stored.get("start_line"), 0)
+    end = _safe_int(stored.get("end_line"), 0)
     content = str(stored.get("content") or "")
     stored_lines = content.splitlines()
     
@@ -208,18 +216,18 @@ def _update_snippet_record(db: object, row: RowData, mapped: RowData) -> None:
     """리매핑된 정보를 DB에 업데이트하여 위치 정보를 동기화합니다."""
     if not hasattr(db, "update_snippet_location_tx"):
         return
-    snippet_id = int(row.get("id") or 0)
+    snippet_id = _safe_int(row.get("id"), 0)
     if not snippet_id:
         return
     content = mapped.get("content", "")
     content_hash = ""
     try:
         import hashlib
-        content_hash = hashlib.sha1(str(content).encode("utf-8")).hexdigest()
+        content_hash = hashlib.sha256(str(content).encode("utf-8")).hexdigest()
     except Exception:
         content_hash = ""
-    start = int(mapped.get("start") or 0)
-    end = int(mapped.get("end") or 0)
+    start = _safe_int(mapped.get("start"), 0)
+    end = _safe_int(mapped.get("end"), 0)
     # 현재 파일 상태를 바탕으로 앵커 재계산
     anchors = {
         "before": "",
@@ -257,8 +265,8 @@ def _update_snippet_record(db: object, row: RowData, mapped: RowData) -> None:
 
 def _should_update(mapped: RowData) -> tuple[bool, str]:
     """리매핑된 정보가 유효하여 업데이트를 수행해야 하는지 결정합니다."""
-    start = int(mapped.get("start") or 0)
-    end = int(mapped.get("end") or 0)
+    start = _safe_int(mapped.get("start"), 0)
+    end = _safe_int(mapped.get("end"), 0)
     content = str(mapped.get("content") or "")
     if not mapped.get("remapped"):
         return False, "not_remapped"
@@ -360,7 +368,7 @@ def build_get_snippet(args: SnippetArgs, db: object, roots: list[str]) -> ToolRe
                             r["updated"] = False
                             r["update_skipped_reason"] = reason
                 if history and r.get("id"):
-                    r["versions"] = db.list_snippet_versions(int(r["id"]))
+                    r["versions"] = db.list_snippet_versions(_safe_int(r.get("id"), 0))
         for r in rows:
             _apply_context_window(r, context_lines)
         rows = _apply_payload_budget(rows[:limit], max_chars=max_preview_chars)
@@ -390,7 +398,7 @@ def build_get_snippet(args: SnippetArgs, db: object, roots: list[str]) -> ToolRe
                             r["updated"] = False
                             r["update_skipped_reason"] = reason
                 if history and r.get("id"):
-                    r["versions"] = db.list_snippet_versions(int(r["id"]))
+                    r["versions"] = db.list_snippet_versions(_safe_int(r.get("id"), 0))
         for r in rows:
             _apply_context_window(r, context_lines)
         rows = _apply_payload_budget(rows[:limit], max_chars=max_preview_chars)
@@ -439,6 +447,15 @@ def execute_get_snippet(
             "get_snippet",
             lambda: pack_error("get_snippet", ErrorCode.INVALID_ARGS, msg),
             lambda: {"error": {"code": ErrorCode.INVALID_ARGS.value, "message": msg}, "isError": True},
+        )
+    except Exception as e:
+        return internal_error_response(
+            "get_snippet",
+            e,
+            code=ErrorCode.INTERNAL,
+            reason_code="GET_SNIPPET_FAILED",
+            data={"tag": str(args_map.get("tag", ""))[:120], "query": str(args_map.get("query", ""))[:120]},
+            fallback_message="get_snippet failed",
         )
 
     def build_pack() -> str:

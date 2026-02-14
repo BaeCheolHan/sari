@@ -65,6 +65,9 @@ def test_read_gate_blocks_when_candidate_ref_missing(tmp_path, monkeypatch):
     payload = _payload(blocked)
     assert payload["error"]["code"] == "SEARCH_REF_REQUIRED"
     assert "SARI_NEXT" in payload["error"]["message"]
+    gate = payload["meta"]["stabilization"]["gate_context"]
+    assert gate["expected_target"] == target
+    assert gate["provided_target"] == target
 
 
 def test_read_gate_allows_candidate_ref(tmp_path, monkeypatch):
@@ -155,6 +158,9 @@ def test_read_gate_blocks_candidate_id_target_mismatch(tmp_path, monkeypatch):
     payload = _payload(blocked)
     assert payload["error"]["code"] == "CANDIDATE_REF_REQUIRED"
     assert "SARI_NEXT" in payload["error"]["message"]
+    gate = payload["meta"]["stabilization"]["gate_context"]
+    assert gate["expected_target"] == target
+    assert gate["provided_target"] == other
 
 
 def test_read_gate_blocks_symbol_candidate_when_path_mismatch(tmp_path, monkeypatch):

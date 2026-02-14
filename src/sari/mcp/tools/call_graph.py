@@ -10,6 +10,7 @@ from ._util import (
     pack_error,
     ErrorCode,
     invalid_args_response,
+    internal_error_response,
 )
 from sari.core.services.call_graph.service import CallGraphService
 
@@ -88,12 +89,13 @@ def execute_call_graph(
         payload = svc.build(args)
         return mcp_response("call_graph", lambda: build_pack(payload), lambda: payload)
     except Exception as e:
-        import traceback
-        stack = traceback.format_exc()
-        msg = str(e)
-        code = ErrorCode.DB_ERROR if "db" in msg.lower() else ErrorCode.INVALID_ARGS
-        return mcp_response(
+        msg = str(e).lower()
+        code = ErrorCode.DB_ERROR if "db" in msg else ErrorCode.INVALID_ARGS
+        return internal_error_response(
             "call_graph",
-            lambda: pack_error("call_graph", code, f"{msg}: {stack}"),
-            lambda: {"error": {"code": code.value, "message": msg}, "isError": True},
+            e,
+            code=code,
+            reason_code="CALL_GRAPH_BUILD_FAILED",
+            data={"requested_depth": int(args.get("depth") or 2)},
+            fallback_message="call graph build failed",
         )

@@ -33,7 +33,7 @@ def _qualname(parent: str, name: str) -> str:
 def _symbol_id(path: str, kind: str, qualname: str) -> str:
     """파일 경로, 종류, 이름을 기반으로 심볼의 고유 식별자(SHA1)를 생성합니다."""
     base = f"{path}|{kind}|{qualname}"
-    return hashlib.sha1(base.encode("utf-8")).hexdigest()
+    return hashlib.sha256(base.encode("utf-8")).hexdigest()
 
 
 NORMALIZE_KIND_BY_EXT: Dict[str, Dict[str, str]] = {

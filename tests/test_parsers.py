@@ -22,7 +22,7 @@ def test_common_utils():
     assert _qualname("Parent", "Child") == "Parent.Child"
     assert _qualname("", "Top") == "Top"
     sid = _symbol_id("path", "kind", "qual")
-    assert len(sid) == 40
+    assert len(sid) == 64
 
 def test_python_parser():
     parser = PythonParser()

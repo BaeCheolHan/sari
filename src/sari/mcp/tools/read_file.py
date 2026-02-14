@@ -120,7 +120,7 @@ def execute_read_file(args: object, db: LocalSearchDB, roots: list[str]) -> Tool
 def _validate_read_file_args(args: ToolArgs) -> Optional[ToolResult]:
     """read_file 인자의 유효성을 검사합니다."""
     path = args.get("path")
-    if not path:
+    if not isinstance(path, str) or not path.strip():
         return mcp_response(
             "read_file",
             lambda: pack_error("read_file", ErrorCode.INVALID_ARGS, "'path' is required"),
@@ -203,7 +203,7 @@ def _count_tokens(content: str) -> int:
         import tiktoken
         enc = tiktoken.get_encoding("cl100k_base")
         return len(enc.encode(content))
-    except Exception:
+    except (ImportError, AttributeError, TypeError, ValueError):
         char_estimate = len(content) // 4
         byte_estimate = len(content.encode("utf-8", errors="ignore")) // 4
         return max(char_estimate, byte_estimate)

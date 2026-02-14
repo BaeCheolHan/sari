@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from typing import Callable, TypeAlias
 
+from sari.mcp.tools.doctor_common import compact_error_message
+
 DoctorResult: TypeAlias = dict[str, object]
 
 
@@ -63,7 +65,7 @@ def check_daemon(
                     False,
                     f"Not responding on {host}:{port} but PID {pid} is alive. Possible zombie or port conflict.",
                 )
-            except Exception:
+            except OSError:
                 return result_fn(
                     "Sari Daemon",
                     False,
@@ -145,4 +147,4 @@ def check_daemon_runtime_markers(
         )
         return result_fn("Daemon Runtime Markers", True, detail)
     except Exception as e:
-        return result_fn("Daemon Runtime Markers", False, str(e))
+        return result_fn("Daemon Runtime Markers", False, compact_error_message(e, "runtime marker load failed"))

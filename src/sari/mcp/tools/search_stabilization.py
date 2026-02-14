@@ -40,12 +40,12 @@ def clip_text(value: object, max_chars: int) -> str:
 
 def candidate_id(match: Mapping[str, object], index: int) -> str:
     raw = f"{match.get('path','')}|{match.get('identity','')}|{match.get('type','')}|{index}"
-    return "cand_" + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+    return "cand_" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
 
 
 def bundle_id(query: str, matches: list[dict[str, object]]) -> str:
     parts = [query] + [str(m.get("path", "")) for m in matches]
-    return "bundle_" + hashlib.sha1("\n".join(parts).encode("utf-8")).hexdigest()[:12]
+    return "bundle_" + hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:12]
 
 
 def next_calls_for_matches(matches: list[dict[str, object]], bundle: str) -> list[dict[str, object]]:

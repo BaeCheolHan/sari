@@ -13,10 +13,18 @@ from sari.mcp.tools._util import (
     ErrorCode,
     parse_int_arg,
     invalid_args_response,
+    internal_error_response,
 )
 from sari.core.services.symbol_service import SymbolService
 
 ToolResult: TypeAlias = dict[str, object]
+
+
+def _safe_int(value: object, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _is_next_candidate_path(path: str) -> bool:
@@ -58,14 +66,14 @@ def _search_symbol_candidates(
     out: list[dict[str, object]] = []
     for row in rows or []:
         out.append(
-            {
-                "implementer_path": str(getattr(row, "path", "") or (row.get("path") if isinstance(row, Mapping) else "") or ""),
-                "implementer_symbol": str(getattr(row, "name", "") or (row.get("name") if isinstance(row, Mapping) else "") or ""),
-                "implementer_sid": str(getattr(row, "symbol_id", "") or (row.get("symbol_id") if isinstance(row, Mapping) else "") or ""),
-                "rel_type": "search_fallback",
-                "line": int(getattr(row, "line", 0) or (row.get("line") if isinstance(row, Mapping) else 0) or 0),
-            }
-        )
+                {
+                    "implementer_path": str(getattr(row, "path", "") or (row.get("path") if isinstance(row, Mapping) else "") or ""),
+                    "implementer_symbol": str(getattr(row, "name", "") or (row.get("name") if isinstance(row, Mapping) else "") or ""),
+                    "implementer_sid": str(getattr(row, "symbol_id", "") or (row.get("symbol_id") if isinstance(row, Mapping) else "") or ""),
+                    "rel_type": "search_fallback",
+                    "line": _safe_int(getattr(row, "line", 0) or (row.get("line") if isinstance(row, Mapping) else 0), 0),
+                }
+            )
     return out
 
 
@@ -79,8 +87,8 @@ def execute_get_implementations(args: object, db: object, roots: list[str]) -> T
 
     target_symbol = str(args.get("name", "")).strip()
     target_sid = str(args.get("symbol_id", "")).strip() or str(args.get("sid", "")).strip()
-    target_path = str(args.get("path", "")).strip()
-    repo = str(args.get("repo", "")).strip()
+    target_path = str(args.get("path", "")).strip()[:512]
+    repo = str(args.get("repo", "")).strip()[:256]
     limit, err = parse_int_arg(args, "limit", 100, "get_implementations", min_value=1, max_value=500)
     if err:
         return err
@@ -110,13 +118,23 @@ def execute_get_implementations(args: object, db: object, roots: list[str]) -> T
 
     # 2. 서비스 계층 위임 (순수 비즈니스 로직)
     service = SymbolService(db)
-    results = service.get_implementations(
-        target_name=target_symbol,
-        symbol_id=target_sid,
-        path=target_path,
-        limit=limit,
-        root_ids=effective_root_ids
-    )
+    try:
+        results = service.get_implementations(
+            target_name=target_symbol,
+            symbol_id=target_sid,
+            path=target_path,
+            limit=limit,
+            root_ids=effective_root_ids
+        )
+    except Exception as exc:
+        return internal_error_response(
+            "get_implementations",
+            exc,
+            code=ErrorCode.DB_ERROR,
+            reason_code="GET_IMPLEMENTATIONS_QUERY_FAILED",
+            data={"target": target_symbol[:120], "target_sid": target_sid[:120]},
+            fallback_message="get_implementations failed",
+        )
     if not results and target_symbol:
         results = _search_symbol_candidates(db, target_symbol, limit, effective_root_ids, repo)
 

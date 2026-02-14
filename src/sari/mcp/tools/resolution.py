@@ -12,7 +12,7 @@ def _first_value(row: object) -> object:
         return row
     try:
         return next(iter(row))
-    except Exception:
+    except (TypeError, StopIteration):
         return None
 
 
@@ -39,10 +39,10 @@ def resolve_root_ids(roots: list[str]) -> list[str]:
         "1", "true", "yes", "on"}
     for r in roots:
         try:
-            out.append(WorkspaceManager.root_id_for_workspace(r))
+            out.append(WorkspaceManager.root_id_for_workspace(str(r)))
             if allow_legacy:
-                out.append(WorkspaceManager.root_id(r))
-        except Exception:
+                out.append(WorkspaceManager.root_id(str(r)))
+        except (AttributeError, OSError, TypeError, ValueError):
             continue
     return list(dict.fromkeys(out))
 
@@ -55,6 +55,8 @@ def resolve_db_path(
     파일 시스템 경로를 Sari DB 경로로 변환 (Index-First Policy).
     """
     if not input_path:
+        return None
+    if "\x00" in str(input_path):
         return None
     try:
         path_in = Path(os.path.expanduser(input_path))
@@ -69,12 +71,12 @@ def resolve_db_path(
                     if rooted.is_file():
                         candidate_abs = str(rooted)
                         break
-                except Exception:
+                except (OSError, RuntimeError, ValueError):
                     continue
             if candidate_abs is None:
                 candidate_abs = str(path_in.resolve())
             p_abs = candidate_abs
-    except Exception:
+    except (OSError, RuntimeError, ValueError):
         return None
 
     # 1. Index-First: Check global database
@@ -90,7 +92,7 @@ def resolve_db_path(
                 path_val = _first_value(row)
                 if path_val:
                     return str(path_val)
-        except Exception:
+        except (AttributeError, OSError, ValueError):
             pass
 
     # 2. Roots Fallback
@@ -98,7 +100,7 @@ def resolve_db_path(
     for r in roots or []:
         try:
             resolved_roots.append(Path(r).expanduser().resolve())
-        except Exception:
+        except (OSError, RuntimeError, ValueError):
             continue
 
     sorted_roots = sorted(
@@ -116,7 +118,7 @@ def resolve_db_path(
                     continue
                 rid = WorkspaceManager.root_id_for_workspace(str(root_path))
                 return f"{rid}/{rel}" if rel != "." else rid
-        except Exception:
+        except (OSError, RuntimeError, ValueError):
             continue
     return None
 
@@ -124,12 +126,14 @@ def resolve_db_path(
 def resolve_fs_path(db_path: str, roots: list[str]) -> str | None:
     if not db_path or not roots:
         return None
+    if "\x00" in str(db_path):
+        return None
     active_root_map = {}
     for r in roots:
         try:
-            rid = WorkspaceManager.root_id_for_workspace(r)
+            rid = WorkspaceManager.root_id_for_workspace(str(r))
             active_root_map[rid] = Path(r).expanduser().resolve()
-        except Exception:
+        except (AttributeError, OSError, TypeError, ValueError):
             continue
 
     sorted_rids = sorted(active_root_map.keys(), key=len, reverse=True)
@@ -167,7 +171,7 @@ def resolve_repo_scope(repo: str | None,
                 matched_by_ws_name.append(
                     WorkspaceManager.root_id_for_workspace(
                         str(rp)))
-        except Exception:
+        except (AttributeError, OSError, TypeError, ValueError):
             continue
 
     if db is not None:
@@ -185,7 +189,7 @@ def resolve_repo_scope(repo: str | None,
                     root_id = _first_value(row)
                     if root_id:
                         matched_by_repo_bucket.append(str(root_id))
-        except Exception:
+        except (AttributeError, OSError, ValueError):
             pass
 
     if matched_by_ws_name:

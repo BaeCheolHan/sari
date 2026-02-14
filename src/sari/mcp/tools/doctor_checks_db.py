@@ -12,7 +12,7 @@ from sari.core.config import Config
 from sari.core.db import LocalSearchDB
 from sari.core.settings import settings
 from sari.core.workspace import WorkspaceManager
-from sari.mcp.tools.doctor_common import result, row_get, safe_pragma_table_name
+from sari.mcp.tools.doctor_common import compact_error_message, result, row_get, safe_pragma_table_name
 
 DoctorResult: TypeAlias = dict[str, object]
 DoctorResults: TypeAlias = list[DoctorResult]
@@ -37,7 +37,7 @@ def check_db(ws_root: str, *, allow_config_autofix: bool = False) -> DoctorResul
                 else:
                     results.append(result("DB Path AutoFix", True, "skipped (auto_fix=false)", warn=True))
     except Exception as e:
-        results.append(result("DB Path AutoFix", False, f"failed: {e}"))
+        results.append(result("DB Path AutoFix", False, f"failed: {compact_error_message(e)}"))
     db_path = Path(cfg.db_path)
     if not db_path.exists():
         results.append(result("DB Existence", False, f"DB not found at {db_path}"))
@@ -46,7 +46,7 @@ def check_db(ws_root: str, *, allow_config_autofix: bool = False) -> DoctorResul
     try:
         db = LocalSearchDB(str(db_path))
     except Exception as e:
-        results.append(result("DB Access", False, str(e)))
+        results.append(result("DB Access", False, compact_error_message(e, "db access failed")))
         return results
 
     fts_ok = False
@@ -107,7 +107,7 @@ def check_db(ws_root: str, *, allow_config_autofix: bool = False) -> DoctorResul
             else:
                 results.append(result("Failed Tasks (DLQ)", True, f"pending={total_failed}"))
     except Exception as e:
-        results.append(result("DB Schema Check", False, str(e)))
+        results.append(result("DB Schema Check", False, compact_error_message(e, "db schema check failed")))
     finally:
         try:
             db.close()
@@ -141,7 +141,7 @@ def check_engine_sync_dlq(ws_root: str) -> DoctorResult:
             except Exception:
                 pass
     except Exception as e:
-        return result("Engine Sync DLQ", False, str(e))
+        return result("Engine Sync DLQ", False, compact_error_message(e, "engine sync dlq check failed"))
 
 
 def check_writer_health(db: object = None) -> DoctorResult:
@@ -170,7 +170,7 @@ def check_writer_health(db: object = None) -> DoctorResult:
             detail += f" last_commit_age_sec={age}"
         return result("Writer Health", True, detail)
     except Exception as e:
-        return result("Writer Health", False, str(e))
+        return result("Writer Health", False, compact_error_message(e, "writer health check failed"))
 
 
 def check_storage_switch_guard() -> DoctorResult:
@@ -186,7 +186,7 @@ def check_storage_switch_guard() -> DoctorResult:
             msg += f" age_sec={age}"
         return result("Storage Switch Guard", False, msg)
     except Exception as e:
-        return result("Storage Switch Guard", False, str(e))
+        return result("Storage Switch Guard", False, compact_error_message(e, "storage switch guard check failed"))
 
 
 def check_fts_rebuild_policy() -> DoctorResult:
@@ -256,7 +256,7 @@ def check_engine_runtime(ws_root: str) -> DoctorResult:
             except Exception:
                 pass
     except Exception as e:
-        return result("Search Engine Runtime", False, str(e))
+        return result("Search Engine Runtime", False, compact_error_message(e, "search engine runtime check failed"))
 
 
 def check_db_integrity(ws_root: str) -> DoctorResult:
@@ -305,4 +305,4 @@ def check_db_integrity(ws_root: str) -> DoctorResult:
                 return result("DB Integrity", True, "SQLite integrity_check ok")
             return result("DB Integrity", False, f"Corruption detected: {res}")
     except Exception as e:
-        return result("DB Integrity", False, f"Check failed: {e}")
+        return result("DB Integrity", False, f"Check failed: {compact_error_message(e)}")

@@ -123,6 +123,22 @@ def test_execute_status_prefers_indexer_runtime_status():
     assert "m:symbols_extracted=19" in text
     assert "m:errors=1" in text
 
+
+def test_execute_status_json_mode_includes_structured_payload(monkeypatch):
+    monkeypatch.setenv("SARI_FORMAT", "json")
+    indexer = MagicMock()
+    indexer.status.index_ready = True
+    indexer.status.scanned_files = 3
+    indexer.status.indexed_files = 2
+    indexer.status.errors = 0
+    db = MagicMock()
+    cfg = MagicMock()
+    cfg.include_ext = [".py"]
+    out = execute_status({}, indexer, db, cfg, "/tmp/ws", "0.0.1", MagicMock())
+    assert out["ok"] is True
+    assert out["index_ready"] is True
+    assert out["scanned_files"] == 3
+
 def test_execute_search_pack_error_sets_is_error_flag(monkeypatch):
     db = MagicMock()
     logger = MagicMock()

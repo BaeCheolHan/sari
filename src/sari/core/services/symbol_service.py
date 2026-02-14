@@ -3,6 +3,7 @@ import logging
 import sqlite3
 from typing import Dict, List, Optional
 from ..db.main import LocalSearchDB
+from ..fallback_governance import note_fallback_event
 from ..models import SymbolDTO, ImplementationHitDTO
 
 logger = logging.getLogger("sari.symbol_service")
@@ -42,6 +43,11 @@ class SymbolService:
 
         # 2. Secondary: Text search fallback
         if not results and target_name:
+            note_fallback_event(
+                "symbol_implementation_text_fallback",
+                trigger="direct_relation_empty_or_failed",
+                exit_condition="text_pattern_search_returned",
+            )
             results = self._fallback_text_search(target_name, limit, root_ids)
 
         return results

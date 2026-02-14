@@ -57,7 +57,7 @@ def _evict_bundles_if_needed() -> None:
 
 
 def _hash_item(mode: str, path: str, text: str) -> str:
-    return hashlib.sha1(f"{mode}\n{path}\n{text}".encode("utf-8")).hexdigest()
+    return hashlib.sha256(f"{mode}\n{path}\n{text}".encode("utf-8")).hexdigest()
 
 
 def add_read_to_bundle(
@@ -88,7 +88,7 @@ def add_read_to_bundle(
                     bundle.seen.discard(dropped_id)
 
         all_ids = ",".join(item["id"] for item in bundle.items)
-        bundle_id = hashlib.sha1(all_ids.encode("utf-8")).hexdigest() if all_ids else ""
+        bundle_id = hashlib.sha256(all_ids.encode("utf-8")).hexdigest() if all_ids else ""
         return {
             "context_bundle_id": bundle_id,
             "bundle_items": len(bundle.items),

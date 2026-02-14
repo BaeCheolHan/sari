@@ -26,6 +26,29 @@ from sari.mcp.tools._util import (
 ToolResult: TypeAlias = dict[str, object]
 
 
+def _coerce_bool(value: object, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off", ""}:
+            return False
+    return bool(value)
+
+
+def _safe_int(value: object, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _extract_block_from_lines(
         content: str,
         start_line: int,
@@ -183,8 +206,8 @@ def execute_read_symbol(args: object,
 
     target = candidates[0]
     target_path = str(target.get("path", ""))
-    start_line = int(target.get("line", 0) or 0)
-    end_line = int(target.get("end_line", 0) or start_line)
+    start_line = _safe_int(target.get("line"), 0)
+    end_line = _safe_int(target.get("end_line"), start_line)
     full_content = db.read_file(target_path) or ""
     block = _extract_block_from_lines(full_content, start_line, end_line)
     if not block:
@@ -229,7 +252,7 @@ def execute_read_symbol(args: object,
 
     # 1. Summary Mode Extraction (요약 모드)
     # outline=True 또는 summary=True 일 때 구현부를 생략하고 시그니처와 독스트링만 반환
-    summary_mode = bool(args.get("summary") or args.get("outline", False))
+    summary_mode = _coerce_bool(args.get("summary")) or _coerce_bool(args.get("outline"))
 
     doc = block_dict.get("docstring", "")
     meta = block_dict.get("metadata", "{}")

@@ -66,6 +66,25 @@ def test_http_resolver_default_when_no_registry_or_env(monkeypatch, tmp_path):
     assert port == DEFAULT_HTTP_PORT
 
 
+def test_http_resolver_ignores_invalid_port_override(monkeypatch, tmp_path):
+    from sari.core.endpoint_resolver import resolve_http_endpoint
+    from sari.core.constants import DEFAULT_HTTP_PORT
+
+    workspace_root = tmp_path / "ws"
+    workspace_root.mkdir()
+    monkeypatch.setenv("SARI_WORKSPACE_ROOT", str(workspace_root))
+    monkeypatch.delenv("SARI_HTTP_API_PORT", raising=False)
+    monkeypatch.delenv("SARI_HTTP_PORT", raising=False)
+
+    host, port = resolve_http_endpoint(
+        workspace_root=str(workspace_root),
+        host_override="127.0.0.1",
+        port_override="bad-port",  # type: ignore[arg-type]
+    )
+    assert host == "127.0.0.1"
+    assert port == DEFAULT_HTTP_PORT
+
+
 def test_load_server_info_ignores_legacy_when_strict_ssot_enabled(monkeypatch, tmp_path):
     from sari.mcp.cli.registry import load_server_info
 

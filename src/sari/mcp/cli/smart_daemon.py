@@ -210,7 +210,8 @@ def smart_kill_port_owner(host: str, port: int) -> bool:
                                      "-sTCP:LISTEN"],
                                     capture_output=True,
                                     text=True,
-                                    check=False)
+                                    check=False,
+                                    timeout=2.0)
             pids = result.stdout.strip().split()
             for pid_str in pids:
                 pid = int(pid_str)

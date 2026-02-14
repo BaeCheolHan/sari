@@ -12,7 +12,7 @@ from typing import TypeAlias
 
 from sari.core.workspace import WorkspaceManager
 from sari.mcp.server_registry import get_registry_path
-from sari.mcp.tools.doctor_common import result
+from sari.mcp.tools.doctor_common import compact_error_message, result
 
 DoctorResult: TypeAlias = dict[str, object]
 DoctorResults: TypeAlias = list[DoctorResult]
@@ -48,7 +48,7 @@ def check_disk_space(ws_root: str, min_gb: float) -> DoctorResult:
             return result("Disk Space", False, f"Low space: {free_gb:.2f} GB (Min: {min_gb} GB)")
         return result("Disk Space", True)
     except Exception as e:
-        return result("Disk Space", False, str(e))
+        return result("Disk Space", False, compact_error_message(e, "disk usage check failed"))
 
 
 def check_log_errors() -> DoctorResult:
@@ -86,7 +86,7 @@ def check_log_errors() -> DoctorResult:
     except (PermissionError, OSError) as e:
         return result("Log Health", False, f"Log file inaccessible: {e}")
     except Exception as e:
-        return result("Log Health", True, f"Scan skipped: {e}", warn=True)
+        return result("Log Health", True, f"Scan skipped: {compact_error_message(e)}", warn=True)
 
 
 def check_system_env() -> DoctorResults:
@@ -108,7 +108,7 @@ def check_system_env() -> DoctorResults:
         elif not os.access(os.path.dirname(reg_path), os.W_OK):
             results.append(result("Registry Access", False, "Registry directory is not writable"))
     except Exception as e:
-        results.append(result("Registry Path", False, f"Could not determine registry: {e}"))
+        results.append(result("Registry Path", False, f"Could not determine registry: {compact_error_message(e)}"))
 
     return results
 

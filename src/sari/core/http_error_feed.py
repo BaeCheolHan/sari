@@ -14,9 +14,17 @@ def parse_log_line_ts(text: str) -> float:
     for fmt in ("%Y-%m-%d %H:%M:%S,%f", "%Y-%m-%d %H:%M:%S"):
         try:
             return _dt.datetime.strptime(token, fmt).timestamp()
-        except Exception:
+        except ValueError:
             continue
     return 0.0
+
+
+def _coerce_int(value: object, default: int, *, min_value: int, max_value: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(min_value, min(parsed, max_value))
 
 
 def read_recent_log_error_entries(
@@ -51,7 +59,7 @@ def read_recent_log_error_entries(
                 break
         out.reverse()
         return out
-    except Exception:
+    except (OSError, ValueError, UnicodeError):
         return []
 
 
@@ -65,12 +73,12 @@ def build_errors_payload(
     read_log_entries: Callable[[int], list[dict[str, object]]],
     status_warning_counts_provider: Callable[[], dict[str, int]],
 ) -> dict[str, object]:
-    lim = max(1, min(int(limit or 50), 200))
+    lim = _coerce_int(limit, 50, min_value=1, max_value=200)
     source_norm = str(source or "all").strip().lower()
     if source_norm not in {"all", "log", "warning"}:
         source_norm = "all"
     reason_filter = {str(rc).strip() for rc in (reason_codes or set()) if str(rc).strip()}
-    since = max(0, int(since_sec or 0))
+    since = _coerce_int(since_sec, 0, min_value=0, max_value=86400 * 365)
     cutoff_ts = time.time() - since if since > 0 else 0.0
 
     warnings_recent = warning_sink_obj.warnings_recent()

@@ -12,9 +12,17 @@ from sari.mcp.tools._util import (
     parse_timestamp,
     parse_int_arg,
     invalid_args_response,
+    internal_error_response,
 )
 
 ToolResult: TypeAlias = dict[str, object]
+
+
+def _safe_int(value: object, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def execute_get_context(
@@ -64,25 +72,28 @@ def execute_get_context(
                     "isError": True},
             )
     except Exception as e:
-        msg = str(e)
-        return mcp_response(
+        return internal_error_response(
             "get_context",
-            lambda: pack_error(
-                "get_context",
-                ErrorCode.DB_ERROR,
-                msg),
-            lambda: {
-                "error": {
-                    "code": ErrorCode.DB_ERROR.value,
-                    "message": msg},
-                "isError": True},
+            e,
+            code=ErrorCode.DB_ERROR,
+            reason_code="GET_CONTEXT_QUERY_FAILED",
+            data={"topic": topic[:120], "query": query[:120]},
+            fallback_message="context query failed",
         )
 
     def build_json() -> ToolResult:
         """JSON 형식의 응답을 생성합니다."""
+        normalized: list[dict[str, object]] = []
+        for row in results:
+            if hasattr(row, "model_dump"):
+                normalized.append(row.model_dump())
+            elif isinstance(row, Mapping):
+                normalized.append(dict(row))
+            else:
+                normalized.append({"topic": str(getattr(row, "topic", "")), "content": str(getattr(row, "content", ""))})
         return {
             "topic": topic, "query": query,
-            "results": [r.model_dump() for r in results],
+            "results": normalized,
             "count": len(results)
         }
 
@@ -90,10 +101,18 @@ def execute_get_context(
         """PACK1 형식의 응답을 생성합니다."""
         lines = [pack_header("get_context", {}, returned=len(results))]
         for r in results:
+            if isinstance(r, Mapping):
+                topic_value = str(r.get("topic", ""))
+                updated_ts = _safe_int(r.get("updated_ts"), 0)
+                deprecated = _safe_int(r.get("deprecated"), 0)
+            else:
+                topic_value = str(getattr(r, "topic", ""))
+                updated_ts = _safe_int(getattr(r, "updated_ts", 0), 0)
+                deprecated = _safe_int(getattr(r, "deprecated", 0), 0)
             kv = {
-                "topic": pack_encode_id(r.topic),
-                "updated_ts": str(r.updated_ts),
-                "deprecated": str(int(r.deprecated)),
+                "topic": pack_encode_id(topic_value),
+                "updated_ts": str(updated_ts),
+                "deprecated": str(deprecated),
             }
             lines.append(pack_line("r", kv))
         return "\n".join(lines)

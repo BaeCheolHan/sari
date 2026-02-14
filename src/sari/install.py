@@ -15,9 +15,18 @@ def check_dependencies():
     if missing:
         print(f"Missing libraries: {', '.join(missing)}")
         try:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"])
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", "-r", "requirements.txt"],
+                timeout=120.0,
+            )
             print("Dependencies installed successfully.")
-        except Exception as e:
+        except subprocess.TimeoutExpired:
+            print("Error installing dependencies: pip install timed out")
+            sys.exit(1)
+        except subprocess.CalledProcessError as e:
+            print(f"Error installing dependencies: pip exited with {e.returncode}")
+            sys.exit(1)
+        except OSError as e:
             print(f"Error installing dependencies: {e}")
             sys.exit(1)
     else:

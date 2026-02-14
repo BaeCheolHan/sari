@@ -1,7 +1,6 @@
 import sqlite3
 import json
 import difflib
-import time
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Optional, Tuple
 from .base import BaseRepository
@@ -27,6 +26,7 @@ SYMBOL_COLUMNS = [
 SymbolInput = SymbolDTO | Mapping[str, object] | Sequence[object]
 RelationRow = Sequence[object]
 RowObject = sqlite3.Row | Mapping[str, object] | Sequence[object] | None
+RelationSourceKey = tuple[str, str]
 
 def _row_get(row: RowObject, key: str, index: int, default: object = None) -> object:
     if row is None:
@@ -56,14 +56,25 @@ class SymbolRepository(BaseRepository):
         입력 데이터 형식(DTO, Dict, Tuple)을 자동으로 감지하여 정형화된 형태로 저장합니다.
         기존에 존재하던 같은 경로의 심볼들은 삭제 후 새로 삽입됩니다.
         """
-        symbols_list = list(symbols)
-        if not symbols_list:
-            return 0
-
         normalized_rows: list[dict[str, object]] = []
-        int(time.time())
+        seen_paths: set[tuple[str, str]] = set()
+        inserted = 0
+        col_names = ", ".join(SYMBOL_COLUMNS)
+        placeholders = ",".join(["?"] * len(SYMBOL_COLUMNS))
 
-        for s in symbols_list:
+        def _flush() -> int:
+            if not normalized_rows:
+                return 0
+            payload = [tuple(r[col] for col in SYMBOL_COLUMNS) for r in normalized_rows]
+            cur.executemany(
+                f"INSERT OR REPLACE INTO symbols({col_names}) VALUES({placeholders})",
+                payload,
+            )
+            n = len(payload)
+            normalized_rows.clear()
+            return n
+
+        for s in symbols:
             # 1. Convert to dict regardless of input format (DTO, Tuple, or
             # Dict)
             try:
@@ -133,39 +144,48 @@ class SymbolRepository(BaseRepository):
                 "qualname": qualname,
                 "importance_score": float(data.get("importance_score") or 0.0)
             })
+            source_key = (path, str(data.get("root_id") or "root"))
+            if source_key not in seen_paths:
+                seen_paths.add(source_key)
+                cur.execute(
+                    "DELETE FROM symbols WHERE path = ? AND root_id = ?",
+                    source_key,
+                )
+            if len(normalized_rows) >= 1000:
+                inserted += _flush()
 
-        if not normalized_rows:
-            return 0
-
-        # Group by path/root to clean up old symbols before insertion
-        paths = {(r["path"], r["root_id"]) for r in normalized_rows}
-        for p, rid in paths:
-            cur.execute(
-                "DELETE FROM symbols WHERE path = ? AND root_id = ?", (p, rid))
-
-        col_names = ", ".join(SYMBOL_COLUMNS)
-        placeholders = ",".join(["?"] * len(SYMBOL_COLUMNS))
-        normalized = [tuple(r[col] for col in SYMBOL_COLUMNS) for r in normalized_rows]
-        cur.executemany(
-            f"INSERT OR REPLACE INTO symbols({col_names}) VALUES({placeholders})",
-            normalized)
-        return len(normalized)
+        inserted += _flush()
+        return inserted
 
     def upsert_relations_tx(
             self,
             cur: sqlite3.Cursor,
-            relations: Iterable[RelationRow]) -> int:
+            relations: Iterable[RelationRow],
+            replace_sources: Optional[Iterable[RelationSourceKey]] = None) -> int:
         """
         심볼 간의 호출 관계, 구현 관계 등을 트랜잭션 내에서 저장합니다.
         """
-        rels_list = list(relations)
-        if not rels_list:
-            return 0
+        # Replace outgoing edges for changed files first so stale rows do not remain.
+        # This supports cases where a file now has zero outgoing relations.
+        sources = set()
+        if replace_sources is not None:
+            for item in replace_sources:
+                try:
+                    path = str(item[0] or "")
+                    root_id = str(item[1] or "")
+                except Exception:
+                    continue
+                if path and root_id:
+                    sources.add((path, root_id))
+        if sources:
+            cur.executemany(
+                "DELETE FROM symbol_relations WHERE from_path = ? AND from_root_id = ?",
+                list(sources),
+            )
 
-        # Standard 11-column mapping for relations + in-memory dedup
+        inserted = 0
         normalized: list[tuple[object, ...]] = []
-        seen: set[tuple[object, ...]] = set()
-        for r in rels_list:
+        for r in relations:
             vals = list(r)
             while len(vals) < 11:
                 if len(vals) == 9:
@@ -189,22 +209,35 @@ class SymbolRepository(BaseRepository):
                 line,                # line
                 str(vals[10] or ""),  # meta_json
             )
-            if normalized_row in seen:
-                continue
-            seen.add(normalized_row)
             normalized.append(normalized_row)
+            if len(normalized) >= 2000:
+                cur.executemany(
+                    """
+                    INSERT OR IGNORE INTO symbol_relations(
+                        from_path, from_root_id, from_symbol, from_symbol_id,
+                        to_path, to_root_id, to_symbol, to_symbol_id,
+                        rel_type, line, meta_json
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    normalized,
+                )
+                inserted += len(normalized)
+                normalized.clear()
 
-        cur.executemany(
-            """
-            INSERT OR IGNORE INTO symbol_relations(
-                from_path, from_root_id, from_symbol, from_symbol_id,
-                to_path, to_root_id, to_symbol, to_symbol_id,
-                rel_type, line, meta_json
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
-            """,
-            normalized,
-        )
-        return len(normalized)
+        if normalized:
+            cur.executemany(
+                """
+                INSERT OR IGNORE INTO symbol_relations(
+                    from_path, from_root_id, from_symbol, from_symbol_id,
+                    to_path, to_root_id, to_symbol, to_symbol_id,
+                    rel_type, line, meta_json
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                normalized,
+            )
+            inserted += len(normalized)
+
+        return inserted
 
     def get_symbol_range(
             self, path: str, name: str) -> Optional[Tuple[int, int]]:

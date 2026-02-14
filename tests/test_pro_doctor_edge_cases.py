@@ -87,3 +87,19 @@ class TestProDoctorEdgeCases:
         assert res.get("isError") is True
         text = res["content"][0]["text"]
         assert "PACK1 tool=doctor ok=false code=INVALID_ARGS" in text
+
+    def test_doctor_string_false_disables_network_check(self):
+        with patch("sari.mcp.tools.doctor._check_system_env", return_value=[]), \
+             patch("sari.mcp.tools.doctor._check_network", side_effect=AssertionError("network check should be skipped")):
+            res = execute_doctor(
+                {
+                    "include_network": "false",
+                    "include_port": False,
+                    "include_db": False,
+                    "include_disk": False,
+                    "include_daemon": False,
+                    "include_venv": False,
+                },
+                roots=["/tmp/ws"],
+            )
+            assert res.get("isError") is not True

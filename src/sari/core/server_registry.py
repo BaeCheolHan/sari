@@ -6,6 +6,7 @@ import logging
 from pathlib import Path
 from typing import Optional, Iterable, Callable, TypedDict
 from filelock import FileLock
+from sari.core.fallback_governance import note_fallback_enter, note_fallback_exit
 
 # Backward compatibility for legacy tests/tools that patch module-level path.
 REGISTRY_FILE = Path.home() / ".local" / os.path.join("share", "sari") / "server.json"
@@ -83,6 +84,10 @@ def get_registry_path() -> Path:
         return Path(env_path).resolve()
     # Default path may be blocked in sandboxed/test environments.
     if _ensure_writable_dir(REGISTRY_FILE):
+        note_fallback_exit(
+            "registry_path_fallback",
+            exit_condition="default_registry_path_writable",
+        )
         return REGISTRY_FILE
     # Fallback to a temp location when home directory is not writable.
     _ensure_writable_dir(_FALLBACK_REGISTRY)
@@ -92,6 +97,10 @@ def get_registry_path() -> Path:
             _FALLBACK_REGISTRY,
         )
         _FALLBACK_WARNED = True
+    note_fallback_enter(
+        "registry_path_fallback",
+        trigger="default_registry_path_not_writable",
+    )
     return _FALLBACK_REGISTRY.resolve()
 
 
@@ -235,7 +244,7 @@ class ServerRegistry:
     def _load_unlocked(self) -> RegistryData:
         reg_file = get_registry_path()
         try:
-            with open(reg_file, "r") as f:
+            with open(reg_file, "r", encoding="utf-8") as f:
                 return self._safe_load(f.read())
         except FileNotFoundError:
             return self._empty()
@@ -246,7 +255,7 @@ class ServerRegistry:
         tmp_path = reg_file.parent / \
             f"{reg_file.name}.tmp.{os.getpid()}.{int(time.time() * 1000)}"
         try:
-            with open(tmp_path, "w") as f:
+            with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
                 f.flush()
                 os.fsync(f.fileno())

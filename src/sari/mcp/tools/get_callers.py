@@ -1,5 +1,6 @@
 from collections.abc import Mapping
 from typing import TypeAlias
+import logging
 
 from sari.mcp.tools._util import (
     mcp_response,
@@ -18,6 +19,14 @@ from sari.mcp.tools.call_graph import build_call_graph
 from sari.core.models import CallerHitDTO
 
 ToolResult: TypeAlias = dict[str, object]
+_LOG = logging.getLogger("sari.mcp.get_callers")
+
+
+def _safe_int(value: object, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _is_next_candidate_path(path: str) -> bool:
@@ -59,14 +68,14 @@ def _search_symbol_candidates(
     out: list[dict[str, object]] = []
     for row in rows or []:
         out.append(
-            {
-                "caller_path": str(getattr(row, "path", "") or (row.get("path") if isinstance(row, Mapping) else "") or ""),
-                "caller_symbol": str(getattr(row, "name", "") or (row.get("name") if isinstance(row, Mapping) else "") or ""),
-                "caller_symbol_id": str(getattr(row, "symbol_id", "") or (row.get("symbol_id") if isinstance(row, Mapping) else "") or ""),
-                "line": int(getattr(row, "line", 0) or (row.get("line") if isinstance(row, Mapping) else 0) or 0),
-                "rel_type": "search_fallback",
-            }
-        )
+                {
+                    "caller_path": str(getattr(row, "path", "") or (row.get("path") if isinstance(row, Mapping) else "") or ""),
+                    "caller_symbol": str(getattr(row, "name", "") or (row.get("name") if isinstance(row, Mapping) else "") or ""),
+                    "caller_symbol_id": str(getattr(row, "symbol_id", "") or (row.get("symbol_id") if isinstance(row, Mapping) else "") or ""),
+                    "line": _safe_int(getattr(row, "line", 0) or (row.get("line") if isinstance(row, Mapping) else 0), 0),
+                    "rel_type": "search_fallback",
+                }
+            )
     return out
 
 
@@ -80,8 +89,8 @@ def execute_get_callers(args: object, db: object, roots: list[str]) -> ToolResul
 
     target_symbol = str(args.get("name", "") or "").strip()
     target_sid = str(args.get("symbol_id", "") or "").strip() or str(args.get("sid", "") or "").strip()
-    target_path = str(args.get("path", "")).strip()
-    repo = str(args.get("repo", "")).strip()
+    target_path = str(args.get("path", "")).strip()[:512]
+    repo = str(args.get("repo", "")).strip()[:256]
     limit, err = parse_int_arg(args, "limit", 100, "get_callers", min_value=1, max_value=500)
     if err:
         return err
@@ -98,7 +107,7 @@ def execute_get_callers(args: object, db: object, roots: list[str]) -> ToolResul
     # 1. 유효 범위(Scope) 해결
     allowed_root_ids = resolve_root_ids(roots)
     req_root_ids = args.get("root_ids")
-    if isinstance(req_root_ids, list) and req_root_ids:
+    if isinstance(req_root_ids, list | tuple) and req_root_ids:
         req_set = {str(x) for x in req_root_ids if x}
         effective_root_ids = [rid for rid in allowed_root_ids if rid in req_set]
     else:
@@ -132,15 +141,16 @@ def execute_get_callers(args: object, db: object, roots: list[str]) -> ToolResul
     sql += " ORDER BY from_path, line LIMIT ?"
     params.append(limit)
 
+    diagnostics: list[str] = []
     conn = db.get_read_connection() if hasattr(db, "get_read_connection") else db._read
     results = []
     try:
         rows = conn.execute(sql, params).fetchall()
         for r in rows:
             results.append(CallerHitDTO.from_row(r).model_dump())
-    except Exception as e: 
-        import logging
-        logging.getLogger("sari.mcp.get_callers").debug("SQL query failed: %s", e)
+    except Exception as e:
+        diagnostics.append(f"sql:{type(e).__name__}")
+        _LOG.debug("SQL query failed: %s", e)
 
     # 3. 직접적인 관계가 없을 경우 Call Graph(depth=1) 휴리스틱 사용 (Fallback)
     if not results:
@@ -156,12 +166,12 @@ def execute_get_callers(args: object, db: object, roots: list[str]) -> ToolResul
                     "caller_path": c.get("path", ""),
                     "caller_symbol": c.get("name", ""),
                     "caller_symbol_id": c.get("symbol_id", ""),
-                    "line": int(c.get("line", 0) or 0),
+                    "line": _safe_int(c.get("line", 0), 0),
                     "rel_type": c.get("rel_type", "calls_heuristic"),
                 })
         except Exception as e:
-            import logging
-            logging.getLogger("sari.mcp.get_callers").debug("Call graph fallback failed: %s", e)
+            diagnostics.append(f"call_graph:{type(e).__name__}")
+            _LOG.debug("Call graph fallback failed: %s", e)
     if not results and target_symbol:
         results.extend(_search_symbol_candidates(db, target_symbol, limit, effective_root_ids, repo))
 
@@ -184,5 +194,11 @@ def execute_get_callers(args: object, db: object, roots: list[str]) -> ToolResul
     return mcp_response(
         "get_callers",
         build_pack,
-        lambda: {"target": target_symbol, "target_sid": target_sid, "results": results, "count": len(results)},
+        lambda: {
+            "target": target_symbol,
+            "target_sid": target_sid,
+            "results": results,
+            "count": len(results),
+            "diagnostics": diagnostics,
+        },
     )

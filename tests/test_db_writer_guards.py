@@ -230,3 +230,71 @@ def test_upsert_files_tx_does_not_delete_symbols_when_file_not_updated(tmp_path)
     left = db._read.execute("SELECT COUNT(1) FROM symbols WHERE path = ?", ("root1/a.py",)).fetchone()[0]
     assert int(left) == 1
     db.close_all()
+
+
+def test_db_writer_retries_transient_batch_failure(tmp_path):
+    class FlakyDB:
+        def __init__(self):
+            self.engine = None
+            self.calls = 0
+            self.rows = []
+
+        def upsert_files_tx(self, _cur, rows):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("transient failure")
+            self.rows.extend(rows)
+
+    db = FlakyDB()
+    writer = DBWriter(db, max_batch=4, max_wait=0.01)
+    writer.start()
+    writer.enqueue(DbTask(kind="upsert_files", rows=[_files_row("root1/retry.py", "root1")]))
+    assert writer.flush(timeout=2.0) is True
+    writer.stop()
+
+    assert db.calls >= 2
+    assert len(db.rows) == 1
+
+
+def test_db_writer_process_batch_without_cursor_rolls_back_on_engine_failure(tmp_path):
+    db = LocalSearchDB(str(tmp_path / "roll.db"))
+    db.upsert_root("root1", str(tmp_path), str(tmp_path), label="root")
+
+    class BadEngine:
+        def upsert_documents(self, _docs, commit=True):
+            raise RuntimeError("engine fail")
+
+    db.set_engine(BadEngine())
+    writer = DBWriter(db)
+
+    with pytest.raises(RuntimeError):
+        writer._process_batch(
+            None,
+            [
+                DbTask(
+                    kind="upsert_files",
+                    rows=[_files_row("root1/atomic.py", "root1")],
+                    engine_docs=[{"id": "root1/atomic.py", "root_id": "root1"}],
+                )
+            ],
+        )
+    row = db._read.execute("SELECT path FROM files WHERE path = ?", ("root1/atomic.py",)).fetchone()
+    assert row is None
+    db.close_all()
+
+
+def test_finalize_turbo_batch_inside_existing_transaction(tmp_path):
+    db = LocalSearchDB(str(tmp_path / "nested.db"))
+    db.upsert_root("root1", str(tmp_path), str(tmp_path), label="root")
+    rows = [_files_row("root1/nested.py", "root1")]
+    db.upsert_files_turbo(rows)
+
+    conn = db._write
+    cur = conn.cursor()
+    cur.execute("BEGIN")
+    db.finalize_turbo_batch()
+    conn.commit()
+
+    row = db._read.execute("SELECT path FROM files WHERE path = ?", ("root1/nested.py",)).fetchone()
+    assert row is not None
+    db.close_all()

@@ -154,16 +154,40 @@ def mcp_response(
             return res
     except Exception as e:
         import traceback
-        err_msg = f"Internal Error in {tool_name}: {str(e)}"
+        raw_err = str(e).strip()
+        compact_err = " ".join(raw_err.replace("\r", " ").replace("\n", " ").split())[:500] if raw_err else "unknown error"
+        err_msg = f"Internal Error in {tool_name}: {compact_err}"
         stack = traceback.format_exc()
         logger.error(err_msg, exc_info=True)
+        debug_trace = _get_env_any("DEBUG_TRACE", "").strip().lower() in {"1", "true", "yes", "on"}
         if fmt == "pack":
-            return {"content": [{"type": "text", "text": pack_error(
-                tool_name, ErrorCode.INTERNAL, err_msg, trace=stack)}], "isError": True}
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": pack_error(
+                            tool_name,
+                            ErrorCode.INTERNAL,
+                            err_msg,
+                            trace=stack if debug_trace else None,
+                            fields={"reason_code": "MCP_RESPONSE_BUILD_FAILED"},
+                        ),
+                    }
+                ],
+                "isError": True,
+            }
         else:
-            return {"content": [{"type": "text",
-                                 "text": json.dumps({"error": err_msg,
-                                                     "trace": stack})}],
-                    "isError": True,
-                    "error": {"code": ErrorCode.INTERNAL.value,
-                              "message": err_msg}}
+            error_payload = {
+                "error": {
+                    "code": ErrorCode.INTERNAL.value,
+                    "message": err_msg,
+                    "data": {"reason_code": "MCP_RESPONSE_BUILD_FAILED"},
+                }
+            }
+            if debug_trace:
+                error_payload["trace"] = stack
+            return {
+                "content": [{"type": "text", "text": json.dumps(error_payload)}],
+                "isError": True,
+                "error": error_payload["error"],
+            }

@@ -11,6 +11,9 @@ from sari.mcp.tools.call_graph import execute_call_graph
 from sari.mcp.tools.archive_context import execute_archive_context
 from sari.mcp.tools.get_context import execute_get_context
 from sari.mcp.tools.get_callers import execute_get_callers
+from sari.mcp.tools.get_implementations import execute_get_implementations
+from sari.mcp.tools.get_snippet import execute_get_snippet
+from sari.mcp.tools.index_file import execute_index_file
 from sari.mcp.tools.list_files import execute_list_files
 from sari.mcp.tools.list_symbols import execute_list_symbols
 from sari.mcp.tools.read_file import execute_read_file
@@ -74,7 +77,7 @@ def test_search_db_error_returns_engine_query(monkeypatch):
 
     text = resp["content"][0]["text"] if "content" in resp else str(resp)
     assert resp.get("isError") is True
-    assert "boom" in text
+    assert "Search%20failed" in text
 
 
 def test_search_json_and_importance_tags(monkeypatch):
@@ -355,6 +358,18 @@ def test_list_symbols_rejects_non_object_args():
     _assert_invalid_args_response(resp)
 
 
+def test_read_file_rejects_blank_path():
+    resp = execute_read_file({"path": "   "}, MagicMock(), ["/tmp/ws"])
+    text = resp["content"][0]["text"]
+    assert "code=INVALID_ARGS" in text
+
+
+def test_list_symbols_rejects_blank_path():
+    resp = execute_list_symbols({"path": "   "}, MagicMock(), ["/tmp/ws"])
+    text = resp["content"][0]["text"]
+    assert "code=INVALID_ARGS" in text
+
+
 def test_list_symbols_disambiguates_duplicate_parent_names(monkeypatch):
     class _Conn:
         def execute(self, _sql, _params):
@@ -479,6 +494,22 @@ def test_list_symbols_classifies_unsupported_language(monkeypatch):
     text = resp["content"][0]["text"]
     assert "ok=false" in text
     assert "code=UNSUPPORTED_LANGUAGE" in text
+
+
+def test_list_symbols_returns_db_error_when_symbol_query_fails(monkeypatch):
+    class _Conn:
+        @staticmethod
+        def execute(_sql, _params):
+            raise TypeError("db broken")
+
+    monkeypatch.setenv("SARI_FORMAT", "json")
+    db = MagicMock()
+    db.get_read_connection.return_value = _Conn()
+    monkeypatch.setattr("sari.mcp.tools.list_symbols.resolve_db_path", lambda *_a, **_k: "rid/file.py")
+
+    resp = execute_list_symbols({"path": "file.py"}, db, ["/tmp/ws"])
+    assert resp["isError"] is True
+    assert resp["error"]["code"] == "DB_ERROR"
 
 
 @pytest.mark.read
@@ -738,3 +769,143 @@ def test_registry_execute_does_not_mark_action_for_whitespace_prefixed_pack_erro
 
     reg.execute("search", ctx, {})
     policy.mark_action.assert_not_called()
+
+
+def test_get_context_db_error_includes_reason_code(monkeypatch):
+    monkeypatch.setenv("SARI_FORMAT", "json")
+    db = MagicMock()
+    db.contexts.search_contexts.side_effect = RuntimeError("db down")
+    out = execute_get_context({"query": "hello"}, db, ["/tmp/ws"])
+    assert out["isError"] is True
+    assert out["error"]["code"] == "DB_ERROR"
+    assert out["error"]["data"]["reason_code"] == "GET_CONTEXT_QUERY_FAILED"
+
+
+def test_get_context_pack_tolerates_non_integer_metadata(monkeypatch):
+    monkeypatch.setenv("SARI_FORMAT", "pack")
+    db = MagicMock()
+    db.contexts.search_contexts.return_value = [
+        {"topic": "t1", "content": "c1", "updated_ts": "bad-ts", "deprecated": "bad-flag"}
+    ]
+    out = execute_get_context({"query": "t1"}, db, ["/tmp/ws"])
+    text = out["content"][0]["text"]
+    assert "PACK1 tool=get_context ok=true" in text
+
+
+def test_archive_context_normalizes_tags_related_files_and_db_error(monkeypatch):
+    monkeypatch.setenv("SARI_FORMAT", "json")
+    db = MagicMock()
+    db.contexts.upsert.side_effect = RuntimeError("upsert failed")
+    out = execute_archive_context(
+        {
+            "topic": "t",
+            "content": "c",
+            "tags": ["  a  ", "", "b"],
+            "related_files": ["x.py", ""],
+        },
+        db,
+        ["/tmp/ws"],
+    )
+    assert out["isError"] is True
+    assert out["error"]["data"]["reason_code"] == "ARCHIVE_CONTEXT_UPSERT_FAILED"
+
+
+def test_archive_context_coerces_scalar_lists_and_boolean_string(monkeypatch):
+    monkeypatch.setenv("SARI_FORMAT", "json")
+    captured: dict[str, object] = {}
+    db = MagicMock()
+
+    def _upsert(data):
+        captured["data"] = data
+        return _CtxRow("topic-a", 1, int(bool(data.get("deprecated"))))
+
+    db.contexts.upsert.side_effect = _upsert
+    out = execute_archive_context(
+        {
+            "topic": "topic-a",
+            "content": "content-a",
+            "tags": "tag-one",
+            "related_files": "src/a.py",
+            "deprecated": "false",
+        },
+        db,
+        ["/tmp/ws"],
+    )
+    assert out.get("isError") is not True
+    payload = captured["data"]
+    assert payload["tags"] == ["tag-one"]
+    assert payload["related_files"] == ["src/a.py"]
+    assert payload["deprecated"] is False
+
+
+def test_index_file_rejects_nul_path():
+    out = execute_index_file({"path": "bad\x00path.py"}, MagicMock(), ["/tmp/ws"])
+    text = out["content"][0]["text"]
+    assert "code=INVALID_ARGS" in text
+    assert "NUL%20byte" in text
+
+
+def test_get_snippet_internal_error_has_reason_code(monkeypatch):
+    monkeypatch.setenv("SARI_FORMAT", "json")
+    db = MagicMock()
+    db.list_snippets_by_tag.side_effect = RuntimeError("explode")
+    out = execute_get_snippet({"tag": "t"}, db, ["/tmp/ws"])
+    assert out["isError"] is True
+    assert out["error"]["code"] == "INTERNAL"
+    assert out["error"]["data"]["reason_code"] == "GET_SNIPPET_FAILED"
+
+
+def test_get_snippet_tolerates_malformed_numeric_fields(monkeypatch):
+    monkeypatch.setenv("SARI_FORMAT", "json")
+    monkeypatch.setattr("sari.mcp.tools.get_snippet.require_db_schema", lambda *_a, **_k: None)
+    db = MagicMock()
+    db.list_snippets_by_tag.return_value = [
+        {
+            "id": "bad-id",
+            "tag": "t",
+            "path": "rid-x/a.py",
+            "start_line": "bad-start",
+            "end_line": "bad-end",
+            "content": "line1\nline2",
+            "anchor_before": "",
+            "anchor_after": "",
+        }
+    ]
+    db.read_file.return_value = "line1\nline2\n"
+    out = execute_get_snippet({"tag": "t", "remap": True}, db, ["/tmp/ws"])
+    assert out.get("isError") is not True
+    assert out["results"]
+
+
+def test_get_implementations_service_error_has_reason_code(monkeypatch):
+    monkeypatch.setenv("SARI_FORMAT", "json")
+
+    class _Svc:
+        def __init__(self, _db):
+            pass
+
+        def get_implementations(self, **_kwargs):
+            raise RuntimeError("db fail")
+
+    monkeypatch.setattr("sari.mcp.tools.get_implementations.SymbolService", _Svc)
+    out = execute_get_implementations({"name": "Iface"}, MagicMock(), ["/tmp/ws"])
+    assert out["isError"] is True
+    assert out["error"]["code"] == "DB_ERROR"
+    assert out["error"]["data"]["reason_code"] == "GET_IMPLEMENTATIONS_QUERY_FAILED"
+
+
+def test_call_graph_error_does_not_leak_traceback(monkeypatch):
+    monkeypatch.setenv("SARI_FORMAT", "pack")
+
+    class _SvcErr:
+        def __init__(self, _db, _roots):
+            pass
+
+        def build(self, _args):
+            raise RuntimeError("db exploded")
+
+    monkeypatch.setattr("sari.mcp.tools.call_graph.CallGraphService", _SvcErr)
+    out = execute_call_graph({"symbol": "S"}, MagicMock(), MagicMock(), ["/tmp/ws"])
+    text = out["content"][0]["text"]
+    assert "code=DB_ERROR" in text
+    assert "trace=" not in text

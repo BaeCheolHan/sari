@@ -13,6 +13,7 @@ from sari.mcp.tools._util import (
     pack_line,
     pack_encode_id,
     invalid_args_response,
+    internal_error_response,
 )
 
 ToolResult: TypeAlias = dict[str, object]
@@ -36,6 +37,9 @@ def execute_index_file(args: object, indexer: object, roots: list[str]) -> ToolR
             lambda: pack_error("index_file", ErrorCode.INVALID_ARGS, "File path is required"),
             lambda: {"error": {"code": ErrorCode.INVALID_ARGS.value, "message": "File path is required"}, "isError": True},
         )
+
+    if "\x00" in path:
+        return invalid_args_response("index_file", "path contains NUL byte")
 
     db = getattr(indexer, "db", None)
     svc = IndexService(indexer)
@@ -75,9 +79,11 @@ def execute_index_file(args: object, indexer: object, roots: list[str]) -> ToolR
             lambda: {"success": True, "path": db_path, "message": f"Successfully requested re-indexing for {db_path}"},
         )
     except Exception as e:
-        msg = str(e)
-        return mcp_response(
+        return internal_error_response(
             "index_file",
-            lambda: pack_error("index_file", ErrorCode.INTERNAL, msg),
-            lambda: {"error": {"code": ErrorCode.INTERNAL.value, "message": msg}, "isError": True},
+            e,
+            code=ErrorCode.INTERNAL,
+            reason_code="INDEX_FILE_EXECUTION_FAILED",
+            data={"path": path[:512]},
+            fallback_message="index_file failed",
         )

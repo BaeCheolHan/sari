@@ -44,6 +44,7 @@ try:
     from .utils.system import get_system_metrics  # type: ignore
     from .daemon_health import detect_orphan_daemons  # type: ignore
     from .policy_engine import load_daemon_runtime_status  # type: ignore
+    from .daemon_resolver import resolve_daemon_address  # type: ignore
     from .workspace_state_registry import get_workspace_registry  # type: ignore
 except ImportError:
     from db import LocalSearchDB  # type: ignore
@@ -53,6 +54,7 @@ except ImportError:
     from utils.system import get_system_metrics  # type: ignore
     from daemon_health import detect_orphan_daemons  # type: ignore
     from policy_engine import load_daemon_runtime_status  # type: ignore
+    from daemon_resolver import resolve_daemon_address  # type: ignore
     from workspace_state_registry import get_workspace_registry  # type: ignore
 
 
@@ -498,6 +500,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/status":
             daemon_status = load_daemon_runtime_status()
+            daemon_target_host, daemon_target_port = resolve_daemon_address(workspace_root or None)
             st = indexer.status
             runtime_status = _build_runtime_status_impl(indexer, warn_status=self._warn_status)
             repo_stats = db.get_repo_stats(
@@ -548,6 +551,8 @@ class Handler(BaseHTTPRequestHandler):
                     "row_parse_error_count": int(workspaces_payload.get("row_parse_error_count", 0) or 0),
                     "registry_resolve_failed": bool(registry_resolve_failed),
                     "workspace_root": workspace_root,
+                    "daemon_target_host": daemon_target_host,
+                    "daemon_target_port": int(daemon_target_port),
                     "deployment": deployment,
                 },
             )

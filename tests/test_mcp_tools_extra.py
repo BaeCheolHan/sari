@@ -122,6 +122,40 @@ def test_execute_grep_and_read_rejects_non_object_args():
     assert resp.get("isError") is True
 
 
+def test_execute_grep_and_read_normalizes_scalar_and_boolean_filters(monkeypatch):
+    captured = {}
+
+    class _DB:
+        def search(self, opts):
+            captured["opts"] = opts
+            return [], {"total": 0, "total_mode": "exact"}
+
+        def has_legacy_paths(self):
+            return False
+
+    monkeypatch.setattr("sari.mcp.tools.grep_and_read.require_db_schema", lambda *_a, **_k: None)
+
+    resp = execute_grep_and_read(
+        {
+            "query": "hello",
+            "file_types": "py",
+            "exclude_patterns": "*.min.js",
+            "recency_boost": "false",
+            "use_regex": "false",
+            "case_sensitive": "0",
+        },
+        _DB(),
+        ["/tmp/ws"],
+    )
+    assert resp.get("isError") is not True
+    opts = captured["opts"]
+    assert opts.file_types == ["py"]
+    assert opts.exclude_patterns == ["*.min.js"]
+    assert opts.recency_boost is False
+    assert opts.use_regex is False
+    assert opts.case_sensitive is False
+
+
 def test_execute_index_file():
     indexer = MagicMock()
     roots = ["/tmp/ws"]
@@ -202,6 +236,20 @@ def test_execute_dry_run_diff_rejects_non_object_args():
     text = resp["content"][0]["text"]
     assert "PACK1 tool=dry_run_diff ok=false code=INVALID_ARGS" in text
     assert resp.get("isError") is True
+
+
+def test_execute_dry_run_diff_internal_error_has_reason_code(monkeypatch):
+    monkeypatch.setenv("SARI_FORMAT", "json")
+    from sari.mcp.tools import dry_run_diff as mod
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("unexpected explode")
+
+    monkeypatch.setattr(mod, "build_dry_run_diff", _boom)
+    resp = execute_dry_run_diff({"path": "a.py", "content": "x=1"}, MagicMock(), ["/tmp/ws"])
+    assert resp["isError"] is True
+    assert resp["error"]["code"] == "INTERNAL"
+    assert resp["error"]["data"]["reason_code"] == "DRY_RUN_DIFF_FAILED"
 
 
 def test_execute_sari_guide_rejects_non_object_args():
@@ -546,12 +594,62 @@ def test_read_symbol_supports_symbol_id_without_path(tmp_path):
     assert "sid=sid-hello" in text
 
 
+def test_read_symbol_summary_string_false_keeps_full_content(tmp_path, monkeypatch):
+    monkeypatch.setenv("SARI_FORMAT", "json")
+    from sari.core.db import LocalSearchDB
+    from sari.core.workspace import WorkspaceManager
+
+    root = tmp_path / "ws"
+    root.mkdir()
+    (root / "main.py").write_text("def hello():\n    return 1\n", encoding="utf-8")
+    db = LocalSearchDB(str(root / "sari.db"))
+    rid = WorkspaceManager.root_id(str(root))
+    db.upsert_root(rid, str(root), str(root.resolve()), label="ws")
+    cur = db._write.cursor()
+    db.upsert_files_tx(cur, [(f"{rid}/main.py", "main.py", rid, "repo", 1, 20, "def hello():\n    return 1\n", "h", "hello", 1, 0, "ok", "", "ok", "", 0, 0, 0, 20, "{}")])
+    db.upsert_symbols_tx(cur, [("sid-hello", f"{rid}/main.py", rid, "hello", "function", 1, 2, "def hello():", "", "{}", "", "hello")])
+    db._write.commit()
+
+    resp = execute_read_symbol(
+        {"symbol_id": "sid-hello", "summary": "false"},
+        db,
+        MagicMock(),
+        [str(root)],
+    )
+    assert resp.get("isError") is not True
+    assert resp["summary_mode"] is False
+    assert "return 1" in resp["content"][0]["text"]
+
+
 def test_execute_read_symbol_rejects_non_object_args():
     db = MagicMock()
     resp = execute_read_symbol(["bad-args"], db, MagicMock(), ["/tmp/ws"])
     text = resp["content"][0]["text"]
     assert "PACK1 tool=read_symbol ok=false code=INVALID_ARGS" in text
     assert resp.get("isError") is True
+
+
+def test_read_symbol_tolerates_malformed_line_numbers(monkeypatch):
+    monkeypatch.setenv("SARI_FORMAT", "pack")
+    db = MagicMock()
+    monkeypatch.setattr(
+        "sari.mcp.tools.read_symbol._symbol_candidates",
+        lambda *_a, **_k: [
+            {
+                "symbol_id": "sid-x",
+                "path": "rid-x/a.py",
+                "name": "f",
+                "kind": "function",
+                "line": "bad-line",
+                "end_line": "bad-end",
+                "qualname": "f",
+            }
+        ],
+    )
+    db.read_file.return_value = "def f():\n    return 1\n"
+    out = execute_read_symbol({"symbol_id": "sid-x"}, db, MagicMock(), ["/tmp/ws"])
+    text = out["content"][0]["text"]
+    assert "PACK1 tool=read_symbol ok=true" in text
 
 
 def test_execute_save_snippet_rejects_non_object_args():
@@ -636,6 +734,39 @@ def test_get_callers_uses_search_fallback_when_call_graph_is_empty(monkeypatch):
     assert "rel_type=search_fallback" in text
 
 
+def test_get_callers_search_fallback_tolerates_non_integer_line(monkeypatch):
+    class _Conn:
+        def execute(self, *_args, **_kwargs):
+            class _Rows:
+                def fetchall(self_non):
+                    return []
+            return _Rows()
+
+    class _SymbolDTO:
+        def __init__(self):
+            self.path = "rid-x/a.py"
+            self.name = "target_caller"
+            self.symbol_id = "sid-caller"
+            self.line = "bad-line"
+
+    class _Symbols:
+        def search_symbols(self, _query, limit=20, **_kwargs):
+            return [_SymbolDTO()]
+
+    class _DB:
+        _read = _Conn()
+        symbols = _Symbols()
+
+    monkeypatch.setattr(
+        "sari.mcp.tools.get_callers.build_call_graph",
+        lambda _args, _db, _roots: {"upstream": {"children": []}},
+    )
+    resp = execute_get_callers({"name": "target", "limit": 10}, _DB(), ["/tmp/ws"])
+    text = resp["content"][0]["text"]
+    assert "PACK1 tool=get_callers ok=true" in text
+    assert "rel_type=search_fallback" in text
+
+
 def test_get_implementations_uses_search_fallback_when_service_returns_empty(monkeypatch):
     class _Svc:
         def __init__(self, _db):
@@ -663,6 +794,35 @@ def test_get_implementations_uses_search_fallback_when_service_returns_empty(mon
     text = resp["content"][0]["text"]
     assert "PACK1 tool=get_implementations ok=true" in text
     assert "implementer_symbol=TargetImpl" in text
+    assert "rel_type=search_fallback" in text
+
+
+def test_get_implementations_search_fallback_tolerates_non_integer_line(monkeypatch):
+    class _Svc:
+        def __init__(self, _db):
+            pass
+
+        def get_implementations(self, **_kwargs):
+            return []
+
+    class _SymbolDTO:
+        def __init__(self):
+            self.path = "rid-x/impl.py"
+            self.name = "TargetImpl"
+            self.symbol_id = "sid-impl"
+            self.line = "bad-line"
+
+    class _Symbols:
+        def search_symbols(self, _query, limit=20, **_kwargs):
+            return [_SymbolDTO()]
+
+    class _DB:
+        symbols = _Symbols()
+
+    monkeypatch.setattr("sari.mcp.tools.get_implementations.SymbolService", _Svc)
+    resp = execute_get_implementations({"name": "Target", "limit": 10}, _DB(), ["/tmp/ws"])
+    text = resp["content"][0]["text"]
+    assert "PACK1 tool=get_implementations ok=true" in text
     assert "rel_type=search_fallback" in text
 
 

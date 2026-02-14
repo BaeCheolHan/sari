@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Mapping
 
-from sari.mcp.tools._util import parse_search_options
+from sari.mcp.tools._util import internal_error_response, parse_search_options
 from sari.mcp.tools.inference import resolve_search_intent
 from sari.mcp.tools.repo_candidates import execute_repo_candidates
 from sari.mcp.tools.search_api_endpoints import execute_search_api_endpoints
@@ -98,8 +98,16 @@ def execute_core_search_raw(
             )
         return {"results": results, "meta": meta}
     except Exception as e:
-        message = str(e).strip() or "Search failed"
-        return {"isError": True, "error": {"code": "INTERNAL", "message": message}}
+        return internal_error_response(
+            "search",
+            e,
+            reason_code="SEARCH_EXECUTION_FAILED",
+            data={
+                "search_type": str(args.get("search_type", "code")).lower(),
+                "query": str(args.get("query", ""))[:120],
+            },
+            fallback_message="Search failed",
+        )
 
 
 def dispatch_search(

@@ -5,6 +5,7 @@ import pytest
 
 from sari.core.async_http_server import AsyncHttpServer
 from sari.core.http_server import Handler
+from sari.core.http_status_payload import build_queue_depths_payload
 
 
 def _make_sync_handler():
@@ -95,6 +96,14 @@ async def test_status_contract_common_fields_sync_async(monkeypatch):
         "warning_counts",
         "warnings_recent",
         "deployment",
+        "registry_truth",
+        "socket_truth",
+        "process_truth",
+        "final_truth",
+        "mismatch_reason",
+        "fallback_metrics",
+        "fallback_taxonomy",
+        "error_contract_metrics",
     }
     assert common_required.issubset(set(sync_payload.keys()))
     assert common_required.issubset(set(async_payload.keys()))
@@ -112,3 +121,39 @@ def test_sync_status_contract_specific_fields(monkeypatch):
     assert "workspaces" in payload
     assert "registry_resolve_failed" in payload
     assert "deployment" in payload
+
+
+def test_sync_status_projection_uses_daemon_target_not_http_port(monkeypatch):
+    monkeypatch.setattr("sari.core.http_server.detect_orphan_daemons", lambda: [])
+    monkeypatch.setattr(
+        "sari.core.http_server.get_system_metrics",
+        lambda: {"process_cpu_percent": 0, "memory_percent": 0},
+    )
+    monkeypatch.setattr("sari.core.http_server.resolve_daemon_address", lambda _ws=None: ("127.0.0.1", 47779))
+    handler = _make_sync_handler()
+    payload = Handler._handle_get(handler, "/status", {})
+    assert payload["port"] == 47777
+    assert payload["socket_truth"]["port"] == 47779
+
+
+def test_build_queue_depths_payload_tolerates_invalid_qsize_value():
+    class _Writer:
+        @staticmethod
+        def qsize():
+            return "bad"
+
+    class _DB:
+        writer = _Writer()
+
+    class _Proc:
+        @staticmethod
+        def is_alive():
+            return False
+
+    class _Indexer:
+        _worker_proc = _Proc()
+        _pending_rescan = True
+
+    out = build_queue_depths_payload(_Indexer(), _DB(), fallback=True)
+    assert out["index_worker"] == 0
+    assert out["rescan_pending"] == 1

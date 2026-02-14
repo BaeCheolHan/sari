@@ -9,6 +9,7 @@ import os
 import asyncio
 import inspect
 import logging
+import time
 from contextlib import asynccontextmanager
 from typing import Optional, TypeAlias
 
@@ -36,6 +37,7 @@ from sari.core.http_status_payload import (
     build_status_payload_base as _build_status_payload_base_impl,
 )
 from sari.core.mcp_runtime import create_mcp_server
+from sari.core.daemon_resolver import resolve_daemon_address
 from sari.core.policy_engine import load_daemon_runtime_status
 from sari.core.warning_sink import warning_sink
 
@@ -278,6 +280,7 @@ class AsyncHttpServer:
         st = self.indexer.status
         runtime_status = _build_runtime_status_impl(self.indexer, warn_status=self._warn_status)
         daemon_status = load_daemon_runtime_status()
+        daemon_target_host, daemon_target_port = resolve_daemon_address(self.workspace_root or None)
         repo_stats = {}
         if hasattr(self.db, "get_repo_stats"):
             repo_stats = self.db.get_repo_stats(root_ids=self.root_ids)
@@ -323,6 +326,9 @@ class AsyncHttpServer:
                     "fts_enabled": self.db.fts_enabled,
                     "worker_count": getattr(self.indexer, "max_workers", 0),
                     "endpoint_ok": bool(getattr(self, "_endpoint_ok", True)),
+                    "workspace_root": self.workspace_root,
+                    "daemon_target_host": daemon_target_host,
+                    "daemon_target_port": int(daemon_target_port),
                     "deployment": deployment,
                 },
             )

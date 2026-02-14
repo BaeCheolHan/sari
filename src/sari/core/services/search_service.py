@@ -3,6 +3,7 @@ from typing import TypeAlias
 
 from sari.core.models import SearchOptions, SearchHit
 from sari.core.engine_runtime import EngineError
+from sari.core.fallback_governance import note_fallback_event
 
 SearchMeta: TypeAlias = dict[str, object]
 SearchResult: TypeAlias = tuple[list[SearchHit], SearchMeta]
@@ -140,6 +141,11 @@ class SearchService:
             raise
         except Exception as exc:
             # 엔진 에러 발생 시 폴백 로직 (L2 검색 등)
+            note_fallback_event(
+                "search_text_fallback",
+                trigger=f"engine_exception:{type(exc).__name__}",
+                exit_condition="fallback_result_returned",
+            )
             fallback_hits = []
             fallback_meta: SearchMeta = {
                 "partial": True,

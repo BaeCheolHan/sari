@@ -11,9 +11,46 @@ from sari.mcp.tools._util import (
     ErrorCode,
     parse_timestamp,
     invalid_args_response,
+    internal_error_response,
 )
 
 ToolResult: TypeAlias = dict[str, object]
+
+
+def _normalize_str_list(value: object, *, max_items: int, max_len: int) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = [value]
+    elif not isinstance(value, list):
+        try:
+            value = list(value)
+        except TypeError:
+            value = [value]
+    out: list[str] = []
+    for item in value:
+        text = str(item).strip()
+        if not text:
+            continue
+        out.append(text[:max_len])
+        if len(out) >= max_items:
+            break
+    return out
+
+
+def _coerce_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off", ""}:
+            return False
+    return bool(value)
+
 
 def execute_archive_context(
     args: object,
@@ -28,8 +65,8 @@ def execute_archive_context(
     if not isinstance(args, Mapping):
         return invalid_args_response("archive_context", "args must be an object")
 
-    topic = str(args.get("topic") or "").strip()
-    content = str(args.get("content") or "").strip()
+    topic = str(args.get("topic") or "").strip()[:256]
+    content = str(args.get("content") or "").strip()[:50000]
     
     if not topic or not content:
         return mcp_response(
@@ -42,23 +79,25 @@ def execute_archive_context(
     data = {
         "topic": topic,
         "content": content,
-        "tags": args.get("tags") or [],
-        "related_files": args.get("related_files") or [],
-        "source": str(args.get("source") or "").strip(),
+        "tags": _normalize_str_list(args.get("tags"), max_items=50, max_len=120),
+        "related_files": _normalize_str_list(args.get("related_files"), max_items=50, max_len=512),
+        "source": str(args.get("source") or "").strip()[:256],
         "valid_from": parse_timestamp(args.get("valid_from")),
         "valid_until": parse_timestamp(args.get("valid_until")),
-        "deprecated": bool(args.get("deprecated")),
+        "deprecated": _coerce_bool(args.get("deprecated")),
     }
 
     try:
         # Facade 사용: db.contexts가 모든 내부 세부 사항을 처리합니다.
         payload = db.contexts.upsert(data)
     except Exception as e:
-        msg = str(e)
-        return mcp_response(
+        return internal_error_response(
             "archive_context",
-            lambda: pack_error("archive_context", ErrorCode.DB_ERROR, msg),
-            lambda: {"error": {"code": ErrorCode.DB_ERROR.value, "message": msg}, "isError": True},
+            e,
+            code=ErrorCode.DB_ERROR,
+            reason_code="ARCHIVE_CONTEXT_UPSERT_FAILED",
+            data={"topic": topic, "has_tags": bool(data["tags"])},
+            fallback_message="context archive failed",
         )
 
     def build_pack() -> str:

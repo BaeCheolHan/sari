@@ -35,6 +35,7 @@ from sari.mcp.tools._util import (
     resolve_db_path,
     resolve_fs_path,
     resolve_root_ids,
+    sanitize_error_message,
 )
 from sari.mcp.tools.crypto import issue_context_ref
 
@@ -94,7 +95,23 @@ def _line_count(text: str) -> int:
 
 
 def _compute_content_hash(text: str) -> str:
-    return hashlib.sha1(str(text).encode("utf-8", "replace")).hexdigest()[:12]
+    return hashlib.sha256(str(text).encode("utf-8", "replace")).hexdigest()[:12]
+
+
+def _coerce_bool(value: object, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off", ""}:
+            return False
+    return bool(value)
 
 
 def _mode_to_evidence_kind(mode: str) -> str:
@@ -245,12 +262,12 @@ def _attach_context_refs(evidence_refs: list[dict[str, object]], roots: list[str
             "ws": ws,
             "kind": str(out.get("kind") or "file"),
             "path": path,
-            "span": [int(out.get("start_line") or 0), int(out.get("end_line") or 0)],
+            "span": [_to_int(out.get("start_line")) or 0, _to_int(out.get("end_line")) or 0],
             "ch": str(out.get("content_hash") or ""),
         }
         try:
             out["context_ref"] = issue_context_ref(payload)
-        except Exception:
+        except (TypeError, ValueError):
             pass
         attached.append(out)
     return attached
@@ -280,7 +297,7 @@ def _extract_json_payload(response: ToolResult) -> dict[str, object] | None:
         return None
     try:
         payload = json.loads(text)
-    except Exception:
+    except json.JSONDecodeError:
         return None
     return payload if isinstance(payload, dict) else None
 
@@ -362,7 +379,7 @@ def _infer_symbol_name(args_map: Mapping[str, object], new_text: str) -> str:
         return ""
     try:
         module = ast.parse(text)
-    except Exception:
+    except SyntaxError:
         return ""
     for node in module.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -384,7 +401,7 @@ def _build_symbol_test_next_calls(target_fs_path: str, roots: list[str], symbol:
         for cand in tests_dir.rglob("test_*.py"):
             try:
                 text = cand.read_text(encoding="utf-8", errors="ignore")
-            except Exception:
+            except (OSError, UnicodeError):
                 continue
             if symbol in text:
                 found.append(cand)
@@ -405,7 +422,7 @@ def _caller_paths_from_db(db: object, symbol: str, limit: int = 20) -> list[str]
     if hasattr(db, "get_read_connection"):
         try:
             conn = db.get_read_connection()
-        except Exception:
+        except (AttributeError, OSError, TypeError, ValueError):
             conn = None
     if conn is None:
         conn = getattr(db, "_read", None)
@@ -416,7 +433,7 @@ def _caller_paths_from_db(db: object, symbol: str, limit: int = 20) -> list[str]
             "SELECT DISTINCT from_path FROM symbol_relations WHERE to_symbol = ? ORDER BY from_path LIMIT ?",
             (symbol, int(limit)),
         ).fetchall()
-    except Exception:
+    except (AttributeError, TypeError, ValueError):
         return []
 
     out: list[str] = []
@@ -428,7 +445,7 @@ def _caller_paths_from_db(db: object, symbol: str, limit: int = 20) -> list[str]
         else:
             try:
                 out.append(str(row["from_path"]))
-            except Exception:
+            except (TypeError, KeyError):
                 pass
     return [p for p in out if p]
 
@@ -462,7 +479,7 @@ def _python_symbol_span(source: str, symbol: str) -> tuple[int, int] | None:
         return None
     try:
         module = ast.parse(source)
-    except Exception:
+    except SyntaxError:
         return None
     for node in ast.walk(module):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and getattr(node, "name", "") == symbol:
@@ -510,7 +527,7 @@ def _extract_tree_sitter_symbols(source: str, fs_path: str) -> list[object]:
     try:
         from sari.core.parsers.ast_engine import ASTEngine
         from sari.core.parsers.factory import ParserFactory
-    except Exception:
+    except ImportError:
         return []
 
     suffix = Path(fs_path).suffix.lower()
@@ -524,7 +541,7 @@ def _extract_tree_sitter_symbols(source: str, fs_path: str) -> list[object]:
         return []
     try:
         parsed = engine.extract_symbols(fs_path, language, source, tree=tree)
-    except Exception:
+    except (AttributeError, RuntimeError, TypeError, ValueError):
         return []
     return list(getattr(parsed, "symbols", []) or [])
 
@@ -624,12 +641,12 @@ def _wait_focus_sync(indexer: object, timeout_ms: int) -> tuple[str, str]:
     while time.time() < deadline:
         try:
             depths_raw = getter()
-        except Exception:
+        except (AttributeError, TypeError, ValueError):
             return ("failed", "focus sync check failed while reading queue depths")
         depths = depths_raw if isinstance(depths_raw, Mapping) else {}
-        fair = int(depths.get("fair_queue", 0) or 0)
-        priority = int(depths.get("priority_queue", 0) or 0)
-        writer = int(depths.get("db_writer", 0) or 0)
+        fair = _to_int(depths.get("fair_queue", 0)) or 0
+        priority = _to_int(depths.get("priority_queue", 0)) or 0
+        writer = _to_int(depths.get("db_writer", 0)) or 0
         if fair == 0 and priority == 0 and writer == 0:
             return ("complete", "")
         time.sleep(0.05)
@@ -645,8 +662,12 @@ def _execute_ast_edit(args_map: Mapping[str, object], db: object, roots: list[st
     symbol_qualname = str(args_map.get("symbol_qualname") or "").strip()
     symbol_kind_raw = str(args_map.get("symbol_kind") or "").strip()
     symbol_kind = _normalize_symbol_kind(symbol_kind_raw)
-    preview = bool(args_map.get("ast_edit_preview", False))
-    sync_timeout_ms = int(args_map.get("sync_timeout_ms") or 500)
+    preview = _coerce_bool(args_map.get("ast_edit_preview"), False)
+    try:
+        sync_timeout_ms = int(args_map.get("sync_timeout_ms") or 500)
+    except (TypeError, ValueError):
+        return _ast_edit_error(ErrorCode.INVALID_ARGS.value, "sync_timeout_ms must be an integer")
+    sync_timeout_ms = max(0, min(sync_timeout_ms, 10_000))
     if not target:
         return _ast_edit_error(ErrorCode.INVALID_ARGS.value, "target is required for mode=ast_edit")
     if not expected_hash:
@@ -669,8 +690,11 @@ def _execute_ast_edit(args_map: Mapping[str, object], db: object, roots: list[st
 
     try:
         original = path_obj.read_text(encoding="utf-8")
-    except Exception as exc:
-        return _ast_edit_error(ErrorCode.IO_ERROR.value, f"failed to read target: {exc}")
+    except (OSError, UnicodeError) as exc:
+        return _ast_edit_error(
+            ErrorCode.IO_ERROR.value,
+            f"failed to read target: {sanitize_error_message(exc, 'read failed')}",
+        )
 
     current_hash = _compute_content_hash(original)
     if current_hash != expected_hash:
@@ -707,7 +731,10 @@ def _execute_ast_edit(args_map: Mapping[str, object], db: object, roots: list[st
         try:
             edited = _replace_line_span(original, start_line, end_line, new_text)
         except ValueError as exc:
-            return _ast_edit_error(ErrorCode.INVALID_ARGS.value, str(exc))
+            return _ast_edit_error(
+                ErrorCode.INVALID_ARGS.value,
+                sanitize_error_message(exc, "invalid line span"),
+            )
     else:
         if old_text not in original:
             return _ast_edit_error(ErrorCode.INVALID_ARGS.value, "old_text was not found in target")
@@ -715,8 +742,11 @@ def _execute_ast_edit(args_map: Mapping[str, object], db: object, roots: list[st
     if str(path_obj).endswith(".py"):
         try:
             ast.parse(edited)
-        except Exception as exc:
-            return _ast_edit_error(ErrorCode.INVALID_ARGS.value, f"edited python source is invalid syntax: {exc}")
+        except (SyntaxError, ValueError, TypeError) as exc:
+            return _ast_edit_error(
+                ErrorCode.INVALID_ARGS.value,
+                f"edited python source is invalid syntax: {sanitize_error_message(exc, 'syntax error')}",
+            )
     new_hash = _compute_content_hash(edited)
     if preview:
         change_preview = _build_change_preview(original, edited, db_path)
@@ -767,8 +797,11 @@ def _execute_ast_edit(args_map: Mapping[str, object], db: object, roots: list[st
 
     try:
         path_obj.write_text(edited, encoding="utf-8")
-    except Exception as exc:
-        return _ast_edit_error(ErrorCode.IO_ERROR.value, f"failed to write target: {exc}")
+    except (OSError, UnicodeError) as exc:
+        return _ast_edit_error(
+            ErrorCode.IO_ERROR.value,
+            f"failed to write target: {sanitize_error_message(exc, 'write failed')}",
+        )
 
     focus_indexing = "deferred"
     focus_sync_state = "not_requested"
@@ -1012,21 +1045,23 @@ def _stabilization_error(
     reason_codes: list[str],
     warnings: list[str] | None = None,
     next_calls: list[dict[str, object]] | None = None,
+    gate_context: Mapping[str, object] | None = None,
 ) -> ToolResult:
+    stabilization: dict[str, object] = {
+        "reason_codes": reason_codes,
+        "warnings": list(warnings or []),
+        "evidence_refs": [],
+        "suggested_next_action": "search",
+        "next_calls": list(next_calls or []),
+    }
+    if gate_context:
+        stabilization["gate_context"] = dict(gate_context)
     return mcp_response(
         "read",
         lambda: pack_error("read", code, message),
         lambda: {
             "error": {"code": code, "message": message},
-            "meta": {
-                "stabilization": {
-                    "reason_codes": reason_codes,
-                    "warnings": list(warnings or []),
-                    "evidence_refs": [],
-                    "suggested_next_action": "search",
-                    "next_calls": list(next_calls or []),
-                }
-            },
+            "meta": {"stabilization": stabilization},
             "isError": True,
         },
     )
@@ -1102,6 +1137,10 @@ def _enforce_search_ref_gate(
                 reason_codes=[ReasonCode.SEARCH_REF_REQUIRED.value],
                 warnings=[msg],
                 next_calls=_build_search_next_calls(str(args_map.get("target") or "")),
+                gate_context={
+                    "expected_target": str(args_map.get("target") or args_map.get("path") or "").strip(),
+                    "provided_target": str(args_map.get("target") or args_map.get("path") or "").strip(),
+                },
             ),
             [ReasonCode.SEARCH_REF_REQUIRED.value],
             [msg],
@@ -1130,6 +1169,10 @@ def _enforce_search_ref_gate(
                 reason_codes=[ReasonCode.CANDIDATE_REF_REQUIRED.value],
                 warnings=[message],
                 next_calls=_build_search_next_calls(target),
+                gate_context={
+                    "expected_target": matched or target,
+                    "provided_target": target or path_arg,
+                },
             ),
             [ReasonCode.CANDIDATE_REF_REQUIRED.value],
             [message],
@@ -1151,6 +1194,14 @@ def _enforce_search_ref_gate(
             reason_codes=[reason.value],
             warnings=[message],
             next_calls=_build_search_next_calls(target),
+            gate_context=(
+                {
+                    "expected_target": target,
+                    "provided_target": target,
+                }
+                if reason == ReasonCode.SEARCH_REF_REQUIRED
+                else None
+            ),
         ),
         [reason.value],
         [message],

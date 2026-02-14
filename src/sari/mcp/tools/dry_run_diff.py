@@ -17,6 +17,7 @@ from sari.mcp.tools._util import (
     ErrorCode,
     resolve_db_path,
     resolve_fs_path,
+    sanitize_error_message,
 )
 
 ToolArgs: TypeAlias = dict[str, object]
@@ -55,6 +56,7 @@ def _read_git_baseline(db_path: str, roots: list[str], against: str) -> tuple[st
         stderr=subprocess.PIPE,
         check=False,
         text=True,
+        timeout=3.0,
     )
     if repo_probe.returncode != 0:
         return "", False
@@ -68,6 +70,7 @@ def _read_git_baseline(db_path: str, roots: list[str], against: str) -> tuple[st
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=False,
+        timeout=5.0,
     )
     if show_proc.returncode != 0:
         return "", False
@@ -105,13 +108,13 @@ def _syntax_check(path: str, content: str) -> ToolResult:
                 "hint": "Check if you used syntax from a newer Python version than " + runtime
             }
         except Exception as e:
-            return {"syntax_ok": False, "syntax_error": str(e), "runtime": runtime}
+            return {"syntax_ok": False, "syntax_error": sanitize_error_message(e, "python syntax validation failed"), "runtime": runtime}
     if path.endswith(".json"):
         try:
             json.loads(content)
             return {"syntax_ok": True, "runtime": runtime}
         except Exception as e:
-            return {"syntax_ok": False, "syntax_error": str(e), "runtime": runtime}
+            return {"syntax_ok": False, "syntax_error": sanitize_error_message(e, "json syntax validation failed"), "runtime": runtime}
     return {"syntax_ok": True, "runtime": runtime}
 
 def _maybe_lint(path: str, content: str) -> ToolResult:
@@ -131,6 +134,7 @@ def _maybe_lint(path: str, content: str) -> ToolResult:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 check=False,
+                timeout=5.0,
             )
             output = (proc.stdout or b"").decode("utf-8", errors="ignore").strip()
             err = (proc.stderr or b"").decode("utf-8", errors="ignore").strip()
@@ -141,7 +145,7 @@ def _maybe_lint(path: str, content: str) -> ToolResult:
                 "lint_error": err,
             }
         except Exception as e:
-            return {"lint_ok": False, "lint_error": str(e), "lint_tool": "ruff"}
+            return {"lint_ok": False, "lint_error": sanitize_error_message(e, "ruff execution failed"), "lint_tool": "ruff"}
     if (ext.endswith(".js") or ext.endswith(".ts") or ext.endswith(".jsx") or ext.endswith(".tsx")) and shutil.which("eslint"):
         try:
             proc = subprocess.run(
@@ -150,6 +154,7 @@ def _maybe_lint(path: str, content: str) -> ToolResult:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 check=False,
+                timeout=8.0,
             )
             output = (proc.stdout or b"").decode("utf-8", errors="ignore").strip()
             err = (proc.stderr or b"").decode("utf-8", errors="ignore").strip()
@@ -160,7 +165,7 @@ def _maybe_lint(path: str, content: str) -> ToolResult:
                 "lint_error": err,
             }
         except Exception as e:
-            return {"lint_ok": False, "lint_error": str(e), "lint_tool": "eslint"}
+            return {"lint_ok": False, "lint_error": sanitize_error_message(e, "eslint execution failed"), "lint_tool": "eslint"}
     return {"lint_skipped": True, "lint_reason": "tool_not_found"}
 
 
@@ -243,6 +248,13 @@ def execute_dry_run_diff(args: object, db: object, roots: list[str]) -> ToolResu
             "dry_run_diff",
             lambda: pack_error("dry_run_diff", ErrorCode.INVALID_ARGS, msg),
             lambda: {"error": {"code": ErrorCode.INVALID_ARGS.value, "message": msg}, "isError": True},
+        )
+    except Exception as e:
+        msg = sanitize_error_message(e, "dry_run_diff failed")
+        return mcp_response(
+            "dry_run_diff",
+            lambda: pack_error("dry_run_diff", ErrorCode.INTERNAL, msg, fields={"reason_code": "DRY_RUN_DIFF_FAILED"}),
+            lambda: {"error": {"code": ErrorCode.INTERNAL.value, "message": msg, "data": {"reason_code": "DRY_RUN_DIFF_FAILED"}}, "isError": True},
         )
 
     def build_pack() -> str:

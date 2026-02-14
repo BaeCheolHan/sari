@@ -31,7 +31,7 @@ def workspace_hash(roots: list[str]) -> str:
         primary = canonicalize_workspace_root(root)
         if primary:
             break
-    digest = hashlib.sha1(primary.encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(primary.encode("utf-8")).hexdigest()
     return digest[:12]
 
 

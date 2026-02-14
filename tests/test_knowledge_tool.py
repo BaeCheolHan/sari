@@ -15,7 +15,7 @@ def _json_payload(resp: dict) -> dict:
 
 
 def _sha12(text: str) -> str:
-    return hashlib.sha1(text.encode("utf-8", "replace")).hexdigest()[:12]
+    return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:12]
 
 
 def test_registry_exposes_knowledge_and_hides_legacy_by_default(monkeypatch):

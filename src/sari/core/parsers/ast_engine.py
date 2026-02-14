@@ -14,7 +14,7 @@ except ImportError:
 
 
 def _symbol_id(path: str, kind: str, name: str) -> str:
-    h = hashlib.sha1(f"{path}:{kind}:{name}".encode()).hexdigest()
+    h = hashlib.sha256(f"{path}:{kind}:{name}".encode()).hexdigest()
     return h
 
 

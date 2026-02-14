@@ -132,12 +132,22 @@ def main(argv: Optional[List[str]] = None) -> int:
     failed: List[str] = []
 
     try:
-        subprocess.run([sys.executable, "-m", "sari", "daemon", "stop"], check=False, capture_output=True)
+        subprocess.run(
+            [sys.executable, "-m", "sari", "daemon", "stop"],
+            check=False,
+            capture_output=True,
+            timeout=5,
+        )
     except Exception:
         pass
 
     try:
-        subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "sari"], check=False, capture_output=True)
+        subprocess.run(
+            [sys.executable, "-m", "pip", "uninstall", "-y", "sari"],
+            check=False,
+            capture_output=True,
+            timeout=20,
+        )
     except Exception:
         pass
 

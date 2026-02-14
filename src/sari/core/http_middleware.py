@@ -20,6 +20,14 @@ class HttpMiddleware:
         return error
 
 
+def _sanitize_error_message(exc: object, fallback: str = "request failed") -> str:
+    raw = str(exc).strip() if exc is not None else ""
+    if not raw:
+        return fallback
+    text = " ".join(raw.replace("\r", " ").replace("\n", " ").split())
+    return text[:500]
+
+
 def run_http_middlewares(
     ctx: HttpContext,
     middlewares: list[HttpMiddleware],
@@ -34,7 +42,11 @@ def run_http_middlewares(
         if not isinstance(result, dict):
             raise TypeError("http execute_fn must return an object")
     except Exception as e:
-        err = {"ok": False, "error": str(e)}
+        err = {
+            "ok": False,
+            "error": _sanitize_error_message(e),
+            "reason_code": "HTTP_MIDDLEWARE_EXEC_FAILED",
+        }
         for m in reversed(middlewares):
             err = m.on_error(ctx, err)
         return err

@@ -42,7 +42,10 @@ def get_arg(args: object, name: str, default: object = None) -> object:
     Returns:
         Attribute value or default
     """
-    return getattr(args, name, default)
+    try:
+        return getattr(args, name, default)
+    except Exception:
+        return default
 
 
 def get_pid_file_path() -> Path:
@@ -89,7 +92,9 @@ def load_local_db(workspace_root: Optional[str] = None):
     Returns:
         Tuple of (db, workspace_roots, resolved_root)
     """
-    root = workspace_root or WorkspaceManager.resolve_workspace_root()
+    root = str(workspace_root or WorkspaceManager.resolve_workspace_root()).strip()
+    if not root:
+        raise RuntimeError("workspace root is required")
     cfg_path = WorkspaceManager.resolve_config_path(root)
     cfg = Config.load(cfg_path, workspace_root_override=root)
     db = LocalSearchDB(cfg.db_path)
@@ -144,7 +149,7 @@ def get_local_version() -> str:
     try:
         from sari.version import __version__ as v
         return v or ""
-    except Exception:
+    except (ImportError, AttributeError):
         return os.environ.get("SARI_VERSION", "") or ""
 
 
@@ -160,10 +165,16 @@ def is_port_in_use(host: str, port: int) -> bool:
         True if port is in use, False if available
     """
     try:
+        host_norm = str(host or "").strip()
+        port_norm = int(port)
+        if port_norm < 1 or port_norm > 65535:
+            raise ValueError("port out of range")
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind((host, port))
+            s.bind((host_norm, port_norm))
             return False
     except OSError:
+        return True
+    except (TypeError, ValueError):
         return True
 
 

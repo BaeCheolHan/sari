@@ -3,6 +3,16 @@ from __future__ import annotations
 import os
 from typing import Any, Callable
 
+from sari.core.fallback_governance import note_fallback_event
+
+
+def _record_normalization_fallback() -> None:
+    note_fallback_event(
+        "workspace_normalization_fallback",
+        trigger="workspace_normalize_exception",
+        exit_condition="fallback_normalized_path_computed",
+    )
+
 
 def _load_configured_roots(workspace_root: str) -> tuple[list[str], Any | None]:
     try:
@@ -19,22 +29,28 @@ def _load_configured_roots(workspace_root: str) -> tuple[list[str], Any | None]:
 
 
 def _parse_failed_row(row: object) -> tuple[str, int, int]:
+    def _to_int(value: object) -> int:
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+
     if isinstance(row, dict):
         rid = str(row.get("root_id") or "")
-        pending_count = int(row.get("pending_count") or 0)
-        failed_count = int(row.get("failed_count") or 0)
+        pending_count = _to_int(row.get("pending_count"))
+        failed_count = _to_int(row.get("failed_count"))
         return rid, pending_count, failed_count
 
     rid = str(getattr(row, "root_id", "") or "")
     if not rid and isinstance(row, (list, tuple)) and len(row) >= 1:
         rid = str(row[0] or "")
-    pending_count = int(getattr(row, "pending_count", 0) or 0)
-    failed_count = int(getattr(row, "failed_count", 0) or 0)
+    pending_count = _to_int(getattr(row, "pending_count", 0))
+    failed_count = _to_int(getattr(row, "failed_count", 0))
     if isinstance(row, (list, tuple)):
         if len(row) >= 2:
-            pending_count = int(row[1] or 0)
+            pending_count = _to_int(row[1])
         if len(row) >= 3:
-            failed_count = int(row[2] or 0)
+            failed_count = _to_int(row[2])
     return rid, pending_count, failed_count
 
 
@@ -68,6 +84,7 @@ def build_registered_workspaces_payload(
             normalized_by_path[normalized] = normalized_by
         if normalized_by == "fallback":
             normalize_fallback_count += 1
+            _record_normalization_fallback()
 
     indexed_by_path: dict[str, Any] = {}
     row_parse_error_count = 0
@@ -85,13 +102,14 @@ def build_registered_workspaces_payload(
                     indexed_by_path[normalized] = row
                     if normalized_by == "fallback":
                         normalize_fallback_count += 1
+                        _record_normalization_fallback()
                 except Exception as row_error:
                     row_parse_error_count += 1
                     warn_status(
                         "WORKSPACE_ROW_PARSE_FAILED",
                         "Failed to parse workspace root row",
-                        error=repr(row_error),
-                        raw_row=repr(row),
+                        error=repr(row_error)[:240],
+                        raw_row=repr(row)[:240],
                     )
         except Exception as e:
             warn_status(
@@ -134,6 +152,7 @@ def build_registered_workspaces_payload(
             watched_roots.add(normalized)
             if normalized_by == "fallback":
                 normalize_fallback_count += 1
+                _record_normalization_fallback()
     except Exception as e:
         warn_status(
             watched_roots_warn_code,
@@ -160,7 +179,7 @@ def build_registered_workspaces_payload(
         if not computed_root_id and workspace_manager is not None:
             try:
                 computed_root_id = str(workspace_manager.root_id_for_workspace(root))
-            except Exception:
+            except (AttributeError, OSError, ValueError):
                 computed_root_id = ""
 
         failed_counts = failed_by_root.get(computed_root_id, {})

@@ -4,7 +4,7 @@ from typing import Optional, TypeAlias
 from sari.core.db.main import LocalSearchDB
 from sari.core.indexer.main import Indexer
 from sari.core.config import Config
-from sari.mcp.tools._util import pack_header
+from sari.mcp.tools._util import ErrorCode, invalid_args_response, mcp_response, pack_header, pack_line
 
 ToolResult: TypeAlias = dict[str, object]
 
@@ -25,6 +25,27 @@ def _status_field(status: object, name: str, default: object) -> object:
     return getattr(status, name, default) if status is not None else default
 
 
+def _coerce_int(value: object, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off", ""}:
+            return False
+    return False
+
+
 def execute_status(
     args: Mapping[str, object],
     indexer: Optional[Indexer],
@@ -38,7 +59,9 @@ def execute_status(
     Sari 서버의 상태를 조회하는 현대화된 상태 도구입니다.
     인덱서 및 DB의 실시간 상태와 풍부한 메타데이터를 제공합니다.
     """
-    
+    if not isinstance(args, Mapping):
+        return invalid_args_response("status", "args must be an object")
+
     # DB 통계 정보 수집
     total_symbols = 0
     total_files = 0
@@ -64,11 +87,11 @@ def execute_status(
         except Exception:
             runtime_status = {}
     status_data: ToolResult = {
-        "index_ready": runtime_status.get("index_ready", _status_field(status_obj, "index_ready", False)),
-        "indexed_files": runtime_status.get("indexed_files", _status_field(status_obj, "indexed_files", 0)),
-        "scanned_files": runtime_status.get("scanned_files", _status_field(status_obj, "scanned_files", 0)),
-        "symbols_extracted": runtime_status.get("symbols_extracted", _status_field(status_obj, "symbols_extracted", 0)),
-        "errors": runtime_status.get("errors", _status_field(status_obj, "errors", 0)),
+        "index_ready": _coerce_bool(runtime_status.get("index_ready", _status_field(status_obj, "index_ready", False))),
+        "indexed_files": _coerce_int(runtime_status.get("indexed_files", _status_field(status_obj, "indexed_files", 0))),
+        "scanned_files": _coerce_int(runtime_status.get("scanned_files", _status_field(status_obj, "scanned_files", 0))),
+        "symbols_extracted": _coerce_int(runtime_status.get("symbols_extracted", _status_field(status_obj, "symbols_extracted", 0))),
+        "errors": _coerce_int(runtime_status.get("errors", _status_field(status_obj, "errors", 0))),
         "total_files_db": total_files,
         "total_symbols_db": total_symbols,
         "db_error": db_error,
@@ -81,9 +104,20 @@ def execute_status(
     }
     
     # 풍부한 정보를 담은 PACK1 응답 생성
-    lines = [pack_header("status", {}, returned=len(status_data))]
-    for k, v in status_data.items():
-        val = str(v).lower() if isinstance(v, bool) else v
-        lines.append(f"m:{k}={val}")
-        
-    return {"content": [{"type": "text", "text": "\n".join(lines)}]}
+    def build_pack() -> str:
+        lines = [pack_header("status", {}, returned=len(status_data))]
+        for k, v in status_data.items():
+            val = str(v).lower() if isinstance(v, bool) else str(v)
+            lines.append(pack_line("m", {k: val}))
+        if db_error:
+            lines.append(pack_line("m", {"reason_code": ErrorCode.DB_ERROR.value}))
+        return "\n".join(lines)
+
+    def build_json() -> ToolResult:
+        payload: ToolResult = dict(status_data)
+        if db_error:
+            payload["error"] = {"code": ErrorCode.DB_ERROR.value, "message": db_error}
+        payload["ok"] = True
+        return payload
+
+    return mcp_response("status", build_pack, build_json)

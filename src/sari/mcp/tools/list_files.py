@@ -30,9 +30,9 @@ def _infer_top_directory(path: str, rel_path: str | None = None, roots: list[str
                             if rel_from_root:
                                 candidate = rel_from_root
                                 break
-                        except Exception:
+                        except (OSError, RuntimeError, ValueError):
                             continue
-            except Exception:
+            except (OSError, RuntimeError, ValueError):
                 pass
             rel = candidate.lstrip("./")
     rel = rel.lstrip("./")

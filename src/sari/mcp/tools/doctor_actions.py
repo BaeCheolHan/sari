@@ -7,7 +7,7 @@ from sari.core.config import Config
 from sari.core.db import LocalSearchDB
 from sari.core.workspace import WorkspaceManager
 
-from sari.mcp.tools.doctor_common import result
+from sari.mcp.tools.doctor_common import compact_error_message, result
 
 DoctorResult: TypeAlias = dict[str, object]
 DoctorResults: TypeAlias = list[DoctorResult]
@@ -176,7 +176,7 @@ def run_auto_fixes(ws_root: str, actions: ActionItems) -> DoctorResults:
                 )
 
         except Exception as e:
-            results.append(result(f"Auto Fix {name}", False, str(e)))
+            results.append(result(f"Auto Fix {name}", False, compact_error_message(e, "auto fix failed")))
 
     return results
 
@@ -201,7 +201,7 @@ def run_rescan(ws_root: str) -> DoctorResults:
         db.close()
         results.append(result("Auto Fix Rescan", True, "scan_once completed"))
     except Exception as e:
-        results.append(result("Auto Fix Rescan", False, str(e)))
+        results.append(result("Auto Fix Rescan", False, compact_error_message(e, "rescan failed")))
     return results
 
 
@@ -235,5 +235,5 @@ def check_workspace_overlaps(ws_root: str) -> DoctorResults:
         else:
             results.append(result("Workspace Overlap", True, "No nested roots detected"))
     except Exception as e:
-        results.append(result("Workspace Overlap Check", True, f"Skipped: {e}", warn=True))
+        results.append(result("Workspace Overlap Check", True, f"Skipped: {compact_error_message(e)}", warn=True))
     return results

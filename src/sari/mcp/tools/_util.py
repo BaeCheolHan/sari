@@ -4,6 +4,7 @@ This module re-exports common functionality from modular components to maintain 
 """
 import logging
 from collections.abc import Mapping, Sequence
+from enum import Enum
 from typing import TypeAlias
 
 # --- Protocol & Formatting ---
@@ -97,6 +98,52 @@ def invalid_args_response(tool: str, message: str) -> ToolResult:
     )
 
 
+def _error_code_text(code: object) -> str:
+    if isinstance(code, Enum):
+        return str(code.value)
+    return str(code)
+
+
+def sanitize_error_message(exc: object, fallback: str = "Internal error") -> str:
+    raw = str(exc).strip() if exc is not None else ""
+    if not raw:
+        return fallback
+    compact = " ".join(raw.replace("\r", " ").replace("\n", " ").split())
+    return compact[:500] if len(compact) > 500 else compact
+
+
+def internal_error_response(
+    tool: str,
+    exc: object,
+    *,
+    code: object = ErrorCode.INTERNAL,
+    reason_code: str | None = None,
+    data: Mapping[str, object] | None = None,
+    fallback_message: str = "Internal error",
+) -> ToolResult:
+    code_text = _error_code_text(code)
+    msg = sanitize_error_message(exc, fallback_message)
+    reason = str(reason_code or f"{tool.upper()}_FAILED")
+    merged_data: dict[str, object] = {"reason_code": reason}
+    if data:
+        merged_data.update(dict(data))
+
+    pack_fields: dict[str, object] = {"reason_code": reason}
+    if data:
+        for key, value in data.items():
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                pack_fields[str(key)] = value
+
+    return mcp_response(
+        tool,
+        lambda: pack_error(tool, code_text, msg, fields=pack_fields),
+        lambda: {
+            "error": {"code": code_text, "message": msg, "data": merged_data},
+            "isError": True,
+        },
+    )
+
+
 def parse_int_arg(
     args: ArgMap,
     key: str,
@@ -183,4 +230,6 @@ __all__ = [
     "get_data_attr",
     "parse_timestamp",
     "parse_search_options",
+    "sanitize_error_message",
+    "internal_error_response",
 ]

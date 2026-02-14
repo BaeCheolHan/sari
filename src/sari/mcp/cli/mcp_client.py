@@ -14,8 +14,46 @@ from sari.core.constants import (
     DAEMON_IDENTIFY_TIMEOUT_SECONDS,
     DAEMON_PROBE_TIMEOUT_SECONDS,
 )
+from sari.mcp.cli.utils import enforce_loopback
 
 JsonMap: TypeAlias = dict[str, object]
+_MAX_MCP_HEADER_LINES = 64
+_MAX_MCP_CONTENT_LENGTH = 4 * 1024 * 1024
+
+
+def _send_framed_json(sock: socket.socket, payload: JsonMap) -> None:
+    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
+    sock.sendall(header + body)
+
+
+def _read_framed_json(sock: socket.socket) -> JsonMap:
+    f = sock.makefile("rb")
+    headers: dict[bytes, bytes] = {}
+    for _ in range(_MAX_MCP_HEADER_LINES):
+        line = f.readline()
+        if not line:
+            return {}
+        line = line.strip()
+        if not line:
+            break
+        if b":" in line:
+            k, v = line.split(b":", 1)
+            headers[k.strip().lower()] = v.strip()
+    content_len_raw = headers.get(b"content-length", b"0")
+    try:
+        content_length = int(content_len_raw)
+    except (TypeError, ValueError):
+        return {}
+    if content_length <= 0:
+        return {}
+    if content_length > _MAX_MCP_CONTENT_LENGTH:
+        raise ValueError("mcp content-length too large")
+    resp_body = f.read(content_length)
+    if not resp_body:
+        return {}
+    parsed = json.loads(resp_body.decode("utf-8"))
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def identify_sari_daemon(
@@ -38,85 +76,40 @@ def identify_sari_daemon(
     Returns:
         Identify payload dict if Sari daemon, None otherwise
     """
+    try:
+        enforce_loopback(host)
+    except RuntimeError:
+        return None
+
     # Try modern sari/identify method
     try:
         with socket.create_connection((host, port), timeout=timeout) as sock:
             sock.settimeout(timeout)
-            body = json.dumps({"jsonrpc": "2.0", "id": 1,
-                              "method": "sari/identify"}).encode("utf-8")
-            header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
-            sock.sendall(header + body)
+            _send_framed_json(sock, {"jsonrpc": "2.0", "id": 1, "method": "sari/identify"})
+            resp = _read_framed_json(sock)
 
-            f = sock.makefile("rb")
-            headers = {}
-            while True:
-                line = f.readline()
-                if not line:
-                    return None
-                line = line.strip()
-                if not line:
-                    break
-                if b":" in line:
-                    k, v = line.split(b":", 1)
-                    headers[k.strip().lower()] = v.strip()
-
-            try:
-                content_length = int(headers.get(b"content-length", b"0"))
-            except ValueError:
-                return None
-            if content_length <= 0:
-                return None
-            resp_body = f.read(content_length)
-            if not resp_body:
-                return None
-            resp = json.loads(resp_body.decode("utf-8"))
-
-            result = resp.get("result") or {}
+            result_raw = resp.get("result")
+            result = result_raw if isinstance(result_raw, dict) else {}
             if result.get("name") == "sari":
                 return result
-    except Exception:
+    except (OSError, ValueError, json.JSONDecodeError, TimeoutError):
         pass
 
     # Legacy fallback: probe "ping" and accept "Server not initialized" error
     try:
         with socket.create_connection((host, port), timeout=timeout) as sock:
             sock.settimeout(timeout)
-            body = json.dumps({"jsonrpc": "2.0", "id": 1,
-                              "method": "ping"}).encode("utf-8")
-            header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
-            sock.sendall(header + body)
-
-            f = sock.makefile("rb")
-            headers = {}
-            while True:
-                line = f.readline()
-                if not line:
-                    return None
-                line = line.strip()
-                if not line:
-                    break
-                if b":" in line:
-                    k, v = line.split(b":", 1)
-                    headers[k.strip().lower()] = v.strip()
-
-            try:
-                content_length = int(headers.get(b"content-length", b"0"))
-            except ValueError:
-                return None
-            if content_length <= 0:
-                return None
-            resp_body = f.read(content_length)
-            if not resp_body:
-                return None
-            resp = json.loads(resp_body.decode("utf-8"))
-            err = resp.get("error") or {}
+            _send_framed_json(sock, {"jsonrpc": "2.0", "id": 1, "method": "ping"})
+            resp = _read_framed_json(sock)
+            err_raw = resp.get("error")
+            err = err_raw if isinstance(err_raw, dict) else {}
             msg = (err.get("message") or "").lower()
             if "server not initialized" in msg:
                 return {
                     "name": "sari",
                     "version": "legacy",
                     "protocolVersion": ""}
-    except Exception:
+    except (OSError, ValueError, json.JSONDecodeError, TimeoutError):
         pass
 
     return None
@@ -154,7 +147,7 @@ def is_http_running(host: str, port: int, timeout: float = 2.0) -> bool:
                 return False
             payload = json.loads(r.read().decode("utf-8"))
             return bool(payload.get("ok"))
-    except Exception:
+    except (OSError, ValueError, json.JSONDecodeError):
         return False
 
 
@@ -176,11 +169,12 @@ def ensure_workspace_http(
         True if successful, False otherwise
     """
     try:
+        enforce_loopback(daemon_host)
         root = workspace_root or os.environ.get(
             "SARI_WORKSPACE_ROOT") or WorkspaceManager.resolve_workspace_root()
         with socket.create_connection((daemon_host, daemon_port), timeout=timeout) as sock:
             sock.settimeout(timeout)
-            body = json.dumps({
+            _send_framed_json(sock, {
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "initialize",
@@ -190,29 +184,12 @@ def ensure_workspace_http(
                     # Keep initialized workspaces available through daemon lifetime.
                     "sariPersist": True,
                 },
-            }).encode("utf-8")
-            header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
-            sock.sendall(header + body)
-            f = sock.makefile("rb")
-            headers = {}
-            while True:
-                line = f.readline()
-                if not line:
-                    break
-                line = line.strip()
-                if not line:
-                    break
-                if b":" in line:
-                    k, v = line.split(b":", 1)
-                    headers[k.strip().lower()] = v.strip()
-            try:
-                content_length = int(headers.get(b"content-length", b"0"))
-            except ValueError:
-                content_length = 0
-            if content_length > 0:
-                f.read(content_length)
+            })
+            resp = _read_framed_json(sock)
+            if isinstance(resp.get("error"), dict):
+                return False
         return True
-    except Exception:
+    except (OSError, ValueError, json.JSONDecodeError, TimeoutError, RuntimeError):
         return False
 
 
@@ -233,44 +210,27 @@ def request_mcp_status(
         Status dict or None if request fails
     """
     try:
+        enforce_loopback(daemon_host)
         root = workspace_root or os.environ.get(
             "SARI_WORKSPACE_ROOT") or WorkspaceManager.resolve_workspace_root()
         with socket.create_connection((daemon_host, daemon_port), timeout=2.0) as sock:
-            def _send(payload: JsonMap) -> JsonMap:
-                body = json.dumps(payload).encode("utf-8")
-                header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
-                sock.sendall(header + body)
-                f = sock.makefile("rb")
-                headers = {}
-                while True:
-                    line = f.readline()
-                    if not line:
-                        break
-                    line = line.strip()
-                    if not line:
-                        break
-                    if b":" in line:
-                        k, v = line.split(b":", 1)
-                        headers[k.strip().lower()] = v.strip()
-                try:
-                    content_length = int(headers.get(b"content-length", b"0"))
-                except ValueError:
-                    content_length = 0
-                body = f.read(content_length) if content_length > 0 else b""
-                return json.loads(body.decode("utf-8")) if body else {}
-
-            _send({
+            sock.settimeout(2.0)
+            _send_framed_json(sock, {
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "initialize",
                 "params": {"rootUri": f"file://{root}", "capabilities": {}},
             })
-            resp = _send({
+            _ = _read_framed_json(sock)
+            _send_framed_json(sock, {
                 "jsonrpc": "2.0",
                 "id": 2,
                 "method": "tools/call",
                 "params": {"name": "status", "arguments": {"details": True}},
             })
+            resp = _read_framed_json(sock)
+            if isinstance(resp.get("error"), dict):
+                return None
             return resp.get("result") or resp
-    except Exception:
+    except (OSError, ValueError, json.JSONDecodeError, TimeoutError, RuntimeError):
         return None

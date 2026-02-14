@@ -206,13 +206,20 @@ class LocalSearchDB:
         if not mapped_tuples:
             return
         try:
+            was_in_tx = bool(getattr(conn, "in_transaction", False))
             self.upsert_files_staging(conn, mapped_tuples)
-            conn.commit()
+            if not was_in_tx:
+                conn.commit()
         except Exception as e:
             self.logger.error(
                 "upsert_files_turbo commit failed: %s",
                 e,
                 exc_info=True)
+            if not bool(getattr(conn, "in_transaction", False)):
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
             raise
 
     def finalize_turbo_batch(self):
@@ -224,19 +231,23 @@ class LocalSearchDB:
             count = int(next(iter(res), 0)) if res else 0
             if count == 0:
                 return
+            started_tx = not bool(getattr(conn, "in_transaction", False))
             try:
-                conn.execute("BEGIN IMMEDIATE TRANSACTION")
+                if started_tx:
+                    conn.execute("BEGIN IMMEDIATE TRANSACTION")
                 cols = ", ".join(FILE_COLUMNS)
                 conn.execute(
                     f"INSERT OR REPLACE INTO main.files({cols}) SELECT {cols} FROM staging_mem.files_temp")
                 conn.execute("DELETE FROM staging_mem.files_temp")
-                conn.execute("COMMIT")
+                if started_tx:
+                    conn.execute("COMMIT")
                 self.update_stats()
             except Exception as te:
                 self.logger.error(
                     "Database merge failed: %s", te, exc_info=True)
                 try:
-                    conn.execute("ROLLBACK")
+                    if started_tx:
+                        conn.execute("ROLLBACK")
                 except Exception:
                     pass
                 raise te
@@ -386,17 +397,55 @@ class LocalSearchDB:
         """심볼 정보를 트랜잭션 내에서 일괄 삽입합니다."""
         if not rows:
             return
-        if cur is None:
-            cur = self.db.connection().cursor()
-        self._symbol_repo(cur).upsert_symbols_tx(cur, rows)
-
-    def upsert_relations_tx(self, cur, rows: List[object]):
-        """관계 정보를 트랜잭션 내에서 일괄 삽입합니다."""
-        if not rows:
+        if cur is not None:
+            self._symbol_repo(cur).upsert_symbols_tx(cur, rows)
             return
-        if cur is None:
-            cur = self.db.connection().cursor()
-        self._symbol_repo(cur).upsert_relations_tx(cur, rows)
+        conn = self.db.connection()
+        started_tx = not bool(getattr(conn, "in_transaction", False))
+        tx_cur = conn.cursor()
+        try:
+            if started_tx:
+                conn.execute("BEGIN IMMEDIATE TRANSACTION")
+            self._symbol_repo(tx_cur).upsert_symbols_tx(tx_cur, rows)
+            if started_tx:
+                conn.execute("COMMIT")
+        except Exception:
+            if started_tx:
+                try:
+                    conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+            raise
+
+    def upsert_relations_tx(
+            self,
+            cur,
+            rows: List[object],
+            replace_sources: Optional[List[Tuple[str, str]]] = None):
+        """관계 정보를 트랜잭션 내에서 일괄 삽입합니다."""
+        if not rows and not replace_sources:
+            return
+        if cur is not None:
+            self._symbol_repo(cur).upsert_relations_tx(
+                cur, rows, replace_sources=replace_sources)
+            return
+        conn = self.db.connection()
+        started_tx = not bool(getattr(conn, "in_transaction", False))
+        tx_cur = conn.cursor()
+        try:
+            if started_tx:
+                conn.execute("BEGIN IMMEDIATE TRANSACTION")
+            self._symbol_repo(tx_cur).upsert_relations_tx(
+                tx_cur, rows, replace_sources=replace_sources)
+            if started_tx:
+                conn.execute("COMMIT")
+        except Exception:
+            if started_tx:
+                try:
+                    conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+            raise
 
     def upsert_snippet_tx(self, cur, rows: List[object]):
         self._snippet_repo(cur).upsert_snippet_tx(cur, rows)
@@ -494,6 +543,10 @@ class LocalSearchDB:
         self._file_repo(cur).delete_path_tx(cur, path)
 
     def update_last_seen_tx(self, cur, paths: List[str], ts: int):
+        if not paths:
+            return
+        if cur is None:
+            cur = self.db.connection().cursor()
         self._file_repo(cur).update_last_seen_tx(cur, paths, ts)
 
     def search_symbols(

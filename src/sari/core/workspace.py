@@ -203,7 +203,7 @@ class WorkspaceManager:
         if policy in {"roots_hash", "legacy"}:
             roots = roots or []
             seed = "::".join(sorted([PathUtils.normalize(r) for r in roots]))
-            digest = hashlib.sha1(seed.encode(
+            digest = hashlib.sha256(seed.encode(
                 "utf-8")).hexdigest()[:8] if seed else "default"
             return base / f"roots-{digest}"
         if policy in {"per_root", "shard"}:

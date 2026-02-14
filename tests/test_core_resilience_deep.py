@@ -109,6 +109,43 @@ def test_worker_git_root_cache_is_capped(monkeypatch):
     assert hasattr(worker, "_cache_lock")
 
 
+def test_worker_git_probe_runs_once_per_root(monkeypatch, tmp_path):
+    mock_db = MagicMock(spec=LocalSearchDB)
+    cfg = MagicMock()
+    cfg.store_content = True
+    worker = IndexWorker(cfg, mock_db, None, lambda p, c: ([], []))
+
+    root = tmp_path / "ws"
+    root.mkdir()
+    d1 = root / "a"
+    d2 = root / "b"
+    d1.mkdir()
+    d2.mkdir()
+    f1 = d1 / "x.py"
+    f2 = d2 / "y.py"
+    f1.write_text("print(1)\n", encoding="utf-8")
+    f2.write_text("print(2)\n", encoding="utf-8")
+
+    calls = {"n": 0}
+
+    class _Proc:
+        returncode = 1
+        stdout = ""
+
+    def _fake_run(*_args, **_kwargs):
+        calls["n"] += 1
+        return _Proc()
+
+    monkeypatch.setattr("sari.core.indexer.worker.subprocess.run", _fake_run)
+
+    r1 = worker._derive_repo_label(root, f1, "a/x.py")
+    r2 = worker._derive_repo_label(root, f2, "b/y.py")
+
+    assert r1 == root.name
+    assert r2 == root.name
+    assert calls["n"] == 1
+
+
 def test_db_writer_resilience_to_batch_failure():
     """
     D3: Verify that DBWriter handles batch failures by retrying individually.

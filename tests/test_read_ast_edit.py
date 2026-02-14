@@ -15,7 +15,7 @@ def _payload(resp: dict) -> dict:
 def _hash12(text: str) -> str:
     import hashlib
 
-    return hashlib.sha1(text.encode("utf-8", "replace")).hexdigest()[:12]
+    return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:12]
 
 
 class _DummyDB:
@@ -39,6 +39,32 @@ def test_ast_edit_requires_expected_version_hash(monkeypatch, tmp_path):
     payload = _payload(resp)
     assert payload["isError"] is True
     assert payload["error"]["code"] == "INVALID_ARGS"
+
+
+def test_ast_edit_rejects_non_integer_sync_timeout(monkeypatch, tmp_path):
+    monkeypatch.setenv("SARI_FORMAT", "json")
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    f = ws / "a.py"
+    f.write_text("x = 1\n", encoding="utf-8")
+    db = _DummyDB()
+
+    resp = execute_read(
+        {
+            "mode": "ast_edit",
+            "target": str(f),
+            "expected_version_hash": _hash12("x = 1\n"),
+            "old_text": "x = 1",
+            "new_text": "x = 2",
+            "sync_timeout_ms": "bad",
+        },
+        db,
+        [str(ws)],
+    )
+    payload = _payload(resp)
+    assert payload["isError"] is True
+    assert payload["error"]["code"] == "INVALID_ARGS"
+    assert "sync_timeout_ms" in payload["error"]["message"]
 
 
 def test_ast_edit_rejects_version_conflict(monkeypatch, tmp_path):
@@ -136,6 +162,34 @@ def test_ast_edit_preview_does_not_write_file_and_returns_diff(monkeypatch, tmp_
     assert "--- " in payload["change_preview"]
     assert "+++ " in payload["change_preview"]
     assert f.read_text(encoding="utf-8") == before
+
+
+def test_ast_edit_preview_string_false_applies_edit(monkeypatch, tmp_path):
+    monkeypatch.setenv("SARI_FORMAT", "json")
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    f = ws / "a.py"
+    before = "x = 1\n"
+    f.write_text(before, encoding="utf-8")
+    db = _DummyDB()
+
+    resp = execute_read(
+        {
+            "mode": "ast_edit",
+            "target": str(f),
+            "expected_version_hash": _hash12(before),
+            "old_text": "x = 1",
+            "new_text": "x = 2",
+            "ast_edit_preview": "false",
+        },
+        db,
+        [str(ws)],
+    )
+    payload = _payload(resp)
+    assert payload.get("isError") is not True
+    assert payload.get("preview") in (None, False)
+    assert payload["updated"] is True
+    assert f.read_text(encoding="utf-8") == "x = 2\n"
 
 
 def test_ast_edit_triggers_focus_indexing_when_indexer_is_available(monkeypatch, tmp_path):

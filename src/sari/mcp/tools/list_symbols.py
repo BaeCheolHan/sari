@@ -71,7 +71,7 @@ def execute_list_symbols(args: object, db: LocalSearchDB, roots: list[str]) -> T
         return invalid_args_response("list_symbols", "args must be an object")
 
     path = args.get("path")
-    if not path:
+    if not isinstance(path, str) or not path.strip():
         return mcp_response(
             "list_symbols",
             lambda: pack_error("list_symbols", ErrorCode.INVALID_ARGS, "'path' is required"),
@@ -85,10 +85,18 @@ def execute_list_symbols(args: object, db: LocalSearchDB, roots: list[str]) -> T
     # 해당 파일의 모든 심볼 조회
     # 성능과 신뢰성을 위해 ORM 대신 Raw SQL 사용
     conn = db.get_read_connection() if hasattr(db, "get_read_connection") else db._read
-    rows = conn.execute(
-        "SELECT name, kind, line, end_line, parent, qualname FROM symbols WHERE path = ? ORDER BY line ASC",
-        (db_path,),
-    ).fetchall()
+    try:
+        rows = conn.execute(
+            "SELECT name, kind, line, end_line, parent, qualname FROM symbols WHERE path = ? ORDER BY line ASC",
+            (db_path,),
+        ).fetchall()
+    except (AttributeError, TypeError, ValueError) as exc:
+        msg = f"failed to query symbols: {exc}"
+        return mcp_response(
+            "list_symbols",
+            lambda: pack_error("list_symbols", ErrorCode.DB_ERROR, msg),
+            lambda: {"error": {"code": ErrorCode.DB_ERROR.value, "message": msg}, "isError": True},
+        )
     
     symbols = []
     for row in rows:

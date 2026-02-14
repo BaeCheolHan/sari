@@ -27,6 +27,24 @@ def get_last_resolver_status() -> dict:
     return dict(_LAST_RESOLVER_STATUS)
 
 
+def _compact_error(value: object) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    text = " ".join(raw.replace("\r", " ").replace("\n", " ").split())
+    return text[:300]
+
+
+def _coerce_port(value: object, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    if 1 <= parsed <= 65535:
+        return parsed
+    return default
+
+
 def _strict_ssot_enabled() -> bool:
     return (os.environ.get("SARI_STRICT_SSOT") or "").strip().lower() in {
         "1",
@@ -44,7 +62,7 @@ def _load_legacy_server_info(workspace_root: str) -> Optional[dict]:
         return None
     try:
         info = json.loads(server_json.read_text(encoding="utf-8"))
-    except Exception:
+    except (OSError, json.JSONDecodeError, ValueError):
         return None
     try:
         endpoint = ServerRegistry().resolve_workspace_http(str(workspace_root))
@@ -68,7 +86,7 @@ def _load_legacy_server_info(workspace_root: str) -> Optional[dict]:
             )
             if host_conflict or port_conflict:
                 return None
-    except Exception:
+    except (OSError, ValueError, TypeError):
         pass
     return info
 
@@ -78,9 +96,9 @@ def _load_http_config(workspace_root: str) -> Tuple[str, int]:
         cfg_path = WorkspaceManager.resolve_config_path(workspace_root)
         cfg = Config.load(cfg_path, workspace_root_override=workspace_root)
         host = str(getattr(cfg, "http_api_host", "") or DEFAULT_HTTP_HOST)
-        port = int(getattr(cfg, "http_api_port", 0) or DEFAULT_HTTP_PORT)
+        port = _coerce_port(getattr(cfg, "http_api_port", 0) or DEFAULT_HTTP_PORT, DEFAULT_HTTP_PORT)
         return host, port
-    except Exception:
+    except (OSError, ValueError, TypeError, AttributeError):
         return DEFAULT_HTTP_HOST, DEFAULT_HTTP_PORT
 
 
@@ -101,15 +119,15 @@ def resolve_http_endpoint(
             if resolved.get("host"):
                 host = str(resolved.get("host"))
             if resolved.get("port"):
-                port = int(resolved.get("port"))
+                port = _coerce_port(resolved.get("port"), port)
         else:
             ws_info = ServerRegistry().get_workspace(str(root))
             if ws_info:
                 if ws_info.get("http_host"):
                     host = str(ws_info.get("http_host"))
                 if ws_info.get("http_port"):
-                    port = int(ws_info.get("http_port"))
-    except Exception:
+                    port = _coerce_port(ws_info.get("http_port"), port)
+    except (OSError, ValueError, TypeError, AttributeError):
         pass
 
     server_info = _load_legacy_server_info(str(root))
@@ -118,22 +136,19 @@ def resolve_http_endpoint(
             if server_info.get("host"):
                 host = str(server_info.get("host"))
             if server_info.get("port"):
-                port = int(server_info.get("port"))
-        except Exception:
+                port = _coerce_port(server_info.get("port"), port)
+        except (TypeError, ValueError):
             pass
 
     if env_host:
         host = env_host
     if env_port:
-        try:
-            port = int(env_port)
-        except (TypeError, ValueError):
-            pass
+        port = _coerce_port(env_port, port)
 
     if host_override:
-        host = host_override
+        host = str(host_override)
     if port_override is not None:
-        port = int(port_override)
+        port = _coerce_port(port_override, port)
 
     return host, port
 
@@ -164,8 +179,8 @@ def resolve_http_endpoint_for_daemon(
             if inst.get("http_host"):
                 host = str(inst.get("http_host"))
             if inst.get("http_port"):
-                port = int(inst.get("http_port"))
-    except Exception:
+                port = _coerce_port(inst.get("http_port"), port)
+    except (OSError, ValueError, TypeError, AttributeError):
         pass
     return host, port
 
@@ -183,7 +198,7 @@ def resolve_registry_daemon_address(
 
     if inst and inst.get("port"):
         host = inst.get("host") or (env_host or DEFAULT_DAEMON_HOST)
-        return host, int(inst.get("port"))
+        return host, _coerce_port(inst.get("port"), DEFAULT_DAEMON_PORT)
     return None
 
 
@@ -214,7 +229,7 @@ def resolve_daemon_endpoint(workspace_root: Optional[str] = None) -> Tuple[str, 
             "Failed to resolve daemon address from registry",
             exc_info=True,
         )
-        _set_resolver_status(False, str(e))
+        _set_resolver_status(False, _compact_error(e))
 
     if env_port:
         try:

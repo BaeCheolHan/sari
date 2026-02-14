@@ -16,6 +16,7 @@ from sari.mcp.tools._util import (
     resolve_fs_path,
     resolve_root_ids,
     invalid_args_response,
+    internal_error_response,
 )
 
 from sari.core.queue_pipeline import DbTask
@@ -31,7 +32,7 @@ def _parse_path_range(path: str, start_line: int | None, end_line: int | None) -
             a, b = rng.split("-", 1)
             try:
                 return base, int(a), int(b)
-            except Exception:
+            except (TypeError, ValueError):
                 return path, start_line, end_line
     return path, start_line, end_line
 
@@ -111,7 +112,7 @@ def build_save_snippet(
     start = max(1, int(start_line))
     end = max(start, int(end_line))
     snippet = "\n".join(lines[start - 1 : end])
-    content_hash = hashlib.sha1(snippet.encode("utf-8")).hexdigest()
+    content_hash = hashlib.sha256(snippet.encode("utf-8")).hexdigest()
     anchor_before = lines[start - 2].strip() if start > 1 and len(lines) >= start - 1 else ""
     anchor_after = lines[end].strip() if end < len(lines) else ""
 
@@ -171,6 +172,15 @@ def execute_save_snippet(args: object, db: object, roots: list[str], indexer: ob
             "save_snippet",
             lambda: pack_error("save_snippet", ErrorCode.INVALID_ARGS, msg),
             lambda: {"error": {"code": ErrorCode.INVALID_ARGS.value, "message": msg}, "isError": True},
+        )
+    except Exception as e:
+        return internal_error_response(
+            "save_snippet",
+            e,
+            code=ErrorCode.INTERNAL,
+            reason_code="SAVE_SNIPPET_FAILED",
+            data={"path": str(args.get("path", ""))[:256], "tag": str(args.get("tag", ""))[:120]},
+            fallback_message="save_snippet failed",
         )
 
     def build_pack() -> str:

@@ -14,7 +14,9 @@ import uuid
 from sari.core.config.main import Config
 from sari.core.db.main import LocalSearchDB
 from .worker import IndexWorker
+from .scanner import Scanner
 from sari.core.workspace import WorkspaceManager
+from sari.core.utils.path import PathUtils
 
 from sari.core.models import IndexingResult
 
@@ -34,6 +36,102 @@ def _is_pid_alive(pid: int) -> bool:
         return False
 
 
+def _cleanup_deleted_paths(
+    db: LocalSearchDB,
+    scanned_root_ids: list[str],
+    *,
+    now_ts: int,
+    logger: Optional[logging.Logger] = None,
+) -> int:
+    root_ids = [rid for rid in scanned_root_ids if rid]
+    if not root_ids:
+        return 0
+    conn = db.get_connection()
+    placeholders = ",".join(["?"] * len(root_ids))
+    deleted_ts = int(time.time())
+    started_tx = not bool(getattr(conn, "in_transaction", False))
+    changed = 0
+    try:
+        if started_tx:
+            conn.execute("BEGIN IMMEDIATE TRANSACTION")
+        cur = conn.execute(
+            f"""
+            UPDATE files
+               SET deleted_ts = ?, status = 'deleted'
+             WHERE deleted_ts = 0
+               AND last_seen_ts < ?
+               AND root_id IN ({placeholders})
+            """,
+            tuple([deleted_ts, now_ts] + root_ids),
+        )
+        try:
+            changed = int(getattr(cur, "rowcount", 0) or 0)
+        except (TypeError, ValueError):
+            changed = 0
+        conn.execute(
+            f"""
+            DELETE FROM symbols
+             WHERE root_id IN ({placeholders})
+               AND path IN (
+                    SELECT path FROM files
+                     WHERE deleted_ts > 0
+                       AND root_id IN ({placeholders})
+               )
+            """,
+            tuple(root_ids + root_ids),
+        )
+        conn.execute(
+            f"""
+            DELETE FROM symbol_relations
+             WHERE (from_root_id IN ({placeholders}) AND from_path IN (
+                        SELECT path FROM files
+                         WHERE deleted_ts > 0
+                           AND root_id IN ({placeholders})
+                    ))
+                OR (to_root_id IN ({placeholders}) AND to_path IN (
+                        SELECT path FROM files
+                         WHERE deleted_ts > 0
+                           AND root_id IN ({placeholders})
+                    ))
+            """,
+            tuple(root_ids + root_ids + root_ids + root_ids),
+        )
+        db.update_stats()
+        if started_tx:
+            conn.execute("COMMIT")
+        return changed
+    except Exception:
+        if started_tx:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+        raise
+
+
+def _adaptive_flush_threshold(
+    base: int,
+    *,
+    pending_count: int,
+    max_inflight: int,
+    enabled: bool,
+) -> int:
+    norm_base = max(1, int(base or 1))
+    if not enabled:
+        return norm_base
+    if max_inflight <= 0:
+        return norm_base
+    try:
+        load = float(pending_count) / float(max_inflight)
+    except Exception:
+        load = 0.0
+    if load >= 0.80:
+        return max(1, norm_base // 2)
+    if load <= 0.20:
+        return max(1, min(norm_base * 2, norm_base + 5000))
+    return norm_base
+
+
 def _scan_to_db(config: Config, db: LocalSearchDB,
                 logger: logging.Logger,
                 parent_pid: Optional[int] = None,
@@ -51,6 +149,7 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
         "symbols_extracted": 0,
         "errors": 0,
         "index_version": "",
+        "adaptive_flush_enabled": False,
     }
     worker = IndexWorker(config, db, logger, None)
     max_workers = os.cpu_count() or 4
@@ -67,6 +166,10 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
     except Exception:
         flush_file_rows = 200
     try:
+        flush_seen_rows = max(1, int(os.environ.get("SARI_INDEXER_FLUSH_SEEN_ROWS", "1000") or 1000))
+    except Exception:
+        flush_seen_rows = 1000
+    try:
         flush_symbol_rows = max(1, int(os.environ.get("SARI_INDEXER_FLUSH_SYMBOL_ROWS", "2000") or 2000))
     except Exception:
         flush_symbol_rows = 2000
@@ -74,12 +177,28 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
         flush_rel_rows = max(1, int(os.environ.get("SARI_INDEXER_FLUSH_REL_ROWS", "4000") or 4000))
     except Exception:
         flush_rel_rows = 4000
+    try:
+        flush_rel_replace_rows = max(
+            1, int(os.environ.get("SARI_INDEXER_FLUSH_REL_REPLACE_ROWS", "2000") or 2000))
+    except Exception:
+        flush_rel_replace_rows = 2000
     check_parent_alive = parent_alive_check or _is_pid_alive
     progress_every_files = max(1, int(os.environ.get("SARI_INDEXER_PROGRESS_EVERY_FILES", "200") or 200))
     progress_every_sec = max(0.2, float(os.environ.get("SARI_INDEXER_PROGRESS_EVERY_SEC", "1.5") or 1.5))
     progress_log_enabled = str(os.environ.get("SARI_INDEXER_PROGRESS_LOG", "1")).strip().lower() in {
         "1", "true", "yes", "on"}
+    adaptive_flush_enabled = str(
+        os.environ.get("SARI_INDEXER_ADAPTIVE_FLUSH", "1")
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    status["adaptive_flush_enabled"] = bool(adaptive_flush_enabled)
     last_progress_ts = time.time()
+    flush_state: dict[str, int] = {
+        "file_rows": int(flush_file_rows),
+        "seen_rows": int(flush_seen_rows),
+        "symbol_rows": int(flush_symbol_rows),
+        "rel_rows": int(flush_rel_rows),
+        "rel_replace_rows": int(flush_rel_replace_rows),
+    }
 
     def _ensure_parent_alive() -> None:
         if parent_pid is None:
@@ -102,6 +221,9 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
         last_progress_ts = now
         payload = dict(status)
         payload["stage"] = str(stage or "")
+        payload["pending_inflight"] = int(len(pending)) if "pending" in locals() else 0
+        payload["max_inflight"] = int(max_inflight)
+        payload["flush_thresholds"] = dict(flush_state)
         if progress_callback is not None:
             try:
                 progress_callback(payload)
@@ -124,41 +246,115 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
             모든 파일을 메모리에 로드하지 않고 하나씩 처리하기 위한 제너레이터입니다.
             각 루트 디렉토리를 순회하며 인덱싱 대상 파일을 선별합니다.
             """
+            scanner = Scanner(config, active_workspaces=[str(r) for r in config.workspace_roots])
             for root in config.workspace_roots:
                 rid = WorkspaceManager.root_id(root)
                 db.ensure_root(rid, str(root))
-                for path in Path(root).rglob("*"):
-                    if path.is_file() and config.should_index(str(path)):
-                        yield root, path, rid
+                root_path = Path(root)
+                for path, st, _excluded in scanner.iter_file_entries(root_path, apply_exclude=True):
+                    if config.should_index(str(path)):
+                        yield root, path, rid, st
 
         pending: set[concurrent.futures.Future] = set()
         now = int(time.time())
         file_rows = []
+        seen_paths = []
         all_symbols = []
         all_relations = []
+        relation_replace_sources: set[tuple[str, str]] = set()
 
         def _flush_batches(force: bool = False) -> None:
-            if file_rows and (force or len(file_rows) >= flush_file_rows):
+            file_rows_threshold = _adaptive_flush_threshold(
+                flush_file_rows,
+                pending_count=len(pending),
+                max_inflight=max_inflight,
+                enabled=adaptive_flush_enabled,
+            )
+            symbol_rows_threshold = _adaptive_flush_threshold(
+                flush_symbol_rows,
+                pending_count=len(pending),
+                max_inflight=max_inflight,
+                enabled=adaptive_flush_enabled,
+            )
+            rel_rows_threshold = _adaptive_flush_threshold(
+                flush_rel_rows,
+                pending_count=len(pending),
+                max_inflight=max_inflight,
+                enabled=adaptive_flush_enabled,
+            )
+            rel_replace_threshold = _adaptive_flush_threshold(
+                flush_rel_replace_rows,
+                pending_count=len(pending),
+                max_inflight=max_inflight,
+                enabled=adaptive_flush_enabled,
+            )
+            flush_state["file_rows"] = int(file_rows_threshold)
+            flush_state["symbol_rows"] = int(symbol_rows_threshold)
+            flush_state["rel_rows"] = int(rel_rows_threshold)
+            flush_state["rel_replace_rows"] = int(rel_replace_threshold)
+            if file_rows and (force or len(file_rows) >= file_rows_threshold):
                 rows = list(file_rows)
                 file_rows.clear()
                 db.upsert_files_turbo(rows)
                 db.finalize_turbo_batch()
-            if all_symbols and (force or len(all_symbols) >= flush_symbol_rows):
-                unique_symbols = list(OrderedDict.fromkeys(all_symbols))
+            if all_symbols and (force or len(all_symbols) >= symbol_rows_threshold):
+                rows = list(all_symbols)
                 all_symbols.clear()
                 try:
-                    db.upsert_symbols_tx(None, unique_symbols)
+                    db.upsert_symbols_tx(None, rows)
                 except Exception as e:
                     if logger:
                         logger.error(f"Failed to store extracted symbols: {e}")
-            if all_relations and (force or len(all_relations) >= flush_rel_rows):
+            if all_relations and (force or len(all_relations) >= rel_rows_threshold):
                 rows = list(all_relations)
                 all_relations.clear()
+                replace_sources = list(relation_replace_sources)
+                relation_replace_sources.clear()
                 try:
-                    db.upsert_relations_tx(None, rows)
+                    db.upsert_relations_tx(
+                        None,
+                        rows,
+                        replace_sources=replace_sources,
+                    )
                 except Exception as e:
                     if logger:
                         logger.error(f"Failed to store extracted relations: {e}")
+            elif relation_replace_sources and force:
+                replace_sources = list(relation_replace_sources)
+                relation_replace_sources.clear()
+                try:
+                    db.upsert_relations_tx(None, [], replace_sources=replace_sources)
+                except Exception as e:
+                    if logger:
+                        logger.error(f"Failed to replace extracted relations: {e}")
+            elif relation_replace_sources and len(relation_replace_sources) >= rel_replace_threshold:
+                replace_sources = list(relation_replace_sources)
+                relation_replace_sources.clear()
+                try:
+                    db.upsert_relations_tx(None, [], replace_sources=replace_sources)
+                except Exception as e:
+                    if logger:
+                        logger.error(f"Failed to replace extracted relations: {e}")
+
+        def _flush_seen_paths(force: bool = False) -> None:
+            if not seen_paths:
+                return
+            seen_threshold = _adaptive_flush_threshold(
+                flush_seen_rows,
+                pending_count=len(pending),
+                max_inflight=max_inflight,
+                enabled=adaptive_flush_enabled,
+            )
+            flush_state["seen_rows"] = int(seen_threshold)
+            if not force and len(seen_paths) < seen_threshold:
+                return
+            rows = list(OrderedDict.fromkeys(seen_paths))
+            seen_paths.clear()
+            try:
+                db.update_last_seen_tx(None, rows, now)
+            except Exception as e:
+                if logger:
+                    logger.error(f"Failed to refresh last_seen_ts for scanned paths: {e}")
 
         def _consume_future_result(future: concurrent.futures.Future) -> None:
             _ensure_parent_alive()
@@ -172,6 +368,7 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
                     file_rows.append(res.to_file_row())
 
                     root_id = res.root_id
+                    relation_replace_sources.add((res.path, root_id))
                     if res.symbols:
                         for s in res.symbols:
                             all_symbols.append(
@@ -230,12 +427,14 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
             for fut in done:
                 _consume_future_result(fut)
 
-        for root, path, rid in _get_files_generator():
+        for root, path, rid, st in _get_files_generator():
             _ensure_parent_alive()
             status["scanned_files"] += 1
+            rel_to_root = PathUtils.to_relative(str(path), str(root)) or path.name
+            seen_paths.append(f"{rid}/{rel_to_root}")
+            _flush_seen_paths(force=False)
             _emit_progress(stage="enqueue")
             try:
-                st = path.stat()
                 # 파일 처리 작업을 쓰레드 풀에 제출
                 fut = executor.submit(
                     worker.process_file_task,
@@ -251,6 +450,7 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
         _drain_pending(wait_one=False)
 
         # 데이터베이스 일괄 업데이트 (Batch Update)
+        _flush_seen_paths(force=True)
         _flush_batches(force=True)
         # 현재 스캔에서 관측되지 않은 과거 row는 soft-delete 처리한다.
         # exclude 정책 변경 시 기존 노이즈(.venv/.idea 등)가 검색에 남지 않도록 보장한다.
@@ -263,48 +463,12 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
                     continue
             scanned_root_ids = [rid for rid in scanned_root_ids if rid]
             if scanned_root_ids:
-                placeholders = ",".join(["?"] * len(scanned_root_ids))
-                deleted_ts = int(time.time())
-                db.execute(
-                    f"""
-                    UPDATE files
-                       SET deleted_ts = ?, status = 'deleted'
-                     WHERE deleted_ts = 0
-                       AND last_seen_ts < ?
-                       AND root_id IN ({placeholders})
-                    """,
-                    tuple([deleted_ts, now] + scanned_root_ids),
+                _cleanup_deleted_paths(
+                    db,
+                    scanned_root_ids,
+                    now_ts=now,
+                    logger=logger,
                 )
-                # deleted files에 대한 심볼/관계 노이즈도 제거한다.
-                db.execute(
-                    f"""
-                    DELETE FROM symbols
-                     WHERE root_id IN ({placeholders})
-                       AND path IN (
-                            SELECT path FROM files
-                             WHERE deleted_ts > 0
-                               AND root_id IN ({placeholders})
-                       )
-                    """,
-                    tuple(scanned_root_ids + scanned_root_ids),
-                )
-                db.execute(
-                    f"""
-                    DELETE FROM symbol_relations
-                     WHERE (from_root_id IN ({placeholders}) AND from_path IN (
-                                SELECT path FROM files
-                                 WHERE deleted_ts > 0
-                                   AND root_id IN ({placeholders})
-                            ))
-                        OR (to_root_id IN ({placeholders}) AND to_path IN (
-                                SELECT path FROM files
-                                 WHERE deleted_ts > 0
-                                   AND root_id IN ({placeholders})
-                            ))
-                    """,
-                    tuple(scanned_root_ids + scanned_root_ids + scanned_root_ids + scanned_root_ids),
-                )
-                db.update_stats()
         except Exception:
             if logger:
                 logger.debug("legacy-row soft-delete cleanup skipped", exc_info=True)

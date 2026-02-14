@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from typing import Mapping, TypeAlias
 
 from sari.core.db import LocalSearchDB
@@ -12,6 +13,7 @@ from sari.mcp.tools._util import (
     ErrorCode,
     resolve_root_ids,
     require_db_schema,
+    sanitize_error_message,
 )
 
 ToolResult: TypeAlias = dict[str, object]
@@ -30,6 +32,32 @@ def _coerce_int(val: object, default: int) -> int:
         return int(val)
     except (TypeError, ValueError):
         return default
+
+
+def _normalize_string_list(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [str(item) for item in value if item not in (None, "")]
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    text = str(value).strip()
+    return [text] if text else []
+
+
+def _coerce_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off", ""}:
+            return False
+    return bool(value)
 
 
 def execute_grep_and_read(args: object, db: LocalSearchDB, roots: list[str]) -> ToolResult:
@@ -104,12 +132,12 @@ def execute_grep_and_read(args: object, db: LocalSearchDB, roots: list[str]) -> 
         limit=limit,
         offset=0,
         snippet_lines=snippet_lines,
-        file_types=list(args_map.get("file_types", [])),
+        file_types=_normalize_string_list(args_map.get("file_types")),
         path_pattern=args_map.get("path_pattern"),
-        exclude_patterns=args_map.get("exclude_patterns", []),
-        recency_boost=bool(args_map.get("recency_boost", False)),
-        use_regex=bool(args_map.get("use_regex", False)),
-        case_sensitive=bool(args_map.get("case_sensitive", False)),
+        exclude_patterns=_normalize_string_list(args_map.get("exclude_patterns")),
+        recency_boost=_coerce_bool(args_map.get("recency_boost", False)),
+        use_regex=_coerce_bool(args_map.get("use_regex", False)),
+        case_sensitive=_coerce_bool(args_map.get("case_sensitive", False)),
         total_mode=total_mode,
         root_ids=root_ids,
     )
@@ -118,7 +146,7 @@ def execute_grep_and_read(args: object, db: LocalSearchDB, roots: list[str]) -> 
         # 1. 하이브리드 검색 실행
         hits, meta = db.search(opts)
     except Exception as exc:
-        msg = str(exc)
+        msg = sanitize_error_message(exc, "engine query failed")
         return mcp_response(
             "grep_and_read",
             lambda: pack_error(
@@ -145,7 +173,7 @@ def execute_grep_and_read(args: object, db: LocalSearchDB, roots: list[str]) -> 
             content = db.read_file(h.path)
         except Exception as exc:
             content = None
-            read_errors.append({"path": h.path, "error": str(exc), "hint": "run scan_once"})
+            read_errors.append({"path": h.path, "error": sanitize_error_message(exc), "hint": "run scan_once"})
         if content is None:
             read_errors.append({"path": h.path, "error": "not indexed", "hint": "run scan_once"})
             continue

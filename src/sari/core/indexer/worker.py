@@ -16,7 +16,7 @@ from sari.core.models import IndexingResult
 
 
 def compute_hash(content: str) -> str:
-    return hashlib.sha1(content.encode("utf-8", errors="ignore")).hexdigest()
+    return hashlib.sha256(content.encode("utf-8", errors="ignore")).hexdigest()
 
 
 def _read_text_best_effort(file_path: Path) -> str:
@@ -36,7 +36,7 @@ def compute_fast_signature(file_path: Path, size: int) -> str:
             header = f.read(4096)
             f.seek(-4096, 2)
             footer = f.read(4096)
-            return hashlib.sha1(
+            return hashlib.sha256(
                 header + footer + str(size).encode()).hexdigest()
     except Exception:
         return ""
@@ -54,6 +54,7 @@ class IndexWorker:
         self._ast_cache = OrderedDict()
         self._ast_cache_max = self.settings.AST_CACHE_ENTRIES
         self._git_root_cache: dict[str, str | None] = {}
+        self._root_git_probe_cache: dict[str, str | None] = {}
         try:
             self._git_root_cache_max = max(
                 64,
@@ -83,6 +84,23 @@ class IndexWorker:
             if key not in self._git_root_cache:
                 return False, None
             return True, self._git_root_cache.get(key)
+
+    def _root_probe_get(self, root_key: str) -> tuple[bool, str | None]:
+        if not root_key:
+            return False, None
+        with self._cache_lock:
+            if root_key not in self._root_git_probe_cache:
+                return False, None
+            return True, self._root_git_probe_cache.get(root_key)
+
+    def _root_probe_set(self, root_key: str, value: str | None) -> None:
+        if not root_key:
+            return
+        with self._cache_lock:
+            self._root_git_probe_cache[root_key] = value
+            while len(self._root_git_probe_cache) > int(self._git_root_cache_max or 0):
+                self._root_git_probe_cache.pop(
+                    next(iter(self._root_git_probe_cache)), None)
 
     def process_file_task(
             self,
@@ -229,6 +247,7 @@ class IndexWorker:
             file_path: Path,
             rel_to_root: str) -> str:
         root_path = Path(root)
+        target_root = root_path.resolve()
         parent = str(file_path.parent.resolve())
         has_cached, git_root = self._git_cache_lookup(parent)
         if not has_cached:
@@ -237,8 +256,11 @@ class IndexWorker:
                 # to root
                 curr = Path(parent)
                 found_git = False
-                target_root = root_path.resolve()
-                while curr.parts and str(curr).startswith(str(target_root)):
+                while curr.parts:
+                    try:
+                        curr.relative_to(target_root)
+                    except ValueError:
+                        break
                     if (curr / ".git").exists():
                         found_git = True
                         git_root = str(curr)
@@ -246,18 +268,27 @@ class IndexWorker:
                     curr = curr.parent
 
                 if not found_git:
-                    # Fallback to git command for complex cases (e.g.
-                    # submodule, worktree)
-                    proc = subprocess.run(["git",
-                                           "-C",
-                                           parent,
-                                           "rev-parse",
-                                           "--show-toplevel"],
-                                          capture_output=True,
-                                          text=True,
-                                          check=False,
-                                          timeout=0.5)
-                    git_root = proc.stdout.strip() if proc.returncode == 0 else None
+                    # Probe git root once per workspace root to avoid repeated
+                    # subprocess calls on large trees.
+                    root_key = str(target_root)
+                    has_root_cached, root_git = self._root_probe_get(root_key)
+                    if not has_root_cached:
+                        proc = subprocess.run(
+                            [
+                                "git",
+                                "-C",
+                                str(target_root),
+                                "rev-parse",
+                                "--show-toplevel",
+                            ],
+                            capture_output=True,
+                            text=True,
+                            check=False,
+                            timeout=0.5,
+                        )
+                        root_git = proc.stdout.strip() if proc.returncode == 0 else None
+                        self._root_probe_set(root_key, root_git)
+                    git_root = root_git
             except Exception:
                 git_root = None
             self._git_cache_set(parent, git_root)

@@ -3,6 +3,7 @@ from __future__ import annotations
 from importlib.util import find_spec
 from typing import Callable, Optional, Protocol, TypeAlias
 
+from sari.core.fallback_governance import note_fallback_event
 from sari.core.models import SearchHit, SearchOptions
 from sari.core.engine_runtime import EmbeddedEngine, SqliteSearchEngineAdapter
 
@@ -56,12 +57,22 @@ def default_engine_name(cfg: object = None) -> str:
         if mode in {"embedded", "sqlite"}:
             # Respect explicit user choice if valid
             if mode == "embedded" and not HAS_TANTIVY:
+                note_fallback_event(
+                    "engine_embedded_unavailable_fallback",
+                    trigger="embedded_requested_without_tantivy",
+                    exit_condition="sqlite_engine_selected",
+                )
                 return "sqlite" # Graceful fallback
             return mode
             
     # Default selection logic: prefer embedded if lib exists
     if HAS_TANTIVY:
         return "embedded"
+    note_fallback_event(
+        "engine_default_sqlite_fallback",
+        trigger="tantivy_not_installed",
+        exit_condition="sqlite_engine_selected",
+    )
     return "sqlite"
 
 

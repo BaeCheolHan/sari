@@ -70,7 +70,13 @@ def test_tools_list():
     except Exception as e:
         print(f"Error: {e}")
     finally:
-        proc.terminate()
+        try:
+            proc.terminate()
+            proc.wait(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        except Exception:
+            pass
         
     return False
 

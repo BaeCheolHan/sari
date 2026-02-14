@@ -115,6 +115,8 @@ def test_search_normalizes_core_errors_to_mcp_response(roots):
 
 
 def test_search_dispatch_error_includes_code(roots):
+    os.environ["SARI_FORMAT"] = "json"
+
     class ErrorDB:
         @staticmethod
         def search(_opts):
@@ -124,6 +126,7 @@ def test_search_dispatch_error_includes_code(roots):
     assert result["isError"] is True
     assert result["error"]["code"] == "INTERNAL"
     assert result["error"]["message"] == "boom"
+    assert result["error"]["data"]["reason_code"] == "SEARCH_EXECUTION_FAILED"
 
 
 def test_search_pack_emits_single_sari_next_line_for_top_hit(db, roots):

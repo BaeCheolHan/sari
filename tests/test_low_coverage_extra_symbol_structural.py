@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 
+from sari.core.fallback_governance import reset_fallback_metrics_for_tests, snapshot_fallback_metrics
 from sari.core.models import CallerHitDTO, ImplementationHitDTO
 from sari.core.services.symbol_service import SymbolService
 
@@ -204,6 +205,7 @@ def test_failed_task_repository_accepts_dict_rows(db):
 
 
 def test_symbol_service_direct_and_fallback_paths(monkeypatch):
+    reset_fallback_metrics_for_tests()
     class _Conn:
         def __init__(self, rows=None, symbol_row=None, fail=False):
             self.rows = rows or []
@@ -243,6 +245,8 @@ def test_symbol_service_direct_and_fallback_paths(monkeypatch):
     out2 = svc2.get_implementations("Base", symbol_id="", limit="bad")
     assert len(out2) == 1
     assert out2[0]["implementer_symbol"] == "AImpl"
+    rows = {row["fallback_id"]: row for row in snapshot_fallback_metrics()["rows"]}
+    assert rows["symbol_implementation_text_fallback"]["enter_count"] >= 1
 
 
 def test_symbol_service_limit_normalization(db):

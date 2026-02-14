@@ -135,7 +135,7 @@ def _save_snippet(
     now = int(time.time())
     note = str((metadata or {}).get("note") or "")
     commit_hash = str((metadata or {}).get("commit") or "")
-    content_hash = hashlib.sha1(content.encode("utf-8", "replace")).hexdigest()
+    content_hash = hashlib.sha256(content.encode("utf-8", "replace")).hexdigest()
     row = (
         key,
         path,
@@ -200,7 +200,7 @@ def _execute_save(args: Mapping[str, object], db: object, roots: list[str]) -> T
         return _json_error(ErrorCode.INVALID_ARGS, str(exc))
 
     expected_hash = str(decoded.get("ch") or "").strip()
-    actual_hash = hashlib.sha1(content.encode("utf-8", "replace")).hexdigest()[:12]
+    actual_hash = hashlib.sha256(content.encode("utf-8", "replace")).hexdigest()[:12]
     if expected_hash and expected_hash != actual_hash:
         return _json_error(ErrorCode.INVALID_ARGS, "content hash mismatch with context_ref")
 

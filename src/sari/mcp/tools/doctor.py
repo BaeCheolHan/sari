@@ -19,7 +19,9 @@ from sari.mcp.cli.mcp_client import probe_sari_daemon, is_http_running as _is_ht
 from sari.core.daemon_resolver import resolve_daemon_address as get_daemon_address
 from sari.core.daemon_runtime_state import RUNTIME_HOST, RUNTIME_PORT
 from sari.mcp.tools.doctor_common import (
+    compact_error_message as _compact_error_message,
     result as _result,
+    safe_bool as _safe_bool,
     safe_float as _safe_float,
     safe_int as _safe_int,
     safe_pragma_table_name as _safe_pragma_table_name,
@@ -134,7 +136,7 @@ def _check_tree_sitter() -> DoctorResult:
             True,
             "core enabled but no language parsers loaded yet")
     except Exception as e:
-        return _result("Tree-sitter Support", False, str(e))
+        return _result("Tree-sitter Support", False, _compact_error_message(e, "tree-sitter check failed"))
 
 
 def _check_tree_sitter_language_runtime() -> DoctorResult:
@@ -143,7 +145,7 @@ def _check_tree_sitter_language_runtime() -> DoctorResult:
         from sari.core.parsers.ast_engine import ASTEngine
         from sari.core.parsers.factory import ParserFactory
     except Exception as e:
-        return _result("Tree-sitter Language Runtime", False, str(e))
+        return _result("Tree-sitter Language Runtime", False, _compact_error_message(e, "runtime check failed"))
 
     engine = ASTEngine()
     if not engine.enabled:
@@ -327,18 +329,18 @@ def execute_doctor(
     args_map: Mapping[str, object] = args
     ws_root = roots[0] if roots else WorkspaceManager.resolve_workspace_root()
 
-    include_network = bool(args_map.get("include_network", True))
-    include_port = bool(args_map.get("include_port", True))
-    include_db = bool(args_map.get("include_db", True))
-    include_disk = bool(args_map.get("include_disk", True))
-    include_daemon = bool(args_map.get("include_daemon", True))
-    include_venv = bool(args_map.get("include_venv", True))
-    include_marker = bool(args_map.get("include_marker", False))
+    include_network = _safe_bool(args_map.get("include_network"), True)
+    include_port = _safe_bool(args_map.get("include_port"), True)
+    include_db = _safe_bool(args_map.get("include_db"), True)
+    include_disk = _safe_bool(args_map.get("include_disk"), True)
+    include_daemon = _safe_bool(args_map.get("include_daemon"), True)
+    include_venv = _safe_bool(args_map.get("include_venv"), True)
+    include_marker = _safe_bool(args_map.get("include_marker"), False)
     port = _safe_int(args_map.get("port", 0), 0)
     min_disk_gb = _safe_float(args_map.get("min_disk_gb", 1.0), 1.0)
 
-    auto_fix = bool(args_map.get("auto_fix", False))
-    auto_fix_rescan = bool(args_map.get("auto_fix_rescan", False))
+    auto_fix = _safe_bool(args_map.get("auto_fix"), False)
+    auto_fix_rescan = _safe_bool(args_map.get("auto_fix_rescan"), False)
 
     results: DoctorResults = []
 

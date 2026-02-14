@@ -20,7 +20,7 @@ def _payload(result: dict) -> dict:
 
 
 def _hash12(text: str) -> str:
-    return hashlib.sha1(text.encode("utf-8", "replace")).hexdigest()[:12]
+    return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:12]
 
 
 def _wrap(payload: dict) -> dict:

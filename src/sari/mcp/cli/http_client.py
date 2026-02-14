@@ -72,8 +72,13 @@ def request_http(
     """
     host, port = get_http_host_port(host, port)
     enforce_loopback(host)
+    normalized_path = str(path or "").strip()
+    if not normalized_path.startswith("/"):
+        raise RuntimeError("HTTP path must start with '/'")
+    if not isinstance(params, dict):
+        raise RuntimeError("params must be an object")
     qs = urllib.parse.urlencode(params)
-    url = f"http://{host}:{port}{path}?{qs}"
+    url = f"http://{host}:{port}{normalized_path}?{qs}"
     with urllib.request.urlopen(url, timeout=3.0) as r:
         return json.loads(r.read().decode("utf-8"))
 

@@ -65,7 +65,13 @@ def test_stdio():
     except Exception as e:
         print(f"Exception: {e}")
     finally:
-        proc.terminate()
+        try:
+            proc.terminate()
+            proc.wait(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        except Exception:
+            pass
         
     return False
 

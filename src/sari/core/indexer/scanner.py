@@ -33,11 +33,11 @@ class Scanner:
                 self.cfg, "include_ext", [])}
         self.include_files = set(getattr(self.cfg, "include_files", []))
         self.include_all = not self.include_ext and not self.include_files
-        self.follow_symlinks = getattr(
-            self.cfg.settings, "FOLLOW_SYMLINKS", False)
+        self.follow_symlinks = getattr(self.settings, "FOLLOW_SYMLINKS", False)
 
         # O(1) match optimization
         user_exclude_dirs = set(getattr(self.cfg, "exclude_dirs", []))
+        self.exclude_dir_patterns = list(user_exclude_dirs | self.hard_exclude_dirs)
         self.exclude_dir_regex = self._compile_patterns(
             user_exclude_dirs | self.hard_exclude_dirs)
 
@@ -50,6 +50,36 @@ class Scanner:
         if active_workspaces:
             for ws in active_workspaces:
                 self.workspace_trie.insert(ws)
+        gitignore_lines = list(getattr(self.cfg, "gitignore_lines", []))
+        self._gitignore = GitignoreMatcher(gitignore_lines) if gitignore_lines else None
+
+    def _is_excluded_dir(self, d_name: str, rel: str) -> bool:
+        rel_posix = rel.replace(os.sep, "/")
+        if self.exclude_dir_regex and (
+                self.exclude_dir_regex.match(d_name) or self.exclude_dir_regex.match(rel)):
+            return True
+        # Directory-aware fallback for patterns like ".idea/**":
+        # file-level glob can match descendants, but directory token itself
+        # often does not match, causing unnecessary traversal.
+        for pat in self.exclude_dir_patterns:
+            p = str(pat or "").strip()
+            if not p:
+                continue
+            if p.endswith("/**"):
+                prefix = p[:-3].rstrip("/")
+                if not prefix:
+                    continue
+                if "/" not in prefix and d_name == prefix:
+                    return True
+                if rel_posix == prefix or rel_posix.startswith(prefix + "/"):
+                    return True
+            elif "*" not in p and "?" not in p and "[" not in p:
+                token = p.rstrip("/")
+                if token and (d_name == token or rel_posix == token):
+                    return True
+            if fnmatch.fnmatch(d_name, p) or fnmatch.fnmatch(rel_posix, p):
+                return True
+        return False
 
     def _expand_braces(self, pattern: str) -> List[str]:
         """
@@ -133,91 +163,87 @@ class Scanner:
             except (PermissionError, OSError):
                 return
 
-        # gitignore check
-        gitignore_lines = list(getattr(self.cfg, "gitignore_lines", []))
-        gitignore = GitignoreMatcher(
-            gitignore_lines) if gitignore_lines else None
+        # gitignore check (build once per scanner to avoid O(directories) matcher init cost)
+        gitignore = self._gitignore
 
         try:
-            entries = list(os.scandir(current_dir))
+            with os.scandir(current_dir) as entries:
+                for entry in entries:
+                    try:
+                        p = Path(entry.path)
+                        rel = str(p.absolute().relative_to(root))
+                    except (ValueError, RuntimeError):
+                        continue
+
+                    if entry.is_dir(follow_symlinks=follow_symlinks):
+                        # Directory processing
+                        d_name = entry.name
+                        if apply_exclude:
+                            if self._is_excluded_dir(d_name, rel):
+                                continue
+                            if gitignore and gitignore.is_ignored(
+                                    rel.replace(os.sep, "/"), is_dir=True):
+                                continue
+
+                        yield from self._scan_recursive(root, p, depth + 1, follow_symlinks, apply_exclude, visited)
+
+                    elif entry.is_file(follow_symlinks=follow_symlinks):
+                        # File processing
+                        # Cycle detection for symlinks (Files)
+                        if follow_symlinks:
+                            try:
+                                real_f_path = str(p.resolve())
+                                if real_f_path in visited:
+                                    continue
+                                visited.add(real_f_path)
+                            except (PermissionError, OSError):
+                                continue
+
+                        fn = entry.name
+                        excluded = False
+                        if self.exclude_glob_regex and (
+                                self.exclude_glob_regex.match(fn) or self.exclude_glob_regex.match(rel)):
+                            excluded = True
+
+                        if not excluded and gitignore:
+                            rel_posix = rel.replace(os.sep, "/")
+                            if gitignore.is_ignored(rel_posix, is_dir=False):
+                                excluded = True
+
+                        if not excluded and self.exclude_dir_regex:
+                            rel_parts = rel.split(os.sep)
+                            for part in rel_parts:
+                                if self.exclude_dir_regex.match(part):
+                                    excluded = True
+                                    break
+
+                        try:
+                            st = entry.stat(follow_symlinks=follow_symlinks)
+                        except (PermissionError, OSError) as e:
+                            import logging
+                            logging.getLogger("sari.indexer.scanner").debug(
+                                f"Failed to stat {entry.path}: {e}")
+                            continue
+
+                        # Include filter
+                        if not self.include_all:
+                            rel_posix = rel.replace(os.sep, "/")
+                            ext = p.suffix.lower()
+                            included = False
+                            if self.include_files:
+                                for pattern in self.include_files:
+                                    if fnmatch.fnmatch(
+                                            fn, pattern) or fnmatch.fnmatch(
+                                            rel_posix, pattern):
+                                        included = True
+                                        break
+                            if not included and self.include_ext and ext in self.include_ext:
+                                included = True
+                            if not included:
+                                continue
+
+                        if apply_exclude and excluded:
+                            continue
+                        yield p, st, excluded
         except (PermissionError, OSError):
             return
-
-        for entry in entries:
-            try:
-                p = Path(entry.path)
-                rel = str(p.absolute().relative_to(root))
-            except (ValueError, RuntimeError):
-                continue
-
-            if entry.is_dir(follow_symlinks=follow_symlinks):
-                # Directory processing
-                d_name = entry.name
-                if apply_exclude:
-                    if self.exclude_dir_regex and (
-                            self.exclude_dir_regex.match(d_name) or self.exclude_dir_regex.match(rel)):
-                        continue
-                    if gitignore and gitignore.is_ignored(
-                            rel.replace(os.sep, "/"), is_dir=True):
-                        continue
-
-                yield from self._scan_recursive(root, p, depth + 1, follow_symlinks, apply_exclude, visited)
-
-            elif entry.is_file(follow_symlinks=follow_symlinks):
-                # File processing
-                # Cycle detection for symlinks (Files)
-                if follow_symlinks:
-                    try:
-                        real_f_path = str(p.resolve())
-                        if real_f_path in visited:
-                            continue
-                        visited.add(real_f_path)
-                    except (PermissionError, OSError):
-                        continue
-
-                fn = entry.name
-                excluded = False
-                if self.exclude_glob_regex and (
-                        self.exclude_glob_regex.match(fn) or self.exclude_glob_regex.match(rel)):
-                    excluded = True
-
-                if not excluded and gitignore:
-                    rel_posix = rel.replace(os.sep, "/")
-                    if gitignore.is_ignored(rel_posix, is_dir=False):
-                        excluded = True
-
-                if not excluded and self.exclude_dir_regex:
-                    rel_parts = rel.split(os.sep)
-                    for part in rel_parts:
-                        if self.exclude_dir_regex.match(part):
-                            excluded = True
-                            break
-
-                try:
-                    st = entry.stat(follow_symlinks=follow_symlinks)
-                except (PermissionError, OSError) as e:
-                    import logging
-                    logging.getLogger("sari.indexer.scanner").debug(
-                        f"Failed to stat {entry.path}: {e}")
-                    continue
-
-                # Include filter
-                if not self.include_all:
-                    rel_posix = rel.replace(os.sep, "/")
-                    ext = p.suffix.lower()
-                    included = False
-                    if self.include_files:
-                        for pattern in self.include_files:
-                            if fnmatch.fnmatch(
-                                    fn, pattern) or fnmatch.fnmatch(
-                                    rel_posix, pattern):
-                                included = True
-                                break
-                    if not included and self.include_ext and ext in self.include_ext:
-                        included = True
-                    if not included:
-                        continue
-
-                if apply_exclude and excluded:
-                    continue
-                yield p, st, excluded

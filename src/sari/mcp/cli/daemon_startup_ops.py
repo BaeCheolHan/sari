@@ -8,13 +8,31 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 
+from sari.core.fallback_governance import note_fallback_event
+
+
+def _coerce_bool(value: object, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off", ""}:
+            return False
+    return bool(value)
+
 
 def _daemon_port_strategy(params: dict[str, object]) -> str:
     raw = (os.environ.get("SARI_DAEMON_PORT_STRATEGY") or "").strip().lower()
     if raw in {"auto", "strict"}:
         return raw
     # Explicitly requested port keeps strict behavior unless overridden.
-    if bool(params.get("explicit_port")):
+    if _coerce_bool(params.get("explicit_port"), False):
         return "strict"
     return "auto"
 
@@ -74,6 +92,11 @@ def check_port_availability(
             print(
                 f"⚠️ Port {port} is in use; falling back to {fallback}.",
                 file=stderr,
+            )
+            note_fallback_event(
+                "port_auto_fallback",
+                trigger="daemon_port_in_use",
+                exit_condition="fallback_port_selected",
             )
             return None
 

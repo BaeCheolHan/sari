@@ -57,16 +57,55 @@ def test_mcp_response_json(monkeypatch):
     assert resp["key"] == "val"
 
 
+def test_mcp_response_pack_internal_build_error_includes_reason_code_without_trace(monkeypatch):
+    monkeypatch.setenv("SARI_FORMAT", "pack")
+    monkeypatch.delenv("SARI_DEBUG_TRACE", raising=False)
+    resp = mcp_response(
+        "tool",
+        lambda: (_ for _ in ()).throw(RuntimeError("boom\nline2")),
+        lambda: {"json": "output"},
+    )
+    text = resp["content"][0]["text"]
+    assert resp["isError"] is True
+    assert "code=INTERNAL" in text
+    assert "reason_code=MCP_RESPONSE_BUILD_FAILED" in text
+    assert "trace=" not in text
+
+
+def test_mcp_response_json_internal_build_error_contains_structured_error(monkeypatch):
+    monkeypatch.setenv("SARI_FORMAT", "json")
+    monkeypatch.delenv("SARI_DEBUG_TRACE", raising=False)
+    resp = mcp_response(
+        "tool",
+        lambda: "PACK_OUTPUT",
+        lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    payload = json.loads(resp["content"][0]["text"])
+    assert payload["error"]["code"] == "INTERNAL"
+    assert payload["error"]["data"]["reason_code"] == "MCP_RESPONSE_BUILD_FAILED"
+    assert "trace" not in payload
+
+
 def test_resolve_db_path_blocks_traversal():
     roots = ["/tmp/ws"]
     rid = __import__("sari.core.workspace", fromlist=["WorkspaceManager"]).WorkspaceManager.root_id("/tmp/ws")
     assert resolve_db_path(f"{rid}/../../etc/passwd", roots) is None
 
 
+def test_resolve_db_path_rejects_nul_byte():
+    roots = ["/tmp/ws"]
+    assert resolve_db_path("a\x00b.py", roots) is None
+
+
 def test_resolve_fs_path_blocks_traversal():
     roots = ["/tmp/ws"]
     rid = __import__("sari.core.workspace", fromlist=["WorkspaceManager"]).WorkspaceManager.root_id("/tmp/ws")
     assert resolve_fs_path(f"{rid}/../../etc/passwd", roots) is None
+
+
+def test_resolve_fs_path_rejects_nul_byte():
+    roots = ["/tmp/ws"]
+    assert resolve_fs_path("rid/a\x00b.py", roots) is None
 
 
 def test_parse_search_options_normalizes_scalar_filters_and_boolean_strings():

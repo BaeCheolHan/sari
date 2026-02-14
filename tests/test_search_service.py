@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from sari.core.models import SearchHit
+from sari.core.fallback_governance import reset_fallback_metrics_for_tests, snapshot_fallback_metrics
 from sari.core.services.search_service import SearchService
 
 
@@ -57,6 +58,8 @@ def test_search_service_index_meta_fallback_when_to_meta_is_not_mapping():
 
 
 def test_search_service_fallback_ignores_non_callable_l2_only():
+    reset_fallback_metrics_for_tests()
+
     class _BrokenEngine:
         @staticmethod
         def search(_opts):
@@ -72,3 +75,5 @@ def test_search_service_fallback_ignores_non_callable_l2_only():
     assert hits == []
     assert meta["partial"] is True
     assert meta["engine"] == "fallback"
+    rows = {row["fallback_id"]: row for row in snapshot_fallback_metrics()["rows"]}
+    assert rows["search_text_fallback"]["enter_count"] >= 1

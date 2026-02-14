@@ -93,6 +93,71 @@ def test_relations_upsert_deduplicates_duplicate_rows(db):
     assert int(row[0]) == 1
 
 
+def test_relations_replace_sources_removes_stale_outgoing_rows(db):
+    db.upsert_root("rid-a", "/tmp/ws-a", "/tmp/ws-a")
+    old_rel = (
+        "rid-a/a.py",
+        "rid-a",
+        "caller",
+        "sid-caller",
+        "rid-a/b.py",
+        "rid-a",
+        "callee",
+        "sid-callee",
+        "calls",
+        12,
+        "{}",
+    )
+    db.upsert_relations_tx(None, [old_rel])
+    before = db.execute("SELECT COUNT(1) FROM symbol_relations WHERE from_path = ?", ("rid-a/a.py",)).fetchone()
+    assert int(before[0]) == 1
+
+    db.upsert_relations_tx(None, [], replace_sources=[("rid-a/a.py", "rid-a")])
+
+    after = db.execute("SELECT COUNT(1) FROM symbol_relations WHERE from_path = ?", ("rid-a/a.py",)).fetchone()
+    assert int(after[0]) == 0
+
+
+def test_relations_replace_sources_and_insert_new_rows_atomically(db):
+    db.upsert_root("rid-a", "/tmp/ws-a", "/tmp/ws-a")
+    old_rel = (
+        "rid-a/a.py",
+        "rid-a",
+        "caller",
+        "sid-caller",
+        "rid-a/b.py",
+        "rid-a",
+        "callee",
+        "sid-callee",
+        "calls",
+        12,
+        "{}",
+    )
+    new_rel = (
+        "rid-a/a.py",
+        "rid-a",
+        "caller",
+        "sid-caller",
+        "rid-a/c.py",
+        "rid-a",
+        "callee2",
+        "sid-callee2",
+        "calls",
+        33,
+        "{}",
+    )
+    db.upsert_relations_tx(None, [old_rel])
+    db.upsert_relations_tx(None, [new_rel], replace_sources=[("rid-a/a.py", "rid-a")])
+
+    rows = db.execute(
+        "SELECT to_path, line FROM symbol_relations WHERE from_path = ? ORDER BY line ASC",
+        ("rid-a/a.py",),
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == "rid-a/c.py"
+    assert int(rows[0][1]) == 33
+
+
 def test_schema_has_symbol_relations_unique_index(db):
     rows = db.execute("PRAGMA index_list('symbol_relations')").fetchall()
     names = [str(r[1]) for r in rows]
@@ -103,3 +168,159 @@ def test_db_set_settings_is_available_for_runtime_bootstrap(db):
     marker = object()
     db.set_settings(marker)
     assert getattr(db, "settings", None) is marker
+
+
+def test_update_last_seen_tx_accepts_none_cursor(db):
+    db.upsert_root("rid-a", "/tmp/ws-a", "/tmp/ws-a")
+    row = (
+        "rid-a/a.py",
+        "a.py",
+        "rid-a",
+        "repo-a",
+        100,
+        10,
+        b"print(1)",
+        "h1",
+        "print(1)",
+        1,
+        0,
+        "ok",
+        "",
+        "ok",
+        "",
+        0,
+        0,
+        0,
+        8,
+        "{}",
+    )
+    db.upsert_files_turbo([row])
+    db.finalize_turbo_batch()
+
+    db.update_last_seen_tx(None, ["rid-a/a.py"], 12345)
+    got = db.execute("SELECT last_seen_ts FROM files WHERE path = ?", ("rid-a/a.py",)).fetchone()
+    assert got is not None
+    assert int(got[0]) == 12345
+
+
+def test_upsert_symbols_tx_none_cursor_is_atomic_on_insert_failure(db):
+    db.upsert_root("rid-a", "/tmp/ws-a", "/tmp/ws-a")
+    db.upsert_files_turbo(
+        [
+            (
+                "rid-a/a.py",
+                "a.py",
+                "rid-a",
+                "repo-a",
+                100,
+                10,
+                b"print(1)",
+                "h1",
+                "print(1)",
+                100,
+                0,
+                "ok",
+                "",
+                "ok",
+                "",
+                0,
+                0,
+                0,
+                8,
+                "{}",
+            )
+        ]
+    )
+    db.finalize_turbo_batch()
+    cur = db._write.cursor()
+    cur.execute(
+        "INSERT INTO symbols(symbol_id, path, root_id, name, kind, line, end_line, content, parent, meta_json, doc_comment, qualname, importance_score) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        ("sid-old", "rid-a/a.py", "rid-a", "Old", "class", 1, 2, "class Old: pass", "", "{}", "", "Old", 1.0),
+    )
+    db._write.commit()
+    db.execute(
+        """
+        CREATE TRIGGER tr_symbols_fail_insert
+        BEFORE INSERT ON symbols
+        BEGIN
+            SELECT RAISE(ABORT, 'symbols insert blocked');
+        END
+        """
+    )
+
+    rows = [
+        (
+            "sid-new",
+            "rid-a/a.py",
+            "rid-a",
+            "New",
+            "class",
+            1,
+            2,
+            "class New: pass",
+            "",
+            "{}",
+            "",
+            "New",
+            1.0,
+        )
+    ]
+    with pytest.raises(Exception):
+        db.upsert_symbols_tx(None, rows)
+
+    kept = db.execute(
+        "SELECT symbol_id FROM symbols WHERE path = ? ORDER BY symbol_id",
+        ("rid-a/a.py",),
+    ).fetchall()
+    assert [r[0] for r in kept] == ["sid-old"]
+
+
+def test_upsert_relations_tx_none_cursor_is_atomic_on_insert_failure(db):
+    db.upsert_root("rid-a", "/tmp/ws-a", "/tmp/ws-a")
+    old_rel = (
+        "rid-a/a.py",
+        "rid-a",
+        "caller",
+        "sid-caller",
+        "rid-a/b.py",
+        "rid-a",
+        "callee",
+        "sid-callee",
+        "calls",
+        10,
+        "{}",
+    )
+    db.upsert_relations_tx(None, [old_rel])
+    db.execute(
+        """
+        CREATE TRIGGER tr_rel_fail_insert
+        BEFORE INSERT ON symbol_relations
+        BEGIN
+            SELECT RAISE(ABORT, 'relations insert blocked');
+        END
+        """
+    )
+    new_rel = (
+        "rid-a/a.py",
+        "rid-a",
+        "caller",
+        "sid-caller",
+        "rid-a/c.py",
+        "rid-a",
+        "callee2",
+        "sid-callee2",
+        "calls",
+        11,
+        "{}",
+    )
+
+    with pytest.raises(Exception):
+        db.upsert_relations_tx(None, [new_rel], replace_sources=[("rid-a/a.py", "rid-a")])
+
+    rows = db.execute(
+        "SELECT to_path, line FROM symbol_relations WHERE from_path = ? ORDER BY line ASC",
+        ("rid-a/a.py",),
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == "rid-a/b.py"
+    assert int(rows[0][1]) == 10
