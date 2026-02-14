@@ -654,7 +654,7 @@ def test_value_index_split_defers_then_backfills_payload(tmp_path, monkeypatch):
     ws = tmp_path / "ws"
     ws.mkdir()
     src = ws / "main.py"
-    src.write_text("print('payload')\n", encoding="utf-8")
+    src.write_text("def payload_func():\n    return 'payload'\n", encoding="utf-8")
 
     db = LocalSearchDB(str(tmp_path / "idx.db"))
     cfg = Config(**Config.get_defaults(str(ws)))
@@ -679,7 +679,42 @@ def test_value_index_split_defers_then_backfills_payload(tmp_path, monkeypatch):
     meta2_raw = row2["metadata_json"] if hasattr(row2, "keys") else row2[0]
     meta2 = json.loads(meta2_raw or "{}")
     assert bool(meta2.get("deferred_payload", False)) is False
-    assert "payload" in db.read_file(str(src))
+    assert "payload_func" in db.read_file(str(src))
+
+
+def test_force_reparse_backfills_deferred_payload_even_when_hash_unchanged(tmp_path, monkeypatch):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    src = ws / "main.py"
+    src.write_text("def payload_func():\n    return 'payload'\n", encoding="utf-8")
+
+    db = LocalSearchDB(str(tmp_path / "idx.db"))
+    cfg = Config(**Config.get_defaults(str(ws)))
+
+    # 1) First pass: defer payload and skip symbol extraction.
+    monkeypatch.setenv("SARI_INDEXER_INITIAL_FASTPATH", "1")
+    monkeypatch.setenv("SARI_INDEXER_INITIAL_PROCESS_POOL", "0")
+    monkeypatch.setenv("SARI_INDEXER_VALUE_INDEX_SPLIT", "1")
+    monkeypatch.setenv("SARI_INDEXER_PHASE_MODE", "fast")
+    _scan_to_db(cfg, db, logging.getLogger("test"))
+
+    # 2) Backfill pass: force reparse with full phase.
+    # Hash/mtime are unchanged, so force must bypass unchanged fast-path.
+    monkeypatch.setenv("SARI_INDEXER_FORCE_REPARSE", "1")
+    monkeypatch.setenv("SARI_INDEXER_PHASE_MODE", "full")
+    _scan_to_db(cfg, db, logging.getLogger("test"))
+
+    root_id = WorkspaceManager.root_id(str(ws))
+    db_path = f"{root_id}/main.py"
+    row = db.execute("SELECT metadata_json FROM files WHERE path = ?", (db_path,)).fetchone()
+    assert row is not None
+    meta_raw = row["metadata_json"] if hasattr(row, "keys") else row[0]
+    meta = json.loads(meta_raw or "{}")
+    assert bool(meta.get("deferred_payload", False)) is False
+    assert "payload_func" in db.read_file(str(src))
+
+    sym_cnt = db.execute("SELECT COUNT(1) FROM symbols WHERE root_id = ?", (root_id,)).fetchone()
+    assert int(sym_cnt[0]) >= 1
 
 
 def test_scan_to_db_initial_fastpath_skips_file_meta_lookup_when_root_empty(tmp_path, monkeypatch):

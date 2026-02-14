@@ -128,8 +128,12 @@ def _run_single_trial(
     start_wall = time.perf_counter()
     start_cpu = time.process_time()
     start_rss = _get_rss_kib_current()
+    standby_wall_s = 0.0
+    standby_cpu_s = 0.0
     with _patch_env(env_overrides):
         status = _scan_to_db(cfg, db, logger)
+        standby_wall_s = time.perf_counter() - start_wall
+        standby_cpu_s = time.process_time() - start_cpu
     backfill_status: Dict[str, Any] | None = None
     if mode.upper() == "B" and mode_b_backfill_full:
         backfill_env = dict(env_overrides)
@@ -137,8 +141,8 @@ def _run_single_trial(
         backfill_env["SARI_INDEXER_FORCE_REPARSE"] = "1"
         with _patch_env(backfill_env):
             backfill_status = _scan_to_db(cfg, db, logger)
-    wall_s = time.perf_counter() - start_wall
-    cpu_s = time.process_time() - start_cpu
+    full_wall_s = time.perf_counter() - start_wall
+    full_cpu_s = time.process_time() - start_cpu
     end_rss = _get_rss_kib_current()
 
     placeholders = ",".join("?" for _ in root_ids)
@@ -202,8 +206,13 @@ def _run_single_trial(
         "mode": mode,
         "trial": int(trial_no),
         "workspaces": [str(p) for p in workspaces],
-        "wall_s": round(float(wall_s), 6),
-        "cpu_s": round(float(cpu_s), 6),
+        # Backward-compatible aliases for existing consumers.
+        "wall_s": round(float(full_wall_s), 6),
+        "cpu_s": round(float(full_cpu_s), 6),
+        "standby_wall_s": round(float(standby_wall_s), 6),
+        "full_wall_s": round(float(full_wall_s), 6),
+        "standby_cpu_s": round(float(standby_cpu_s), 6),
+        "full_cpu_s": round(float(full_cpu_s), 6),
         "maxrss_kib_delta": max(0, int(end_rss - start_rss)),
         "files": files,
         "symbols": symbols,
@@ -233,8 +242,10 @@ def summarize_trials(trials: List[Dict[str, Any]], *, integrity_scope: str = "fu
             grouped[mode].append(row)
 
     def _mode_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
-        wall = [float(r.get("wall_s", 0.0) or 0.0) for r in rows]
-        cpu = [float(r.get("cpu_s", 0.0) or 0.0) for r in rows]
+        standby_wall = [float(r.get("standby_wall_s", r.get("wall_s", 0.0)) or 0.0) for r in rows]
+        full_wall = [float(r.get("full_wall_s", r.get("wall_s", 0.0)) or 0.0) for r in rows]
+        standby_cpu = [float(r.get("standby_cpu_s", r.get("cpu_s", 0.0)) or 0.0) for r in rows]
+        full_cpu = [float(r.get("full_cpu_s", r.get("cpu_s", 0.0)) or 0.0) for r in rows]
         rss = [float(r.get("maxrss_kib_delta", 0) or 0) for r in rows]
         files = [int(r.get("files", 0) or 0) for r in rows]
         symbols = [int(r.get("symbols", 0) or 0) for r in rows]
@@ -260,10 +271,19 @@ def summarize_trials(trials: List[Dict[str, Any]], *, integrity_scope: str = "fu
             }
         return {
             "runs": len(rows),
-            "wall_s_median": round(_safe_median(wall), 6),
-            "wall_s_p95": round(_percentile(wall, 95), 6),
-            "cpu_s_median": round(_safe_median(cpu), 6),
-            "cpu_s_p95": round(_percentile(cpu, 95), 6),
+            # Backward-compatible aliases: wall/cpu now represent full completion.
+            "wall_s_median": round(_safe_median(full_wall), 6),
+            "wall_s_p95": round(_percentile(full_wall, 95), 6),
+            "cpu_s_median": round(_safe_median(full_cpu), 6),
+            "cpu_s_p95": round(_percentile(full_cpu, 95), 6),
+            "standby_wall_s_median": round(_safe_median(standby_wall), 6),
+            "standby_wall_s_p95": round(_percentile(standby_wall, 95), 6),
+            "full_wall_s_median": round(_safe_median(full_wall), 6),
+            "full_wall_s_p95": round(_percentile(full_wall, 95), 6),
+            "standby_cpu_s_median": round(_safe_median(standby_cpu), 6),
+            "standby_cpu_s_p95": round(_percentile(standby_cpu, 95), 6),
+            "full_cpu_s_median": round(_safe_median(full_cpu), 6),
+            "full_cpu_s_p95": round(_percentile(full_cpu, 95), 6),
             "maxrss_kib_median": int(_safe_median(rss)),
             "maxrss_kib_p95": int(_percentile(rss, 95)),
             "files_set": sorted(set(files)),
@@ -276,6 +296,8 @@ def summarize_trials(trials: List[Dict[str, Any]], *, integrity_scope: str = "fu
     b = _mode_summary(grouped["B"])
     wall_improve = _improvement_pct(float(a["wall_s_median"]), float(b["wall_s_median"]))
     cpu_improve = _improvement_pct(float(a["cpu_s_median"]), float(b["cpu_s_median"]))
+    standby_wall_improve = _improvement_pct(float(a["standby_wall_s_median"]), float(b["standby_wall_s_median"]))
+    full_wall_improve = _improvement_pct(float(a["full_wall_s_median"]), float(b["full_wall_s_median"]))
 
     scope = str(integrity_scope or "full").strip().lower()
     if scope == "files":
@@ -300,6 +322,8 @@ def summarize_trials(trials: List[Dict[str, Any]], *, integrity_scope: str = "fu
         "improvement_pct": {
             "wall_s_median": round(wall_improve, 3),
             "cpu_s_median": round(cpu_improve, 3),
+            "standby_wall_s_median": round(standby_wall_improve, 3),
+            "full_wall_s_median": round(full_wall_improve, 3),
         },
         "gates": {
             "integrity_ok": bool(integrity_ok),
@@ -323,7 +347,9 @@ def _render_markdown(summary: Dict[str, Any], *, workspaces: List[Path], repeats
             f"- Repeats per mode: `{int(repeats)}`",
             "",
             "## Improvement",
-            f"- Wall median improvement (B vs A): `{imp.get('wall_s_median', 0)}%`",
+            f"- Standby wall median improvement (B vs A): `{imp.get('standby_wall_s_median', 0)}%`",
+            f"- Full wall median improvement (B vs A): `{imp.get('full_wall_s_median', 0)}%`",
+            f"- Wall median improvement (compat alias, full): `{imp.get('wall_s_median', 0)}%`",
             f"- CPU median improvement (B vs A): `{imp.get('cpu_s_median', 0)}%`",
             "",
             "## Gates",
@@ -331,12 +357,16 @@ def _render_markdown(summary: Dict[str, Any], *, workspaces: List[Path], repeats
             f"- Load Guard OK: `{gates.get('load_guard_ok', False)}`",
             "",
             "## Mode A",
+            f"- standby wall median/p95: `{a.get('standby_wall_s_median', 0)}` / `{a.get('standby_wall_s_p95', 0)}`",
+            f"- full wall median/p95: `{a.get('full_wall_s_median', 0)}` / `{a.get('full_wall_s_p95', 0)}`",
             f"- wall median/p95: `{a.get('wall_s_median', 0)}` / `{a.get('wall_s_p95', 0)}`",
             f"- cpu median/p95: `{a.get('cpu_s_median', 0)}` / `{a.get('cpu_s_p95', 0)}`",
             f"- rss median/p95 (KiB): `{a.get('maxrss_kib_median', 0)}` / `{a.get('maxrss_kib_p95', 0)}`",
             f"- files/symbols/relations sets: `{a.get('files_set', [])}` / `{a.get('symbols_set', [])}` / `{a.get('relations_set', [])}`",
             "",
             "## Mode B",
+            f"- standby wall median/p95: `{b.get('standby_wall_s_median', 0)}` / `{b.get('standby_wall_s_p95', 0)}`",
+            f"- full wall median/p95: `{b.get('full_wall_s_median', 0)}` / `{b.get('full_wall_s_p95', 0)}`",
             f"- wall median/p95: `{b.get('wall_s_median', 0)}` / `{b.get('wall_s_p95', 0)}`",
             f"- cpu median/p95: `{b.get('cpu_s_median', 0)}` / `{b.get('cpu_s_p95', 0)}`",
             f"- rss median/p95 (KiB): `{b.get('maxrss_kib_median', 0)}` / `{b.get('maxrss_kib_p95', 0)}`",

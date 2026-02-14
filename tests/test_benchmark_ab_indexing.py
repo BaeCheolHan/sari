@@ -48,3 +48,39 @@ def test_summarize_trials_file_scope_integrity_allows_symbol_diff():
     ]
     summary = ab.summarize_trials(trials, integrity_scope="files")
     assert summary["gates"]["integrity_ok"] is True
+
+
+def test_summarize_trials_includes_standby_and_full_wall_metrics():
+    trials = [
+        {
+            "mode": "A",
+            "standby_wall_s": 10.0,
+            "full_wall_s": 10.0,
+            "wall_s": 10.0,
+            "cpu_s": 5.0,
+            "maxrss_kib_delta": 1000,
+            "files": 100,
+            "symbols": 200,
+            "relations": 300,
+        },
+        {
+            "mode": "B",
+            "standby_wall_s": 6.5,
+            "full_wall_s": 8.0,
+            "wall_s": 8.0,
+            "cpu_s": 4.0,
+            "maxrss_kib_delta": 900,
+            "files": 100,
+            "symbols": 200,
+            "relations": 300,
+        },
+    ]
+
+    summary = ab.summarize_trials(trials)
+    mode_a = summary["mode_A"]
+    mode_b = summary["mode_B"]
+    assert float(mode_a["standby_wall_s_median"]) == 10.0
+    assert float(mode_b["standby_wall_s_median"]) == 6.5
+    assert float(mode_b["full_wall_s_median"]) == 8.0
+    assert "standby_wall_s_median" in summary["improvement_pct"]
+    assert "full_wall_s_median" in summary["improvement_pct"]

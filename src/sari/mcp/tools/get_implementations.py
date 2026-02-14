@@ -14,6 +14,7 @@ from sari.mcp.tools._util import (
     parse_int_arg,
     invalid_args_response,
     internal_error_response,
+    require_repo_arg,
 )
 from sari.core.services.symbol_service import SymbolService
 
@@ -84,6 +85,9 @@ def execute_get_implementations(args: object, db: object, roots: list[str]) -> T
     """
     if not isinstance(args, Mapping):
         return invalid_args_response("get_implementations", "args must be an object")
+    repo_err = require_repo_arg(args, "get_implementations")
+    if repo_err:
+        return repo_err
 
     target_symbol = str(args.get("name", "")).strip()
     target_sid = str(args.get("symbol_id", "")).strip() or str(args.get("sid", "")).strip()

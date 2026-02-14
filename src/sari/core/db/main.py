@@ -673,6 +673,88 @@ class LocalSearchDB:
             cur = self.db.connection().cursor()
         self._file_repo(cur).update_last_seen_tx(cur, paths, ts)
 
+    def mark_lsp_dirty(self, path: str, root_id: str = "", reason: str = "") -> None:
+        normalized = self._resolve_db_path(path)
+        rid = str(root_id or (normalized.split("/", 1)[0] if "/" in normalized else "root"))
+        now = int(time.time())
+        conn = self.db.connection()
+        try:
+            conn.execute(
+                """
+                INSERT INTO lsp_indexed_files(path, root_id, dirty, error, updated_ts, created_ts)
+                VALUES(?, ?, 1, ?, ?, ?)
+                ON CONFLICT(path) DO UPDATE SET
+                  root_id=excluded.root_id,
+                  dirty=1,
+                  error=excluded.error,
+                  updated_ts=excluded.updated_ts
+                """,
+                (normalized, rid, str(reason or ""), now, now),
+            )
+        except Exception:
+            # Keep watcher/indexer path non-blocking.
+            self.logger.debug("mark_lsp_dirty failed for %s", normalized, exc_info=True)
+
+    def mark_lsp_clean(self, path: str, error: str = "") -> None:
+        normalized = self._resolve_db_path(path)
+        now = int(time.time())
+        conn = self.db.connection()
+        try:
+            conn.execute(
+                """
+                INSERT INTO lsp_indexed_files(path, root_id, dirty, error, updated_ts, created_ts)
+                VALUES(?, ?, 0, ?, ?, ?)
+                ON CONFLICT(path) DO UPDATE SET
+                  dirty=0,
+                  error=excluded.error,
+                  updated_ts=excluded.updated_ts
+                """,
+                (
+                    normalized,
+                    normalized.split("/", 1)[0] if "/" in normalized else "root",
+                    str(error or ""),
+                    now,
+                    now,
+                ),
+            )
+        except Exception:
+            self.logger.debug("mark_lsp_clean failed for %s", normalized, exc_info=True)
+
+    def get_lsp_dirty_candidates(self, limit: int = 32) -> List[Dict[str, object]]:
+        limit_value = max(1, int(limit or 32))
+        rows = self.execute(
+            """
+            SELECT f.path, f.rel_path, f.root_id, f.repo, r.root_path
+            FROM files f
+            LEFT JOIN roots r ON r.root_id = f.root_id
+            LEFT JOIN lsp_indexed_files l ON l.path = f.path
+            WHERE f.deleted_ts = 0
+              AND COALESCE(l.dirty, 1) = 1
+            ORDER BY COALESCE(l.updated_ts, 0) ASC, f.path ASC
+            LIMIT ?
+            """,
+            (limit_value,),
+        ).fetchall()
+        out: List[Dict[str, object]] = []
+        for row in rows or []:
+            d = dict(row) if isinstance(row, sqlite3.Row) else {
+                "path": row[0] if len(row) > 0 else "",
+                "rel_path": row[1] if len(row) > 1 else "",
+                "root_id": row[2] if len(row) > 2 else "",
+                "repo": row[3] if len(row) > 3 else "",
+                "root_path": row[4] if len(row) > 4 else "",
+            }
+            out.append(
+                {
+                    "path": str(d.get("path") or ""),
+                    "rel_path": str(d.get("rel_path") or ""),
+                    "root_id": str(d.get("root_id") or ""),
+                    "repo": str(d.get("repo") or ""),
+                    "root_path": str(d.get("root_path") or ""),
+                }
+            )
+        return out
+
     def search_symbols(
             self,
             query: str,

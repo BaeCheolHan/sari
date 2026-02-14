@@ -18,6 +18,7 @@ from .worker import IndexWorker, init_process_worker, process_file_task_in_proce
 from .scanner import Scanner
 from sari.core.workspace import WorkspaceManager
 from sari.core.utils.path import PathUtils
+from sari.core.lsp.hydrator import hydrate_file_symbols_from_text, sync_lsp_snapshot
 
 from sari.core.models import IndexingResult
 
@@ -337,7 +338,14 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
         os.environ.get("SARI_INDEXER_ADAPTIVE_FLUSH", "1")
     ).strip().lower() in {"1", "true", "yes", "on"}
     phase_mode = str(os.environ.get("SARI_INDEXER_PHASE_MODE", "full") or "full").strip().lower()
-    extract_symbols_enabled = phase_mode != "fast"
+    # Keep fast-mode deferral, but allow symbol extraction in full mode for compatibility.
+    extract_symbols_default = phase_mode != "fast"
+    extract_symbols_enabled = str(
+        os.environ.get(
+            "SARI_INDEXER_EXTRACT_SYMBOLS",
+            "1" if extract_symbols_default else "0",
+        )
+    ).strip().lower() in {"1", "true", "yes", "on"}
     force_reparse_enabled = str(
         os.environ.get("SARI_INDEXER_FORCE_REPARSE", "0")
     ).strip().lower() in {"1", "true", "yes", "on"}
@@ -663,7 +671,16 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
                 try:
                     t0 = time.perf_counter()
                     if symbol_rows and not relation_rows and not replace_sources:
-                        db.upsert_symbols_tx(None, symbol_rows)
+                        if combined_symbol_rel_tx_enabled:
+                            db.upsert_symbols_and_relations_tx(
+                                symbol_rows,
+                                [],
+                                replace_sources=[],
+                            )
+                        else:
+                            db.upsert_symbols_tx(None, symbol_rows)
+                            db.upsert_relations_tx(None, [], replace_sources=[])
+                            perf_stats["flush_relations_calls"] += 1.0
                         perf_stats["flush_symbols_calls"] += 1.0
                     elif replace_sources and not symbol_rows and not relation_rows:
                         db.upsert_relations_tx(None, [], replace_sources=replace_sources)
@@ -932,6 +949,13 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
         # 데이터베이스 일괄 업데이트 (Batch Update)
         _flush_seen_paths(force=True)
         _flush_batches(force=True)
+        if int(perf_stats["flush_relations_calls"]) == 0 and int(status.get("indexed_files", 0) or 0) > 0:
+            try:
+                db.upsert_relations_tx(None, [], replace_sources=[])
+                perf_stats["flush_relations_calls"] += 1.0
+            except Exception:
+                if logger:
+                    logger.debug("final empty relation cleanup flush skipped", exc_info=True)
         # 현재 스캔에서 관측되지 않은 과거 row는 soft-delete 처리한다.
         # exclude 정책 변경 시 기존 노이즈(.venv/.idea 등)가 검색에 남지 않도록 보장한다.
         try:
@@ -1271,6 +1295,7 @@ class Indexer:
         """백그라운드에서 주기적으로 인덱싱 작업을 수행하는 무한 루프입니다."""
         next_due = time.time()
         while not self._stop_event.is_set():
+            self._reconcile_lsp_dirty_once()
             self._finalize_worker_if_done()
             now = time.time()
             if self._rescan_event.is_set() or now >= next_due:
@@ -1279,16 +1304,98 @@ class Indexer:
                 next_due = now + self.config.scan_interval_seconds
             time.sleep(0.2)
 
+    def _reconcile_lsp_dirty_once(self) -> None:
+        """Process a small dirty LSP batch without blocking indexing loop."""
+        if not hasattr(self.db, "get_lsp_dirty_candidates"):
+            return
+        try:
+            batch_size = int(os.environ.get("SARI_LSP_RECONCILE_BATCH", "8") or 8)
+        except Exception:
+            batch_size = 8
+        batch_size = max(1, min(batch_size, 64))
+        try:
+            candidates = self.db.get_lsp_dirty_candidates(limit=batch_size)
+        except Exception:
+            if self.logger:
+                self.logger.debug("failed to load lsp dirty candidates", exc_info=True)
+            return
+        if not candidates:
+            return
+
+        for c in candidates:
+            db_path = str(c.get("path") or "")
+            rel_path = str(c.get("rel_path") or "")
+            root_path = str(c.get("root_path") or "")
+            if not db_path:
+                continue
+            fs_path = ""
+            if root_path and rel_path:
+                fs_path = str((Path(root_path) / rel_path).resolve())
+            if fs_path and Path(fs_path).is_file():
+                try:
+                    source = Path(fs_path).read_text(encoding="utf-8", errors="ignore")
+                except Exception:
+                    source = ""
+            else:
+                source = ""
+            if not source and hasattr(self.db, "read_file"):
+                try:
+                    source = str(self.db.read_file(db_path) or "")
+                except Exception:
+                    source = ""
+            if not source:
+                if hasattr(self.db, "mark_lsp_clean"):
+                    self.db.mark_lsp_clean(db_path, error="source_unavailable")
+                continue
+            try:
+                _count, symbol_rows = hydrate_file_symbols_from_text(
+                    db=self.db,
+                    db_path=db_path,
+                    source_path=(fs_path or db_path),
+                    source=source,
+                )
+                sync_lsp_snapshot(
+                    db=self.db,
+                    db_path=db_path,
+                    source_path=(fs_path or db_path),
+                    symbol_rows=symbol_rows,
+                    lsp_version="reconcile-v1",
+                )
+            except Exception:
+                if hasattr(self.db, "mark_lsp_dirty"):
+                    self.db.mark_lsp_dirty(db_path, reason="reconcile_failed")
+                if self.logger:
+                    self.logger.debug("lsp dirty reconcile failed: %s", db_path, exc_info=True)
+
     def request_rescan(self):
         """즉시 리스캔을 요청합니다."""
         self._rescan_event.set()
 
     def index_file(self, _path: str):
         """특정 파일 변경 시 인덱싱을 요청합니다."""
+        try:
+            if isinstance(_path, str) and _path.strip() and hasattr(self.db, "mark_lsp_dirty"):
+                self.db.mark_lsp_dirty(_path, reason="index_file")
+        except Exception:
+            if self.logger:
+                self.logger.debug("index_file dirty mark failed", exc_info=True)
         self.request_rescan()
 
     def _enqueue_fsevent(self, _evt: object) -> None:
         """파일 시스템 이벤트를 처리합니다."""
+        try:
+            if hasattr(self.db, "mark_lsp_dirty"):
+                evt_path = str(getattr(_evt, "path", "") or "").strip()
+                evt_root = str(getattr(_evt, "root", "") or "").strip()
+                root_id = WorkspaceManager.root_id(evt_root) if evt_root else ""
+                if evt_path:
+                    self.db.mark_lsp_dirty(evt_path, root_id=root_id, reason="watchdog_event")
+                dest_path = str(getattr(_evt, "dest_path", "") or "").strip()
+                if dest_path:
+                    self.db.mark_lsp_dirty(dest_path, root_id=root_id, reason="watchdog_event")
+        except Exception:
+            if self.logger:
+                self.logger.debug("watchdog dirty mark failed", exc_info=True)
         self.request_rescan()
 
     def _snapshot_path(self) -> str:

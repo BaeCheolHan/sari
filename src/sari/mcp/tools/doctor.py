@@ -101,84 +101,24 @@ def _check_engine_tokenizer_data() -> DoctorResult:
         f"{err} (install/upgrade package 'lindera-python-ipadic')")
 
 
-def _check_tree_sitter() -> DoctorResult:
-    """Tree-sitter 패키지와 언어 파서가 설치되어 있는지 확인합니다."""
+def _check_lsp_runtime() -> DoctorResult:
+    """LSP 기반 인덱싱 런타임 상태를 간단히 보고합니다."""
+    enabled = str(os.environ.get("SARI_LSP_ON_DEMAND", "1")).strip().lower() not in {"0", "false", "no", "off"}
+    metrics_note = ""
     try:
-        from sari.core.parsers.ast_engine import ASTEngine
-        engine = ASTEngine()
-        if not engine.enabled:
-            return _result(
-                "Tree-sitter Support",
-                False,
-                "core 'tree-sitter' package not installed (optional)")
-
-        # 주요 언어 파서 확인
-        langs = [
-            "python",
-            "javascript",
-            "typescript",
-            "java",
-            "go",
-            "rust",
-            "cpp"]
-        installed = []
-        for lang in langs:
-            if engine._get_language(lang):
-                installed.append(lang)
-
-        if installed:
-            return _result(
-                "Tree-sitter Support",
-                True,
-                f"enabled for: {', '.join(installed)}")
-        return _result(
-            "Tree-sitter Support",
-            True,
-            "core enabled but no language parsers loaded yet")
-    except Exception as e:
-        return _result("Tree-sitter Support", False, _compact_error_message(e, "tree-sitter check failed"))
-
-
-def _check_tree_sitter_language_runtime() -> DoctorResult:
-    """파서 팩토리 기준 언어별 tree-sitter 런타임 지원 상태를 보고합니다."""
-    try:
-        from sari.core.parsers.ast_engine import ASTEngine
-        from sari.core.parsers.factory import ParserFactory
-    except Exception as e:
-        return _result("Tree-sitter Language Runtime", False, _compact_error_message(e, "runtime check failed"))
-
-    engine = ASTEngine()
-    if not engine.enabled:
-        return _result(
-            "Tree-sitter Language Runtime",
-            False,
-            "core 'tree-sitter' package not installed (optional)",
+        from sari.core.lsp.hub import get_lsp_hub
+        snap = get_lsp_hub().metrics_snapshot()
+        metrics_note = (
+            f" req={int(snap.get('lsp_request_count', 0) or 0)}"
+            f" timeout_rate={float(snap.get('lsp_timeout_rate', 0.0) or 0.0):.3f}"
+            f" restarts={int(snap.get('lsp_restart_count', 0) or 0)}"
+            f" active_lang={int(snap.get('active_languages', 0) or 0)}"
         )
-
-    lang_map = getattr(ParserFactory, "_lang_map", {}) or {}
-    configured = sorted({str(v).strip() for v in lang_map.values() if str(v).strip()})
-    if not configured:
-        return _result("Tree-sitter Language Runtime", True, "no configured parser languages")
-
-    available: list[str] = []
-    missing: list[str] = []
-    for lang in configured:
-        if engine._get_language(lang):
-            available.append(lang)
-        else:
-            missing.append(lang)
-
-    if not missing:
-        return _result(
-            "Tree-sitter Language Runtime",
-            True,
-            "all configured parser languages have runtime support",
-        )
-    detail = (
-        f"available={', '.join(available) if available else '-'}; "
-        f"missing={', '.join(missing)}"
-    )
-    return _result("Tree-sitter Language Runtime", False, detail)
+    except Exception:
+        metrics_note = ""
+    if enabled:
+        return _result("LSP Runtime", True, f"enabled (on-demand hydration path active){metrics_note}")
+    return _result("LSP Runtime", False, "disabled by environment")
 
 
 def _check_embedded_engine_module() -> DoctorResult:
@@ -389,8 +329,7 @@ def execute_doctor(
         results.append(_check_embedded_engine_module())
         results.append(_check_engine_runtime(ws_root))
         results.append(_check_engine_tokenizer_data())
-        results.append(_check_tree_sitter())
-        results.append(_check_tree_sitter_language_runtime())
+        results.append(_check_lsp_runtime())
         results.append(_check_fts_rebuild_policy())
         results.append(_check_writer_health(db))
         results.append(_check_storage_switch_guard())

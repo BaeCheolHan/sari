@@ -14,6 +14,7 @@ from sari.mcp.tools._util import (
     ErrorCode,
     parse_int_arg,
     invalid_args_response,
+    require_repo_arg,
 )
 from sari.mcp.tools.call_graph import build_call_graph
 from sari.core.models import CallerHitDTO
@@ -86,6 +87,9 @@ def execute_get_callers(args: object, db: object, roots: list[str]) -> ToolResul
     """
     if not isinstance(args, Mapping):
         return invalid_args_response("get_callers", "args must be an object")
+    repo_err = require_repo_arg(args, "get_callers")
+    if repo_err:
+        return repo_err
 
     target_symbol = str(args.get("name", "") or "").strip()
     target_sid = str(args.get("symbol_id", "") or "").strip() or str(args.get("sid", "") or "").strip()

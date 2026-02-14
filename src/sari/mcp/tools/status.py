@@ -101,7 +101,25 @@ def execute_status(
         "db_engine": "PeeWee+Turbo",
         "fts_enabled": True,
         "cfg_include_ext": ",".join(cfg.include_ext) if cfg and cfg.include_ext else "",
+        "cache_hit_rate": float(runtime_status.get("cache_hit_rate", 0.0) or 0.0),
+        "queue_p95_latency": float(runtime_status.get("queue_p95_latency", 0.0) or 0.0),
+        "conflict_count": _coerce_int(runtime_status.get("conflict_count", 0), 0),
     }
+    try:
+        from sari.core.lsp.hub import get_lsp_hub
+
+        lsp_metrics = get_lsp_hub().metrics_snapshot()
+        status_data["language_cold_start_count"] = _coerce_int(lsp_metrics.get("language_cold_start_count"), 0)
+        status_data["lsp_restart_count"] = _coerce_int(lsp_metrics.get("lsp_restart_count"), 0)
+        status_data["lsp_timeout_rate"] = float(lsp_metrics.get("lsp_timeout_rate", 0.0) or 0.0)
+        status_data["lsp_backpressure_count"] = _coerce_int(lsp_metrics.get("lsp_backpressure_count"), 0)
+        status_data["lsp_by_language"] = lsp_metrics.get("by_language", {})
+    except Exception:
+        status_data["language_cold_start_count"] = 0
+        status_data["lsp_restart_count"] = 0
+        status_data["lsp_timeout_rate"] = 0.0
+        status_data["lsp_backpressure_count"] = 0
+        status_data["lsp_by_language"] = {}
     
     # 풍부한 정보를 담은 PACK1 응답 생성
     def build_pack() -> str:

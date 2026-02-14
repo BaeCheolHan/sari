@@ -35,6 +35,7 @@ from sari.mcp.tools._util import (
     resolve_db_path,
     resolve_fs_path,
     resolve_root_ids,
+    require_repo_arg,
     sanitize_error_message,
 )
 from sari.mcp.tools.crypto import issue_context_ref
@@ -523,46 +524,29 @@ def _js_like_symbol_span(source: str, symbol: str) -> tuple[int, int] | None:
     return None
 
 
-def _extract_tree_sitter_symbols(source: str, fs_path: str) -> list[object]:
-    try:
-        from sari.core.parsers.ast_engine import ASTEngine
-        from sari.core.parsers.factory import ParserFactory
-    except ImportError:
-        return []
-
-    suffix = Path(fs_path).suffix.lower()
-    language = ParserFactory.get_language(suffix)
-    if not language:
-        return []
-
-    engine = ASTEngine()
-    tree = engine.parse(language, source)
-    if tree is None:
-        return []
-    try:
-        parsed = engine.extract_symbols(fs_path, language, source, tree=tree)
-    except (AttributeError, RuntimeError, TypeError, ValueError):
-        return []
-    return list(getattr(parsed, "symbols", []) or [])
-
-
 def _normalize_symbol_token(value: str) -> str:
     return str(value or "").strip().replace("::", ".").replace("#", ".")
 
 
-def _tree_sitter_symbol_span(
-    source: str,
-    fs_path: str,
+def _db_symbol_span(
+    db: object,
+    db_path: str,
     symbol: str,
     symbol_qualname: str = "",
     symbol_kind: str = "",
 ) -> tuple[int, int] | None:
     if not symbol:
         return None
-    symbols = _extract_tree_sitter_symbols(source, fs_path)
-    if not symbols:
+    conn = None
+    if hasattr(db, "get_read_connection"):
+        try:
+            conn = db.get_read_connection()
+        except (AttributeError, OSError, TypeError, ValueError):
+            conn = None
+    if conn is None:
+        conn = getattr(db, "_read", None)
+    if conn is None:
         return None
-    suffix = Path(fs_path).suffix.lower()
     raw_symbol = str(symbol or "").strip()
     normalized = _normalize_symbol_token(raw_symbol)
     target_name = normalized.split(".")[-1] if normalized else raw_symbol
@@ -570,24 +554,35 @@ def _tree_sitter_symbol_span(
     qual_hint = _normalize_symbol_token(str(symbol_qualname or "").strip())
     kind_hint = str(symbol_kind or "").strip().lower()
 
-    preferred_kinds: dict[str, tuple[str, ...]] = {
-        ".java": ("method", "function"),
-        ".kt": ("method", "function"),
-        ".go": ("function", "method"),
-        ".rs": ("function", "method"),
-    }
-    kinds = preferred_kinds.get(suffix, ("function", "method", "class"))
+    try:
+        rows = conn.execute(
+            "SELECT name, qualname, kind, line, end_line FROM symbols WHERE path = ? ORDER BY line ASC",
+            (db_path,),
+        ).fetchall()
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if not rows:
+        return None
 
+    kinds = ("function", "method", "class", "interface", "struct", "trait", "enum", "module")
     best: tuple[int, int, int] | None = None
-    for sym in symbols:
-        name = str(getattr(sym, "name", "") or "").strip()
-        qualname = str(getattr(sym, "qualname", "") or "").strip()
+    best_span: tuple[int, int] | None = None
+    for sym in rows:
+        if isinstance(sym, Mapping):
+            name = str(sym.get("name", "") or "").strip()
+            qualname = str(sym.get("qualname", "") or "").strip()
+            kind = str(sym.get("kind", "") or "").strip().lower()
+            start = int(sym.get("line", 0) or 0)
+            end = int(sym.get("end_line", 0) or 0)
+        else:
+            name = str(getattr(sym, "name", "") or "").strip()
+            qualname = str(getattr(sym, "qualname", "") or "").strip()
+            kind = str(getattr(sym, "kind", "") or "").strip().lower()
+            start = int(getattr(sym, "line", 0) or 0)
+            end = int(getattr(sym, "end_line", 0) or 0)
         norm_qual = _normalize_symbol_token(qualname)
-        start = int(getattr(sym, "line", 0) or 0)
-        end = int(getattr(sym, "end_line", 0) or 0)
         if start <= 0 or end < start:
             continue
-        kind = str(getattr(sym, "kind", "") or "").strip().lower()
 
         score = 100
         if qual_hint and norm_qual and norm_qual == qual_hint:
@@ -708,9 +703,9 @@ def _execute_ast_edit(args_map: Mapping[str, object], db: object, roots: list[st
         elif suffix in {".js", ".jsx", ".ts", ".tsx"}:
             span = _js_like_symbol_span(original, symbol)
         else:
-            span = _tree_sitter_symbol_span(
-                original,
-                str(path_obj),
+            span = _db_symbol_span(
+                db,
+                db_path,
                 symbol,
                 symbol_qualname=symbol_qualname,
                 symbol_kind=symbol_kind,
@@ -719,7 +714,7 @@ def _execute_ast_edit(args_map: Mapping[str, object], db: object, roots: list[st
                 return _ast_edit_error(
                     "SYMBOL_RESOLUTION_FAILED",
                     f"symbol-based ast_edit could not resolve symbol '{symbol}' in {suffix or 'target'} "
-                    "(tree-sitter parser/runtime unavailable or symbol missing)",
+                    "(symbol metadata missing or stale; re-run list_symbols/read_symbol first)",
                 )
         if not span:
             return _ast_edit_error("SYMBOL_NOT_FOUND", f"symbol '{symbol}' was not found in target")
@@ -1300,6 +1295,10 @@ def execute_read(args: object, db: object, roots: list[str], logger: object = No
     if not isinstance(args, Mapping):
         return invalid_args_response("read", "args must be an object")
     args_map = dict(args)
+    if bool(args_map.get("__enforce_repo__", False)):
+        repo_err = require_repo_arg(args_map, "read")
+        if repo_err:
+            return repo_err
     if requires_strict_session_id(args_map):
         return _stabilization_error(
             code="STRICT_SESSION_ID_REQUIRED",

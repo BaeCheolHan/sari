@@ -7,8 +7,6 @@ from pathlib import Path
 from typing import Optional
 from sari.core.config.main import Config
 from sari.core.settings import settings
-from sari.core.parsers.factory import ParserFactory
-from sari.core.parsers.ast_engine import ASTEngine
 from sari.core.utils.path import PathUtils
 import hashlib
 import zlib
@@ -97,10 +95,7 @@ class IndexWorker:
         self.logger = logger
         self.extractor_cb = extractor_cb
         self.settings = settings_obj or settings
-        self.ast_engine = ASTEngine()
         self._cache_lock = threading.Lock()
-        self._ast_cache = OrderedDict()
-        self._ast_cache_max = self.settings.AST_CACHE_ENTRIES
         self._git_root_cache: dict[str, str | None] = {}
         self._root_git_probe_cache: dict[str, str | None] = {}
         try:
@@ -212,7 +207,7 @@ class IndexWorker:
                     root_id=root_id)
 
             current_hash = compute_hash(content)
-            if prev and prev[2] == current_hash and not deferred_payload:
+            if (not force) and prev and prev[2] == current_hash and not deferred_payload:
                 return IndexingResult(
                     type="unchanged", path=str(file_path), rel=db_path)
 
@@ -221,28 +216,30 @@ class IndexWorker:
             if self.settings.get_bool("REDACT_ENABLED", True):
                 content = _redact(content)
 
-            # 4. FTS and AST Processing
+            # 4. FTS processing
             enable_fts = self.settings.get_bool("ENABLE_FTS", True) and not split_value_payload
             normalized = _normalize_engine_text(analysis_content) if enable_fts else ""
             fts_content = normalized[:self.settings.get_int(
                 "FTS_MAX_BYTES", 1000000)] if normalized else ""
 
             symbols, relations = [], []
-            ast_status, ast_reason = "skipped", "disabled"
-            if extract_symbols and size <= self.settings.MAX_AST_BYTES and self.ast_engine.enabled:
-                lang = ParserFactory.get_language(file_path.suffix.lower())
-                if lang:
-                    tree = self.ast_engine.parse(
-                        lang, analysis_content, self._ast_cache_get(db_path))
-                    if tree:
+            ast_status, ast_reason = "skipped", "lsp_pending"
+            if extract_symbols:
+                if file_path.suffix.lower() == ".py":
+                    try:
+                        if not hasattr(self, "_python_parser"):
+                            from sari.core.parsers.python import PythonParser
+
+                            self._python_parser = PythonParser()
+                        parsed = self._python_parser.extract(db_path, analysis_content)
+                        symbols = list(getattr(parsed, "symbols", []) or [])
+                        relations = list(getattr(parsed, "relations", []) or [])
                         ast_status, ast_reason = "ok", "none"
-                        self._ast_cache_put(db_path, tree)
-                        parse_result = self.ast_engine.extract_symbols(
-                            db_path, lang, analysis_content, tree=tree)
-                        symbols = parse_result.symbols or []
-                        relations = parse_result.relations or []
-                    else:
-                        ast_status, ast_reason = "failed", "parse_error"
+                    except Exception:
+                        symbols, relations = [], []
+                        ast_status, ast_reason = "error", "py_extract_failed"
+                else:
+                    ast_status, ast_reason = "skipped", "unsupported_lang"
 
             # 5. Storage & Result Assembly
             store_content = getattr(self.cfg, "store_content", True) and not split_value_payload
