@@ -47,6 +47,7 @@ class LocalSearchDB:
         self.engine = None
         self._lock = threading.Lock()
         self._writer_thread_id: Optional[int] = None
+        self._turbo_update_stats_enabled = True
         try:
             # SQLite 최적화 설정
             self.db = SqliteDatabase(db_path, pragmas={
@@ -241,7 +242,8 @@ class LocalSearchDB:
                 conn.execute("DELETE FROM staging_mem.files_temp")
                 if started_tx:
                     conn.execute("COMMIT")
-                self.update_stats()
+                if bool(getattr(self, "_turbo_update_stats_enabled", True)):
+                    self.update_stats()
             except Exception as te:
                 self.logger.error(
                     "Database merge failed: %s", te, exc_info=True)
@@ -254,6 +256,10 @@ class LocalSearchDB:
         except Exception as e:
             self.logger.error("Critical error in finalize_turbo_batch: %s", e)
             raise
+
+    def set_turbo_update_stats_enabled(self, enabled: bool) -> None:
+        """Control whether finalize_turbo_batch() updates root stats on each flush."""
+        self._turbo_update_stats_enabled = bool(enabled)
 
     def update_stats(self):
         """루트별 파일 및 심볼 통계를 갱신합니다."""

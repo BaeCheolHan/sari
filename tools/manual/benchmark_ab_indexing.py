@@ -101,66 +101,127 @@ def _run_single_trial(
     *,
     mode: str,
     trial_no: int,
-    workspace: Path,
+    workspaces: List[Path],
     out_dir: Path,
     env_overrides: Dict[str, str],
+    mode_b_backfill_full: bool = False,
 ) -> Dict[str, Any]:
     db_path = out_dir / f"ab_{mode.lower()}_{trial_no}.db"
     if db_path.exists():
         db_path.unlink()
 
-    defaults = Config.get_defaults(str(workspace))
-    defaults["workspace_root"] = str(workspace)
-    defaults["workspace_roots"] = [str(workspace)]
+    primary_workspace = workspaces[0]
+    defaults = Config.get_defaults(str(primary_workspace))
+    defaults["workspace_root"] = str(primary_workspace)
+    defaults["workspace_roots"] = [str(p) for p in workspaces]
     defaults["db_path"] = str(db_path)
     cfg = Config(**defaults)
 
     logger = logging.getLogger("sari.ab_benchmark")
     db = LocalSearchDB(str(db_path), logger=logger)
-    root_id = WorkspaceManager.root_id(str(workspace))
-    db.upsert_root(root_id, str(workspace), str(workspace), label=workspace.name)
+    root_ids: List[str] = []
+    for workspace in workspaces:
+        root_id = WorkspaceManager.root_id(str(workspace))
+        root_ids.append(root_id)
+        db.upsert_root(root_id, str(workspace), str(workspace), label=workspace.name)
 
     start_wall = time.perf_counter()
     start_cpu = time.process_time()
     start_rss = _get_rss_kib_current()
     with _patch_env(env_overrides):
         status = _scan_to_db(cfg, db, logger)
+    backfill_status: Dict[str, Any] | None = None
+    if mode.upper() == "B" and mode_b_backfill_full:
+        backfill_env = dict(env_overrides)
+        backfill_env["SARI_INDEXER_PHASE_MODE"] = "full"
+        backfill_env["SARI_INDEXER_FORCE_REPARSE"] = "1"
+        with _patch_env(backfill_env):
+            backfill_status = _scan_to_db(cfg, db, logger)
     wall_s = time.perf_counter() - start_wall
     cpu_s = time.process_time() - start_cpu
     end_rss = _get_rss_kib_current()
 
+    placeholders = ",".join("?" for _ in root_ids)
     files = int(
-        db.execute("SELECT COUNT(1) FROM files WHERE deleted_ts = 0 AND root_id = ?", (root_id,)).fetchone()[0]
-        or 0
-    )
-    symbols = int(
-        db.execute("SELECT COUNT(1) FROM symbols WHERE root_id = ?", (root_id,)).fetchone()[0] or 0
-    )
-    relations = int(
         db.execute(
-            "SELECT COUNT(1) FROM symbol_relations WHERE from_root_id = ? OR to_root_id = ?",
-            (root_id, root_id),
+            f"SELECT COUNT(1) FROM files WHERE deleted_ts = 0 AND root_id IN ({placeholders})",
+            tuple(root_ids),
         ).fetchone()[0]
         or 0
     )
+    symbols = int(
+        db.execute(
+            f"SELECT COUNT(1) FROM symbols WHERE root_id IN ({placeholders})",
+            tuple(root_ids),
+        ).fetchone()[0]
+        or 0
+    )
+    relations = int(
+        db.execute(
+            f"SELECT COUNT(1) FROM symbol_relations WHERE from_root_id IN ({placeholders}) OR to_root_id IN ({placeholders})",
+            tuple(root_ids) + tuple(root_ids),
+        ).fetchone()[0]
+        or 0
+    )
+
+    root_metrics: List[Dict[str, Any]] = []
+    for ws, rid in zip(workspaces, root_ids):
+        files_by_root = int(
+            db.execute(
+                "SELECT COUNT(1) FROM files WHERE deleted_ts = 0 AND root_id = ?",
+                (rid,),
+            ).fetchone()[0]
+            or 0
+        )
+        symbols_by_root = int(
+            db.execute(
+                "SELECT COUNT(1) FROM symbols WHERE root_id = ?",
+                (rid,),
+            ).fetchone()[0]
+            or 0
+        )
+        relations_by_root = int(
+            db.execute(
+                "SELECT COUNT(1) FROM symbol_relations WHERE from_root_id = ? OR to_root_id = ?",
+                (rid, rid),
+            ).fetchone()[0]
+            or 0
+        )
+        root_metrics.append(
+            {
+                "workspace": str(ws),
+                "root_id": rid,
+                "files": files_by_root,
+                "symbols": symbols_by_root,
+                "relations": relations_by_root,
+            }
+        )
     db.close_all()
 
     return {
         "mode": mode,
         "trial": int(trial_no),
-        "workspace": str(workspace),
+        "workspaces": [str(p) for p in workspaces],
         "wall_s": round(float(wall_s), 6),
         "cpu_s": round(float(cpu_s), 6),
         "maxrss_kib_delta": max(0, int(end_rss - start_rss)),
         "files": files,
         "symbols": symbols,
         "relations": relations,
+        "root_metrics": root_metrics,
+        "mode_b_backfill_full": bool(mode.upper() == "B" and mode_b_backfill_full),
         "status": {
             "scanned_files": int(status.get("scanned_files", 0) or 0),
             "indexed_files": int(status.get("indexed_files", 0) or 0),
             "symbols_extracted": int(status.get("symbols_extracted", 0) or 0),
             "errors": int(status.get("errors", 0) or 0),
         },
+        "backfill_status": {
+            "scanned_files": int((backfill_status or {}).get("scanned_files", 0) or 0),
+            "indexed_files": int((backfill_status or {}).get("indexed_files", 0) or 0),
+            "symbols_extracted": int((backfill_status or {}).get("symbols_extracted", 0) or 0),
+            "errors": int((backfill_status or {}).get("errors", 0) or 0),
+        } if backfill_status is not None else None,
     }
 
 
@@ -178,6 +239,25 @@ def summarize_trials(trials: List[Dict[str, Any]], *, integrity_scope: str = "fu
         files = [int(r.get("files", 0) or 0) for r in rows]
         symbols = [int(r.get("symbols", 0) or 0) for r in rows]
         relations = [int(r.get("relations", 0) or 0) for r in rows]
+        roots: Dict[str, Dict[str, List[int]]] = {}
+        for row in rows:
+            for item in list(row.get("root_metrics") or []):
+                ws = str(item.get("workspace") or "")
+                if not ws:
+                    continue
+                bucket = roots.setdefault(
+                    ws, {"files": [], "symbols": [], "relations": []}
+                )
+                bucket["files"].append(int(item.get("files", 0) or 0))
+                bucket["symbols"].append(int(item.get("symbols", 0) or 0))
+                bucket["relations"].append(int(item.get("relations", 0) or 0))
+        roots_summary: Dict[str, Dict[str, Any]] = {}
+        for ws, bucket in roots.items():
+            roots_summary[ws] = {
+                "files_set": sorted(set(bucket["files"])),
+                "symbols_set": sorted(set(bucket["symbols"])),
+                "relations_set": sorted(set(bucket["relations"])),
+            }
         return {
             "runs": len(rows),
             "wall_s_median": round(_safe_median(wall), 6),
@@ -189,6 +269,7 @@ def summarize_trials(trials: List[Dict[str, Any]], *, integrity_scope: str = "fu
             "files_set": sorted(set(files)),
             "symbols_set": sorted(set(symbols)),
             "relations_set": sorted(set(relations)),
+            "roots": roots_summary,
         }
 
     a = _mode_summary(grouped["A"])
@@ -228,7 +309,7 @@ def summarize_trials(trials: List[Dict[str, Any]], *, integrity_scope: str = "fu
     }
 
 
-def _render_markdown(summary: Dict[str, Any], *, workspace: Path, repeats: int) -> str:
+def _render_markdown(summary: Dict[str, Any], *, workspaces: List[Path], repeats: int) -> str:
     imp = summary.get("improvement_pct", {})
     gates = summary.get("gates", {})
     a = summary.get("mode_A", {})
@@ -237,7 +318,8 @@ def _render_markdown(summary: Dict[str, Any], *, workspace: Path, repeats: int) 
         [
             "# A/B Initial Indexing Benchmark Report",
             "",
-            f"- Workspace: `{workspace}`",
+            "- Workspaces:",
+            *[f"  - `{ws}`" for ws in workspaces],
             f"- Repeats per mode: `{int(repeats)}`",
             "",
             "## Improvement",
@@ -252,11 +334,13 @@ def _render_markdown(summary: Dict[str, Any], *, workspace: Path, repeats: int) 
             f"- wall median/p95: `{a.get('wall_s_median', 0)}` / `{a.get('wall_s_p95', 0)}`",
             f"- cpu median/p95: `{a.get('cpu_s_median', 0)}` / `{a.get('cpu_s_p95', 0)}`",
             f"- rss median/p95 (KiB): `{a.get('maxrss_kib_median', 0)}` / `{a.get('maxrss_kib_p95', 0)}`",
+            f"- files/symbols/relations sets: `{a.get('files_set', [])}` / `{a.get('symbols_set', [])}` / `{a.get('relations_set', [])}`",
             "",
             "## Mode B",
             f"- wall median/p95: `{b.get('wall_s_median', 0)}` / `{b.get('wall_s_p95', 0)}`",
             f"- cpu median/p95: `{b.get('cpu_s_median', 0)}` / `{b.get('cpu_s_p95', 0)}`",
             f"- rss median/p95 (KiB): `{b.get('maxrss_kib_median', 0)}` / `{b.get('maxrss_kib_p95', 0)}`",
+            f"- files/symbols/relations sets: `{b.get('files_set', [])}` / `{b.get('symbols_set', [])}` / `{b.get('relations_set', [])}`",
             "",
         ]
     )
@@ -264,23 +348,29 @@ def _render_markdown(summary: Dict[str, Any], *, workspace: Path, repeats: int) 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="A/B benchmark for initial indexing.")
-    p.add_argument("--workspace", required=True, help="Workspace path to benchmark.")
+    p.add_argument("--workspace", action="append", required=True, help="Workspace path to benchmark (repeatable).")
     p.add_argument("--repeats", type=int, default=5, help="Repeats per mode (A and B).")
     p.add_argument("--out-dir", default="", help="Output directory for jsonl/json/md.")
     p.add_argument("--mode-a-env", action="append", default=[], help="Mode A env override (KEY=VALUE).")
     p.add_argument("--mode-b-env", action="append", default=[], help="Mode B env override (KEY=VALUE).")
+    p.add_argument(
+        "--mode-b-backfill-full",
+        action="store_true",
+        help="When mode=B, run a second pass with SARI_INDEXER_PHASE_MODE=full and include it in measured time.",
+    )
     p.add_argument("--integrity-scope", default="full", choices=["full", "files"], help="Integrity gate scope.")
     return p.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    workspace = Path(args.workspace).resolve()
-    if not workspace.exists() or not workspace.is_dir():
-        raise SystemExit(f"workspace not found: {workspace}")
+    workspaces = [Path(p).resolve() for p in args.workspace]
+    for workspace in workspaces:
+        if not workspace.exists() or not workspace.is_dir():
+            raise SystemExit(f"workspace not found: {workspace}")
 
     repeats = max(1, int(args.repeats))
-    out_dir = Path(args.out_dir).resolve() if args.out_dir else workspace / ".sari-ab-bench"
+    out_dir = Path(args.out_dir).resolve() if args.out_dir else workspaces[0] / ".sari-ab-bench"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     mode_a_env = _parse_env_overrides(args.mode_a_env)
@@ -296,9 +386,10 @@ def main() -> int:
         row = _run_single_trial(
             mode=mode,
             trial_no=idx,
-            workspace=workspace,
+            workspaces=workspaces,
             out_dir=out_dir,
             env_overrides=envs,
+            mode_b_backfill_full=bool(args.mode_b_backfill_full),
         )
         trials.append(row)
 
@@ -311,7 +402,7 @@ def main() -> int:
     summary_path = out_dir / "summary.json"
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    report = _render_markdown(summary, workspace=workspace, repeats=repeats)
+    report = _render_markdown(summary, workspaces=workspaces, repeats=repeats)
     report_path = out_dir / "report.md"
     report_path.write_text(report, encoding="utf-8")
 

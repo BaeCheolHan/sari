@@ -3,9 +3,12 @@ import logging
 import json
 
 from sari.core.indexer.main import (
+    _apply_incremental_low_impact_caps,
     Indexer,
     _adaptive_flush_threshold,
+    _effective_inflight_limit,
     _scan_to_db,
+    _update_cpu_throttle_state,
     _worker_build_snapshot,
 )
 from sari.core.indexer.worker import compute_hash
@@ -233,6 +236,7 @@ def test_scan_to_db_replaces_outgoing_relations_when_result_has_no_relations(tmp
     file_path.write_text("print('x')\n", encoding="utf-8")
     db = LocalSearchDB(str(tmp_path / "idx.db"))
     cfg = Config(**Config.get_defaults(str(ws)))
+    monkeypatch.setenv("SARI_INDEXER_INITIAL_FASTPATH", "0")
     root_id = WorkspaceManager.root_id(str(ws))
     db.ensure_root(root_id, str(ws))
 
@@ -342,6 +346,7 @@ def test_scan_to_db_flushes_relation_replace_sources_without_relations(tmp_path,
         files.append(p)
     db = LocalSearchDB(str(tmp_path / "idx.db"))
     cfg = Config(**Config.get_defaults(str(ws)))
+    monkeypatch.setenv("SARI_INDEXER_INITIAL_FASTPATH", "0")
     monkeypatch.setenv("SARI_INDEXER_FLUSH_REL_ROWS", "10000")
     monkeypatch.setenv("SARI_INDEXER_FLUSH_REL_REPLACE_ROWS", "2")
 
@@ -393,6 +398,27 @@ def test_adaptive_flush_threshold_contract():
     assert _adaptive_flush_threshold(200, pending_count=4, max_inflight=8, enabled=True) == 200
 
 
+def test_cpu_throttle_state_hysteresis():
+    assert _update_cpu_throttle_state(False, 80.0, high_watermark=70.0, resume_watermark=55.0) is True
+    assert _update_cpu_throttle_state(True, 60.0, high_watermark=70.0, resume_watermark=55.0) is True
+    assert _update_cpu_throttle_state(True, 50.0, high_watermark=70.0, resume_watermark=55.0) is False
+
+
+def test_effective_inflight_limit_contract():
+    assert _effective_inflight_limit(32, 8, throttle_active=False, throttle_workers=2) == 32
+    assert _effective_inflight_limit(32, 8, throttle_active=True, throttle_workers=2) <= 8
+    assert _effective_inflight_limit(4, 8, throttle_active=True, throttle_workers=1) >= 1
+
+
+def test_apply_incremental_low_impact_caps_contract():
+    w, i = _apply_incremental_low_impact_caps(12, 48, incremental_mode=True, enabled=True)
+    assert w <= 4
+    assert i <= 8
+    w2, i2 = _apply_incremental_low_impact_caps(12, 48, incremental_mode=False, enabled=True)
+    assert w2 == 12
+    assert i2 == 48
+
+
 def test_scan_to_db_flushes_files_before_symbols_to_preserve_fk(tmp_path, monkeypatch):
     ws = tmp_path / "ws"
     ws.mkdir()
@@ -425,3 +451,122 @@ def test_scan_to_db_fast_mode_defers_symbols_and_relations(tmp_path, monkeypatch
     assert int(symbols[0]) == 0
     assert int(rels[0]) == 0
     assert int(status.get("symbols_deferred_files", 0) or 0) >= 1
+
+
+def test_scan_to_db_fast_mode_repeat_scan_does_not_duplicate_file_rows(tmp_path, monkeypatch):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "main.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    db = LocalSearchDB(str(tmp_path / "idx.db"))
+    cfg = Config(**Config.get_defaults(str(ws)))
+    monkeypatch.setenv("SARI_INDEXER_PHASE_MODE", "fast")
+
+    _scan_to_db(cfg, db, logging.getLogger("test"))
+    _scan_to_db(cfg, db, logging.getLogger("test"))
+
+    root_id = WorkspaceManager.root_id(str(ws))
+    row = db.execute(
+        "SELECT COUNT(1) FROM files WHERE path = ? AND root_id = ?",
+        (f"{root_id}/main.py", root_id),
+    ).fetchone()
+    assert int(row[0]) == 1
+
+
+def test_scan_to_db_skips_process_pool_on_high_cpu(tmp_path, monkeypatch):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "main.py").write_text("print('x')\n", encoding="utf-8")
+    db = LocalSearchDB(str(tmp_path / "idx.db"))
+    cfg = Config(**Config.get_defaults(str(ws)))
+
+    monkeypatch.setenv("SARI_INDEXER_INITIAL_FASTPATH", "1")
+    monkeypatch.setenv("SARI_INDEXER_INITIAL_PROCESS_POOL", "1")
+    monkeypatch.setenv("SARI_INDEXER_CPU_THROTTLE_ENABLED", "1")
+    monkeypatch.setenv("SARI_INDEXER_CPU_HIGH_WATERMARK", "1")
+    monkeypatch.setenv("SARI_INDEXER_CPU_RESUME_WATERMARK", "0")
+    monkeypatch.setattr("sari.core.indexer.main._read_system_cpu_percent", lambda: 99.0)
+
+    def _must_not_create_process_pool(*_args, **_kwargs):
+        raise AssertionError("process pool should be skipped under high cpu")
+
+    monkeypatch.setattr("concurrent.futures.ProcessPoolExecutor", _must_not_create_process_pool)
+    status = _scan_to_db(cfg, db, logging.getLogger("test"))
+    assert int(status.get("indexed_files", 0) or 0) >= 1
+
+
+def test_scan_to_db_initial_fastpath_skips_file_meta_lookup_when_root_empty(tmp_path, monkeypatch):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "a.py").write_text("print('a')\n", encoding="utf-8")
+    (ws / "b.py").write_text("print('b')\n", encoding="utf-8")
+    db = LocalSearchDB(str(tmp_path / "idx.db"))
+    cfg = Config(**Config.get_defaults(str(ws)))
+    monkeypatch.setenv("SARI_INDEXER_INITIAL_FASTPATH", "1")
+
+    def _fail_meta(_path):
+        raise AssertionError("get_file_meta should be skipped for empty roots in initial fastpath")
+
+    monkeypatch.setattr(db, "get_file_meta", _fail_meta)
+    status = _scan_to_db(cfg, db, logging.getLogger("test"))
+    assert int(status.get("indexed_files", 0) or 0) >= 2
+
+
+def test_scan_to_db_initial_empty_skips_relation_replace_sources(tmp_path, monkeypatch):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "a.py").write_text("print('a')\n", encoding="utf-8")
+    (ws / "b.py").write_text("print('b')\n", encoding="utf-8")
+    db = LocalSearchDB(str(tmp_path / "idx.db"))
+    cfg = Config(**Config.get_defaults(str(ws)))
+    monkeypatch.setenv("SARI_INDEXER_INITIAL_FASTPATH", "1")
+
+    captured_replace_sizes: list[int] = []
+    orig_upsert_rel = db.upsert_relations_tx
+
+    def _capture_rel(cur, rows, replace_sources=None):
+        captured_replace_sizes.append(len(list(replace_sources or [])))
+        return orig_upsert_rel(cur, rows, replace_sources=replace_sources)
+
+    monkeypatch.setattr(db, "upsert_relations_tx", _capture_rel)
+    _scan_to_db(cfg, db, logging.getLogger("test"))
+    assert captured_replace_sizes
+    assert max(captured_replace_sizes) == 0
+
+
+def test_scan_to_db_defer_turbo_stats_updates_during_flush(tmp_path, monkeypatch):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    for i in range(8):
+        (ws / f"f{i}.py").write_text(f"print({i})\n", encoding="utf-8")
+    db = LocalSearchDB(str(tmp_path / "idx.db"))
+    cfg = Config(**Config.get_defaults(str(ws)))
+    monkeypatch.setenv("SARI_INDEXER_FLUSH_FILE_ROWS", "1")
+
+    calls = {"update_stats": 0}
+    orig_update_stats = db.update_stats
+
+    def _count_update_stats():
+        calls["update_stats"] += 1
+        return orig_update_stats()
+
+    monkeypatch.setattr(db, "update_stats", _count_update_stats)
+    _scan_to_db(cfg, db, logging.getLogger("test"))
+    # Consolidated update should happen near scan tail, not on every flush.
+    assert calls["update_stats"] <= 2
+
+
+def test_scan_to_db_process_pool_fallback_to_thread_pool(tmp_path, monkeypatch):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "a.py").write_text("print('a')\n", encoding="utf-8")
+    db = LocalSearchDB(str(tmp_path / "idx.db"))
+    cfg = Config(**Config.get_defaults(str(ws)))
+    monkeypatch.setenv("SARI_INDEXER_INITIAL_FASTPATH", "1")
+    monkeypatch.setenv("SARI_INDEXER_INITIAL_PROCESS_POOL", "1")
+
+    def _raise_perm(*args, **kwargs):
+        raise PermissionError("process pool blocked")
+
+    monkeypatch.setattr("concurrent.futures.ProcessPoolExecutor", _raise_perm)
+    status = _scan_to_db(cfg, db, logging.getLogger("test"))
+    assert int(status.get("indexed_files", 0) or 0) >= 1

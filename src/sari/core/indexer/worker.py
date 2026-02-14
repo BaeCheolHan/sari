@@ -5,6 +5,7 @@ import threading
 from collections import OrderedDict
 from pathlib import Path
 from typing import Optional
+from sari.core.config.main import Config
 from sari.core.settings import settings
 from sari.core.parsers.factory import ParserFactory
 from sari.core.parsers.ast_engine import ASTEngine
@@ -13,6 +14,50 @@ import hashlib
 import zlib
 from sari.core.utils import _redact, _normalize_engine_text
 from sari.core.models import IndexingResult
+
+
+class _NoopDB:
+    def get_file_meta(self, _path: str):
+        return None
+
+
+class _SimpleStat:
+    __slots__ = ("st_mtime", "st_size")
+
+    def __init__(self, st_mtime: int, st_size: int):
+        self.st_mtime = int(st_mtime)
+        self.st_size = int(st_size)
+
+
+_PROCESS_WORKER: Optional["IndexWorker"] = None
+
+
+def init_process_worker(cfg_dict: dict[str, object]) -> None:
+    global _PROCESS_WORKER
+    _PROCESS_WORKER = IndexWorker(Config(**cfg_dict), _NoopDB(), None, None)
+
+
+def process_file_task_in_process(
+    payload: tuple[str, str, int, int, int, float, str, bool],
+) -> Optional[dict[str, object]]:
+    global _PROCESS_WORKER
+    if _PROCESS_WORKER is None:
+        raise RuntimeError("process worker is not initialized")
+    root_str, file_str, mtime, size, scan_ts, now, root_id, extract_symbols = payload
+    res = _PROCESS_WORKER.process_file_task(
+        Path(root_str),
+        Path(file_str),
+        _SimpleStat(mtime, size),
+        int(scan_ts),
+        float(now),
+        True,
+        root_id=str(root_id or "root"),
+        skip_prev_lookup=True,
+        extract_symbols=bool(extract_symbols),
+    )
+    if not res:
+        return None
+    return res.model_dump(mode="python")
 
 
 def compute_hash(content: str) -> str:
@@ -112,13 +157,14 @@ class IndexWorker:
             excluded: bool,
             root_id: Optional[str] = None,
             force: bool = False,
+            skip_prev_lookup: bool = False,
             extract_symbols: bool = True) -> Optional[IndexingResult]:
         try:
             db_path = self._encode_db_path(root, file_path, root_id=root_id)
             rel_to_root = PathUtils.to_relative(str(file_path), str(root))
 
             # 1. Delta Check (Metadata)
-            prev = self.db.get_file_meta(db_path)
+            prev = None if skip_prev_lookup else self.db.get_file_meta(db_path)
             if not force and prev and int(
                 st.st_mtime) == int(
                 prev[0]) and int(
@@ -290,6 +336,31 @@ class IndexWorker:
                         root_git = proc.stdout.strip() if proc.returncode == 0 else None
                         self._root_probe_set(root_key, root_git)
                     git_root = root_git
+
+                    # Root-level cached git root can be stale/wrong for
+                    # multi-repo workspaces. If it does not contain this file,
+                    # probe from the file parent once to resolve correctly.
+                    if git_root:
+                        try:
+                            Path(file_path.resolve()).relative_to(
+                                Path(git_root).resolve())
+                        except Exception:
+                            proc = subprocess.run(
+                                [
+                                    "git",
+                                    "-C",
+                                    parent,
+                                    "rev-parse",
+                                    "--show-toplevel",
+                                ],
+                                capture_output=True,
+                                text=True,
+                                check=False,
+                                timeout=0.5,
+                            )
+                            scoped_git = proc.stdout.strip() if proc.returncode == 0 else None
+                            if scoped_git:
+                                git_root = scoped_git
             except Exception:
                 git_root = None
             self._git_cache_set(parent, git_root)
