@@ -7,6 +7,8 @@ from sari.core.indexer.main import (
     Indexer,
     _adaptive_flush_threshold,
     _effective_inflight_limit,
+    _maybe_raise_initial_flush_threshold,
+    _maybe_raise_initial_max_buffer_bytes,
     _scan_to_db,
     _update_cpu_throttle_state,
     _worker_build_snapshot,
@@ -516,6 +518,61 @@ def test_apply_incremental_low_impact_caps_contract():
     w2, i2 = _apply_incremental_low_impact_caps(12, 48, incremental_mode=False, enabled=True)
     assert w2 == 12
     assert i2 == 48
+
+
+def test_maybe_raise_initial_flush_threshold_contract(monkeypatch):
+    monkeypatch.delenv("SARI_INDEXER_FLUSH_FILE_ROWS", raising=False)
+    raised = _maybe_raise_initial_flush_threshold(
+        key="SARI_INDEXER_FLUSH_FILE_ROWS",
+        current=200,
+        initial_all_empty=True,
+        multiplier=3,
+        minimum=600,
+    )
+    assert raised == 600
+    monkeypatch.setenv("SARI_INDEXER_FLUSH_FILE_ROWS", "200")
+    preserved = _maybe_raise_initial_flush_threshold(
+        key="SARI_INDEXER_FLUSH_FILE_ROWS",
+        current=200,
+        initial_all_empty=True,
+        multiplier=3,
+        minimum=600,
+    )
+    assert preserved == 200
+
+
+def test_maybe_raise_initial_max_buffer_bytes_contract(monkeypatch):
+    monkeypatch.delenv("SARI_INDEXER_MAX_BUFFER_MB", raising=False)
+    raised = _maybe_raise_initial_max_buffer_bytes(
+        current=64 * 1024 * 1024,
+        initial_all_empty=True,
+        minimum_bytes=128 * 1024 * 1024,
+    )
+    assert raised == 128 * 1024 * 1024
+    monkeypatch.setenv("SARI_INDEXER_MAX_BUFFER_MB", "64")
+    preserved = _maybe_raise_initial_max_buffer_bytes(
+        current=64 * 1024 * 1024,
+        initial_all_empty=True,
+        minimum_bytes=128 * 1024 * 1024,
+    )
+    assert preserved == 64 * 1024 * 1024
+
+
+def test_scan_to_db_skips_cleanup_when_all_roots_initially_empty(tmp_path, monkeypatch):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "main.py").write_text("print('x')\n", encoding="utf-8")
+    db = LocalSearchDB(str(tmp_path / "idx.db"))
+    cfg = Config(**Config.get_defaults(str(ws)))
+    calls = {"cleanup": 0}
+
+    def _count_cleanup(*args, **kwargs):
+        calls["cleanup"] += 1
+        return None
+
+    monkeypatch.setattr("sari.core.indexer.main._cleanup_deleted_paths", _count_cleanup)
+    _scan_to_db(cfg, db, logging.getLogger("test"))
+    assert calls["cleanup"] == 0
 
 
 def test_scan_to_db_flushes_files_before_symbols_to_preserve_fk(tmp_path, monkeypatch):

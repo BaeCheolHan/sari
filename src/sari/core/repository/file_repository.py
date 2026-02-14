@@ -113,9 +113,23 @@ class FileRepository(BaseRepository):
             ts: int) -> None:
         if not paths:
             return
+        unique_paths = list(dict.fromkeys(str(p) for p in paths if p))
+        if not unique_paths:
+            return
+        # Batch update via temp table to reduce per-row UPDATE overhead.
+        cur.execute(
+            "CREATE TEMP TABLE IF NOT EXISTS temp_seen_paths(path TEXT PRIMARY KEY) WITHOUT ROWID"
+        )
+        cur.execute("DELETE FROM temp_seen_paths")
         cur.executemany(
-            "UPDATE files SET last_seen_ts = ? WHERE path = ?", [
-                (ts, p) for p in paths])
+            "INSERT OR IGNORE INTO temp_seen_paths(path) VALUES (?)",
+            [(p,) for p in unique_paths],
+        )
+        cur.execute(
+            "UPDATE files SET last_seen_ts = ? WHERE path IN (SELECT path FROM temp_seen_paths)",
+            (int(ts),),
+        )
+        cur.execute("DELETE FROM temp_seen_paths")
 
     def get_file_meta(self, path: str) -> Optional[Tuple[int, int, str]]:
         """특정 경로 파일의 mtime, 크기, 그리고 메타데이터에 저장된 내용 해시값을 반환합니다."""

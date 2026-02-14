@@ -210,6 +210,34 @@ def _apply_incremental_low_impact_caps(
     return workers, inflight
 
 
+def _maybe_raise_initial_flush_threshold(
+    *,
+    key: str,
+    current: int,
+    initial_all_empty: bool,
+    multiplier: int,
+    minimum: int,
+) -> int:
+    if not initial_all_empty:
+        return max(1, int(current or 1))
+    if key in os.environ:
+        return max(1, int(current or 1))
+    return max(int(minimum), int(current or 1) * int(multiplier))
+
+
+def _maybe_raise_initial_max_buffer_bytes(
+    *,
+    current: int,
+    initial_all_empty: bool,
+    minimum_bytes: int,
+) -> int:
+    if not initial_all_empty:
+        return max(1, int(current or 1))
+    if "SARI_INDEXER_MAX_BUFFER_MB" in os.environ:
+        return max(1, int(current or 1))
+    return max(int(minimum_bytes), int(current or 1))
+
+
 def _scan_to_db(config: Config, db: LocalSearchDB,
                 logger: logging.Logger,
                 parent_pid: Optional[int] = None,
@@ -321,6 +349,9 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
     ).strip().lower() in {"1", "true", "yes", "on"}
     combined_symbol_rel_tx_enabled = str(
         os.environ.get("SARI_INDEXER_COMBINED_SYMBOL_REL_TX", "1")
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    initial_flush_tuning_enabled = str(
+        os.environ.get("SARI_INDEXER_INITIAL_FLUSH_TUNING", "0")
     ).strip().lower() in {"1", "true", "yes", "on"}
     cpu_throttle_enabled = str(
         os.environ.get("SARI_INDEXER_CPU_THROTTLE_ENABLED", "1")
@@ -450,6 +481,48 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
         initial_all_empty = bool(root_initial_empty) and all(
             bool(v) for v in root_initial_empty.values()
         )
+        if initial_flush_tuning_enabled:
+            # Experimental initial flush tuning (opt-in only).
+            flush_file_rows = _maybe_raise_initial_flush_threshold(
+                key="SARI_INDEXER_FLUSH_FILE_ROWS",
+                current=flush_file_rows,
+                initial_all_empty=initial_all_empty,
+                multiplier=3,
+                minimum=600,
+            )
+            flush_seen_rows = _maybe_raise_initial_flush_threshold(
+                key="SARI_INDEXER_FLUSH_SEEN_ROWS",
+                current=flush_seen_rows,
+                initial_all_empty=initial_all_empty,
+                multiplier=8,
+                minimum=8000,
+            )
+            flush_symbol_rows = _maybe_raise_initial_flush_threshold(
+                key="SARI_INDEXER_FLUSH_SYMBOL_ROWS",
+                current=flush_symbol_rows,
+                initial_all_empty=initial_all_empty,
+                multiplier=2,
+                minimum=4000,
+            )
+            flush_rel_rows = _maybe_raise_initial_flush_threshold(
+                key="SARI_INDEXER_FLUSH_REL_ROWS",
+                current=flush_rel_rows,
+                initial_all_empty=initial_all_empty,
+                multiplier=2,
+                minimum=8000,
+            )
+            flush_rel_replace_rows = _maybe_raise_initial_flush_threshold(
+                key="SARI_INDEXER_FLUSH_REL_REPLACE_ROWS",
+                current=flush_rel_replace_rows,
+                initial_all_empty=initial_all_empty,
+                multiplier=2,
+                minimum=4000,
+            )
+            max_buffer_bytes = _maybe_raise_initial_max_buffer_bytes(
+                current=max_buffer_bytes,
+                initial_all_empty=initial_all_empty,
+                minimum_bytes=128 * 1024 * 1024,
+            )
         split_value_payload = bool(value_index_split_enabled and initial_all_empty and not force_reparse_enabled)
         max_workers, max_inflight = _apply_incremental_low_impact_caps(
             max_workers,
@@ -869,7 +942,7 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
                 except Exception:
                     continue
             scanned_root_ids = [rid for rid in scanned_root_ids if rid]
-            if scanned_root_ids:
+            if scanned_root_ids and not initial_all_empty:
                 t0 = time.perf_counter()
                 _cleanup_deleted_paths(
                     db,

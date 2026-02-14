@@ -105,6 +105,25 @@ def test_upsert_symbols_and_relations_tx_commits_both_sets(db):
     assert int(sym[0]) == 1
     assert int(rel[0]) == 1
 
+
+def test_update_last_seen_tx_bulk_updates_all_rows(db):
+    db.upsert_root("root1", "/tmp/root1", "/tmp/root1")
+    rows = [
+        ("root1/a.py", "a.py", "root1", "repo1", 1, 10, b"x", "h1", "x", 1, 0, "ok", "", "ok", "", "ok", "", 0, 0, "{}"),
+        ("root1/b.py", "b.py", "root1", "repo1", 1, 10, b"x", "h2", "x", 1, 0, "ok", "", "ok", "", "ok", "", 0, 0, "{}"),
+    ]
+    db.upsert_files_turbo(rows)
+    db.finalize_turbo_batch()
+    db.update_last_seen_tx(None, ["root1/a.py", "root1/b.py", "root1/a.py"], 777)
+
+    out = db.execute(
+        "SELECT path, last_seen_ts FROM files WHERE path IN (?, ?) ORDER BY path",
+        ("root1/a.py", "root1/b.py"),
+    ).fetchall()
+    assert len(out) == 2
+    assert int(out[0][1]) == 777
+    assert int(out[1][1]) == 777
+
 def test_db_intelligent_read_compressed(db):
     """
     Verify that read_file handles compressed data automatically.
