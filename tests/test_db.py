@@ -28,6 +28,39 @@ def test_db_turbo_ingestion_and_search(db):
     assert len(results) == 1
     assert results[0]["path"] == "p1"
 
+
+def test_finalize_turbo_batch_invokes_wal_checkpoint_hook(db, monkeypatch):
+    db.upsert_root("root1", "/tmp/root1", "/tmp/root1")
+    row = ("p1", "rel1", "root1", "repo1", 100, 50, b"content1", "h1", "fts", 200, 0, "ok", "", "ok", "", 0, 0, 0, 50, "{}")
+    db.upsert_files_turbo([row])
+
+    calls = {"n": 0}
+
+    def _count_checkpoint(force=False):
+        calls["n"] += 1
+        return False
+
+    monkeypatch.setattr(db, "maybe_checkpoint_wal", _count_checkpoint)
+    db.finalize_turbo_batch()
+    assert calls["n"] >= 1
+
+
+def test_maybe_checkpoint_wal_force_executes_passive(db, monkeypatch):
+    db._wal_idle_checkpoint_enabled = True
+    monkeypatch.setattr("os.path.getsize", lambda _p: 1024 * 1024 * 64)
+    seen = {"checkpoint": 0}
+
+    class _FakeConn:
+        def execute(self, sql, *args, **kwargs):
+            if "wal_checkpoint(PASSIVE)" in str(sql):
+                seen["checkpoint"] += 1
+            return []
+
+    monkeypatch.setattr(db.db, "connection", lambda: _FakeConn())
+    ok = db.maybe_checkpoint_wal(force=True)
+    assert ok is True
+    assert seen["checkpoint"] >= 1
+
 def test_db_intelligent_read_compressed(db):
     """
     Verify that read_file handles compressed data automatically.

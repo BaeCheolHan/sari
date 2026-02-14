@@ -134,6 +134,22 @@ class FileRepository(BaseRepository):
         except Exception:
             return None
 
+    def is_payload_deferred(self, path: str) -> bool:
+        try:
+            row = self.execute(
+                "SELECT metadata_json FROM files WHERE path = ? LIMIT 1",
+                (path,),
+            ).fetchone()
+            if not row:
+                return False
+            meta_raw = row["metadata_json"] if hasattr(row, "keys") else row[0]
+            if not meta_raw:
+                return False
+            meta = json.loads(meta_raw)
+            return bool(meta.get("deferred_payload", False))
+        except Exception:
+            return False
+
     def get_unseen_paths(self, ts: int) -> list[str]:
         rows = self.execute(
             "SELECT path FROM files WHERE last_seen_ts < ?", (ts,)).fetchall()

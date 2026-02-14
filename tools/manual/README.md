@@ -33,8 +33,12 @@ For `benchmark_ab_indexing.py`:
 - `SARI_SCANNER_BACKEND=python` (default)
 - `SARI_SCANNER_BACKEND=rust` (optional sidecar scanner)
 - `SARI_INDEXER_INITIAL_FASTPATH=1` (default): skip per-file DB metadata lookup on empty roots
-- `SARI_INDEXER_INITIAL_PROCESS_POOL=1` (default): use process pool for initial indexing when available
+- `SARI_INDEXER_INITIAL_PROCESS_POOL=0` (default, opt-in): use process pool for initial indexing
+  - Experimental path: environment/permission dependent, deterministic performance is **not guaranteed**.
   - If process pool is unavailable (restricted env/sandbox), indexer auto-falls back to thread pool.
+- `SARI_INDEXER_VALUE_INDEX_SPLIT=0` (opt-in): initial pass stores light metadata/symbol/relation first,
+  defers heavy file payload(content/fts) and backfills on next scan.
+- `SARI_WAL_IDLE_CHECKPOINT=1` (default): disable auto-checkpoint and run PASSIVE checkpoint only when idle.
 - Laptop-friendly defaults (override when needed):
   - `SARI_INDEXER_RESERVE_CORES=2` (leave headroom for UI)
   - `SARI_INDEXER_MAX_WORKERS_CAP=8` (prevent extreme fan/noise spikes)

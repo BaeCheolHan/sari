@@ -21,6 +21,10 @@ from .schema import init_schema
 from ..utils.path import PathUtils
 
 logger = logging.getLogger("sari.db")
+try:
+    import psutil as _psutil  # type: ignore
+except Exception:
+    _psutil = None
 
 
 class LocalSearchDB:
@@ -48,6 +52,32 @@ class LocalSearchDB:
         self._lock = threading.Lock()
         self._writer_thread_id: Optional[int] = None
         self._turbo_update_stats_enabled = True
+        self._wal_idle_checkpoint_enabled = str(
+            os.environ.get("SARI_WAL_IDLE_CHECKPOINT", "1")
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        self._last_wal_checkpoint_ts = 0.0
+        try:
+            self._wal_checkpoint_min_interval_sec = max(
+                0.5,
+                float(os.environ.get("SARI_WAL_CHECKPOINT_MIN_INTERVAL_SEC", "2.0") or 2.0),
+            )
+        except Exception:
+            self._wal_checkpoint_min_interval_sec = 2.0
+        try:
+            self._wal_checkpoint_min_pages = max(
+                128,
+                int(os.environ.get("SARI_WAL_CHECKPOINT_MIN_PAGES", "2048") or 2048),
+            )
+        except Exception:
+            self._wal_checkpoint_min_pages = 2048
+        try:
+            self._wal_idle_cpu_threshold = max(
+                1.0,
+                float(os.environ.get("SARI_WAL_IDLE_CPU_THRESHOLD", "45.0") or 45.0),
+            )
+        except Exception:
+            self._wal_idle_cpu_threshold = 45.0
+        self._sqlite_page_size = 4096
         try:
             # SQLite 최적화 설정
             self.db = SqliteDatabase(db_path, pragmas={
@@ -64,12 +94,60 @@ class LocalSearchDB:
             self.db.connect()
             init_schema(self.db.connection())
             self._init_mem_staging()
+            self._configure_wal_checkpoint_policy()
         except Exception as e:
             self.logger.error(
                 "Failed to initialize database: %s",
                 e,
                 exc_info=True)
             raise
+
+    def _configure_wal_checkpoint_policy(self) -> None:
+        conn = self.db.connection()
+        try:
+            page_size_row = conn.execute("PRAGMA page_size").fetchone()
+            if page_size_row:
+                self._sqlite_page_size = int(page_size_row[0] or 4096)
+        except Exception:
+            self._sqlite_page_size = 4096
+        if not self._wal_idle_checkpoint_enabled:
+            return
+        try:
+            conn.execute("PRAGMA wal_autocheckpoint=0")
+        except Exception:
+            self.logger.debug("failed to disable wal_autocheckpoint", exc_info=True)
+
+    def maybe_checkpoint_wal(self, *, force: bool = False) -> bool:
+        if not self._wal_idle_checkpoint_enabled:
+            return False
+        conn = self.db.connection()
+        now = time.time()
+        if not force and (now - float(self._last_wal_checkpoint_ts or 0.0)) < float(
+            self._wal_checkpoint_min_interval_sec
+        ):
+            return False
+        wal_path = f"{self.db_path}-wal"
+        try:
+            wal_bytes = int(os.path.getsize(wal_path))
+        except Exception:
+            wal_bytes = 0
+        min_bytes = int(self._wal_checkpoint_min_pages) * int(self._sqlite_page_size or 4096)
+        if not force and wal_bytes < min_bytes:
+            return False
+        if not force and _psutil is not None:
+            try:
+                cpu = float(_psutil.cpu_percent(interval=None))
+                if cpu > float(self._wal_idle_cpu_threshold):
+                    return False
+            except Exception:
+                pass
+        try:
+            conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            self._last_wal_checkpoint_ts = now
+            return True
+        except Exception:
+            self.logger.debug("wal passive checkpoint failed", exc_info=True)
+            return False
 
     def set_settings(self, settings_obj: object) -> None:
         """
@@ -244,6 +322,7 @@ class LocalSearchDB:
                     conn.execute("COMMIT")
                 if bool(getattr(self, "_turbo_update_stats_enabled", True)):
                     self.update_stats()
+                self.maybe_checkpoint_wal(force=False)
             except Exception as te:
                 self.logger.error(
                     "Database merge failed: %s", te, exc_info=True)
@@ -398,6 +477,12 @@ class LocalSearchDB:
         except Exception as e:
             self.logger.debug("Failed to get file meta for %s: %s", path, e)
             return None
+
+    def is_payload_deferred(self, path: str) -> bool:
+        try:
+            return bool(self._file_repo().is_payload_deferred(self._resolve_db_path(path)))
+        except Exception:
+            return False
 
     def upsert_symbols_tx(self, cur, rows: List[object], root_id: str = "root"):
         """심볼 정보를 트랜잭션 내에서 일괄 삽입합니다."""

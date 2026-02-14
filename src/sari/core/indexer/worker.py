@@ -19,6 +19,8 @@ from sari.core.models import IndexingResult
 class _NoopDB:
     def get_file_meta(self, _path: str):
         return None
+    def is_payload_deferred(self, _path: str) -> bool:
+        return False
 
 
 class _SimpleStat:
@@ -38,12 +40,12 @@ def init_process_worker(cfg_dict: dict[str, object]) -> None:
 
 
 def process_file_task_in_process(
-    payload: tuple[str, str, int, int, int, float, str, bool],
+    payload: tuple[str, str, int, int, int, float, str, bool, bool],
 ) -> Optional[dict[str, object]]:
     global _PROCESS_WORKER
     if _PROCESS_WORKER is None:
         raise RuntimeError("process worker is not initialized")
-    root_str, file_str, mtime, size, scan_ts, now, root_id, extract_symbols = payload
+    root_str, file_str, mtime, size, scan_ts, now, root_id, extract_symbols, split_value_payload = payload
     res = _PROCESS_WORKER.process_file_task(
         Path(root_str),
         Path(file_str),
@@ -54,6 +56,7 @@ def process_file_task_in_process(
         root_id=str(root_id or "root"),
         skip_prev_lookup=True,
         extract_symbols=bool(extract_symbols),
+        split_value_payload=bool(split_value_payload),
     )
     if not res:
         return None
@@ -158,24 +161,31 @@ class IndexWorker:
             root_id: Optional[str] = None,
             force: bool = False,
             skip_prev_lookup: bool = False,
-            extract_symbols: bool = True) -> Optional[IndexingResult]:
+            extract_symbols: bool = True,
+            split_value_payload: bool = False) -> Optional[IndexingResult]:
         try:
             db_path = self._encode_db_path(root, file_path, root_id=root_id)
             rel_to_root = PathUtils.to_relative(str(file_path), str(root))
 
             # 1. Delta Check (Metadata)
             prev = None if skip_prev_lookup else self.db.get_file_meta(db_path)
+            deferred_payload = False
+            if not force and prev:
+                try:
+                    deferred_payload = bool(self.db.is_payload_deferred(db_path))
+                except Exception:
+                    deferred_payload = False
             if not force and prev and int(
                 st.st_mtime) == int(
                 prev[0]) and int(
                 st.st_size) == int(
-                    prev[1]):
+                    prev[1]) and not deferred_payload:
                 return IndexingResult(
                     type="unchanged", path=str(file_path), rel=db_path)
 
             # 2. Fast Signature Check
             size = st.st_size
-            if not force and prev and size == int(prev[1]):
+            if not force and prev and size == int(prev[1]) and not deferred_payload:
                 sig = compute_fast_signature(file_path, size)
                 if sig and sig == prev[2]:
                     return IndexingResult(
@@ -202,7 +212,7 @@ class IndexWorker:
                     root_id=root_id)
 
             current_hash = compute_hash(content)
-            if prev and prev[2] == current_hash:
+            if prev and prev[2] == current_hash and not deferred_payload:
                 return IndexingResult(
                     type="unchanged", path=str(file_path), rel=db_path)
 
@@ -212,7 +222,7 @@ class IndexWorker:
                 content = _redact(content)
 
             # 4. FTS and AST Processing
-            enable_fts = self.settings.get_bool("ENABLE_FTS", True)
+            enable_fts = self.settings.get_bool("ENABLE_FTS", True) and not split_value_payload
             normalized = _normalize_engine_text(analysis_content) if enable_fts else ""
             fts_content = normalized[:self.settings.get_int(
                 "FTS_MAX_BYTES", 1000000)] if normalized else ""
@@ -235,9 +245,13 @@ class IndexWorker:
                         ast_status, ast_reason = "failed", "parse_error"
 
             # 5. Storage & Result Assembly
-            store_content = getattr(self.cfg, "store_content", True)
+            store_content = getattr(self.cfg, "store_content", True) and not split_value_payload
             stored_content = content if store_content else ""
-            metadata = {"stored": store_content}
+            metadata = {
+                "stored": store_content,
+                "content_hash": current_hash,
+                "deferred_payload": bool(split_value_payload),
+            }
 
             if store_content and self.settings.STORE_CONTENT_COMPRESS:
                 raw_bytes = stored_content.encode("utf-8", errors="ignore")

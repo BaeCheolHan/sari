@@ -232,11 +232,14 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
     }
     worker = IndexWorker(config, db, logger, None)
     try:
-        _worker_accepts_skip_prev_lookup = "skip_prev_lookup" in inspect.signature(
-            worker.process_file_task
-        ).parameters
+        _worker_sig_params = inspect.signature(worker.process_file_task).parameters
+        _worker_accepts_skip_prev_lookup = "skip_prev_lookup" in _worker_sig_params
+        _worker_accepts_split_value_payload = "split_value_payload" in _worker_sig_params
+        _worker_accepts_force = "force" in _worker_sig_params
     except Exception:
         _worker_accepts_skip_prev_lookup = True
+        _worker_accepts_split_value_payload = True
+        _worker_accepts_force = True
     prev_turbo_update_stats_enabled = True
     if hasattr(db, "set_turbo_update_stats_enabled"):
         try:
@@ -299,6 +302,9 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
     ).strip().lower() in {"1", "true", "yes", "on"}
     initial_fastpath_enabled = str(
         os.environ.get("SARI_INDEXER_INITIAL_FASTPATH", "1")
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    value_index_split_enabled = str(
+        os.environ.get("SARI_INDEXER_VALUE_INDEX_SPLIT", "0")
     ).strip().lower() in {"1", "true", "yes", "on"}
     cpu_throttle_enabled = str(
         os.environ.get("SARI_INDEXER_CPU_THROTTLE_ENABLED", "1")
@@ -428,6 +434,7 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
         initial_all_empty = bool(root_initial_empty) and all(
             bool(v) for v in root_initial_empty.values()
         )
+        split_value_payload = bool(value_index_split_enabled and initial_all_empty and not force_reparse_enabled)
         max_workers, max_inflight = _apply_incremental_low_impact_caps(
             max_workers,
             max_inflight,
@@ -438,8 +445,11 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
         global _PROCESS_POOL_ALLOWED
         if initial_fastpath_enabled and root_initial_empty:
             try:
+                # ProcessPool path is intentionally opt-in only.
+                # It is environment/permission dependent and performance is not
+                # guaranteed to be stable across platforms. Use with caution.
                 process_pool_enabled = str(
-                    os.environ.get("SARI_INDEXER_INITIAL_PROCESS_POOL", "1")
+                    os.environ.get("SARI_INDEXER_INITIAL_PROCESS_POOL", "0")
                 ).strip().lower() in {"1", "true", "yes", "on"}
             except Exception:
                 process_pool_enabled = False
@@ -455,6 +465,10 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
                     use_process_pool = False
             if _PROCESS_POOL_ALLOWED is False:
                 use_process_pool = False
+            if process_pool_enabled and logger:
+                logger.warning(
+                    "initial process pool is experimental and environment-dependent; deterministic performance is not guaranteed"
+                )
         if use_process_pool:
             cfg_payload = config.model_dump(mode="python") if hasattr(config, "model_dump") else dict(config.__dict__)
             try:
@@ -683,6 +697,38 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
             for fut in done:
                 _consume_future_result(fut)
 
+        def _submit_worker_task(
+            root: Path,
+            path: Path,
+            st: object,
+            rid: str,
+            *,
+            force: bool,
+            skip_prev_lookup: bool,
+            extract_symbols: bool,
+            split_value_payload_flag: bool,
+        ) -> concurrent.futures.Future:
+            kwargs: dict[str, object] = {
+                "root_id": rid,
+                "extract_symbols": extract_symbols,
+            }
+            if force and _worker_accepts_force:
+                kwargs["force"] = True
+            if _worker_accepts_skip_prev_lookup:
+                kwargs["skip_prev_lookup"] = skip_prev_lookup
+            if _worker_accepts_split_value_payload:
+                kwargs["split_value_payload"] = split_value_payload_flag
+            return executor.submit(
+                worker.process_file_task,
+                root,
+                path,
+                st,
+                now,
+                st.st_mtime,
+                True,
+                **kwargs,
+            )
+
         for root, path, rid, st in _get_files_generator():
             _ensure_parent_alive()
             if cpu_throttle_enabled:
@@ -718,74 +764,42 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
                             float(getattr(st, "st_mtime", 0.0) or 0.0),
                             str(rid),
                             bool(extract_symbols_enabled),
+                            bool(split_value_payload),
                         ),
                     )
                 elif force_reparse_enabled:
-                    if _worker_accepts_skip_prev_lookup:
-                        fut = executor.submit(
-                            worker.process_file_task,
-                            root,
-                            path,
-                            st,
-                            now,
-                            st.st_mtime,
-                            True,
-                            root_id=rid,
-                            force=True,
-                            skip_prev_lookup=skip_prev_lookup,
-                            extract_symbols=extract_symbols_enabled,
-                        )
-                    else:
-                        fut = executor.submit(
-                            worker.process_file_task,
-                            root,
-                            path,
-                            st,
-                            now,
-                            st.st_mtime,
-                            True,
-                            root_id=rid,
-                            force=True,
-                            extract_symbols=extract_symbols_enabled,
-                        )
+                    fut = _submit_worker_task(
+                        root,
+                        path,
+                        st,
+                        rid,
+                        force=True,
+                        skip_prev_lookup=skip_prev_lookup,
+                        extract_symbols=extract_symbols_enabled,
+                        split_value_payload_flag=False,
+                    )
                 else:
                     if skip_prev_lookup:
-                        if _worker_accepts_skip_prev_lookup:
-                            fut = executor.submit(
-                                worker.process_file_task,
-                                root,
-                                path,
-                                st,
-                                now,
-                                st.st_mtime,
-                                True,
-                                root_id=rid,
-                                skip_prev_lookup=True,
-                                extract_symbols=extract_symbols_enabled,
-                            )
-                        else:
-                            fut = executor.submit(
-                                worker.process_file_task,
-                                root,
-                                path,
-                                st,
-                                now,
-                                st.st_mtime,
-                                True,
-                                root_id=rid,
-                                extract_symbols=extract_symbols_enabled,
-                            )
-                    else:
-                        fut = executor.submit(
-                            worker.process_file_task,
+                        fut = _submit_worker_task(
                             root,
                             path,
                             st,
-                            now,
-                            st.st_mtime,
-                            True,
-                            root_id=rid,
+                            rid,
+                            force=False,
+                            skip_prev_lookup=True,
                             extract_symbols=extract_symbols_enabled,
+                            split_value_payload_flag=split_value_payload,
+                        )
+                    else:
+                        fut = _submit_worker_task(
+                            root,
+                            path,
+                            st,
+                            rid,
+                            force=False,
+                            skip_prev_lookup=False,
+                            extract_symbols=extract_symbols_enabled,
+                            split_value_payload_flag=split_value_payload,
                         )
                 pending.add(fut)
                 effective_inflight = _effective_inflight_limit(
