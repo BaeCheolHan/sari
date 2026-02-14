@@ -73,6 +73,21 @@ def _patch_env(overrides: Dict[str, str]) -> Iterator[None]:
                 os.environ[k] = prev
 
 
+def _get_rss_kib_current() -> int:
+    try:
+        import psutil  # type: ignore
+
+        return int(psutil.Process(os.getpid()).memory_info().rss // 1024)
+    except Exception:
+        pass
+    try:
+        import resource
+
+        return int(getattr(resource.getrusage(resource.RUSAGE_SELF), "ru_maxrss", 0) or 0)
+    except Exception:
+        return 0
+
+
 def _get_maxrss_kib() -> int:
     try:
         import resource
@@ -107,12 +122,12 @@ def _run_single_trial(
 
     start_wall = time.perf_counter()
     start_cpu = time.process_time()
-    start_rss = _get_maxrss_kib()
+    start_rss = _get_rss_kib_current()
     with _patch_env(env_overrides):
         status = _scan_to_db(cfg, db, logger)
     wall_s = time.perf_counter() - start_wall
     cpu_s = time.process_time() - start_cpu
-    end_rss = _get_maxrss_kib()
+    end_rss = _get_rss_kib_current()
 
     files = int(
         db.execute("SELECT COUNT(1) FROM files WHERE deleted_ts = 0 AND root_id = ?", (root_id,)).fetchone()[0]

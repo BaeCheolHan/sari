@@ -292,11 +292,26 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
             flush_state["symbol_rows"] = int(symbol_rows_threshold)
             flush_state["rel_rows"] = int(rel_rows_threshold)
             flush_state["rel_replace_rows"] = int(rel_replace_threshold)
+            files_flushed = False
             if file_rows and (force or len(file_rows) >= file_rows_threshold):
                 rows = list(file_rows)
                 file_rows.clear()
                 db.upsert_files_turbo(rows)
                 db.finalize_turbo_batch()
+                files_flushed = True
+            # Symbols reference files(path) via FK; when symbol flush is due,
+            # ensure pending file rows are committed first.
+            if (
+                file_rows
+                and not files_flushed
+                and all_symbols
+                and (force or len(all_symbols) >= symbol_rows_threshold)
+            ):
+                rows = list(file_rows)
+                file_rows.clear()
+                db.upsert_files_turbo(rows)
+                db.finalize_turbo_batch()
+                files_flushed = True
             if all_symbols and (force or len(all_symbols) >= symbol_rows_threshold):
                 rows = list(all_symbols)
                 all_symbols.clear()

@@ -387,3 +387,18 @@ def test_adaptive_flush_threshold_contract():
     assert _adaptive_flush_threshold(200, pending_count=1, max_inflight=8, enabled=True) == 400
     assert _adaptive_flush_threshold(200, pending_count=7, max_inflight=8, enabled=True) == 100
     assert _adaptive_flush_threshold(200, pending_count=4, max_inflight=8, enabled=True) == 200
+
+
+def test_scan_to_db_flushes_files_before_symbols_to_preserve_fk(tmp_path, monkeypatch):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "main.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    db = LocalSearchDB(str(tmp_path / "idx.db"))
+    cfg = Config(**Config.get_defaults(str(ws)))
+    monkeypatch.setenv("SARI_INDEXER_FLUSH_FILE_ROWS", "10000")
+    monkeypatch.setenv("SARI_INDEXER_FLUSH_SYMBOL_ROWS", "1")
+    monkeypatch.setenv("SARI_INDEXER_ADAPTIVE_FLUSH", "0")
+
+    _scan_to_db(cfg, db, logging.getLogger("test"))
+    row = db.execute("SELECT COUNT(1) FROM symbols").fetchone()
+    assert int(row[0]) >= 1
