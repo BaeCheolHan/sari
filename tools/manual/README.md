@@ -39,6 +39,7 @@ For `benchmark_ab_indexing.py`:
 - `SARI_INDEXER_VALUE_INDEX_SPLIT=0` (opt-in): initial pass stores light metadata/symbol/relation first,
   defers heavy file payload(content/fts) and backfills on next scan.
 - `SARI_WAL_IDLE_CHECKPOINT=1` (default): disable auto-checkpoint and run PASSIVE checkpoint only when idle.
+- `SARI_INDEXER_COMBINED_SYMBOL_REL_TX=1` (default): flush symbols+relations in one transaction to reduce commit overhead.
 - Laptop-friendly defaults (override when needed):
   - `SARI_INDEXER_RESERVE_CORES=2` (leave headroom for UI)
   - `SARI_INDEXER_MAX_WORKERS_CAP=8` (prevent extreme fan/noise spikes)

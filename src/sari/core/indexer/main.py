@@ -229,6 +229,19 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
         "errors": 0,
         "index_version": "",
         "adaptive_flush_enabled": False,
+        "perf": {},
+    }
+    perf_stats: dict[str, float] = {
+        "worker_result_ms": 0.0,
+        "flush_files_ms": 0.0,
+        "flush_files_calls": 0.0,
+        "flush_symbols_ms": 0.0,
+        "flush_symbols_calls": 0.0,
+        "flush_relations_ms": 0.0,
+        "flush_relations_calls": 0.0,
+        "flush_seen_ms": 0.0,
+        "flush_seen_calls": 0.0,
+        "cleanup_ms": 0.0,
     }
     worker = IndexWorker(config, db, logger, None)
     try:
@@ -305,6 +318,9 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
     ).strip().lower() in {"1", "true", "yes", "on"}
     value_index_split_enabled = str(
         os.environ.get("SARI_INDEXER_VALUE_INDEX_SPLIT", "0")
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    combined_symbol_rel_tx_enabled = str(
+        os.environ.get("SARI_INDEXER_COMBINED_SYMBOL_REL_TX", "1")
     ).strip().lower() in {"1", "true", "yes", "on"}
     cpu_throttle_enabled = str(
         os.environ.get("SARI_INDEXER_CPU_THROTTLE_ENABLED", "1")
@@ -530,8 +546,11 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
                 rows = list(file_rows)
                 file_rows.clear()
                 file_buffer_bytes = 0
+                t0 = time.perf_counter()
                 db.upsert_files_turbo(rows)
                 db.finalize_turbo_batch()
+                perf_stats["flush_files_ms"] += (time.perf_counter() - t0) * 1000.0
+                perf_stats["flush_files_calls"] += 1.0
                 files_flushed = True
             # Symbols reference files(path) via FK; when symbol flush is due,
             # ensure pending file rows are committed first.
@@ -544,49 +563,65 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
                 rows = list(file_rows)
                 file_rows.clear()
                 file_buffer_bytes = 0
+                t0 = time.perf_counter()
                 db.upsert_files_turbo(rows)
                 db.finalize_turbo_batch()
+                perf_stats["flush_files_ms"] += (time.perf_counter() - t0) * 1000.0
+                perf_stats["flush_files_calls"] += 1.0
                 files_flushed = True
-            if all_symbols and (force or len(all_symbols) >= symbol_rows_threshold):
-                rows = list(all_symbols)
-                all_symbols.clear()
-                symbol_buffer_bytes = 0
+            symbols_due = bool(all_symbols and (force or len(all_symbols) >= symbol_rows_threshold))
+            relations_due = bool(all_relations and (force or len(all_relations) >= rel_rows_threshold))
+            replace_due = bool(
+                relation_replace_sources
+                and (force or len(relation_replace_sources) >= rel_replace_threshold)
+            )
+            if symbols_due or relations_due or replace_due:
+                symbol_rows = list(all_symbols) if symbols_due else []
+                relation_rows = list(all_relations) if relations_due else []
+                replace_sources = list(relation_replace_sources) if (relations_due or replace_due) else []
+                if symbols_due:
+                    all_symbols.clear()
+                    symbol_buffer_bytes = 0
+                if relations_due:
+                    all_relations.clear()
+                    relation_buffer_bytes = 0
+                if relations_due or replace_due:
+                    relation_replace_sources.clear()
                 try:
-                    db.upsert_symbols_tx(None, rows)
+                    t0 = time.perf_counter()
+                    if symbol_rows and not relation_rows and not replace_sources:
+                        db.upsert_symbols_tx(None, symbol_rows)
+                        perf_stats["flush_symbols_calls"] += 1.0
+                    elif replace_sources and not symbol_rows and not relation_rows:
+                        db.upsert_relations_tx(None, [], replace_sources=replace_sources)
+                        perf_stats["flush_relations_calls"] += 1.0
+                    elif relation_rows and not symbol_rows:
+                        db.upsert_relations_tx(None, relation_rows, replace_sources=replace_sources)
+                        perf_stats["flush_relations_calls"] += 1.0
+                    elif not combined_symbol_rel_tx_enabled:
+                        if symbol_rows:
+                            db.upsert_symbols_tx(None, symbol_rows)
+                            perf_stats["flush_symbols_calls"] += 1.0
+                        db.upsert_relations_tx(None, relation_rows, replace_sources=replace_sources)
+                        perf_stats["flush_relations_calls"] += 1.0
+                    else:
+                        db.upsert_symbols_and_relations_tx(
+                            symbol_rows,
+                            relation_rows,
+                            replace_sources=replace_sources,
+                        )
+                        if symbol_rows:
+                            perf_stats["flush_symbols_calls"] += 1.0
+                        if relation_rows or replace_sources:
+                            perf_stats["flush_relations_calls"] += 1.0
+                    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+                    if symbol_rows:
+                        perf_stats["flush_symbols_ms"] += elapsed_ms
+                    if relation_rows or replace_sources:
+                        perf_stats["flush_relations_ms"] += elapsed_ms
                 except Exception as e:
                     if logger:
-                        logger.error(f"Failed to store extracted symbols: {e}")
-            if all_relations and (force or len(all_relations) >= rel_rows_threshold):
-                rows = list(all_relations)
-                all_relations.clear()
-                relation_buffer_bytes = 0
-                replace_sources = list(relation_replace_sources)
-                relation_replace_sources.clear()
-                try:
-                    db.upsert_relations_tx(
-                        None,
-                        rows,
-                        replace_sources=replace_sources,
-                    )
-                except Exception as e:
-                    if logger:
-                        logger.error(f"Failed to store extracted relations: {e}")
-            elif relation_replace_sources and force:
-                replace_sources = list(relation_replace_sources)
-                relation_replace_sources.clear()
-                try:
-                    db.upsert_relations_tx(None, [], replace_sources=replace_sources)
-                except Exception as e:
-                    if logger:
-                        logger.error(f"Failed to replace extracted relations: {e}")
-            elif relation_replace_sources and len(relation_replace_sources) >= rel_replace_threshold:
-                replace_sources = list(relation_replace_sources)
-                relation_replace_sources.clear()
-                try:
-                    db.upsert_relations_tx(None, [], replace_sources=replace_sources)
-                except Exception as e:
-                    if logger:
-                        logger.error(f"Failed to replace extracted relations: {e}")
+                        logger.error(f"Failed to store extracted symbol/relations: {e}")
 
         def _flush_seen_paths(force: bool = False) -> None:
             if not seen_paths:
@@ -603,7 +638,10 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
             rows = list(OrderedDict.fromkeys(seen_paths))
             seen_paths.clear()
             try:
+                t0 = time.perf_counter()
                 db.update_last_seen_tx(None, rows, now)
+                perf_stats["flush_seen_ms"] += (time.perf_counter() - t0) * 1000.0
+                perf_stats["flush_seen_calls"] += 1.0
             except Exception as e:
                 if logger:
                     logger.error(f"Failed to refresh last_seen_ts for scanned paths: {e}")
@@ -612,7 +650,9 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
             nonlocal file_buffer_bytes, symbol_buffer_bytes, relation_buffer_bytes
             _ensure_parent_alive()
             try:
+                t0 = time.perf_counter()
                 res_obj: Optional[IndexingResult | dict[str, object]] = future.result()
+                perf_stats["worker_result_ms"] += (time.perf_counter() - t0) * 1000.0
                 if isinstance(res_obj, dict):
                     res = IndexingResult(**res_obj)
                 else:
@@ -830,18 +870,41 @@ def _scan_to_db(config: Config, db: LocalSearchDB,
                     continue
             scanned_root_ids = [rid for rid in scanned_root_ids if rid]
             if scanned_root_ids:
+                t0 = time.perf_counter()
                 _cleanup_deleted_paths(
                     db,
                     scanned_root_ids,
                     now_ts=now,
                     logger=logger,
                 )
+                perf_stats["cleanup_ms"] += (time.perf_counter() - t0) * 1000.0
         except Exception:
             if logger:
                 logger.debug("legacy-row soft-delete cleanup skipped", exc_info=True)
 
         status["scan_finished_ts"] = int(time.time())
         status["index_version"] = str(status["scan_finished_ts"])
+        status["perf"] = {
+            "worker_result_ms": round(float(perf_stats["worker_result_ms"]), 3),
+            "flush_files_ms": round(float(perf_stats["flush_files_ms"]), 3),
+            "flush_files_calls": int(perf_stats["flush_files_calls"]),
+            "flush_symbols_ms": round(float(perf_stats["flush_symbols_ms"]), 3),
+            "flush_symbols_calls": int(perf_stats["flush_symbols_calls"]),
+            "flush_relations_ms": round(float(perf_stats["flush_relations_ms"]), 3),
+            "flush_relations_calls": int(perf_stats["flush_relations_calls"]),
+            "flush_seen_ms": round(float(perf_stats["flush_seen_ms"]), 3),
+            "flush_seen_calls": int(perf_stats["flush_seen_calls"]),
+            "cleanup_ms": round(float(perf_stats["cleanup_ms"]), 3),
+        }
+        if logger:
+            logger.info(
+                "indexer_perf worker_ms=%.2f file_flush_ms=%.2f symbol_flush_ms=%.2f rel_flush_ms=%.2f seen_flush_ms=%.2f",
+                float(status["perf"]["worker_result_ms"]),
+                float(status["perf"]["flush_files_ms"]),
+                float(status["perf"]["flush_symbols_ms"]),
+                float(status["perf"]["flush_relations_ms"]),
+                float(status["perf"]["flush_seen_ms"]),
+            )
         _emit_progress(force=True, stage="done")
         return status
     finally:

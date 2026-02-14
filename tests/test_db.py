@@ -61,6 +61,50 @@ def test_maybe_checkpoint_wal_force_executes_passive(db, monkeypatch):
     assert ok is True
     assert seen["checkpoint"] >= 1
 
+
+def test_upsert_symbols_and_relations_tx_commits_both_sets(db):
+    db.upsert_root("root1", "/tmp/root1", "/tmp/root1")
+    file_row = (
+        "root1/a.py",
+        "a.py",
+        "root1",
+        "repo1",
+        1,
+        10,
+        b"print('x')",
+        "h1",
+        "print x",
+        1,
+        0,
+        "ok",
+        "",
+        "ok",
+        "",
+        "ok",
+        "",
+        0,
+        0,
+        "{}",
+    )
+    db.upsert_files_turbo([file_row])
+    db.finalize_turbo_batch()
+
+    symbol_rows = [
+        ("sid-a", "root1/a.py", "root1", "a", "function", 1, 1, "def a(): pass", "", "{}", "", "a"),
+    ]
+    relation_rows = [
+        ("root1/a.py", "root1", "a", "sid-a", "root1/a.py", "root1", "a", "sid-a", "calls", 1, "{}"),
+    ]
+    db.upsert_symbols_and_relations_tx(symbol_rows, relation_rows, replace_sources=[("root1/a.py", "root1")])
+
+    sym = db.execute("SELECT COUNT(1) FROM symbols WHERE path = ?", ("root1/a.py",)).fetchone()
+    rel = db.execute(
+        "SELECT COUNT(1) FROM symbol_relations WHERE from_path = ? AND from_root_id = ?",
+        ("root1/a.py", "root1"),
+    ).fetchone()
+    assert int(sym[0]) == 1
+    assert int(rel[0]) == 1
+
 def test_db_intelligent_read_compressed(db):
     """
     Verify that read_file handles compressed data automatically.

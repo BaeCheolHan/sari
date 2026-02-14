@@ -538,6 +538,39 @@ class LocalSearchDB:
                     pass
             raise
 
+    def upsert_symbols_and_relations_tx(
+        self,
+        symbol_rows: List[object],
+        relation_rows: List[object],
+        replace_sources: Optional[List[Tuple[str, str]]] = None,
+    ) -> None:
+        """Persist symbols and relations within one transaction to reduce write overhead."""
+        if not symbol_rows and not relation_rows and not replace_sources:
+            return
+        conn = self.db.connection()
+        started_tx = not bool(getattr(conn, "in_transaction", False))
+        tx_cur = conn.cursor()
+        try:
+            if started_tx:
+                conn.execute("BEGIN IMMEDIATE TRANSACTION")
+            if symbol_rows:
+                self._symbol_repo(tx_cur).upsert_symbols_tx(tx_cur, symbol_rows)
+            if relation_rows or replace_sources:
+                self._symbol_repo(tx_cur).upsert_relations_tx(
+                    tx_cur,
+                    relation_rows,
+                    replace_sources=replace_sources,
+                )
+            if started_tx:
+                conn.execute("COMMIT")
+        except Exception:
+            if started_tx:
+                try:
+                    conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+            raise
+
     def upsert_snippet_tx(self, cur, rows: List[object]):
         self._snippet_repo(cur).upsert_snippet_tx(cur, rows)
 

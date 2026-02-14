@@ -118,6 +118,31 @@ def test_scan_to_db_emits_progress_callback(tmp_path):
         assert int(last["flush_thresholds"].get(key, 0)) > 0
 
 
+def test_scan_to_db_returns_perf_breakdown(tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "main.py").write_text("print('x')\n", encoding="utf-8")
+    db = LocalSearchDB(str(tmp_path / "idx.db"))
+    cfg = Config(**Config.get_defaults(str(ws)))
+
+    status = _scan_to_db(cfg, db, logging.getLogger("test"))
+    perf = status.get("perf") or {}
+    assert isinstance(perf, dict)
+    for key in (
+        "worker_result_ms",
+        "flush_files_ms",
+        "flush_files_calls",
+        "flush_symbols_ms",
+        "flush_symbols_calls",
+        "flush_relations_ms",
+        "flush_relations_calls",
+        "flush_seen_ms",
+        "flush_seen_calls",
+        "cleanup_ms",
+    ):
+        assert key in perf
+
+
 def test_indexer_runtime_status_prefers_worker_progress(tmp_path):
     ws = tmp_path / "ws"
     ws.mkdir()
@@ -389,6 +414,80 @@ def test_scan_to_db_flushes_relation_replace_sources_without_relations(tmp_path,
     # With threshold=2 and 5 changed files (all relation-less), replace-source
     # flush should occur incrementally, not only once at final force flush.
     assert calls["empty_replace"] >= 2
+
+
+def test_scan_to_db_combines_symbol_relation_tx_by_default(tmp_path, monkeypatch):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "a.py").write_text("def a():\n  return 1\n\na()\n", encoding="utf-8")
+    db = LocalSearchDB(str(tmp_path / "idx.db"))
+    cfg = Config(**Config.get_defaults(str(ws)))
+    monkeypatch.setenv("SARI_INDEXER_INITIAL_FASTPATH", "0")
+    monkeypatch.setenv("SARI_INDEXER_FLUSH_SYMBOL_ROWS", "1")
+    monkeypatch.setenv("SARI_INDEXER_FLUSH_REL_ROWS", "1")
+    monkeypatch.setenv("SARI_INDEXER_ADAPTIVE_FLUSH", "0")
+
+    calls = {"combined": 0, "sym": 0, "rel": 0}
+    orig_combined = db.upsert_symbols_and_relations_tx
+
+    def _combined(symbol_rows, relation_rows, replace_sources=None):
+        calls["combined"] += 1
+        return orig_combined(symbol_rows, relation_rows, replace_sources=replace_sources)
+
+    def _sym(cur, rows, root_id="root"):
+        calls["sym"] += 1
+        return None
+
+    def _rel(cur, rows, replace_sources=None):
+        calls["rel"] += 1
+        return None
+
+    monkeypatch.setattr(db, "upsert_symbols_and_relations_tx", _combined)
+    monkeypatch.setattr(db, "upsert_symbols_tx", _sym)
+    monkeypatch.setattr(db, "upsert_relations_tx", _rel)
+    _scan_to_db(cfg, db, logging.getLogger("test"))
+
+    assert calls["combined"] >= 1
+    assert calls["sym"] == 0
+
+
+def test_scan_to_db_can_disable_combined_symbol_relation_tx(tmp_path, monkeypatch):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "a.py").write_text("def a():\n  return 1\n\na()\n", encoding="utf-8")
+    db = LocalSearchDB(str(tmp_path / "idx.db"))
+    cfg = Config(**Config.get_defaults(str(ws)))
+    monkeypatch.setenv("SARI_INDEXER_INITIAL_FASTPATH", "0")
+    monkeypatch.setenv("SARI_INDEXER_FLUSH_SYMBOL_ROWS", "1")
+    monkeypatch.setenv("SARI_INDEXER_FLUSH_REL_ROWS", "1")
+    monkeypatch.setenv("SARI_INDEXER_ADAPTIVE_FLUSH", "0")
+    monkeypatch.setenv("SARI_INDEXER_COMBINED_SYMBOL_REL_TX", "0")
+
+    calls = {"combined": 0, "sym": 0, "rel": 0}
+
+    def _combined(symbol_rows, relation_rows, replace_sources=None):
+        calls["combined"] += 1
+        return None
+
+    orig_sym = db.upsert_symbols_tx
+    orig_rel = db.upsert_relations_tx
+
+    def _sym(cur, rows, root_id="root"):
+        calls["sym"] += 1
+        return orig_sym(cur, rows, root_id=root_id)
+
+    def _rel(cur, rows, replace_sources=None):
+        calls["rel"] += 1
+        return orig_rel(cur, rows, replace_sources=replace_sources)
+
+    monkeypatch.setattr(db, "upsert_symbols_and_relations_tx", _combined)
+    monkeypatch.setattr(db, "upsert_symbols_tx", _sym)
+    monkeypatch.setattr(db, "upsert_relations_tx", _rel)
+    _scan_to_db(cfg, db, logging.getLogger("test"))
+
+    assert calls["combined"] == 0
+    assert calls["sym"] >= 1
+    assert calls["rel"] >= 1
 
 
 def test_adaptive_flush_threshold_contract():
