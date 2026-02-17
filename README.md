@@ -16,3 +16,15 @@ python3 -m sari.cli.main daemon start
 python3 -m pytest -q
 python3 tools/quality/full_tree_policy_check.py --root src --fail-on-todo
 ```
+
+## Release (PyPI)
+
+```bash
+# local preflight
+tools/ci/release_pypi.sh
+```
+
+- GitHub Actions: `.github/workflows/release-pypi.yml`
+- Trigger:
+  - `v*` tag push -> publish to PyPI
+  - manual dispatch -> publish to PyPI/TestPyPI
