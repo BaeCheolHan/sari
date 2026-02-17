@@ -1,0 +1,218 @@
+"""MCP search 도구를 구현한다."""
+
+from __future__ import annotations
+
+import hashlib
+import os
+from collections.abc import Callable
+
+from sari.core.exceptions import ValidationError
+from sari.core.models import ErrorResponseDTO
+from sari.core.repo_resolver import resolve_repo_root
+from sari.db.repositories.workspace_repository import WorkspaceRepository
+from sari.mcp.stabilization.reason_codes import ReasonCode
+from sari.mcp.stabilization.session_state import record_search_metrics
+from sari.mcp.stabilization.warning_sink import warn
+from sari.mcp.tools.pack1 import Pack1MetaDTO, pack1_error, pack1_success
+from sari.search.orchestrator import SearchOrchestrator
+
+
+class SearchTool:
+    """pack1 계약 기반 search 도구를 제공한다."""
+
+    def __init__(
+        self,
+        orchestrator: SearchOrchestrator,
+        workspace_repo: WorkspaceRepository | None = None,
+        metrics_provider: Callable[[], object] | None = None,
+    ) -> None:
+        """검색 오케스트레이터를 주입한다."""
+        self._orchestrator = orchestrator
+        self._workspace_repo = workspace_repo
+        self._metrics_provider = metrics_provider
+
+    def call(self, arguments: dict[str, object]) -> dict[str, object]:
+        """도구 입력을 검증하고 pack1 결과를 반환한다."""
+        repo = arguments.get("repo")
+        query = arguments.get("query")
+        limit = arguments.get("limit", 20)
+
+        if not isinstance(repo, str) or repo.strip() == "":
+            return pack1_error(ErrorResponseDTO(code="ERR_REPO_REQUIRED", message="repo is required"))
+        if self._workspace_repo is not None:
+            try:
+                repo = resolve_repo_root(
+                    repo_or_path=repo.strip(),
+                    workspace_paths=[item.path for item in self._workspace_repo.list_all()],
+                )
+            except ValidationError as exc:
+                return pack1_error(ErrorResponseDTO(code=exc.context.code, message=exc.context.message))
+        if not isinstance(query, str) or query.strip() == "":
+            return pack1_error(ErrorResponseDTO(code="ERR_QUERY_REQUIRED", message="query is required"))
+        if not isinstance(limit, int) or limit <= 0:
+            return pack1_error(ErrorResponseDTO(code="ERR_INVALID_LIMIT", message="limit must be positive integer"))
+
+        result = self._orchestrator.search(query=query, limit=limit, repo_root=repo)
+        stabilization_meta = _build_search_stabilization(
+            arguments=arguments,
+            repo=repo,
+            query=query,
+            items=result.items,
+            degraded=result.meta.degraded,
+            fatal_error=result.meta.fatal_error,
+            errors=[error.to_dict() for error in result.meta.errors],
+        )
+        progress_meta = self._build_progress_meta()
+        if result.meta.fatal_error:
+            first_error = result.meta.errors[0]
+            return pack1_error(
+                ErrorResponseDTO(code=first_error.code, message=first_error.message),
+                detailed_errors=[error.to_dict() for error in result.meta.errors],
+                stabilization=stabilization_meta,
+            )
+        meta_payload = Pack1MetaDTO(
+            candidate_count=result.meta.candidate_count,
+            resolved_count=result.meta.resolved_count,
+            cache_hit=None,
+            errors=[err.to_dict() for err in result.meta.errors],
+            stabilization=stabilization_meta,
+        ).to_dict()
+        meta_payload["lsp_query_mode"] = result.meta.lsp_query_mode
+        meta_payload["lsp_sync_mode"] = result.meta.lsp_sync_mode
+        meta_payload["lsp_fallback_used"] = result.meta.lsp_fallback_used
+        meta_payload["lsp_fallback_reason"] = result.meta.lsp_fallback_reason
+        meta_payload["ranking_version"] = result.meta.ranking_version
+        meta_payload["ranking_components_enabled"] = (
+            result.meta.ranking_components_enabled if result.meta.ranking_components_enabled is not None else {}
+        )
+        if progress_meta is not None:
+            meta_payload["index_progress"] = progress_meta
+        return pack1_success(
+            {
+                "items": [
+                    {
+                        "type": item.item_type,
+                        "repo": item.repo,
+                        "relative_path": item.relative_path,
+                        "score": item.score,
+                        "source": item.source,
+                        "name": item.name,
+                        "kind": item.kind,
+                    }
+                    for item in result.items
+                ],
+                "meta": meta_payload,
+            }
+        )
+
+    def _build_progress_meta(self) -> dict[str, object] | None:
+        """파이프라인 진행률 메타를 반환한다."""
+        if self._metrics_provider is None:
+            return None
+        try:
+            metrics = self._metrics_provider()
+        except (RuntimeError, OSError, ValueError, TypeError):
+            return None
+        if not hasattr(metrics, "to_dict"):
+            return None
+        payload = metrics.to_dict()
+        return {
+            "progress_percent_l2": float(payload.get("progress_percent_l2", 0.0)),
+            "progress_percent_l3": float(payload.get("progress_percent_l3", 0.0)),
+            "eta_l2_sec": int(payload.get("eta_l2_sec", -1)),
+            "eta_l3_sec": int(payload.get("eta_l3_sec", -1)),
+            "remaining_jobs_l2": int(payload.get("remaining_jobs_l2", 0)),
+            "remaining_jobs_l3": int(payload.get("remaining_jobs_l3", 0)),
+            "worker_state": str(payload.get("worker_state", "unknown")),
+        }
+
+
+def _build_search_stabilization(
+    arguments: dict[str, object],
+    repo: str,
+    query: str,
+    items: list[object],
+    degraded: bool,
+    fatal_error: bool,
+    errors: list[dict[str, object]],
+) -> dict[str, object] | None:
+    """search 응답용 stabilization 메타를 생성한다."""
+    if not _stabilization_enabled():
+        return None
+    top_paths = [str(getattr(item, "relative_path", "") or "") for item in items[:10]]
+    candidates = _candidate_mapping(query=query, items=items)
+    generated_bundle_id = _bundle_id(query=query, paths=top_paths)
+    metrics_snapshot = record_search_metrics(
+        arguments,
+        [repo],
+        preview_degraded=degraded,
+        query=query,
+        top_paths=top_paths,
+        candidates=candidates,
+        bundle_id=generated_bundle_id,
+    )
+    warnings: list[str] = []
+    reason_codes: list[str] = []
+    if degraded:
+        warnings.append("Search completed with degraded backend state; inspect meta.errors.")
+        reason_codes.append(ReasonCode.SEARCH_DEGRADED.value)
+    if fatal_error:
+        warnings.append("Search failed with fatal backend errors.")
+        reason_codes.append(ReasonCode.SEARCH_FATAL.value)
+    for error in errors:
+        message = str(error.get("message", "")).strip()
+        severity = str(error.get("severity", "")).strip().upper()
+        code = str(error.get("code", "")).strip()
+        if severity == "FATAL":
+            warn(f"[search:fatal] {code}: {message}")
+        elif message != "":
+            warn(f"[search:degraded] {code}: {message}")
+    return {
+        "budget_state": "NORMAL",
+        "suggested_next_action": "read" if len(items) > 0 else "search",
+        "warnings": warnings,
+        "reason_codes": reason_codes,
+        "bundle_id": generated_bundle_id,
+        "next_calls": _next_calls(items),
+        "metrics_snapshot": metrics_snapshot,
+        "degraded": degraded,
+        "fatal_error": fatal_error,
+    }
+
+
+def _stabilization_enabled() -> bool:
+    """stabilization 활성 여부를 반환한다."""
+    raw_value = os.getenv("SARI_STABILIZATION_ENABLED", "1").strip().lower()
+    return raw_value not in {"0", "false", "no", "off"}
+
+
+def _candidate_mapping(query: str, items: list[object]) -> dict[str, str]:
+    """검색 결과에서 candidate_id 매핑을 생성한다."""
+    mapping: dict[str, str] = {}
+    for index, item in enumerate(items):
+        relative_path = str(getattr(item, "relative_path", "") or "")
+        name = str(getattr(item, "name", "") or "")
+        raw = f"{query}|{relative_path}|{name}|{index}"
+        candidate_key = "cand_" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+        mapping[candidate_key] = relative_path
+    return mapping
+
+
+def _bundle_id(query: str, paths: list[str]) -> str:
+    """검색 응답 번들 식별자를 생성한다."""
+    merged = "\n".join([query, *paths])
+    return "bundle_" + hashlib.sha256(merged.encode("utf-8")).hexdigest()[:12]
+
+
+def _next_calls(items: list[object]) -> list[dict[str, object]]:
+    """다음 권장 호출 힌트를 생성한다."""
+    calls: list[dict[str, object]] = []
+    for item in items[:3]:
+        item_type = str(getattr(item, "item_type", "") or "")
+        relative_path = str(getattr(item, "relative_path", "") or "")
+        name = str(getattr(item, "name", "") or "")
+        if item_type == "symbol":
+            calls.append({"tool": "read", "arguments": {"mode": "symbol", "target": name, "path": relative_path}})
+        else:
+            calls.append({"tool": "read", "arguments": {"mode": "file", "target": relative_path}})
+    return calls

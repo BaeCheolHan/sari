@@ -1,500 +1,749 @@
-from pydantic import BaseModel, Field, ConfigDict
-from typing import Dict, List, Optional, Tuple, Union
+from __future__ import annotations
 import json
-import logging
-
-logger = logging.getLogger("sari.models")
-
-# --- Single Source of Truth for DB Column Ordering ---
-# These must match schema.py EXACTLY.
-FILE_COLUMNS = [
-    "path",
-    "rel_path",
-    "root_id",
-    "repo",
-    "mtime",
-    "size",
-    "content",
-    "hash",
-    "fts_content",
-    "last_seen_ts",
-    "deleted_ts",
-    "status",
-    "error",
-    "parse_status",
-    "parse_error",
-    "ast_status",
-    "ast_reason",
-    "is_binary",
-    "is_minified",
-    "metadata_json"]
-
-
-def _to_dict(row: object) -> Dict[str, object]:
-    if isinstance(row, dict):
-        return row
-    try:
-        if hasattr(row, "keys"):
-            return {k: row[k] for k in row.keys()}
-    except Exception as e:
-        logger.debug("Row to dict conversion failed: %s", e)
-
-    if isinstance(row, (list, tuple)) and len(row) == len(FILE_COLUMNS):
-        return dict(zip(FILE_COLUMNS, row, strict=False))
-
-    if hasattr(row, "__dict__"):
-        return row.__dict__
-    return {}
-
-
-def _sequence_to_dict(row: object, columns: List[str]) -> Dict[str, object]:
-    if not isinstance(row, (list, tuple)):
-        return {}
-    values = list(row)
-    padded = values + [None] * max(0, len(columns) - len(values))
-    return dict(zip(columns, padded, strict=False))
-
-
-class SearchOptions(BaseModel):
-    model_config = ConfigDict(frozen=True)
-    query: str
-    limit: int = 50
-    offset: int = 0
-    root_ids: Optional[List[str]] = None
-    use_regex: bool = False
-    case_sensitive: bool = False
-    recency_boost: bool = False
-    include_content: bool = False
-    repo: Optional[str] = None
-    file_types: Optional[List[str]] = None
-    exclude_patterns: Optional[List[str]] = None
-    path_pattern: Optional[str] = None
-    snippet_lines: int = 3
-    total_mode: str = "exact"
-
-
-class SearchHit(BaseModel):
-    repo: str = ""
-    path: str = ""
-    score: float = 0.0
-    snippet: str = ""
-    mtime: int = 0
-    size: int = 0
-    match_count: int = 1
-    file_type: str = ""
-    hit_reason: str = ""
-    scope_reason: str = ""
-    context_symbol: str = ""
-    docstring: str = ""
-    metadata: Dict[str, object] = Field(default_factory=dict)
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, object]) -> "SearchHit":
-        return cls(**data)
-
-    def to_result_dict(self) -> Dict[str, object]:
+from dataclasses import dataclass
+from datetime import datetime, timezone
+@dataclass(frozen=True)
+class WorkspaceDTO:
+    path: str
+    name: str | None
+    indexed_at: str | None
+    is_active: bool
+    def to_sql_params(self) -> dict[str, object]:
         return {
-            "doc_id": self.path,
-            "repo": self.repo,
             "path": self.path,
-            "score": self.score,
-            "snippet": self.snippet,
-            "mtime": self.mtime,
-            "size": self.size,
-            "match_count": self.match_count,
-            "file_type": self.file_type,
-            "hit_reason": self.hit_reason,
-            "scope_reason": self.scope_reason,
-            "context_symbol": self.context_symbol,
-            "docstring": self.docstring,
-            "metadata": self.metadata,
+            "name": self.name,
+            "indexed_at": self.indexed_at,
+            "is_active": 1 if self.is_active else 0,
+        }
+Workspace = WorkspaceDTO
+@dataclass(frozen=True)
+class DaemonRuntimeDTO:
+    pid: int
+    host: str
+    port: int
+    state: str
+    started_at: str
+    session_count: int
+    last_heartbeat_at: str
+    last_exit_reason: str | None = None
+    def to_sql_params(self) -> dict[str, object]:
+        return {
+            "singleton_key": "default",
+            "pid": self.pid,
+            "host": self.host,
+            "port": self.port,
+            "state": self.state,
+            "started_at": self.started_at,
+            "session_count": self.session_count,
+            "last_heartbeat_at": self.last_heartbeat_at,
+            "last_exit_reason": self.last_exit_reason,
+        }
+@dataclass(frozen=True)
+class DaemonRegistryEntryDTO:
+    daemon_id: str
+    host: str
+    port: int
+    pid: int
+    workspace_root: str
+    protocol: str
+    started_at: str
+    last_seen_at: str
+    is_draining: bool
+    def to_sql_params(self) -> dict[str, object]:
+        return {
+            "daemon_id": self.daemon_id,
+            "host": self.host,
+            "port": self.port,
+            "pid": self.pid,
+            "workspace_root": self.workspace_root,
+            "protocol": self.protocol,
+            "started_at": self.started_at,
+            "last_seen_at": self.last_seen_at,
+            "is_draining": 1 if self.is_draining else 0,
+        }
+@dataclass(frozen=True)
+class HealthResponseDTO:
+    status: str
+    version: str
+    uptime_sec: float
+@dataclass(frozen=True)
+class ErrorResponseDTO:
+    code: str
+    message: str
+@dataclass(frozen=True)
+class LanguageProbeStatusDTO:
+    language: str
+    enabled: bool
+    available: bool
+    last_probe_at: str | None
+    last_error_code: str | None
+    last_error_message: str | None
+    updated_at: str
+    symbol_extract_success: bool = False
+    document_symbol_count: int = 0
+    path_mapping_ok: bool = False
+    timeout_occurred: bool = False
+    recovered_by_restart: bool = False
+    def to_sql_params(self) -> dict[str, object]:
+        return {
+            "language": self.language,
+            "enabled": 1 if self.enabled else 0,
+            "available": 1 if self.available else 0,
+            "last_probe_at": self.last_probe_at,
+            "last_error_code": self.last_error_code,
+            "last_error_message": self.last_error_message,
+            "symbol_extract_success": 1 if self.symbol_extract_success else 0,
+            "document_symbol_count": self.document_symbol_count,
+            "path_mapping_ok": 1 if self.path_mapping_ok else 0,
+            "timeout_occurred": 1 if self.timeout_occurred else 0,
+            "recovered_by_restart": 1 if self.recovered_by_restart else 0,
+            "updated_at": self.updated_at,
+        }
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "language": self.language,
+            "enabled": self.enabled,
+            "available": self.available,
+            "last_probe_at": self.last_probe_at,
+            "last_error_code": self.last_error_code,
+            "last_error_message": self.last_error_message,
+            "symbol_extract_success": self.symbol_extract_success,
+            "document_symbol_count": self.document_symbol_count,
+            "path_mapping_ok": self.path_mapping_ok,
+            "timeout_occurred": self.timeout_occurred,
+            "recovered_by_restart": self.recovered_by_restart,
+        }
+@dataclass(frozen=True)
+class SearchErrorDTO:
+    code: str
+    message: str
+    severity: str
+    origin: str
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "code": self.code,
+            "message": self.message,
+            "severity": self.severity,
+            "origin": self.origin,
+        }
+@dataclass(frozen=True)
+class SearchPlaceholderResponseDTO:
+    phase: str
+    message: str
+    query: str
+    limit: int
+@dataclass(frozen=True)
+class CandidateFileDTO:
+    repo_root: str
+    relative_path: str
+    score: float
+    file_hash: str
+@dataclass(frozen=True)
+class CandidateIndexChangeDTO:
+    repo_root: str
+    relative_path: str
+    absolute_path: str
+    content_hash: str
+    mtime_ns: int
+    size_bytes: int
+    event_source: str
+    recorded_at: str
+    def to_sql_params(self) -> dict[str, object]:
+        return {
+            "repo_root": self.repo_root,
+            "relative_path": self.relative_path,
+            "absolute_path": self.absolute_path,
+            "content_hash": self.content_hash,
+            "mtime_ns": self.mtime_ns,
+            "size_bytes": self.size_bytes,
+            "event_source": self.event_source,
+            "recorded_at": self.recorded_at,
+        }
+@dataclass(frozen=True)
+class CandidateIndexChangeLogDTO:
+    change_id: int
+    change_type: str
+    status: str
+    repo_root: str
+    relative_path: str
+    absolute_path: str | None
+    content_hash: str | None
+    mtime_ns: int | None
+    size_bytes: int | None
+    event_source: str
+    reason: str | None
+    created_at: str
+    updated_at: str
+@dataclass(frozen=True)
+class RankingComponentsDTO:
+    """검색 점수 구성요소를 표현한다."""
+
+    rrf: float = 0.0
+    importance: float = 0.0
+    vector: float = 0.0
+    hierarchy: float = 0.0
+    final: float = 0.0
+
+    def to_dict(self) -> dict[str, float]:
+        """직렬화 가능한 점수 구성요소 딕셔너리를 반환한다."""
+        return {
+            "rrf": self.rrf,
+            "importance": self.importance,
+            "vector": self.vector,
+            "hierarchy": self.hierarchy,
+            "final": self.final,
         }
 
 
-class FileDTO(BaseModel):
-    path: str
-    rel_path: str = ""
-    root_id: str = ""
-    repo: str = ""
-    mtime: int = 0
-    size: int = 0
-    content: Optional[Union[str, bytes]] = None
-    hash: str = ""
-    fts_content: str = ""
-    metadata: Dict[str, object] = Field(default_factory=dict)
-
-    @classmethod
-    def from_row(cls, row: Union[Dict[str, object], object]) -> "FileDTO":
-        d = _to_dict(row)
-        meta = {}
-        m_key = "metadata_json" if "metadata_json" in d else "meta_json"
-        if d.get(m_key):
-            try:
-                meta = json.loads(d[m_key])
-            except Exception as e:
-                logger.debug("FileDTO meta parse error: %s", e)
-
-        return cls(
-            path=d.get("path", ""),
-            rel_path=d.get("rel_path", ""),
-            root_id=d.get("root_id", ""),
-            repo=d.get("repo", ""),
-            mtime=int(d.get("mtime", 0)),
-            size=int(d.get("size", 0)),
-            content=d.get("content"),
-            hash=d.get("hash", d.get("content_hash", "")),
-            fts_content=d.get("fts_content", ""),
-            metadata=meta
-        )
-
-
-class SymbolDTO(BaseModel):
-    symbol_id: str = ""
-    path: str
-    root_id: str = ""
-    repo: str = ""
-    name: str
-    kind: str
-    line: int
-    end_line: int = 0
-    content: str = ""
-    parent_name: Optional[str] = ""
-    qualname: str = ""
-    metadata: Dict[str, object] = Field(default_factory=dict)
-
-    @classmethod
-    def from_row(cls, row: Union[Dict[str, object], object]) -> "SymbolDTO":
-        d = _to_dict(row)
-        meta = {}
-        m_key = "meta_json" if "meta_json" in d else "metadata"
-        if d.get(m_key):
-            try:
-                m = d[m_key]
-                meta = json.loads(m) if isinstance(m, str) else m
-            except Exception as e:
-                logger.debug("SymbolDTO meta parse error: %s", e)
-
-        return cls(
-            symbol_id=d.get("symbol_id", d.get("sid", "")),
-            path=d.get("path", ""),
-            root_id=d.get("root_id", ""),
-            repo=d.get("repo", ""),
-            name=d.get("name", ""),
-            kind=d.get("kind", ""),
-            line=int(d.get("line", 0)),
-            end_line=int(d.get("end_line", 0)),
-            content=d.get("content", ""),
-            parent_name=d.get("parent", d.get("parent_name", "")),
-            qualname=d.get("qualname", ""),
-            metadata=meta
-        )
-
-
-class SnippetDTO(BaseModel):
-    id: Optional[int] = None
-    tag: str
-    path: str
-    root_id: str
+@dataclass(frozen=True)
+class SearchItemDTO:
+    item_type: str
+    repo: str
+    relative_path: str
+    score: float
+    source: str
+    name: str | None
+    kind: str | None
+    content_hash: str | None = None
+    rrf_score: float = 0.0
+    importance_score: float = 0.0
+    base_rrf_score: float = 0.0
+    importance_norm_score: float = 0.0
+    vector_norm_score: float = 0.0
+    hierarchy_score: float = 0.0
+    hierarchy_norm_score: float = 0.0
+    symbol_key: str | None = None
+    parent_symbol_key: str | None = None
+    depth: int = 0
+    container_name: str | None = None
+    ranking_components: RankingComponentsDTO | None = None
+    vector_score: float | None = None
+    blended_score: float = 0.0
+    final_score: float = 0.0
+@dataclass(frozen=True)
+class CollectedFileL1DTO:
+    repo_root: str
+    relative_path: str
+    absolute_path: str
+    repo_label: str
+    mtime_ns: int
+    size_bytes: int
+    content_hash: str
+    is_deleted: bool
+    last_seen_at: str
+    updated_at: str
+    enrich_state: str
+    def to_sql_params(self) -> dict[str, object]:
+        return {
+            "repo_root": self.repo_root,
+            "relative_path": self.relative_path,
+            "absolute_path": self.absolute_path,
+            "repo_label": self.repo_label,
+            "mtime_ns": self.mtime_ns,
+            "size_bytes": self.size_bytes,
+            "content_hash": self.content_hash,
+            "is_deleted": 1 if self.is_deleted else 0,
+            "last_seen_at": self.last_seen_at,
+            "updated_at": self.updated_at,
+            "enrich_state": self.enrich_state,
+        }
+@dataclass(frozen=True)
+class FileEnrichJobDTO:
+    job_id: str
+    repo_root: str
+    relative_path: str
+    content_hash: str
+    priority: int
+    enqueue_source: str
+    status: str
+    attempt_count: int
+    last_error: str | None
+    next_retry_at: str
+    created_at: str
+    updated_at: str
+    def to_sql_params(self) -> dict[str, object]:
+        return {
+            "job_id": self.job_id,
+            "repo_root": self.repo_root,
+            "relative_path": self.relative_path,
+            "content_hash": self.content_hash,
+            "priority": self.priority,
+            "enqueue_source": self.enqueue_source,
+            "status": self.status,
+            "attempt_count": self.attempt_count,
+            "last_error": self.last_error,
+            "next_retry_at": self.next_retry_at,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+@dataclass(frozen=True)
+class FileEnrichFailureUpdateDTO:
+    job_id: str
+    error_message: str
+    now_iso: str
+    dead_threshold: int
+    backoff_base_sec: int
+@dataclass(frozen=True)
+class EnqueueRequestDTO:
+    repo_root: str
+    relative_path: str
+    content_hash: str
+    priority: int
+    enqueue_source: str
+    now_iso: str
+@dataclass(frozen=True)
+class CollectedFileBodyDTO:
+    repo_root: str
+    relative_path: str
+    content_hash: str
+    content_zlib: bytes
+    content_len: int
+    normalized_text: str
+    created_at: str
+    updated_at: str
+    def to_sql_params(self) -> dict[str, object]:
+        return {
+            "repo_root": self.repo_root,
+            "relative_path": self.relative_path,
+            "content_hash": self.content_hash,
+            "content_zlib": self.content_zlib,
+            "content_len": self.content_len,
+            "normalized_text": self.normalized_text,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+@dataclass(frozen=True)
+class ToolReadinessStateDTO:
+    repo_root: str
+    relative_path: str
+    content_hash: str
+    list_files_ready: bool
+    read_file_ready: bool
+    search_symbol_ready: bool
+    get_callers_ready: bool
+    consistency_ready: bool
+    quality_ready: bool
+    tool_ready: bool
+    last_reason: str
+    updated_at: str
+    def to_sql_params(self) -> dict[str, object]:
+        return {
+            "repo_root": self.repo_root,
+            "relative_path": self.relative_path,
+            "content_hash": self.content_hash,
+            "list_files_ready": 1 if self.list_files_ready else 0,
+            "read_file_ready": 1 if self.read_file_ready else 0,
+            "search_symbol_ready": 1 if self.search_symbol_ready else 0,
+            "get_callers_ready": 1 if self.get_callers_ready else 0,
+            "consistency_ready": 1 if self.consistency_ready else 0,
+            "quality_ready": 1 if self.quality_ready else 0,
+            "tool_ready": 1 if self.tool_ready else 0,
+            "last_reason": self.last_reason,
+            "updated_at": self.updated_at,
+        }
+@dataclass(frozen=True)
+class EnrichStateUpdateDTO:
+    repo_root: str
+    relative_path: str
+    enrich_state: str
+    updated_at: str
+    def to_sql_params(self) -> dict[str, object]:
+        return {
+            "repo_root": self.repo_root,
+            "relative_path": self.relative_path,
+            "enrich_state": self.enrich_state,
+            "updated_at": self.updated_at,
+        }
+@dataclass(frozen=True)
+class FileBodyDeleteTargetDTO:
+    repo_root: str
+    relative_path: str
+    content_hash: str
+    def to_sql_params(self) -> dict[str, object]:
+        return {
+            "repo_root": self.repo_root,
+            "relative_path": self.relative_path,
+            "content_hash": self.content_hash,
+        }
+@dataclass(frozen=True)
+class LspExtractPersistDTO:
+    repo_root: str
+    relative_path: str
+    content_hash: str
+    symbols: list[dict[str, object]]
+    relations: list[dict[str, object]]
+    created_at: str
+@dataclass(frozen=True)
+class FileListItemDTO:
+    repo: str
+    relative_path: str
+    size_bytes: int
+    mtime_ns: int
+    content_hash: str
+    enrich_state: str
+@dataclass(frozen=True)
+class FileReadResultDTO:
+    relative_path: str
+    content: str
     start_line: int
     end_line: int
-    content: str
-    content_hash: str = ""
-    anchor_before: str = ""
-    anchor_after: str = ""
-    repo: str = ""
-    note: str = ""
-    commit_hash: str = ""
-    created_ts: int = 0
-    updated_ts: int = 0
-    metadata: Dict[str, object] = Field(default_factory=dict)
-
-    @classmethod
-    def from_row(cls, row: Union[Dict[str, object], object]) -> "SnippetDTO":
-        d = _to_dict(row)
-        meta = {}
-        m_key = "metadata_json" if "metadata_json" in d else "meta_json"
-        if d.get(m_key):
-            try:
-                meta = json.loads(d[m_key])
-            except Exception as e:
-                logger.debug("SnippetDTO meta parse error: %s", e)
-        return cls(
-            id=d.get("id"),
-            tag=d.get("tag", ""),
-            path=d.get("path", ""),
-            root_id=d.get("root_id", ""),
-            start_line=int(d.get("start_line", 0)),
-            end_line=int(d.get("end_line", 0)),
-            content=d.get("content", ""),
-            content_hash=d.get("content_hash", ""),
-            anchor_before=d.get("anchor_before", ""),
-            anchor_after=d.get("anchor_after", ""),
-            repo=d.get("repo", ""),
-            note=d.get("note", ""),
-            commit_hash=d.get("commit_hash", ""),
-            created_ts=int(d.get("created_ts", 0)),
-            updated_ts=int(d.get("updated_ts", 0)),
-            metadata=meta
-        )
-
-
-class IndexingResult(BaseModel):
-    type: str = "changed"
-    path: str
-    rel: str
-    root_id: str = "root"
-    repo: str = ""
-    mtime: int = 0
-    size: int = 0
-    content: Optional[Union[str, bytes]] = None
-    content_hash: str = ""
-    fts_content: str = ""
-    scan_ts: int = 0
-    parse_status: str = "ok"
-    parse_reason: str = "none"
-    ast_status: str = "skipped"
-    ast_reason: str = ""
-    is_binary: int = 0
-    is_minified: int = 0
-    content_bytes: int = 0
-    metadata_json: str = "{}"
-    symbols: List["ParserSymbol"] = Field(default_factory=list)
-    relations: List["ParserRelation"] = Field(default_factory=list)
-    engine_doc: Optional[Dict[str, object]] = None
-
-    def to_file_row(self) -> Tuple:
-        """Dynamically build the tuple using FILE_COLUMNS SSOT to eliminate magic numbers."""
-        data = {
-            "path": self.path,
-            "rel_path": self.rel,
-            "root_id": self.root_id,
-            "repo": self.repo,
-            "mtime": self.mtime,
-            "size": self.size,
-            "content": self.content,
-            "hash": self.content_hash,
-            "fts_content": self.fts_content,
-            "last_seen_ts": self.scan_ts,
-            "deleted_ts": 0,
-            "status": "ok",
-            "error": None,
-            "parse_status": self.parse_status,
-            "parse_error": self.parse_reason,
-            "ast_status": self.ast_status,
-            "ast_reason": self.ast_reason,
-            "is_binary": self.is_binary,
-            "is_minified": self.is_minified,
-            "metadata_json": self.metadata_json
+    source: str
+    total_lines: int
+    is_truncated: bool
+    next_offset: int | None
+@dataclass(frozen=True)
+class CollectionScanResultDTO:
+    scanned_count: int
+    indexed_count: int
+    deleted_count: int
+@dataclass(frozen=True)
+class CollectionPolicyDTO:
+    include_ext: tuple[str, ...]
+    exclude_globs: tuple[str, ...]
+    max_file_size_bytes: int
+    scan_interval_sec: int
+    max_enrich_batch: int
+    retry_max_attempts: int
+    retry_backoff_base_sec: int
+    queue_poll_interval_ms: int
+@dataclass(frozen=True)
+class PipelineMetricsDTO:
+    queue_depth: int
+    running_jobs: int
+    failed_jobs: int
+    dead_jobs: int
+    done_jobs: int
+    avg_enrich_latency_ms: float
+    indexing_mode: str = "steady"
+    l2_coverage_bps: int = 0
+    l3_coverage_bps: int = 0
+    l3_backlog_count: int = 0
+    progress_percent_l2: float = 0.0
+    progress_percent_l3: float = 0.0
+    eta_l2_sec: int = -1
+    eta_l3_sec: int = -1
+    eta_confidence_bps: int = 0
+    eta_window_sec: int = 0
+    throughput_ema: float = 0.0
+    remaining_jobs_l2: int = 0
+    remaining_jobs_l3: int = 0
+    worker_state: str = "running"
+    last_error_code: str | None = None
+    last_error_message: str | None = None
+    last_error_at: str | None = None
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "queue_depth": self.queue_depth,
+            "running_jobs": self.running_jobs,
+            "failed_jobs": self.failed_jobs,
+            "dead_jobs": self.dead_jobs,
+            "done_jobs": self.done_jobs,
+            "avg_enrich_latency_ms": self.avg_enrich_latency_ms,
+            "indexing_mode": self.indexing_mode,
+            "l2_coverage_bps": self.l2_coverage_bps,
+            "l3_coverage_bps": self.l3_coverage_bps,
+            "l3_backlog_count": self.l3_backlog_count,
+            "progress_percent_l2": self.progress_percent_l2,
+            "progress_percent_l3": self.progress_percent_l3,
+            "eta_l2_sec": self.eta_l2_sec,
+            "eta_l3_sec": self.eta_l3_sec,
+            "eta_confidence_bps": self.eta_confidence_bps,
+            "eta_window_sec": self.eta_window_sec,
+            "throughput_ema": self.throughput_ema,
+            "remaining_jobs_l2": self.remaining_jobs_l2,
+            "remaining_jobs_l3": self.remaining_jobs_l3,
+            "worker_state": self.worker_state,
+            "last_error_code": self.last_error_code,
+            "last_error_message": self.last_error_message,
+            "last_error_at": self.last_error_at,
         }
-        return tuple(data.get(col) for col in FILE_COLUMNS)
-
-
-class ContextDTO(BaseModel):
-
-    id: Optional[int] = None
-
-    topic: str
-
-    content: str
-
-    tags: List[str] = Field(default_factory=list)
-
-    related_files: List[str] = Field(default_factory=list)
-
-    source: str = ""
-
-    valid_from: int = 0
-
-    valid_until: int = 0
-
-    deprecated: bool = False
-
-    created_ts: int = 0
-
-    updated_ts: int = 0
-
-    @classmethod
-    def from_row(cls, row: Union[Dict[str, object], object]) -> "ContextDTO":
-
-        d = _to_dict(row)
-
-        def _parse_json_list(key):
-
-            val = d.get(key)
-
-            if not val:
-                return []
-
-            if isinstance(val, list):
-                return val
-
-            try:
-                return json.loads(val)
-
-            except Exception as e:
-
-                logger.debug(
-                    "ContextDTO json list parse error for %s: %s", key, e)
-
-                return []
-
-        return cls(
-
-            id=d.get("id"),
-
-            topic=d.get("topic", ""),
-
-            content=d.get("content", ""),
-
-            tags=_parse_json_list("tags_json"),
-
-            related_files=_parse_json_list("related_files_json"),
-
-            source=d.get("source", ""),
-
-            valid_from=int(d.get("valid_from", 0)),
-
-            valid_until=int(d.get("valid_until", 0)),
-
-            deprecated=bool(d.get("deprecated", 0)),
-
-            created_ts=int(d.get("created_ts", 0)),
-
-            updated_ts=int(d.get("updated_ts", 0))
-
-        )
-
-
-class CallerHitDTO(BaseModel):
-
-    caller_path: str = ""
-
-    caller_symbol: str = ""
-
-    caller_symbol_id: str = ""
-
-    line: int = 0
-
-    rel_type: str = ""
-
-    @classmethod
-    def from_row(cls, row: Union[Dict[str, object], object]) -> "CallerHitDTO":
-        d = _to_dict(row)
-        if d:
-            return cls(
-                caller_path=str(d.get("from_path", d.get("caller_path", ""))),
-                caller_symbol=str(d.get("from_symbol", d.get("caller_symbol", ""))),
-                caller_symbol_id=str(d.get("from_symbol_id", d.get("caller_symbol_id", "")) or ""),
-                line=int(d.get("line", 0) or 0),
-                rel_type=str(d.get("rel_type", "")),
-            )
-        if isinstance(row, (list, tuple)):
-            seq = _sequence_to_dict(
-                row,
-                ["caller_path", "caller_symbol", "caller_symbol_id", "line", "rel_type"],
-            )
-            return cls(
-                caller_path=str(seq.get("caller_path") or ""),
-                caller_symbol=str(seq.get("caller_symbol") or ""),
-                caller_symbol_id=str(seq.get("caller_symbol_id") or ""),
-                line=int(seq.get("line") or 0),
-                rel_type=str(seq.get("rel_type") or ""),
-            )
-        return cls()
-
-
-class ImplementationHitDTO(BaseModel):
-
-    implementer_path: str = ""
-
-    implementer_symbol: str = ""
-
-    implementer_sid: str = ""
-
-    rel_type: str = ""
-
-    line: int = 0
-
-    @classmethod
-    def from_row(cls, row: Union[Dict[str, object], object]) -> "ImplementationHitDTO":
-        d = _to_dict(row)
-        if d:
-            return cls(
-                implementer_path=str(d.get("from_path", d.get("implementer_path", ""))),
-                implementer_symbol=str(d.get("from_symbol", d.get("implementer_symbol", ""))),
-                implementer_sid=str(d.get("from_symbol_id", d.get("implementer_sid", "")) or ""),
-                rel_type=str(d.get("rel_type", "")),
-                line=int(d.get("line", 0) or 0),
-            )
-        if isinstance(row, (list, tuple)):
-            seq = _sequence_to_dict(
-                row,
-                ["implementer_path", "implementer_symbol", "implementer_sid", "rel_type", "line"],
-            )
-            return cls(
-                implementer_path=str(seq.get("implementer_path") or ""),
-                implementer_symbol=str(seq.get("implementer_symbol") or ""),
-                implementer_sid=str(seq.get("implementer_sid") or ""),
-                rel_type=str(seq.get("rel_type") or ""),
-                line=int(seq.get("line") or 0),
-            )
-        return cls()
-
-
-# --- Parser Result Objects (to avoid messy tuple indexing) ---
-
-
-class ParserSymbol(BaseModel):
-
-    sid: str
-
-    path: str
-
+@dataclass(frozen=True)
+class PipelineErrorEventDTO:
+    event_id: str
+    occurred_at: str
+    component: str
+    phase: str
+    severity: str
+    scope_type: str
+    repo_root: str | None
+    relative_path: str | None
+    job_id: str | None
+    attempt_count: int
+    error_code: str
+    error_message: str
+    error_type: str
+    stacktrace_text: str
+    context_json: str
+    worker_name: str
+    run_mode: str
+    resolved: bool
+    resolved_at: str | None
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "event_id": self.event_id,
+            "occurred_at": self.occurred_at,
+            "component": self.component,
+            "phase": self.phase,
+            "severity": self.severity,
+            "scope_type": self.scope_type,
+            "repo_root": self.repo_root,
+            "relative_path": self.relative_path,
+            "job_id": self.job_id,
+            "attempt_count": self.attempt_count,
+            "error_code": self.error_code,
+            "error_message": self.error_message,
+            "error_type": self.error_type,
+            "stacktrace_text": self.stacktrace_text,
+            "context_json": self.context_json,
+            "worker_name": self.worker_name,
+            "run_mode": self.run_mode,
+            "resolved": self.resolved,
+            "resolved_at": self.resolved_at,
+        }
+@dataclass(frozen=True)
+class PipelinePolicyDTO:
+    deletion_hold: bool
+    l3_p95_threshold_ms: int
+    dead_ratio_threshold_bps: int
+    enrich_worker_count: int
+    updated_at: str
+    bootstrap_mode_enabled: bool = False
+    bootstrap_l3_worker_count: int = 1
+    bootstrap_l3_queue_max: int = 1000
+    bootstrap_exit_min_l2_coverage_bps: int = 9500
+    bootstrap_exit_max_sec: int = 1800
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "deletion_hold": self.deletion_hold,
+            "l3_p95_threshold_ms": self.l3_p95_threshold_ms,
+            "dead_ratio_threshold_bps": self.dead_ratio_threshold_bps,
+            "enrich_worker_count": self.enrich_worker_count,
+            "bootstrap_mode_enabled": self.bootstrap_mode_enabled,
+            "bootstrap_l3_worker_count": self.bootstrap_l3_worker_count,
+            "bootstrap_l3_queue_max": self.bootstrap_l3_queue_max,
+            "bootstrap_exit_min_l2_coverage_bps": self.bootstrap_exit_min_l2_coverage_bps,
+            "bootstrap_exit_max_sec": self.bootstrap_exit_max_sec,
+            "updated_at": self.updated_at,
+        }
+@dataclass(frozen=True)
+class DeadJobItemDTO:
+    job_id: str
+    repo_root: str
+    relative_path: str
+    attempt_count: int
+    last_error: str | None
+    updated_at: str
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "job_id": self.job_id,
+            "repo_root": self.repo_root,
+            "relative_path": self.relative_path,
+            "attempt_count": self.attempt_count,
+            "last_error": self.last_error,
+            "updated_at": self.updated_at,
+        }
+@dataclass(frozen=True)
+class DeadJobActionResultDTO:
+    requeued_count: int = 0
+    purged_count: int = 0
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "requeued_count": self.requeued_count,
+            "purged_count": self.purged_count,
+        }
+@dataclass(frozen=True)
+class PipelineAlertSnapshotDTO:
+    state: str
+    window_seconds: int
+    event_count: int
+    dead_count: int
+    dead_ratio_bps: int
+    l3_p95_ms: int
+    threshold_dead_ratio_bps: int
+    threshold_l3_p95_ms: int
+    policy: PipelinePolicyDTO
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "state": self.state,
+            "window_seconds": self.window_seconds,
+            "event_count": self.event_count,
+            "dead_count": self.dead_count,
+            "dead_ratio_bps": self.dead_ratio_bps,
+            "l3_p95_ms": self.l3_p95_ms,
+            "threshold_dead_ratio_bps": self.threshold_dead_ratio_bps,
+            "threshold_l3_p95_ms": self.threshold_l3_p95_ms,
+            "policy": self.policy.to_dict(),
+        }
+@dataclass(frozen=True)
+class PipelineAutoControlStateDTO:
+    auto_hold_enabled: bool
+    auto_hold_active: bool
+    last_action: str
+    updated_at: str
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "auto_hold_enabled": self.auto_hold_enabled,
+            "auto_hold_active": self.auto_hold_active,
+            "last_action": self.last_action,
+            "updated_at": self.updated_at,
+        }
+@dataclass(frozen=True)
+class SymbolSearchItemDTO:
+    repo: str
+    relative_path: str
     name: str
-
     kind: str
-
     line: int
-
     end_line: int
-
-    content: str
-
-    parent: str = ""
-
-    meta: Dict[str, object] = Field(default_factory=dict)
-
-    qualname: str = ""
-
-    doc: str = ""
-
-
-class ParserRelation(BaseModel):
-
-    from_name: str
-
-    from_sid: str
-
-    to_name: str
-
-    to_sid: str = ""
-
-    rel_type: str
-
+    content_hash: str
+    symbol_key: str | None = None
+    parent_symbol_key: str | None = None
+    depth: int = 0
+    container_name: str | None = None
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "repo": self.repo,
+            "relative_path": self.relative_path,
+            "name": self.name,
+            "kind": self.kind,
+            "line": self.line,
+            "end_line": self.end_line,
+            "content_hash": self.content_hash,
+            "symbol_key": self.symbol_key,
+            "parent_symbol_key": self.parent_symbol_key,
+            "depth": self.depth,
+            "container_name": self.container_name,
+        }
+@dataclass(frozen=True)
+class CallerEdgeDTO:
+    repo: str
+    relative_path: str
+    from_symbol: str
+    to_symbol: str
     line: int
-
-    meta: Dict[str, object] = Field(default_factory=dict)
-
-    to_path: str = ""
-
-
-class ParseResult(BaseModel):
-
-    symbols: List[ParserSymbol] = Field(default_factory=list)
-
-    relations: List[ParserRelation] = Field(default_factory=list)
-
-    def __iter__(self):
-        # Backward compatibility: allow `symbols, relations = result`.
-        yield self.symbols
-        yield self.relations
+    content_hash: str
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "repo": self.repo,
+            "relative_path": self.relative_path,
+            "from_symbol": self.from_symbol,
+            "to_symbol": self.to_symbol,
+            "line": self.line,
+            "content_hash": self.content_hash,
+        }
+@dataclass(frozen=True)
+class L3ReferenceDataDTO:
+    symbols: list[dict[str, object]]
+    relations: list[dict[str, object]]
+    error_message: str | None
+    def has_error(self) -> bool:
+        return self.error_message is not None and self.error_message.strip() != ""
+@dataclass(frozen=True)
+class L3DiffResultDTO:
+    symbol_tp: int
+    symbol_fp: int
+    symbol_fn: int
+    caller_tp: int
+    caller_fp: int
+    caller_fn: int
+    error_message: str | None
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "symbol_tp": self.symbol_tp,
+            "symbol_fp": self.symbol_fp,
+            "symbol_fn": self.symbol_fn,
+            "caller_tp": self.caller_tp,
+            "caller_fp": self.caller_fp,
+            "caller_fn": self.caller_fn,
+            "error_message": self.error_message,
+        }
+@dataclass(frozen=True)
+class SnippetSaveDTO:
+    repo_root: str
+    source_path: str
+    start_line: int
+    end_line: int
+    tag: str
+    note: str | None
+    commit_hash: str | None
+    content_text: str
+    created_at: str
+    def to_sql_params(self) -> dict[str, object]:
+        return {
+            "repo_root": self.repo_root,
+            "source_path": self.source_path,
+            "start_line": self.start_line,
+            "end_line": self.end_line,
+            "tag": self.tag,
+            "note": self.note,
+            "commit_hash": self.commit_hash,
+            "content_text": self.content_text,
+            "created_at": self.created_at,
+        }
+@dataclass(frozen=True)
+class SnippetRecordDTO:
+    snippet_id: int
+    repo_root: str
+    source_path: str
+    start_line: int
+    end_line: int
+    tag: str
+    note: str | None
+    commit_hash: str | None
+    content_text: str
+    created_at: str
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "snippet_id": self.snippet_id,
+            "repo": self.repo_root,
+            "path": self.source_path,
+            "start_line": self.start_line,
+            "end_line": self.end_line,
+            "tag": self.tag,
+            "note": self.note,
+            "commit": self.commit_hash,
+            "content": self.content_text,
+            "created_at": self.created_at,
+        }
+@dataclass(frozen=True)
+class KnowledgeEntryDTO:
+    kind: str
+    repo_root: str
+    topic: str
+    content_text: str
+    tags: tuple[str, ...]
+    related_files: tuple[str, ...]
+    created_at: str
+    def to_sql_params(self) -> dict[str, object]:
+        return {
+            "kind": self.kind,
+            "repo_root": self.repo_root,
+            "topic": self.topic,
+            "content_text": self.content_text,
+            "tags_json": json.dumps(list(self.tags), ensure_ascii=False),
+            "related_files_json": json.dumps(list(self.related_files), ensure_ascii=False),
+            "created_at": self.created_at,
+        }
+@dataclass(frozen=True)
+class KnowledgeRecordDTO:
+    entry_id: int
+    kind: str
+    repo_root: str
+    topic: str
+    content_text: str
+    tags: tuple[str, ...]
+    related_files: tuple[str, ...]
+    created_at: str
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "entry_id": self.entry_id,
+            "kind": self.kind,
+            "repo": self.repo_root,
+            "topic": self.topic,
+            "content": self.content_text,
+            "tags": list(self.tags),
+            "related_files": list(self.related_files),
+            "created_at": self.created_at,
+        }
+def now_iso8601_utc() -> str:
+    return datetime.now(timezone.utc).isoformat()

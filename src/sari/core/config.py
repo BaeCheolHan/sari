@@ -1,0 +1,370 @@
+"""런타임 설정을 정의한다."""
+
+import os
+import json
+from dataclasses import dataclass
+from pathlib import Path
+
+from sari.core.language_registry import get_default_collection_extensions
+
+
+@dataclass(frozen=True)
+class AppConfig:
+    """애플리케이션 전역 설정 DTO다."""
+
+    db_path: Path
+    host: str
+    preferred_port: int
+    max_port_scan: int
+    stop_grace_sec: int
+    candidate_backend: str = "tantivy"
+    candidate_fallback_scan: bool = True
+    pipeline_retry_max: int = 5
+    pipeline_backoff_base_sec: int = 1
+    queue_poll_interval_ms: int = 500
+    watcher_debounce_ms: int = 300
+    collection_include_ext: tuple[str, ...] = get_default_collection_extensions()
+    collection_exclude_globs: tuple[str, ...] = ("**/.git/**", "**/node_modules/**", "**/dist/**", "**/build/**")
+    pipeline_worker_count: int = 4
+    pipeline_l3_p95_threshold_ms: int = 180_000
+    pipeline_dead_ratio_threshold_bps: int = 10
+    pipeline_alert_window_sec: int = 300
+    pipeline_auto_tick_interval_sec: int = 5
+    run_mode: str = "dev"
+    daemon_heartbeat_interval_sec: int = 2
+    daemon_stale_timeout_sec: int = 15
+    lsp_request_timeout_sec: float = 20.0
+    orphan_ppid_check_interval_sec: int = 1
+    shutdown_join_timeout_sec: int = 2
+    importance_kind_class: float = 600.0
+    importance_kind_function: float = 500.0
+    importance_kind_interface: float = 450.0
+    importance_kind_method: float = 350.0
+    importance_fan_in_weight: float = 24.0
+    importance_filename_exact_bonus: float = 1.0
+    importance_core_path_bonus: float = 0.6
+    importance_noisy_path_penalty: float = -0.7
+    importance_code_ext_bonus: float = 0.3
+    importance_noisy_ext_penalty: float = -1.0
+    importance_recency_24h_multiplier: float = 1.5
+    importance_recency_7d_multiplier: float = 1.3
+    importance_recency_30d_multiplier: float = 1.1
+    importance_normalize_mode: str = "log1p"
+    importance_max_boost: float = 200.0
+    importance_core_path_tokens: tuple[str, ...] = ("src", "app", "core")
+    importance_noisy_path_tokens: tuple[str, ...] = ("test", "tests", "build", "dist")
+    importance_code_extensions: tuple[str, ...] = (".py", ".pyi", ".ts", ".tsx", ".js", ".jsx", ".java", ".kt", ".kts", ".go", ".rs")
+    importance_noisy_extensions: tuple[str, ...] = (".lock", ".min.js")
+    vector_enabled: bool = False
+    vector_model_id: str = "hashbow-v1"
+    vector_dim: int = 128
+    vector_candidate_k: int = 50
+    vector_rerank_k: int = 20
+    vector_blend_weight: float = 0.2
+    vector_min_similarity_threshold: float = 0.15
+    vector_max_boost: float = 0.2
+    vector_min_token_count_for_rerank: int = 2
+    vector_apply_to_item_types: tuple[str, ...] = ("symbol", "file")
+    ranking_w_rrf: float = 0.55
+    ranking_w_importance: float = 0.30
+    ranking_w_vector: float = 0.15
+    ranking_w_hierarchy: float = 0.15
+
+    @classmethod
+    def default(cls) -> "AppConfig":
+        """기본 설정값으로 구성 객체를 생성한다."""
+        file_config = _load_user_config()
+        db_path_raw = os.getenv("SARI_DB_PATH", str(file_config.get("db_path", ""))).strip()
+        db_path = Path(db_path_raw).expanduser() if db_path_raw != "" else Path.home() / ".local" / "share" / "sari-v2" / "state.db"
+        backend = os.getenv("SARI_CANDIDATE_BACKEND", "tantivy").strip().lower()
+        if backend not in {"tantivy", "scan"}:
+            backend = "tantivy"
+        fallback_flag = os.getenv("SARI_CANDIDATE_FALLBACK_SCAN", "1").strip()
+        retry_max_raw = os.getenv("SARI_PIPELINE_RETRY_MAX", str(file_config.get("pipeline_retry_max", 5))).strip()
+        backoff_raw = os.getenv("SARI_PIPELINE_BACKOFF_BASE_SEC", str(file_config.get("pipeline_backoff_base_sec", 1))).strip()
+        poll_raw = os.getenv("SARI_QUEUE_POLL_INTERVAL_MS", str(file_config.get("queue_poll_interval_ms", 500))).strip()
+        debounce_raw = os.getenv("SARI_WATCHER_DEBOUNCE_MS", str(file_config.get("watcher_debounce_ms", 300))).strip()
+        worker_raw = os.getenv("SARI_PIPELINE_WORKER_COUNT", str(file_config.get("pipeline_worker_count", 4))).strip()
+        p95_raw = os.getenv("SARI_PIPELINE_L3_P95_THRESHOLD_MS", str(file_config.get("pipeline_l3_p95_threshold_ms", 180000))).strip()
+        dead_ratio_raw = os.getenv("SARI_PIPELINE_DEAD_RATIO_THRESHOLD_BPS", str(file_config.get("pipeline_dead_ratio_threshold_bps", 10))).strip()
+        alert_window_raw = os.getenv("SARI_PIPELINE_ALERT_WINDOW_SEC", str(file_config.get("pipeline_alert_window_sec", 300))).strip()
+        auto_tick_raw = os.getenv("SARI_PIPELINE_AUTO_TICK_INTERVAL_SEC", str(file_config.get("pipeline_auto_tick_interval_sec", 5))).strip()
+        run_mode_raw = os.getenv("SARI_RUN_MODE", str(file_config.get("run_mode", "dev"))).strip().lower()
+        heartbeat_raw = os.getenv("SARI_DAEMON_HEARTBEAT_INTERVAL_SEC", str(file_config.get("daemon_heartbeat_interval_sec", 2))).strip()
+        stale_timeout_raw = os.getenv("SARI_DAEMON_STALE_TIMEOUT_SEC", str(file_config.get("daemon_stale_timeout_sec", 15))).strip()
+        lsp_timeout_raw = os.getenv("SARI_LSP_REQUEST_TIMEOUT_SEC", str(file_config.get("lsp_request_timeout_sec", 20.0))).strip()
+        orphan_check_raw = os.getenv("SARI_ORPHAN_PPID_CHECK_INTERVAL_SEC", str(file_config.get("orphan_ppid_check_interval_sec", 1))).strip()
+        shutdown_join_raw = os.getenv("SARI_SHUTDOWN_JOIN_TIMEOUT_SEC", str(file_config.get("shutdown_join_timeout_sec", 2))).strip()
+        vector_enabled_raw = os.getenv("SARI_VECTOR_ENABLED", str(file_config.get("vector_enabled", False))).strip().lower()
+        vector_model_id = str(file_config.get("vector_model_id", "hashbow-v1")).strip()
+        vector_dim_raw = os.getenv("SARI_VECTOR_DIM", str(file_config.get("vector_dim", 128))).strip()
+        vector_candidate_raw = os.getenv("SARI_VECTOR_CANDIDATE_K", str(file_config.get("vector_candidate_k", 50))).strip()
+        vector_rerank_raw = os.getenv("SARI_VECTOR_RERANK_K", str(file_config.get("vector_rerank_k", 20))).strip()
+        vector_blend_raw = os.getenv("SARI_VECTOR_BLEND_WEIGHT", str(file_config.get("vector_blend_weight", 0.2))).strip()
+        vector_min_similarity_raw = os.getenv(
+            "SARI_VECTOR_MIN_SIMILARITY_THRESHOLD",
+            str(file_config.get("vector_min_similarity_threshold", 0.15)),
+        ).strip()
+        vector_max_boost_raw = os.getenv("SARI_VECTOR_MAX_BOOST", str(file_config.get("vector_max_boost", 0.2))).strip()
+        vector_min_token_raw = os.getenv(
+            "SARI_VECTOR_MIN_TOKEN_COUNT_FOR_RERANK",
+            str(file_config.get("vector_min_token_count_for_rerank", 2)),
+        ).strip()
+        importance_normalize_mode = str(
+            os.getenv("SARI_IMPORTANCE_NORMALIZE_MODE", str(file_config.get("importance_normalize_mode", "log1p")))
+        ).strip()
+        importance_max_boost_raw = os.getenv(
+            "SARI_IMPORTANCE_MAX_BOOST",
+            str(file_config.get("importance_max_boost", 200.0)),
+        ).strip()
+        ranking_w_rrf_raw = os.getenv("SARI_RANKING_W_RRF", str(file_config.get("ranking_w_rrf", 0.55))).strip()
+        ranking_w_importance_raw = os.getenv(
+            "SARI_RANKING_W_IMPORTANCE",
+            str(file_config.get("ranking_w_importance", 0.30)),
+        ).strip()
+        ranking_w_vector_raw = os.getenv(
+            "SARI_RANKING_W_VECTOR",
+            str(file_config.get("ranking_w_vector", 0.15)),
+        ).strip()
+        ranking_w_hierarchy_raw = os.getenv(
+            "SARI_RANKING_W_HIERARCHY",
+            str(file_config.get("ranking_w_hierarchy", 0.15)),
+        ).strip()
+        run_mode = "prod" if run_mode_raw == "prod" else "dev"
+        try:
+            retry_max = max(1, int(retry_max_raw))
+        except ValueError:
+            retry_max = 5
+        try:
+            backoff_sec = max(1, int(backoff_raw))
+        except ValueError:
+            backoff_sec = 1
+        try:
+            poll_ms = max(100, int(poll_raw))
+        except ValueError:
+            poll_ms = 500
+        try:
+            debounce_ms = max(50, int(debounce_raw))
+        except ValueError:
+            debounce_ms = 300
+        try:
+            worker_count = max(1, int(worker_raw))
+        except ValueError:
+            worker_count = 4
+        try:
+            p95_threshold_ms = max(1, int(p95_raw))
+        except ValueError:
+            p95_threshold_ms = 180_000
+        try:
+            dead_ratio_bps = max(1, int(dead_ratio_raw))
+        except ValueError:
+            dead_ratio_bps = 10
+        try:
+            alert_window_sec = max(60, int(alert_window_raw))
+        except ValueError:
+            alert_window_sec = 300
+        try:
+            auto_tick_sec = max(1, int(auto_tick_raw))
+        except ValueError:
+            auto_tick_sec = 5
+        try:
+            heartbeat_sec = max(1, int(heartbeat_raw))
+        except ValueError:
+            heartbeat_sec = 2
+        try:
+            stale_timeout_sec = max(5, int(stale_timeout_raw))
+        except ValueError:
+            stale_timeout_sec = 15
+        try:
+            lsp_request_timeout_sec = max(0.1, float(lsp_timeout_raw))
+        except ValueError:
+            lsp_request_timeout_sec = 20.0
+        try:
+            orphan_check_sec = max(1, int(orphan_check_raw))
+        except ValueError:
+            orphan_check_sec = 1
+        try:
+            shutdown_join_sec = max(1, int(shutdown_join_raw))
+        except ValueError:
+            shutdown_join_sec = 2
+        try:
+            vector_dim = max(16, int(vector_dim_raw))
+        except ValueError:
+            vector_dim = 128
+        try:
+            vector_candidate_k = max(1, int(vector_candidate_raw))
+        except ValueError:
+            vector_candidate_k = 50
+        try:
+            vector_rerank_k = max(1, int(vector_rerank_raw))
+        except ValueError:
+            vector_rerank_k = 20
+        try:
+            vector_blend_weight = max(0.0, min(1.0, float(vector_blend_raw)))
+        except ValueError:
+            vector_blend_weight = 0.2
+        try:
+            vector_min_similarity_threshold = max(0.0, min(1.0, float(vector_min_similarity_raw)))
+        except ValueError:
+            vector_min_similarity_threshold = 0.15
+        try:
+            vector_max_boost = max(0.0, min(1.0, float(vector_max_boost_raw)))
+        except ValueError:
+            vector_max_boost = 0.2
+        try:
+            vector_min_token_count_for_rerank = max(1, int(vector_min_token_raw))
+        except ValueError:
+            vector_min_token_count_for_rerank = 2
+        try:
+            importance_max_boost = max(0.0, float(importance_max_boost_raw))
+        except ValueError:
+            importance_max_boost = 200.0
+        try:
+            ranking_w_rrf = max(0.0, min(1.0, float(ranking_w_rrf_raw)))
+        except ValueError:
+            ranking_w_rrf = 0.55
+        try:
+            ranking_w_importance = max(0.0, min(1.0, float(ranking_w_importance_raw)))
+        except ValueError:
+            ranking_w_importance = 0.30
+        try:
+            ranking_w_vector = max(0.0, min(1.0, float(ranking_w_vector_raw)))
+        except ValueError:
+            ranking_w_vector = 0.15
+        try:
+            ranking_w_hierarchy = max(0.0, min(1.0, float(ranking_w_hierarchy_raw)))
+        except ValueError:
+            ranking_w_hierarchy = 0.15
+        total_weight = ranking_w_rrf + ranking_w_importance + ranking_w_vector + ranking_w_hierarchy
+        if total_weight > 0.0:
+            ranking_w_rrf = ranking_w_rrf / total_weight
+            ranking_w_importance = ranking_w_importance / total_weight
+            ranking_w_vector = ranking_w_vector / total_weight
+            ranking_w_hierarchy = ranking_w_hierarchy / total_weight
+        else:
+            ranking_w_rrf = 0.55
+            ranking_w_importance = 0.30
+            ranking_w_vector = 0.15
+            ranking_w_hierarchy = 0.15
+        normalized_mode = importance_normalize_mode.lower()
+        if normalized_mode not in {"none", "log1p", "minmax"}:
+            normalized_mode = "log1p"
+        include_ext_raw = os.getenv("SARI_COLLECTION_INCLUDE_EXT", "")
+        exclude_globs_raw = os.getenv("SARI_COLLECTION_EXCLUDE_GLOBS", "")
+        vector_apply_types_raw = os.getenv("SARI_VECTOR_APPLY_TO_ITEM_TYPES", "")
+        importance_core_paths_raw = os.getenv("SARI_IMPORTANCE_CORE_PATH_TOKENS", "")
+        importance_noisy_paths_raw = os.getenv("SARI_IMPORTANCE_NOISY_PATH_TOKENS", "")
+        importance_code_ext_raw = os.getenv("SARI_IMPORTANCE_CODE_EXTENSIONS", "")
+        importance_noisy_ext_raw = os.getenv("SARI_IMPORTANCE_NOISY_EXTENSIONS", "")
+        include_ext = _parse_csv_setting(
+            include_ext_raw,
+            default_value=_read_tuple_setting(file_config, "collection_include_ext", cls.collection_include_ext),
+        )
+        exclude_globs = _parse_csv_setting(
+            exclude_globs_raw,
+            default_value=_read_tuple_setting(file_config, "collection_exclude_globs", cls.collection_exclude_globs),
+        )
+        vector_apply_to_item_types = _parse_csv_setting(
+            vector_apply_types_raw,
+            default_value=_read_tuple_setting(file_config, "vector_apply_to_item_types", cls.vector_apply_to_item_types),
+        )
+        importance_core_path_tokens = _parse_csv_setting(
+            importance_core_paths_raw,
+            default_value=_read_tuple_setting(file_config, "importance_core_path_tokens", cls.importance_core_path_tokens),
+        )
+        importance_noisy_path_tokens = _parse_csv_setting(
+            importance_noisy_paths_raw,
+            default_value=_read_tuple_setting(file_config, "importance_noisy_path_tokens", cls.importance_noisy_path_tokens),
+        )
+        importance_code_extensions = _parse_csv_setting(
+            importance_code_ext_raw,
+            default_value=_read_tuple_setting(file_config, "importance_code_extensions", cls.importance_code_extensions),
+        )
+        importance_noisy_extensions = _parse_csv_setting(
+            importance_noisy_ext_raw,
+            default_value=_read_tuple_setting(file_config, "importance_noisy_extensions", cls.importance_noisy_extensions),
+        )
+        return cls(
+            db_path=db_path,
+            host="127.0.0.1",
+            preferred_port=47777,
+            max_port_scan=50,
+            stop_grace_sec=10,
+            candidate_backend=backend,
+            candidate_fallback_scan=(fallback_flag != "0"),
+            pipeline_retry_max=retry_max,
+            pipeline_backoff_base_sec=backoff_sec,
+            queue_poll_interval_ms=poll_ms,
+            watcher_debounce_ms=debounce_ms,
+            collection_include_ext=include_ext,
+            collection_exclude_globs=exclude_globs,
+            pipeline_worker_count=worker_count,
+            pipeline_l3_p95_threshold_ms=p95_threshold_ms,
+            pipeline_dead_ratio_threshold_bps=dead_ratio_bps,
+            pipeline_alert_window_sec=alert_window_sec,
+            pipeline_auto_tick_interval_sec=auto_tick_sec,
+            run_mode=run_mode,
+            daemon_heartbeat_interval_sec=heartbeat_sec,
+            daemon_stale_timeout_sec=stale_timeout_sec,
+            lsp_request_timeout_sec=lsp_request_timeout_sec,
+            orphan_ppid_check_interval_sec=orphan_check_sec,
+            shutdown_join_timeout_sec=shutdown_join_sec,
+            importance_normalize_mode=normalized_mode,
+            importance_max_boost=importance_max_boost,
+            importance_core_path_tokens=importance_core_path_tokens,
+            importance_noisy_path_tokens=importance_noisy_path_tokens,
+            importance_code_extensions=importance_code_extensions,
+            importance_noisy_extensions=importance_noisy_extensions,
+            vector_enabled=vector_enabled_raw in {"1", "true", "yes", "on"},
+            vector_model_id=vector_model_id if vector_model_id != "" else "hashbow-v1",
+            vector_dim=vector_dim,
+            vector_candidate_k=vector_candidate_k,
+            vector_rerank_k=vector_rerank_k,
+            vector_blend_weight=vector_blend_weight,
+            vector_min_similarity_threshold=vector_min_similarity_threshold,
+            vector_max_boost=vector_max_boost,
+            vector_min_token_count_for_rerank=vector_min_token_count_for_rerank,
+            vector_apply_to_item_types=vector_apply_to_item_types,
+            ranking_w_rrf=ranking_w_rrf,
+            ranking_w_importance=ranking_w_importance,
+            ranking_w_vector=ranking_w_vector,
+            ranking_w_hierarchy=ranking_w_hierarchy,
+        )
+
+
+def _load_user_config() -> dict[str, object]:
+    """사용자 설정 파일을 읽어 딕셔너리로 반환한다."""
+    config_path = Path.home() / ".sari" / "config.json"
+    if not config_path.exists() or not config_path.is_file():
+        return {}
+    try:
+        loaded = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(loaded, dict):
+        return {}
+    return loaded
+
+
+def _read_tuple_setting(file_config: dict[str, object], key: str, fallback: tuple[str, ...]) -> tuple[str, ...]:
+    """설정 딕셔너리의 문자열 배열 값을 튜플로 파싱한다."""
+    raw_value = file_config.get(key)
+    if not isinstance(raw_value, list):
+        return fallback
+    parsed: list[str] = []
+    for item in raw_value:
+        if isinstance(item, str) and item.strip() != "":
+            parsed.append(item.strip())
+    if len(parsed) == 0:
+        return fallback
+    return tuple(parsed)
+
+
+def _parse_csv_setting(raw_value: str, default_value: tuple[str, ...]) -> tuple[str, ...]:
+    """콤마 구분 환경변수를 튜플 설정으로 파싱한다."""
+    if raw_value.strip() == "":
+        return default_value
+    parsed = [part.strip() for part in raw_value.split(",") if part.strip() != ""]
+    if len(parsed) == 0:
+        return default_value
+    return tuple(parsed)

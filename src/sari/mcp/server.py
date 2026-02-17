@@ -1,653 +1,364 @@
-import json
+from __future__ import annotations
 import os
 import sys
-import threading
-import queue
-import concurrent.futures
-import socket
-from uuid import uuid4
-from typing import Optional, Mapping, TypeAlias
-from sari.mcp.adapters.workspace_runtime import (
-    WorkspaceRuntime,
-    get_workspace_runtime,
-)
-from sari.core.workspace import WorkspaceManager
-from sari.core.settings import settings
-from sari.core.config import Config
-from sari.mcp.policies import PolicyEngine
-from sari.mcp.middleware import PolicyMiddleware, run_middlewares
-from sari.mcp.tools.registry import ToolContext, build_default_registry
-from sari.mcp.telemetry import TelemetryLogger
-from sari.mcp.transport import McpTransport
-from sari.core.utils.logging import get_logger
-from sari.mcp.trace import trace
-from sari.mcp.server_sanitize import (
-    sanitize_for_llm_tools as _sanitize_for_llm_tools_impl,
-    sanitize_value as _sanitize_value_impl,
-)
-from sari.mcp.server_daemon_forward import (
-    close_all_daemon_connections as _close_all_daemon_connections_impl,
-    close_daemon_connection as _close_daemon_connection_impl,
-    ensure_daemon_connection as _ensure_daemon_connection_impl,
-    forward_error_response as _forward_error_response_impl,
-    forward_over_open_socket as _forward_over_open_socket_impl,
-)
-from sari.mcp.server_worker import (
-    drain_pending_requests as _drain_pending_requests_impl,
-    emit_queue_overload as _emit_queue_overload_impl,
-    enqueue_incoming_request as _enqueue_incoming_request_impl,
-    handle_and_respond as _handle_and_respond_impl,
-    submit_request_for_execution as _submit_request_for_execution_impl,
-    worker_loop as _worker_loop_impl,
-)
-from sari.mcp.server_logging import (
-    log_debug_message as _log_debug_message_impl,
-    log_debug_request as _log_debug_request_impl,
-    log_debug_response as _log_debug_response_impl,
-)
-from sari.mcp.server_bootstrap import build_runtime_options, parse_truthy_flag
-from sari.mcp.server_initialize import (
-    build_initialize_result as _build_initialize_result_impl,
-    choose_target_uri as _choose_target_uri_impl,
-    iter_client_protocol_versions as _iter_client_protocol_versions_impl,
-    negotiate_protocol_version as _negotiate_protocol_version_impl,
-)
-from sari.mcp.server_tool_runtime import (
-    ensure_connection_id as _ensure_connection_id_impl,
-    resolve_tool_runtime as _resolve_tool_runtime_impl,
-)
-from sari.mcp.server_request_dispatch import (
-    execute_local_method as _execute_local_method_impl,
-)
-from sari.mcp.server_transport_init import ensure_transport as _ensure_transport_impl
-from sari.mcp.server_shutdown import perform_shutdown as _perform_shutdown_impl
-from sari.mcp.server_entrypoint import run_entrypoint as _run_entrypoint_impl
-from sari.mcp.server_method_registry import (
-    build_dispatch_methods as _build_dispatch_methods_impl,
-    resolve_root_entries as _resolve_root_entries_impl,
-)
-from sari.mcp.server_session_state import (
-    ensure_initialized_session as _ensure_initialized_session_impl,
-)
-from sari.mcp.server_roots import collect_workspace_roots as _collect_workspace_roots_impl
+from pathlib import Path
+from typing import BinaryIO
+from sari.core.config import AppConfig
+from sari.core.daemon_resolver import resolve_daemon_address
+from sari.core.exceptions import ValidationError
+from sari.core.models import ErrorResponseDTO
+from sari.db.repositories.runtime_repository import RuntimeRepository
+from sari.db.repositories.candidate_index_change_repository import CandidateIndexChangeRepository
+from sari.db.repositories.symbol_cache_repository import SymbolCacheRepository
+from sari.db.repositories.symbol_importance_repository import SymbolImportanceRepository
+from sari.db.repositories.workspace_repository import WorkspaceRepository
+from sari.db.repositories.file_body_repository import FileBodyRepository
+from sari.db.repositories.file_collection_repository import FileCollectionRepository
+from sari.db.repositories.file_enrich_queue_repository import FileEnrichQueueRepository
+from sari.db.repositories.lsp_tool_data_repository import LspToolDataRepository
+from sari.db.repositories.knowledge_repository import KnowledgeRepository
+from sari.db.repositories.vector_embedding_repository import VectorEmbeddingRepository
+from sari.db.repositories.pipeline_benchmark_repository import PipelineBenchmarkRepository
+from sari.db.repositories.pipeline_quality_repository import PipelineQualityRepository
+from sari.db.repositories.language_probe_repository import LanguageProbeRepository
+from sari.db.repositories.pipeline_lsp_matrix_repository import PipelineLspMatrixRepository
+from sari.db.repositories.pipeline_control_state_repository import PipelineControlStateRepository
+from sari.db.repositories.pipeline_job_event_repository import PipelineJobEventRepository
+from sari.db.repositories.pipeline_error_event_repository import PipelineErrorEventRepository
+from sari.db.repositories.pipeline_policy_repository import PipelinePolicyRepository
+from sari.db.repositories.tool_readiness_repository import ToolReadinessRepository
+from sari.db.migration import ensure_migrated
+from sari.db.schema import init_schema
+from sari.lsp.hub import LspHub
+from sari.mcp.contracts import McpError, McpResponse
+from sari.mcp.tools.admin_tools import DoctorTool, RepoCandidatesTool, RescanTool
+from sari.mcp.tools.pipeline_admin_tools import PipelineAutoSetTool, PipelineAutoStatusTool, PipelineAutoTickTool, PipelineAlertStatusTool, PipelineDeadListTool, PipelineDeadPurgeTool, PipelineDeadRequeueTool, PipelinePolicyGetTool, PipelinePolicySetTool
+from sari.mcp.tools.pipeline_benchmark_tools import PipelineBenchmarkReportTool, PipelineBenchmarkRunTool
+from sari.mcp.tools.pipeline_lsp_matrix_tools import PipelineLspMatrixReportTool, PipelineLspMatrixRunTool
+from sari.mcp.tools.pipeline_quality_tools import PipelineQualityReportTool, PipelineQualityRunTool
+from sari.mcp.tools.pack1 import pack1_error
+from sari.mcp.tools.file_collection_tools import IndexFileTool, ListFilesTool, ReadFileTool, ScanOnceTool
+from sari.mcp.tools.symbol_tools import GetCallersTool, SearchSymbolTool
+from sari.mcp.transport import MCP_MODE_FRAMED, McpTransport, McpTransportParseError
+from sari.mcp.server_daemon_forward import DaemonForwardError, forward_once
+from sari.mcp.tools.search_tool import SearchTool
+from sari.mcp.tools.legacy_tools import ArchiveContextTool, CallGraphHealthTool, CallGraphTool, DryRunDiffTool, GetContextTool, GetImplementationsTool, GetSnippetTool, KnowledgeTool, ListSymbolsTool, ReadSymbolTool, ReadTool, SariGuideTool, SaveSnippetTool, StatusTool
+from sari.search.candidate_search import CandidateSearchService
+from sari.search.hierarchy_scorer import HierarchyScorer
+from sari.search.importance_scorer import ImportanceScorePolicyDTO, ImportanceScorer, ImportanceWeightsDTO
+from sari.search.orchestrator import RankingBlendConfigDTO, SearchOrchestrator
+from sari.search.symbol_resolve import SymbolResolveService
+from sari.search.vector_reranker import VectorConfigDTO, VectorIndexSink, VectorReranker
+from sari.services.admin_service import AdminService
+from sari.services.file_collection_service import build_default_file_collection_service
+from sari.services.pipeline_benchmark_service import BenchmarkLspExtractionBackend, PipelineBenchmarkService
+from sari.services.pipeline_control_service import PipelineControlService
+from sari.services.language_probe_service import LanguageProbeService
+from sari.services.pipeline_lsp_matrix_service import PipelineLspMatrixService
+from sari.services.pipeline_quality_service import PipelineQualityService, SerenaGoldenBackend
 
-try:
-    import orjson as _orjson
-except Exception:
-    _orjson = None
+class McpServer:
 
-JsonMap: TypeAlias = dict[str, object]
+    def __init__(self, db_path: Path) -> None:
+        init_schema(db_path)
+        ensure_migrated(db_path)
+        self._db_path = db_path
+        self._proxy_to_daemon = os.getenv('SARI_MCP_FORWARD_TO_DAEMON', '').strip().lower() in {'1', 'true', 'yes', 'on'}
+        self._daemon_forward_timeout_sec = _parse_daemon_forward_timeout(os.getenv('SARI_MCP_DAEMON_TIMEOUT_SEC', '').strip())
+        runtime_config = AppConfig.default()
+        workspace_repo = WorkspaceRepository(db_path)
+        self._workspace_repo = workspace_repo
+        runtime_repo = RuntimeRepository(db_path)
+        self._runtime_repo = runtime_repo
+        symbol_cache_repo = SymbolCacheRepository(db_path)
+        symbol_importance_repo = SymbolImportanceRepository(db_path)
+        file_repo = FileCollectionRepository(db_path)
+        enrich_queue_repo = FileEnrichQueueRepository(db_path)
+        body_repo = FileBodyRepository(db_path)
+        lsp_repo = LspToolDataRepository(db_path)
+        knowledge_repo = KnowledgeRepository(db_path)
+        readiness_repo = ToolReadinessRepository(db_path)
+        policy_repo = PipelinePolicyRepository(db_path)
+        control_state_repo = PipelineControlStateRepository(db_path)
+        event_repo = PipelineJobEventRepository(db_path)
+        error_event_repo = PipelineErrorEventRepository(db_path)
+        benchmark_repo = PipelineBenchmarkRepository(db_path)
+        quality_repo = PipelineQualityRepository(db_path)
+        language_probe_repo = LanguageProbeRepository(db_path)
+        lsp_matrix_repo = PipelineLspMatrixRepository(db_path)
+        vector_repo = VectorEmbeddingRepository(db_path)
+        candidate_change_repo = CandidateIndexChangeRepository(db_path)
+        importance_scorer = ImportanceScorer(file_repo=file_repo, lsp_repo=lsp_repo, cache_repo=symbol_importance_repo, weights=ImportanceWeightsDTO(kind_class=runtime_config.importance_kind_class, kind_function=runtime_config.importance_kind_function, kind_interface=runtime_config.importance_kind_interface, kind_method=runtime_config.importance_kind_method, fan_in_weight=runtime_config.importance_fan_in_weight, filename_exact_bonus=runtime_config.importance_filename_exact_bonus, core_path_bonus=runtime_config.importance_core_path_bonus, noisy_path_penalty=runtime_config.importance_noisy_path_penalty, code_ext_bonus=runtime_config.importance_code_ext_bonus, noisy_ext_penalty=runtime_config.importance_noisy_ext_penalty, recency_24h_multiplier=runtime_config.importance_recency_24h_multiplier, recency_7d_multiplier=runtime_config.importance_recency_7d_multiplier, recency_30d_multiplier=runtime_config.importance_recency_30d_multiplier), policy=ImportanceScorePolicyDTO(normalize_mode=runtime_config.importance_normalize_mode, max_importance_boost=runtime_config.importance_max_boost), core_path_tokens=runtime_config.importance_core_path_tokens, noisy_path_tokens=runtime_config.importance_noisy_path_tokens, code_extensions=runtime_config.importance_code_extensions, noisy_extensions=runtime_config.importance_noisy_extensions)
+        vector_config = VectorConfigDTO(enabled=runtime_config.vector_enabled, model_id=runtime_config.vector_model_id, dim=runtime_config.vector_dim, candidate_k=runtime_config.vector_candidate_k, rerank_k=runtime_config.vector_rerank_k, blend_weight=runtime_config.vector_blend_weight, min_similarity_threshold=runtime_config.vector_min_similarity_threshold, max_vector_boost=runtime_config.vector_max_boost, min_token_count_for_rerank=runtime_config.vector_min_token_count_for_rerank, apply_to_item_types=runtime_config.vector_apply_to_item_types)
+        vector_sink = VectorIndexSink(repository=vector_repo, config=vector_config)
+        vector_reranker = VectorReranker(repository=vector_repo, config=vector_config)
+        hierarchy_scorer = HierarchyScorer()
+        candidate_service = CandidateSearchService.build_default(max_file_size_bytes=512 * 1024, index_root=db_path.parent / 'candidate_index', backend_mode='tantivy', enable_scan_fallback=True, change_repo=candidate_change_repo)
+        file_collection_service = build_default_file_collection_service(workspace_repo=workspace_repo, file_repo=file_repo, enrich_queue_repo=enrich_queue_repo, body_repo=body_repo, lsp_repo=lsp_repo, readiness_repo=readiness_repo, policy_repo=policy_repo, event_repo=event_repo, error_event_repo=error_event_repo, candidate_index_sink=candidate_service, vector_index_sink=vector_sink, include_ext=runtime_config.collection_include_ext, exclude_globs=runtime_config.collection_exclude_globs, watcher_debounce_ms=runtime_config.watcher_debounce_ms, run_mode='prod')
+        benchmark_collection_service = build_default_file_collection_service(workspace_repo=workspace_repo, file_repo=file_repo, enrich_queue_repo=enrich_queue_repo, body_repo=body_repo, lsp_repo=lsp_repo, readiness_repo=readiness_repo, policy_repo=policy_repo, event_repo=event_repo, error_event_repo=error_event_repo, run_mode='prod', lsp_backend=BenchmarkLspExtractionBackend(), persist_body_for_read=False)
+        benchmark_service = PipelineBenchmarkService(file_collection_service=benchmark_collection_service, queue_repo=enrich_queue_repo, lsp_repo=lsp_repo, policy_repo=policy_repo, benchmark_repo=benchmark_repo, artifact_root=db_path.parent / 'artifacts')
+        quality_service = PipelineQualityService(file_repo=file_repo, lsp_repo=lsp_repo, quality_repo=quality_repo, golden_backend=SerenaGoldenBackend(hub=LspHub(request_timeout_sec=runtime_config.lsp_request_timeout_sec)), artifact_root=db_path.parent / 'artifacts')
+        language_probe_service = LanguageProbeService(workspace_repo=workspace_repo, lsp_hub=LspHub(request_timeout_sec=runtime_config.lsp_request_timeout_sec), probe_repo=language_probe_repo)
+        pipeline_lsp_matrix_service = PipelineLspMatrixService(probe_service=language_probe_service, run_repo=lsp_matrix_repo)
+        pipeline_control_service = PipelineControlService(policy_repo=policy_repo, event_repo=event_repo, queue_repo=enrich_queue_repo, control_state_repo=control_state_repo)
+        admin_service = AdminService(config=AppConfig(db_path=db_path, host='127.0.0.1', preferred_port=47777, max_port_scan=50, stop_grace_sec=10), workspace_repo=workspace_repo, runtime_repo=runtime_repo, symbol_cache_repo=symbol_cache_repo)
+        orchestrator = SearchOrchestrator(workspace_repo=workspace_repo, candidate_service=candidate_service, symbol_service=SymbolResolveService(hub=LspHub(request_timeout_sec=runtime_config.lsp_request_timeout_sec), cache_repo=symbol_cache_repo), importance_scorer=importance_scorer, hierarchy_scorer=hierarchy_scorer, vector_reranker=vector_reranker, blend_config=RankingBlendConfigDTO(w_rrf=runtime_config.ranking_w_rrf, w_importance=runtime_config.ranking_w_importance, w_vector=runtime_config.ranking_w_vector, w_hierarchy=runtime_config.ranking_w_hierarchy, version='v2-config'))
+        self._search_tool = SearchTool(orchestrator=orchestrator, workspace_repo=workspace_repo, metrics_provider=file_collection_service.get_pipeline_metrics)
+        self._doctor_tool = DoctorTool(admin_service=admin_service, workspace_repo=workspace_repo)
+        self._rescan_tool = RescanTool(admin_service=admin_service, workspace_repo=workspace_repo)
+        self._repo_candidates_tool = RepoCandidatesTool(admin_service=admin_service, workspace_repo=workspace_repo)
+        self._scan_once_tool = ScanOnceTool(workspace_repo=workspace_repo, collection_service=file_collection_service)
+        self._list_files_tool = ListFilesTool(workspace_repo=workspace_repo, collection_service=file_collection_service)
+        self._read_file_tool = ReadFileTool(workspace_repo=workspace_repo, collection_service=file_collection_service)
+        self._index_file_tool = IndexFileTool(workspace_repo=workspace_repo, collection_service=file_collection_service)
+        self._search_symbol_tool = SearchSymbolTool(workspace_repo=workspace_repo, lsp_repo=lsp_repo)
+        self._get_callers_tool = GetCallersTool(workspace_repo=workspace_repo, lsp_repo=lsp_repo)
+        self._sari_guide_tool = SariGuideTool()
+        self._status_tool = StatusTool(workspace_repo=workspace_repo, runtime_repo=runtime_repo, file_repo=file_repo, lsp_repo=lsp_repo, language_probe_repo=language_probe_repo)
+        self._read_tool = ReadTool(workspace_repo=workspace_repo, file_collection_service=file_collection_service, lsp_repo=lsp_repo, knowledge_repo=knowledge_repo)
+        self._dry_run_diff_tool = DryRunDiffTool(read_tool=self._read_tool)
+        self._list_symbols_tool = ListSymbolsTool(workspace_repo=workspace_repo, lsp_repo=lsp_repo)
+        self._read_symbol_tool = ReadSymbolTool(workspace_repo=workspace_repo, lsp_repo=lsp_repo)
+        self._get_implementations_tool = GetImplementationsTool(workspace_repo=workspace_repo, lsp_repo=lsp_repo)
+        self._call_graph_tool = CallGraphTool(workspace_repo=workspace_repo, lsp_repo=lsp_repo)
+        self._call_graph_health_tool = CallGraphHealthTool(workspace_repo=workspace_repo, lsp_repo=lsp_repo)
+        self._knowledge_tool = KnowledgeTool(workspace_repo=workspace_repo, knowledge_repo=knowledge_repo)
+        self._save_snippet_tool = SaveSnippetTool(workspace_repo=workspace_repo, knowledge_repo=knowledge_repo)
+        self._get_snippet_tool = GetSnippetTool(workspace_repo=workspace_repo, knowledge_repo=knowledge_repo)
+        self._archive_context_tool = ArchiveContextTool(workspace_repo=workspace_repo, knowledge_repo=knowledge_repo)
+        self._get_context_tool = GetContextTool(workspace_repo=workspace_repo, knowledge_repo=knowledge_repo)
+        self._pipeline_policy_get_tool = PipelinePolicyGetTool(workspace_repo=workspace_repo, service=pipeline_control_service)
+        self._pipeline_policy_set_tool = PipelinePolicySetTool(workspace_repo=workspace_repo, service=pipeline_control_service)
+        self._pipeline_alert_status_tool = PipelineAlertStatusTool(workspace_repo=workspace_repo, service=pipeline_control_service)
+        self._pipeline_dead_list_tool = PipelineDeadListTool(workspace_repo=workspace_repo, service=pipeline_control_service)
+        self._pipeline_dead_requeue_tool = PipelineDeadRequeueTool(workspace_repo=workspace_repo, service=pipeline_control_service)
+        self._pipeline_dead_purge_tool = PipelineDeadPurgeTool(workspace_repo=workspace_repo, service=pipeline_control_service)
+        self._pipeline_auto_status_tool = PipelineAutoStatusTool(workspace_repo=workspace_repo, service=pipeline_control_service)
+        self._pipeline_auto_set_tool = PipelineAutoSetTool(workspace_repo=workspace_repo, service=pipeline_control_service)
+        self._pipeline_auto_tick_tool = PipelineAutoTickTool(workspace_repo=workspace_repo, service=pipeline_control_service)
+        self._pipeline_benchmark_run_tool = PipelineBenchmarkRunTool(workspace_repo=workspace_repo, benchmark_service=benchmark_service)
+        self._pipeline_benchmark_report_tool = PipelineBenchmarkReportTool(workspace_repo=workspace_repo, benchmark_service=benchmark_service)
+        self._pipeline_quality_run_tool = PipelineQualityRunTool(workspace_repo=workspace_repo, quality_service=quality_service)
+        self._pipeline_quality_report_tool = PipelineQualityReportTool(workspace_repo=workspace_repo, quality_service=quality_service)
+        self._pipeline_lsp_matrix_run_tool = PipelineLspMatrixRunTool(workspace_repo=workspace_repo, matrix_service=pipeline_lsp_matrix_service)
+        self._pipeline_lsp_matrix_report_tool = PipelineLspMatrixReportTool(workspace_repo=workspace_repo, matrix_service=pipeline_lsp_matrix_service)
 
-
-class JsonRpcException(Exception):
-    def __init__(self, code: int, message: str, data: object = None):
-        self.code = code
-        self.message = message
-        self.data = data
-
-
-def _json_dumps(obj: object) -> str:
-    if _orjson:
-        return _orjson.dumps(obj).decode("utf-8")
-    return json.dumps(obj)
-
-
-MAX_MESSAGE_SIZE = 10 * 1024 * 1024  # 10MB
-
-
-class LocalSearchMCPServer:
-    """
-    Modernized MCP Server for Sari.
-    Delegates workspace management to WorkspaceRegistry.
-    """
-    PROTOCOL_VERSION = "2025-11-25"
-    SUPPORTED_VERSIONS = {
-        "2024-11-05",
-        "2025-03-26",
-        "2025-06-18",
-        "2025-11-25"}
-    SERVER_NAME = "sari"
-    SERVER_VERSION = settings.VERSION
-    _SENSITIVE_KEYS = (
-        "token",
-        "secret",
-        "password",
-        "api_key",
-        "apikey",
-        "authorization",
-        "cookie",
-        "key")
-
-    def __init__(
-            self,
-            workspace_root: str,
-            cfg: object = None,
-            db: object = None,
-            indexer: object = None,
-            workspace_runtime: Optional[WorkspaceRuntime] = None,
-            start_worker: bool = True):
-        self.workspace_root = workspace_root
-        trace(
-            "server_init_start",
-            workspace_root=self.workspace_root,
-            injected_cfg=bool(cfg),
-            injected_db=bool(db),
-            injected_indexer=bool(indexer),
-            start_worker=start_worker,
-        )
-        # Keep optional injected handles for backward compatibility with older
-        # callers.
-        self._injected_cfg = cfg
-        self._injected_db = db
-        self._injected_indexer = indexer
-        # Backward-compatible attribute name kept for tests and legacy code.
-        self.registry = workspace_runtime or get_workspace_runtime()
-        self.policy_engine = PolicyEngine(mode=settings.SEARCH_FIRST_MODE)
-        self.logger = TelemetryLogger(WorkspaceManager.get_global_log_dir())
-        self.struct_logger = get_logger("sari.mcp.protocol")
-        self._tool_registry = build_default_registry()
-        self._middlewares = [PolicyMiddleware(self.policy_engine)]
-        runtime_opts = build_runtime_options(
-            env=os.environ,
-            debug_default=settings.DEBUG,
-            queue_size=settings.get_int("MCP_QUEUE_SIZE", 1000),
-        )
-        self._debug_enabled = runtime_opts.debug_enabled
-        self._dev_jsonl = runtime_opts.dev_jsonl
-        self._force_content_length = runtime_opts.force_content_length
-        # Add maxsize to prevent memory bloat under heavy load
-        self._req_queue: "queue.Queue[JsonMap]" = queue.Queue(
-            maxsize=runtime_opts.queue_size)
-        self._stop = threading.Event()
-        self._stdout_lock = threading.Lock()
-        self.transport = None
-        self._session = None
-        self._session_acquired = False
-        self._daemon_lock = threading.Lock()
-        self._daemon_channels_lock = threading.Lock()
-        self._daemon_channels: dict[int, object] = {}
-        # Duplicate assignment removed. Use _debug_enabled from above.
-
-        # Daemon proxy is handled by the stdio proxy process, not the MCP
-        # server.
-        self._proxy_to_daemon = False
-        self._daemon_sock = None
-        self._server_connection_id = str(uuid4())
-
-        self._executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=runtime_opts.max_workers)
-        self._worker = threading.Thread(target=self._worker_loop, daemon=True)
-        if start_worker:
-            self._worker.start()
-        trace(
-            "server_init_done",
-            workspace_root=self.workspace_root,
-            proxy_to_daemon=self._proxy_to_daemon)
-
-    def handle_initialize(self, params: Mapping[str, object]) -> JsonMap:
-        trace(
-            "initialize_enter",
-            workspace_root=self.workspace_root,
-            params_keys=sorted(list(params.keys())),
-            has_root_uri=bool(params.get("rootUri") or params.get("rootPath")),
-            protocol_version=params.get("protocolVersion"),
-            supported_versions=params.get("supportedProtocolVersions"),
-        )
-        target_uri = _choose_target_uri_impl(params)
-
-        if target_uri:
-            # Update workspace if provided by client
-            self.workspace_root = WorkspaceManager.resolve_workspace_root(
-                root_uri=target_uri)
-            trace(
-                "initialize_resolved_workspace",
-                workspace_root=self.workspace_root,
-                target_uri=target_uri)
-
-        negotiated_version = self._negotiate_protocol_version(params)
-        trace("initialize_negotiated_version", version=negotiated_version)
-
-        return _build_initialize_result_impl(
-            negotiated_version, self.SERVER_NAME, self.SERVER_VERSION
-        )
-
-    def _iter_client_protocol_versions(
-            self, params: Mapping[str, object]) -> list[str]:
-        return _iter_client_protocol_versions_impl(params)
-
-    def _negotiate_protocol_version(self, params: Mapping[str, object]) -> str:
-        strict = parse_truthy_flag(os.environ.get("SARI_STRICT_PROTOCOL"))
-        return _negotiate_protocol_version_impl(
-            params=params,
-            supported_versions=self.SUPPORTED_VERSIONS,
-            default_version=self.PROTOCOL_VERSION,
-            strict_protocol=strict,
-            error_builder=lambda supported: JsonRpcException(
-                -32602,
-                "Unsupported protocol version",
-                data={"supported": supported},
-            ),
-        )
-
-    def handle_initialized(self, params: Mapping[str, object]) -> None:
-        """Called by client after initialize response is received."""
-        # Optional: Start background tasks here if needed
-        pass
-
-    def handle_tools_call(self, params: Mapping[str, object]) -> JsonMap:
-        tool_name = params.get("name")
-        raw_args = params.get("arguments", {})
-        base_args = dict(raw_args) if isinstance(raw_args, Mapping) else {}
-        args = _ensure_connection_id_impl(base_args, self._server_connection_id)
-        runtime = _resolve_tool_runtime_impl(
-            injected_cfg=self._injected_cfg,
-            injected_db=self._injected_db,
-            injected_indexer=self._injected_indexer,
-            session=self._session,
-            registry=self.registry,
-            workspace_root=self.workspace_root,
-            error_builder=lambda msg: JsonRpcException(-32000, msg),
-        )
-        if runtime.session is not None:
-            self._session = runtime.session
-        if runtime.session_acquired:
-            self._session_acquired = True
-
-        ctx = ToolContext(
-            db=runtime.db,
-            engine=getattr(runtime.db, "engine", None),
-            indexer=runtime.indexer,
-            roots=runtime.roots,
-            cfg=self._injected_cfg,
-            logger=self.logger,
-            workspace_root=self.workspace_root,
-            server_version=self.SERVER_VERSION,
-            policy_engine=self.policy_engine
-        )
-
-        return run_middlewares(
-            tool_name,
-            ctx,
-            args,
-            self._middlewares,
-            lambda: self._tool_registry.execute(tool_name, ctx, args),
-        )
-
-    def list_roots(self) -> list[dict[str, str]]:
-        """Return configured workspace roots as MCP root objects."""
-        roots = _collect_workspace_roots_impl(
-            workspace_root=self.workspace_root,
-            resolve_config_path=WorkspaceManager.resolve_config_path,
-            config_load=Config.load,
-            resolve_workspace_roots=WorkspaceManager.resolve_workspace_roots,
-        )
-        return _resolve_root_entries_impl(roots)
-
-    @staticmethod
-    def _sanitize_for_llm_tools(schema: dict) -> dict:
-        return _sanitize_for_llm_tools_impl(schema)
-
-    def list_tools(self) -> list[dict[str, object]]:
-        tools = self._tool_registry.list_tools()
-        return [
-            {
-                "name": str(t.get("name", "")),
-                "description": str(t.get("description", "")),
-                "inputSchema": self._sanitize_for_llm_tools(dict(t.get("inputSchema") or {})),
-                **({"deprecated": True} if bool(t.get("deprecated")) else {}),
-            }
-            for t in tools
-        ]
-
-    def handle_tools_list(self, params: Mapping[str, object]) -> JsonMap:
-        """Test helper: Handle tools/list request."""
-        return {"tools": self.list_tools()}
-
-    def _ensure_initialized(self) -> None:
-        """Test helper: Ensure session is initialized."""
-        self._session, self._session_acquired = _ensure_initialized_session_impl(
-            session=self._session,
-            injected_db=self._injected_db,
-            registry=self.registry,
-            workspace_root=self.workspace_root,
-            session_acquired=self._session_acquired,
-        )
-
-    def _tool_status(self, args: dict[str, object]) -> JsonMap:
-        """Test helper: Execute status tool."""
-        self._ensure_initialized()
-        return self.handle_tools_call({"name": "status", "arguments": args})
-
-    def _tool_search(self, args: dict[str, object]) -> JsonMap:
-        """Test helper: Execute search tool."""
-        self._ensure_initialized()
-        return self.handle_tools_call({"name": "search", "arguments": args})
-
-    def _dispatch_methods(self) -> dict[str, object]:
-        return _build_dispatch_methods_impl(
-            handle_initialize=self.handle_initialize,
-            list_tools=self.list_tools,
-            list_roots=self.list_roots,
-            server_name=self.SERVER_NAME,
-            server_version=self.SERVER_VERSION,
-            workspace_root=self.workspace_root,
-            pid=os.getpid(),
-        )
-
-    def handle_request(
-            self, request: object) -> Optional[JsonMap]:
-        if not isinstance(request, Mapping):
-            return {
-                "jsonrpc": "2.0",
-                "id": None,
-                "error": {"code": -32600, "message": "Invalid Request"},
-            }
-        request_map: Mapping[str, object] = request
-        trace(
-            "handle_request_enter",
-            method=request_map.get("method"),
-            msg_id=request_map.get("id"),
-            proxy_to_daemon=self._proxy_to_daemon,
-        )
-        if self._proxy_to_daemon:
-            resp = self._forward_to_daemon(dict(request_map))
-            if isinstance(resp, dict):
-                err = resp.get("error") if isinstance(resp, dict) else None
-                if isinstance(err, dict) and err.get("code") == -32002:
-                    # Daemon is unreachable; fall back to local stdio handling.
-                    self._log_debug(
-                        "Daemon proxy failed; falling back to local MCP server.")
-                    self._proxy_to_daemon = False
-                    self._close_all_daemon_connections()
-                    trace("daemon_proxy_fallback", error=err)
-                else:
-                    trace(
-                        "handle_request_proxy_response",
-                        has_error=bool(err),
-                        msg_id=request_map.get("id"))
-                    return resp
-            else:
-                return resp
-
-        method, params, msg_id = request_map.get(
-            "method"), request_map.get("params", {}), request_map.get("id")
-        if msg_id is None:
-            return None  # Ignore notifications for now
-
-        try:
-            resp = _execute_local_method_impl(
-                method=method,
-                params=params if isinstance(params, Mapping) else {},
-                msg_id=msg_id,
-                handle_tools_call=self.handle_tools_call,
-                dispatch_methods=self._dispatch_methods(),
-            )
-            trace(
-                "handle_request_exit",
-                method=method,
-                msg_id=msg_id,
-                ok="error" not in resp,
-            )
-            return resp
-        except JsonRpcException as e:
-            trace(
-                "handle_request_error",
-                method=method,
-                msg_id=msg_id,
-                code=e.code,
-                message=e.message)
-            return {
-                "jsonrpc": "2.0",
-                "id": msg_id,
-                "error": {
-                    "code": e.code,
-                    "message": e.message,
-                    "data": e.data}}
-        except Exception as e:
-            trace(
-                "handle_request_error",
-                method=method,
-                msg_id=msg_id,
-                code=-32000,
-                message=str(e))
-            return {
-                "jsonrpc": "2.0",
-                "id": msg_id,
-                "error": {
-                    "code": -32000,
-                    "message": str(e)}}
-
-    def _forward_to_daemon(
-            self, request: JsonMap) -> Optional[JsonMap]:
-        """Forward MCP request to the TCP daemon and return response."""
-        tid = threading.get_ident()
-        trace(
-            "forward_to_daemon_enter",
-            msg_id=request.get("id"),
-            method=request.get("method"))
-        try:
-            conn, f = self._ensure_daemon_connection(tid)
+    def handle_request(self, payload: dict[str, object]) -> McpResponse:
+        request_id = payload.get('id')
+        method = payload.get('method')
+        if not isinstance(method, str):
+            return McpResponse(request_id=request_id, result=None, error=McpError(code=-32600, message='invalid request'))
+        if self._should_forward(payload, method):
+            return self._forward_to_daemon(payload=payload, request_id=request_id)
+        if method == 'initialize':
+            return McpResponse(request_id=request_id, result={'protocolVersion': '2024-11-05', 'serverInfo': {'name': 'sari-v2', 'version': '0.1.0'}, 'capabilities': {'tools': {}}}, error=None)
+        if method == 'sari/identify':
+            return McpResponse(request_id=request_id, result={'name': 'sari-v2', 'version': '0.1.0', 'workspaceRoot': self._default_workspace_root(), 'pid': os.getpid()}, error=None)
+        if method == 'prompts/list':
+            return McpResponse(request_id=request_id, result={'prompts': []}, error=None)
+        if method == 'resources/list':
+            return McpResponse(request_id=request_id, result={'resources': []}, error=None)
+        if method == 'resources/templates/list':
+            return McpResponse(request_id=request_id, result={'resourceTemplates': []}, error=None)
+        if method == 'roots/list':
+            return McpResponse(request_id=request_id, result={'roots': self._roots_list()}, error=None)
+        if method == 'initialized':
+            return McpResponse(request_id=request_id, result={}, error=None)
+        if method == 'notifications/initialized':
+            return McpResponse(request_id=request_id, result={}, error=None)
+        if method == 'ping':
+            return McpResponse(request_id=request_id, result={}, error=None)
+        if method == 'tools/list':
+            return McpResponse(request_id=request_id, result={'tools': [{'name': 'sari_guide', 'description': 'Return quick usage guide in pack1 format', 'inputSchema': {'type': 'object', 'properties': {}}}, {'name': 'status', 'description': 'Return repository runtime/index status in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'search', 'description': 'Search symbols/files in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo', 'query'], 'properties': {'repo': {'type': 'string'}, 'query': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'doctor', 'description': 'Return runtime health checks in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'rescan', 'description': 'Invalidate symbol cache in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'repo_candidates', 'description': 'List repository candidates in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'read', 'description': 'Unified read interface in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'mode': {'type': 'string'}, 'target': {'type': 'string'}, 'path': {'type': 'string'}, 'offset': {'type': 'integer', 'minimum': 0}, 'limit': {'type': 'integer', 'minimum': 1}, 'content': {'type': 'string'}, 'against': {'type': 'string'}, 'tag': {'type': 'string'}}}}, {'name': 'dry_run_diff', 'description': 'Legacy diff preview wrapper in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo', 'path', 'content'], 'properties': {'repo': {'type': 'string'}, 'path': {'type': 'string'}, 'content': {'type': 'string'}, 'against': {'type': 'string'}}}}, {'name': 'scan_once', 'description': 'Scan repository files once and enqueue enrich jobs', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'list_files', 'description': 'List indexed files for repository in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}, 'prefix': {'type': 'string'}}}}, {'name': 'read_file', 'description': 'Read indexed file content in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo', 'relative_path'], 'properties': {'repo': {'type': 'string'}, 'relative_path': {'type': 'string'}, 'offset': {'type': 'integer', 'minimum': 0}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'index_file', 'description': 'Incrementally index single file in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo', 'relative_path'], 'properties': {'repo': {'type': 'string'}, 'relative_path': {'type': 'string'}}}}, {'name': 'list_symbols', 'description': 'List indexed symbols in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'query': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'read_symbol', 'description': 'Read symbol detail in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'name': {'type': 'string'}, 'symbol_id': {'type': 'string'}, 'sid': {'type': 'string'}, 'path': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'search_symbol', 'description': 'Search indexed symbols in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo', 'query'], 'properties': {'repo': {'type': 'string'}, 'query': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}, 'path_prefix': {'type': 'string'}}}}, {'name': 'get_callers', 'description': 'Get caller edges for symbol in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'symbol': {'type': 'string'}, 'symbol_id': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'get_implementations', 'description': 'Get implementation candidates for symbol in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'symbol': {'type': 'string'}, 'symbol_id': {'type': 'string'}, 'sid': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'call_graph', 'description': 'Get call graph for symbol in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'symbol': {'type': 'string'}, 'symbol_id': {'type': 'string'}, 'sid': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'call_graph_health', 'description': 'Get call graph health summary in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'knowledge', 'description': 'Query archived knowledge entries in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'query': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'save_snippet', 'description': 'Save code snippet to local store in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo', 'path', 'start_line', 'end_line', 'tag'], 'properties': {'repo': {'type': 'string'}, 'path': {'type': 'string'}, 'start_line': {'type': 'integer', 'minimum': 1}, 'end_line': {'type': 'integer', 'minimum': 1}, 'tag': {'type': 'string'}, 'note': {'type': 'string'}, 'commit': {'type': 'string'}}}}, {'name': 'get_snippet', 'description': 'Query saved snippets in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'tag': {'type': 'string'}, 'query': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'archive_context', 'description': 'Archive context notes in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo', 'topic', 'content'], 'properties': {'repo': {'type': 'string'}, 'topic': {'type': 'string'}, 'content': {'type': 'string'}, 'tags': {'type': 'array', 'items': {'type': 'string'}}, 'related_files': {'type': 'array', 'items': {'type': 'string'}}}}}, {'name': 'get_context', 'description': 'Get archived context notes in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'query': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'pipeline_policy_get', 'description': 'Get pipeline policy in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'pipeline_policy_set', 'description': 'Set pipeline policy in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'deletion_hold': {'type': ['string', 'boolean']}, 'l3_p95_threshold_ms': {'type': 'integer', 'minimum': 1}, 'dead_ratio_threshold_bps': {'type': 'integer', 'minimum': 1}, 'workers': {'type': 'integer', 'minimum': 1}, 'alert_window_sec': {'type': 'integer', 'minimum': 60}}}}, {'name': 'pipeline_alert_status', 'description': 'Get pipeline alert snapshot in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'pipeline_dead_list', 'description': 'List dead enrich jobs in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'pipeline_dead_requeue', 'description': 'Requeue dead enrich jobs in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}, 'all': {'type': ['boolean', 'string']}}}}, {'name': 'pipeline_dead_purge', 'description': 'Purge dead enrich jobs in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}, 'all': {'type': ['boolean', 'string']}}}}, {'name': 'pipeline_auto_status', 'description': 'Get pipeline auto-control state in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'pipeline_auto_set', 'description': 'Set pipeline auto-control enabled flag in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo', 'enabled'], 'properties': {'repo': {'type': 'string'}, 'enabled': {'type': ['string', 'boolean']}}}}, {'name': 'pipeline_auto_tick', 'description': 'Evaluate pipeline auto-control once in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'pipeline_benchmark_run', 'description': 'Run pipeline benchmark and return summary in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'target_files': {'type': 'integer', 'minimum': 1}, 'profile': {'type': 'string'}, 'language_filter': {'type': ['string', 'array'], 'items': {'type': 'string'}}, 'per_language_report': {'type': ['boolean', 'string']}}}}, {'name': 'pipeline_benchmark_report', 'description': 'Return latest pipeline benchmark summary in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'pipeline_quality_run', 'description': 'Run L3 quality evaluation in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'limit_files': {'type': 'integer', 'minimum': 1}, 'profile': {'type': 'string'}, 'language_filter': {'type': ['string', 'array'], 'items': {'type': 'string'}}}}}, {'name': 'pipeline_quality_report', 'description': 'Return latest L3 quality summary in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'pipeline_lsp_matrix_run', 'description': 'Run LSP readiness matrix and hard gate in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'required_languages': {'type': ['string', 'array'], 'items': {'type': 'string'}}, 'fail_on_unavailable': {'type': ['boolean', 'string']}, 'strict_all_languages': {'type': ['boolean', 'string']}, 'strict_symbol_gate': {'type': ['boolean', 'string']}}}}, {'name': 'pipeline_lsp_matrix_report', 'description': 'Return latest LSP readiness matrix report in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}]}, error=None)
+        if method == 'tools/call':
+            params = payload.get('params')
+            if not isinstance(params, dict):
+                return McpResponse(request_id=request_id, result=None, error=McpError(code=-32602, message='invalid params'))
+            tool_name = params.get('name')
+            arguments = params.get('arguments', {})
+            if not isinstance(arguments, dict):
+                return McpResponse(request_id=request_id, result=None, error=McpError(code=-32602, message='invalid arguments'))
             try:
-                resp = self._forward_over_open_socket(request, conn, f)
-                trace(
-                    "forward_to_daemon_exit",
-                    msg_id=request.get("id"),
-                    ok=bool(resp))
-                return resp
-            except Exception:
-                # Retry once with a fresh per-thread connection.
-                trace("forward_to_daemon_retry", msg_id=request.get("id"))
-                self._close_daemon_connection(tid)
-                conn, f = self._ensure_daemon_connection(tid)
-                resp = self._forward_over_open_socket(request, conn, f)
-                trace(
-                    "forward_to_daemon_exit",
-                    msg_id=request.get("id"),
-                    ok=bool(resp))
-                return resp
-        except Exception as e:
-            trace(
-                "forward_to_daemon_error",
-                msg_id=request.get("id"),
-                error=str(e))
-            return _forward_error_response_impl(request, str(e))
+                if tool_name == 'search':
+                    return McpResponse(request_id=request_id, result=self._search_tool.call(arguments), error=None)
+                if tool_name == 'sari_guide':
+                    return McpResponse(request_id=request_id, result=self._sari_guide_tool.call(arguments), error=None)
+                if tool_name == 'status':
+                    return McpResponse(request_id=request_id, result=self._status_tool.call(arguments), error=None)
+                if tool_name == 'doctor':
+                    return McpResponse(request_id=request_id, result=self._doctor_tool.call(arguments), error=None)
+                if tool_name == 'rescan':
+                    return McpResponse(request_id=request_id, result=self._rescan_tool.call(arguments), error=None)
+                if tool_name == 'repo_candidates':
+                    return McpResponse(request_id=request_id, result=self._repo_candidates_tool.call(arguments), error=None)
+                if tool_name == 'read':
+                    return McpResponse(request_id=request_id, result=self._read_tool.call(arguments), error=None)
+                if tool_name == 'dry_run_diff':
+                    return McpResponse(request_id=request_id, result=self._dry_run_diff_tool.call(arguments), error=None)
+                if tool_name == 'scan_once':
+                    return McpResponse(request_id=request_id, result=self._scan_once_tool.call(arguments), error=None)
+                if tool_name == 'list_files':
+                    return McpResponse(request_id=request_id, result=self._list_files_tool.call(arguments), error=None)
+                if tool_name == 'read_file':
+                    return McpResponse(request_id=request_id, result=self._read_file_tool.call(arguments), error=None)
+                if tool_name == 'index_file':
+                    return McpResponse(request_id=request_id, result=self._index_file_tool.call(arguments), error=None)
+                if tool_name == 'list_symbols':
+                    return McpResponse(request_id=request_id, result=self._list_symbols_tool.call(arguments), error=None)
+                if tool_name == 'read_symbol':
+                    return McpResponse(request_id=request_id, result=self._read_symbol_tool.call(arguments), error=None)
+                if tool_name == 'search_symbol':
+                    return McpResponse(request_id=request_id, result=self._search_symbol_tool.call(arguments), error=None)
+                if tool_name == 'get_callers':
+                    return McpResponse(request_id=request_id, result=self._get_callers_tool.call(arguments), error=None)
+                if tool_name == 'get_implementations':
+                    return McpResponse(request_id=request_id, result=self._get_implementations_tool.call(arguments), error=None)
+                if tool_name == 'call_graph':
+                    return McpResponse(request_id=request_id, result=self._call_graph_tool.call(arguments), error=None)
+                if tool_name == 'call_graph_health':
+                    return McpResponse(request_id=request_id, result=self._call_graph_health_tool.call(arguments), error=None)
+                if tool_name == 'knowledge':
+                    return McpResponse(request_id=request_id, result=self._knowledge_tool.call(arguments), error=None)
+                if tool_name == 'save_snippet':
+                    return McpResponse(request_id=request_id, result=self._save_snippet_tool.call(arguments), error=None)
+                if tool_name == 'get_snippet':
+                    return McpResponse(request_id=request_id, result=self._get_snippet_tool.call(arguments), error=None)
+                if tool_name == 'archive_context':
+                    return McpResponse(request_id=request_id, result=self._archive_context_tool.call(arguments), error=None)
+                if tool_name == 'get_context':
+                    return McpResponse(request_id=request_id, result=self._get_context_tool.call(arguments), error=None)
+                if tool_name == 'pipeline_policy_get':
+                    return McpResponse(request_id=request_id, result=self._pipeline_policy_get_tool.call(arguments), error=None)
+                if tool_name == 'pipeline_policy_set':
+                    return McpResponse(request_id=request_id, result=self._pipeline_policy_set_tool.call(arguments), error=None)
+                if tool_name == 'pipeline_alert_status':
+                    return McpResponse(request_id=request_id, result=self._pipeline_alert_status_tool.call(arguments), error=None)
+                if tool_name == 'pipeline_dead_list':
+                    return McpResponse(request_id=request_id, result=self._pipeline_dead_list_tool.call(arguments), error=None)
+                if tool_name == 'pipeline_dead_requeue':
+                    return McpResponse(request_id=request_id, result=self._pipeline_dead_requeue_tool.call(arguments), error=None)
+                if tool_name == 'pipeline_dead_purge':
+                    return McpResponse(request_id=request_id, result=self._pipeline_dead_purge_tool.call(arguments), error=None)
+                if tool_name == 'pipeline_auto_status':
+                    return McpResponse(request_id=request_id, result=self._pipeline_auto_status_tool.call(arguments), error=None)
+                if tool_name == 'pipeline_auto_set':
+                    return McpResponse(request_id=request_id, result=self._pipeline_auto_set_tool.call(arguments), error=None)
+                if tool_name == 'pipeline_auto_tick':
+                    return McpResponse(request_id=request_id, result=self._pipeline_auto_tick_tool.call(arguments), error=None)
+                if tool_name == 'pipeline_benchmark_run':
+                    return McpResponse(request_id=request_id, result=self._pipeline_benchmark_run_tool.call(arguments), error=None)
+                if tool_name == 'pipeline_benchmark_report':
+                    return McpResponse(request_id=request_id, result=self._pipeline_benchmark_report_tool.call(arguments), error=None)
+                if tool_name == 'pipeline_quality_run':
+                    return McpResponse(request_id=request_id, result=self._pipeline_quality_run_tool.call(arguments), error=None)
+                if tool_name == 'pipeline_quality_report':
+                    return McpResponse(request_id=request_id, result=self._pipeline_quality_report_tool.call(arguments), error=None)
+                if tool_name == 'pipeline_lsp_matrix_run':
+                    return McpResponse(request_id=request_id, result=self._pipeline_lsp_matrix_run_tool.call(arguments), error=None)
+                if tool_name == 'pipeline_lsp_matrix_report':
+                    return McpResponse(request_id=request_id, result=self._pipeline_lsp_matrix_report_tool.call(arguments), error=None)
+            except ValidationError as exc:
+                payload = pack1_error(ErrorResponseDTO(code=exc.context.code, message=exc.context.message))
+                return McpResponse(request_id=request_id, result=payload, error=None)
+            return McpResponse(request_id=request_id, result=None, error=McpError(code=-32601, message='tool not found'))
+        return McpResponse(request_id=request_id, result=None, error=McpError(code=-32601, message='method not found'))
 
-    def _ensure_daemon_connection(self, tid: int):
-        return _ensure_daemon_connection_impl(
-            tid=tid,
-            daemon_channels_lock=self._daemon_channels_lock,
-            daemon_channels=self._daemon_channels,
-            daemon_address=self._daemon_address,
-            timeout_sec=settings.DAEMON_TIMEOUT_SEC,
-            trace_fn=trace,
-            create_connection_fn=socket.create_connection,
-        )
+    def _should_forward(self, payload: dict[str, object], method: str) -> bool:
+        if not self._proxy_to_daemon:
+            return False
+        if method != 'tools/call':
+            return False
+        if not isinstance(payload.get('params'), dict):
+            return False
+        return True
 
-    def _close_daemon_connection(self, tid: Optional[int] = None) -> None:
-        if tid is None:
-            self._close_all_daemon_connections()
-            return
-        _close_daemon_connection_impl(
-            tid=tid,
-            daemon_channels_lock=self._daemon_channels_lock,
-            daemon_channels=self._daemon_channels,
-            trace_fn=trace,
-        )
-
-    def _close_all_daemon_connections(self) -> None:
-        _close_all_daemon_connections_impl(
-            daemon_channels_lock=self._daemon_channels_lock,
-            daemon_channels=self._daemon_channels,
-            trace_fn=trace,
-        )
-
-    def _forward_over_open_socket(
-            self, request: JsonMap, conn: object, f: object) -> Optional[JsonMap]:
-        return _forward_over_open_socket_impl(
-            request=request,
-            conn=conn,
-            f=f,
-            trace_fn=trace,
-        )
-
-    def run(self, output_stream: Optional[object] = None) -> None:
-        """Standard MCP JSON-RPC loop with encapsulated transport."""
-        self._log_debug("Sari MCP Server starting run loop...")
-        trace("run_loop_start", workspace_root=self.workspace_root)
-
-        if not self.transport:
-            self.transport = _ensure_transport_impl(
-                transport=self.transport,
-                output_stream=output_stream,
-                original_stdout=getattr(self, "_original_stdout", None),
-                stdin_obj=sys.stdin,
-                stdout_obj=sys.stdout,
-                env=os.environ,
-                transport_factory=McpTransport,
-            )
-            trace(
-                "transport_initialized",
-                wire_format=self.transport.default_mode,
-                dev_jsonl=self._dev_jsonl,
-                force_content_length=self._force_content_length,
-            )
-
+    def _forward_to_daemon(self, payload: dict[str, object], request_id: object) -> McpResponse:
+        workspace_root = self._extract_workspace_root(payload)
         try:
-            while not self._stop.is_set():
-                res = self.transport.read_message()
-                if res is None:
-                    trace("run_loop_eof")
-                    break
+            host, port = resolve_daemon_address(db_path=self._db_path, workspace_root=workspace_root)
+        except ValueError as exc:
+            return McpResponse(request_id=request_id, result=None, error=McpError(code=-32002, message=f'failed to resolve daemon address: {exc}'))
+        try:
+            forwarded = forward_once(request=payload, host=host, port=port, timeout_sec=self._daemon_forward_timeout_sec)
+        except (OSError, TimeoutError, DaemonForwardError, ValueError) as exc:
+            return McpResponse(request_id=request_id, result=None, error=McpError(code=-32002, message=f'failed to forward to daemon: {exc}'))
+        response_id = forwarded.get('id', request_id)
+        error_payload = forwarded.get('error')
+        if isinstance(error_payload, dict):
+            code = error_payload.get('code')
+            message = error_payload.get('message')
+            if isinstance(code, int) and isinstance(message, str):
+                return McpResponse(request_id=response_id, result=None, error=McpError(code=code, message=message))
+            return McpResponse(request_id=response_id, result=None, error=McpError(code=-32003, message='invalid daemon error response'))
+        return McpResponse(request_id=response_id, result=forwarded.get('result'), error=None)
 
-                req, mode = res
-                self._log_debug_request(mode, req)
-                trace(
-                    "run_loop_received",
-                    msg_id=req.get("id"),
-                    method=req.get("method"),
-                    mode=mode)
+    def _extract_workspace_root(self, payload: dict[str, object]) -> str | None:
+        params = payload.get('params')
+        if not isinstance(params, dict):
+            return None
+        arguments = params.get('arguments')
+        if not isinstance(arguments, dict):
+            return None
+        repo = arguments.get('repo')
+        if not isinstance(repo, str):
+            return None
+        stripped = repo.strip()
+        if stripped == '':
+            return None
+        return stripped
 
-                # Attach metadata for response framing matching
-                req["_sari_framing_mode"] = mode
+    def _roots_list(self) -> list[dict[str, str]]:
+        roots: list[dict[str, str]] = []
+        for workspace in self._workspace_repo.list_all():
+            root_path = workspace.path
+            name = Path(root_path).name if Path(root_path).name != '' else root_path
+            roots.append({'uri': f'file://{root_path}', 'name': name})
+        return roots
 
-                self._enqueue_incoming_request(req)
-        except Exception as e:
-            self._log_debug(f"CRITICAL in run loop: {e}")
-            trace("run_loop_error", error=str(e))
-        finally:
-            self._drain_pending_requests()
-            self._log_debug("Sari MCP Server shutting down...")
-            trace("run_loop_shutdown")
-            self.shutdown()
+    def _default_workspace_root(self) -> str:
+        workspaces = self._workspace_repo.list_all()
+        if len(workspaces) == 0:
+            return ''
+        return workspaces[0].path
 
-    def shutdown(self) -> None:
-        """Graceful shutdown of all resources."""
-        changed, acquired, session = _perform_shutdown_impl(
-            stop_event=self._stop,
-            executor=self._executor,
-            transport=self.transport,
-            logger=self.logger,
-            close_all_daemon_connections=self._close_all_daemon_connections,
-            registry=self.registry,
-            workspace_root=self.workspace_root,
-            session_acquired=self._session_acquired,
-            session=self._session,
-            trace_fn=trace,
-            log_debug=self._log_debug,
-        )
-        if not changed:
-            return
-        self._session_acquired = acquired
-        self._session = session
+def run_stdio_streams(db_path: Path, input_stream: BinaryIO, output_stream: BinaryIO) -> int:
+    server = McpServer(db_path=db_path)
+    runtime = server._runtime_repo.get_runtime()
+    if runtime is not None:
+        server._runtime_repo.increment_session()
+    transport = McpTransport(input_stream=input_stream, output_stream=output_stream, allow_jsonl=True)
+    transport.default_mode = MCP_MODE_FRAMED
+    try:
+        while True:
+            try:
+                read_result = transport.read_message()
+            except McpTransportParseError as exc:
+                parse_response = McpResponse(request_id=None, result=None, error=McpError(code=-32700, message=str(exc)))
+                transport.write_message(parse_response.to_dict(), mode=exc.mode)
+                continue
+            if read_result is None:
+                return 0
+            payload, mode = read_result
+            response = server.handle_request(payload)
+            transport.write_message(response.to_dict(), mode=mode)
+    finally:
+        runtime = server._runtime_repo.get_runtime()
+        if runtime is not None:
+            server._runtime_repo.decrement_session()
+    return 0
 
-    def _worker_loop(self) -> None:
-        _worker_loop_impl(
-            stop_event=self._stop,
-            req_queue=self._req_queue,
-            submit_request_for_execution=self._submit_request_for_execution,
-            log_debug=self._log_debug,
-        )
+def run_stdio(db_path: Path) -> int:
+    input_stream = getattr(sys.stdin, 'buffer', sys.stdin)
+    output_stream = getattr(sys.stdout, 'buffer', sys.stdout)
+    return run_stdio_streams(db_path=db_path, input_stream=input_stream, output_stream=output_stream)
 
-    def _enqueue_incoming_request(self, req: JsonMap) -> None:
-        _enqueue_incoming_request_impl(
-            req_queue=self._req_queue,
-            req=req,
-            emit_queue_overload=self._emit_queue_overload,
-            log_debug=self._log_debug,
-            trace_fn=trace,
-        )
-
-    def _emit_queue_overload(self, req: JsonMap) -> None:
-        _emit_queue_overload_impl(
-            req=req,
-            stdout_lock=self._stdout_lock,
-            transport=self.transport,
-            log_debug=self._log_debug,
-            trace_fn=trace,
-        )
-
-    def _submit_request_for_execution(self, req: JsonMap) -> bool:
-        return _submit_request_for_execution_impl(
-            executor=self._executor,
-            handle_and_respond=self._handle_and_respond,
-            req=req,
-            log_debug=self._log_debug,
-        )
-
-    def _drain_pending_requests(self) -> None:
-        _drain_pending_requests_impl(
-            req_queue=self._req_queue,
-            handle_and_respond=self._handle_and_respond,
-        )
-
-    def _handle_and_respond(self, req: JsonMap) -> None:
-        _handle_and_respond_impl(
-            req=req,
-            handle_request=self.handle_request,
-            force_content_length=self._force_content_length,
-            log_debug_response=self._log_debug_response,
-            transport=self.transport,
-            stdout_lock=self._stdout_lock,
-            log_debug=self._log_debug,
-            trace_fn=trace,
-        )
-
-    def _log_debug(self, message: str) -> None:
-        """Log MCP traffic to the structured logger."""
-        _log_debug_message_impl(self._debug_enabled, self.struct_logger, message)
-
-    def _sanitize_value(self, value: object, key: str = "") -> object:
-        return _sanitize_value_impl(value, self._SENSITIVE_KEYS, key)
-
-    def _log_debug_request(self, mode: str, req: JsonMap) -> None:
-        _log_debug_request_impl(
-            debug_enabled=self._debug_enabled,
-            struct_logger=self.struct_logger,
-            mode=mode,
-            req=req,
-            sanitize_value=self._sanitize_value,
-        )
-
-    def _log_debug_response(self, mode: str, resp: JsonMap) -> None:
-        _log_debug_response_impl(
-            debug_enabled=self._debug_enabled,
-            struct_logger=self.struct_logger,
-            mode=mode,
-            resp=resp,
-            sanitize_value=self._sanitize_value,
-        )
-
-
-def main(original_stdout: object = None) -> None:
-    _run_entrypoint_impl(
-        original_stdout=original_stdout,
-        resolve_workspace_root=WorkspaceManager.resolve_workspace_root,
-        server_factory=LocalSearchMCPServer,
-        stdout_obj=sys.stdout,
-        stderr_obj=sys.stderr,
-        set_stdout=lambda value: setattr(sys, "stdout", value),
-    )
-
-
-if __name__ == "__main__":
-    main()
+def _parse_daemon_forward_timeout(raw_value: str) -> float:
+    if raw_value == '':
+        return 2.0
+    try:
+        parsed = float(raw_value)
+    except ValueError:
+        return 2.0
+    if parsed <= 0:
+        return 2.0
+    return parsed
