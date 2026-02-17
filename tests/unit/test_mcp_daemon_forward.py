@@ -1,0 +1,63 @@
+"""MCP daemon forward 경로를 검증한다."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from pytest import MonkeyPatch
+
+from sari.mcp.server import McpServer
+
+
+def test_mcp_tools_call_forwards_to_daemon_when_enabled(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """환경변수 활성화 시 tools/call은 daemon forward 응답을 사용해야 한다."""
+    monkeypatch.setenv("SARI_MCP_FORWARD_TO_DAEMON", "1")
+    server = McpServer(db_path=tmp_path / "state.db")
+
+    monkeypatch.setattr("sari.mcp.server.resolve_daemon_address", lambda db_path, workspace_root=None: ("127.0.0.1", 47777))
+    monkeypatch.setattr(
+        "sari.mcp.server.forward_once",
+        lambda request, host, port, timeout_sec: {
+            "jsonrpc": "2.0",
+            "id": request.get("id"),
+            "result": {"isError": False, "content": [], "structuredContent": {"items": [], "meta": {"errors": []}}},
+        },
+    )
+
+    response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 100,
+            "method": "tools/call",
+            "params": {"name": "search", "arguments": {"repo": "/repo", "query": "abc", "limit": 5}},
+        }
+    )
+    payload = response.to_dict()
+    assert "error" not in payload
+    assert payload["result"]["isError"] is False
+
+
+def test_mcp_forward_failure_returns_jsonrpc_error(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """daemon forward 실패 시 JSON-RPC error를 반환해야 한다."""
+    monkeypatch.setenv("SARI_MCP_FORWARD_TO_DAEMON", "1")
+    server = McpServer(db_path=tmp_path / "state.db")
+    monkeypatch.setattr("sari.mcp.server.resolve_daemon_address", lambda db_path, workspace_root=None: ("127.0.0.1", 47777))
+
+    def _raise_error(request: dict[str, object], host: str, port: int, timeout_sec: float) -> dict[str, object]:
+        del request, host, port, timeout_sec
+        raise OSError("connection refused")
+
+    monkeypatch.setattr("sari.mcp.server.forward_once", _raise_error)
+
+    response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 101,
+            "method": "tools/call",
+            "params": {"name": "search", "arguments": {"repo": "/repo", "query": "abc", "limit": 5}},
+        }
+    )
+    payload = response.to_dict()
+    assert payload["error"]["code"] == -32002
+    assert "failed to forward to daemon" in payload["error"]["message"]
+

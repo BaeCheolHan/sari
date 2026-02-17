@@ -1,9 +1,13 @@
+"""stabilization reason code 열거형을 정의한다."""
+
 from __future__ import annotations
 
 from enum import Enum
 
 
 class ReasonCode(str, Enum):
+    """stabilization 판단 사유 코드를 정의한다."""
+
     SEARCH_FIRST_REQUIRED = "SEARCH_FIRST_REQUIRED"
     SEARCH_REF_REQUIRED = "SEARCH_REF_REQUIRED"
     CANDIDATE_REF_REQUIRED = "CANDIDATE_REF_REQUIRED"
@@ -11,3 +15,6 @@ class ReasonCode(str, Enum):
     BUDGET_HARD_LIMIT = "BUDGET_HARD_LIMIT"
     LOW_RELEVANCE_OUTSIDE_TOPK = "LOW_RELEVANCE_OUTSIDE_TOPK"
     PREVIEW_DEGRADED = "PREVIEW_DEGRADED"
+    SESSION_ID_REQUIRED = "SESSION_ID_REQUIRED"
+    SEARCH_DEGRADED = "SEARCH_DEGRADED"
+    SEARCH_FATAL = "SEARCH_FATAL"

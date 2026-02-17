@@ -1,234 +1,137 @@
+"""MCP stdio 전송 계층(Content-Length/JSONL)을 제공한다."""
+
+from __future__ import annotations
+
 import json
-import sys
-import logging
-from typing import Optional, TypeAlias, BinaryIO
-from sari.mcp.trace import trace
+from typing import BinaryIO
 
-logger = logging.getLogger("sari.mcp.transport")
+MCP_MODE_FRAMED = "content-length"
+MCP_MODE_JSONL = "jsonl"
+MAX_MESSAGE_SIZE = 10 * 1024 * 1024
 
-_MODE_FRAMED = "content-length"
-_MODE_JSONL = "jsonl"
-MAX_MESSAGE_SIZE = 10 * 1024 * 1024  # 10MB
-JsonObject: TypeAlias = dict[str, object]
+
+class McpTransportParseError(Exception):
+    """전송 계층에서 메시지 파싱에 실패했음을 나타낸다."""
+
+    def __init__(self, mode: str, message: str) -> None:
+        """오류 모드와 메시지를 저장한다."""
+        super().__init__(message)
+        self.mode = mode
 
 
 class McpTransport:
-    """
-    Handles the low-level MCP wire protocol (Framing) with high fault tolerance.
-    """
+    """MCP wire protocol 읽기/쓰기를 담당한다."""
 
-    def __init__(
-            self,
-            input_stream: BinaryIO,
-            output_stream: BinaryIO,
-            allow_jsonl: bool = True):
-        self.input = input_stream
-        self.output = output_stream
-        self.allow_jsonl = allow_jsonl
-        self.default_mode = _MODE_FRAMED
+    def __init__(self, input_stream: BinaryIO, output_stream: BinaryIO, allow_jsonl: bool = True) -> None:
+        """입출력 스트림과 모드를 초기화한다."""
+        self._input = input_stream
+        self._output = output_stream
+        self._allow_jsonl = allow_jsonl
+        self.default_mode = MCP_MODE_FRAMED
 
-    def read_message(self) -> Optional[tuple[JsonObject, str]]:
-        """
-        Robustly reads one MCP message, skipping leading noise or empty lines.
-        """
-        try:
-            while True:
-                line = self.input.readline()
-                if not line:
-                    return None  # EOF
+    def read_message(self) -> tuple[dict[str, object], str] | None:
+        """다음 MCP 메시지를 읽어 payload와 모드를 반환한다."""
+        while True:
+            line = self._input.readline()
+            if line == b"":
+                return None
 
-                line_str = line.decode("utf-8", errors="ignore").strip()
-                if not line_str:
-                    continue  # Skip empty lines
+            line_text = self._decode_utf8_strict(line=line, mode=MCP_MODE_FRAMED).strip()
+            if line_text == "":
+                continue
 
-                # 1. Check for JSONL Mode (Starts with '{')
-                if line_str.startswith("{"):
-                    if self.allow_jsonl:
-                        msg = self._parse_json(line_str)
-                        if msg:
-                            trace("transport_read_jsonl")
-                            return msg, _MODE_JSONL
-                    continue  # Not a valid JSON, keep looking
+            if line_text.startswith("{"):
+                if not self._allow_jsonl:
+                    continue
+                payload = self._parse_json_object(line_text)
+                if payload is not None:
+                    return payload, MCP_MODE_JSONL
+                raise McpTransportParseError(mode=MCP_MODE_JSONL, message="parse error")
 
-                # 2. Check for Content-Length Mode
-                if line_str.lower().startswith("content-length:"):
-                    content_length = self._parse_headers(line_str)
-                    if content_length is None or content_length <= 0 or content_length > MAX_MESSAGE_SIZE:
-                        continue  # Invalid header, keep looking for next valid marker
+            if line_text.lower().startswith("content-length:"):
+                content_length = self._parse_headers(first_line=line_text)
+                if content_length is None:
+                    continue
+                if content_length <= 0 or content_length > MAX_MESSAGE_SIZE:
+                    continue
 
-                    try:
-                        body_bytes = self.input.read(content_length)
-                        if len(body_bytes) < content_length:
-                            return None  # Unexpected EOF
-
-                        msg = self._parse_json(body_bytes.decode("utf-8"))
-                        if msg:
-                            trace(
-                                "transport_read_framed",
-                                bytes=content_length)
-                            return msg, _MODE_FRAMED
-                    except Exception:
-                        continue  # Malformed body, try again
-
-                # 3. If we are here, it means the line was noise (logs, etc.)
-                # Keep looping to find the actual start of an MCP message
-
-        except Exception as e:
-            logger.error(f"Error reading MCP message: {e}")
-            return None
-
-    def write_message(
-            self, message: JsonObject, mode: Optional[str] = None):
-        """Writes one MCP message with proper framing."""
-        try:
-            json_str = json.dumps(message, ensure_ascii=False)
-            mode = mode or self.default_mode
-
-            if mode == _MODE_JSONL:
-                payload = (json_str + "\n").encode("utf-8")
-                self.output.write(payload)
-            else:
-                body_bytes = json_str.encode("utf-8")
-                header = f"Content-Length: {len(body_bytes)}\r\n\r\n".encode(
-                    "ascii")
-                self.output.write(header + body_bytes)
-
-            self.output.flush()
-        except Exception as e:
-            logger.error(f"Error writing MCP message: {e}")
-
-    def _parse_headers(self, first_line: str) -> Optional[int]:
-        try:
-            headers = {}
-            # Parse the first line already read
-            k, v = first_line.split(":", 1)
-            headers[k.strip().lower()] = v.strip()
-
-            # Read subsequent headers until an empty line
-            while True:
-                line = self.input.readline()
-                if not line:
-                    break
-                h_str = line.decode("utf-8").strip()
-                if not h_str:
-                    break  # Header end marker (\r\n\r\n)
-                if ":" in h_str:
-                    k, v = h_str.split(":", 1)
-                    headers[k.strip().lower()] = v.strip()
-
-            return int(headers.get("content-length", 0))
-        except (ValueError, TypeError, Exception):
-            return None
-
-    def _parse_json(self, data: str) -> Optional[JsonObject]:
-        try:
-            payload = json.loads(data)
-            return payload if isinstance(payload, dict) else None
-        except Exception:
-            return None
-
-    def close(self) -> None:
-        stdio_streams = {
-            getattr(
-                sys.stdin, "buffer", None), getattr(
-                sys.stdout, "buffer", None)}
-        for stream in (self.input, self.output):
-            if stream and stream not in stdio_streams:
-                try:
-                    stream.close()
-                except Exception:
-                    pass
-
-
-class AsyncMcpTransport:
-    """
-    Async version of McpTransport with noise resilience.
-    """
-
-    def __init__(self, reader, writer, allow_jsonl: bool = True):
-        self.reader = reader
-        self.writer = writer
-        self.allow_jsonl = allow_jsonl
-        self.default_mode = _MODE_FRAMED
-
-    async def read_message(self) -> Optional[tuple[JsonObject, str]]:
-        """
-        Asynchronously reads one MCP message, skipping noise.
-        """
-        try:
-            while True:
-                line = await self.reader.readline()
-                if not line:
+                body = self._input.read(content_length)
+                if len(body) < content_length:
                     return None
+                body_text = self._decode_utf8_strict(line=body, mode=MCP_MODE_FRAMED)
+                payload = self._parse_json_object(body_text)
+                if payload is not None:
+                    return payload, MCP_MODE_FRAMED
+                raise McpTransportParseError(mode=MCP_MODE_FRAMED, message="parse error")
 
-                line_str = line.decode("utf-8", errors="ignore").strip()
-                if not line_str:
-                    continue
+    def write_message(self, message: dict[str, object], mode: str | None = None) -> None:
+        """모드에 맞춰 MCP 응답 메시지를 출력한다."""
+        encoded = json.dumps(message, ensure_ascii=False).encode("utf-8")
+        selected_mode = mode if mode is not None else self.default_mode
+        if selected_mode == MCP_MODE_JSONL:
+            self._output.write(encoded + b"\n")
+            self._output.flush()
+            return
 
-                if line_str.startswith("{"):
-                    if self.allow_jsonl:
-                        msg = self._parse_json(line_str)
-                        if msg:
-                            return msg, _MODE_JSONL
-                    continue
+        header = f"Content-Length: {len(encoded)}\r\n\r\n".encode("ascii")
+        self._output.write(header + encoded)
+        self._output.flush()
 
-                if line_str.lower().startswith("content-length:"):
-                    content_length = await self._parse_headers_async(line_str)
-                    if content_length is None or content_length <= 0 or content_length > MAX_MESSAGE_SIZE:
-                        continue
+    def _parse_headers(self, first_line: str) -> int | None:
+        """헤더 블록에서 content-length를 파싱한다."""
+        headers: dict[str, str] = {}
+        first_key, first_value = self._split_header(first_line)
+        if first_key is None or first_value is None:
+            return None
+        headers[first_key] = first_value
 
-                    try:
-                        body = await self.reader.readexactly(content_length)
-                        msg = self._parse_json(body.decode("utf-8"))
-                        if msg:
-                            return msg, _MODE_FRAMED
-                    except Exception:
-                        continue
-        except Exception as e:
-            logger.error(f"Async transport read error: {e}")
+        while True:
+            line = self._input.readline()
+            if line == b"":
+                break
+            header_line = self._decode_utf8_strict(line=line, mode=MCP_MODE_FRAMED).strip()
+            if header_line == "":
+                break
+            key, value = self._split_header(header_line)
+            if key is None or value is None:
+                continue
+            headers[key] = value
+
+        raw_length = headers.get("content-length")
+        if raw_length is None:
+            return None
+        try:
+            return int(raw_length)
+        except ValueError:
             return None
 
-    async def write_message(
-            self, message: JsonObject, mode: Optional[str] = None) -> None:
+    @staticmethod
+    def _split_header(line: str) -> tuple[str | None, str | None]:
+        """단일 헤더 라인을 key/value로 분리한다."""
+        if ":" not in line:
+            return None, None
+        key, value = line.split(":", 1)
+        return key.strip().lower(), value.strip()
+
+    @staticmethod
+    def _parse_json_object(text: str) -> dict[str, object] | None:
+        """JSON 문자열을 dict payload로 파싱한다."""
         try:
-            json_str = json.dumps(message, ensure_ascii=False)
-            mode = mode or self.default_mode
-
-            if mode == _MODE_JSONL:
-                self.writer.write((json_str + "\n").encode("utf-8"))
-            else:
-                body_bytes = json_str.encode("utf-8")
-                header = f"Content-Length: {len(body_bytes)}\r\n\r\n".encode(
-                    "ascii")
-                self.writer.write(header + body_bytes)
-
-            await self.writer.drain()
-        except Exception as e:
-            logger.error(f"Async transport write error: {e}")
-
-    async def _parse_headers_async(self, first_line: str) -> Optional[int]:
-        try:
-            headers = {}
-            k, v = first_line.split(":", 1)
-            headers[k.strip().lower()] = v.strip()
-
-            while True:
-                line = await self.reader.readline()
-                if not line:
-                    break
-                h_str = line.decode("utf-8").strip()
-                if not h_str:
-                    break
-                if ":" in h_str:
-                    k, v = h_str.split(":", 1)
-                    headers[k.strip().lower()] = v.strip()
-            return int(headers.get("content-length", 0))
-        except Exception:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
             return None
-
-    def _parse_json(self, data: str) -> Optional[JsonObject]:
-        try:
-            payload = json.loads(data)
-            return payload if isinstance(payload, dict) else None
-        except Exception:
+        if not isinstance(parsed, dict):
             return None
+        normalized: dict[str, object] = {}
+        for key, value in parsed.items():
+            if isinstance(key, str):
+                normalized[key] = value
+        return normalized
+
+    @staticmethod
+    def _decode_utf8_strict(line: bytes, mode: str) -> str:
+        """UTF-8 디코드 실패를 침묵하지 않고 전송 계층 오류로 변환한다."""
+        try:
+            return line.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise McpTransportParseError(mode=mode, message=f"invalid utf-8 payload: {exc}") from exc

@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LspLanguageMatrixRun",
+  "type": "object",
+  "required": [
+    "run_id",
+    "repo_root",
+    "started_at",
+    "finished_at",
+    "summary",
+    "languages"
+  ],
+  "properties": {
+    "run_id": {
+      "type": "string"
+    },
+    "repo_root": {
+      "type": "string"
+    },
+    "started_at": {
+      "type": "string"
+    },
+    "finished_at": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "object",
+      "required": [
+        "total_languages",
+        "available_languages",
+        "unavailable_languages"
+      ],
+      "properties": {
+        "total_languages": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "available_languages": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unavailable_languages": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "languages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "language",
+          "enabled",
+          "available",
+          "last_probe_at",
+          "last_error_code",
+          "last_error_message"
+        ],
+        "properties": {
+          "language": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "available": {
+            "type": "boolean"
+          },
+          "last_probe_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_error_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_error_message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

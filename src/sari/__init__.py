@@ -1,3 +1,4 @@
-from .version import __version__
+"""sari-v2 패키지 진입점이다."""
 
 __all__ = ["__version__"]
+__version__ = "0.1.0"

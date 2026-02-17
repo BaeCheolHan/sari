@@ -33,5 +33,10 @@
     "severity": "warn",
     "description": "Search preview was truncated by token budget.",
     "next_call_template": "read"
+  },
+  "SESSION_ID_REQUIRED": {
+    "severity": "error",
+    "description": "session_id is required by strict session policy.",
+    "next_call_template": "read"
   }
 }

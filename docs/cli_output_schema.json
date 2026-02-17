@@ -1,0 +1,223 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sari-v2.local/schemas/cli_output_schema.json",
+  "title": "sari-v2 CLI Output Schema",
+  "description": "sari-v2 CLI 명령 출력 계약을 정의한다.",
+  "type": "object",
+  "$defs": {
+    "error_object": {
+      "type": "object",
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "type": "string" },
+        "message": { "type": "string" }
+      }
+    },
+    "doctor_check": {
+      "type": "object",
+      "required": ["name", "passed", "detail"],
+      "properties": {
+        "name": { "type": "string" },
+        "passed": { "type": "boolean" },
+        "detail": { "type": "string" }
+      }
+    },
+    "doctor_output": {
+      "type": "object",
+      "required": ["checks"],
+      "properties": {
+        "checks": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/doctor_check" }
+        }
+      }
+    },
+    "index_output": {
+      "type": "object",
+      "required": ["invalidated_cache_rows"],
+      "properties": {
+        "invalidated_cache_rows": { "type": "integer" }
+      }
+    },
+    "install_output_codex": {
+      "type": "object",
+      "required": ["host", "snippet"],
+      "properties": {
+        "host": { "type": "string" },
+        "snippet": {
+          "type": "object",
+          "required": ["mcp_servers"],
+          "properties": {
+            "mcp_servers": {
+              "type": "object",
+              "required": ["sari"],
+              "properties": {
+                "sari": {
+                  "type": "object",
+                  "required": ["command", "args"],
+                  "properties": {
+                    "command": { "type": "string" },
+                    "args": {
+                      "type": "array",
+                      "items": { "type": "string" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "engine_dependencies": {
+      "type": "object",
+      "required": ["solidlsp", "tantivy", "requests"],
+      "properties": {
+        "solidlsp": { "type": "boolean" },
+        "tantivy": { "type": "boolean" },
+        "requests": { "type": "boolean" }
+      }
+    },
+    "engine_status_output": {
+      "type": "object",
+      "required": ["search_mode", "dependencies"],
+      "properties": {
+        "search_mode": { "type": "string" },
+        "dependencies": { "$ref": "#/$defs/engine_dependencies" }
+      }
+    },
+    "daemon_output": {
+      "type": "object",
+      "required": ["daemon"],
+      "properties": {
+        "daemon": {
+          "type": ["object", "null"],
+          "required": ["pid", "host", "port", "state", "started_at", "session_count"],
+          "properties": {
+            "pid": { "type": "integer" },
+            "host": { "type": "string" },
+            "port": { "type": "integer" },
+            "state": { "type": "string" },
+            "started_at": { "type": "string" },
+            "session_count": { "type": "integer" }
+          }
+        }
+      }
+    },
+    "workspace_list_output": {
+      "type": "object",
+      "required": ["items"],
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path", "name", "indexed_at", "is_active"],
+            "properties": {
+              "path": { "type": "string" },
+              "name": { "type": ["string", "null"] },
+              "indexed_at": { "type": ["string", "null"] },
+              "is_active": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    },
+    "pipeline_policy_output": {
+      "type": "object",
+      "required": ["policy"],
+      "properties": {
+        "policy": {
+          "type": "object",
+          "required": [
+            "deletion_hold",
+            "l3_p95_threshold_ms",
+            "dead_ratio_threshold_bps",
+            "enrich_worker_count",
+            "updated_at"
+          ],
+          "properties": {
+            "deletion_hold": { "type": "boolean" },
+            "l3_p95_threshold_ms": { "type": "integer" },
+            "dead_ratio_threshold_bps": { "type": "integer" },
+            "enrich_worker_count": { "type": "integer" },
+            "updated_at": { "type": "string" }
+          }
+        }
+      }
+    },
+    "pipeline_alert_output": {
+      "type": "object",
+      "required": ["alert"],
+      "properties": {
+        "alert": {
+          "type": "object",
+          "required": ["state", "window_seconds", "event_count", "dead_count", "dead_ratio_bps", "l3_p95_ms"],
+          "properties": {
+            "state": { "type": "string" },
+            "window_seconds": { "type": "integer" },
+            "event_count": { "type": "integer" },
+            "dead_count": { "type": "integer" },
+            "dead_ratio_bps": { "type": "integer" },
+            "l3_p95_ms": { "type": "integer" }
+          }
+        }
+      }
+    },
+    "pipeline_dead_action_output": {
+      "type": "object",
+      "properties": {
+        "requeued_count": { "type": "integer" },
+        "purged_count": { "type": "integer" }
+      }
+    },
+    "benchmark_run_output": {
+      "type": "object",
+      "required": ["benchmark"],
+      "properties": {
+        "benchmark": {
+          "type": "object",
+          "required": ["run_id", "status", "target_files", "recommended_policy"],
+          "properties": {
+            "run_id": { "type": "string" },
+            "status": { "type": "string" },
+            "target_files": { "type": "integer" },
+            "recommended_policy": {
+              "type": "object",
+              "required": ["l3_p95_threshold_ms", "dead_ratio_threshold_bps"],
+              "properties": {
+                "l3_p95_threshold_ms": { "type": "integer" },
+                "dead_ratio_threshold_bps": { "type": "integer" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "benchmark_report_output": {
+      "type": "object",
+      "required": ["benchmark"],
+      "properties": {
+        "benchmark": {
+          "type": "object"
+        }
+      }
+    },
+    "pipeline_auto_output": {
+      "type": "object",
+      "required": ["auto_control"],
+      "properties": {
+        "auto_control": {
+          "type": "object",
+          "required": ["auto_hold_enabled", "auto_hold_active", "last_action", "updated_at"],
+          "properties": {
+            "auto_hold_enabled": { "type": "boolean" },
+            "auto_hold_active": { "type": "boolean" },
+            "last_action": { "type": "string" },
+            "updated_at": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

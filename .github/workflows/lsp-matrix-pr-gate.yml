@@ -1,0 +1,63 @@
+name: LSP Matrix PR Gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      report_only:
+        description: "Run in report-only mode (do not hard fail on gate)"
+        required: false
+        default: "true"
+
+jobs:
+  lsp-matrix-gate:
+    runs-on: [self-hosted, sari-lsp]
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -e .
+          python3 -m pip install pytest
+
+      - name: Runner preflight
+        run: |
+          chmod +x tools/ci/lsp_runner_preflight.sh
+          tools/ci/lsp_runner_preflight.sh
+
+      - name: LSP matrix hard gate
+        run: |
+          chmod +x tools/ci/run_lsp_matrix_gate.sh
+          REPORT_ONLY="false"
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            REPORT_ONLY="true"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            REPORT_ONLY="${{ inputs.report_only }}"
+          fi
+          tools/ci/run_lsp_matrix_gate.sh --report-only "${REPORT_ONLY}"
+
+      - name: Upload matrix artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lsp-matrix-gate-artifacts
+          path: |
+            artifacts/ci/lsp-matrix-cli.log
+            artifacts/ci/lsp-matrix-report.json
+            artifacts/ci/lsp-matrix-diagnose.json
+            artifacts/ci/lsp-matrix-diagnose.md
+            artifacts/ci/lsp-matrix-gate-summary.json
+          if-no-files-found: warn

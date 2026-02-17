@@ -1,95 +1,36 @@
+"""데몬 엔드포인트 해석 유틸을 제공한다."""
+
+from __future__ import annotations
+
 import os
-import logging
-from typing import Tuple, Optional
-from sari.core.server_registry import ServerRegistry
-from sari.core.workspace import WorkspaceManager
-from sari.core.constants import DEFAULT_DAEMON_HOST, DEFAULT_DAEMON_PORT
-from sari.core.daemon_runtime_state import RUNTIME_HOST, RUNTIME_PORT
+from pathlib import Path
 
-DEFAULT_HOST = DEFAULT_DAEMON_HOST
-DEFAULT_PORT = DEFAULT_DAEMON_PORT
-_LAST_RESOLVER_STATUS = {"resolver_ok": True, "error": ""}
+from sari.db.repositories.daemon_registry_repository import DaemonRegistryRepository
+from sari.db.repositories.runtime_repository import RuntimeRepository
 
 
-def _set_resolver_status(resolver_ok: bool, error: str = "") -> None:
-    _LAST_RESOLVER_STATUS["resolver_ok"] = bool(resolver_ok)
-    _LAST_RESOLVER_STATUS["error"] = str(error or "")
+def resolve_daemon_address(db_path: Path, workspace_root: str | None = None) -> tuple[str, int]:
+    """레지스트리 우선으로 데몬 주소를 결정한다."""
+    host_override = os.getenv("SARI_DAEMON_HOST", "").strip()
+    port_override = os.getenv("SARI_DAEMON_PORT", "").strip()
+    force_override = os.getenv("SARI_DAEMON_OVERRIDE", "").strip().lower() in {"1", "true", "yes", "on"}
 
+    if force_override and host_override != "" and port_override != "":
+        return host_override, int(port_override)
 
-def get_last_resolver_status() -> dict:
-    return dict(_LAST_RESOLVER_STATUS)
+    if workspace_root is not None and workspace_root.strip() != "":
+        registry_repo = DaemonRegistryRepository(db_path)
+        entry = registry_repo.resolve_latest(workspace_root.strip())
+        if entry is not None:
+            return entry.host, entry.port
 
+    runtime_repo = RuntimeRepository(db_path)
+    runtime = runtime_repo.get_runtime()
+    if runtime is not None:
+        return runtime.host, runtime.port
 
-def resolve_registry_daemon_address(
-    workspace_root: Optional[str] = None,
-) -> Optional[Tuple[str, int]]:
-    """
-    Resolve daemon endpoint from registry only.
+    if host_override != "" and port_override != "":
+        return host_override, int(port_override)
 
-    Priority inside registry:
-      1. Latest non-draining workspace daemon
-      2. Workspace bound daemon (legacy/backward-compat)
-    """
-    env_host = os.environ.get(RUNTIME_HOST)
-    root = workspace_root or os.environ.get("SARI_WORKSPACE_ROOT") or WorkspaceManager.resolve_workspace_root()
-    reg = ServerRegistry()
+    return "127.0.0.1", 47777
 
-    inst = reg.resolve_latest_daemon(workspace_root=str(root), allow_draining=False)
-    if not inst:
-        inst = reg.resolve_workspace_daemon(str(root))
-
-    if inst and inst.get("port"):
-        host = inst.get("host") or (env_host or DEFAULT_HOST)
-        return host, int(inst.get("port"))
-    return None
-
-
-def resolve_daemon_address(workspace_root: Optional[str] = None) -> Tuple[str, int]:
-    """
-    Single Source of Truth for resolving daemon address.
-    Priority:
-      1. Env Override (Explicit debugging) -> Highest priority
-      2. Registry SSOT (resolve_latest_daemon) -> Ensures version/draining awareness
-      3. Env Fallback (Legacy)
-      4. Default
-    """
-    env_host = os.environ.get(RUNTIME_HOST)
-    env_port = os.environ.get(RUNTIME_PORT)
-    
-    # 1. Env Override (Explicit only - High priority for debugging)
-    force_override = (os.environ.get("SARI_DAEMON_OVERRIDE") or "").strip().lower() in {"1", "true", "yes", "on"}
-    if force_override and env_port:
-        try:
-            _set_resolver_status(True, "")
-            return (env_host or DEFAULT_HOST), int(env_port)
-        except ValueError:
-            pass
-
-    # 2. Check Registry (SSOT)
-    try:
-        resolved = resolve_registry_daemon_address(workspace_root=workspace_root)
-        if resolved:
-            _set_resolver_status(True, "")
-            return resolved
-    except Exception as e:
-        logging.getLogger("sari.daemon_resolver").warning(
-            "Failed to resolve daemon address from registry",
-            exc_info=True,
-        )
-        _set_resolver_status(False, str(e))
-
-    # 3. Env Fallback (if no registry entry found)
-    if env_port:
-        try:
-            if not get_last_resolver_status().get("resolver_ok", True):
-                _set_resolver_status(False, get_last_resolver_status().get("error", ""))
-            else:
-                _set_resolver_status(True, "")
-            return (env_host or DEFAULT_HOST), int(env_port)
-        except ValueError:
-            pass
-
-    if not get_last_resolver_status().get("resolver_ok", True):
-        return (env_host or DEFAULT_HOST), DEFAULT_PORT
-    _set_resolver_status(True, "")
-    return (env_host or DEFAULT_HOST), DEFAULT_PORT

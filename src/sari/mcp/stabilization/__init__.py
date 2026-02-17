@@ -1,2 +1,2 @@
-"""Stabilization helpers for unified read/search flows."""
+"""MCP stabilization 유틸 모듈을 노출한다."""
 
