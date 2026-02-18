@@ -37,7 +37,7 @@ def test_status_tool_returns_pack1_success(tmp_path: Path) -> None:
             "jsonrpc": "2.0",
             "id": 1,
             "method": "tools/call",
-            "params": {"name": "status", "arguments": {"repo": str(repo_path)}},
+            "params": {"name": "status", "arguments": {"repo": str(repo_path), "options": {"structured": 1}}},
         }
     )
     payload = response.to_dict()
@@ -58,7 +58,7 @@ def test_read_tool_requires_target(tmp_path: Path) -> None:
             "jsonrpc": "2.0",
             "id": 2,
             "method": "tools/call",
-            "params": {"name": "read", "arguments": {"repo": str(repo_path), "mode": "file"}},
+            "params": {"name": "read", "arguments": {"repo": str(repo_path), "mode": "file", "options": {"structured": 1}}},
         }
     )
     payload = response.to_dict()
@@ -67,8 +67,8 @@ def test_read_tool_requires_target(tmp_path: Path) -> None:
     assert first_error["code"] == "ERR_TARGET_REQUIRED"
 
 
-def test_save_snippet_and_get_snippet_roundtrip(tmp_path: Path) -> None:
-    """save_snippet 저장 후 get_snippet 조회가 가능해야 한다."""
+def test_save_snippet_and_get_snippet_are_hidden_on_mcp(tmp_path: Path) -> None:
+    """save_snippet/get_snippet은 MCP에서 숨김 처리되어야 한다."""
     db_path = tmp_path / "state.db"
     repo_path = tmp_path / "repo"
     repo_path.mkdir(parents=True, exist_ok=True)
@@ -95,7 +95,7 @@ def test_save_snippet_and_get_snippet_roundtrip(tmp_path: Path) -> None:
         }
     )
     save_payload = save_response.to_dict()
-    assert save_payload["result"]["isError"] is False
+    assert save_payload["error"]["code"] == -32601
 
     get_response = server.handle_request(
         {
@@ -109,7 +109,4 @@ def test_save_snippet_and_get_snippet_roundtrip(tmp_path: Path) -> None:
         }
     )
     get_payload = get_response.to_dict()
-    assert get_payload["result"]["isError"] is False
-    items = get_payload["result"]["structuredContent"]["items"]
-    assert len(items) == 1
-    assert items[0]["tag"] == "sample"
+    assert get_payload["error"]["code"] == -32601

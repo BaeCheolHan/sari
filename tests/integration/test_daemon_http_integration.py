@@ -61,6 +61,14 @@ def _post_json(url: str, payload: dict[str, object]) -> dict[str, object]:
     return json.loads(body)
 
 
+def _post_empty(url: str) -> dict[str, object]:
+    """본문 없이 POST 요청을 보내고 JSON 응답을 반환한다."""
+    request = urllib.request.Request(url, data=b"", method="POST")
+    with urllib.request.urlopen(request, timeout=1.0) as response:
+        body = response.read().decode("utf-8")
+    return json.loads(body)
+
+
 def _read_json_error(url: str) -> tuple[int, dict[str, object]]:
     """오류 응답 본문을 읽어 상태코드와 함께 반환한다."""
     try:
@@ -176,6 +184,21 @@ def test_daemon_start_status_stop_and_http(tmp_path: Path) -> None:
         html_code, html_body = _read_text(f"http://{runtime.host}:{runtime.port}/pipeline/errors")
         assert html_code == 200
         assert "Pipeline Error Events" in html_body
+
+        dead_list = _read_json(f"http://{runtime.host}:{runtime.port}/pipeline/dead?repo={repo_q}&limit=5")
+        assert "items" in dead_list
+        assert "meta" in dead_list
+        assert "queue_snapshot" in dead_list["meta"]
+
+        dead_requeue = _post_empty(f"http://{runtime.host}:{runtime.port}/pipeline/dead/requeue?repo={repo_q}&limit=5")
+        assert "result" in dead_requeue
+        assert "meta" in dead_requeue
+        assert "queue_snapshot" in dead_requeue["meta"]
+
+        dead_purge = _post_empty(f"http://{runtime.host}:{runtime.port}/pipeline/dead/purge?repo={repo_q}&limit=5")
+        assert "result" in dead_purge
+        assert "meta" in dead_purge
+        assert "queue_snapshot" in dead_purge["meta"]
 
         status = daemon_service.status()
         assert status is not None

@@ -11,9 +11,10 @@ CLI_E2E_LOG="${ARTIFACT_DIR}/release-gate-cli-e2e.log"
 CRITICAL_LSP_LOG="${ARTIFACT_DIR}/release-gate-critical-lsp.log"
 MCP_HANDSHAKE_LOG="${ARTIFACT_DIR}/release-gate-mcp-handshake.log"
 MCP_CONCURRENCY_LOG="${ARTIFACT_DIR}/release-gate-mcp-concurrency.log"
+QUEUE_OPS_LOG="${ARTIFACT_DIR}/release-gate-queue-ops.log"
 
 mkdir -p "${ARTIFACT_DIR}"
-rm -f "${SUMMARY_FILE}" "${DB_PATH}" "${DAEMON_PROXY_LOG}" "${CLI_E2E_LOG}" "${CRITICAL_LSP_LOG}" "${MCP_HANDSHAKE_LOG}" "${MCP_CONCURRENCY_LOG}"
+rm -f "${SUMMARY_FILE}" "${DB_PATH}" "${DAEMON_PROXY_LOG}" "${CLI_E2E_LOG}" "${CRITICAL_LSP_LOG}" "${MCP_HANDSHAKE_LOG}" "${MCP_CONCURRENCY_LOG}" "${QUEUE_OPS_LOG}"
 
 prepare_critical_fixture() {
   rm -rf "${REPO_FIXTURE}"
@@ -92,13 +93,14 @@ CLI_E2E_PASSED="$(run_cmd cli_e2e "${CLI_E2E_LOG}" bash -lc "python3 -m sari.cli
 CRITICAL_LSP_PASSED="$(run_cmd critical_lsp "${CRITICAL_LSP_LOG}" bash -lc "tools/ci/run_lsp_matrix_gate.sh --report-only true")"
 MCP_HANDSHAKE_PASSED="$(run_cmd mcp_handshake "${MCP_HANDSHAKE_LOG}" python3 tools/ci/release_gate_mcp_probe.py handshake)"
 MCP_CONCURRENCY_PASSED="$(run_cmd mcp_concurrency "${MCP_CONCURRENCY_LOG}" python3 tools/ci/release_gate_mcp_probe.py concurrency)"
+QUEUE_OPS_PASSED="$(run_cmd queue_ops "${QUEUE_OPS_LOG}" bash -lc "python3 -m sari.cli.main pipeline dead list --repo '${REPO_FIXTURE}' --limit 5 && python3 -m sari.cli.main pipeline dead requeue --repo '${REPO_FIXTURE}' --limit 5 && python3 -m sari.cli.main pipeline dead purge --repo '${REPO_FIXTURE}' --limit 5 --confirm")"
 
 FINAL_DECISION="PASS"
-if [[ "${DAEMON_PROXY_PASSED}" != "true" || "${CLI_E2E_PASSED}" != "true" || "${CRITICAL_LSP_PASSED}" != "true" || "${MCP_HANDSHAKE_PASSED}" != "true" || "${MCP_CONCURRENCY_PASSED}" != "true" ]]; then
+if [[ "${DAEMON_PROXY_PASSED}" != "true" || "${CLI_E2E_PASSED}" != "true" || "${CRITICAL_LSP_PASSED}" != "true" || "${MCP_HANDSHAKE_PASSED}" != "true" || "${MCP_CONCURRENCY_PASSED}" != "true" || "${QUEUE_OPS_PASSED}" != "true" ]]; then
   FINAL_DECISION="FAIL"
 fi
 
-python3 - <<'PY' "${SUMMARY_FILE}" "${DAEMON_PROXY_PASSED}" "${CLI_E2E_PASSED}" "${CRITICAL_LSP_PASSED}" "${MCP_HANDSHAKE_PASSED}" "${MCP_CONCURRENCY_PASSED}" "${FINAL_DECISION}"
+python3 - <<'PY' "${SUMMARY_FILE}" "${DAEMON_PROXY_PASSED}" "${CLI_E2E_PASSED}" "${CRITICAL_LSP_PASSED}" "${MCP_HANDSHAKE_PASSED}" "${MCP_CONCURRENCY_PASSED}" "${QUEUE_OPS_PASSED}" "${FINAL_DECISION}" "${MCP_HANDSHAKE_LOG}" "${MCP_CONCURRENCY_LOG}"
 import json
 import sys
 from pathlib import Path
@@ -109,8 +111,35 @@ cli_e2e_passed = sys.argv[3].lower() == "true"
 critical_lsp_passed = sys.argv[4].lower() == "true"
 mcp_handshake_passed = sys.argv[5].lower() == "true"
 mcp_concurrency_passed = sys.argv[6].lower() == "true"
-final_decision = sys.argv[7]
-release_gate_passed = daemon_proxy_passed and cli_e2e_passed and critical_lsp_passed and mcp_handshake_passed and mcp_concurrency_passed
+queue_ops_passed = sys.argv[7].lower() == "true"
+final_decision = sys.argv[8]
+handshake_log_path = Path(sys.argv[9])
+concurrency_log_path = Path(sys.argv[10])
+release_gate_passed = daemon_proxy_passed and cli_e2e_passed and critical_lsp_passed and mcp_handshake_passed and mcp_concurrency_passed and queue_ops_passed
+
+
+def extract_probe_summary(path: Path) -> dict[str, object] | None:
+    if not path.exists():
+        return None
+    for raw_line in reversed(path.read_text(encoding="utf-8", errors="replace").splitlines()):
+        line = raw_line.strip()
+        if not line.startswith("PROBE_SUMMARY:"):
+            continue
+        payload = line[len("PROBE_SUMMARY:") :].strip()
+        if payload == "":
+            continue
+        try:
+            loaded = json.loads(payload)
+        except json.JSONDecodeError:
+            return {"parse_error": "invalid_probe_summary_json", "raw": payload}
+        if isinstance(loaded, dict):
+            return loaded
+        return {"parse_error": "probe_summary_not_dict", "raw": payload}
+    return None
+
+
+handshake_probe_summary = extract_probe_summary(handshake_log_path)
+concurrency_probe_summary = extract_probe_summary(concurrency_log_path)
 payload = {
     "release_gate_passed": release_gate_passed,
     "daemon_proxy_passed": daemon_proxy_passed,
@@ -118,6 +147,7 @@ payload = {
     "critical_lsp_passed": critical_lsp_passed,
     "mcp_handshake_passed": mcp_handshake_passed,
     "mcp_concurrency_passed": mcp_concurrency_passed,
+    "queue_ops_passed": queue_ops_passed,
     "final_decision": final_decision,
     "logs": {
         "daemon_proxy": str(Path(sys.argv[1]).parent / "release-gate-daemon-proxy.log"),
@@ -125,6 +155,11 @@ payload = {
         "critical_lsp": str(Path(sys.argv[1]).parent / "release-gate-critical-lsp.log"),
         "mcp_handshake": str(Path(sys.argv[1]).parent / "release-gate-mcp-handshake.log"),
         "mcp_concurrency": str(Path(sys.argv[1]).parent / "release-gate-mcp-concurrency.log"),
+        "queue_ops": str(Path(sys.argv[1]).parent / "release-gate-queue-ops.log"),
+    },
+    "probe_details": {
+        "mcp_handshake": handshake_probe_summary,
+        "mcp_concurrency": concurrency_probe_summary,
     },
 }
 summary_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -136,7 +171,7 @@ if [[ "${FINAL_DECISION}" != "PASS" ]]; then
     echo "[release gate] summary:" >&2
     cat "${SUMMARY_FILE}" >&2 || true
   fi
-  for path in "${DAEMON_PROXY_LOG}" "${CLI_E2E_LOG}" "${CRITICAL_LSP_LOG}" "${MCP_HANDSHAKE_LOG}" "${MCP_CONCURRENCY_LOG}"; do
+  for path in "${DAEMON_PROXY_LOG}" "${CLI_E2E_LOG}" "${CRITICAL_LSP_LOG}" "${MCP_HANDSHAKE_LOG}" "${MCP_CONCURRENCY_LOG}" "${QUEUE_OPS_LOG}"; do
     if [[ -f "${path}" ]]; then
       echo "[release gate] tail ${path}:" >&2
       tail -n 80 "${path}" >&2 || true

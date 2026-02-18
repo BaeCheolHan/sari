@@ -6,6 +6,7 @@ import io
 import json
 from pathlib import Path
 
+from sari.mcp.transport import McpTransport
 from sari.mcp.server import run_stdio_streams
 
 
@@ -74,3 +75,16 @@ def test_run_stdio_streams_returns_parse_error_for_invalid_utf8_jsonl(tmp_path: 
     payload = _read_first_frame(raw_output)
     assert payload["error"]["code"] == -32700
     assert "utf-8" in payload["error"]["message"].lower()
+
+
+def test_transport_write_message_sanitizes_lone_surrogate() -> None:
+    """고립 surrogate 문자열이 있어도 write_message는 실패하지 않아야 한다."""
+    input_stream = io.BytesIO()
+    output_stream = io.BytesIO()
+    transport = McpTransport(input_stream=input_stream, output_stream=output_stream)
+
+    transport.write_message({"jsonrpc": "2.0", "id": 1, "result": {"text": "\ud800"}})
+
+    raw = output_stream.getvalue()
+    payload = _read_first_frame(raw)
+    assert payload["result"]["text"] == "\ufffd"

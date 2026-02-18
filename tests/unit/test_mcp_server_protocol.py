@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from pytest import MonkeyPatch
+from sari import __version__ as SARI_VERSION
 from sari.core.exceptions import ErrorContext, ValidationError
 from sari.core.models import WorkspaceDTO
 from sari.db.repositories.workspace_repository import WorkspaceRepository
@@ -18,9 +19,14 @@ def test_mcp_initialize_and_tools_list(tmp_path: Path) -> None:
     init_payload = init_response.to_dict()
     assert "result" in init_payload
     assert init_payload["result"]["serverInfo"]["name"] == "sari-v2"
+    assert init_payload["result"]["serverInfo"]["version"] == SARI_VERSION
+    assert init_payload["result"]["schemaVersion"] == "2026-02-18.pack1.v2-line"
+    assert init_payload["result"]["schema_version"] == "2026-02-18.pack1.v2-line"
 
     list_response = server.handle_request({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
     list_payload = list_response.to_dict()
+    assert list_payload["result"]["schemaVersion"] == "2026-02-18.pack1.v2-line"
+    assert list_payload["result"]["schema_version"] == "2026-02-18.pack1.v2-line"
     tools = list_payload["result"]["tools"]
     tool_names = {tool["name"] for tool in tools}
     assert tool_names == {
@@ -92,8 +98,8 @@ def test_mcp_tool_call_requires_repo_and_query(tmp_path: Path) -> None:
 
     payload = response.to_dict()
     assert payload["result"]["isError"] is True
-    assert payload["result"]["structuredContent"]["meta"]["errors"][0]["code"] == "ERR_REPO_REQUIRED"
-    assert payload["result"]["structuredContent"]["meta"]["errors"][0]["message"] == "repo is required"
+    text = payload["result"]["content"][0]["text"]
+    assert "@ERR code=ERR_REPO_REQUIRED" in text
 
 
 def test_mcp_doctor_requires_repo(tmp_path: Path) -> None:
@@ -110,8 +116,8 @@ def test_mcp_doctor_requires_repo(tmp_path: Path) -> None:
     )
     payload = response.to_dict()
     assert payload["result"]["isError"] is True
-    assert payload["result"]["structuredContent"]["meta"]["errors"][0]["code"] == "ERR_REPO_REQUIRED"
-    assert payload["result"]["structuredContent"]["meta"]["errors"][0]["message"] == "repo is required"
+    text = payload["result"]["content"][0]["text"]
+    assert "@ERR code=ERR_REPO_REQUIRED" in text
 
 
 def test_mcp_tool_call_returns_pack1_error_on_validation_exception(tmp_path: Path) -> None:
@@ -140,9 +146,8 @@ def test_mcp_tool_call_returns_pack1_error_on_validation_exception(tmp_path: Pat
     payload = response.to_dict()
     assert "error" not in payload
     assert payload["result"]["isError"] is True
-    err = payload["result"]["structuredContent"]["meta"]["errors"][0]
-    assert err["code"] == "ERR_DB_MAPPING_INVALID"
-    assert err["message"] == "invalid row"
+    text = payload["result"]["content"][0]["text"]
+    assert "@ERR code=ERR_DB_MAPPING_INVALID" in text
 
 
 def test_mcp_supports_method_surface_parity(tmp_path: Path) -> None:
@@ -175,7 +180,9 @@ def test_mcp_supports_method_surface_parity(tmp_path: Path) -> None:
     identify_payload = server.handle_request({"jsonrpc": "2.0", "id": 17, "method": "sari/identify"}).to_dict()
     identify = identify_payload["result"]
     assert identify["name"] == "sari-v2"
-    assert identify["version"] == "0.1.0"
+    assert identify["version"] == SARI_VERSION
+    assert identify["schemaVersion"] == "2026-02-18.pack1.v2-line"
+    assert identify["schema_version"] == "2026-02-18.pack1.v2-line"
     assert isinstance(identify["pid"], int)
     assert "workspaceRoot" in identify
 

@@ -37,7 +37,7 @@ def _read_one(fd, timeout_sec: float) -> dict[str, object]:
         if len(rest) < size:
             continue
         raw = rest[:size]
-        return json.loads(raw.decode("utf-8", errors="ignore"))
+        return json.loads(raw.decode("utf-8"))
     raise RuntimeError("timeout while reading MCP response")
 
 
@@ -50,7 +50,30 @@ def _read_by_id(fd, request_id: int, timeout_sec: float) -> dict[str, object]:
     raise RuntimeError("timeout while reading MCP response by id")
 
 
-def _run_internal_client() -> int:
+def _drain_stderr(stderr, bucket: list[str]) -> None:
+    """stderr 출력을 수집해 프로브 실패 원인에 포함한다."""
+    if stderr is None:
+        return
+    for line in stderr:
+        if isinstance(line, bytes):
+            bucket.append(line.decode("utf-8", errors="replace").rstrip())
+        else:
+            bucket.append(str(line).rstrip())
+
+
+def _terminate_process(proc: subprocess.Popen[bytes]) -> None:
+    """프로브 종료 시 자식 프로세스를 확실히 정리한다."""
+    if proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=3.0)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=3.0)
+
+
+def _run_internal_client(timeout_initialize_sec: float = 30.0, timeout_tools_sec: float = 10.0) -> tuple[bool, dict[str, object]]:
     proc = subprocess.Popen(
         [sys.executable, "-m", "sari.cli.main", "mcp", "stdio", "--local"],
         stdin=subprocess.PIPE,
@@ -60,6 +83,9 @@ def _run_internal_client() -> int:
     )
     assert proc.stdin is not None
     assert proc.stdout is not None
+    stderr_lines: list[str] = []
+    stderr_reader = threading.Thread(target=_drain_stderr, args=(proc.stderr, stderr_lines), daemon=True)
+    stderr_reader.start()
     try:
         proc.stdin.write(
             _frame(
@@ -76,51 +102,68 @@ def _run_internal_client() -> int:
             )
         )
         proc.stdin.flush()
-        resp1 = _read_one(proc.stdout, timeout_sec=30.0)
+        resp1 = _read_one(proc.stdout, timeout_sec=timeout_initialize_sec)
         if "error" in resp1:
-            return 0
+            return (False, {"stage": "initialize", "response": resp1, "stderr_tail": stderr_lines[-20:]})
         proc.stdin.write(_frame({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}))
         proc.stdin.flush()
         proc.stdin.write(_frame({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}))
         proc.stdin.flush()
-        resp2 = _read_by_id(proc.stdout, request_id=2, timeout_sec=10.0)
+        resp2 = _read_by_id(proc.stdout, request_id=2, timeout_sec=timeout_tools_sec)
         tools_obj = resp2.get("result")
         if not isinstance(tools_obj, dict) or not isinstance(tools_obj.get("tools"), list):
-            return 0
-        return 1
+            return (
+                False,
+                {"stage": "tools/list", "response": resp2, "reason": "tools payload shape invalid", "stderr_tail": stderr_lines[-20:]},
+            )
+        return (True, {"stage": "ok", "tool_count": len(tools_obj.get("tools", [])), "stderr_tail": stderr_lines[-20:]})
+    except Exception as exc:  # noqa: BLE001
+        return (False, {"stage": "exception", "error": str(exc), "stderr_tail": stderr_lines[-20:]})
     finally:
-        proc.terminate()
+        _terminate_process(proc)
+        stderr_reader.join(timeout=1.0)
+
+
+def _emit_summary(mode: str, ok: bool, detail: dict[str, object]) -> None:
+    """release gate 로그 파싱을 위한 JSON 요약을 출력한다."""
+    payload = {"mode": mode, "ok": ok, "detail": detail}
+    print("PROBE_SUMMARY:" + json.dumps(payload, ensure_ascii=False))
 
 
 def _run_handshake() -> int:
-    ok = _run_internal_client()
-    if ok != 1:
-        raise RuntimeError("mcp handshake probe failed")
+    ok, detail = _run_internal_client()
+    _emit_summary(mode="handshake", ok=ok, detail=detail)
+    if not ok:
+        raise RuntimeError(f"mcp handshake probe failed: {detail}")
     return 0
 
 
 def _run_concurrency() -> int:
-    results: list[int] = []
+    results: list[bool] = []
+    details: list[dict[str, object]] = []
     lock = threading.Lock()
 
     def run_client() -> None:
-        item = _run_internal_client()
+        item, detail = _run_internal_client()
         with lock:
             results.append(item)
+            details.append(detail)
 
     threads = [threading.Thread(target=run_client) for _ in range(3)]
     for thread in threads:
         thread.start()
     for thread in threads:
         thread.join()
-    if not results or any(item == 0 for item in results):
+    ok = bool(results) and all(results)
+    _emit_summary(mode="concurrency", ok=ok, detail={"client_results": results, "client_details": details})
+    if not ok:
         raise RuntimeError(f"concurrency discovery failed: {results}")
     return 0
 
 
 def main() -> int:
-    subprocess.run('pkill -f "sari.*daemon"', shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    subprocess.run('pkill -f "sari daemon run"', shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(["pkill", "-f", "sari.*daemon"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(["pkill", "-f", "sari daemon run"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if len(sys.argv) < 2:
         raise SystemExit("usage: release_gate_mcp_probe.py [handshake|concurrency]")
     mode = sys.argv[1].strip().lower()

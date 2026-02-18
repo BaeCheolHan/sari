@@ -27,16 +27,17 @@ def test_read_diff_preview_includes_stabilization_meta(tmp_path: Path) -> None:
             "id": 601,
             "method": "tools/call",
             "params": {
-                "name": "read",
-                "arguments": {
-                    "repo": str(repo_path),
-                    "mode": "diff_preview",
-                    "target": "main.py",
-                    "content": "print('b')\n",
+                    "name": "read",
+                    "arguments": {
+                        "repo": str(repo_path),
+                        "mode": "diff_preview",
+                        "target": "main.py",
+                        "content": "print('b')\n",
+                        "options": {"structured": 1},
+                    },
                 },
-            },
-        }
-    )
+            }
+        )
     payload = response.to_dict()
     assert payload["result"]["isError"] is False
     meta = payload["result"]["structuredContent"]["meta"]
@@ -45,4 +46,3 @@ def test_read_diff_preview_includes_stabilization_meta(tmp_path: Path) -> None:
     assert isinstance(stabilization["reason_codes"], list)
     assert isinstance(stabilization["evidence_refs"], list)
     assert len(stabilization["evidence_refs"]) == 1
-

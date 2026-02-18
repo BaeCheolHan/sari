@@ -27,7 +27,7 @@ def test_mcp_repo_candidates_returns_registered_workspace(tmp_path: Path) -> Non
             "method": "tools/call",
             "params": {
                 "name": "repo_candidates",
-                "arguments": {"repo": str(repo_dir.resolve())},
+                "arguments": {"repo": str(repo_dir.resolve()), "options": {"structured": 1}},
             },
         }
     )
@@ -56,7 +56,7 @@ def test_mcp_rescan_returns_invalidation_count(tmp_path: Path) -> None:
             "method": "tools/call",
             "params": {
                 "name": "rescan",
-                "arguments": {"repo": str(repo_dir.resolve())},
+                "arguments": {"repo": str(repo_dir.resolve()), "options": {"structured": 1}},
             },
         }
     )

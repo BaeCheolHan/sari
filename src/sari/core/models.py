@@ -560,11 +560,22 @@ class DeadJobItemDTO:
 class DeadJobActionResultDTO:
     requeued_count: int = 0
     purged_count: int = 0
+    queue_snapshot: dict[str, int] | None = None
+    executed_at: str | None = None
+    repo_scope: str | None = None
+
     def to_dict(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "requeued_count": self.requeued_count,
             "purged_count": self.purged_count,
         }
+        if self.queue_snapshot is not None:
+            payload["queue_snapshot"] = self.queue_snapshot
+        if self.executed_at is not None:
+            payload["executed_at"] = self.executed_at
+        if self.repo_scope is not None:
+            payload["repo_scope"] = self.repo_scope
+        return payload
 @dataclass(frozen=True)
 class PipelineAlertSnapshotDTO:
     state: str

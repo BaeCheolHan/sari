@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import platform
+import shlex
 import subprocess
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -12,6 +13,17 @@ from solidlsp.ls_utils import FileUtils, PlatformUtils
 from solidlsp.util.subprocess_util import subprocess_kwargs
 
 log = logging.getLogger(__name__)
+
+
+def _normalize_command_args(command: str | list[str], is_windows: bool) -> list[str]:
+    """런타임 의존성 설치 명령을 안전한 argv 리스트로 변환한다."""
+    if isinstance(command, str):
+        parts = shlex.split(command, posix=not is_windows)
+    else:
+        parts = [str(item) for item in command]
+    if len(parts) == 0:
+        raise RuntimeError("runtime dependency command is empty")
+    return parts
 
 
 @dataclass(kw_only=True)
@@ -105,16 +117,13 @@ class RuntimeDependencyCollection:
             kwargs["user"] = pwd.getpwuid(os.getuid()).pw_name  # type: ignore
 
         is_windows = platform.system() == "Windows"
-        if not isinstance(command, str) and not is_windows:
-            # Since we are using the shell, we need to convert the command list to a single string
-            # on Linux/macOS
-            command = " ".join(command)
+        command_args = _normalize_command_args(command=command, is_windows=is_windows)
 
-        log.info("Running command %s in '%s'", f"'{command}'" if isinstance(command, str) else command, cwd)
+        log.info("Running command %s in '%s'", command_args, cwd)
 
         completed_process = subprocess.run(
-            command,
-            shell=True,
+            command_args,
+            shell=False,
             check=True,
             cwd=cwd,
             stdout=subprocess.PIPE,
@@ -122,7 +131,7 @@ class RuntimeDependencyCollection:
             **kwargs,
         )  # type: ignore
         if completed_process.returncode != 0:
-            log.warning("Command '%s' failed with return code %d", command, completed_process.returncode)
+            log.warning("Command '%s' failed with return code %d", command_args, completed_process.returncode)
             log.warning("Command output:\n%s", completed_process.stdout)
         else:
             log.info(

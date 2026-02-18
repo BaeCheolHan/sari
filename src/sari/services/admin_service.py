@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import importlib
+import importlib.metadata
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from sari import __version__ as SARI_RUNTIME_VERSION
 from sari.core.config import AppConfig
 from sari.db.repositories.runtime_repository import RuntimeRepository
 from sari.db.repositories.symbol_cache_repository import SymbolCacheRepository
@@ -71,7 +72,53 @@ class AdminService:
                 detail=self._config.run_mode,
             )
         )
+        checks.append(
+            DoctorCheckDTO(
+                name="orm_backend",
+                passed=True,
+                detail=self._detect_orm_backend(),
+            )
+        )
+        version_alignment_passed, version_alignment_detail = self._detect_version_alignment()
+        checks.append(
+            DoctorCheckDTO(
+                name="version_alignment",
+                passed=version_alignment_passed,
+                detail=version_alignment_detail,
+            )
+        )
         return checks
+
+    def _detect_orm_backend(self) -> str:
+        """저장소 계층 ORM 백엔드 상태를 탐지한다."""
+        repository_root = Path(__file__).resolve().parents[1] / "db" / "repositories"
+        repository_files = sorted(repository_root.glob("*_repository.py"))
+        legacy_count = 0
+        for file_path in repository_files:
+            try:
+                source = file_path.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            if "from sari.db.schema import connect" in source:
+                legacy_count += 1
+        if legacy_count == 0:
+            return "sqlalchemy_only"
+        return f"mixed(sqlalchemy+sqlite):legacy_repositories={legacy_count}"
+
+    def _detect_version_alignment(self) -> tuple[bool, str]:
+        """실행중 코드 버전과 설치 메타데이터 버전 정합성을 점검한다."""
+        runtime_version = SARI_RUNTIME_VERSION.strip()
+        try:
+            metadata_version = importlib.metadata.version("sari").strip()
+        except importlib.metadata.PackageNotFoundError:
+            metadata_version = "unavailable"
+        except (importlib.metadata.InvalidVersion, ValueError):
+            metadata_version = "unavailable"
+        if metadata_version == "unavailable":
+            return True, f"runtime={runtime_version}, metadata=unavailable"
+        if runtime_version == metadata_version:
+            return True, f"runtime={runtime_version}, metadata={metadata_version}"
+        return False, f"runtime={runtime_version}, metadata={metadata_version}, mismatch=true"
 
     def run_mode(self) -> str:
         """현재 유효 실행 모드를 반환한다."""

@@ -124,6 +124,10 @@ class PipelineControlService:
             policy=policy,
         )
 
+    def get_queue_snapshot(self) -> dict[str, int]:
+        """현재 큐 상태 스냅샷을 반환한다."""
+        return self._queue_repo.get_status_counts()
+
     def list_dead_jobs(self, repo_root: str, limit: int) -> list[DeadJobItemDTO]:
         """DEAD 작업 목록을 조회한다."""
         if limit <= 0:
@@ -143,19 +147,36 @@ class PipelineControlService:
         applied_now = now_iso if now_iso is not None else now_iso8601_utc()
         if all_scopes:
             count = self._queue_repo.requeue_dead_all(now_iso=applied_now)
+            scope = "all"
         else:
             count = self._queue_repo.requeue_dead(repo_root=repo_root, limit=limit, now_iso=applied_now)
-        return DeadJobActionResultDTO(requeued_count=count, purged_count=0)
+            scope = "repo"
+        return DeadJobActionResultDTO(
+            requeued_count=count,
+            purged_count=0,
+            queue_snapshot=self._queue_repo.get_status_counts(),
+            executed_at=applied_now,
+            repo_scope=scope,
+        )
 
     def purge_dead_jobs(self, repo_root: str, limit: int, all_scopes: bool = False) -> DeadJobActionResultDTO:
         """DEAD 작업을 삭제한다."""
         if limit <= 0:
             raise ValidationError(ErrorContext(code="ERR_INVALID_LIMIT", message="limit는 1 이상이어야 합니다"))
+        applied_now = now_iso8601_utc()
         if all_scopes:
             count = self._queue_repo.purge_dead_all()
+            scope = "all"
         else:
             count = self._queue_repo.purge_dead(repo_root=repo_root, limit=limit)
-        return DeadJobActionResultDTO(requeued_count=0, purged_count=count)
+            scope = "repo"
+        return DeadJobActionResultDTO(
+            requeued_count=0,
+            purged_count=count,
+            queue_snapshot=self._queue_repo.get_status_counts(),
+            executed_at=applied_now,
+            repo_scope=scope,
+        )
 
     def get_auto_control_state(self) -> PipelineAutoControlStateDTO:
         """자동제어 상태를 조회한다."""

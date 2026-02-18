@@ -7,6 +7,7 @@ import os
 import sys
 from dataclasses import dataclass
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 
 import click
@@ -575,7 +576,16 @@ def pipeline_dead_list_command(repo: str, limit: int) -> None:
     except SariBaseError as exc:
         _print_json({"error": asdict(exc.context)}, exit_code=1)
         return
-    _print_json({"items": [item.to_dict() for item in items]})
+    _print_json(
+        {
+            "items": [item.to_dict() for item in items],
+            "meta": {
+                "queue_snapshot": services.pipeline_control_service.get_queue_snapshot(),
+                "executed_at": datetime.now(timezone.utc).isoformat(),
+                "repo_scope": "repo",
+            },
+        }
+    )
 
 
 @pipeline_dead_group.command("requeue")
@@ -589,7 +599,7 @@ def pipeline_dead_requeue_command(repo: str, limit: int) -> None:
     except SariBaseError as exc:
         _print_json({"error": asdict(exc.context)}, exit_code=1)
         return
-    _print_json(result.to_dict())
+    _print_json({"result": result.to_dict(), "meta": {"queue_snapshot": result.queue_snapshot, "executed_at": result.executed_at, "repo_scope": result.repo_scope}})
 
 
 @pipeline_dead_group.command("purge")
@@ -607,7 +617,7 @@ def pipeline_dead_purge_command(repo: str, limit: int, confirm: bool) -> None:
     except SariBaseError as exc:
         _print_json({"error": asdict(exc.context)}, exit_code=1)
         return
-    _print_json(result.to_dict())
+    _print_json({"result": result.to_dict(), "meta": {"queue_snapshot": result.queue_snapshot, "executed_at": result.executed_at, "repo_scope": result.repo_scope}})
 
 
 @pipeline_group.group("auto")

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sari.core.exceptions import ValidationError
+from sari.core.exceptions import ErrorContext, ValidationError
 from sari.lsp.uri_utils import file_uri_to_repo_relative
 
 
@@ -15,7 +15,14 @@ def normalize_repo_relative_path(raw: str) -> str:
         value = value.replace("//", "/")
     if value.endswith("/"):
         value = value[:-1]
-    return value
+    if value.startswith("/"):
+        raise ValidationError(ErrorContext(code="ERR_URI_PATH_INVALID", message="절대 경로는 허용되지 않습니다"))
+    if len(value) >= 3 and value[1] == ":" and value[2] == "/":
+        raise ValidationError(ErrorContext(code="ERR_URI_PATH_INVALID", message="절대 경로는 허용되지 않습니다"))
+    segments = [segment for segment in value.split("/") if segment not in ("", ".")]
+    if any(segment == ".." for segment in segments):
+        raise ValidationError(ErrorContext(code="ERR_URI_PATH_INVALID", message="repo 범위를 벗어나는 상대 경로입니다"))
+    return "/".join(segments)
 
 
 def normalize_location_to_repo_relative(

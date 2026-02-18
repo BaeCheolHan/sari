@@ -12,7 +12,7 @@ from sari.db.schema import init_schema
 
 
 def test_mcp_search_pack1_snapshot(tmp_path: Path) -> None:
-    """search 도구 응답이 pack1 필수 키셋을 충족하는지 검증한다."""
+    """search 도구 응답이 PACK1 v2 라인 포맷을 충족하는지 검증한다."""
     db_path = tmp_path / "state.db"
     init_schema(db_path)
 
@@ -49,20 +49,12 @@ def test_mcp_search_pack1_snapshot(tmp_path: Path) -> None:
     for key in snapshot["required_top_keys"]:
         assert key in result
 
-    structured = result["structuredContent"]
-    assert isinstance(structured, dict)
-    for key in snapshot["required_structured_keys"]:
-        assert key in structured
-
-    meta = structured["meta"]
-    assert isinstance(meta, dict)
-    for key in snapshot["required_meta_keys"]:
-        assert key in meta
-
-    items = structured["items"]
-    assert isinstance(items, list)
-    if len(items) > 0:
-        first = items[0]
-        assert isinstance(first, dict)
-        for key in snapshot["required_item_keys"]:
-            assert key in first
+    content = result["content"]
+    assert isinstance(content, list)
+    assert len(content) > 0
+    assert isinstance(content[0], dict)
+    text = str(content[0].get("text", ""))
+    for prefix in snapshot["required_line_prefixes"]:
+        assert prefix in text
+    for token in snapshot["forbidden_tokens"]:
+        assert token not in result

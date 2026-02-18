@@ -132,21 +132,34 @@ def test_orphan_daemon_self_terminates_and_records_exit_reason(tmp_path: Path) -
 
     launcher_code = r'''
 import json
-from pathlib import Path
-from sari.core.config import AppConfig
-from sari.db.repositories.runtime_repository import RuntimeRepository
-from sari.db.schema import init_schema
-from sari.services.daemon_service import DaemonService
-
+import os
+import subprocess
 import sys
+from pathlib import Path
+from sari.db.schema import init_schema
 
 db_path = Path(sys.argv[1])
 port = int(sys.argv[2])
 init_schema(db_path)
-config = AppConfig(db_path=db_path, host="127.0.0.1", preferred_port=port, max_port_scan=20, stop_grace_sec=2)
-service = DaemonService(config=config, runtime_repo=RuntimeRepository(db_path))
-runtime = service.start(run_mode="prod")
-print(json.dumps({"pid": runtime.pid}), flush=True)
+env = os.environ.copy()
+env.pop("SARI_DAEMON_DETACHED", None)
+proc = subprocess.Popen(
+    [
+        sys.executable,
+        "-m",
+        "sari.daemon_process",
+        "--db-path",
+        str(db_path),
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+        "--run-mode",
+        "prod",
+    ],
+    env=env,
+)
+print(json.dumps({"pid": proc.pid}), flush=True)
 '''
 
     env = os.environ.copy()
@@ -162,12 +175,12 @@ print(json.dumps({"pid": runtime.pid}), flush=True)
     assert launcher.returncode == 0, err
     pid = int(json.loads(out.strip())["pid"])
 
-    _wait_pid_exit(pid, timeout_sec=10.0)
+    _wait_pid_exit(pid, timeout_sec=15.0)
 
     runtime_repo = RuntimeRepository(db_path)
-    runtime = runtime_repo.get_runtime()
-    assert runtime is not None
-    assert runtime.last_exit_reason == "ORPHAN_SELF_TERMINATE"
+    latest = runtime_repo.get_latest_exit_event()
+    assert latest is not None
+    assert latest["exit_reason"] == "ORPHAN_SELF_TERMINATE"
 
 
 def test_graceful_sigterm_records_normal_shutdown(tmp_path: Path) -> None:

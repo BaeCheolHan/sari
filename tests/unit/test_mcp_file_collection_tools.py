@@ -45,7 +45,7 @@ def test_mcp_file_collection_scan_list_read_flow(tmp_path: Path) -> None:
             "method": "tools/call",
             "params": {
                 "name": "scan_once",
-                "arguments": {"repo": str(repo_dir.resolve())},
+                "arguments": {"repo": str(repo_dir.resolve()), "options": {"structured": 1}},
             },
         }
     )
@@ -59,7 +59,7 @@ def test_mcp_file_collection_scan_list_read_flow(tmp_path: Path) -> None:
             "method": "tools/call",
             "params": {
                 "name": "list_files",
-                "arguments": {"repo": str(repo_dir.resolve()), "limit": 10},
+                "arguments": {"repo": str(repo_dir.resolve()), "limit": 10, "options": {"structured": 1}},
             },
         }
     )
@@ -82,6 +82,7 @@ def test_mcp_file_collection_scan_list_read_flow(tmp_path: Path) -> None:
                     "relative_path": "alpha.py",
                     "offset": 0,
                     "limit": 20,
+                    "options": {"structured": 1},
                 },
             },
         }
@@ -113,6 +114,7 @@ def test_mcp_index_file_requires_relative_path(tmp_path: Path) -> None:
                 "name": "index_file",
                 "arguments": {
                     "repo": str(repo_dir.resolve()),
+                    "options": {"structured": 1},
                 },
             },
         }
@@ -196,6 +198,7 @@ def test_mcp_read_file_returns_explicit_error_for_corrupted_l2_body(tmp_path: Pa
                     "relative_path": "alpha.py",
                     "offset": 0,
                     "limit": 20,
+                    "options": {"structured": 1},
                 },
             },
         }
@@ -229,6 +232,7 @@ def test_mcp_index_file_returns_explicit_error_for_non_collectible_path(tmp_path
                 "arguments": {
                     "repo": str(repo_dir.resolve()),
                     "relative_path": ".git/FETCH_HEAD",
+                    "options": {"structured": 1},
                 },
             },
         }

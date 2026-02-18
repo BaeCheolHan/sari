@@ -377,8 +377,22 @@ async def pipeline_dead_list_endpoint(request) -> JSONResponse:
     except ValueError:
         error = ErrorResponseDTO(code='ERR_INVALID_LIMIT', message='limit는 정수여야 합니다')
         return JSONResponse({'error': {'code': error.code, 'message': error.message}}, status_code=400)
-    items = context.pipeline_control_service.list_dead_jobs(repo_root=repo, limit=limit)
-    return JSONResponse({'items': [item.to_dict() for item in items]})
+    try:
+        items = context.pipeline_control_service.list_dead_jobs(repo_root=repo, limit=limit)
+    except ValidationError as exc:
+        error = ErrorResponseDTO(code=exc.context.code, message=exc.context.message)
+        return JSONResponse({'error': {'code': error.code, 'message': error.message}}, status_code=400)
+    queue_snapshot = context.pipeline_control_service.get_queue_snapshot()
+    return JSONResponse(
+        {
+            'items': [item.to_dict() for item in items],
+            'meta': {
+                'queue_snapshot': queue_snapshot,
+                'executed_at': datetime.now(timezone.utc).isoformat(),
+                'repo_scope': 'repo',
+            },
+        }
+    )
 async def pipeline_dead_requeue_endpoint(request) -> JSONResponse:
     context: HttpContext = request.app.state.context
     if context.pipeline_control_service is None:
@@ -388,11 +402,20 @@ async def pipeline_dead_requeue_endpoint(request) -> JSONResponse:
     if error_response is not None:
         return error_response
     assert repo is not None
-    limit = int(str(request.query_params.get('limit', '20')))
+    limit_raw = str(request.query_params.get('limit', '20'))
+    try:
+        limit = int(limit_raw)
+    except ValueError:
+        error = ErrorResponseDTO(code='ERR_INVALID_LIMIT', message='limit는 정수여야 합니다')
+        return JSONResponse({'error': {'code': error.code, 'message': error.message}}, status_code=400)
     all_raw = str(request.query_params.get('all', 'false')).strip().lower()
     all_scopes = all_raw in {'true', '1', 'on', 'yes'}
-    result = context.pipeline_control_service.requeue_dead_jobs(repo_root=repo, limit=limit, all_scopes=all_scopes)
-    return JSONResponse(result.to_dict())
+    try:
+        result = context.pipeline_control_service.requeue_dead_jobs(repo_root=repo, limit=limit, all_scopes=all_scopes)
+    except ValidationError as exc:
+        error = ErrorResponseDTO(code=exc.context.code, message=exc.context.message)
+        return JSONResponse({'error': {'code': error.code, 'message': error.message}}, status_code=400)
+    return JSONResponse({'result': result.to_dict(), 'meta': {'queue_snapshot': result.queue_snapshot, 'executed_at': result.executed_at, 'repo_scope': result.repo_scope}})
 async def pipeline_dead_purge_endpoint(request) -> JSONResponse:
     context: HttpContext = request.app.state.context
     if context.pipeline_control_service is None:
@@ -402,11 +425,20 @@ async def pipeline_dead_purge_endpoint(request) -> JSONResponse:
     if error_response is not None:
         return error_response
     assert repo is not None
-    limit = int(str(request.query_params.get('limit', '20')))
+    limit_raw = str(request.query_params.get('limit', '20'))
+    try:
+        limit = int(limit_raw)
+    except ValueError:
+        error = ErrorResponseDTO(code='ERR_INVALID_LIMIT', message='limit는 정수여야 합니다')
+        return JSONResponse({'error': {'code': error.code, 'message': error.message}}, status_code=400)
     all_raw = str(request.query_params.get('all', 'false')).strip().lower()
     all_scopes = all_raw in {'true', '1', 'on', 'yes'}
-    result = context.pipeline_control_service.purge_dead_jobs(repo_root=repo, limit=limit, all_scopes=all_scopes)
-    return JSONResponse(result.to_dict())
+    try:
+        result = context.pipeline_control_service.purge_dead_jobs(repo_root=repo, limit=limit, all_scopes=all_scopes)
+    except ValidationError as exc:
+        error = ErrorResponseDTO(code=exc.context.code, message=exc.context.message)
+        return JSONResponse({'error': {'code': error.code, 'message': error.message}}, status_code=400)
+    return JSONResponse({'result': result.to_dict(), 'meta': {'queue_snapshot': result.queue_snapshot, 'executed_at': result.executed_at, 'repo_scope': result.repo_scope}})
 async def pipeline_auto_status_endpoint(request) -> JSONResponse:
     context: HttpContext = request.app.state.context
     if context.pipeline_control_service is None:

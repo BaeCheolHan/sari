@@ -66,7 +66,8 @@ class McpTransport:
 
     def write_message(self, message: dict[str, object], mode: str | None = None) -> None:
         """모드에 맞춰 MCP 응답 메시지를 출력한다."""
-        encoded = json.dumps(message, ensure_ascii=False).encode("utf-8")
+        safe_message = _sanitize_json_value(message)
+        encoded = json.dumps(safe_message, ensure_ascii=False).encode("utf-8")
         selected_mode = mode if mode is not None else self.default_mode
         if selected_mode == MCP_MODE_JSONL:
             self._output.write(encoded + b"\n")
@@ -135,3 +136,34 @@ class McpTransport:
             return line.decode("utf-8")
         except UnicodeDecodeError as exc:
             raise McpTransportParseError(mode=mode, message=f"invalid utf-8 payload: {exc}") from exc
+
+
+def _sanitize_json_value(value: object) -> object:
+    """JSON 직렬화 경계에서 비정상 텍스트를 안전 문자로 치환한다."""
+    if isinstance(value, str):
+        return _sanitize_text(value)
+    if isinstance(value, list):
+        return [_sanitize_json_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_sanitize_json_value(item) for item in value]
+    if isinstance(value, dict):
+        sanitized: dict[str, object] = {}
+        for key, child in value.items():
+            if isinstance(key, str):
+                sanitized[_sanitize_text(key)] = _sanitize_json_value(child)
+        return sanitized
+    return value
+
+
+def _sanitize_text(text: str) -> str:
+    """고립 surrogate 문자를 U+FFFD로 치환해 UTF-8 인코딩 실패를 방지한다."""
+    if text == "":
+        return text
+    chars: list[str] = []
+    for ch in text:
+        code = ord(ch)
+        if 55296 <= code <= 57343:
+            chars.append("\ufffd")
+            continue
+        chars.append(ch)
+    return "".join(chars)

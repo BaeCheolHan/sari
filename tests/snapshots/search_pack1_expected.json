@@ -1,6 +1,5 @@
 {
-  "required_top_keys": ["content", "structuredContent", "isError"],
-  "required_structured_keys": ["items", "meta"],
-  "required_meta_keys": ["candidate_count", "resolved_count", "cache_hit", "errors"],
-  "required_item_keys": ["type", "repo", "relative_path", "score", "source", "name", "kind"]
+  "required_top_keys": ["content", "isError"],
+  "required_line_prefixes": ["@V 2", "@SUM ", "@R "],
+  "forbidden_tokens": ["structuredContent"]
 }

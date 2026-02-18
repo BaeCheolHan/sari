@@ -27,7 +27,7 @@ def test_search_includes_stabilization_meta(tmp_path: Path) -> None:
             "method": "tools/call",
             "params": {
                 "name": "search",
-                "arguments": {"repo": str(repo_dir.resolve()), "query": "alpha_symbol", "limit": 5},
+                "arguments": {"repo": str(repo_dir.resolve()), "query": "alpha_symbol", "limit": 5, "options": {"structured": 1}},
             },
         }
     )
@@ -39,4 +39,3 @@ def test_search_includes_stabilization_meta(tmp_path: Path) -> None:
     assert isinstance(stabilization["metrics_snapshot"], dict)
     assert isinstance(stabilization["next_calls"], list)
     assert isinstance(stabilization["bundle_id"], str)
-

@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import platform
+import shlex
 import subprocess
 import threading
 import time
@@ -32,13 +33,24 @@ from solidlsp.lsp_protocol_handler.server import (
     make_request,
     make_response,
 )
-from solidlsp.util.subprocess_util import quote_arg, subprocess_kwargs
+from solidlsp.util.subprocess_util import subprocess_kwargs
 
 log = logging.getLogger(__name__)
 
 RequestId = int | str
 RequestHandler = Callable[[PayloadLike], PayloadLike]
 NotificationHandler = Callable[[PayloadLike], None]
+
+
+def _normalize_command_args(cmd: str | list[str], is_windows: bool) -> list[str]:
+    """프로세스 실행 인자를 안전한 리스트 형태로 정규화한다."""
+    if isinstance(cmd, str):
+        parts = shlex.split(cmd, posix=not is_windows)
+    else:
+        parts = [str(item) for item in cmd]
+    if len(parts) == 0:
+        raise RuntimeError("language server command is empty")
+    return parts
 
 
 class LanguageServerTerminatedException(Exception):
@@ -190,21 +202,18 @@ class SolidLanguageServerHandler:
 
         cmd = self.process_launch_info.cmd
         is_windows = platform.system() == "Windows"
-        if not isinstance(cmd, str) and not is_windows:
-            # Since we are using the shell, we need to convert the command list to a single string
-            # on Linux/macOS
-            cmd = " ".join(map(quote_arg, cmd))
+        command_args = _normalize_command_args(cmd=cmd, is_windows=is_windows)
         log.info("Starting language server process via command: %s", self.process_launch_info.cmd)
         kwargs = subprocess_kwargs()
         kwargs["start_new_session"] = self.start_independent_lsp_process
         self.process = subprocess.Popen(
-            cmd,
+            command_args,
             stdout=subprocess.PIPE,
             stdin=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=child_proc_env,
             cwd=self.process_launch_info.cwd,
-            shell=True,
+            shell=False,
             **kwargs,
         )
 

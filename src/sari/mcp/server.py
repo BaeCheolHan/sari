@@ -3,6 +3,7 @@ import os
 import sys
 from pathlib import Path
 from typing import BinaryIO
+from sari import __version__ as SARI_VERSION
 from sari.core.config import AppConfig
 from sari.core.exceptions import ValidationError
 from sari.core.models import ErrorResponseDTO
@@ -46,6 +47,7 @@ from sari.mcp.tools.pipeline_benchmark_tools import PipelineBenchmarkReportTool,
 from sari.mcp.tools.pipeline_lsp_matrix_tools import PipelineLspMatrixReportTool, PipelineLspMatrixRunTool
 from sari.mcp.tools.pipeline_quality_tools import PipelineQualityReportTool, PipelineQualityRunTool
 from sari.mcp.tools.pack1 import pack1_error
+from sari.mcp.pack1_line import PackLineOptionsDTO, render_pack_v2
 from sari.mcp.tools.file_collection_tools import IndexFileTool, ListFilesTool, ReadFileTool, ScanOnceTool
 from sari.mcp.tools.symbol_tools import GetCallersTool, SearchSymbolTool
 from sari.mcp.transport import MCP_MODE_FRAMED, McpTransport, McpTransportParseError
@@ -67,6 +69,7 @@ from sari.services.pipeline_lsp_matrix_service import PipelineLspMatrixService
 from sari.services.pipeline_quality_service import PipelineQualityService, SerenaGoldenBackend
 
 class McpServer:
+    _TOOLS_SCHEMA_VERSION = "2026-02-18.pack1.v2-line"
     _DEFAULT_PROTOCOL_VERSION = '2024-11-05'
     _SUPPORTED_PROTOCOL_VERSIONS = (
         '2025-11-25',
@@ -160,6 +163,47 @@ class McpServer:
         self._pipeline_quality_report_tool = PipelineQualityReportTool(workspace_repo=workspace_repo, quality_service=quality_service)
         self._pipeline_lsp_matrix_run_tool = PipelineLspMatrixRunTool(workspace_repo=workspace_repo, matrix_service=pipeline_lsp_matrix_service)
         self._pipeline_lsp_matrix_report_tool = PipelineLspMatrixReportTool(workspace_repo=workspace_repo, matrix_service=pipeline_lsp_matrix_service)
+        self._tool_handler_attrs: dict[str, str] = {
+            "search": "_search_tool",
+            "sari_guide": "_sari_guide_tool",
+            "status": "_status_tool",
+            "doctor": "_doctor_tool",
+            "rescan": "_rescan_tool",
+            "repo_candidates": "_repo_candidates_tool",
+            "read": "_read_tool",
+            "dry_run_diff": "_dry_run_diff_tool",
+            "scan_once": "_scan_once_tool",
+            "list_files": "_list_files_tool",
+            "read_file": "_read_file_tool",
+            "index_file": "_index_file_tool",
+            "list_symbols": "_list_symbols_tool",
+            "read_symbol": "_read_symbol_tool",
+            "search_symbol": "_search_symbol_tool",
+            "get_callers": "_get_callers_tool",
+            "get_implementations": "_get_implementations_tool",
+            "call_graph": "_call_graph_tool",
+            "call_graph_health": "_call_graph_health_tool",
+            "knowledge": "_knowledge_tool",
+            "save_snippet": "_save_snippet_tool",
+            "get_snippet": "_get_snippet_tool",
+            "archive_context": "_archive_context_tool",
+            "get_context": "_get_context_tool",
+            "pipeline_policy_get": "_pipeline_policy_get_tool",
+            "pipeline_policy_set": "_pipeline_policy_set_tool",
+            "pipeline_alert_status": "_pipeline_alert_status_tool",
+            "pipeline_dead_list": "_pipeline_dead_list_tool",
+            "pipeline_dead_requeue": "_pipeline_dead_requeue_tool",
+            "pipeline_dead_purge": "_pipeline_dead_purge_tool",
+            "pipeline_auto_status": "_pipeline_auto_status_tool",
+            "pipeline_auto_set": "_pipeline_auto_set_tool",
+            "pipeline_auto_tick": "_pipeline_auto_tick_tool",
+            "pipeline_benchmark_run": "_pipeline_benchmark_run_tool",
+            "pipeline_benchmark_report": "_pipeline_benchmark_report_tool",
+            "pipeline_quality_run": "_pipeline_quality_run_tool",
+            "pipeline_quality_report": "_pipeline_quality_report_tool",
+            "pipeline_lsp_matrix_run": "_pipeline_lsp_matrix_run_tool",
+            "pipeline_lsp_matrix_report": "_pipeline_lsp_matrix_report_tool",
+        }
 
     def handle_request(self, payload: dict[str, object]) -> McpResponse:
         request_id = payload.get('id')
@@ -176,9 +220,30 @@ class McpServer:
                 protocol_version = self._negotiate_protocol_version(params=params)
             except ValueError as exc:
                 return McpResponse(request_id=request_id, result=None, error=McpError(code=-32602, message=str(exc)))
-            return McpResponse(request_id=request_id, result={'protocolVersion': protocol_version, 'serverInfo': {'name': 'sari-v2', 'version': '0.1.0'}, 'capabilities': {'tools': {}}}, error=None)
+            return McpResponse(
+                request_id=request_id,
+                result={
+                    'protocolVersion': protocol_version,
+                    'serverInfo': {'name': 'sari-v2', 'version': SARI_VERSION},
+                    'schemaVersion': self._TOOLS_SCHEMA_VERSION,
+                    'schema_version': self._TOOLS_SCHEMA_VERSION,
+                    'capabilities': {'tools': {}},
+                },
+                error=None,
+            )
         if method == 'sari/identify':
-            return McpResponse(request_id=request_id, result={'name': 'sari-v2', 'version': '0.1.0', 'workspaceRoot': self._default_workspace_root(), 'pid': os.getpid()}, error=None)
+            return McpResponse(
+                request_id=request_id,
+                result={
+                    'name': 'sari-v2',
+                    'version': SARI_VERSION,
+                    'schemaVersion': self._TOOLS_SCHEMA_VERSION,
+                    'schema_version': self._TOOLS_SCHEMA_VERSION,
+                    'workspaceRoot': self._default_workspace_root(),
+                    'pid': os.getpid(),
+                },
+                error=None,
+            )
         if method == 'prompts/list':
             return McpResponse(request_id=request_id, result={'prompts': []}, error=None)
         if method == 'resources/list':
@@ -194,7 +259,7 @@ class McpServer:
         if method == 'ping':
             return McpResponse(request_id=request_id, result={}, error=None)
         if method == 'tools/list':
-            return McpResponse(request_id=request_id, result={'tools': [{'name': 'sari_guide', 'description': 'Return quick usage guide in pack1 format', 'inputSchema': {'type': 'object', 'properties': {}}}, {'name': 'status', 'description': 'Return repository runtime/index status in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'search', 'description': 'Search symbols/files in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo', 'query'], 'properties': {'repo': {'type': 'string'}, 'query': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'doctor', 'description': 'Return runtime health checks in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'rescan', 'description': 'Invalidate symbol cache in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'repo_candidates', 'description': 'List repository candidates in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'read', 'description': 'Unified read interface in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'mode': {'type': 'string'}, 'target': {'type': 'string'}, 'path': {'type': 'string'}, 'offset': {'type': 'integer', 'minimum': 0}, 'limit': {'type': 'integer', 'minimum': 1}, 'content': {'type': 'string'}, 'against': {'type': 'string'}, 'tag': {'type': 'string'}}}}, {'name': 'dry_run_diff', 'description': 'Legacy diff preview wrapper in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo', 'path', 'content'], 'properties': {'repo': {'type': 'string'}, 'path': {'type': 'string'}, 'content': {'type': 'string'}, 'against': {'type': 'string'}}}}, {'name': 'scan_once', 'description': 'Scan repository files once and enqueue enrich jobs', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'list_files', 'description': 'List indexed files for repository in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}, 'prefix': {'type': 'string'}}}}, {'name': 'read_file', 'description': 'Read indexed file content in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo', 'relative_path'], 'properties': {'repo': {'type': 'string'}, 'relative_path': {'type': 'string'}, 'offset': {'type': 'integer', 'minimum': 0}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'index_file', 'description': 'Incrementally index single file in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo', 'relative_path'], 'properties': {'repo': {'type': 'string'}, 'relative_path': {'type': 'string'}}}}, {'name': 'list_symbols', 'description': 'List indexed symbols in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'query': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'read_symbol', 'description': 'Read symbol detail in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'name': {'type': 'string'}, 'symbol_id': {'type': 'string'}, 'sid': {'type': 'string'}, 'path': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'search_symbol', 'description': 'Search indexed symbols in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo', 'query'], 'properties': {'repo': {'type': 'string'}, 'query': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}, 'path_prefix': {'type': 'string'}}}}, {'name': 'get_callers', 'description': 'Get caller edges for symbol in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'symbol': {'type': 'string'}, 'symbol_id': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'get_implementations', 'description': 'Get implementation candidates for symbol in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'symbol': {'type': 'string'}, 'symbol_id': {'type': 'string'}, 'sid': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'call_graph', 'description': 'Get call graph for symbol in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'symbol': {'type': 'string'}, 'symbol_id': {'type': 'string'}, 'sid': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'call_graph_health', 'description': 'Get call graph health summary in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'knowledge', 'description': 'Query archived knowledge entries in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'query': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'save_snippet', 'description': 'Save code snippet to local store in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo', 'path', 'start_line', 'end_line', 'tag'], 'properties': {'repo': {'type': 'string'}, 'path': {'type': 'string'}, 'start_line': {'type': 'integer', 'minimum': 1}, 'end_line': {'type': 'integer', 'minimum': 1}, 'tag': {'type': 'string'}, 'note': {'type': 'string'}, 'commit': {'type': 'string'}}}}, {'name': 'get_snippet', 'description': 'Query saved snippets in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'tag': {'type': 'string'}, 'query': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'archive_context', 'description': 'Archive context notes in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo', 'topic', 'content'], 'properties': {'repo': {'type': 'string'}, 'topic': {'type': 'string'}, 'content': {'type': 'string'}, 'tags': {'type': 'array', 'items': {'type': 'string'}}, 'related_files': {'type': 'array', 'items': {'type': 'string'}}}}}, {'name': 'get_context', 'description': 'Get archived context notes in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'query': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'pipeline_policy_get', 'description': 'Get pipeline policy in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'pipeline_policy_set', 'description': 'Set pipeline policy in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'deletion_hold': {'type': ['string', 'boolean']}, 'l3_p95_threshold_ms': {'type': 'integer', 'minimum': 1}, 'dead_ratio_threshold_bps': {'type': 'integer', 'minimum': 1}, 'workers': {'type': 'integer', 'minimum': 1}, 'alert_window_sec': {'type': 'integer', 'minimum': 60}}}}, {'name': 'pipeline_alert_status', 'description': 'Get pipeline alert snapshot in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'pipeline_dead_list', 'description': 'List dead enrich jobs in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'pipeline_dead_requeue', 'description': 'Requeue dead enrich jobs in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}, 'all': {'type': ['boolean', 'string']}}}}, {'name': 'pipeline_dead_purge', 'description': 'Purge dead enrich jobs in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}, 'all': {'type': ['boolean', 'string']}}}}, {'name': 'pipeline_auto_status', 'description': 'Get pipeline auto-control state in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'pipeline_auto_set', 'description': 'Set pipeline auto-control enabled flag in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo', 'enabled'], 'properties': {'repo': {'type': 'string'}, 'enabled': {'type': ['string', 'boolean']}}}}, {'name': 'pipeline_auto_tick', 'description': 'Evaluate pipeline auto-control once in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'pipeline_benchmark_run', 'description': 'Run pipeline benchmark and return summary in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'target_files': {'type': 'integer', 'minimum': 1}, 'profile': {'type': 'string'}, 'language_filter': {'type': ['string', 'array'], 'items': {'type': 'string'}}, 'per_language_report': {'type': ['boolean', 'string']}}}}, {'name': 'pipeline_benchmark_report', 'description': 'Return latest pipeline benchmark summary in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'pipeline_quality_run', 'description': 'Run L3 quality evaluation in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'limit_files': {'type': 'integer', 'minimum': 1}, 'profile': {'type': 'string'}, 'language_filter': {'type': ['string', 'array'], 'items': {'type': 'string'}}}}}, {'name': 'pipeline_quality_report', 'description': 'Return latest L3 quality summary in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'pipeline_lsp_matrix_run', 'description': 'Run LSP readiness matrix and hard gate in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'required_languages': {'type': ['string', 'array'], 'items': {'type': 'string'}}, 'fail_on_unavailable': {'type': ['boolean', 'string']}, 'strict_all_languages': {'type': ['boolean', 'string']}, 'strict_symbol_gate': {'type': ['boolean', 'string']}}}}, {'name': 'pipeline_lsp_matrix_report', 'description': 'Return latest LSP readiness matrix report in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}]}, error=None)
+            return McpResponse(request_id=request_id, result={'schemaVersion': self._TOOLS_SCHEMA_VERSION, 'schema_version': self._TOOLS_SCHEMA_VERSION, 'tools': [{'name': 'sari_guide', 'description': 'Return quick usage guide in pack1 format', 'inputSchema': {'type': 'object', 'properties': {}}}, {'name': 'status', 'description': 'Return repository runtime/index status in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'search', 'description': 'Search symbols/files in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo', 'query'], 'properties': {'repo': {'type': 'string'}, 'query': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'doctor', 'description': 'Return runtime health checks in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'rescan', 'description': 'Invalidate symbol cache in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'repo_candidates', 'description': 'List repository candidates in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'read', 'description': 'Unified read interface in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'mode': {'type': 'string'}, 'target': {'type': 'string'}, 'path': {'type': 'string'}, 'offset': {'type': 'integer', 'minimum': 0}, 'limit': {'type': 'integer', 'minimum': 1}, 'content': {'type': 'string'}, 'against': {'type': 'string'}, 'tag': {'type': 'string'}}}}, {'name': 'dry_run_diff', 'description': 'Legacy diff preview wrapper in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo', 'path', 'content'], 'properties': {'repo': {'type': 'string'}, 'path': {'type': 'string'}, 'content': {'type': 'string'}, 'against': {'type': 'string'}}}}, {'name': 'scan_once', 'description': 'Scan repository files once and enqueue enrich jobs', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'list_files', 'description': 'List indexed files for repository in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}, 'prefix': {'type': 'string'}}}}, {'name': 'read_file', 'description': 'Read indexed file content in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo', 'relative_path'], 'properties': {'repo': {'type': 'string'}, 'relative_path': {'type': 'string'}, 'offset': {'type': 'integer', 'minimum': 0}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'index_file', 'description': 'Incrementally index single file in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo', 'relative_path'], 'properties': {'repo': {'type': 'string'}, 'relative_path': {'type': 'string'}}}}, {'name': 'list_symbols', 'description': 'List indexed symbols in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'query': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'read_symbol', 'description': 'Read symbol detail in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'name': {'type': 'string'}, 'symbol_id': {'type': 'string'}, 'sid': {'type': 'string'}, 'path': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'search_symbol', 'description': 'Search indexed symbols in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo', 'query'], 'properties': {'repo': {'type': 'string'}, 'query': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}, 'path_prefix': {'type': 'string'}}}}, {'name': 'get_callers', 'description': 'Get caller edges for symbol in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'symbol': {'type': 'string'}, 'symbol_id': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'get_implementations', 'description': 'Get implementation candidates for symbol in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'symbol': {'type': 'string'}, 'symbol_id': {'type': 'string'}, 'sid': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'call_graph', 'description': 'Get call graph for symbol in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'symbol': {'type': 'string'}, 'symbol_id': {'type': 'string'}, 'sid': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'call_graph_health', 'description': 'Get call graph health summary in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'knowledge', 'description': 'Query archived knowledge entries in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'query': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'save_snippet', 'description': 'Save code snippet to local store in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo', 'path', 'start_line', 'end_line', 'tag'], 'properties': {'repo': {'type': 'string'}, 'path': {'type': 'string'}, 'start_line': {'type': 'integer', 'minimum': 1}, 'end_line': {'type': 'integer', 'minimum': 1}, 'tag': {'type': 'string'}, 'note': {'type': 'string'}, 'commit': {'type': 'string'}}}}, {'name': 'get_snippet', 'description': 'Query saved snippets in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'tag': {'type': 'string'}, 'query': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'archive_context', 'description': 'Archive context notes in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo', 'topic', 'content'], 'properties': {'repo': {'type': 'string'}, 'topic': {'type': 'string'}, 'content': {'type': 'string'}, 'tags': {'type': 'array', 'items': {'type': 'string'}}, 'related_files': {'type': 'array', 'items': {'type': 'string'}}}}}, {'name': 'get_context', 'description': 'Get archived context notes in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'query': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'pipeline_policy_get', 'description': 'Get pipeline policy in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'pipeline_policy_set', 'description': 'Set pipeline policy in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'deletion_hold': {'type': ['string', 'boolean']}, 'l3_p95_threshold_ms': {'type': 'integer', 'minimum': 1}, 'dead_ratio_threshold_bps': {'type': 'integer', 'minimum': 1}, 'workers': {'type': 'integer', 'minimum': 1}, 'alert_window_sec': {'type': 'integer', 'minimum': 60}}}}, {'name': 'pipeline_alert_status', 'description': 'Get pipeline alert snapshot in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'pipeline_dead_list', 'description': 'List dead enrich jobs in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'pipeline_dead_requeue', 'description': 'Requeue dead enrich jobs in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}, 'all': {'type': ['boolean', 'string']}}}}, {'name': 'pipeline_dead_purge', 'description': 'Purge dead enrich jobs in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}, 'all': {'type': ['boolean', 'string']}}}}, {'name': 'pipeline_auto_status', 'description': 'Get pipeline auto-control state in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'pipeline_auto_set', 'description': 'Set pipeline auto-control enabled flag in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo', 'enabled'], 'properties': {'repo': {'type': 'string'}, 'enabled': {'type': ['string', 'boolean']}}}}, {'name': 'pipeline_auto_tick', 'description': 'Evaluate pipeline auto-control once in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'pipeline_benchmark_run', 'description': 'Run pipeline benchmark and return summary in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'target_files': {'type': 'integer', 'minimum': 1}, 'profile': {'type': 'string'}, 'language_filter': {'type': ['string', 'array'], 'items': {'type': 'string'}}, 'per_language_report': {'type': ['boolean', 'string']}}}}, {'name': 'pipeline_benchmark_report', 'description': 'Return latest pipeline benchmark summary in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'pipeline_quality_run', 'description': 'Run L3 quality evaluation in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'limit_files': {'type': 'integer', 'minimum': 1}, 'profile': {'type': 'string'}, 'language_filter': {'type': ['string', 'array'], 'items': {'type': 'string'}}}}}, {'name': 'pipeline_quality_report', 'description': 'Return latest L3 quality summary in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'pipeline_lsp_matrix_run', 'description': 'Run LSP readiness matrix and hard gate in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'required_languages': {'type': ['string', 'array'], 'items': {'type': 'string'}}, 'fail_on_unavailable': {'type': ['boolean', 'string']}, 'strict_all_languages': {'type': ['boolean', 'string']}, 'strict_symbol_gate': {'type': ['boolean', 'string']}}}}, {'name': 'pipeline_lsp_matrix_report', 'description': 'Return latest LSP readiness matrix report in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}]}, error=None)
         if method == 'tools/call':
             params = payload.get('params')
             if not isinstance(params, dict):
@@ -206,87 +271,26 @@ class McpServer:
             if not isinstance(arguments, dict):
                 return McpResponse(request_id=request_id, result=None, error=McpError(code=-32602, message='invalid arguments'))
             try:
-                if tool_name == 'search':
-                    return McpResponse(request_id=request_id, result=self._search_tool.call(arguments), error=None)
-                if tool_name == 'sari_guide':
-                    return McpResponse(request_id=request_id, result=self._sari_guide_tool.call(arguments), error=None)
-                if tool_name == 'status':
-                    return McpResponse(request_id=request_id, result=self._status_tool.call(arguments), error=None)
-                if tool_name == 'doctor':
-                    return McpResponse(request_id=request_id, result=self._doctor_tool.call(arguments), error=None)
-                if tool_name == 'rescan':
-                    return McpResponse(request_id=request_id, result=self._rescan_tool.call(arguments), error=None)
-                if tool_name == 'repo_candidates':
-                    return McpResponse(request_id=request_id, result=self._repo_candidates_tool.call(arguments), error=None)
-                if tool_name == 'read':
-                    return McpResponse(request_id=request_id, result=self._read_tool.call(arguments), error=None)
-                if tool_name == 'dry_run_diff':
-                    return McpResponse(request_id=request_id, result=self._dry_run_diff_tool.call(arguments), error=None)
-                if tool_name == 'scan_once':
-                    return McpResponse(request_id=request_id, result=self._scan_once_tool.call(arguments), error=None)
-                if tool_name == 'list_files':
-                    return McpResponse(request_id=request_id, result=self._list_files_tool.call(arguments), error=None)
-                if tool_name == 'read_file':
-                    return McpResponse(request_id=request_id, result=self._read_file_tool.call(arguments), error=None)
-                if tool_name == 'index_file':
-                    return McpResponse(request_id=request_id, result=self._index_file_tool.call(arguments), error=None)
-                if tool_name == 'list_symbols':
-                    return McpResponse(request_id=request_id, result=self._list_symbols_tool.call(arguments), error=None)
-                if tool_name == 'read_symbol':
-                    return McpResponse(request_id=request_id, result=self._read_symbol_tool.call(arguments), error=None)
-                if tool_name == 'search_symbol':
-                    return McpResponse(request_id=request_id, result=self._search_symbol_tool.call(arguments), error=None)
-                if tool_name == 'get_callers':
-                    return McpResponse(request_id=request_id, result=self._get_callers_tool.call(arguments), error=None)
-                if tool_name == 'get_implementations':
-                    return McpResponse(request_id=request_id, result=self._get_implementations_tool.call(arguments), error=None)
-                if tool_name == 'call_graph':
-                    return McpResponse(request_id=request_id, result=self._call_graph_tool.call(arguments), error=None)
-                if tool_name == 'call_graph_health':
-                    return McpResponse(request_id=request_id, result=self._call_graph_health_tool.call(arguments), error=None)
-                if tool_name == 'knowledge':
-                    return McpResponse(request_id=request_id, result=self._knowledge_tool.call(arguments), error=None)
-                if tool_name == 'save_snippet':
-                    return McpResponse(request_id=request_id, result=self._save_snippet_tool.call(arguments), error=None)
-                if tool_name == 'get_snippet':
-                    return McpResponse(request_id=request_id, result=self._get_snippet_tool.call(arguments), error=None)
-                if tool_name == 'archive_context':
-                    return McpResponse(request_id=request_id, result=self._archive_context_tool.call(arguments), error=None)
-                if tool_name == 'get_context':
-                    return McpResponse(request_id=request_id, result=self._get_context_tool.call(arguments), error=None)
-                if tool_name == 'pipeline_policy_get':
-                    return McpResponse(request_id=request_id, result=self._pipeline_policy_get_tool.call(arguments), error=None)
-                if tool_name == 'pipeline_policy_set':
-                    return McpResponse(request_id=request_id, result=self._pipeline_policy_set_tool.call(arguments), error=None)
-                if tool_name == 'pipeline_alert_status':
-                    return McpResponse(request_id=request_id, result=self._pipeline_alert_status_tool.call(arguments), error=None)
-                if tool_name == 'pipeline_dead_list':
-                    return McpResponse(request_id=request_id, result=self._pipeline_dead_list_tool.call(arguments), error=None)
-                if tool_name == 'pipeline_dead_requeue':
-                    return McpResponse(request_id=request_id, result=self._pipeline_dead_requeue_tool.call(arguments), error=None)
-                if tool_name == 'pipeline_dead_purge':
-                    return McpResponse(request_id=request_id, result=self._pipeline_dead_purge_tool.call(arguments), error=None)
-                if tool_name == 'pipeline_auto_status':
-                    return McpResponse(request_id=request_id, result=self._pipeline_auto_status_tool.call(arguments), error=None)
-                if tool_name == 'pipeline_auto_set':
-                    return McpResponse(request_id=request_id, result=self._pipeline_auto_set_tool.call(arguments), error=None)
-                if tool_name == 'pipeline_auto_tick':
-                    return McpResponse(request_id=request_id, result=self._pipeline_auto_tick_tool.call(arguments), error=None)
-                if tool_name == 'pipeline_benchmark_run':
-                    return McpResponse(request_id=request_id, result=self._pipeline_benchmark_run_tool.call(arguments), error=None)
-                if tool_name == 'pipeline_benchmark_report':
-                    return McpResponse(request_id=request_id, result=self._pipeline_benchmark_report_tool.call(arguments), error=None)
-                if tool_name == 'pipeline_quality_run':
-                    return McpResponse(request_id=request_id, result=self._pipeline_quality_run_tool.call(arguments), error=None)
-                if tool_name == 'pipeline_quality_report':
-                    return McpResponse(request_id=request_id, result=self._pipeline_quality_report_tool.call(arguments), error=None)
-                if tool_name == 'pipeline_lsp_matrix_run':
-                    return McpResponse(request_id=request_id, result=self._pipeline_lsp_matrix_run_tool.call(arguments), error=None)
-                if tool_name == 'pipeline_lsp_matrix_report':
-                    return McpResponse(request_id=request_id, result=self._pipeline_lsp_matrix_report_tool.call(arguments), error=None)
+                handler_attr = self._tool_handler_attrs.get(str(tool_name))
+                handler = getattr(self, handler_attr) if isinstance(handler_attr, str) and hasattr(self, handler_attr) else None
+                if handler is not None and hasattr(handler, "call"):
+                    raw_result = handler.call(arguments)
+                    if isinstance(raw_result, dict):
+                        pack_result = self._render_pack_v2(
+                            tool_name=str(tool_name),
+                            arguments=arguments,
+                            payload=raw_result,
+                        )
+                        return McpResponse(request_id=request_id, result=pack_result, error=None)
+                    return McpResponse(request_id=request_id, result=raw_result, error=None)
             except ValidationError as exc:
                 payload = pack1_error(ErrorResponseDTO(code=exc.context.code, message=exc.context.message))
-                return McpResponse(request_id=request_id, result=payload, error=None)
+                pack_result = self._render_pack_v2(
+                    tool_name=str(tool_name) if isinstance(tool_name, str) else "unknown",
+                    arguments=arguments,
+                    payload=payload,
+                )
+                return McpResponse(request_id=request_id, result=pack_result, error=None)
             return McpResponse(request_id=request_id, result=None, error=McpError(code=-32601, message='tool not found'))
         return McpResponse(request_id=request_id, result=None, error=McpError(code=-32601, message='method not found'))
 
@@ -319,7 +323,13 @@ class McpServer:
             if isinstance(code, int) and isinstance(message, str):
                 return McpResponse(request_id=response_id, result=None, error=McpError(code=code, message=message))
             return McpResponse(request_id=response_id, result=None, error=McpError(code=-32003, message='invalid daemon error response'))
-        return McpResponse(request_id=response_id, result=forwarded.get('result'), error=None)
+        result_payload = forwarded.get("result")
+        if str(payload.get("method", "")).strip() == "tools/list" and isinstance(result_payload, dict):
+            if "schemaVersion" not in result_payload:
+                result_payload["schemaVersion"] = self._TOOLS_SCHEMA_VERSION
+            if "schema_version" not in result_payload:
+                result_payload["schema_version"] = self._TOOLS_SCHEMA_VERSION
+        return McpResponse(request_id=response_id, result=result_payload, error=None)
 
     def _roots_list(self) -> list[dict[str, str]]:
         roots: list[dict[str, str]] = []
@@ -370,6 +380,43 @@ class McpServer:
                 for item in cap_versions:
                     _append(item)
         return versions
+
+    def _render_pack_v2(
+        self,
+        *,
+        tool_name: str,
+        arguments: dict[str, object],
+        payload: dict[str, object],
+    ) -> dict[str, object]:
+        """도구 payload를 PACK1 v2 라인 포맷으로 렌더링한다."""
+        include_structured = _is_structured_requested(arguments=arguments)
+        return render_pack_v2(
+            tool_name=tool_name,
+            arguments=arguments,
+            payload=payload,
+            options=PackLineOptionsDTO(include_structured=include_structured),
+        )
+
+
+def _is_structured_requested(arguments: dict[str, object]) -> bool:
+    """options.structured=1 요청 여부를 판정한다."""
+    options = arguments.get("options")
+    if isinstance(options, dict):
+        raw_structured = options.get("structured")
+        if isinstance(raw_structured, bool):
+            return raw_structured
+        if isinstance(raw_structured, int):
+            return raw_structured == 1
+        if isinstance(raw_structured, str):
+            return raw_structured.strip().lower() in {"1", "true", "yes", "on"}
+    raw_structured = arguments.get("structured")
+    if isinstance(raw_structured, bool):
+        return raw_structured
+    if isinstance(raw_structured, int):
+        return raw_structured == 1
+    if isinstance(raw_structured, str):
+        return raw_structured.strip().lower() in {"1", "true", "yes", "on"}
+    return False
 
 def run_stdio_streams(db_path: Path, input_stream: BinaryIO, output_stream: BinaryIO) -> int:
     server = McpServer(db_path=db_path)

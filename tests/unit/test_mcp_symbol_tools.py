@@ -49,14 +49,15 @@ def test_mcp_search_symbol_returns_indexed_symbols(tmp_path: Path) -> None:
             "method": "tools/call",
             "params": {
                 "name": "search_symbol",
-                "arguments": {
-                    "repo": str(repo_dir.resolve()),
-                    "query": "Auth",
-                    "limit": 10,
+                    "arguments": {
+                        "repo": str(repo_dir.resolve()),
+                        "query": "Auth",
+                        "limit": 10,
+                        "options": {"structured": 1},
+                    },
                 },
-            },
-        }
-    )
+            }
+        )
     payload = response.to_dict()
 
     assert payload["result"]["isError"] is False
@@ -92,14 +93,15 @@ def test_mcp_get_callers_returns_relation_edges(tmp_path: Path) -> None:
             "method": "tools/call",
             "params": {
                 "name": "get_callers",
-                "arguments": {
-                    "repo": str(repo_dir.resolve()),
-                    "symbol": "AuthService.login",
-                    "limit": 20,
+                    "arguments": {
+                        "repo": str(repo_dir.resolve()),
+                        "symbol": "AuthService.login",
+                        "limit": 20,
+                        "options": {"structured": 1},
+                    },
                 },
-            },
-        }
-    )
+            }
+        )
     payload = response.to_dict()
 
     assert payload["result"]["isError"] is False
@@ -126,12 +128,13 @@ def test_mcp_get_callers_requires_symbol_or_symbol_id(tmp_path: Path) -> None:
             "method": "tools/call",
             "params": {
                 "name": "get_callers",
-                "arguments": {
-                    "repo": str(repo_dir.resolve()),
+                    "arguments": {
+                        "repo": str(repo_dir.resolve()),
+                        "options": {"structured": 1},
+                    },
                 },
-            },
-        }
-    )
+            }
+        )
     payload = response.to_dict()
 
     assert payload["result"]["isError"] is True

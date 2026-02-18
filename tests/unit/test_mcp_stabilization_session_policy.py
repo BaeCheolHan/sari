@@ -31,17 +31,17 @@ def test_read_requires_session_id_when_strict_enabled(tmp_path: Path, monkeypatc
             "method": "tools/call",
             "params": {
                 "name": "read",
-                "arguments": {
-                    "repo": str(repo_path),
-                    "mode": "diff_preview",
-                    "target": "main.py",
-                    "content": "print('b')\n",
+                    "arguments": {
+                        "repo": str(repo_path),
+                        "mode": "diff_preview",
+                        "target": "main.py",
+                        "content": "print('b')\n",
+                        "options": {"structured": 1},
+                    },
                 },
-            },
-        }
-    )
+            }
+        )
     payload = response.to_dict()
     assert payload["result"]["isError"] is True
     error = payload["result"]["structuredContent"]["meta"]["errors"][0]
     assert error["code"] == "ERR_SESSION_ID_REQUIRED"
-

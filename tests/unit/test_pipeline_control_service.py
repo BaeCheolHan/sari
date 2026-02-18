@@ -70,10 +70,17 @@ def test_pipeline_dead_job_actions_requeue_and_purge(tmp_path: Path) -> None:
 
     requeue_result = service.requeue_dead_jobs(repo_root="/repo", limit=10, now_iso=now_iso)
     assert requeue_result.requeued_count == 1
+    assert requeue_result.repo_scope == "repo"
+    assert requeue_result.executed_at == now_iso
+    assert isinstance(requeue_result.queue_snapshot, dict)
+    assert "FAILED" in requeue_result.queue_snapshot
 
     queue_repo.mark_failed_with_backoff(job_id, "e2", now_iso, dead_threshold=1, backoff_base_sec=1)
     purge_result = service.purge_dead_jobs(repo_root="/repo", limit=10)
     assert purge_result.purged_count == 1
+    assert purge_result.repo_scope == "repo"
+    assert isinstance(purge_result.executed_at, str)
+    assert isinstance(purge_result.queue_snapshot, dict)
 
 
 def test_pipeline_dead_job_actions_support_all_scope(tmp_path: Path) -> None:
@@ -98,9 +105,11 @@ def test_pipeline_dead_job_actions_support_all_scope(tmp_path: Path) -> None:
 
     requeue_result = service.requeue_dead_jobs(repo_root="/repo", limit=1, now_iso=now_iso, all_scopes=True)
     assert requeue_result.requeued_count == 3
+    assert requeue_result.repo_scope == "all"
 
     for index in range(3):
         job_id = queue_repo.enqueue("/repo", f"y{index}.py", f"hy{index}", 30, "scan", now_iso)
         queue_repo.mark_failed_with_backoff(job_id, "e2", now_iso, dead_threshold=1, backoff_base_sec=1)
     purge_result = service.purge_dead_jobs(repo_root="/repo", limit=1, all_scopes=True)
     assert purge_result.purged_count == 3
+    assert purge_result.repo_scope == "all"
