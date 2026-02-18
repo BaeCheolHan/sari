@@ -19,6 +19,7 @@ RERUN_COUNT=0
 REPAIR_APPLIED="false"
 FINAL_GATE_DECISION="UNKNOWN"
 RUN_ID=""
+LSP_MATRIX_GATE_TIMEOUT_SEC="${SARI_LSP_MATRIX_GATE_TIMEOUT_SEC:-900}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -94,7 +95,27 @@ run_gate_once() {
     RUN_ARGS+=(--required-language "${lang}")
   done
   set +e
-  python3 "${RUN_ARGS[@]}" >"${LOG_FILE}" 2>&1
+  python3 - <<'PY' "${LOG_FILE}" "${LSP_MATRIX_GATE_TIMEOUT_SEC}" "${RUN_ARGS[@]}"
+import subprocess
+import sys
+from pathlib import Path
+
+log_path = Path(sys.argv[1])
+timeout_sec = float(sys.argv[2])
+args = sys.argv[3:]
+run_args = args
+if len(args) > 0 and args[0] == "-m":
+    run_args = [sys.executable, *args]
+
+with log_path.open("a", encoding="utf-8") as handle:
+    try:
+        completed = subprocess.run(run_args, stdout=handle, stderr=subprocess.STDOUT, timeout=timeout_sec, check=False)
+        raise SystemExit(completed.returncode)
+    except subprocess.TimeoutExpired:
+        handle.write(f"[LSP gate] timeout exceeded: {timeout_sec} sec\n")
+        handle.flush()
+        raise SystemExit(124)
+PY
   run_exit=$?
   set -e
 

@@ -18,6 +18,9 @@ def test_ci_script_supports_report_only_and_diagnose_artifacts() -> None:
     assert "repair_missing_servers.sh" in content
     assert "lsp-matrix-gate-summary.json" in content
     assert "--apply" in content
+    assert "SARI_LSP_MATRIX_GATE_TIMEOUT_SEC" in content
+    assert "subprocess.run" in content
+    assert "timeout=" in content
 
 
 def test_ci_workflow_defaults_to_report_only_mode() -> None:
