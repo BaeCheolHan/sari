@@ -338,6 +338,49 @@ def test_proxy_auto_start_waits_until_daemon_ready(tmp_path: Path, monkeypatch: 
     assert transport.writes[0][0]["result"] == {"ok": True}
 
 
+def test_proxy_initialize_waits_for_cold_start_daemon_ready(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """initialize 요청은 콜드 스타트 준비 완료까지 충분히 재시도해야 한다."""
+    from sari.mcp.proxy import run_stdio_proxy
+
+    transport = _ScriptedTransport(
+        messages=[({"jsonrpc": "2.0", "id": 29, "method": "initialize", "params": {}}, "content-length"), None]
+    )
+    called: dict[str, Any] = {"forward": 0, "start": 0}
+
+    def _fake_transport(*_: object, **__: object) -> _ScriptedTransport:
+        return transport
+
+    def _fake_forward_once(request: dict[str, object], host: str, port: int, timeout_sec: float) -> dict[str, object]:
+        _ = (request, host, port, timeout_sec)
+        called["forward"] += 1
+        if called["forward"] <= 10:
+            raise OSError("connection refused")
+        return {"jsonrpc": "2.0", "id": 29, "result": {"protocolVersion": "2025-06-18"}}
+
+    def _fake_start_daemon(db_path: Path, workspace_root: str | None) -> bool:
+        _ = (db_path, workspace_root)
+        called["start"] += 1
+        return True
+
+    monkeypatch.setattr("sari.mcp.proxy.McpTransport", _fake_transport)
+    monkeypatch.setattr("sari.mcp.proxy.resolve_target", lambda *_: ("127.0.0.1", 47777))
+    monkeypatch.setattr("sari.mcp.proxy.forward_once", _fake_forward_once)
+    monkeypatch.setattr("sari.mcp.daemon_forward_policy.time.sleep", lambda _: None)
+
+    exit_code = run_stdio_proxy(
+        db_path=tmp_path / "state.db",
+        workspace_root="/repo/a",
+        auto_start_on_failure=True,
+        start_daemon_fn=_fake_start_daemon,
+    )
+
+    assert exit_code == 0
+    assert called["start"] == 1
+    assert called["forward"] == 11
+    assert len(transport.writes) == 1
+    assert transport.writes[0][0]["result"]["protocolVersion"] == "2025-06-18"
+
+
 def test_proxy_forward_failure_returns_explicit_error(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     """proxy forward 실패는 명시적 오류코드 메시지로 응답해야 한다."""
     from sari.mcp.proxy import run_stdio_proxy
@@ -407,3 +450,238 @@ def test_proxy_reconnects_when_draining_response_received(tmp_path: Path, monkey
     assert len(transport.writes) == 2
     assert "error" not in transport.writes[1][0]
     assert calls == ["initialize", "tools/list", "initialize", "tools/list"]
+
+
+def test_proxy_does_not_reply_to_notifications(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """notification 메시지(id 없음)에는 응답을 쓰지 않아야 한다."""
+    from sari.mcp.proxy import run_stdio_proxy
+
+    transport = _ScriptedTransport(
+        messages=[
+            ({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}, "content-length"),
+            ({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}, "content-length"),
+            ({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}, "content-length"),
+            None,
+        ]
+    )
+
+    def _fake_transport(*_: object, **__: object) -> _ScriptedTransport:
+        return transport
+
+    def _fake_forward_once(request: dict[str, object], host: str, port: int, timeout_sec: float) -> dict[str, object]:
+        _ = (host, port, timeout_sec)
+        method = str(request.get("method", ""))
+        if method == "initialize":
+            return {"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2025-06-18"}}
+        if method == "notifications/initialized":
+            return {"jsonrpc": "2.0", "id": None, "result": {}}
+        return {"jsonrpc": "2.0", "id": 2, "result": {"tools": []}}
+
+    monkeypatch.setattr("sari.mcp.proxy.McpTransport", _fake_transport)
+    monkeypatch.setattr("sari.mcp.proxy.resolve_target", lambda *_: ("127.0.0.1", 47777))
+    monkeypatch.setattr("sari.mcp.proxy.forward_once", _fake_forward_once)
+
+    exit_code = run_stdio_proxy(
+        db_path=tmp_path / "state.db",
+        workspace_root="/repo/a",
+        auto_start_on_failure=False,
+    )
+
+    assert exit_code == 0
+    assert len(transport.writes) == 2
+    assert transport.writes[0][0]["id"] == 1
+    assert transport.writes[1][0]["id"] == 2
+
+
+def test_proxy_tools_list_hides_internal_tool_group(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """tools/list 응답에서는 내부 관리 도구군만 숨기고 knowledge는 노출해야 한다."""
+    from sari.mcp.proxy import run_stdio_proxy
+
+    transport = _ScriptedTransport(messages=[({"jsonrpc": "2.0", "id": 31, "method": "tools/list"}, "content-length"), None])
+
+    def _fake_transport(*_: object, **__: object) -> _ScriptedTransport:
+        return transport
+
+    def _fake_forward_once(request: dict[str, object], host: str, port: int, timeout_sec: float) -> dict[str, object]:
+        _ = (request, host, port, timeout_sec)
+        return {
+            "jsonrpc": "2.0",
+            "id": 31,
+            "result": {
+                "tools": [
+                    {"name": "search", "inputSchema": {"type": "object"}},
+                    {"name": "knowledge", "inputSchema": {"type": "object"}},
+                    {"name": "save_snippet", "inputSchema": {"type": "object"}},
+                    {"name": "get_snippet", "inputSchema": {"type": "object"}},
+                    {"name": "archive_context", "inputSchema": {"type": "object"}},
+                    {"name": "get_context", "inputSchema": {"type": "object"}},
+                    {"name": "pipeline_policy_get", "inputSchema": {"type": "object"}},
+                    {"name": "pipeline_quality_run", "inputSchema": {"type": "object"}},
+                ]
+            },
+        }
+
+    monkeypatch.setattr("sari.mcp.proxy.McpTransport", _fake_transport)
+    monkeypatch.setattr("sari.mcp.proxy.resolve_target", lambda *_: ("127.0.0.1", 47777))
+    monkeypatch.setattr("sari.mcp.proxy.forward_once", _fake_forward_once)
+
+    exit_code = run_stdio_proxy(
+        db_path=tmp_path / "state.db",
+        workspace_root="/repo/a",
+        auto_start_on_failure=False,
+    )
+
+    assert exit_code == 0
+    assert len(transport.writes) == 1
+    payload = transport.writes[0][0]
+    tools = payload["result"]["tools"]
+    tool_names = {str(tool["name"]) for tool in tools}
+    assert "search" in tool_names
+    assert "knowledge" in tool_names
+    assert "save_snippet" not in tool_names
+    assert "get_snippet" not in tool_names
+    assert "archive_context" not in tool_names
+    assert "get_context" not in tool_names
+    assert "pipeline_policy_get" not in tool_names
+    assert "pipeline_quality_run" not in tool_names
+
+
+def test_proxy_blocks_hidden_tools_call(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """숨김 도구 호출은 daemon으로 전달하지 않고 tool not found로 차단해야 한다."""
+    from sari.mcp.proxy import run_stdio_proxy
+
+    transport = _ScriptedTransport(
+        messages=[
+            (
+                {
+                    "jsonrpc": "2.0",
+                    "id": 32,
+                    "method": "tools/call",
+                    "params": {"name": "save_snippet", "arguments": {"repo": "/repo/a"}},
+                },
+                "content-length",
+            ),
+            None,
+        ]
+    )
+    called = {"forwarded": False}
+
+    def _fake_transport(*_: object, **__: object) -> _ScriptedTransport:
+        return transport
+
+    def _fake_forward_once(request: dict[str, object], host: str, port: int, timeout_sec: float) -> dict[str, object]:
+        _ = (request, host, port, timeout_sec)
+        called["forwarded"] = True
+        return {"jsonrpc": "2.0", "id": 32, "result": {"ok": True}}
+
+    monkeypatch.setattr("sari.mcp.proxy.McpTransport", _fake_transport)
+    monkeypatch.setattr("sari.mcp.proxy.resolve_target", lambda *_: ("127.0.0.1", 47777))
+    monkeypatch.setattr("sari.mcp.proxy.forward_once", _fake_forward_once)
+
+    exit_code = run_stdio_proxy(
+        db_path=tmp_path / "state.db",
+        workspace_root="/repo/a",
+        auto_start_on_failure=False,
+    )
+
+    assert exit_code == 0
+    assert called["forwarded"] is False
+    assert len(transport.writes) == 1
+    payload = transport.writes[0][0]
+    assert payload["error"]["code"] == -32601
+    assert payload["error"]["message"] == "tool not found"
+
+
+def test_proxy_allows_knowledge_call(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """knowledge 호출은 숨김 차단 없이 daemon으로 전달되어야 한다."""
+    from sari.mcp.proxy import run_stdio_proxy
+
+    transport = _ScriptedTransport(
+        messages=[
+            (
+                {
+                    "jsonrpc": "2.0",
+                    "id": 34,
+                    "method": "tools/call",
+                    "params": {"name": "knowledge", "arguments": {"repo": "/repo/a", "query": "x"}},
+                },
+                "content-length",
+            ),
+            None,
+        ]
+    )
+    called = {"forwarded": False}
+
+    def _fake_transport(*_: object, **__: object) -> _ScriptedTransport:
+        return transport
+
+    def _fake_forward_once(request: dict[str, object], host: str, port: int, timeout_sec: float) -> dict[str, object]:
+        _ = (host, port, timeout_sec)
+        called["forwarded"] = True
+        assert str(request.get("method", "")) == "tools/call"
+        params = request.get("params")
+        assert isinstance(params, dict)
+        assert params.get("name") == "knowledge"
+        return {"jsonrpc": "2.0", "id": 34, "result": {"isError": False, "structuredContent": {"items": []}}}
+
+    monkeypatch.setattr("sari.mcp.proxy.McpTransport", _fake_transport)
+    monkeypatch.setattr("sari.mcp.proxy.resolve_target", lambda *_: ("127.0.0.1", 47777))
+    monkeypatch.setattr("sari.mcp.proxy.forward_once", _fake_forward_once)
+
+    exit_code = run_stdio_proxy(
+        db_path=tmp_path / "state.db",
+        workspace_root="/repo/a",
+        auto_start_on_failure=False,
+    )
+
+    assert exit_code == 0
+    assert called["forwarded"] is True
+    assert len(transport.writes) == 1
+    payload = transport.writes[0][0]
+    assert "error" not in payload
+
+
+def test_proxy_blocks_hidden_pipeline_tool_call(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """pipeline 내부 관리 도구 호출도 daemon 전달 없이 차단해야 한다."""
+    from sari.mcp.proxy import run_stdio_proxy
+
+    transport = _ScriptedTransport(
+        messages=[
+            (
+                {
+                    "jsonrpc": "2.0",
+                    "id": 33,
+                    "method": "tools/call",
+                    "params": {"name": "pipeline_quality_run", "arguments": {"repo": "/repo/a"}},
+                },
+                "content-length",
+            ),
+            None,
+        ]
+    )
+    called = {"forwarded": False}
+
+    def _fake_transport(*_: object, **__: object) -> _ScriptedTransport:
+        return transport
+
+    def _fake_forward_once(request: dict[str, object], host: str, port: int, timeout_sec: float) -> dict[str, object]:
+        _ = (request, host, port, timeout_sec)
+        called["forwarded"] = True
+        return {"jsonrpc": "2.0", "id": 33, "result": {"ok": True}}
+
+    monkeypatch.setattr("sari.mcp.proxy.McpTransport", _fake_transport)
+    monkeypatch.setattr("sari.mcp.proxy.resolve_target", lambda *_: ("127.0.0.1", 47777))
+    monkeypatch.setattr("sari.mcp.proxy.forward_once", _fake_forward_once)
+
+    exit_code = run_stdio_proxy(
+        db_path=tmp_path / "state.db",
+        workspace_root="/repo/a",
+        auto_start_on_failure=False,
+    )
+
+    assert exit_code == 0
+    assert called["forwarded"] is False
+    assert len(transport.writes) == 1
+    payload = transport.writes[0][0]
+    assert payload["error"]["code"] == -32601
+    assert payload["error"]["message"] == "tool not found"

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import importlib
+import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from sari.core.config import AppConfig
@@ -100,6 +102,141 @@ class AdminService:
             "host": host,
             "error": {"code": "ERR_UNSUPPORTED_HOST", "message": "지원하지 않는 host입니다"},
         }
+
+    def apply_host_config(self, host: str) -> dict[str, object]:
+        """호스트 설정 파일을 직접 갱신한다."""
+        snippet_payload = self.install_host_config(host=host)
+        if "error" in snippet_payload:
+            return snippet_payload
+        if host == "gemini":
+            return self._apply_gemini_config(snippet_payload)
+        if host == "codex":
+            return self._apply_codex_config(snippet_payload)
+        return {
+            "host": host,
+            "error": {"code": "ERR_UNSUPPORTED_HOST", "message": "지원하지 않는 host입니다"},
+        }
+
+    def _apply_gemini_config(self, snippet_payload: dict[str, object]) -> dict[str, object]:
+        """Gemini 설정 파일에 sari 서버 블록을 병합한다."""
+        target_path = Path.home() / ".gemini" / "settings.json"
+        backup_path = self._backup_if_exists(target_path)
+        data = self._load_json_file(target_path)
+        if data is None:
+            return {
+                "host": "gemini",
+                "error": {"code": "ERR_CONFIG_INVALID_JSON", "message": f"잘못된 JSON 설정: {target_path}"},
+            }
+        mcp_servers_obj = data.get("mcpServers")
+        mcp_servers = mcp_servers_obj if isinstance(mcp_servers_obj, dict) else {}
+        snippet = snippet_payload.get("snippet")
+        snippet_obj = snippet if isinstance(snippet, dict) else {}
+        snippet_servers_obj = snippet_obj.get("mcpServers")
+        snippet_servers = snippet_servers_obj if isinstance(snippet_servers_obj, dict) else {}
+        sari_obj = snippet_servers.get("sari")
+        if not isinstance(sari_obj, dict):
+            return {
+                "host": "gemini",
+                "error": {"code": "ERR_INSTALL_SNIPPET_INVALID", "message": "sari install snippet 형식이 잘못되었습니다"},
+            }
+        mcp_servers["sari"] = sari_obj
+        data["mcpServers"] = mcp_servers
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        return {
+            "host": "gemini",
+            "applied": True,
+            "path": str(target_path),
+            "backup_path": str(backup_path) if backup_path is not None else None,
+            "snippet": snippet_obj,
+        }
+
+    def _apply_codex_config(self, snippet_payload: dict[str, object]) -> dict[str, object]:
+        """Codex TOML 설정에 sari 블록을 병합한다."""
+        target_path = Path.home() / ".codex" / "config.toml"
+        backup_path = self._backup_if_exists(target_path)
+        existing = target_path.read_text(encoding="utf-8") if target_path.exists() else ""
+        snippet = snippet_payload.get("snippet")
+        snippet_obj = snippet if isinstance(snippet, dict) else {}
+        snippet_servers_obj = snippet_obj.get("mcp_servers")
+        snippet_servers = snippet_servers_obj if isinstance(snippet_servers_obj, dict) else {}
+        sari_obj = snippet_servers.get("sari")
+        if not isinstance(sari_obj, dict):
+            return {
+                "host": "codex",
+                "error": {"code": "ERR_INSTALL_SNIPPET_INVALID", "message": "sari install snippet 형식이 잘못되었습니다"},
+            }
+        command_obj = sari_obj.get("command")
+        args_obj = sari_obj.get("args")
+        command = str(command_obj).strip() if isinstance(command_obj, str) else ""
+        if command == "" or not isinstance(args_obj, list):
+            return {
+                "host": "codex",
+                "error": {"code": "ERR_INSTALL_SNIPPET_INVALID", "message": "codex snippet 필수 필드가 누락되었습니다"},
+            }
+        args_line = json.dumps([str(item) for item in args_obj], ensure_ascii=False)
+        block = [
+            "[mcp_servers.sari]",
+            f'command = "{command}"',
+            f"args = {args_line}",
+        ]
+        merged = self._replace_toml_section(existing_text=existing, section_header="[mcp_servers.sari]", replacement_lines=block)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_text(merged, encoding="utf-8")
+        return {
+            "host": "codex",
+            "applied": True,
+            "path": str(target_path),
+            "backup_path": str(backup_path) if backup_path is not None else None,
+            "snippet": snippet_obj,
+        }
+
+    def _backup_if_exists(self, target_path: Path) -> Path | None:
+        """설정 파일이 있으면 타임스탬프 백업을 생성한다."""
+        if not target_path.exists():
+            return None
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        backup_path = target_path.with_name(f"{target_path.name}.bak.{stamp}")
+        backup_path.write_text(target_path.read_text(encoding="utf-8"), encoding="utf-8")
+        return backup_path
+
+    def _load_json_file(self, path: Path) -> dict[str, object] | None:
+        """JSON 파일을 읽고 object 형태만 허용한다."""
+        if not path.exists():
+            return {}
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(loaded, dict):
+            return None
+        return loaded
+
+    def _replace_toml_section(self, existing_text: str, section_header: str, replacement_lines: list[str]) -> str:
+        """기존 TOML 섹션을 교체하거나 신규 추가한다."""
+        lines = existing_text.splitlines()
+        output: list[str] = []
+        index = 0
+        replaced = False
+        while index < len(lines):
+            current = lines[index]
+            if current.strip() == section_header:
+                replaced = True
+                output.extend(replacement_lines)
+                index += 1
+                while index < len(lines):
+                    next_line = lines[index]
+                    if next_line.startswith("[") and next_line.strip().endswith("]"):
+                        break
+                    index += 1
+                continue
+            output.append(current)
+            index += 1
+        if not replaced:
+            if len(output) > 0 and output[-1].strip() != "":
+                output.append("")
+            output.extend(replacement_lines)
+        return "\n".join(output) + "\n"
 
     def engine_status(self) -> dict[str, object]:
         """엔진 관련 의존성과 모드를 조회한다."""

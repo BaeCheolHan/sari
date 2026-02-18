@@ -15,12 +15,34 @@ from sari.mcp.daemon_forward_policy import (
 )
 from sari.mcp.contracts import McpError, McpResponse
 from sari.mcp.server_daemon_forward import DaemonForwardError, forward_once
+from sari.mcp.tool_visibility import filter_tools_list_response_payload, is_hidden_tool_name
 from sari.mcp.transport import MCP_MODE_FRAMED, McpTransport, McpTransportParseError
 
 
 def _is_initialize_request(payload: dict[str, object]) -> bool:
     """payload가 initialize 요청인지 반환한다."""
     return str(payload.get("method", "")).strip() == "initialize"
+
+
+def _is_tools_list_request(payload: dict[str, object]) -> bool:
+    """payload가 tools/list 요청인지 반환한다."""
+    return str(payload.get("method", "")).strip() == "tools/list"
+
+
+def _extract_tools_call_name(payload: dict[str, object]) -> str | None:
+    """tools/call 요청에서 도구명을 추출한다."""
+    if str(payload.get("method", "")).strip() != "tools/call":
+        return None
+    params = payload.get("params")
+    if not isinstance(params, dict):
+        return None
+    name = params.get("name")
+    if not isinstance(name, str):
+        return None
+    normalized = name.strip()
+    if normalized == "":
+        return None
+    return normalized
 
 
 def _is_draining_response(payload: dict[str, object]) -> bool:
@@ -92,6 +114,18 @@ def run_stdio_proxy(
             return 0
         payload, mode = read_result
         request_id = payload.get("id")
+        is_notification = request_id is None
+        hidden_tool_name = _extract_tools_call_name(payload)
+        if hidden_tool_name is not None and is_hidden_tool_name(hidden_tool_name):
+            if is_notification:
+                continue
+            response = McpResponse(
+                request_id=request_id,
+                result=None,
+                error=McpError(code=-32601, message="tool not found"),
+            )
+            transport.write_message(response.to_dict(), mode=mode)
+            continue
         if _is_initialize_request(payload):
             initialize_payload = payload
         try:
@@ -117,8 +151,14 @@ def run_stdio_proxy(
                     timeout_sec=timeout_sec,
                     initialize_payload=initialize_payload,
                 )
+            if _is_tools_list_request(payload):
+                forwarded = filter_tools_list_response_payload(forwarded)
+            if is_notification:
+                continue
             transport.write_message(forwarded, mode=mode)
         except (DaemonForwardError, OSError, TimeoutError, ValueError) as exc:
+            if is_notification:
+                continue
             response = McpResponse(
                 request_id=request_id,
                 result=None,

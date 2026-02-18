@@ -15,9 +15,13 @@ def test_release_gate_script_contains_required_checks() -> None:
     assert "daemon_proxy_passed" in content
     assert "cli_e2e_passed" in content
     assert "critical_lsp_passed" in content
+    assert "mcp_handshake_passed" in content
+    assert "mcp_concurrency_passed" in content
     assert "final_decision" in content
     assert "pipeline lsp-matrix run" in content
     assert "release-gate-critical-lsp.log" in content
+    assert "release-gate-mcp-handshake.log" in content
+    assert "release-gate-mcp-concurrency.log" in content
     assert "\"logs\"" in content
     assert "release-gate-critical-fixture" in content
     assert "prepare_critical_fixture" in content

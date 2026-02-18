@@ -40,6 +40,7 @@ from sari.mcp.daemon_forward_policy import (
     should_forward_to_daemon,
 )
 from sari.mcp.tools.admin_tools import DoctorTool, RepoCandidatesTool, RescanTool
+from sari.mcp.tool_visibility import filter_tools_list_response_payload, is_hidden_tool_name
 from sari.mcp.tools.pipeline_admin_tools import PipelineAutoSetTool, PipelineAutoStatusTool, PipelineAutoTickTool, PipelineAlertStatusTool, PipelineDeadListTool, PipelineDeadPurgeTool, PipelineDeadRequeueTool, PipelinePolicyGetTool, PipelinePolicySetTool
 from sari.mcp.tools.pipeline_benchmark_tools import PipelineBenchmarkReportTool, PipelineBenchmarkRunTool
 from sari.mcp.tools.pipeline_lsp_matrix_tools import PipelineLspMatrixReportTool, PipelineLspMatrixRunTool
@@ -199,6 +200,8 @@ class McpServer:
             if not isinstance(params, dict):
                 return McpResponse(request_id=request_id, result=None, error=McpError(code=-32602, message='invalid params'))
             tool_name = params.get('name')
+            if is_hidden_tool_name(tool_name):
+                return McpResponse(request_id=request_id, result=None, error=McpError(code=-32601, message='tool not found'))
             arguments = params.get('arguments', {})
             if not isinstance(arguments, dict):
                 return McpResponse(request_id=request_id, result=None, error=McpError(code=-32602, message='invalid arguments'))
@@ -387,7 +390,10 @@ def run_stdio_streams(db_path: Path, input_stream: BinaryIO, output_stream: Bina
                 return 0
             payload, mode = read_result
             response = server.handle_request(payload)
-            transport.write_message(response.to_dict(), mode=mode)
+            response_payload = response.to_dict()
+            if str(payload.get("method", "")).strip() == "tools/list":
+                response_payload = filter_tools_list_response_payload(response_payload)
+            transport.write_message(response_payload, mode=mode)
     finally:
         runtime = server._runtime_repo.get_runtime()
         if runtime is not None:

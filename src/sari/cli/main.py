@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 from dataclasses import dataclass
 from dataclasses import asdict
 from pathlib import Path
@@ -45,9 +47,31 @@ from sari.services.workspace_service import WorkspaceService
 from sari.lsp.hub import LspHub
 
 
-@click.group()
-def cli() -> None:
+@click.group(invoke_without_command=True)
+@click.option("--transport", type=click.Choice(["stdio"], case_sensitive=False), required=False, default=None)
+@click.option("--format", "mcp_format", type=click.Choice(["pack", "json"], case_sensitive=False), required=False, default=None)
+@click.pass_context
+def cli(ctx: click.Context, transport: str | None, mcp_format: str | None) -> None:
     """sari-v2 명령을 그룹화한다."""
+    selected_transport = transport.lower() if isinstance(transport, str) else None
+    if ctx.invoked_subcommand is not None:
+        return
+    # 한 줄 설정(command="sari") 호환을 위해 비대화형 stdin에서는 MCP stdio로 자동 진입한다.
+    if selected_transport is None and not sys.stdin.isatty():
+        selected_transport = "stdio"
+    if selected_transport == "stdio":
+        if isinstance(mcp_format, str) and mcp_format.strip() != "":
+            os.environ["SARI_FORMAT"] = mcp_format.lower().strip()
+        config = AppConfig.default()
+        workspace_root_raw = os.getenv("SARI_WORKSPACE_ROOT", "").strip()
+        workspace_root = workspace_root_raw if workspace_root_raw != "" else None
+        raise SystemExit(
+            run_stdio_proxy(
+                db_path=config.db_path,
+                workspace_root=workspace_root,
+            )
+        )
+    click.echo(ctx.get_help())
 
 
 @dataclass(frozen=True)
@@ -359,12 +383,16 @@ def index_command() -> None:
 def install_command(host: str, print_only: bool) -> None:
     """호스트용 MCP 설정 스니펫을 생성해 출력한다."""
     services = _build_services()
-    payload = services.admin_service.install_host_config(host.lower())
+    if print_only:
+        payload = services.admin_service.install_host_config(host.lower())
+        if "error" in payload:
+            _print_json(payload, exit_code=1)
+            return
+        _print_json(payload)
+        return
+    payload = services.admin_service.apply_host_config(host.lower())
     if "error" in payload:
         _print_json(payload, exit_code=1)
-        return
-    if print_only:
-        _print_json(payload)
         return
     _print_json(payload)
 

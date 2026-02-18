@@ -145,6 +145,68 @@ def test_cli_install_print_codemode_matches_schema(tmp_path: Path, monkeypatch: 
     _assert_schema(payload, install_schema, schema)
 
 
+def test_cli_install_apply_updates_gemini_settings_with_backup(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """install --host gemini는 설정 파일을 갱신하고 백업을 생성해야 한다."""
+    _prepare_home(tmp_path=tmp_path, monkeypatch=monkeypatch)
+    runner = CliRunner()
+    gemini_dir = tmp_path / ".gemini"
+    gemini_dir.mkdir(parents=True, exist_ok=True)
+    settings_path = gemini_dir / "settings.json"
+    settings_path.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "github": {"httpUrl": "https://example.com"},
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(cli, ["install", "--host", "gemini"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["applied"] is True
+    assert payload["path"] == str(settings_path)
+    backup_path = payload["backup_path"]
+    assert isinstance(backup_path, str)
+    assert Path(backup_path).exists()
+    updated = json.loads(settings_path.read_text(encoding="utf-8"))
+    mcp_servers = cast(dict[str, object], updated["mcpServers"])
+    assert "github" in mcp_servers
+    assert "sari" in mcp_servers
+
+
+def test_cli_install_apply_updates_codex_config_with_section_merge(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """install --host codex는 TOML에서 sari 섹션만 병합해야 한다."""
+    _prepare_home(tmp_path=tmp_path, monkeypatch=monkeypatch)
+    runner = CliRunner()
+    codex_dir = tmp_path / ".codex"
+    codex_dir.mkdir(parents=True, exist_ok=True)
+    config_path = codex_dir / "config.toml"
+    config_path.write_text(
+        "[mcp_servers.github]\ncommand = \"gh\"\n\n[mcp_servers.sari]\ncommand = \"old\"\nargs = [\"x\"]\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(cli, ["install", "--host", "codex"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["applied"] is True
+    assert payload["path"] == str(config_path)
+    backup_path = payload["backup_path"]
+    assert isinstance(backup_path, str)
+    assert Path(backup_path).exists()
+    content = config_path.read_text(encoding="utf-8")
+    assert "[mcp_servers.github]" in content
+    assert "[mcp_servers.sari]" in content
+    assert "command = \"sari\"" in content
+    assert "args = [\"mcp\", \"stdio\"]" in content
+
+
 def test_cli_roots_add_invalid_path_returns_error_contract(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     """roots add 실패 시 error.code/message 구조를 반환해야 한다."""
     _prepare_home(tmp_path=tmp_path, monkeypatch=monkeypatch)
@@ -191,3 +253,49 @@ def test_cli_pipeline_auto_set_and_status(tmp_path: Path, monkeypatch: MonkeyPat
     assert status_result.exit_code == 0
     status_payload = json.loads(status_result.output)
     assert status_payload["auto_control"]["auto_hold_enabled"] is True
+
+
+def test_cli_no_args_non_tty_enters_mcp_stdio(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """비대화형 stdin에서 sari 단독 실행은 MCP stdio 경로로 진입해야 한다."""
+    _prepare_home(tmp_path=tmp_path, monkeypatch=monkeypatch)
+    runner = CliRunner()
+    called: dict[str, object] = {}
+
+    class _FakeStdin:
+        def isatty(self) -> bool:
+            return False
+
+    def _fake_run_stdio_proxy(**kwargs: object) -> int:
+        called.update(kwargs)
+        return 0
+
+    monkeypatch.setattr("sari.cli.main.sys.stdin", _FakeStdin())
+    monkeypatch.setattr("sari.cli.main.run_stdio_proxy", _fake_run_stdio_proxy)
+
+    result = runner.invoke(cli, [])
+
+    assert result.exit_code == 0
+    assert "db_path" in called
+
+
+def test_cli_transport_stdio_option_enters_mcp_stdio(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """--transport stdio 옵션으로 명시 진입할 수 있어야 한다."""
+    _prepare_home(tmp_path=tmp_path, monkeypatch=monkeypatch)
+    runner = CliRunner()
+    called: dict[str, object] = {}
+
+    class _FakeStdin:
+        def isatty(self) -> bool:
+            return True
+
+    def _fake_run_stdio_proxy(**kwargs: object) -> int:
+        called.update(kwargs)
+        return 0
+
+    monkeypatch.setattr("sari.cli.main.sys.stdin", _FakeStdin())
+    monkeypatch.setattr("sari.cli.main.run_stdio_proxy", _fake_run_stdio_proxy)
+
+    result = runner.invoke(cli, ["--transport", "stdio", "--format", "pack"])
+
+    assert result.exit_code == 0
+    assert "db_path" in called

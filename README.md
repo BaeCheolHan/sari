@@ -1,30 +1,59 @@
 # sari v2
 
-High-performance local indexing and search engine rebuilt on LSP-first architecture.
+LSP-first 로컬 인덱싱/검색 엔진 + MCP 데몬.
 
-## Quick Start
-
-```bash
-python3 -m pip install -e .
-python3 -m sari.cli.main doctor
-python3 -m sari.cli.main daemon start
-```
-
-## Quality Gate
+## 설치
 
 ```bash
-python3 -m pytest -q
-python3 tools/quality/full_tree_policy_check.py --root src --fail-on-todo
+uv tool install sari
+# 또는
+python3 -m pip install sari
 ```
 
-## Release (PyPI)
+## 기본 사용
 
 ```bash
-# local preflight
-tools/ci/release_pypi.sh
+sari doctor
+sari daemon start
+sari roots add /absolute/path/to/repo
 ```
 
-- GitHub Actions: `.github/workflows/release-pypi.yml`
-- Trigger:
-  - `v*` tag push -> publish to PyPI
-  - manual dispatch -> publish to PyPI/TestPyPI
+## MCP 연동 (권장)
+
+```bash
+sari install --host gemini
+sari install --host codex
+```
+
+- Gemini/Codex 설정에 `command = "sari"` + `args = ["mcp","stdio"]`를 자동 반영한다.
+- 기존 설정 파일은 `.bak.<timestamp>`로 백업된다.
+
+## 수동 설정 예시
+
+### Gemini (`~/.gemini/settings.json`)
+
+```json
+{
+  "mcpServers": {
+    "sari": {
+      "command": "sari",
+      "args": ["mcp", "stdio"]
+    }
+  }
+}
+```
+
+### Codex (`~/.codex/config.toml`)
+
+```toml
+[mcp_servers.sari]
+command = "sari"
+args = ["mcp", "stdio"]
+```
+
+## 개발 검증
+
+```bash
+pytest -q
+tools/ci/run_release_gate.sh
+```

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+import socket
 import time
 from typing import Callable
 
@@ -23,6 +24,10 @@ ForwardOnceFn = Callable[[dict[str, object], str, int, float], dict[str, object]
 FORWARD_METHODS = frozenset({"tools/list", "tools/call"})
 POST_START_RETRY_MAX = 8
 POST_START_RETRY_WAIT_SEC = 0.15
+INITIALIZE_POST_START_RETRY_MAX = 40
+INITIALIZE_POST_START_RETRY_WAIT_SEC = 0.2
+DAEMON_START_READY_TIMEOUT_SEC = 20.0
+DAEMON_START_READY_POLL_SEC = 0.2
 
 
 def should_forward_to_daemon(proxy_enabled: bool, method: str) -> bool:
@@ -74,6 +79,7 @@ def forward_with_retry(
     forward_once_fn: ForwardOnceFn,
 ) -> dict[str, object]:
     """forward 실패 시 자동 기동 후 1회 재시도한다."""
+    retry_max, retry_wait_sec = resolve_post_start_retry_policy(request)
     host, port = resolve_target_fn(db_path, workspace_root, host_override, port_override)
     try:
         return forward_once_fn(request, host, port, timeout_sec)
@@ -86,7 +92,7 @@ def forward_with_retry(
         if not started:
             raise
         last_exc: BaseException | None = None
-        for _ in range(POST_START_RETRY_MAX):
+        for _ in range(retry_max):
             host_retry, port_retry = resolve_target_fn(db_path, workspace_root, host_override, port_override)
             try:
                 return forward_once_fn(request, host_retry, port_retry, timeout_sec)
@@ -94,10 +100,19 @@ def forward_with_retry(
                 last_exc = retry_exc
                 if not is_retryable_error(retry_exc):
                     raise
-                time.sleep(POST_START_RETRY_WAIT_SEC)
+                time.sleep(retry_wait_sec)
         if last_exc is not None:
             raise last_exc
         raise
+
+
+def resolve_post_start_retry_policy(request: dict[str, object]) -> tuple[int, float]:
+    """요청 메서드에 따라 post-start 재시도 정책을 반환한다."""
+    method_raw = request.get("method")
+    method = str(method_raw).strip().lower() if isinstance(method_raw, str) else ""
+    if method == "initialize":
+        return INITIALIZE_POST_START_RETRY_MAX, INITIALIZE_POST_START_RETRY_WAIT_SEC
+    return POST_START_RETRY_MAX, POST_START_RETRY_WAIT_SEC
 
 
 def is_retryable_error(exc: BaseException) -> bool:
@@ -135,7 +150,24 @@ def default_start_daemon(db_path: Path, workspace_root: str | None) -> bool:
         registry_repo=registry_repo,
     )
     try:
-        service.ensure_running(run_mode=config.run_mode)
-        return True
+        runtime = service.ensure_running(run_mode=config.run_mode)
+        return wait_for_daemon_ready(
+            host=runtime.host,
+            port=runtime.port,
+            timeout_sec=DAEMON_START_READY_TIMEOUT_SEC,
+            poll_sec=DAEMON_START_READY_POLL_SEC,
+        )
     except DaemonError:
         return False
+
+
+def wait_for_daemon_ready(host: str, port: int, timeout_sec: float, poll_sec: float) -> bool:
+    """daemon TCP endpoint가 연결 가능한 상태가 될 때까지 대기한다."""
+    deadline = time.monotonic() + timeout_sec
+    while time.monotonic() < deadline:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(poll_sec)
+            if sock.connect_ex((host, port)) == 0:
+                return True
+        time.sleep(poll_sec)
+    return False
