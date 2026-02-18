@@ -52,6 +52,7 @@ class FileScanner:
         candidate_index_sink: object | None,
         resolve_lsp_language: Callable[[str], Language | None],
         configure_lsp_prewarm_languages: Callable[[str, dict[Language, int]], None],
+        resolve_repo_label: Callable[[str], str],
         load_gitignore_spec: Callable[[Path], PathSpec],
         is_collectible: Callable[[Path, Path, PathSpec], bool],
         priority_low: int,
@@ -66,6 +67,7 @@ class FileScanner:
         self._candidate_index_sink = candidate_index_sink
         self._resolve_lsp_language = resolve_lsp_language
         self._configure_lsp_prewarm_languages = configure_lsp_prewarm_languages
+        self._resolve_repo_label = resolve_repo_label
         self._load_gitignore_spec = load_gitignore_spec
         self._is_collectible = is_collectible
         self._priority_low = priority_low
@@ -82,6 +84,8 @@ class FileScanner:
         gitignore_spec = self._load_gitignore_spec(root)
         scan_started_at = now_iso8601_utc()
         now_iso = scan_started_at
+        repo_label = self._resolve_repo_label(str(root))
+        self._file_repo.sync_repo_label(repo_root=str(root), repo_label=repo_label)
         seen_paths: list[str] = []
         scanned_count = 0
         indexed_count = 0
@@ -115,7 +119,7 @@ class FileScanner:
                         repo_root=str(root),
                         relative_path=relative_path,
                         absolute_path=str(file_path.resolve()),
-                        repo_label=root.name,
+                        repo_label=repo_label,
                         mtime_ns=stat.st_mtime_ns,
                         size_bytes=stat.st_size,
                         content_hash=existing.content_hash,
@@ -136,7 +140,7 @@ class FileScanner:
                     repo_root=str(root),
                     relative_path=relative_path,
                     absolute_path=str(file_path.resolve()),
-                    repo_label=root.name,
+                    repo_label=repo_label,
                     mtime_ns=stat.st_mtime_ns,
                     size_bytes=stat.st_size,
                     observed_at=now_iso,
@@ -206,13 +210,14 @@ class FileScanner:
         if not self._is_collectible(file_path=file_path, repo_root=root, gitignore_spec=gitignore_spec):
             raise CollectionError(ErrorContext(code="ERR_FILE_NOT_COLLECTIBLE", message="수집 정책 대상 파일이 아닙니다"))
         now_iso = now_iso8601_utc()
+        repo_label = self._resolve_repo_label(str(root))
         content_bytes = file_path.read_bytes()
         content_hash = hashlib.sha256(content_bytes).hexdigest()
         l1_row = CollectedFileL1DTO(
             repo_root=str(root),
             relative_path=str(file_path.relative_to(root).as_posix()),
             absolute_path=str(file_path),
-            repo_label=root.name,
+            repo_label=repo_label,
             mtime_ns=file_path.stat().st_mtime_ns,
             size_bytes=file_path.stat().st_size,
             content_hash=content_hash,

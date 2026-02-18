@@ -6,7 +6,9 @@ from dataclasses import dataclass
 import logging
 import os
 from pathlib import Path
+import re
 import signal
+import subprocess
 import threading
 import time
 from typing import Callable
@@ -355,6 +357,7 @@ class LspHub:
         # NuGet/HTTPS 다운로드가 필요한 LSP가 인증서 검증 실패로 중단되지 않도록 기본 CA 번들을 주입한다.
         if certifi is not None:
             os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+        self._validate_runtime_requirements(language=language)
         self._ensure_user_tool_paths(language=language)
         try:
             config = LanguageServerConfig(code_language=language)
@@ -373,6 +376,58 @@ class LspHub:
         key = LspRuntimeKey(language=language, repo_root=repo_root, slot=slot)
         self._instances[key] = LspRuntimeEntry(server=ls, last_used_at=now)
         return ls
+
+    def _validate_runtime_requirements(self, language: Language) -> None:
+        """언어별 런타임 최소 요구사항을 사전 검증한다."""
+        if language not in {Language.JAVA, Language.KOTLIN}:
+            return
+        try:
+            result = subprocess.run(
+                ["java", "-version"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=2.0,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise DaemonError(
+                ErrorContext(
+                    code="ERR_LSP_RUNTIME_PROBE_FAILED",
+                    message=f"Java 런타임 점검 실패: {exc}",
+                )
+            ) from exc
+        version_text = f"{result.stderr}\n{result.stdout}"
+        major = self._parse_java_major_version(version_text)
+        if major is None:
+            raise DaemonError(
+                ErrorContext(
+                    code="ERR_LSP_RUNTIME_PROBE_FAILED",
+                    message="Java 버전을 해석할 수 없습니다",
+                )
+            )
+        if major < 17:
+            raise DaemonError(
+                ErrorContext(
+                    code="ERR_LSP_RUNTIME_MISMATCH",
+                    message=f"Java 17+ 런타임이 필요합니다(현재: {major})",
+                )
+            )
+
+    def _parse_java_major_version(self, version_text: str) -> int | None:
+        """`java -version` 출력에서 major 버전을 파싱한다."""
+        match = re.search(r'version\s+"([^"]+)"', version_text)
+        if match is None:
+            return None
+        raw_version = match.group(1).strip()
+        if raw_version.startswith("1."):
+            parts = raw_version.split(".")
+            if len(parts) >= 2 and parts[1].isdigit():
+                return int(parts[1])
+            return None
+        major_text = raw_version.split(".")[0]
+        if major_text.isdigit():
+            return int(major_text)
+        return None
 
     def _ensure_user_tool_paths(self, language: Language) -> None:
         """사용자 로컬 설치 경로를 PATH/런타임 변수에 보강한다."""

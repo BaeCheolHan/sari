@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -31,6 +32,7 @@ class RuntimeManager:
         handle_background_collection_error: Callable[[CollectionError, str, str], bool],
         prune_error_events_if_needed: Callable[[], None],
         watcher_loop: Callable[[], None],
+        recover_running_ttl_sec: int = 300,
     ) -> None:
         """런타임 루프 구성요소를 주입받는다."""
         self._stop_event = stop_event
@@ -44,6 +46,7 @@ class RuntimeManager:
         self._handle_background_collection_error = handle_background_collection_error
         self._prune_error_events_if_needed = prune_error_events_if_needed
         self._watcher_loop = watcher_loop
+        self._recover_running_ttl_sec = max(30, int(recover_running_ttl_sec))
         self._scheduler_thread: threading.Thread | None = None
         self._enrich_threads: list[threading.Thread] = []
         self._watcher_thread: threading.Thread | None = None
@@ -98,6 +101,7 @@ class RuntimeManager:
         while not self._stop_event.is_set():
             self._assert_parent_alive("scheduler")
             start_time = time.time()
+            self._recover_stale_running_jobs()
             try:
                 workspaces = self._workspace_repo.list_all()
             except sqlite3.Error as exc:
@@ -135,6 +139,18 @@ class RuntimeManager:
             remain = max(0.0, float(self._policy.scan_interval_sec) - elapsed)
             if remain > 0:
                 self._stop_event.wait(timeout=remain)
+
+    def _recover_stale_running_jobs(self) -> None:
+        """장시간 RUNNING 상태로 고착된 작업을 FAILED로 복구한다."""
+        now_dt = datetime.now(timezone.utc)
+        now_iso = now_dt.isoformat()
+        stale_before_iso = (now_dt - timedelta(seconds=self._recover_running_ttl_sec)).isoformat()
+        recovered = self._enrich_queue_repo.recover_stale_running_to_failed(
+            now_iso=now_iso,
+            stale_before_iso=stale_before_iso,
+        )
+        if recovered <= 0:
+            return
 
     def _enrich_loop(self) -> None:
         while not self._stop_event.is_set():

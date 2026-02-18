@@ -1,6 +1,7 @@
 """LSP Hub 확장자 매핑을 검증한다."""
 
 import time
+import subprocess
 import pytest
 
 from sari.core.exceptions import DaemonError
@@ -610,3 +611,39 @@ def test_lsp_hub_cleans_up_not_running_entry_before_reuse(monkeypatch) -> None:
     metrics = hub.get_metrics()
     assert metrics["lsp_orphan_suspect_count"] >= 1
     hub.stop_all()
+
+
+def test_lsp_hub_fails_fast_when_java_runtime_is_too_old(monkeypatch) -> None:
+    """Java/Kotlin LSP는 런타임 요구사항 미충족 시 즉시 명시 오류를 반환해야 한다."""
+
+    class _Result:
+        def __init__(self, stderr: str) -> None:
+            self.stderr = stderr
+            self.stdout = ""
+
+    monkeypatch.setattr(
+        "sari.lsp.hub.subprocess.run",
+        lambda *args, **kwargs: _Result(stderr='openjdk version "11.0.24" 2024-07-16\n'),
+    )
+
+    hub = LspHub()
+    with pytest.raises(DaemonError) as exc_info:
+        hub.get_or_start(language=Language.JAVA, repo_root="/repo-a")
+
+    assert exc_info.value.context.code == "ERR_LSP_RUNTIME_MISMATCH"
+    assert "Java 17+" in exc_info.value.context.message
+
+
+def test_lsp_hub_runtime_probe_failure_raises_explicit_error(monkeypatch) -> None:
+    """런타임 probe 실패 시 침묵하지 않고 명시 오류를 반환해야 한다."""
+
+    def _raise_run(*args, **kwargs) -> subprocess.CompletedProcess[str]:
+        raise OSError("java not found")
+
+    monkeypatch.setattr("sari.lsp.hub.subprocess.run", _raise_run)
+
+    hub = LspHub()
+    with pytest.raises(DaemonError) as exc_info:
+        hub.get_or_start(language=Language.KOTLIN, repo_root="/repo-a")
+
+    assert exc_info.value.context.code == "ERR_LSP_RUNTIME_PROBE_FAILED"

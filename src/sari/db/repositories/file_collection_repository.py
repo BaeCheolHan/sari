@@ -75,6 +75,21 @@ class FileCollectionRepository:
                 )
             conn.commit()
 
+    def sync_repo_label(self, repo_root: str, repo_label: str) -> int:
+        """특정 저장소의 기존 행 repo_label을 현재 정책 값으로 동기화한다."""
+        with connect(self._db_path) as conn:
+            cur = conn.execute(
+                """
+                UPDATE collected_files_l1
+                SET repo_label = :repo_label
+                WHERE repo_root = :repo_root
+                  AND (repo_label IS NULL OR repo_label = '' OR repo_label != :repo_label)
+                """,
+                {"repo_root": repo_root, "repo_label": repo_label},
+            )
+            conn.commit()
+            return int(cur.rowcount if cur.rowcount is not None else 0)
+
     def list_files(self, repo_root: str, limit: int, prefix: str | None = None) -> list[FileListItemDTO]:
         """활성 파일 목록을 조회한다."""
         where_prefix = ""

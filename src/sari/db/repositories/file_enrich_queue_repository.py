@@ -403,6 +403,24 @@ class FileEnrichQueueRepository:
             conn.commit()
             return int(cur.rowcount if cur.rowcount is not None else 0)
 
+    def recover_stale_running_to_failed(self, now_iso: str, stale_before_iso: str) -> int:
+        """오래된 RUNNING 작업만 FAILED로 복구한다."""
+        with connect(self._db_path) as conn:
+            cur = conn.execute(
+                """
+                UPDATE file_enrich_queue
+                SET status = 'FAILED',
+                    last_error = COALESCE(last_error, 'worker interrupted'),
+                    next_retry_at = :now_iso,
+                    updated_at = :now_iso
+                WHERE status = 'RUNNING'
+                  AND updated_at <= :stale_before_iso
+                """,
+                {"now_iso": now_iso, "stale_before_iso": stale_before_iso},
+            )
+            conn.commit()
+            return int(cur.rowcount if cur.rowcount is not None else 0)
+
     def list_dead(self, repo_root: str, limit: int) -> list[DeadJobItemDTO]:
         """저장소 기준 DEAD 작업 목록을 조회한다."""
         with connect(self._db_path) as conn:

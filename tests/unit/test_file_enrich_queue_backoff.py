@@ -111,3 +111,59 @@ def test_reset_running_to_failed_recovers_interrupted_jobs(tmp_path: Path) -> No
     assert changed == 1
     row = _read_queue_row(db_path, job_id)
     assert row["status"] == "FAILED"
+
+
+def test_recover_stale_running_to_failed_updates_only_aged_jobs(tmp_path: Path) -> None:
+    """stale 기준보다 오래된 RUNNING 작업만 FAILED로 복구해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = FileEnrichQueueRepository(db_path)
+
+    old_job = repo.enqueue(
+        repo_root="/repo",
+        relative_path="old.py",
+        content_hash="h-old",
+        priority=30,
+        enqueue_source="scan",
+        now_iso="2026-02-16T00:00:00+00:00",
+    )
+    new_job = repo.enqueue(
+        repo_root="/repo",
+        relative_path="new.py",
+        content_hash="h-new",
+        priority=30,
+        enqueue_source="scan",
+        now_iso="2026-02-16T00:00:00+00:00",
+    )
+
+    _ = repo.acquire_pending(limit=2, now_iso="2026-02-16T00:00:01+00:00")
+
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE file_enrich_queue
+            SET updated_at = :updated_at
+            WHERE job_id = :job_id
+            """,
+            {"job_id": old_job, "updated_at": "2026-02-16T00:00:02+00:00"},
+        )
+        conn.execute(
+            """
+            UPDATE file_enrich_queue
+            SET updated_at = :updated_at
+            WHERE job_id = :job_id
+            """,
+            {"job_id": new_job, "updated_at": "2026-02-16T00:00:30+00:00"},
+        )
+        conn.commit()
+
+    changed = repo.recover_stale_running_to_failed(
+        now_iso="2026-02-16T00:01:00+00:00",
+        stale_before_iso="2026-02-16T00:00:15+00:00",
+    )
+
+    assert changed == 1
+    old_row = _read_queue_row(db_path, old_job)
+    new_row = _read_queue_row(db_path, new_job)
+    assert old_row["status"] == "FAILED"
+    assert new_row["status"] == "RUNNING"

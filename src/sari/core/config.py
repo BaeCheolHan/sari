@@ -9,6 +9,8 @@ from sari.core.language_registry import get_default_collection_extensions
 
 DEFAULT_COLLECTION_EXCLUDE_GLOBS: tuple[str, ...] = (
     "**/.git/**",
+    "**/bin/**",
+    "**/generated-sources/**",
     "**/node_modules/**",
     "**/dist/**",
     "**/build/**",

@@ -709,3 +709,41 @@ def test_tantivy_delete_visibility_failure_escalates_backend_error(tmp_path: Pat
         assert False, "expected CandidateBackendError"
     except CandidateBackendError as exc:
         assert "candidate delete visibility check failed" in str(exc)
+
+
+def test_tantivy_apply_allows_repo_under_active_workspace(tmp_path: Path) -> None:
+    """active workspace 하위 repo는 candidate apply에서 비활성으로 오판하면 안 된다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    workspace_root = tmp_path / "workspace"
+    repo_dir = workspace_root / "apps" / "repo-g"
+    repo_dir.mkdir(parents=True)
+    target = repo_dir / "alpha.py"
+    target.write_text("def alpha_symbol():\n    return 1\n", encoding="utf-8")
+    raw = target.read_bytes()
+
+    change_repo = CandidateIndexChangeRepository(db_path)
+    repo_root = str(repo_dir.resolve())
+    change_repo.enqueue_upsert(
+        CandidateIndexChangeDTO(
+            repo_root=repo_root,
+            relative_path="alpha.py",
+            absolute_path=str(target.resolve()),
+            content_hash=hashlib.sha256(raw).hexdigest(),
+            mtime_ns=target.stat().st_mtime_ns,
+            size_bytes=target.stat().st_size,
+            event_source="scan",
+            recorded_at="2026-02-16T00:00:00+00:00",
+        )
+    )
+
+    backend = TantivyCandidateBackend(
+        config=CandidateSearchConfig(max_file_size_bytes=512 * 1024),
+        index_root=tmp_path / "candidate-index-workspace-child",
+        change_repo=change_repo,
+    )
+    workspace = WorkspaceDTO(path=str(workspace_root.resolve()), name="workspace", indexed_at=None, is_active=True)
+    items = backend.search(workspaces=[workspace], query="alpha_symbol", limit=10)
+
+    assert len(items) == 1
+    assert items[0].relative_path == "alpha.py"

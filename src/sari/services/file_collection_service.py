@@ -16,6 +16,7 @@ from solidlsp.ls_config import Language
 from sari.core.exceptions import CollectionError, DaemonError, ErrorContext
 from sari.core.config import DEFAULT_COLLECTION_EXCLUDE_GLOBS
 from sari.core.language_registry import get_default_collection_extensions, resolve_language_from_path
+from sari.core.repo_resolver import resolve_repo_key
 from sari.core.text_decode import decode_bytes_with_policy
 from sari.core.models import CandidateIndexChangeDTO, CollectionPolicyDTO, CollectionScanRepoResultDTO, CollectionScanResultDTO, CollectedFileL1DTO, FileReadResultDTO, PipelineMetricsDTO, now_iso8601_utc
 from sari.db.repositories.file_body_repository import FileBodyDecodeError, FileBodyRepository
@@ -303,6 +304,7 @@ class FileCollectionService:
             candidate_index_sink=self._candidate_index_sink,
             resolve_lsp_language=self._resolve_lsp_language,
             configure_lsp_prewarm_languages=self._configure_lsp_prewarm_languages,
+            resolve_repo_label=self._resolve_repo_label,
             load_gitignore_spec=self._load_gitignore_spec,
             is_collectible=self._is_collectible,
             priority_low=self.PRIORITY_LOW,
@@ -373,6 +375,7 @@ class FileCollectionService:
             now_monotonic=time.monotonic,
             on_watcher_queue_overflow=self._record_watcher_queue_overflow,
             schedule_rescan=self._schedule_rescan_from_watcher,
+            on_watcher_file_race=self._record_watcher_file_race,
         )
         self._metrics_service = PipelineMetricsService(
             refresh_indexing_mode=self._enrich_engine.refresh_indexing_mode,
@@ -600,6 +603,23 @@ class FileCollectionService:
         """watcher overflow 복구를 위해 단일 repo 재스캔을 실행한다."""
         _ = self._scanner.scan_once(repo_root)
 
+    def _record_watcher_file_race(self, repo_root: str, relative_path: str, reason: str) -> None:
+        """watcher 경합성 파일 누락 이벤트를 저심각도 경고로 기록한다."""
+        self._error_policy.record_error_event(
+            component="event_watcher",
+            phase="watcher_file_race",
+            severity="warning",
+            error_code="ERR_WATCHER_FILE_RACE",
+            error_message="watcher 이벤트 처리 중 파일이 사라졌습니다",
+            error_type="FileRaceCondition",
+            repo_root=repo_root,
+            relative_path=relative_path,
+            job_id=None,
+            attempt_count=0,
+            context_data={"reason": reason},
+            worker_name="watcher",
+        )
+
     def list_files(self, repo_root: str, limit: int, prefix: str | None) -> list[dict[str, object]]:
         if limit <= 0:
             raise CollectionError(ErrorContext(code='ERR_INVALID_LIMIT', message='limit는 1 이상이어야 합니다'))
@@ -645,6 +665,14 @@ class FileCollectionService:
         candidates.sort(key=lambda item: item[1], reverse=True)
         selected = {language for language, _ in candidates[:self.LSP_PREWARM_TOP_LANGUAGE_COUNT]}
         configure_func(repo_root=repo_root, languages=selected)
+
+    def _resolve_repo_label(self, repo_root: str) -> str:
+        """저장소 절대경로를 workspace-relative repo_key로 변환한다."""
+        try:
+            workspace_paths = [item.path for item in self._workspace_repo.list_all()]
+            return resolve_repo_key(repo_root=repo_root, workspace_paths=workspace_paths)
+        except (RuntimeError, ValueError):
+            return Path(repo_root).name
 
     def _rebalance_jobs_by_language(self, jobs: list[FileEnrichJobDTO]) -> list[FileEnrichJobDTO]:
         return self._enrich_engine._rebalance_jobs_by_language(jobs)
@@ -693,7 +721,7 @@ class FileCollectionService:
         now_iso = now_iso8601_utc()
         content_bytes = file_path.read_bytes()
         content_hash = hashlib.sha256(content_bytes).hexdigest()
-        l1_row = CollectedFileL1DTO(repo_root=str(root), relative_path=str(file_path.relative_to(root).as_posix()), absolute_path=str(file_path), repo_label=root.name, mtime_ns=file_path.stat().st_mtime_ns, size_bytes=file_path.stat().st_size, content_hash=content_hash, is_deleted=False, last_seen_at=now_iso, updated_at=now_iso, enrich_state='PENDING')
+        l1_row = CollectedFileL1DTO(repo_root=str(root), relative_path=str(file_path.relative_to(root).as_posix()), absolute_path=str(file_path), repo_label=self._resolve_repo_label(str(root)), mtime_ns=file_path.stat().st_mtime_ns, size_bytes=file_path.stat().st_size, content_hash=content_hash, is_deleted=False, last_seen_at=now_iso, updated_at=now_iso, enrich_state='PENDING')
         self._file_repo.upsert_file(l1_row)
         self._enrich_queue_repo.enqueue(repo_root=str(root), relative_path=str(file_path.relative_to(root).as_posix()), content_hash=content_hash, priority=priority, enqueue_source=enqueue_source, now_iso=now_iso)
         if self._candidate_index_sink is not None:

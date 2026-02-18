@@ -69,6 +69,7 @@ class EventWatcher:
         now_monotonic: Callable[[], float],
         on_watcher_queue_overflow: Callable[[str | None, str], None],
         schedule_rescan: Callable[[str], None],
+        on_watcher_file_race: Callable[[str, str, str], None] | None = None,
     ) -> None:
         """watcher 동작에 필요한 의존성만 주입받는다."""
         self._workspace_repo = workspace_repo
@@ -88,6 +89,7 @@ class EventWatcher:
         self._now_monotonic = now_monotonic
         self._on_watcher_queue_overflow = on_watcher_queue_overflow
         self._schedule_rescan = schedule_rescan
+        self._on_watcher_file_race = on_watcher_file_race
         self._pending_rescan_roots: set[str] = set()
         self._overflow_last_by_repo: dict[str, float] = {}
         self._overflow_lock = Lock()
@@ -159,6 +161,9 @@ class EventWatcher:
         if matched_root is None:
             return
         relative_path = str(source_path.relative_to(matched_root).as_posix())
+        if event_type != "deleted" and not source_path.exists():
+            self._record_file_race(repo_root=str(matched_root), relative_path=relative_path, reason="file_not_found")
+            return
         if event_type == "deleted":
             self._file_repo.mark_deleted(str(matched_root), relative_path, now_iso8601_utc())
             if self._candidate_index_sink is not None:
@@ -171,9 +176,15 @@ class EventWatcher:
             moved_dest = Path(dest_path).resolve()
             if _path_is_relative_to(moved_dest, matched_root):
                 dest_relative = str(moved_dest.relative_to(matched_root).as_posix())
+                if not moved_dest.exists():
+                    self._record_file_race(repo_root=str(matched_root), relative_path=dest_relative, reason="file_not_found")
+                    return
                 try:
                     self._index_file_with_priority(str(matched_root), dest_relative, self._priority_high, "watcher")
                 except CollectionError as exc:
+                    if exc.context.code == "ERR_FILE_NOT_FOUND":
+                        self._record_file_race(repo_root=str(matched_root), relative_path=dest_relative, reason="file_not_found")
+                        return
                     if self._handle_background_collection_error(exc=exc, phase="watcher_moved", worker_name="watcher"):
                         raise
                     return
@@ -181,6 +192,9 @@ class EventWatcher:
         try:
             self._index_file_with_priority(str(matched_root), relative_path, self._priority_high, "watcher")
         except CollectionError as exc:
+            if exc.context.code == "ERR_FILE_NOT_FOUND":
+                self._record_file_race(repo_root=str(matched_root), relative_path=relative_path, reason="file_not_found")
+                return
             if self._handle_background_collection_error(exc=exc, phase="watcher_index", worker_name="watcher"):
                 raise
             return
@@ -231,6 +245,12 @@ class EventWatcher:
             if _path_is_relative_to(source_path, root):
                 return str(root)
         return None
+
+    def _record_file_race(self, repo_root: str, relative_path: str, reason: str) -> None:
+        """경합으로 사라진 파일 이벤트를 저심각도 이벤트로 기록한다."""
+        if self._on_watcher_file_race is None:
+            return
+        self._on_watcher_file_race(repo_root, relative_path, reason)
 
 
 def _path_is_relative_to(path: Path, base: Path) -> bool:

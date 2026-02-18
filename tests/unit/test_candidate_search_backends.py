@@ -146,3 +146,20 @@ def test_candidate_search_preserves_tantivy_lockbusy_error_code() -> None:
     assert len(result.errors) == 1
     assert result.errors[0].code == "ERR_TANTIVY_LOCK_BUSY"
     assert result.errors[0].severity == "FATAL"
+
+
+def test_filter_workspaces_by_repo_allows_descendant_repo() -> None:
+    """repo가 workspace 하위 경로여도 필터에 포함되어야 한다."""
+    service = CandidateSearchService(
+        backend=_SingleCandidateBackend(),
+        fallback_backend=None,
+    )
+    workspaces = [
+        WorkspaceDTO(path="/tmp/ws", name="ws", indexed_at=None, is_active=True),
+        WorkspaceDTO(path="/tmp/other", name="other", indexed_at=None, is_active=True),
+    ]
+
+    filtered = service.filter_workspaces_by_repo(workspaces=workspaces, repo_root="/tmp/ws/repo-a")
+
+    assert len(filtered) == 1
+    assert filtered[0].path == "/tmp/ws"

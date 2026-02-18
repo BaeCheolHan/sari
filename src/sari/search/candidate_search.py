@@ -352,7 +352,7 @@ class TantivyCandidateBackend:
         pending = self._change_repo.acquire_pending(limit=batch_limit)
         if len(pending) == 0:
             return PendingApplyOutcomeDTO(applied_ids=[], failed_rows=[], delete_probes=[], mutated=False)
-        workspace_roots = {str(Path(item.path).resolve()): item for item in workspaces}
+        workspace_roots = {str(Path(item.path).resolve()) for item in workspaces}
         applied_ids: list[int] = []
         failed_rows: list[PendingApplyFailureDTO] = []
         delete_probes: list[DeleteVisibilityProbeDTO] = []
@@ -379,12 +379,12 @@ class TantivyCandidateBackend:
                 failed_rows.append(PendingApplyFailureDTO(change_id=change.change_id, message=f"candidate apply failed: {exc}"))
         return PendingApplyOutcomeDTO(applied_ids=applied_ids, failed_rows=failed_rows, delete_probes=delete_probes, mutated=mutated)
 
-    def _apply_upsert_change(self, workspace_roots: dict[str, WorkspaceDTO], change) -> None:  # type: ignore[no-untyped-def]
+    def _apply_upsert_change(self, workspace_roots: set[str], change) -> None:  # type: ignore[no-untyped-def]
         """upsert 변경 로그를 인덱스 문서로 반영한다."""
         if change.absolute_path is None or change.content_hash is None or change.mtime_ns is None or change.size_bytes is None:
             raise ValueError("upsert payload is incomplete")
         repo_root = str(Path(change.repo_root).resolve())
-        if repo_root not in workspace_roots:
+        if not self._is_active_repo_root(workspace_roots=workspace_roots, repo_root=repo_root):
             raise ValueError("repo is not active workspace")
         file_path = Path(change.absolute_path).resolve()
         if not file_path.exists() or not file_path.is_file():
@@ -436,7 +436,7 @@ class TantivyCandidateBackend:
         mutated = False
         for indexed_key, state in self._indexed_files.items():
             repo_root, _ = indexed_key
-            if repo_root not in active_roots:
+            if not self._is_active_repo_root(workspace_roots=active_roots, repo_root=repo_root):
                 self._get_writer().delete_documents_by_term("doc_id", state.doc_id)
                 removed_keys.append(indexed_key)
                 mutated = True
@@ -444,6 +444,20 @@ class TantivyCandidateBackend:
             self._indexed_files.pop(indexed_key, None)
         self._indexed_roots = active_roots
         return mutated
+
+    def _is_active_repo_root(self, workspace_roots: set[str], repo_root: str) -> bool:
+        """repo_root가 활성 workspace 자체이거나 하위 경로인지 판정한다."""
+        if repo_root in workspace_roots:
+            return True
+        repo_path = Path(repo_root)
+        for workspace_root in workspace_roots:
+            workspace_path = Path(workspace_root)
+            try:
+                repo_path.relative_to(workspace_path)
+                return True
+            except ValueError:
+                continue
+        return False
 
     def _merge_delete_visibility_failures(self, apply_outcome: PendingApplyOutcomeDTO) -> PendingApplyOutcomeDTO:
         """삭제 요청이 reload 이후에도 보이면 실패로 승격한다."""
@@ -624,7 +638,16 @@ class CandidateSearchService:
     def filter_workspaces_by_repo(self, workspaces: list[WorkspaceDTO], repo_root: str) -> list[WorkspaceDTO]:
         """repo 필터 기준으로 후보 검색 대상을 단일 저장소로 축소한다."""
         normalized_repo = str(Path(repo_root).resolve())
-        return [workspace for workspace in workspaces if str(Path(workspace.path).resolve()) == normalized_repo]
+        filtered: list[WorkspaceDTO] = []
+        repo_path = Path(normalized_repo)
+        for workspace in workspaces:
+            workspace_path = Path(str(Path(workspace.path).resolve()))
+            try:
+                repo_path.relative_to(workspace_path)
+                filtered.append(workspace)
+            except ValueError:
+                continue
+        return filtered
 
     def mark_repo_dirty(self, repo_root: str) -> None:
         """저장소 단위 변경 신호를 후보 인덱스 백엔드에 전달한다."""
