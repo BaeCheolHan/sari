@@ -56,4 +56,25 @@ args = ["mcp", "stdio"]
 ```bash
 pytest -q
 tools/ci/run_release_gate.sh
+tools/manual/test_mcp_call_flow.sh /absolute/path/to/repo
+```
+
+## 로컬 wheel 테스트 (글로벌 tool 오염 방지)
+
+로컬 빌드 산출물 검증은 `uv tool install dist/*.whl` 대신 아래 스크립트를 사용한다.
+
+```bash
+python3 -m build
+tools/manual/test_local_wheel_ephemeral.sh
+```
+
+- 위 방식은 `uvx --from <wheel>`로 일회성 실행만 하므로, `~/.local/bin/sari` 글로벌 설치를 덮어쓰지 않는다.
+- 글로벌 업그레이드는 계속 `uv tool upgrade sari`를 사용한다.
+
+### 실수로 글로벌 tool을 로컬 wheel로 덮어쓴 경우 복구
+
+```bash
+tools/manual/repair_global_sari_tool.sh
+# 특정 버전으로 복구
+tools/manual/repair_global_sari_tool.sh 2.0.11
 ```

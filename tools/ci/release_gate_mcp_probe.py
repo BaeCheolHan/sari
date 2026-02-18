@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 
 
 def _frame(payload: dict[str, object]) -> bytes:
@@ -73,7 +74,43 @@ def _terminate_process(proc: subprocess.Popen[bytes]) -> None:
         proc.wait(timeout=3.0)
 
 
-def _run_internal_client(timeout_initialize_sec: float = 30.0, timeout_tools_sec: float = 10.0) -> tuple[bool, dict[str, object]]:
+def _ensure_probe_repo_registered(repo: str) -> None:
+    """call_flow 대상 repo가 워크스페이스에 등록되도록 보장한다."""
+    from sari.core.config import AppConfig
+    from sari.core.models import WorkspaceDTO
+    from sari.db.migration import ensure_migrated
+    from sari.db.repositories.workspace_repository import WorkspaceRepository
+    from sari.db.schema import init_schema
+
+    repo_path = Path(repo).resolve()
+    if not repo_path.exists():
+        return
+
+    config = AppConfig.default()
+    init_schema(config.db_path)
+    ensure_migrated(config.db_path)
+    workspace_repo = WorkspaceRepository(config.db_path)
+    existing = workspace_repo.get_by_path(str(repo_path))
+    if existing is not None and existing.is_active:
+        return
+    if existing is not None and not existing.is_active:
+        workspace_repo.remove(str(repo_path))
+    workspace_repo.add(
+        WorkspaceDTO(
+            path=str(repo_path),
+            name=repo_path.name,
+            indexed_at=None,
+            is_active=True,
+        )
+    )
+
+
+def _run_internal_client(
+    timeout_initialize_sec: float = 30.0,
+    timeout_tools_sec: float = 10.0,
+    run_call_flow: bool = False,
+    repo: str | None = None,
+) -> tuple[bool, dict[str, object]]:
     proc = subprocess.Popen(
         [sys.executable, "-m", "sari.cli.main", "mcp", "stdio", "--local"],
         stdin=subprocess.PIPE,
@@ -116,7 +153,121 @@ def _run_internal_client(timeout_initialize_sec: float = 30.0, timeout_tools_sec
                 False,
                 {"stage": "tools/list", "response": resp2, "reason": "tools payload shape invalid", "stderr_tail": stderr_lines[-20:]},
             )
-        return (True, {"stage": "ok", "tool_count": len(tools_obj.get("tools", [])), "stderr_tail": stderr_lines[-20:]})
+        if not run_call_flow:
+            return (True, {"stage": "ok", "tool_count": len(tools_obj.get("tools", [])), "stderr_tail": stderr_lines[-20:]})
+
+        if repo is None or repo.strip() == "":
+            return (
+                False,
+                {
+                    "stage": "call_flow",
+                    "reason": "repo is required",
+                    "stderr_tail": stderr_lines[-20:],
+                },
+            )
+
+        search_payload = {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "search",
+                "arguments": {"repo": repo, "query": "McpServer", "limit": 3, "options": {"structured": 1}},
+            },
+        }
+        proc.stdin.write(_frame(search_payload))
+        proc.stdin.flush()
+        search_resp = _read_by_id(proc.stdout, request_id=3, timeout_sec=max(timeout_tools_sec, 20.0))
+        search_result = search_resp.get("result")
+        if not isinstance(search_result, dict):
+            return (
+                False,
+                {"stage": "call_flow/search", "reason": "search result payload invalid", "response": search_resp, "stderr_tail": stderr_lines[-20:]},
+            )
+        if bool(search_result.get("isError", False)):
+            return (
+                False,
+                {"stage": "call_flow/search", "reason": "search returned isError", "response": search_resp, "stderr_tail": stderr_lines[-20:]},
+            )
+        structured = search_result.get("structuredContent")
+        if not isinstance(structured, dict):
+            return (
+                False,
+                {"stage": "call_flow/search", "reason": "search structuredContent missing", "response": search_resp, "stderr_tail": stderr_lines[-20:]},
+            )
+        items = structured.get("items")
+        if not isinstance(items, list) or len(items) == 0:
+            return (
+                False,
+                {"stage": "call_flow/search", "reason": "search items empty", "response": search_resp, "stderr_tail": stderr_lines[-20:]},
+            )
+        first_item = items[0]
+        if not isinstance(first_item, dict):
+            return (
+                False,
+                {"stage": "call_flow/search", "reason": "first item is not object", "response": search_resp, "stderr_tail": stderr_lines[-20:]},
+            )
+        rid = first_item.get("rid")
+        relative_path = first_item.get("relative_path")
+        if not isinstance(rid, str) or rid.strip() == "":
+            rid = None
+        if rid is None and (not isinstance(relative_path, str) or relative_path.strip() == ""):
+            return (
+                False,
+                {
+                    "stage": "call_flow/search",
+                    "reason": "rid/relative_path missing from first item",
+                    "response": search_resp,
+                    "stderr_tail": stderr_lines[-20:],
+                },
+            )
+
+        read_payload = {
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {
+                "name": "read",
+                "arguments": (
+                    {"repo": repo, "rid": rid, "mode": "symbol", "options": {"structured": 1}}
+                    if rid is not None
+                    else {"repo": repo, "mode": "file", "target": relative_path, "options": {"structured": 1}}
+                ),
+            },
+        }
+        proc.stdin.write(_frame(read_payload))
+        proc.stdin.flush()
+        read_resp = _read_by_id(proc.stdout, request_id=4, timeout_sec=max(timeout_tools_sec, 20.0))
+        read_result = read_resp.get("result")
+        if not isinstance(read_result, dict):
+            return (
+                False,
+                {"stage": "call_flow/read", "reason": "read result payload invalid", "response": read_resp, "stderr_tail": stderr_lines[-20:]},
+            )
+        if bool(read_result.get("isError", False)):
+            return (
+                False,
+                {"stage": "call_flow/read", "reason": "read returned isError", "response": read_resp, "stderr_tail": stderr_lines[-20:]},
+            )
+        read_structured = read_result.get("structuredContent")
+        if not isinstance(read_structured, dict):
+            return (
+                False,
+                {"stage": "call_flow/read", "reason": "read structuredContent missing", "response": read_resp, "stderr_tail": stderr_lines[-20:]},
+            )
+
+        return (
+            True,
+            {
+                "stage": "ok",
+                "tool_count": len(tools_obj.get("tools", [])),
+                "search_item_count": len(items),
+                "rid": rid,
+                "relative_path": relative_path,
+                "read_keys": sorted(read_structured.keys()),
+                "stderr_tail": stderr_lines[-20:],
+            },
+        )
     except Exception as exc:  # noqa: BLE001
         return (False, {"stage": "exception", "error": str(exc), "stderr_tail": stderr_lines[-20:]})
     finally:
@@ -161,16 +312,46 @@ def _run_concurrency() -> int:
     return 0
 
 
+def _run_call_flow() -> int:
+    """search -> read 도구 호출 흐름을 단일 세션에서 검증한다."""
+    probe_repo = os.getenv("SARI_MCP_PROBE_REPO", "").strip()
+    if probe_repo != "":
+        _ensure_probe_repo_registered(probe_repo)
+    index_result = subprocess.run(
+        [sys.executable, "-m", "sari.cli.main", "index"],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if index_result.returncode != 0:
+        detail = {
+            "stage": "index",
+            "reason": "index command failed before call_flow",
+            "exit_code": index_result.returncode,
+            "stdout_tail": index_result.stdout.decode("utf-8", errors="replace").splitlines()[-20:],
+            "stderr_tail": index_result.stderr.decode("utf-8", errors="replace").splitlines()[-20:],
+        }
+        _emit_summary(mode="call_flow", ok=False, detail=detail)
+        raise RuntimeError(f"mcp call_flow probe failed: {detail}")
+    ok, detail = _run_internal_client(run_call_flow=True, repo=probe_repo if probe_repo != "" else None)
+    _emit_summary(mode="call_flow", ok=ok, detail=detail)
+    if not ok:
+        raise RuntimeError(f"mcp call_flow probe failed: {detail}")
+    return 0
+
+
 def main() -> int:
     subprocess.run(["pkill", "-f", "sari.*daemon"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     subprocess.run(["pkill", "-f", "sari daemon run"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if len(sys.argv) < 2:
-        raise SystemExit("usage: release_gate_mcp_probe.py [handshake|concurrency]")
+        raise SystemExit("usage: release_gate_mcp_probe.py [handshake|concurrency|call_flow]")
     mode = sys.argv[1].strip().lower()
     if mode == "handshake":
         return _run_handshake()
     if mode == "concurrency":
         return _run_concurrency()
+    if mode == "call_flow":
+        return _run_call_flow()
     raise SystemExit(f"unknown mode: {mode}")
 
 
