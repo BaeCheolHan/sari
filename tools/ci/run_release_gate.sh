@@ -96,6 +96,7 @@ import os
 import re
 import select
 import subprocess
+import sys
 import time
 
 subprocess.run('pkill -f \"sari.*daemon\"', shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -138,7 +139,7 @@ def read_by_id(fd, request_id: int, timeout_sec: float) -> dict[str, object]:
     raise RuntimeError('timeout while reading MCP response by id')
 
 proc = subprocess.Popen(
-    ['sari', 'mcp', 'stdio', '--local'],
+    [sys.executable, '-m', 'sari.cli.main', 'mcp', 'stdio', '--local'],
     stdin=subprocess.PIPE,
     stdout=subprocess.PIPE,
     stderr=subprocess.PIPE,
@@ -175,6 +176,7 @@ import json
 import os
 import re
 import select
+import sys
 import time
 
 subprocess.run('pkill -f \"sari.*daemon\"', shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -221,7 +223,7 @@ def _read_by_id(fd, request_id: int, timeout_sec: float) -> dict[str, object]:
 
 def _run_internal_client() -> int:
     proc = subprocess.Popen(
-        ['sari', 'mcp', 'stdio', '--local'],
+        [sys.executable, '-m', 'sari.cli.main', 'mcp', 'stdio', '--local'],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -305,6 +307,16 @@ PY
 
 if [[ "${FINAL_DECISION}" != "PASS" ]]; then
   echo "[release gate] failed. see ${SUMMARY_FILE}" >&2
+  if [[ -f "${SUMMARY_FILE}" ]]; then
+    echo "[release gate] summary:" >&2
+    cat "${SUMMARY_FILE}" >&2 || true
+  fi
+  for path in "${DAEMON_PROXY_LOG}" "${CLI_E2E_LOG}" "${CRITICAL_LSP_LOG}" "${MCP_HANDSHAKE_LOG}" "${MCP_CONCURRENCY_LOG}"; do
+    if [[ -f "${path}" ]]; then
+      echo "[release gate] tail ${path}:" >&2
+      tail -n 80 "${path}" >&2 || true
+    fi
+  done
   exit 1
 fi
 

@@ -31,6 +31,12 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Install Gate Dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -e .
+          python3 -m pip install pytest
+
       - name: Release hard gate
         run: |
           chmod +x tools/ci/run_release_gate.sh
