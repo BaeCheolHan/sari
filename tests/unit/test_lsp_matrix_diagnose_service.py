@@ -35,12 +35,20 @@ def test_lsp_matrix_diagnose_service_builds_expected_groups(tmp_path: Path) -> N
     assert diagnosis["symbol_failed_languages"] == ["java", "python", "typescript"]
     assert diagnosis["error_code_counts"]["ERR_LSP_SERVER_MISSING"] == 1
     assert diagnosis["error_code_counts"]["ERR_LSP_TIMEOUT"] == 1
+    policies = diagnosis["language_policies"]
+    assert isinstance(policies, list)
+    python_policy = [item for item in policies if item["language"] == "python"][0]
+    assert python_policy["provisioning_mode"] == "hybrid"
+    high_actions = [item for item in diagnosis["recommended_actions"] if item.get("severity") == "HIGH"]
+    assert len(high_actions) == 1
+    assert "recovery_hint" in high_actions[0]
 
     json_path, md_path = service.write_outputs(diagnosis=diagnosis, output_dir=tmp_path / "out")
     assert json_path.exists()
     assert md_path.exists()
     content = md_path.read_text(encoding="utf-8")
     assert "Missing Servers" in content
+    assert "Provisioning Policies" in content
     assert "python" in content
 
 

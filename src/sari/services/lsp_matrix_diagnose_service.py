@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from sari.core.exceptions import DaemonError, ErrorContext
+from sari.core.lsp_provision_policy import get_lsp_provision_policy
 
 
 class LspMatrixDiagnoseService:
@@ -27,6 +28,7 @@ class LspMatrixDiagnoseService:
         timeout_languages: list[str] = []
         symbol_failed_languages: list[str] = []
         error_code_counts: dict[str, int] = {}
+        language_policies: list[dict[str, str]] = []
 
         for item in languages_raw:
             if not isinstance(item, dict):
@@ -37,6 +39,14 @@ class LspMatrixDiagnoseService:
             error_code = str(item.get("last_error_code", "")).strip()
             if error_code != "":
                 error_code_counts[error_code] = error_code_counts.get(error_code, 0) + 1
+            policy = get_lsp_provision_policy(language)
+            language_policies.append(
+                {
+                    "language": language,
+                    "provisioning_mode": policy.provisioning_mode,
+                    "install_hint": policy.install_hint,
+                }
+            )
             if error_code == "ERR_LSP_SERVER_MISSING":
                 missing_server_languages.append(language)
             if error_code == "ERR_LSP_TIMEOUT" or bool(item.get("timeout_occurred")):
@@ -64,6 +74,7 @@ class LspMatrixDiagnoseService:
             "timeout_languages": sorted(set(timeout_languages)),
             "symbol_failed_languages": sorted(set(symbol_failed_languages)),
             "error_code_counts": error_code_counts,
+            "language_policies": sorted(language_policies, key=lambda item: item["language"]),
             "recommended_actions": self._build_recommended_actions(
                 missing_server_languages=sorted(set(missing_server_languages)),
                 timeout_languages=sorted(set(timeout_languages)),
@@ -96,6 +107,20 @@ class LspMatrixDiagnoseService:
                 error_count_lines.append(f"- `{code}`: {int(count)}")
         if len(error_count_lines) == 0:
             error_count_lines.append("- none")
+        policy_lines: list[str] = []
+        policy_items = diagnosis.get("language_policies")
+        if isinstance(policy_items, list):
+            for item in policy_items:
+                if not isinstance(item, dict):
+                    continue
+                language = str(item.get("language", "")).strip()
+                mode = str(item.get("provisioning_mode", "")).strip()
+                hint = str(item.get("install_hint", "")).strip()
+                if language == "":
+                    continue
+                policy_lines.append(f"- `{language}` ({mode}): {hint}")
+        if len(policy_lines) == 0:
+            policy_lines.append("- none")
 
         return "\n".join(
             [
@@ -123,6 +148,9 @@ class LspMatrixDiagnoseService:
                 "## Error Code Counts",
                 *error_count_lines,
                 "",
+                "## Provisioning Policies",
+                *policy_lines,
+                "",
                 "## Recommended Actions",
                 *action_lines,
                 "",
@@ -147,11 +175,16 @@ class LspMatrixDiagnoseService:
         """진단 결과 기반 권장 조치 목록을 생성한다."""
         actions: list[dict[str, str]] = []
         if len(missing_server_languages) > 0:
+            hint_fragments: list[str] = []
+            for language in missing_server_languages:
+                policy = get_lsp_provision_policy(language)
+                hint_fragments.append(f"{language}: {policy.install_hint}")
             actions.append(
                 {
                     "severity": "HIGH",
                     "title": "Install Missing Language Servers",
                     "message": f"missing server languages: {', '.join(missing_server_languages)}",
+                    "recovery_hint": " | ".join(hint_fragments),
                 }
             )
         if len(timeout_languages) > 0:

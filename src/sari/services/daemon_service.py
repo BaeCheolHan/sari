@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 import logging
+from typing import TextIO
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -65,13 +66,19 @@ class DaemonService:
         env = os.environ.copy()
         existing_pythonpath = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = src_root if existing_pythonpath == "" else f"{src_root}:{existing_pythonpath}"
-        process = subprocess.Popen(
-            command,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-            env=env,
-        )
+        stdout_stream, stderr_stream = self._open_daemon_log_streams()
+        try:
+            process = subprocess.Popen(
+                command,
+                stdout=stdout_stream,
+                stderr=stderr_stream,
+                start_new_session=True,
+                env=env,
+            )
+        finally:
+            # 자식 프로세스가 fd를 복제하므로 부모에서 즉시 닫아도 안전하다.
+            stdout_stream.close()
+            stderr_stream.close()
         runtime = DaemonRuntimeDTO(
             pid=process.pid,
             host=self._config.host,
@@ -110,7 +117,7 @@ class DaemonService:
             raise DaemonError(ErrorContext(code="ERR_DAEMON_NOT_RUNNING", message="실행 중인 데몬이 없습니다"))
 
         try:
-            os.kill(runtime.pid, signal.SIGTERM)
+            self._signal_process_tree(runtime.pid, signal.SIGTERM)
         except ProcessLookupError as exc:
             self._remove_registry_by_pid(runtime.pid)
             self._runtime_repo.clear_runtime()
@@ -126,7 +133,7 @@ class DaemonService:
             time.sleep(0.1)
 
         try:
-            os.kill(runtime.pid, signal.SIGKILL)
+            self._signal_process_tree(runtime.pid, signal.SIGKILL)
         except ProcessLookupError:
             # 강제 종료 시점에 이미 프로세스가 종료된 경우를 기록한다.
             log.debug("강제 종료 시점에 데몬 프로세스가 이미 종료됨(pid=%s)", runtime.pid)
@@ -192,11 +199,40 @@ class DaemonService:
             return
         if self._is_pid_alive(runtime.pid):
             try:
-                os.kill(runtime.pid, signal.SIGKILL)
+                self._signal_process_tree(runtime.pid, signal.SIGKILL)
             except ProcessLookupError:
                 log.debug("stale runtime 정리 중 이미 프로세스 종료(pid=%s)", runtime.pid)
         self._remove_registry_by_pid(runtime.pid)
         self._runtime_repo.clear_runtime()
+
+    def _signal_process_tree(self, pid: int, sig: signal.Signals) -> None:
+        """대상 PID와 같은 프로세스 그룹에 동일 시그널을 전파한다."""
+        os.kill(pid, sig)
+        try:
+            pgid = os.getpgid(pid)
+        except ProcessLookupError:
+            return
+        except OSError:
+            return
+        try:
+            os.killpg(pgid, sig)
+        except ProcessLookupError:
+            return
+        except OSError:
+            return
+
+    def _open_daemon_log_streams(self) -> tuple[TextIO, TextIO]:
+        """데몬 stdout/stderr 리다이렉트를 위한 로그 파일 스트림을 연다."""
+        log_dir = self._config.db_path.parent / "logs"
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            stdout_stream = (log_dir / "daemon.stdout.log").open(mode="a", encoding="utf-8")
+            stderr_stream = (log_dir / "daemon.stderr.log").open(mode="a", encoding="utf-8")
+        except OSError as exc:
+            raise DaemonError(
+                ErrorContext(code="ERR_DAEMON_LOG_OPEN_FAILED", message="데몬 로그 파일을 열지 못했습니다")
+            ) from exc
+        return stdout_stream, stderr_stream
 
     def _register_registry_entry(self, runtime: DaemonRuntimeDTO) -> None:
         """런타임 상태를 daemon registry에 등록한다."""

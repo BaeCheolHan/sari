@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import threading
 import uuid
 from typing import Callable
 
 from sari.core.exceptions import DaemonError, ErrorContext
 from sari.core.language_registry import LanguageSupportEntry, iter_language_support_entries
+from sari.core.lsp_provision_policy import get_lsp_provision_policy
 from sari.core.models import LanguageProbeStatusDTO, now_iso8601_utc
 from sari.db.repositories.language_probe_repository import LanguageProbeRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
@@ -26,6 +28,7 @@ class LanguageProbeService:
         probe_repo: LanguageProbeRepository | None = None,
         entries: tuple[LanguageSupportEntry, ...] | None = None,
         now_provider: Callable[[], str] | None = None,
+        per_language_timeout_sec: float = 20.0,
     ) -> None:
         """필요 의존성을 저장한다."""
         self._workspace_repo = workspace_repo
@@ -33,6 +36,7 @@ class LanguageProbeService:
         self._probe_repo = probe_repo
         self._entries = iter_language_support_entries() if entries is None else entries
         self._now_provider = now_provider if now_provider is not None else now_iso8601_utc
+        self._per_language_timeout_sec = max(0.1, float(per_language_timeout_sec))
 
     def run(self, repo_root: str) -> dict[str, object]:
         """전체 활성 언어에 대한 readiness probe를 실행한다."""
@@ -108,7 +112,86 @@ class LanguageProbeService:
         probe_at: str,
     ) -> LanguageProbeStatusDTO:
         """단일 언어 readiness를 probe하고 결과 DTO를 반환한다."""
+        result_box: list[LanguageProbeStatusDTO] = []
+        error_box: list[BaseException] = []
+        done = threading.Event()
+
+        def _runner() -> None:
+            """단일 언어 probe를 별도 스레드에서 실행한다."""
+            try:
+                result_box.append(
+                    self._probe_single_language_impl(
+                        repo_root=repo_root,
+                        entry=entry,
+                        sample_by_extension=sample_by_extension,
+                        probe_at=probe_at,
+                    )
+                )
+            except BaseException as exc:  # pragma: no cover - 예기치 못한 경계 예외
+                error_box.append(exc)
+            finally:
+                done.set()
+
+        worker = threading.Thread(
+            target=_runner,
+            name=f"sari-language-probe-{entry.language.value}",
+            daemon=True,
+        )
+        worker.start()
+        finished = done.wait(timeout=self._per_language_timeout_sec)
+        if not finished:
+            policy = get_lsp_provision_policy(entry.language.value)
+            return LanguageProbeStatusDTO(
+                language=entry.language.value,
+                enabled=True,
+                available=False,
+                last_probe_at=probe_at,
+                last_error_code="ERR_LSP_TIMEOUT",
+                last_error_message=(
+                    f"language probe timed out after {self._per_language_timeout_sec:.1f}s: "
+                    f"{entry.language.value}"
+                ),
+                updated_at=probe_at,
+                symbol_extract_success=False,
+                document_symbol_count=0,
+                path_mapping_ok=False,
+                timeout_occurred=True,
+                recovered_by_restart=False,
+                provisioning_mode=policy.provisioning_mode,
+                missing_dependency=None,
+                install_hint=policy.install_hint,
+            )
+        if len(error_box) > 0:
+            policy = get_lsp_provision_policy(entry.language.value)
+            return LanguageProbeStatusDTO(
+                language=entry.language.value,
+                enabled=True,
+                available=False,
+                last_probe_at=probe_at,
+                last_error_code="ERR_LSP_PROBE_INTERNAL",
+                last_error_message=str(error_box[0]),
+                updated_at=probe_at,
+                symbol_extract_success=False,
+                document_symbol_count=0,
+                path_mapping_ok=False,
+                timeout_occurred=False,
+                recovered_by_restart=False,
+                provisioning_mode=policy.provisioning_mode,
+                missing_dependency=None,
+                install_hint=policy.install_hint,
+            )
+        return result_box[0]
+
+    def _probe_single_language_impl(
+        self,
+        repo_root: str,
+        entry: LanguageSupportEntry,
+        sample_by_extension: dict[str, str],
+        probe_at: str,
+    ) -> LanguageProbeStatusDTO:
+        """단일 언어 probe 본체를 수행한다."""
         sample_path = self._pick_sample_path(entry=entry, sample_by_extension=sample_by_extension)
+        policy = get_lsp_provision_policy(entry.language.value)
         if sample_path is None:
             return LanguageProbeStatusDTO(
                 language=entry.language.value,
@@ -123,6 +206,9 @@ class LanguageProbeService:
                 path_mapping_ok=False,
                 timeout_occurred=False,
                 recovered_by_restart=False,
+                provisioning_mode=policy.provisioning_mode,
+                missing_dependency=None,
+                install_hint=policy.install_hint,
             )
         try:
             lsp = self._lsp_hub.get_or_start(language=entry.language, repo_root=repo_root)
@@ -140,6 +226,9 @@ class LanguageProbeService:
                 path_mapping_ok=True,
                 timeout_occurred=False,
                 recovered_by_restart=False,
+                provisioning_mode=policy.provisioning_mode,
+                missing_dependency=None,
+                install_hint=policy.install_hint,
             )
         except DaemonError as exc:
             classified_code = _classify_lsp_error_code(code=exc.context.code, message=exc.context.message)
@@ -157,6 +246,9 @@ class LanguageProbeService:
                 path_mapping_ok=False,
                 timeout_occurred=timeout_occurred,
                 recovered_by_restart=_is_recovered_by_restart(exc.context.message),
+                provisioning_mode=policy.provisioning_mode,
+                missing_dependency=_extract_missing_dependency(exc.context.message),
+                install_hint=policy.install_hint,
             )
         except SolidLSPException as exc:
             error_message = str(exc)
@@ -176,6 +268,9 @@ class LanguageProbeService:
                 path_mapping_ok=False,
                 timeout_occurred=timeout_occurred,
                 recovered_by_restart=_is_recovered_by_restart(error_message),
+                provisioning_mode=policy.provisioning_mode,
+                missing_dependency=_extract_missing_dependency(error_message),
+                install_hint=policy.install_hint,
             )
         except (RuntimeError, OSError, ValueError, TypeError) as exc:
             error_message = str(exc)
@@ -193,6 +288,9 @@ class LanguageProbeService:
                 path_mapping_ok=False,
                 timeout_occurred=_is_timeout_error(code=classified_code, message=error_message),
                 recovered_by_restart=_is_recovered_by_restart(error_message),
+                provisioning_mode=policy.provisioning_mode,
+                missing_dependency=_extract_missing_dependency(error_message),
+                install_hint=policy.install_hint,
             )
 
     def _pick_sample_path(self, entry: LanguageSupportEntry, sample_by_extension: dict[str, str]) -> str | None:
@@ -250,3 +348,24 @@ def _classify_lsp_error_code(code: str, message: str) -> str:
     if _is_timeout_error(code=code, message=message):
         return "ERR_LSP_TIMEOUT"
     return code
+
+
+def _extract_missing_dependency(message: str) -> str | None:
+    """예외 메시지에서 누락 의존성 토큰을 추출한다."""
+    normalized_message = message.strip()
+    if normalized_message == "":
+        return None
+    lowered = normalized_message.lower()
+    if "pyright" in lowered:
+        return "pyright"
+    if "node" in lowered:
+        return "node"
+    if "npm" in lowered:
+        return "npm"
+    if "dotnet" in lowered:
+        return "dotnet"
+    if "java" in lowered:
+        return "java"
+    if "no such file" in lowered or "command not found" in lowered or "missing required commands" in lowered:
+        return "server_binary"
+    return None

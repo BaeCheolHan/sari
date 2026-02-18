@@ -38,7 +38,10 @@ class SearchTool:
         limit = arguments.get("limit", 20)
 
         if not isinstance(repo, str) or repo.strip() == "":
-            return pack1_error(ErrorResponseDTO(code="ERR_REPO_REQUIRED", message="repo is required"))
+            return pack1_error(
+                ErrorResponseDTO(code="ERR_REPO_REQUIRED", message="repo is required"),
+                recovery_hint="search 호출 시 repo 파라미터를 반드시 제공해야 합니다.",
+            )
         if self._workspace_repo is not None:
             try:
                 repo = resolve_repo_root(
@@ -48,9 +51,15 @@ class SearchTool:
             except ValidationError as exc:
                 return pack1_error(ErrorResponseDTO(code=exc.context.code, message=exc.context.message))
         if not isinstance(query, str) or query.strip() == "":
-            return pack1_error(ErrorResponseDTO(code="ERR_QUERY_REQUIRED", message="query is required"))
+            return pack1_error(
+                ErrorResponseDTO(code="ERR_QUERY_REQUIRED", message="query is required"),
+                recovery_hint="search 호출 시 query 파라미터를 반드시 제공해야 합니다.",
+            )
         if not isinstance(limit, int) or limit <= 0:
-            return pack1_error(ErrorResponseDTO(code="ERR_INVALID_LIMIT", message="limit must be positive integer"))
+            return pack1_error(
+                ErrorResponseDTO(code="ERR_INVALID_LIMIT", message="limit must be positive integer"),
+                recovery_hint="limit은 1 이상의 정수여야 합니다.",
+            )
 
         result = self._orchestrator.search(query=query, limit=limit, repo_root=repo)
         stabilization_meta = _build_search_stabilization(
@@ -65,10 +74,12 @@ class SearchTool:
         progress_meta = self._build_progress_meta()
         if result.meta.fatal_error:
             first_error = result.meta.errors[0]
+            recovery_hint = _resolve_recovery_hint(first_error.code)
             return pack1_error(
                 ErrorResponseDTO(code=first_error.code, message=first_error.message),
                 detailed_errors=[error.to_dict() for error in result.meta.errors],
                 stabilization=stabilization_meta,
+                recovery_hint=recovery_hint,
             )
         meta_payload = Pack1MetaDTO(
             candidate_count=result.meta.candidate_count,
@@ -216,3 +227,15 @@ def _next_calls(items: list[object]) -> list[dict[str, object]]:
         else:
             calls.append({"tool": "read", "arguments": {"mode": "file", "target": relative_path}})
     return calls
+
+
+def _resolve_recovery_hint(error_code: str) -> str | None:
+    """치명 오류 코드별 운영 복구 힌트를 생성한다."""
+    if error_code == "ERR_LSP_UNAVAILABLE":
+        return (
+            "LSP 서버가 기동되지 않았습니다. sari doctor 및 pipeline lsp-matrix diagnose로 "
+            "언어별 상태를 확인하고 필요한 서버를 설치하세요."
+        )
+    if error_code == "ERR_REPO_NOT_REGISTERED":
+        return "해당 경로를 roots add로 등록한 뒤 다시 검색하세요."
+    return None

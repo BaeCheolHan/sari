@@ -84,6 +84,9 @@ class LanguageProbeStatusDTO:
     path_mapping_ok: bool = False
     timeout_occurred: bool = False
     recovered_by_restart: bool = False
+    provisioning_mode: str | None = None
+    missing_dependency: str | None = None
+    install_hint: str | None = None
     def to_sql_params(self) -> dict[str, object]:
         return {
             "language": self.language,
@@ -112,6 +115,9 @@ class LanguageProbeStatusDTO:
             "path_mapping_ok": self.path_mapping_ok,
             "timeout_occurred": self.timeout_occurred,
             "recovered_by_restart": self.recovered_by_restart,
+            "provisioning_mode": self.provisioning_mode,
+            "missing_dependency": self.missing_dependency,
+            "install_hint": self.install_hint,
         }
 @dataclass(frozen=True)
 class SearchErrorDTO:

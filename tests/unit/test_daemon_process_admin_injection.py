@@ -72,3 +72,9 @@ def test_main_stops_lsp_hub_on_shutdown(monkeypatch: MonkeyPatch, tmp_path: Path
     daemon_process.main()
 
     assert captured["stop_all_called"] is True
+
+
+def test_is_parent_alive_treats_detached_ppid_as_alive(monkeypatch: MonkeyPatch) -> None:
+    """ppid=1(detached) 환경은 orphan으로 간주하지 않아야 한다."""
+    monkeypatch.setattr(daemon_process.os, "getppid", lambda: 1)
+    assert daemon_process._is_parent_alive() is True

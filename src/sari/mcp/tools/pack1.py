@@ -34,6 +34,7 @@ def pack1_error(
     error: ErrorResponseDTO,
     detailed_errors: list[dict[str, object]] | None = None,
     stabilization: dict[str, object] | None = None,
+    recovery_hint: str | None = None,
 ) -> dict[str, object]:
     """pack1 규격의 명시적 오류 응답을 생성한다."""
     errors_payload: list[dict[str, object]]
@@ -41,10 +42,18 @@ def pack1_error(
         errors_payload = [{"code": error.code, "message": error.message}]
     else:
         errors_payload = detailed_errors
+    error_payload: dict[str, object] = {"code": error.code, "message": error.message}
+    if recovery_hint is not None and recovery_hint.strip() != "":
+        error_payload["recovery_hint"] = recovery_hint
+    if recovery_hint is not None and recovery_hint.strip() != "":
+        for item in errors_payload:
+            if isinstance(item, dict):
+                item["recovery_hint"] = recovery_hint
     return {
         "content": [{"type": "text", "text": error.message}],
         "structuredContent": {
             "items": [],
+            "error": error_payload,
             "meta": Pack1MetaDTO(
                 candidate_count=0,
                 resolved_count=0,

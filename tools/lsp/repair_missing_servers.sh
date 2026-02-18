@@ -23,7 +23,10 @@ if [[ ! -f "${DIAGNOSE_JSON}" ]]; then
   exit 1
 fi
 
-mapfile -t MISSING_LANGS < <(
+MISSING_LANGS=()
+while IFS= read -r line; do
+  [[ -n "${line}" ]] && MISSING_LANGS+=("${line}")
+done < <(
   python3 - <<'PY' "${DIAGNOSE_JSON}"
 import json
 import sys
@@ -32,7 +35,11 @@ from pathlib import Path
 payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 langs = payload.get("missing_server_languages")
 if not isinstance(langs, list):
-    raise SystemExit(1)
+    langs = []
+if len(langs) == 0:
+    fallback = payload.get("symbol_failed_languages")
+    if isinstance(fallback, list):
+        langs = fallback
 for item in langs:
     if isinstance(item, str) and item.strip():
         print(item.strip().lower())
@@ -44,22 +51,23 @@ if [[ ${#MISSING_LANGS[@]} -eq 0 ]]; then
   exit 0
 fi
 
-declare -A INSTALL_HINTS
-INSTALL_HINTS[python]="npm i -g pyright"
-INSTALL_HINTS[typescript]="npm i -g typescript-language-server typescript"
-INSTALL_HINTS[java]="install eclipse-jdtls (package manager or official release)"
-INSTALL_HINTS[kotlin]="install kotlin-language-server"
-INSTALL_HINTS[go]="go install golang.org/x/tools/gopls@latest"
-INSTALL_HINTS[rust]="install rust-analyzer"
-INSTALL_HINTS[csharp]="install omnisharp/roslyn language server"
-INSTALL_HINTS[ruby]="gem install ruby-lsp"
-INSTALL_HINTS[php]="install intelephense or phpactor language server"
-INSTALL_HINTS[vue]="npm i -g @vue/language-server"
-INSTALL_HINTS[bash]="npm i -g bash-language-server"
+hint_for_language() {
+  local lang="$1"
+  local repo_root
+  repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+  PYTHONPATH="${repo_root}/src:${PYTHONPATH:-}" python3 - <<'PY' "${lang}"
+import sys
+from sari.core.lsp_provision_policy import get_lsp_provision_policy
+
+language = str(sys.argv[1]).strip().lower()
+policy = get_lsp_provision_policy(language)
+print(policy.install_hint)
+PY
+}
 
 FAILED=0
 for lang in "${MISSING_LANGS[@]}"; do
-  hint="${INSTALL_HINTS[$lang]:-manual install required for language: ${lang}}"
+  hint="$(hint_for_language "${lang}")"
   echo "[repair] language=${lang}"
   echo "  hint: ${hint}"
   if [[ "${APPLY}" == "true" ]]; then

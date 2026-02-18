@@ -44,7 +44,7 @@ from sari.core.config import AppConfig
 from sari.core.exceptions import DaemonError, ErrorContext, ValidationError
 from sari.core.models import now_iso8601_utc
 from sari.services.admin_service import AdminService
-from sari.services.file_collection_service import build_default_file_collection_service
+from sari.services.file_collection_service import SolidLspExtractionBackend, build_default_file_collection_service
 from sari.services.pipeline_control_service import PipelineControlService
 from sari.services.pipeline_benchmark_service import PipelineBenchmarkService
 from sari.services.language_probe_service import LanguageProbeService
@@ -197,6 +197,7 @@ def main() -> None:
         watcher_debounce_ms=config.watcher_debounce_ms,
         run_mode=config.run_mode,
         parent_alive_probe=_is_parent_alive,
+        lsp_backend=SolidLspExtractionBackend(lsp_hub),
     )
     pipeline_control_service = PipelineControlService(
         policy_repo=policy_repo,
@@ -208,7 +209,7 @@ def main() -> None:
         file_repo=file_repo,
         lsp_repo=lsp_repo,
         quality_repo=quality_repo,
-        golden_backend=SerenaGoldenBackend(hub=LspHub(request_timeout_sec=config.lsp_request_timeout_sec)),
+        golden_backend=SerenaGoldenBackend(hub=lsp_hub),
         artifact_root=config.db_path.parent / "artifacts",
     )
     pipeline_benchmark_service = PipelineBenchmarkService(
@@ -221,7 +222,7 @@ def main() -> None:
     )
     language_probe_service = LanguageProbeService(
         workspace_repo=workspace_repo,
-        lsp_hub=LspHub(request_timeout_sec=config.lsp_request_timeout_sec),
+        lsp_hub=lsp_hub,
         probe_repo=language_probe_repo,
     )
     pipeline_lsp_matrix_service = PipelineLspMatrixService(
@@ -343,7 +344,8 @@ def _is_parent_alive() -> bool:
     """부모 프로세스 생존 여부를 확인한다."""
     parent_pid = os.getppid()
     if parent_pid <= 1:
-        return False
+        # start_new_session으로 분리된 데몬은 ppid=1이 정상 상태다.
+        return True
     try:
         os.kill(parent_pid, 0)
     except ProcessLookupError:

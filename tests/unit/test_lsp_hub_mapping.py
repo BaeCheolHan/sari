@@ -454,6 +454,70 @@ def test_lsp_hub_stop_timeout_raises_explicit_error() -> None:
     hub.stop_all()
 
 
+def test_lsp_hub_stop_timeout_forces_kill_process_group(monkeypatch) -> None:
+    """stop 타임아웃 시 하위 프로세스 그룹에 강제 종료 신호를 보내야 한다."""
+
+    class _BlockingServer:
+        class _Runtime:
+            def __init__(self) -> None:
+                self.process = self
+                self.pid = 32123
+
+            def is_running(self) -> bool:
+                return True
+
+        def __init__(self) -> None:
+            self.server = self._Runtime()
+
+        def stop(self) -> None:
+            time.sleep(0.3)
+
+    kill_calls: list[tuple[str, int, int]] = []
+    monkeypatch.setattr("sari.lsp.hub.os.getpgid", lambda pid: pid)
+    monkeypatch.setattr("sari.lsp.hub.os.killpg", lambda pgid, sig: kill_calls.append(("pgid", pgid, int(sig))))
+    monkeypatch.setattr("sari.lsp.hub.os.kill", lambda pid, sig: kill_calls.append(("pid", pid, int(sig))))
+
+    hub = LspHub(stop_timeout_sec=0.05)
+    key = LspRuntimeKey(language=Language.PYTHON, repo_root="/repo", slot=0)
+    hub._instances[key] = LspRuntimeEntry(server=_BlockingServer(), last_used_at=0.0)
+
+    with pytest.raises(DaemonError) as exc_info:
+        hub._stop_entry_locked(key)
+    assert exc_info.value.context.code == "ERR_LSP_STOP_TIMEOUT"
+    assert ("pgid", 32123, 15) in kill_calls
+    assert ("pgid", 32123, 9) in kill_calls
+
+
+def test_lsp_hub_maps_assertion_error_to_explicit_unavailable(monkeypatch) -> None:
+    """언어서버 start 내부 assertion 실패는 명시적 LSP unavailable 오류로 승격되어야 한다."""
+
+    class _BrokenServer:
+        class _Runtime:
+            def is_running(self) -> bool:
+                return False
+
+        def __init__(self) -> None:
+            self.server = self._Runtime()
+
+        def start(self) -> None:
+            raise AssertionError("broken initialize capability assertion")
+
+        def stop(self) -> None:
+            return None
+
+    def _fake_create(*args, **kwargs) -> _BrokenServer:
+        del args, kwargs
+        return _BrokenServer()
+
+    monkeypatch.setattr("sari.lsp.hub.SolidLanguageServer.create", _fake_create)
+
+    hub = LspHub()
+    with pytest.raises(DaemonError) as exc_info:
+        hub.get_or_start(language=Language.PYTHON, repo_root="/repo-a")
+    assert exc_info.value.context.code == "ERR_LSP_UNAVAILABLE"
+    hub.stop_all()
+
+
 def test_lsp_hub_restart_if_unhealthy_uses_stop_timeout_guard(monkeypatch) -> None:
     """restart_if_unhealthy도 stop timeout 가드를 통해 비정상 서버를 정리해야 한다."""
 

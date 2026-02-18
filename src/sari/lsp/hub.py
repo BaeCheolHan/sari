@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
+import os
 from pathlib import Path
+import signal
 import threading
 import time
 from typing import Callable
@@ -16,6 +18,10 @@ from solidlsp.ls_config import Language, LanguageServerConfig
 from solidlsp.settings import SolidLSPSettings
 
 log = logging.getLogger(__name__)
+try:
+    import certifi
+except (ImportError, RuntimeError, OSError):
+    certifi = None
 
 
 @dataclass(frozen=True)
@@ -309,6 +315,10 @@ class LspHub:
     def _start_server_locked(self, language: Language, repo_root: str, slot: int, now: float) -> SolidLanguageServer:
         """단일 LSP 서버를 생성하고 캐시에 등록한다."""
         self._evict_lru_if_needed_locked()
+        # NuGet/HTTPS 다운로드가 필요한 LSP가 인증서 검증 실패로 중단되지 않도록 기본 CA 번들을 주입한다.
+        if certifi is not None:
+            os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+        self._ensure_user_tool_paths(language=language)
         try:
             config = LanguageServerConfig(code_language=language)
             settings = SolidLSPSettings()
@@ -321,11 +331,36 @@ class LspHub:
             ls.start()
             if not hasattr(ls, "started"):
                 setattr(ls, "started", True)
-        except (ImportError, RuntimeError, OSError, ValueError, TypeError) as exc:
+        except (ImportError, RuntimeError, OSError, ValueError, TypeError, AssertionError) as exc:
             raise DaemonError(ErrorContext(code="ERR_LSP_UNAVAILABLE", message="LSP 서버를 시작하지 못했습니다")) from exc
         key = LspRuntimeKey(language=language, repo_root=repo_root, slot=slot)
         self._instances[key] = LspRuntimeEntry(server=ls, last_used_at=now)
         return ls
+
+    def _ensure_user_tool_paths(self, language: Language) -> None:
+        """사용자 로컬 설치 경로를 PATH/런타임 변수에 보강한다."""
+        home = str(Path.home())
+        extra_paths: list[str] = []
+        if language == Language.GO:
+            extra_paths.append(f"{home}/go/bin")
+        if language == Language.RUBY:
+            extra_paths.extend([f"{home}/.gem/ruby/2.6.0/bin", "/opt/homebrew/lib/ruby/gems/4.0.0/bin", "/opt/homebrew/opt/ruby/bin"])
+        if language == Language.PERL:
+            extra_paths.append(f"{home}/perl5/bin")
+            current_perl5 = os.environ.get("PERL5LIB", "").strip()
+            perl_lib = f"{home}/perl5/lib/perl5"
+            if len(current_perl5) == 0:
+                os.environ["PERL5LIB"] = perl_lib
+            elif perl_lib not in current_perl5.split(":"):
+                os.environ["PERL5LIB"] = f"{perl_lib}:{current_perl5}"
+        if len(extra_paths) == 0:
+            return
+        current_path = os.environ.get("PATH", "")
+        parts = [part for part in current_path.split(":") if len(part) > 0]
+        for path_item in reversed(extra_paths):
+            if path_item not in parts and Path(path_item).exists():
+                parts.insert(0, path_item)
+        os.environ["PATH"] = ":".join(parts)
 
     def _idle_cleanup_loop(self) -> None:
         """유휴 인스턴스를 주기적으로 정리한다."""
@@ -353,6 +388,7 @@ class LspHub:
         worker.start()
         finished = done.wait(timeout=self._stop_timeout_sec)
         if not finished:
+            self._force_kill_server_process(server)
             raise DaemonError(
                 ErrorContext(
                     code="ERR_LSP_STOP_TIMEOUT",
@@ -363,3 +399,45 @@ class LspHub:
             first_error = error_box[0]
             if isinstance(first_error, (RuntimeError, OSError, ValueError)):
                 raise first_error
+
+    def _force_kill_server_process(self, server: SolidLanguageServer) -> None:
+        """stop 타임아웃 시 LSP 하위 프로세스를 강제 종료한다."""
+        handler = getattr(server, "server", None)
+        process = getattr(handler, "process", None)
+        pid = getattr(process, "pid", None)
+        if not isinstance(pid, int) or pid <= 0:
+            return
+        try:
+            pgid = os.getpgid(pid)
+        except ProcessLookupError:
+            return
+        except OSError:
+            pgid = None
+        if isinstance(pgid, int) and pgid > 0:
+            try:
+                os.killpg(pgid, signal.SIGTERM)
+            except ProcessLookupError:
+                return
+            except OSError:
+                pass
+            time.sleep(0.1)
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+                return
+            except ProcessLookupError:
+                return
+            except OSError:
+                pass
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        except OSError:
+            pass
+        time.sleep(0.1)
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        except OSError:
+            return
