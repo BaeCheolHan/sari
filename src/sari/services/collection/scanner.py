@@ -202,6 +202,9 @@ class FileScanner:
         file_path = (root / relative_path).resolve()
         if not file_path.exists() or not file_path.is_file():
             raise CollectionError(ErrorContext(code="ERR_FILE_NOT_FOUND", message="대상 파일을 찾을 수 없습니다"))
+        gitignore_spec = self._load_gitignore_spec(root)
+        if not self._is_collectible(file_path=file_path, repo_root=root, gitignore_spec=gitignore_spec):
+            raise CollectionError(ErrorContext(code="ERR_FILE_NOT_COLLECTIBLE", message="수집 정책 대상 파일이 아닙니다"))
         now_iso = now_iso8601_utc()
         content_bytes = file_path.read_bytes()
         content_hash = hashlib.sha256(content_bytes).hexdigest()

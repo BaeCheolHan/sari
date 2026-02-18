@@ -137,11 +137,11 @@ async def status_endpoint(request) -> JSONResponse:
         metrics = None
         if context.file_collection_service is not None:
             metrics = context.file_collection_service.get_pipeline_metrics().to_dict()
-        return JSONResponse({'daemon': None, 'workspace_count': len(workspaces), 'phase': 'phase2', 'pipeline_metrics': metrics, 'language_support': language_support, 'daemon_lifecycle': None})
+        return JSONResponse({'daemon': None, 'workspace_count': len(workspaces), 'phase': 'phase2', 'run_mode': context.admin_service.run_mode(), 'pipeline_metrics': metrics, 'language_support': language_support, 'daemon_lifecycle': None})
     metrics = None
     if context.file_collection_service is not None:
         metrics = context.file_collection_service.get_pipeline_metrics().to_dict()
-    return JSONResponse({'daemon': {'pid': runtime.pid, 'host': runtime.host, 'port': runtime.port, 'state': runtime.state, 'started_at': runtime.started_at, 'session_count': runtime.session_count, 'last_heartbeat_at': runtime.last_heartbeat_at, 'last_exit_reason': runtime.last_exit_reason}, 'workspace_count': len(workspaces), 'phase': 'phase2', 'pipeline_metrics': metrics, 'language_support': language_support, 'daemon_lifecycle': {'last_heartbeat_at': runtime.last_heartbeat_at, 'heartbeat_age_sec': _heartbeat_age_sec(runtime.last_heartbeat_at), 'last_exit_reason': runtime.last_exit_reason}})
+    return JSONResponse({'daemon': {'pid': runtime.pid, 'host': runtime.host, 'port': runtime.port, 'state': runtime.state, 'started_at': runtime.started_at, 'session_count': runtime.session_count, 'last_heartbeat_at': runtime.last_heartbeat_at, 'last_exit_reason': runtime.last_exit_reason}, 'workspace_count': len(workspaces), 'phase': 'phase2', 'run_mode': context.admin_service.run_mode(), 'pipeline_metrics': metrics, 'language_support': language_support, 'daemon_lifecycle': {'last_heartbeat_at': runtime.last_heartbeat_at, 'heartbeat_age_sec': _heartbeat_age_sec(runtime.last_heartbeat_at), 'last_exit_reason': runtime.last_exit_reason}})
 
 
 async def mcp_jsonrpc_endpoint(request) -> JSONResponse:

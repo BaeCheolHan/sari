@@ -110,6 +110,7 @@ def test_daemon_start_status_stop_and_http(tmp_path: Path) -> None:
         assert daemon_payload["port"] == runtime.port
         assert isinstance(daemon_payload["last_heartbeat_at"], str)
         assert "workspace_count" in status_payload
+        assert status_payload["run_mode"] == "prod"
         assert "pipeline_metrics" in status_payload
         assert isinstance(status_payload["pipeline_metrics"], dict)
         assert "daemon_lifecycle" in status_payload

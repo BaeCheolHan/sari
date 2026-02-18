@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 from sari.core.exceptions import BenchmarkError, CollectionError, ErrorContext
+from sari.core.config import DEFAULT_COLLECTION_EXCLUDE_GLOBS
 from sari.core.language_registry import (
     get_default_collection_extensions,
     normalize_language_filter,
@@ -68,7 +69,7 @@ class PipelineBenchmarkService:
         """벤치마크 기본 수집 정책을 반환한다."""
         return CollectionPolicyDTO(
             include_ext=get_default_collection_extensions(),
-            exclude_globs=("**/.git/**", "**/node_modules/**", "**/dist/**", "**/build/**"),
+            exclude_globs=DEFAULT_COLLECTION_EXCLUDE_GLOBS,
             max_file_size_bytes=512 * 1024,
             scan_interval_sec=180,
             max_enrich_batch=200,

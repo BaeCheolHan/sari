@@ -113,7 +113,7 @@ class LanguageProbeService:
     ) -> LanguageProbeStatusDTO:
         """단일 언어 readiness를 probe하고 결과 DTO를 반환한다."""
         result_box: list[LanguageProbeStatusDTO] = []
-        error_box: list[BaseException] = []
+        error_box: list[RuntimeError | OSError | ValueError | TypeError | DaemonError | SolidLSPException] = []
         done = threading.Event()
 
         def _runner() -> None:
@@ -127,7 +127,7 @@ class LanguageProbeService:
                         probe_at=probe_at,
                     )
                 )
-            except BaseException as exc:  # pragma: no cover - 예기치 못한 경계 예외
+            except (RuntimeError, OSError, ValueError, TypeError, DaemonError, SolidLSPException) as exc:  # pragma: no cover - 경계 예외
                 error_box.append(exc)
             finally:
                 done.set()

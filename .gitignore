@@ -9,3 +9,5 @@ artifacts/
 dist/
 build/
 *.egg-info/
+.idea/
+.worktrees/

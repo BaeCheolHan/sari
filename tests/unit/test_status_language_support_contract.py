@@ -18,6 +18,14 @@ from sari.http.app import HttpContext, status_endpoint
 from sari.mcp.tools.legacy_tools import StatusTool
 
 
+class _AdminServiceStub:
+    """status 엔드포인트 테스트용 admin service 스텁."""
+
+    def run_mode(self) -> str:
+        """현재 모드를 반환한다."""
+        return "prod"
+
+
 def test_http_status_exposes_language_readiness_snapshot(tmp_path: Path) -> None:
     """HTTP status는 언어 readiness 스냅샷 목록을 포함해야 한다."""
     db_path = tmp_path / "state.db"
@@ -36,7 +44,7 @@ def test_http_status_exposes_language_readiness_snapshot(tmp_path: Path) -> None
         runtime_repo=RuntimeRepository(db_path),
         workspace_repo=WorkspaceRepository(db_path),
         search_orchestrator=SimpleNamespace(),
-        admin_service=SimpleNamespace(),
+        admin_service=_AdminServiceStub(),
         language_probe_repo=probe_repo,
     )
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(context=context)))
@@ -44,6 +52,7 @@ def test_http_status_exposes_language_readiness_snapshot(tmp_path: Path) -> None
 
     assert response.status_code == 200
     payload = json.loads(response.body.decode("utf-8"))
+    assert payload["run_mode"] == "prod"
     language_support = payload["language_support"]
     assert "languages" in language_support
     assert isinstance(language_support["languages"], list)

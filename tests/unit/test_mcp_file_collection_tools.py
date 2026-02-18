@@ -204,3 +204,36 @@ def test_mcp_read_file_returns_explicit_error_for_corrupted_l2_body(tmp_path: Pa
     assert payload["result"]["isError"] is True
     error = payload["result"]["structuredContent"]["meta"]["errors"][0]
     assert error["code"] == "ERR_L2_BODY_CORRUPT"
+
+
+def test_mcp_index_file_returns_explicit_error_for_non_collectible_path(tmp_path: Path) -> None:
+    """index_file은 수집 정책 비대상 파일을 명시적으로 거부해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_dir = tmp_path / "repo-non-collectible"
+    repo_dir.mkdir()
+    git_dir = repo_dir / ".git"
+    git_dir.mkdir()
+    (git_dir / "FETCH_HEAD").write_text("dummy", encoding="utf-8")
+
+    WorkspaceService(WorkspaceRepository(db_path)).add_workspace(str(repo_dir))
+    server = McpServer(db_path=db_path)
+
+    response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 212,
+            "method": "tools/call",
+            "params": {
+                "name": "index_file",
+                "arguments": {
+                    "repo": str(repo_dir.resolve()),
+                    "relative_path": ".git/FETCH_HEAD",
+                },
+            },
+        }
+    )
+    payload = response.to_dict()
+    assert payload["result"]["isError"] is True
+    error = payload["result"]["structuredContent"]["meta"]["errors"][0]
+    assert error["code"] == "ERR_FILE_NOT_COLLECTIBLE"

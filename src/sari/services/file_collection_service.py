@@ -13,6 +13,7 @@ from pathspec import PathSpec
 from pathspec.patterns import GitWildMatchPattern
 from solidlsp.ls_config import Language
 from sari.core.exceptions import CollectionError, DaemonError, ErrorContext
+from sari.core.config import DEFAULT_COLLECTION_EXCLUDE_GLOBS
 from sari.core.language_registry import get_default_collection_extensions, resolve_language_from_path
 from sari.core.text_decode import decode_bytes_with_policy
 from sari.core.models import CandidateIndexChangeDTO, CollectionPolicyDTO, CollectionScanResultDTO, CollectedFileL1DTO, FileReadResultDTO, PipelineMetricsDTO, now_iso8601_utc
@@ -483,6 +484,10 @@ class FileCollectionService:
         file_path = (root / relative_path).resolve()
         if not file_path.exists() or not file_path.is_file():
             raise CollectionError(ErrorContext(code='ERR_FILE_NOT_FOUND', message='대상 파일을 찾을 수 없습니다'))
+        gitignore_spec = self._load_gitignore_spec(root)
+        if not self._is_collectible(file_path=file_path, repo_root=root, gitignore_spec=gitignore_spec):
+            # watcher 이벤트에서 정책 비대상 파일은 큐에 적재하지 않는다.
+            return
         now_iso = now_iso8601_utc()
         content_bytes = file_path.read_bytes()
         content_hash = hashlib.sha256(content_bytes).hexdigest()
@@ -534,7 +539,7 @@ class FileCollectionService:
 
 def build_default_file_collection_service(workspace_repo: WorkspaceRepository, file_repo: FileCollectionRepository, enrich_queue_repo: FileEnrichQueueRepository, body_repo: FileBodyRepository, lsp_repo: LspToolDataRepository, readiness_repo: ToolReadinessRepository, policy_repo: PipelinePolicyRepository | None=None, event_repo: PipelineJobEventRepository | None=None, error_event_repo: PipelineErrorEventRepository | None=None, candidate_index_sink: CandidateIndexSink | None=None, vector_index_sink: VectorIndexSink | None=None, retry_max_attempts: int=5, retry_backoff_base_sec: int=1, queue_poll_interval_ms: int=500, include_ext: tuple[str, ...] | None=None, exclude_globs: tuple[str, ...] | None=None, watcher_debounce_ms: int=300, run_mode: str='dev', parent_alive_probe: Callable[[], bool] | None=None, lsp_backend: LspExtractionBackend | None=None, persist_body_for_read: bool=True) -> CollectionRuntimePort:
     resolved_include_ext = include_ext if include_ext is not None else get_default_collection_extensions()
-    resolved_exclude_globs = exclude_globs if exclude_globs is not None else ('**/.git/**', '**/node_modules/**', '**/dist/**', '**/build/**')
+    resolved_exclude_globs = exclude_globs if exclude_globs is not None else DEFAULT_COLLECTION_EXCLUDE_GLOBS
     policy = CollectionPolicyDTO(include_ext=resolved_include_ext, exclude_globs=resolved_exclude_globs, max_file_size_bytes=512 * 1024, scan_interval_sec=180, max_enrich_batch=20, retry_max_attempts=retry_max_attempts, retry_backoff_base_sec=retry_backoff_base_sec, queue_poll_interval_ms=queue_poll_interval_ms)
     resolved_lsp_backend = lsp_backend if lsp_backend is not None else SolidLspExtractionBackend(LspHub())
     service = FileCollectionService(workspace_repo=workspace_repo, file_repo=file_repo, enrich_queue_repo=enrich_queue_repo, body_repo=body_repo, lsp_repo=lsp_repo, readiness_repo=readiness_repo, policy=policy, lsp_backend=resolved_lsp_backend, policy_repo=policy_repo, event_repo=event_repo, error_event_repo=error_event_repo, candidate_index_sink=candidate_index_sink, vector_index_sink=vector_index_sink, run_mode=run_mode, parent_alive_probe=parent_alive_probe, persist_body_for_read=persist_body_for_read)

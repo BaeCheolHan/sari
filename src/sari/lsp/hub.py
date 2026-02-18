@@ -419,7 +419,7 @@ class LspHub:
             except ProcessLookupError:
                 return
             except OSError:
-                pass
+                log.warning("LSP killpg(SIGTERM) 실패: pid=%s pgid=%s", pid, pgid)
             time.sleep(0.1)
             try:
                 os.killpg(pgid, signal.SIGKILL)
@@ -427,13 +427,13 @@ class LspHub:
             except ProcessLookupError:
                 return
             except OSError:
-                pass
+                log.warning("LSP killpg(SIGKILL) 실패: pid=%s pgid=%s", pid, pgid)
         try:
             os.kill(pid, signal.SIGTERM)
         except ProcessLookupError:
             return
         except OSError:
-            pass
+            log.warning("LSP kill(SIGTERM) 실패: pid=%s", pid)
         time.sleep(0.1)
         try:
             os.kill(pid, signal.SIGKILL)

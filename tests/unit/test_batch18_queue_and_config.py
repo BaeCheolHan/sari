@@ -96,3 +96,21 @@ def test_app_config_loads_json_and_env_override(tmp_path: Path, monkeypatch) -> 
     assert config.ranking_w_vector == pytest.approx(0.0909090909)
     assert config.ranking_w_hierarchy == pytest.approx(0.0909090909)
     assert config.lsp_request_timeout_sec == pytest.approx(12.5)
+
+
+def test_app_config_default_exclude_globs_include_build_artifact_paths(tmp_path: Path, monkeypatch) -> None:
+    """기본 exclude 목록은 빌드 산출물 경로를 폭넓게 포함해야 한다."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("SARI_COLLECTION_EXCLUDE_GLOBS", raising=False)
+    monkeypatch.delenv("SARI_RUN_MODE", raising=False)
+
+    config = AppConfig.default()
+
+    assert "**/.git/**" in config.collection_exclude_globs
+    assert "**/node_modules/**" in config.collection_exclude_globs
+    assert "**/target/**" in config.collection_exclude_globs
+    assert "**/.venv/**" in config.collection_exclude_globs
+    assert "**/.idea/**" in config.collection_exclude_globs
+    assert "**/.cache/**" in config.collection_exclude_globs
+    assert config.run_mode == "prod"

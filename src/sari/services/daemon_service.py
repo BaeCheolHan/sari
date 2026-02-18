@@ -66,6 +66,8 @@ class DaemonService:
         env = os.environ.copy()
         existing_pythonpath = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = src_root if existing_pythonpath == "" else f"{src_root}:{existing_pythonpath}"
+        # 데몬 서비스가 백그라운드 분리 실행임을 자식 프로세스에 명시한다.
+        env["SARI_DAEMON_DETACHED"] = "1"
         stdout_stream, stderr_stream = self._open_daemon_log_streams()
         try:
             process = subprocess.Popen(

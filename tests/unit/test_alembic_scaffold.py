@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from sari.db.migration import ensure_migrated
+from sari.db.migration import HEAD_VERSION, ensure_migrated
 from sari.db.schema import init_schema, connect
 
 
@@ -24,7 +24,7 @@ def test_init_schema_stamps_alembic_version(tmp_path: Path) -> None:
         row = conn.execute("SELECT version_num FROM alembic_version LIMIT 1").fetchone()
 
     assert row is not None
-    assert str(row["version_num"]) == "20260217_0003"
+    assert str(row["version_num"]) == HEAD_VERSION
 
 
 def test_ensure_migrated_runs_without_error(tmp_path: Path, monkeypatch) -> None:
@@ -50,6 +50,17 @@ def test_ensure_migrated_upgrades_baseline_columns(tmp_path: Path) -> None:
                 state TEXT NOT NULL,
                 started_at TEXT NOT NULL,
                 session_count INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS daemon_registry (
+                daemon_id TEXT PRIMARY KEY,
+                host TEXT NOT NULL,
+                port INTEGER NOT NULL,
+                pid INTEGER NOT NULL,
+                workspace_root TEXT NOT NULL,
+                protocol TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                is_draining INTEGER NOT NULL
             );
             CREATE TABLE IF NOT EXISTS file_enrich_queue (
                 job_id TEXT PRIMARY KEY,
@@ -103,7 +114,7 @@ def test_ensure_migrated_upgrades_baseline_columns(tmp_path: Path) -> None:
         symbol_cols = {str(row["name"]) for row in conn.execute("PRAGMA table_info(lsp_symbols)").fetchall()}
 
     assert version_row is not None
-    assert str(version_row["version_num"]) == "20260217_0003"
+    assert str(version_row["version_num"]) == HEAD_VERSION
     assert "last_heartbeat_at" in runtime_cols
     assert "priority" in queue_cols
     assert "bootstrap_mode_enabled" in policy_cols

@@ -104,6 +104,7 @@ def main() -> None:
         run_mode=str(args.run_mode),
     )
     this_pid = os.getpid()
+    launch_parent_pid = os.getppid()
 
     lsp_hub = LspHub(request_timeout_sec=config.lsp_request_timeout_sec)
     importance_scorer = ImportanceScorer(
@@ -178,6 +179,8 @@ def main() -> None:
         runtime_repo=runtime_repo,
         symbol_cache_repo=symbol_cache_repo,
     )
+    detached_mode = os.getenv("SARI_DAEMON_DETACHED", "").strip().lower() in {"1", "true", "yes", "on"}
+
     file_collection_service = build_default_file_collection_service(
         workspace_repo=workspace_repo,
         file_repo=file_repo,
@@ -197,7 +200,7 @@ def main() -> None:
         exclude_globs=config.collection_exclude_globs,
         watcher_debounce_ms=config.watcher_debounce_ms,
         run_mode=config.run_mode,
-        parent_alive_probe=_is_parent_alive,
+        parent_alive_probe=(lambda: _is_parent_alive(launch_parent_pid, detached_mode=detached_mode)),
         lsp_backend=SolidLspExtractionBackend(lsp_hub),
     )
     pipeline_control_service = PipelineControlService(
@@ -281,7 +284,7 @@ def main() -> None:
             try:
                 if os.getenv("SARI_TEST_AUTO_LOOP_FAIL", "").strip() == "1":
                     raise RuntimeError("auto loop failpoint")
-                if not _is_parent_alive():
+                if not _is_parent_alive(launch_parent_pid, detached_mode=detached_mode):
                     shutdown_reason["value"] = "ORPHAN_SELF_TERMINATE"
                     runtime_repo.mark_exit_reason(this_pid, "ORPHAN_SELF_TERMINATE", now_iso8601_utc())
                     stop_event.set()
@@ -344,9 +347,11 @@ def main() -> None:
             raise lsp_stop_error
 
 
-def _is_parent_alive() -> bool:
+def _is_parent_alive(parent_pid: int, detached_mode: bool=False) -> bool:
     """부모 프로세스 생존 여부를 확인한다."""
-    parent_pid = os.getppid()
+    if detached_mode:
+        # 백그라운드 분리 실행 데몬은 부모 종료를 정상 상태로 간주한다.
+        return True
     if parent_pid <= 1:
         # 부모가 init(1)으로 변경되면 고아 상태로 간주해 즉시 종료 경로를 탄다.
         return False

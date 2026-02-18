@@ -11,7 +11,7 @@ from sari.db.repositories.file_enrich_queue_repository import FileEnrichQueueRep
 from sari.db.repositories.lsp_tool_data_repository import LspToolDataRepository
 from sari.db.repositories.tool_readiness_repository import ToolReadinessRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
-from sari.db.schema import init_schema
+from sari.db.schema import connect, init_schema
 from sari.services.file_collection_service import FileCollectionService, LspExtractionBackend, LspExtractionResultDTO
 
 
@@ -153,3 +153,39 @@ def test_file_collection_service_delegates_watcher_and_metrics(tmp_path: Path) -
     assert metrics_stub.get_called == 1
     assert metrics_stub.recorded == [12.5]
     assert metrics.indexing_mode == "steady"
+
+
+def test_file_collection_service_watcher_path_skips_non_collectible_files(tmp_path: Path) -> None:
+    """watcher 경유 인덱싱은 정책 비대상 파일을 큐에 적재하지 않아야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+
+    repo_dir = tmp_path / "repo-a"
+    git_dir = repo_dir / ".git"
+    git_dir.mkdir(parents=True)
+    (git_dir / "FETCH_HEAD").write_text("dummy", encoding="utf-8")
+
+    service = FileCollectionService(
+        workspace_repo=WorkspaceRepository(db_path),
+        file_repo=FileCollectionRepository(db_path),
+        enrich_queue_repo=FileEnrichQueueRepository(db_path),
+        body_repo=FileBodyRepository(db_path),
+        lsp_repo=LspToolDataRepository(db_path),
+        readiness_repo=ToolReadinessRepository(db_path),
+        policy=_policy(),
+        lsp_backend=_NoopLspBackend(),
+        policy_repo=None,
+        event_repo=None,
+    )
+
+    service._index_file_with_priority(  # noqa: SLF001
+        repo_root=str(repo_dir.resolve()),
+        relative_path=".git/FETCH_HEAD",
+        priority=90,
+        enqueue_source="watcher",
+    )
+
+    with connect(db_path) as conn:
+        row = conn.execute("SELECT COUNT(*) AS cnt FROM file_enrich_queue").fetchone()
+        assert row is not None
+        assert int(row["cnt"]) == 0

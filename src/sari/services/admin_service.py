@@ -64,7 +64,18 @@ class AdminService:
                 detail=str(workspace_count),
             )
         )
+        checks.append(
+            DoctorCheckDTO(
+                name="run_mode",
+                passed=self._config.run_mode in {"dev", "prod"},
+                detail=self._config.run_mode,
+            )
+        )
         return checks
+
+    def run_mode(self) -> str:
+        """현재 유효 실행 모드를 반환한다."""
+        return self._config.run_mode
 
     def index(self) -> dict[str, object]:
         """캐시 무효화 기반 재색인 트리거를 수행한다."""
@@ -250,6 +261,7 @@ class AdminService:
 
         return {
             "search_mode": "lsp_pipeline",
+            "run_mode": self._config.run_mode,
             "dependencies": {
                 "solidlsp": _module_available("solidlsp"),
                 "tantivy": _module_available("tantivy"),

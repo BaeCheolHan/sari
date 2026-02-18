@@ -7,6 +7,26 @@ from pathlib import Path
 
 from sari.core.language_registry import get_default_collection_extensions
 
+DEFAULT_COLLECTION_EXCLUDE_GLOBS: tuple[str, ...] = (
+    "**/.git/**",
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/build/**",
+    "**/target/**",
+    "**/.venv/**",
+    "**/venv/**",
+    "**/.idea/**",
+    "**/.vscode/**",
+    "**/.gradle/**",
+    "**/.next/**",
+    "**/out/**",
+    "**/coverage/**",
+    "**/.pytest_cache/**",
+    "**/.mypy_cache/**",
+    "**/.ruff_cache/**",
+    "**/.cache/**",
+)
+
 
 @dataclass(frozen=True)
 class AppConfig:
@@ -24,13 +44,13 @@ class AppConfig:
     queue_poll_interval_ms: int = 500
     watcher_debounce_ms: int = 300
     collection_include_ext: tuple[str, ...] = get_default_collection_extensions()
-    collection_exclude_globs: tuple[str, ...] = ("**/.git/**", "**/node_modules/**", "**/dist/**", "**/build/**")
+    collection_exclude_globs: tuple[str, ...] = DEFAULT_COLLECTION_EXCLUDE_GLOBS
     pipeline_worker_count: int = 4
     pipeline_l3_p95_threshold_ms: int = 180_000
     pipeline_dead_ratio_threshold_bps: int = 10
     pipeline_alert_window_sec: int = 300
     pipeline_auto_tick_interval_sec: int = 5
-    run_mode: str = "dev"
+    run_mode: str = "prod"
     daemon_heartbeat_interval_sec: int = 2
     daemon_stale_timeout_sec: int = 15
     lsp_request_timeout_sec: float = 20.0
@@ -89,7 +109,7 @@ class AppConfig:
         dead_ratio_raw = os.getenv("SARI_PIPELINE_DEAD_RATIO_THRESHOLD_BPS", str(file_config.get("pipeline_dead_ratio_threshold_bps", 10))).strip()
         alert_window_raw = os.getenv("SARI_PIPELINE_ALERT_WINDOW_SEC", str(file_config.get("pipeline_alert_window_sec", 300))).strip()
         auto_tick_raw = os.getenv("SARI_PIPELINE_AUTO_TICK_INTERVAL_SEC", str(file_config.get("pipeline_auto_tick_interval_sec", 5))).strip()
-        run_mode_raw = os.getenv("SARI_RUN_MODE", str(file_config.get("run_mode", "dev"))).strip().lower()
+        run_mode_raw = os.getenv("SARI_RUN_MODE", str(file_config.get("run_mode", "prod"))).strip().lower()
         heartbeat_raw = os.getenv("SARI_DAEMON_HEARTBEAT_INTERVAL_SEC", str(file_config.get("daemon_heartbeat_interval_sec", 2))).strip()
         stale_timeout_raw = os.getenv("SARI_DAEMON_STALE_TIMEOUT_SEC", str(file_config.get("daemon_stale_timeout_sec", 15))).strip()
         lsp_timeout_raw = os.getenv("SARI_LSP_REQUEST_TIMEOUT_SEC", str(file_config.get("lsp_request_timeout_sec", 20.0))).strip()

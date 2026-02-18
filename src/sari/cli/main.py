@@ -246,7 +246,7 @@ def daemon() -> None:
 
 
 @daemon.command("start")
-@click.option("--run-mode", type=click.Choice(["dev", "prod"], case_sensitive=False), default="dev")
+@click.option("--run-mode", type=click.Choice(["dev", "prod"], case_sensitive=False), default="prod")
 def daemon_start(run_mode: str) -> None:
     """데몬을 시작한다."""
     services = _build_services()
@@ -304,7 +304,7 @@ def daemon_stop() -> None:
 
 
 @daemon.command("ensure")
-@click.option("--run-mode", type=click.Choice(["dev", "prod"], case_sensitive=False), default="dev")
+@click.option("--run-mode", type=click.Choice(["dev", "prod"], case_sensitive=False), default="prod")
 def daemon_ensure(run_mode: str) -> None:
     """데몬이 없으면 시작하고 있으면 기존 엔드포인트를 반환한다."""
     services = _build_services()
