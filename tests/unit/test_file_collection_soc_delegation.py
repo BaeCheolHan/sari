@@ -28,7 +28,7 @@ class _ScannerStub:
 
     def scan_once(self, repo_root: str) -> CollectionScanResultDTO:
         """고정 스캔 결과를 반환한다."""
-        assert repo_root == "repo-stub"
+        assert repo_root.endswith("repo-stub")
         return CollectionScanResultDTO(scanned_count=11, indexed_count=7, deleted_count=3)
 
 

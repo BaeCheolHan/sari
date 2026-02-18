@@ -63,6 +63,15 @@ class PipelinePolicySetTool:
         enrich_worker_count, workers_error = parse_optional_loose_int(arguments=arguments, key="workers")
         if workers_error is not None:
             return pack1_error(ErrorResponseDTO(code="ERR_POLICY_INVALID", message=workers_error.message))
+        watcher_queue_max, watcher_queue_max_error = parse_optional_loose_int(arguments=arguments, key="watcher_queue_max")
+        if watcher_queue_max_error is not None:
+            return pack1_error(ErrorResponseDTO(code="ERR_POLICY_INVALID", message=watcher_queue_max_error.message))
+        watcher_overflow_rescan_cooldown_sec, watcher_cooldown_error = parse_optional_loose_int(
+            arguments=arguments,
+            key="watcher_overflow_rescan_cooldown_sec",
+        )
+        if watcher_cooldown_error is not None:
+            return pack1_error(ErrorResponseDTO(code="ERR_POLICY_INVALID", message=watcher_cooldown_error.message))
         bootstrap_mode_enabled, bootstrap_mode_error = parse_optional_boolean(arguments=arguments, key="bootstrap_mode_enabled")
         if bootstrap_mode_error is not None:
             return pack1_error(ErrorResponseDTO(code="ERR_POLICY_INVALID", message=bootstrap_mode_error.message))
@@ -90,6 +99,8 @@ class PipelinePolicySetTool:
                 l3_p95_threshold_ms=l3_p95_threshold_ms,
                 dead_ratio_threshold_bps=dead_ratio_threshold_bps,
                 enrich_worker_count=enrich_worker_count,
+                watcher_queue_max=watcher_queue_max,
+                watcher_overflow_rescan_cooldown_sec=watcher_overflow_rescan_cooldown_sec,
                 bootstrap_mode_enabled=bootstrap_mode_enabled,
                 bootstrap_l3_worker_count=bootstrap_l3_worker_count,
                 bootstrap_l3_queue_max=bootstrap_l3_queue_max,

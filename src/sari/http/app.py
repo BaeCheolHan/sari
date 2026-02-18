@@ -189,7 +189,7 @@ async def read_endpoint(request) -> JSONResponse:
     if context.read_facade_service is None:
         error = ErrorResponseDTO(code='ERR_HTTP_READ_UNAVAILABLE', message='read service is unavailable')
         return JSONResponse({'error': {'code': error.code, 'message': error.message}}, status_code=503)
-    repo, error_response = resolve_repo_from_query(context, request)
+    repo, repo_key, error_response = resolve_repo_from_query(context, request)
     if error_response is not None:
         return error_response
     assert repo is not None
@@ -201,7 +201,7 @@ async def read_endpoint(request) -> JSONResponse:
     if format_error is not None:
         return format_error
     source = {str(k): v for k, v in request.query_params.items()}
-    arguments, arg_error = build_read_arguments(repo_root=repo, mode=mode_raw, source=source)
+    arguments, arg_error = build_read_arguments(repo_root=repo, repo_key=repo_key, mode=mode_raw, source=source)
     if arg_error is not None:
         return arg_error
     assert arguments is not None
@@ -235,14 +235,14 @@ async def read_diff_preview_endpoint(request) -> JSONResponse:
     if not isinstance(body_raw, dict):
         error = ErrorResponseDTO(code='ERR_INVALID_JSON_BODY', message='json body must be object')
         return JSONResponse({'error': {'code': error.code, 'message': error.message}}, status_code=400)
-    repo, error_response = resolve_repo_from_value(context, body_raw.get('repo'))
+    repo, repo_key, error_response = resolve_repo_from_value(context, body_raw.get('repo'))
     if error_response is not None:
         return error_response
     assert repo is not None
     output_format, format_error = resolve_format(body_raw.get('format'))
     if format_error is not None:
         return format_error
-    arguments, arg_error = build_read_arguments(repo_root=repo, mode='diff_preview', source=body_raw)
+    arguments, arg_error = build_read_arguments(repo_root=repo, repo_key=repo_key, mode='diff_preview', source=body_raw)
     if arg_error is not None:
         return arg_error
     assert arguments is not None
@@ -250,7 +250,7 @@ async def read_diff_preview_endpoint(request) -> JSONResponse:
     return read_response(payload=payload, output_format=output_format)
 async def search_endpoint(request) -> JSONResponse:
     context: HttpContext = request.app.state.context
-    repo, error_response = resolve_repo_from_query(context, request)
+    repo, _repo_key, error_response = resolve_repo_from_query(context, request)
     if error_response is not None:
         return error_response
     assert repo is not None
@@ -325,6 +325,12 @@ async def pipeline_policy_set_endpoint(request) -> JSONResponse:
     workers, err = _parse_int('workers')
     if err is not None:
         return JSONResponse({'error': {'code': err.code, 'message': err.message}}, status_code=400)
+    watcher_queue_max, err = _parse_int('watcher_queue_max')
+    if err is not None:
+        return JSONResponse({'error': {'code': err.code, 'message': err.message}}, status_code=400)
+    watcher_overflow_rescan_cooldown_sec, err = _parse_int('watcher_overflow_rescan_cooldown_sec')
+    if err is not None:
+        return JSONResponse({'error': {'code': err.code, 'message': err.message}}, status_code=400)
     bootstrap_l3_worker_count, err = _parse_int('bootstrap_l3_worker_count')
     if err is not None:
         return JSONResponse({'error': {'code': err.code, 'message': err.message}}, status_code=400)
@@ -350,7 +356,7 @@ async def pipeline_policy_set_endpoint(request) -> JSONResponse:
         else:
             return JSONResponse({'error': {'code': 'ERR_POLICY_INVALID', 'message': 'bootstrap_mode_enabled는 불리언이어야 합니다'}}, status_code=400)
     try:
-        updated = context.pipeline_control_service.update_policy(deletion_hold=deletion_hold, l3_p95_threshold_ms=l3_p95_ms, dead_ratio_threshold_bps=dead_ratio_bps, enrich_worker_count=workers, bootstrap_mode_enabled=bootstrap_mode_enabled, bootstrap_l3_worker_count=bootstrap_l3_worker_count, bootstrap_l3_queue_max=bootstrap_l3_queue_max, bootstrap_exit_min_l2_coverage_bps=bootstrap_exit_min_l2_coverage_bps, bootstrap_exit_max_sec=bootstrap_exit_max_sec, alert_window_sec=alert_window_sec)
+        updated = context.pipeline_control_service.update_policy(deletion_hold=deletion_hold, l3_p95_threshold_ms=l3_p95_ms, dead_ratio_threshold_bps=dead_ratio_bps, enrich_worker_count=workers, watcher_queue_max=watcher_queue_max, watcher_overflow_rescan_cooldown_sec=watcher_overflow_rescan_cooldown_sec, bootstrap_mode_enabled=bootstrap_mode_enabled, bootstrap_l3_worker_count=bootstrap_l3_worker_count, bootstrap_l3_queue_max=bootstrap_l3_queue_max, bootstrap_exit_min_l2_coverage_bps=bootstrap_exit_min_l2_coverage_bps, bootstrap_exit_max_sec=bootstrap_exit_max_sec, alert_window_sec=alert_window_sec)
     except ValidationError as exc:
         error = ErrorResponseDTO(code=exc.context.code, message=exc.context.message)
         return JSONResponse({'error': {'code': error.code, 'message': error.message}}, status_code=400)
@@ -367,7 +373,7 @@ async def pipeline_dead_list_endpoint(request) -> JSONResponse:
     if context.pipeline_control_service is None:
         error = ErrorResponseDTO(code='ERR_PIPELINE_ALERT_UNAVAILABLE', message='pipeline control is unavailable')
         return JSONResponse({'error': {'code': error.code, 'message': error.message}}, status_code=503)
-    repo, error_response = resolve_repo_from_query(context, request)
+    repo, _repo_key, error_response = resolve_repo_from_query(context, request)
     if error_response is not None:
         return error_response
     assert repo is not None
@@ -398,7 +404,7 @@ async def pipeline_dead_requeue_endpoint(request) -> JSONResponse:
     if context.pipeline_control_service is None:
         error = ErrorResponseDTO(code='ERR_PIPELINE_ALERT_UNAVAILABLE', message='pipeline control is unavailable')
         return JSONResponse({'error': {'code': error.code, 'message': error.message}}, status_code=503)
-    repo, error_response = resolve_repo_from_query(context, request)
+    repo, _repo_key, error_response = resolve_repo_from_query(context, request)
     if error_response is not None:
         return error_response
     assert repo is not None
@@ -421,7 +427,7 @@ async def pipeline_dead_purge_endpoint(request) -> JSONResponse:
     if context.pipeline_control_service is None:
         error = ErrorResponseDTO(code='ERR_PIPELINE_ALERT_UNAVAILABLE', message='pipeline control is unavailable')
         return JSONResponse({'error': {'code': error.code, 'message': error.message}}, status_code=503)
-    repo, error_response = resolve_repo_from_query(context, request)
+    repo, _repo_key, error_response = resolve_repo_from_query(context, request)
     if error_response is not None:
         return error_response
     assert repo is not None
@@ -471,7 +477,7 @@ async def pipeline_quality_run_api_endpoint(request) -> JSONResponse:
     if context.pipeline_quality_service is None:
         error = ErrorResponseDTO(code='ERR_PIPELINE_QUALITY_UNAVAILABLE', message='pipeline quality is unavailable')
         return JSONResponse({'error': {'code': error.code, 'message': error.message}}, status_code=503)
-    repo, error_response = resolve_repo_from_query(context, request)
+    repo, _repo_key, error_response = resolve_repo_from_query(context, request)
     if error_response is not None:
         return error_response
     assert repo is not None
@@ -496,7 +502,7 @@ async def pipeline_benchmark_run_api_endpoint(request) -> JSONResponse:
     if context.pipeline_benchmark_service is None:
         error = ErrorResponseDTO(code='ERR_PIPELINE_BENCHMARK_UNAVAILABLE', message='pipeline benchmark is unavailable')
         return JSONResponse({'error': {'code': error.code, 'message': error.message}}, status_code=503)
-    repo, error_response = resolve_repo_from_query(context, request)
+    repo, _repo_key, error_response = resolve_repo_from_query(context, request)
     if error_response is not None:
         return error_response
     assert repo is not None
@@ -535,7 +541,7 @@ async def pipeline_quality_report_api_endpoint(request) -> JSONResponse:
     if context.pipeline_quality_service is None:
         error = ErrorResponseDTO(code='ERR_PIPELINE_QUALITY_UNAVAILABLE', message='pipeline quality is unavailable')
         return JSONResponse({'error': {'code': error.code, 'message': error.message}}, status_code=503)
-    repo, error_response = resolve_repo_from_query(context, request)
+    repo, _repo_key, error_response = resolve_repo_from_query(context, request)
     if error_response is not None:
         return error_response
     assert repo is not None
@@ -550,7 +556,7 @@ async def pipeline_lsp_matrix_run_api_endpoint(request) -> JSONResponse:
     if context.pipeline_lsp_matrix_service is None:
         error = ErrorResponseDTO(code='ERR_PIPELINE_LSP_MATRIX_UNAVAILABLE', message='pipeline lsp matrix is unavailable')
         return JSONResponse({'error': {'code': error.code, 'message': error.message}}, status_code=503)
-    repo, error_response = resolve_repo_from_query(context, request)
+    repo, _repo_key, error_response = resolve_repo_from_query(context, request)
     if error_response is not None:
         return error_response
     assert repo is not None
@@ -577,7 +583,7 @@ async def pipeline_lsp_matrix_report_api_endpoint(request) -> JSONResponse:
     if context.pipeline_lsp_matrix_service is None:
         error = ErrorResponseDTO(code='ERR_PIPELINE_LSP_MATRIX_UNAVAILABLE', message='pipeline lsp matrix is unavailable')
         return JSONResponse({'error': {'code': error.code, 'message': error.message}}, status_code=503)
-    repo, error_response = resolve_repo_from_query(context, request)
+    repo, _repo_key, error_response = resolve_repo_from_query(context, request)
     if error_response is not None:
         return error_response
     assert repo is not None

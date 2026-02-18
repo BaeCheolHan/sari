@@ -241,3 +241,75 @@ def test_mcp_index_file_returns_explicit_error_for_non_collectible_path(tmp_path
     assert payload["result"]["isError"] is True
     error = payload["result"]["structuredContent"]["meta"]["errors"][0]
     assert error["code"] == "ERR_FILE_NOT_COLLECTIBLE"
+
+
+def test_mcp_scan_once_fanout_workspace_top_level_repos(tmp_path: Path) -> None:
+    """workspace 컨테이너 scan_once 1회로 top-level repo들이 각각 수집되어야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+
+    workspace_dir = tmp_path / "study"
+    workspace_dir.mkdir()
+    repo_a = workspace_dir / "sari"
+    repo_a.mkdir()
+    (repo_a / "pyproject.toml").write_text("[project]\nname='sari'\n", encoding="utf-8")
+    (repo_a / "alpha.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+    repo_b = workspace_dir / "serena"
+    repo_b.mkdir()
+    (repo_b / "package.json").write_text('{"name":"serena"}', encoding="utf-8")
+    (repo_b / "beta.ts").write_text("export const beta = 2;\n", encoding="utf-8")
+
+    WorkspaceService(WorkspaceRepository(db_path)).add_workspace(str(workspace_dir))
+    server = McpServer(db_path=db_path)
+
+    scan_response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 300,
+            "method": "tools/call",
+            "params": {
+                "name": "scan_once",
+                "arguments": {"repo": workspace_dir.name, "options": {"structured": 1}},
+            },
+        }
+    )
+    scan_payload = scan_response.to_dict()
+    assert scan_payload["result"]["isError"] is False
+
+    scan_item = scan_payload["result"]["structuredContent"]["items"][0]
+    assert scan_item["mode"] == "fanout_top_level"
+    assert scan_item["target_repo_count"] == 2
+    assert scan_item["succeeded_repo_count"] == 2
+    assert scan_item["failed_repo_count"] == 0
+
+    list_a = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 301,
+            "method": "tools/call",
+            "params": {
+                "name": "list_files",
+                "arguments": {"repo": "sari", "limit": 10, "options": {"structured": 1}},
+            },
+        }
+    ).to_dict()
+    assert list_a["result"]["isError"] is False
+    items_a = list_a["result"]["structuredContent"]["items"]
+    paths_a = {str(item["relative_path"]) for item in items_a}
+    assert "alpha.py" in paths_a
+
+    list_b = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 302,
+            "method": "tools/call",
+            "params": {
+                "name": "list_files",
+                "arguments": {"repo": "serena", "limit": 10, "options": {"structured": 1}},
+            },
+        }
+    ).to_dict()
+    assert list_b["result"]["isError"] is False
+    items_b = list_b["result"]["structuredContent"]["items"]
+    paths_b = {str(item["relative_path"]) for item in items_b}
+    assert "beta.ts" in paths_b

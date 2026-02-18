@@ -70,6 +70,14 @@ def test_pipeline_metrics_exposes_progress_and_eta_fields(tmp_path: Path) -> Non
     assert "throughput_ema" in metrics
     assert "remaining_jobs_l2" in metrics
     assert "remaining_jobs_l3" in metrics
+    assert "watcher_queue_depth" in metrics
+    assert "watcher_drop_count" in metrics
+    assert "watcher_overflow_count" in metrics
+    assert "watcher_last_overflow_at" in metrics
+    assert "lsp_instance_count" in metrics
+    assert "lsp_forced_kill_count" in metrics
+    assert "lsp_stop_timeout_count" in metrics
+    assert "lsp_orphan_suspect_count" in metrics
 
 
 def test_pipeline_metrics_returns_unknown_eta_when_throughput_unstable(tmp_path: Path) -> None:

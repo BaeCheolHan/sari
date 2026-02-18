@@ -223,6 +223,8 @@ CREATE TABLE IF NOT EXISTS pipeline_policy (
     l3_p95_threshold_ms INTEGER NOT NULL,
     dead_ratio_threshold_bps INTEGER NOT NULL,
     enrich_worker_count INTEGER NOT NULL,
+    watcher_queue_max INTEGER NOT NULL DEFAULT 10000,
+    watcher_overflow_rescan_cooldown_sec INTEGER NOT NULL DEFAULT 30,
     bootstrap_mode_enabled INTEGER NOT NULL DEFAULT 0 CHECK (bootstrap_mode_enabled IN (0, 1)),
     bootstrap_l3_worker_count INTEGER NOT NULL DEFAULT 1,
     bootstrap_l3_queue_max INTEGER NOT NULL DEFAULT 1000,

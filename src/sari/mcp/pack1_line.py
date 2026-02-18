@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+from pathlib import Path
 from typing import Mapping
 from urllib.parse import quote
 
@@ -327,15 +328,37 @@ def _resolve_rid(item: Mapping[str, object], arguments: Mapping[str, object]) ->
     resource_id = item.get("resource_id")
     if isinstance(resource_id, str) and resource_id.strip() != "":
         return resource_id.strip()
-    repo = item.get("repo")
-    if not isinstance(repo, str) or repo.strip() == "":
-        repo_arg = arguments.get("repo")
-        repo = repo_arg if isinstance(repo_arg, str) else ""
+    repo = _resolve_repo_token(item=item, arguments=arguments)
     path = _resolve_path(item)
     symbol_key = item.get("symbol_key")
     if isinstance(symbol_key, str) and symbol_key.strip() != "":
         return f"{repo}:{path}:{symbol_key.strip()}"
     return f"{repo}:{path}"
+
+
+def _resolve_repo_token(item: Mapping[str, object], arguments: Mapping[str, object]) -> str:
+    """repo 식별자를 repo_key 우선으로 추출한다."""
+    for key in ("repo_key", "repo"):
+        value = item.get(key)
+        if isinstance(value, str) and value.strip() != "":
+            return _normalize_repo_token(value)
+    for key in ("repo_key", "repo"):
+        value = arguments.get(key)
+        if isinstance(value, str) and value.strip() != "":
+            return _normalize_repo_token(value)
+    return "-"
+
+
+def _normalize_repo_token(raw_value: str) -> str:
+    """절대경로 입력을 안전한 repo 토큰으로 축약한다."""
+    stripped = raw_value.strip()
+    if stripped == "":
+        return "-"
+    candidate = Path(stripped)
+    if candidate.is_absolute():
+        # 절대경로 노출을 금지하고 마지막 디렉터리명만 사용한다.
+        return candidate.name if candidate.name != "" else "-"
+    return stripped
 
 
 def _enc(value: str) -> str:

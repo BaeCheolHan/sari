@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 import threading
 import time
 from pathlib import Path
@@ -9,7 +10,7 @@ from typing import Callable
 
 from watchdog.observers import Observer
 
-from sari.core.exceptions import CollectionError
+from sari.core.exceptions import CollectionError, ErrorContext
 from sari.core.models import now_iso8601_utc
 
 
@@ -97,7 +98,18 @@ class RuntimeManager:
         while not self._stop_event.is_set():
             self._assert_parent_alive("scheduler")
             start_time = time.time()
-            workspaces = self._workspace_repo.list_all()
+            try:
+                workspaces = self._workspace_repo.list_all()
+            except sqlite3.Error as exc:
+                fatal_error = CollectionError(
+                    ErrorContext(
+                        code="ERR_COLLECTION_DB_FATAL",
+                        message=f"workspace 조회 실패: {exc}",
+                    )
+                )
+                if self._handle_background_collection_error(fatal_error, "scheduler_workspace_list", "scheduler"):
+                    return
+                continue
             for workspace in workspaces:
                 if not workspace.is_active:
                     continue
@@ -107,7 +119,18 @@ class RuntimeManager:
                     if not self._handle_background_collection_error(exc, "scheduler_scan", "scheduler"):
                         continue
                     return
-            self._prune_error_events_if_needed()
+            try:
+                self._prune_error_events_if_needed()
+            except sqlite3.Error as exc:
+                fatal_error = CollectionError(
+                    ErrorContext(
+                        code="ERR_COLLECTION_DB_FATAL",
+                        message=f"오류 이벤트 정리 실패: {exc}",
+                    )
+                )
+                if self._handle_background_collection_error(fatal_error, "scheduler_prune", "scheduler"):
+                    return
+                continue
             elapsed = time.time() - start_time
             remain = max(0.0, float(self._policy.scan_interval_sec) - elapsed)
             if remain > 0:
@@ -120,6 +143,16 @@ class RuntimeManager:
                 processed = self._process_enrich_jobs_bootstrap(int(self._policy.max_enrich_batch))
             except CollectionError as exc:
                 if self._handle_background_collection_error(exc, "enrich_loop", "enrich_worker"):
+                    return
+                processed = 0
+            except sqlite3.Error as exc:
+                fatal_error = CollectionError(
+                    ErrorContext(
+                        code="ERR_COLLECTION_DB_FATAL",
+                        message=f"enrich 처리 실패: {exc}",
+                    )
+                )
+                if self._handle_background_collection_error(fatal_error, "enrich_loop_db", "enrich_worker"):
                     return
                 processed = 0
             if processed == 0:

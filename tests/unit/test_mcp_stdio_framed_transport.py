@@ -6,6 +6,7 @@ import io
 import json
 from pathlib import Path
 
+from pytest import MonkeyPatch
 from sari.mcp.transport import McpTransport
 from sari.mcp.server import run_stdio_streams
 
@@ -88,3 +89,31 @@ def test_transport_write_message_sanitizes_lone_surrogate() -> None:
     raw = output_stream.getvalue()
     payload = _read_first_frame(raw)
     assert payload["result"]["text"] == "\ufffd"
+
+
+def test_run_stdio_streams_calls_server_close_on_eof(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """EOF 종료 경로에서도 MCP 서버 close가 호출되어야 한다."""
+
+    close_called = {"value": False}
+
+    class _RuntimeRepo:
+        def get_runtime(self) -> None:
+            return None
+
+    class _FakeServer:
+        def __init__(self, db_path: Path) -> None:
+            del db_path
+            self._runtime_repo = _RuntimeRepo()
+
+        def handle_request(self, payload: dict[str, object]) -> object:
+            del payload
+            raise AssertionError("EOF 경로에서는 handle_request가 호출되면 안 됩니다")
+
+        def close(self) -> None:
+            close_called["value"] = True
+
+    monkeypatch.setattr("sari.mcp.server.McpServer", _FakeServer)
+    exit_code = run_stdio_streams(db_path=tmp_path / "state.db", input_stream=io.BytesIO(b""), output_stream=io.BytesIO())
+
+    assert exit_code == 0
+    assert close_called["value"] is True

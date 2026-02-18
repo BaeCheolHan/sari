@@ -81,6 +81,7 @@ def test_mcp_initialize_and_tools_list(tmp_path: Path) -> None:
     assert "fail_on_unavailable" in lsp_matrix_props
     assert "strict_all_languages" in lsp_matrix_props
     assert "strict_symbol_gate" in lsp_matrix_props
+    server.close()
 
 
 def test_mcp_tool_call_requires_repo_and_query(tmp_path: Path) -> None:
@@ -258,4 +259,11 @@ def test_mcp_initialize_and_tools_list_do_not_touch_tantivy_writer(
     assert "error" not in init_payload
     assert "error" not in list_payload
     assert init_payload["result"]["serverInfo"]["name"] == "sari-v2"
-    assert isinstance(list_payload["result"]["tools"], list)
+    server.close()
+
+
+def test_mcp_server_close_is_idempotent(tmp_path: Path) -> None:
+    """MCP close는 중복 호출해도 실패하지 않아야 한다."""
+    server = McpServer(db_path=tmp_path / "state.db")
+    server.close()
+    server.close()

@@ -118,6 +118,8 @@ def test_ensure_migrated_upgrades_baseline_columns(tmp_path: Path) -> None:
     assert "last_heartbeat_at" in runtime_cols
     assert "priority" in queue_cols
     assert "bootstrap_mode_enabled" in policy_cols
+    assert "watcher_queue_max" in policy_cols
+    assert "watcher_overflow_rescan_cooldown_sec" in policy_cols
     assert "required_languages_json" in matrix_cols
     assert "enabled" in probe_cols
     assert "symbol_key" in symbol_cols

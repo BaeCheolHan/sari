@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 import sqlite3
 
-HEAD_VERSION = "20260218_0004"
+HEAD_VERSION = "20260218_0005"
 BASELINE_VERSION = "20260216_0001"
 
 
@@ -85,6 +85,10 @@ def _fallback_upgrade_sqlite(db_path: Path) -> None:
         if current_version < "20260218_0004":
             _fallback_upgrade_0004(conn)
             _set_version(conn, "20260218_0004")
+            current_version = "20260218_0004"
+        if current_version < "20260218_0005":
+            _fallback_upgrade_0005(conn)
+            _set_version(conn, "20260218_0005")
         conn.commit()
 
 
@@ -216,3 +220,14 @@ def _fallback_upgrade_0004(conn: sqlite3.Connection) -> None:
         ON daemon_registry(workspace_root, is_draining, deployment_state, last_seen_at DESC)
         """
     )
+
+
+def _fallback_upgrade_0005(conn: sqlite3.Connection) -> None:
+    """0005 리비전 컬럼을 적용한다."""
+    policy_cols = _table_columns(conn, "pipeline_policy")
+    if "watcher_queue_max" not in policy_cols:
+        conn.execute("ALTER TABLE pipeline_policy ADD COLUMN watcher_queue_max INTEGER NOT NULL DEFAULT 10000")
+    if "watcher_overflow_rescan_cooldown_sec" not in policy_cols:
+        conn.execute(
+            "ALTER TABLE pipeline_policy ADD COLUMN watcher_overflow_rescan_cooldown_sec INTEGER NOT NULL DEFAULT 30"
+        )

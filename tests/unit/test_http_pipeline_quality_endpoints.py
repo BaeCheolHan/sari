@@ -117,7 +117,7 @@ def test_pipeline_quality_run_and_report_endpoint(tmp_path: Path) -> None:
     """품질 실행/리포트 API가 정상 응답을 반환해야 한다."""
     context = _default_context(tmp_path)
     request = SimpleNamespace(
-        query_params={"repo": str((tmp_path / "repo-a").resolve()), "limit_files": "100", "profile": "default"},
+        query_params={"repo": "repo-a", "limit_files": "100", "profile": "default"},
         app=SimpleNamespace(state=SimpleNamespace(context=context)),
     )
     response = asyncio.run(pipeline_quality_run_api_endpoint(request))
@@ -126,7 +126,7 @@ def test_pipeline_quality_run_and_report_endpoint(tmp_path: Path) -> None:
     assert payload["quality"]["status"] in {"PASSED", "FAILED"}
 
     report_request = SimpleNamespace(
-        query_params={"repo": str((tmp_path / "repo-a").resolve())},
+        query_params={"repo": "repo-a"},
         app=SimpleNamespace(state=SimpleNamespace(context=context)),
     )
     report_response = asyncio.run(pipeline_quality_report_api_endpoint(report_request))
@@ -140,7 +140,7 @@ def test_pipeline_benchmark_run_and_report_endpoint(tmp_path: Path) -> None:
     context = _default_context(tmp_path)
     run_request = SimpleNamespace(
         query_params={
-            "repo": str((tmp_path / "repo-a").resolve()),
+            "repo": "repo-a",
             "target_files": "20",
             "profile": "default",
             "language_filter": "python",
@@ -157,7 +157,7 @@ def test_pipeline_benchmark_run_and_report_endpoint(tmp_path: Path) -> None:
     assert "per_language" in run_payload["benchmark"]
 
     report_request = SimpleNamespace(
-        query_params={},
+        query_params={"repo": "repo-a"},
         app=SimpleNamespace(state=SimpleNamespace(context=context)),
     )
     report_response = asyncio.run(pipeline_benchmark_report_api_endpoint(report_request))

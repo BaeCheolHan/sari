@@ -32,6 +32,11 @@ class PipelineMetricsService:
         last_error_code: Callable[[], str | None],
         last_error_message: Callable[[], str | None],
         last_error_at: Callable[[], str | None],
+        watcher_queue_depth: Callable[[], int],
+        watcher_drop_count: Callable[[], int],
+        watcher_overflow_count: Callable[[], int],
+        watcher_last_overflow_at: Callable[[], str | None],
+        lsp_metrics_snapshot: Callable[[], dict[str, int]],
     ) -> None:
         """메트릭 계산에 필요한 의존성만 주입받는다."""
         self._refresh_indexing_mode = refresh_indexing_mode
@@ -51,6 +56,11 @@ class PipelineMetricsService:
         self._last_error_code = last_error_code
         self._last_error_message = last_error_message
         self._last_error_at = last_error_at
+        self._watcher_queue_depth = watcher_queue_depth
+        self._watcher_drop_count = watcher_drop_count
+        self._watcher_overflow_count = watcher_overflow_count
+        self._watcher_last_overflow_at = watcher_last_overflow_at
+        self._lsp_metrics_snapshot = lsp_metrics_snapshot
 
     def get_pipeline_metrics(self) -> PipelineMetricsDTO:
         """파이프라인 실시간 메트릭을 반환한다."""
@@ -101,6 +111,7 @@ class PipelineMetricsService:
             eta_l3_sec = 0
         elif eta_basis > 0 and eta_confidence_bps >= 5000:
             eta_l3_sec = int(math.ceil(float(remaining_jobs_l3) / eta_basis))
+        lsp_metrics = self._lsp_metrics_snapshot()
         return PipelineMetricsDTO(
             queue_depth=queue_depth,
             running_jobs=running_jobs,
@@ -125,6 +136,14 @@ class PipelineMetricsService:
             last_error_code=self._last_error_code(),
             last_error_message=self._last_error_message(),
             last_error_at=self._last_error_at(),
+            watcher_queue_depth=int(self._watcher_queue_depth()),
+            watcher_drop_count=int(self._watcher_drop_count()),
+            watcher_overflow_count=int(self._watcher_overflow_count()),
+            watcher_last_overflow_at=self._watcher_last_overflow_at(),
+            lsp_instance_count=int(lsp_metrics.get("lsp_instance_count", 0)),
+            lsp_forced_kill_count=int(lsp_metrics.get("lsp_forced_kill_count", 0)),
+            lsp_stop_timeout_count=int(lsp_metrics.get("lsp_stop_timeout_count", 0)),
+            lsp_orphan_suspect_count=int(lsp_metrics.get("lsp_orphan_suspect_count", 0)),
         )
 
     def record_enrich_latency(self, latency_ms: float) -> None:

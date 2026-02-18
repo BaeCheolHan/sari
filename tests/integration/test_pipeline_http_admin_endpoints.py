@@ -71,12 +71,17 @@ def test_pipeline_policy_and_alert_endpoints(tmp_path: Path) -> None:
         assert isinstance(policy["policy"], dict)
 
         updated = _read_json(
-            f"http://{runtime.host}:{runtime.port}/pipeline/policy?deletion_hold=on&workers=6",
+            (
+                f"http://{runtime.host}:{runtime.port}/pipeline/policy?"
+                "deletion_hold=on&workers=6&watcher_queue_max=12000&watcher_overflow_rescan_cooldown_sec=45"
+            ),
             method="POST",
         )
         assert "policy" in updated
         assert updated["policy"]["deletion_hold"] is True
         assert updated["policy"]["enrich_worker_count"] == 6
+        assert updated["policy"]["watcher_queue_max"] == 12000
+        assert updated["policy"]["watcher_overflow_rescan_cooldown_sec"] == 45
 
         alert = _read_json(f"http://{runtime.host}:{runtime.port}/pipeline/alert")
         assert "alert" in alert

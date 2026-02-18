@@ -450,6 +450,8 @@ def test_lsp_hub_stop_timeout_raises_explicit_error() -> None:
     with pytest.raises(DaemonError) as exc_info:
         hub._stop_entry_locked(key)
     assert exc_info.value.context.code == "ERR_LSP_STOP_TIMEOUT"
+    metrics = hub.get_metrics()
+    assert metrics["lsp_stop_timeout_count"] >= 1
     hub._instances.clear()
     hub.stop_all()
 
@@ -559,4 +561,52 @@ def test_lsp_hub_restart_if_unhealthy_uses_stop_timeout_guard(monkeypatch) -> No
     restarted = hub.restart_if_unhealthy(language=Language.PYTHON, repo_root="/repo")
 
     assert restarted.server.is_running() is True
+    hub.stop_all()
+
+
+def test_lsp_hub_cleans_up_not_running_entry_before_reuse(monkeypatch) -> None:
+    """재사용 전 is_running=false 엔트리를 stop 시도 후 정리해야 한다."""
+
+    class _StoppedRuntime:
+        def is_running(self) -> bool:
+            return False
+
+    class _StoppedServer:
+        def __init__(self) -> None:
+            self.server = _StoppedRuntime()
+            self.stop_called = False
+
+        def stop(self) -> None:
+            self.stop_called = True
+
+    class _RunningRuntime:
+        def is_running(self) -> bool:
+            return True
+
+    class _RunningServer:
+        def __init__(self) -> None:
+            self.server = _RunningRuntime()
+
+        def start(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+    def _fake_create(*args, **kwargs) -> _RunningServer:
+        del args, kwargs
+        return _RunningServer()
+
+    monkeypatch.setattr("sari.lsp.hub.SolidLanguageServer.create", _fake_create)
+
+    stale_server = _StoppedServer()
+    hub = LspHub()
+    key = LspRuntimeKey(language=Language.PYTHON, repo_root=str("/repo"), slot=0)
+    hub._instances[key] = LspRuntimeEntry(server=stale_server, last_used_at=time.monotonic())
+
+    _ = hub.get_or_start(language=Language.PYTHON, repo_root="/repo")
+
+    assert stale_server.stop_called is True
+    metrics = hub.get_metrics()
+    assert metrics["lsp_orphan_suspect_count"] >= 1
     hub.stop_all()

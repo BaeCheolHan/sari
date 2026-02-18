@@ -18,10 +18,10 @@ from sari.core.models import now_iso8601_utc
 class _WatcherHandler(FileSystemEventHandler):
     """watchdog 이벤트를 내부 큐로 전달한다."""
 
-    def __init__(self, event_queue: queue.Queue[tuple[str, str, str]]) -> None:
-        """이벤트 전달 큐를 저장한다."""
+    def __init__(self, enqueue_event: Callable[[str, str, str], None]) -> None:
+        """이벤트 enqueue 함수를 저장한다."""
         super().__init__()
-        self._event_queue = event_queue
+        self._enqueue_event_fn = enqueue_event
 
     def on_created(self, event: FileSystemEvent) -> None:
         """생성 이벤트를 큐에 적재한다."""
@@ -43,7 +43,7 @@ class _WatcherHandler(FileSystemEventHandler):
         """디렉터리 이벤트를 제외하고 파일 이벤트를 큐에 적재한다."""
         if event.is_directory:
             return
-        self._event_queue.put((event_type, str(event.src_path), str(getattr(event, "dest_path", ""))))
+        self._enqueue_event_fn(event_type, str(event.src_path), str(getattr(event, "dest_path", "")))
 
 
 class EventWatcher:
@@ -65,6 +65,10 @@ class EventWatcher:
         handle_background_collection_error: Callable[[CollectionError, str, str], bool],
         priority_high: int,
         set_observer: Callable[[Observer | None], None],
+        watcher_overflow_rescan_cooldown_sec: int,
+        now_monotonic: Callable[[], float],
+        on_watcher_queue_overflow: Callable[[str | None, str], None],
+        schedule_rescan: Callable[[str], None],
     ) -> None:
         """watcher 동작에 필요한 의존성만 주입받는다."""
         self._workspace_repo = workspace_repo
@@ -80,11 +84,18 @@ class EventWatcher:
         self._handle_background_collection_error = handle_background_collection_error
         self._priority_high = priority_high
         self._set_observer = set_observer
+        self._watcher_overflow_rescan_cooldown_sec = max(1, int(watcher_overflow_rescan_cooldown_sec))
+        self._now_monotonic = now_monotonic
+        self._on_watcher_queue_overflow = on_watcher_queue_overflow
+        self._schedule_rescan = schedule_rescan
+        self._pending_rescan_roots: set[str] = set()
+        self._overflow_last_by_repo: dict[str, float] = {}
+        self._overflow_lock = Lock()
 
     def watcher_loop(self) -> None:
         """watchdog 이벤트 루프를 실행한다."""
         observer = Observer()
-        handler = _WatcherHandler(self._event_queue)
+        handler = _WatcherHandler(self.enqueue_event)
         workspaces = self._workspace_repo.list_all()
         for workspace in workspaces:
             if not workspace.is_active:
@@ -95,11 +106,45 @@ class EventWatcher:
         while not self._stop_event.is_set():
             self._assert_parent_alive(worker_name="watcher")
             self.flush_debounced_events()
+            self.process_pending_rescans()
             try:
                 event_type, src_path, dest_path = self._event_queue.get(timeout=0.5)
             except queue.Empty:
                 continue
             self.push_debounced_event(event_type=event_type, src_path=src_path, dest_path=dest_path)
+
+    def enqueue_event(self, event_type: str, src_path: str, dest_path: str) -> None:
+        """watchdog 이벤트를 큐에 적재하고 overflow를 감지한다."""
+        try:
+            self._event_queue.put_nowait((event_type, src_path, dest_path))
+            return
+        except queue.Full:
+            repo_root = self._resolve_repo_root_for_path(Path(src_path))
+            self._on_watcher_queue_overflow(repo_root, src_path)
+            if repo_root is None:
+                return
+            now_monotonic = self._now_monotonic()
+            with self._overflow_lock:
+                last_seen = self._overflow_last_by_repo.get(repo_root)
+                if (
+                    last_seen is None
+                    or (now_monotonic - last_seen) >= float(self._watcher_overflow_rescan_cooldown_sec)
+                ):
+                    self._overflow_last_by_repo[repo_root] = now_monotonic
+                    self._pending_rescan_roots.add(repo_root)
+
+    def process_pending_rescans(self) -> None:
+        """overflow로 누락된 이벤트를 보정하기 위한 repo 재스캔을 수행한다."""
+        with self._overflow_lock:
+            pending_roots = sorted(self._pending_rescan_roots)
+            self._pending_rescan_roots.clear()
+        for repo_root in pending_roots:
+            try:
+                self._schedule_rescan(repo_root)
+            except CollectionError as exc:
+                if self._handle_background_collection_error(exc=exc, phase="watcher_overflow_rescan", worker_name="watcher"):
+                    raise
+                return
 
     def handle_fs_event(self, event_type: str, src_path: str, dest_path: str) -> None:
         """단일 파일 시스템 이벤트를 처리한다."""
@@ -154,14 +199,14 @@ class EventWatcher:
             return
         relative_path = str(source_path.relative_to(matched_root).as_posix())
         key = (str(matched_root), relative_path)
-        now_monotonic = time.monotonic()
+        now_monotonic = self._now_monotonic()
         with self._debounce_lock:
             self._debounce_events[key] = (now_monotonic, event_type, dest_path)
 
     def flush_debounced_events(self) -> None:
         """디바운스 버퍼에서 만료된 이벤트를 처리한다."""
         due_items: list[tuple[str, str, str, str]] = []
-        now_monotonic = time.monotonic()
+        now_monotonic = self._now_monotonic()
         with self._debounce_lock:
             keys_to_delete: list[tuple[str, str]] = []
             for key, value in self._debounce_events.items():
@@ -176,6 +221,16 @@ class EventWatcher:
                 self._debounce_events.pop(key, None)
         for event_type, src_path, dest_path, _repo_root in due_items:
             self.handle_fs_event(event_type=event_type, src_path=src_path, dest_path=dest_path)
+
+    def _resolve_repo_root_for_path(self, path_value: Path) -> str | None:
+        """입력 파일 경로가 속한 workspace root를 반환한다."""
+        source_path = path_value.resolve()
+        workspaces = self._workspace_repo.list_all()
+        for workspace in workspaces:
+            root = Path(workspace.path).resolve()
+            if _path_is_relative_to(source_path, root):
+                return str(root)
+        return None
 
 
 def _path_is_relative_to(path: Path, base: Path) -> bool:

@@ -138,7 +138,7 @@ def test_daemon_start_status_stop_and_http(tmp_path: Path) -> None:
         assert len(workspaces["items"]) == 1
 
         query = urllib.parse.quote("test_symbol")
-        repo_q = urllib.parse.quote(str(repo_dir))
+        repo_q = urllib.parse.quote("repo-a")
         search = _read_json(f"http://{runtime.host}:{runtime.port}/search?repo={repo_q}&q={query}&limit=5")
         assert "items" in search
         assert "meta" in search
@@ -149,7 +149,7 @@ def test_daemon_start_status_stop_and_http(tmp_path: Path) -> None:
         read_json = _post_json(
             f"http://{runtime.host}:{runtime.port}/read_diff_preview",
             {
-                "repo": str(repo_dir),
+                "repo": "repo-a",
                 "target": "sample.py",
                 "content": "def test_symbol():\n    return 'changed'\n",
             },
@@ -162,7 +162,7 @@ def test_daemon_start_status_stop_and_http(tmp_path: Path) -> None:
         read_pack1 = _post_json(
             f"http://{runtime.host}:{runtime.port}/read_diff_preview",
             {
-                "repo": str(repo_dir),
+                "repo": "repo-a",
                 "target": "sample.py",
                 "content": "def test_symbol():\n    return 'changed'\n",
                 "format": "pack1",

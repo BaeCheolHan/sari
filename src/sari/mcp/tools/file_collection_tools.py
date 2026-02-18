@@ -41,7 +41,23 @@ class ScanOnceTool:
             "scanned_count": result.scanned_count,
             "indexed_count": result.indexed_count,
             "deleted_count": result.deleted_count,
+            "mode": result.mode,
+            "target_repo_count": result.target_repo_count,
+            "succeeded_repo_count": result.succeeded_repo_count,
+            "failed_repo_count": result.failed_repo_count,
+            "repo_results": [entry.to_dict() for entry in result.repo_results],
         }
+        errors: list[dict[str, object]] = []
+        for entry in result.repo_results:
+            if entry.status != "error":
+                continue
+            errors.append(
+                {
+                    "code": entry.error_code or "ERR_SCAN_ONCE_FAILED",
+                    "message": entry.error_message or "scan_once fan-out repository scan failed",
+                    "repo_root": entry.repo_root,
+                }
+            )
         return pack1_success(
             {
                 "items": [item],
@@ -49,7 +65,7 @@ class ScanOnceTool:
                     candidate_count=result.scanned_count,
                     resolved_count=result.indexed_count,
                     cache_hit=None,
-                    errors=[],
+                    errors=errors,
                 ).to_dict(),
             }
         )

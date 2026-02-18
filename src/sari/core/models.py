@@ -406,10 +406,35 @@ class FileReadResultDTO:
     is_truncated: bool
     next_offset: int | None
 @dataclass(frozen=True)
+class CollectionScanRepoResultDTO:
+    repo_root: str
+    scanned_count: int
+    indexed_count: int
+    deleted_count: int
+    status: str = "ok"
+    error_code: str | None = None
+    error_message: str | None = None
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "repo_root": self.repo_root,
+            "scanned_count": self.scanned_count,
+            "indexed_count": self.indexed_count,
+            "deleted_count": self.deleted_count,
+            "status": self.status,
+            "error_code": self.error_code,
+            "error_message": self.error_message,
+        }
+
+@dataclass(frozen=True)
 class CollectionScanResultDTO:
     scanned_count: int
     indexed_count: int
     deleted_count: int
+    mode: str = "single_repo"
+    target_repo_count: int = 1
+    succeeded_repo_count: int = 1
+    failed_repo_count: int = 0
+    repo_results: tuple[CollectionScanRepoResultDTO, ...] = ()
 @dataclass(frozen=True)
 class CollectionPolicyDTO:
     include_ext: tuple[str, ...]
@@ -445,6 +470,14 @@ class PipelineMetricsDTO:
     last_error_code: str | None = None
     last_error_message: str | None = None
     last_error_at: str | None = None
+    watcher_queue_depth: int = 0
+    watcher_drop_count: int = 0
+    watcher_overflow_count: int = 0
+    watcher_last_overflow_at: str | None = None
+    lsp_instance_count: int = 0
+    lsp_forced_kill_count: int = 0
+    lsp_stop_timeout_count: int = 0
+    lsp_orphan_suspect_count: int = 0
     def to_dict(self) -> dict[str, object]:
         return {
             "queue_depth": self.queue_depth,
@@ -470,6 +503,14 @@ class PipelineMetricsDTO:
             "last_error_code": self.last_error_code,
             "last_error_message": self.last_error_message,
             "last_error_at": self.last_error_at,
+            "watcher_queue_depth": self.watcher_queue_depth,
+            "watcher_drop_count": self.watcher_drop_count,
+            "watcher_overflow_count": self.watcher_overflow_count,
+            "watcher_last_overflow_at": self.watcher_last_overflow_at,
+            "lsp_instance_count": self.lsp_instance_count,
+            "lsp_forced_kill_count": self.lsp_forced_kill_count,
+            "lsp_stop_timeout_count": self.lsp_stop_timeout_count,
+            "lsp_orphan_suspect_count": self.lsp_orphan_suspect_count,
         }
 @dataclass(frozen=True)
 class PipelineErrorEventDTO:
@@ -521,6 +562,8 @@ class PipelinePolicyDTO:
     dead_ratio_threshold_bps: int
     enrich_worker_count: int
     updated_at: str
+    watcher_queue_max: int = 10000
+    watcher_overflow_rescan_cooldown_sec: int = 30
     bootstrap_mode_enabled: bool = False
     bootstrap_l3_worker_count: int = 1
     bootstrap_l3_queue_max: int = 1000
@@ -532,6 +575,8 @@ class PipelinePolicyDTO:
             "l3_p95_threshold_ms": self.l3_p95_threshold_ms,
             "dead_ratio_threshold_bps": self.dead_ratio_threshold_bps,
             "enrich_worker_count": self.enrich_worker_count,
+            "watcher_queue_max": self.watcher_queue_max,
+            "watcher_overflow_rescan_cooldown_sec": self.watcher_overflow_rescan_cooldown_sec,
             "bootstrap_mode_enabled": self.bootstrap_mode_enabled,
             "bootstrap_l3_worker_count": self.bootstrap_l3_worker_count,
             "bootstrap_l3_queue_max": self.bootstrap_l3_queue_max,

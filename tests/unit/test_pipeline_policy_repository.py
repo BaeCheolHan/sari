@@ -20,6 +20,8 @@ def test_pipeline_policy_repository_returns_default_policy(tmp_path: Path) -> No
     assert policy.l3_p95_threshold_ms == 180_000
     assert policy.dead_ratio_threshold_bps == 10
     assert policy.enrich_worker_count == 4
+    assert policy.watcher_queue_max == 10_000
+    assert policy.watcher_overflow_rescan_cooldown_sec == 30
 
 
 def test_pipeline_policy_repository_updates_fields(tmp_path: Path) -> None:
@@ -33,9 +35,13 @@ def test_pipeline_policy_repository_updates_fields(tmp_path: Path) -> None:
         l3_p95_threshold_ms=210_000,
         dead_ratio_threshold_bps=25,
         enrich_worker_count=8,
+        watcher_queue_max=20_000,
+        watcher_overflow_rescan_cooldown_sec=45,
     )
 
     assert updated.deletion_hold is True
     assert updated.l3_p95_threshold_ms == 210_000
     assert updated.dead_ratio_threshold_bps == 25
     assert updated.enrich_worker_count == 8
+    assert updated.watcher_queue_max == 20_000
+    assert updated.watcher_overflow_rescan_cooldown_sec == 45

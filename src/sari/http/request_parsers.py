@@ -9,41 +9,47 @@ from starlette.responses import JSONResponse
 
 from sari.core.exceptions import ValidationError
 from sari.core.models import ErrorResponseDTO
-from sari.core.repo_resolver import resolve_repo_root
+from sari.core.repo_resolver import resolve_repo_key, resolve_repo_root
 from sari.http.context import HttpContext
 
 
-def resolve_repo_from_query(context: HttpContext, request: Request) -> tuple[str | None, JSONResponse | None]:
-    """쿼리스트링의 repo를 검증하고 실제 repo_root로 해석한다."""
+def resolve_repo_from_query(context: HttpContext, request: Request) -> tuple[str | None, str | None, JSONResponse | None]:
+    """쿼리스트링의 repo_key를 검증하고 repo_root/repo_key를 반환한다."""
     raw_repo = str(request.query_params.get("repo", "")).strip()
     if raw_repo == "":
         error = ErrorResponseDTO(code="ERR_REPO_REQUIRED", message="repo is required")
-        return (None, JSONResponse({"error": {"code": error.code, "message": error.message}}, status_code=400))
+        return (None, None, JSONResponse({"error": {"code": error.code, "message": error.message}}, status_code=400))
     try:
+        workspace_paths = [item.path for item in context.workspace_repo.list_all()]
         resolved_repo = resolve_repo_root(
             repo_or_path=raw_repo,
-            workspace_paths=[item.path for item in context.workspace_repo.list_all()],
+            workspace_paths=workspace_paths,
+            allow_absolute_input=False,
         )
+        resolved_key = resolve_repo_key(repo_root=resolved_repo, workspace_paths=workspace_paths)
     except ValidationError as exc:
         error = ErrorResponseDTO(code=exc.context.code, message=exc.context.message)
-        return (None, JSONResponse({"error": {"code": error.code, "message": error.message}}, status_code=400))
-    return (resolved_repo, None)
+        return (None, None, JSONResponse({"error": {"code": error.code, "message": error.message}}, status_code=400))
+    return (resolved_repo, resolved_key, None)
 
 
-def resolve_repo_from_value(context: HttpContext, raw_repo: object) -> tuple[str | None, JSONResponse | None]:
-    """일반 값 입력의 repo를 검증하고 실제 repo_root로 해석한다."""
+def resolve_repo_from_value(context: HttpContext, raw_repo: object) -> tuple[str | None, str | None, JSONResponse | None]:
+    """일반 값 입력의 repo_key를 검증하고 repo_root/repo_key를 반환한다."""
     if not isinstance(raw_repo, str) or raw_repo.strip() == "":
         error = ErrorResponseDTO(code="ERR_REPO_REQUIRED", message="repo is required")
-        return (None, JSONResponse({"error": {"code": error.code, "message": error.message}}, status_code=400))
+        return (None, None, JSONResponse({"error": {"code": error.code, "message": error.message}}, status_code=400))
     try:
+        workspace_paths = [item.path for item in context.workspace_repo.list_all()]
         resolved_repo = resolve_repo_root(
             repo_or_path=raw_repo.strip(),
-            workspace_paths=[item.path for item in context.workspace_repo.list_all()],
+            workspace_paths=workspace_paths,
+            allow_absolute_input=False,
         )
+        resolved_key = resolve_repo_key(repo_root=resolved_repo, workspace_paths=workspace_paths)
     except ValidationError as exc:
         error = ErrorResponseDTO(code=exc.context.code, message=exc.context.message)
-        return (None, JSONResponse({"error": {"code": error.code, "message": error.message}}, status_code=400))
-    return (resolved_repo, None)
+        return (None, None, JSONResponse({"error": {"code": error.code, "message": error.message}}, status_code=400))
+    return (resolved_repo, resolved_key, None)
 
 
 def to_int(value: object) -> int | None:
@@ -191,11 +197,14 @@ def resolve_format(raw_format: object) -> tuple[str, JSONResponse | None]:
 def build_read_arguments(
     *,
     repo_root: str,
+    repo_key: str | None,
     mode: str,
     source: Mapping[str, object],
 ) -> tuple[dict[str, object] | None, JSONResponse | None]:
     """read 호출 인자를 모드별로 검증해 구성한다."""
     arguments: dict[str, object] = {"repo": repo_root, "mode": mode}
+    if isinstance(repo_key, str) and repo_key.strip() != "":
+        arguments["repo_key"] = repo_key.strip()
     target = source.get("target")
     if mode in {"file", "symbol", "diff_preview"}:
         if not isinstance(target, str) or target.strip() == "":

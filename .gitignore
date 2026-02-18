@@ -10,4 +10,8 @@ dist/
 build/
 *.egg-info/
 .idea/
-.worktrees/
+.worktrees/.venv/
+.solidlsp/
+.serena/
+.idea/
+.pytest_cache/

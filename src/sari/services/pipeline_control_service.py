@@ -45,6 +45,8 @@ class PipelineControlService:
         l3_p95_threshold_ms: int | None = None,
         dead_ratio_threshold_bps: int | None = None,
         enrich_worker_count: int | None = None,
+        watcher_queue_max: int | None = None,
+        watcher_overflow_rescan_cooldown_sec: int | None = None,
         bootstrap_mode_enabled: bool | None = None,
         bootstrap_l3_worker_count: int | None = None,
         bootstrap_l3_queue_max: int | None = None,
@@ -59,6 +61,12 @@ class PipelineControlService:
             raise ValidationError(ErrorContext(code="ERR_POLICY_INVALID", message="dead_ratio_threshold_bps는 1 이상이어야 합니다"))
         if enrich_worker_count is not None and enrich_worker_count <= 0:
             raise ValidationError(ErrorContext(code="ERR_POLICY_INVALID", message="enrich_worker_count는 1 이상이어야 합니다"))
+        if watcher_queue_max is not None and watcher_queue_max < 100:
+            raise ValidationError(ErrorContext(code="ERR_POLICY_INVALID", message="watcher_queue_max는 100 이상이어야 합니다"))
+        if watcher_overflow_rescan_cooldown_sec is not None and watcher_overflow_rescan_cooldown_sec < 1:
+            raise ValidationError(
+                ErrorContext(code="ERR_POLICY_INVALID", message="watcher_overflow_rescan_cooldown_sec는 1 이상이어야 합니다")
+            )
         if bootstrap_l3_worker_count is not None and bootstrap_l3_worker_count <= 0:
             raise ValidationError(ErrorContext(code="ERR_POLICY_INVALID", message="bootstrap_l3_worker_count는 1 이상이어야 합니다"))
         if bootstrap_l3_queue_max is not None and bootstrap_l3_queue_max <= 0:
@@ -78,6 +86,8 @@ class PipelineControlService:
             l3_p95_threshold_ms=l3_p95_threshold_ms,
             dead_ratio_threshold_bps=dead_ratio_threshold_bps,
             enrich_worker_count=enrich_worker_count,
+            watcher_queue_max=watcher_queue_max,
+            watcher_overflow_rescan_cooldown_sec=watcher_overflow_rescan_cooldown_sec,
             bootstrap_mode_enabled=bootstrap_mode_enabled,
             bootstrap_l3_worker_count=bootstrap_l3_worker_count,
             bootstrap_l3_queue_max=bootstrap_l3_queue_max,

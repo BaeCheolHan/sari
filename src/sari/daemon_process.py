@@ -54,6 +54,14 @@ from sari.services.read_facade_service import ReadFacadeService
 from sari.mcp.server import McpServer
 
 log = logging.getLogger(__name__)
+_FATAL_DB_PATTERNS: tuple[str, ...] = (
+    "disk i/o error",
+    "no such table",
+    "database disk image is malformed",
+    "database or disk is full",
+    "readonly database",
+    "unable to open database file",
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -274,8 +282,20 @@ def main() -> None:
     def _heartbeat_loop() -> None:
         """데몬 heartbeat를 주기적으로 갱신한다."""
         while not stop_event.is_set():
-            runtime_repo.touch_heartbeat(pid=this_pid, heartbeat_at=now_iso8601_utc())
-            _touch_registry_seen(daemon_registry_repo, this_pid)
+            try:
+                runtime_repo.touch_heartbeat(pid=this_pid, heartbeat_at=now_iso8601_utc())
+                _touch_registry_seen(daemon_registry_repo, this_pid)
+            except sqlite3.Error as exc:
+                log.exception("heartbeat 갱신 실패: %s", exc)
+                if _is_fatal_db_error(exc):
+                    _trigger_fatal_shutdown(
+                        stop_event=stop_event,
+                        runtime_repo=runtime_repo,
+                        pid=this_pid,
+                        reason="DB_FATAL_HEARTBEAT",
+                        shutdown_reason=shutdown_reason,
+                    )
+                    return
             stop_event.wait(timeout=float(config.daemon_heartbeat_interval_sec))
 
     def _auto_loop() -> None:
@@ -294,6 +314,15 @@ def main() -> None:
             except (ValidationError, sqlite3.Error, RuntimeError, OSError, ValueError, TypeError) as exc:
                 # 자동제어 실패를 침묵 처리하지 않고 명시적으로 기록한다.
                 log.exception("자동제어 평가 실패: %s", exc)
+                if isinstance(exc, sqlite3.Error) and _is_fatal_db_error(exc):
+                    _trigger_fatal_shutdown(
+                        stop_event=stop_event,
+                        runtime_repo=runtime_repo,
+                        pid=this_pid,
+                        reason="DB_FATAL_AUTO_LOOP",
+                        shutdown_reason=shutdown_reason,
+                    )
+                    return
                 try:
                     event_repo.record_event(
                         job_id="daemon:auto_hold",
@@ -302,6 +331,15 @@ def main() -> None:
                         created_at=now_iso8601_utc(),
                     )
                 except sqlite3.Error as event_exc:
+                    if _is_fatal_db_error(event_exc):
+                        _trigger_fatal_shutdown(
+                            stop_event=stop_event,
+                            runtime_repo=runtime_repo,
+                            pid=this_pid,
+                            reason="DB_FATAL_EVENT_RECORD",
+                            shutdown_reason=shutdown_reason,
+                        )
+                        return
                     raise DaemonError(
                         ErrorContext(
                             code="ERR_DAEMON_EVENT_RECORD_FAILED",
@@ -340,6 +378,13 @@ def main() -> None:
             shutdown_reason["value"] = "LSP_STOP_FAILURE"
             runtime_repo.mark_exit_reason(this_pid, "LSP_STOP_FAILURE", now_iso8601_utc())
             lsp_stop_error = exc
+        try:
+            app.state.mcp_server.close()
+        except DaemonError as exc:
+            if lsp_stop_error is None:
+                shutdown_reason["value"] = "MCP_CLOSE_FAILURE"
+                runtime_repo.mark_exit_reason(this_pid, "MCP_CLOSE_FAILURE", now_iso8601_utc())
+                lsp_stop_error = exc
         file_collection_service.stop_background()
         daemon_registry_repo.remove_by_pid(this_pid)
         runtime_repo.mark_exit_reason(this_pid, shutdown_reason["value"], now_iso8601_utc())
@@ -374,6 +419,30 @@ def _touch_registry_seen(registry_repo: DaemonRegistryRepository, pid: int) -> N
         if entry.pid == pid:
             registry_repo.touch(daemon_id=entry.daemon_id, seen_at=now_iso8601_utc())
             return
+
+
+def _is_fatal_db_error(exc: sqlite3.Error) -> bool:
+    """운영 지속이 불가능한 DB 오류인지 판정한다."""
+    message = str(exc).strip().lower()
+    return any(pattern in message for pattern in _FATAL_DB_PATTERNS)
+
+
+def _trigger_fatal_shutdown(
+    *,
+    stop_event: threading.Event,
+    runtime_repo: RuntimeRepository,
+    pid: int,
+    reason: str,
+    shutdown_reason: dict[str, str],
+) -> None:
+    """DB 치명 오류 시 즉시 종료 경로로 전환한다."""
+    shutdown_reason["value"] = reason
+    try:
+        runtime_repo.mark_exit_reason(pid, reason, now_iso8601_utc())
+    except sqlite3.Error as mark_exc:
+        log.exception("exit reason 기록 실패(%s): %s", reason, mark_exc)
+    stop_event.set()
+    os.kill(pid, signal.SIGTERM)
 
 
 if __name__ == "__main__":

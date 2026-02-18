@@ -23,6 +23,7 @@ class PipelinePolicyRepository:
             row = conn.execute(
                 """
                 SELECT deletion_hold, l3_p95_threshold_ms, dead_ratio_threshold_bps, enrich_worker_count,
+                       watcher_queue_max, watcher_overflow_rescan_cooldown_sec,
                        bootstrap_mode_enabled, bootstrap_l3_worker_count, bootstrap_l3_queue_max,
                        bootstrap_exit_min_l2_coverage_bps, bootstrap_exit_max_sec,
                        alert_window_sec, updated_at
@@ -37,6 +38,8 @@ class PipelinePolicyRepository:
             l3_p95_threshold_ms=row_int(row, "l3_p95_threshold_ms"),
             dead_ratio_threshold_bps=row_int(row, "dead_ratio_threshold_bps"),
             enrich_worker_count=row_int(row, "enrich_worker_count"),
+            watcher_queue_max=row_int(row, "watcher_queue_max"),
+            watcher_overflow_rescan_cooldown_sec=row_int(row, "watcher_overflow_rescan_cooldown_sec"),
             bootstrap_mode_enabled=row_bool(row, "bootstrap_mode_enabled"),
             bootstrap_l3_worker_count=row_int(row, "bootstrap_l3_worker_count"),
             bootstrap_l3_queue_max=row_int(row, "bootstrap_l3_queue_max"),
@@ -66,6 +69,8 @@ class PipelinePolicyRepository:
         l3_p95_threshold_ms: int | None = None,
         dead_ratio_threshold_bps: int | None = None,
         enrich_worker_count: int | None = None,
+        watcher_queue_max: int | None = None,
+        watcher_overflow_rescan_cooldown_sec: int | None = None,
         bootstrap_mode_enabled: bool | None = None,
         bootstrap_l3_worker_count: int | None = None,
         bootstrap_l3_queue_max: int | None = None,
@@ -80,6 +85,12 @@ class PipelinePolicyRepository:
         next_l3_p95 = current.l3_p95_threshold_ms if l3_p95_threshold_ms is None else l3_p95_threshold_ms
         next_dead_ratio = current.dead_ratio_threshold_bps if dead_ratio_threshold_bps is None else dead_ratio_threshold_bps
         next_workers = current.enrich_worker_count if enrich_worker_count is None else enrich_worker_count
+        next_watcher_queue_max = current.watcher_queue_max if watcher_queue_max is None else watcher_queue_max
+        next_watcher_overflow_cooldown = (
+            current.watcher_overflow_rescan_cooldown_sec
+            if watcher_overflow_rescan_cooldown_sec is None
+            else watcher_overflow_rescan_cooldown_sec
+        )
         next_bootstrap_enabled = current.bootstrap_mode_enabled if bootstrap_mode_enabled is None else bootstrap_mode_enabled
         next_bootstrap_l3_workers = (
             current.bootstrap_l3_worker_count if bootstrap_l3_worker_count is None else bootstrap_l3_worker_count
@@ -101,6 +112,8 @@ class PipelinePolicyRepository:
                     l3_p95_threshold_ms = :l3_p95_threshold_ms,
                     dead_ratio_threshold_bps = :dead_ratio_threshold_bps,
                     enrich_worker_count = :enrich_worker_count,
+                    watcher_queue_max = :watcher_queue_max,
+                    watcher_overflow_rescan_cooldown_sec = :watcher_overflow_rescan_cooldown_sec,
                     bootstrap_mode_enabled = :bootstrap_mode_enabled,
                     bootstrap_l3_worker_count = :bootstrap_l3_worker_count,
                     bootstrap_l3_queue_max = :bootstrap_l3_queue_max,
@@ -115,6 +128,8 @@ class PipelinePolicyRepository:
                     "l3_p95_threshold_ms": next_l3_p95,
                     "dead_ratio_threshold_bps": next_dead_ratio,
                     "enrich_worker_count": next_workers,
+                    "watcher_queue_max": next_watcher_queue_max,
+                    "watcher_overflow_rescan_cooldown_sec": next_watcher_overflow_cooldown,
                     "bootstrap_mode_enabled": 1 if next_bootstrap_enabled else 0,
                     "bootstrap_l3_worker_count": next_bootstrap_l3_workers,
                     "bootstrap_l3_queue_max": next_bootstrap_l3_queue_max,
@@ -130,6 +145,8 @@ class PipelinePolicyRepository:
             l3_p95_threshold_ms=next_l3_p95,
             dead_ratio_threshold_bps=next_dead_ratio,
             enrich_worker_count=next_workers,
+            watcher_queue_max=next_watcher_queue_max,
+            watcher_overflow_rescan_cooldown_sec=next_watcher_overflow_cooldown,
             bootstrap_mode_enabled=next_bootstrap_enabled,
             bootstrap_l3_worker_count=next_bootstrap_l3_workers,
             bootstrap_l3_queue_max=next_bootstrap_l3_queue_max,
@@ -146,11 +163,12 @@ class PipelinePolicyRepository:
                 """
                 INSERT INTO pipeline_policy(
                     singleton_key, deletion_hold, l3_p95_threshold_ms, dead_ratio_threshold_bps,
-                    enrich_worker_count, bootstrap_mode_enabled, bootstrap_l3_worker_count, bootstrap_l3_queue_max,
+                    enrich_worker_count, watcher_queue_max, watcher_overflow_rescan_cooldown_sec,
+                    bootstrap_mode_enabled, bootstrap_l3_worker_count, bootstrap_l3_queue_max,
                     bootstrap_exit_min_l2_coverage_bps, bootstrap_exit_max_sec, alert_window_sec, updated_at
                 )
                 VALUES(
-                    'default', 0, 180000, 10, 4, 0, 1, 1000, 9500, 1800, 300, :updated_at
+                    'default', 0, 180000, 10, 4, 10000, 30, 0, 1, 1000, 9500, 1800, 300, :updated_at
                 )
                 ON CONFLICT(singleton_key) DO NOTHING
                 """,

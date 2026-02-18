@@ -1,9 +1,9 @@
-"""repo 경계 판별 유틸을 제공한다."""
+"""repo 경계 판별 및 repo_key 변환 유틸을 제공한다."""
 
 from __future__ import annotations
 
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from sari.core.exceptions import ErrorContext, ValidationError
 
@@ -42,10 +42,30 @@ _SKIP_DIR_NAMES: set[str] = {
 }
 
 
-def resolve_repo_root(repo_or_path: str, workspace_paths: list[str]) -> str:
-    """입력 경로에서 repo 루트를 결정론적으로 판별한다."""
-    normalized_input = _normalize_input_path(repo_or_path)
+def resolve_repo_root(repo_or_path: str, workspace_paths: list[str], *, allow_absolute_input: bool = True) -> str:
+    """입력값(repo_key/경로)에서 repo 루트를 결정론적으로 판별한다."""
     normalized_workspaces = _normalize_workspace_paths(workspace_paths)
+    stripped_input = str(repo_or_path).strip()
+    if stripped_input == "":
+        raise ValidationError(
+            ErrorContext(
+                code="ERR_REPO_REQUIRED",
+                message="repo is required",
+            )
+        )
+    if not _looks_like_absolute_path(stripped_input):
+        key_candidate = _resolve_repo_from_key_input(repo_key=stripped_input, workspace_paths=normalized_workspaces)
+        if key_candidate is not None:
+            return str(key_candidate)
+    if not allow_absolute_input:
+        raise ValidationError(
+            ErrorContext(
+                code="ERR_REPO_NOT_FOUND",
+                message="repo key is not registered workspace",
+            )
+        )
+
+    normalized_input = _normalize_input_path(repo_or_path)
     exact_workspace_match = _find_exact_workspace_match(normalized_input, normalized_workspaces)
     if exact_workspace_match is not None:
         return str(exact_workspace_match)
@@ -68,6 +88,20 @@ def resolve_repo_root(repo_or_path: str, workspace_paths: list[str]) -> str:
             message="repo is not registered workspace",
         )
     )
+
+
+def resolve_repo_key(repo_root: str, workspace_paths: list[str]) -> str:
+    """repo 루트를 workspace-relative repo_key로 변환한다."""
+    normalized_root = Path(repo_root).expanduser().resolve()
+    normalized_workspaces = _normalize_workspace_paths(workspace_paths)
+    for workspace_path in normalized_workspaces:
+        if not _is_path_descendant(normalized_root, workspace_path):
+            continue
+        relative = normalized_root.relative_to(workspace_path).as_posix().strip()
+        if relative != "":
+            return str(PurePosixPath(relative))
+        return normalized_root.name
+    return normalized_root.name
 
 
 def is_path_within_repo_boundary(repo_root: str, path_value: str | Path) -> bool:
@@ -117,6 +151,34 @@ def _normalize_workspace_paths(workspace_paths: list[str]) -> list[Path]:
     # 가장 긴 경계를 먼저 평가하기 위해 경로 길이 기준 정렬한다.
     normalized.sort(key=lambda item: len(item.parts), reverse=True)
     return normalized
+
+
+def _looks_like_absolute_path(value: str) -> bool:
+    """입력이 절대경로 형태인지 판별한다."""
+    expanded = Path(value).expanduser()
+    if expanded.is_absolute():
+        return True
+    # Windows drive path (예: C:\repo)
+    return len(value) >= 2 and value[1] == ":"
+
+
+def _resolve_repo_from_key_input(repo_key: str, workspace_paths: list[Path]) -> Path | None:
+    """repo_key 입력을 workspace 기준 경로로 해석한다."""
+    normalized_key = PurePosixPath(repo_key.strip())
+    if str(normalized_key) in {"", "."}:
+        return None
+    for workspace_path in workspace_paths:
+        candidate = (workspace_path / str(normalized_key)).resolve()
+        if not candidate.exists() or not candidate.is_dir():
+            continue
+        if not _is_path_descendant(candidate, workspace_path):
+            continue
+        return candidate
+    # workspace 자체가 이미 repo라면 basename으로도 접근할 수 있게 허용한다.
+    for workspace_path in workspace_paths:
+        if workspace_path.name == str(normalized_key):
+            return workspace_path
+    return None
 
 
 def _find_git_root(start: Path) -> Path | None:

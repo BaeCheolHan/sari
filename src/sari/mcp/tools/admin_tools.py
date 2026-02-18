@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from sari.core.exceptions import ValidationError
 from sari.core.models import ErrorResponseDTO
-from sari.core.repo_resolver import resolve_repo_root
+from sari.core.repo_resolver import resolve_repo_key, resolve_repo_root
 from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.mcp.tools.pack1 import Pack1MetaDTO, pack1_error, pack1_success
 from sari.services.admin_service import AdminService
@@ -17,16 +17,29 @@ def validate_repo_argument(arguments: dict[str, object], workspace_repo: Workspa
     repo = arguments.get("repo")
     if not isinstance(repo, str) or repo.strip() == "":
         return ErrorResponseDTO(code="ERR_REPO_REQUIRED", message="repo is required")
+    repo_key_raw = arguments.get("repo_key")
+    workspace_paths = [item.path for item in workspace_repo.list_all()]
     try:
-        resolved_repo = resolve_repo_root(
-            repo_or_path=repo.strip(),
-            workspace_paths=[item.path for item in workspace_repo.list_all()],
-        )
+        if isinstance(repo_key_raw, str) and repo_key_raw.strip() != "":
+            resolved_repo = resolve_repo_root(
+                repo_or_path=repo_key_raw.strip(),
+                workspace_paths=workspace_paths,
+                allow_absolute_input=False,
+            )
+        else:
+            resolved_repo = resolve_repo_root(
+                repo_or_path=repo.strip(),
+                workspace_paths=workspace_paths,
+                allow_absolute_input=False,
+            )
     except ValidationError as exc:
-        return ErrorResponseDTO(code=exc.context.code, message=exc.context.message)
-    if workspace_repo.get_by_path(resolved_repo) is None:
-        return ErrorResponseDTO(code="ERR_REPO_NOT_FOUND", message="repo is not registered workspace")
+        workspace_match = workspace_repo.get_by_path(repo.strip())
+        if workspace_match is None:
+            return ErrorResponseDTO(code=exc.context.code, message=exc.context.message)
+        resolved_repo = workspace_match.path
+    resolved_key = resolve_repo_key(repo_root=resolved_repo, workspace_paths=workspace_paths)
     arguments["repo"] = resolved_repo
+    arguments["repo_key"] = resolved_key
     return None
 
 

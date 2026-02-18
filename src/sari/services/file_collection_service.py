@@ -3,6 +3,7 @@ import fnmatch
 import hashlib
 import logging
 import queue
+import sqlite3
 import threading
 import time
 import traceback
@@ -16,7 +17,7 @@ from sari.core.exceptions import CollectionError, DaemonError, ErrorContext
 from sari.core.config import DEFAULT_COLLECTION_EXCLUDE_GLOBS
 from sari.core.language_registry import get_default_collection_extensions, resolve_language_from_path
 from sari.core.text_decode import decode_bytes_with_policy
-from sari.core.models import CandidateIndexChangeDTO, CollectionPolicyDTO, CollectionScanResultDTO, CollectedFileL1DTO, FileReadResultDTO, PipelineMetricsDTO, now_iso8601_utc
+from sari.core.models import CandidateIndexChangeDTO, CollectionPolicyDTO, CollectionScanRepoResultDTO, CollectionScanResultDTO, CollectedFileL1DTO, FileReadResultDTO, PipelineMetricsDTO, now_iso8601_utc
 from sari.db.repositories.file_body_repository import FileBodyDecodeError, FileBodyRepository
 from sari.db.repositories.file_collection_repository import FileCollectionRepository
 from sari.db.repositories.file_enrich_queue_repository import FileEnrichQueueRepository
@@ -208,6 +209,10 @@ class SolidLspExtractionBackend:
         with self._prewarm_lock:
             self._hot_languages_by_repo[normalized] = set(languages)
 
+    def get_runtime_metrics(self) -> dict[str, int]:
+        """LSP 허브 런타임 메트릭을 반환한다."""
+        return self._hub.get_metrics()
+
 class FileCollectionService:
     PRIORITY_HIGH = 90
     PRIORITY_MEDIUM = 60
@@ -220,6 +225,25 @@ class FileCollectionService:
     SCAN_HASH_MAX_WORKERS = 8
     LSP_PREWARM_TOP_LANGUAGE_COUNT = 2
     LSP_PREWARM_MIN_LANGUAGE_FILES = 32
+    WATCHER_QUEUE_MAX = 10_000
+    WATCHER_OVERFLOW_RESCAN_COOLDOWN_SEC = 30
+    WORKSPACE_SCAN_BUILD_MARKERS: tuple[str, ...] = (
+        "pyproject.toml",
+        "package.json",
+        "go.mod",
+        "Cargo.toml",
+        "pom.xml",
+        "build.gradle",
+        "build.gradle.kts",
+        "settings.gradle",
+        "settings.gradle.kts",
+        "WORKSPACE",
+        "MODULE.bazel",
+        "nx.json",
+        "pnpm-workspace.yaml",
+        "turbo.json",
+        "composer.json",
+    )
 
     def __init__(self, workspace_repo: WorkspaceRepository, file_repo: FileCollectionRepository, enrich_queue_repo: FileEnrichQueueRepository, body_repo: FileBodyRepository, lsp_repo: LspToolDataRepository, readiness_repo: ToolReadinessRepository, policy: CollectionPolicyDTO, lsp_backend: LspExtractionBackend, policy_repo: PipelinePolicyRepository | None=None, event_repo: PipelineJobEventRepository | None=None, error_event_repo: PipelineErrorEventRepository | None=None, candidate_index_sink: CandidateIndexSink | None=None, vector_index_sink: VectorIndexSink | None=None, run_mode: str='dev', parent_alive_probe: Callable[[], bool] | None=None, persist_body_for_read: bool=True) -> None:
         self._workspace_repo = workspace_repo
@@ -238,15 +262,31 @@ class FileCollectionService:
         self._run_mode = 'prod' if run_mode == 'prod' else 'dev'
         self._parent_alive_probe = parent_alive_probe
         self._persist_body_for_read = persist_body_for_read
+        self._watcher_queue_max = self.WATCHER_QUEUE_MAX
+        self._watcher_overflow_rescan_cooldown_sec = self.WATCHER_OVERFLOW_RESCAN_COOLDOWN_SEC
+        if self._policy_repo is not None:
+            try:
+                runtime_policy = self._policy_repo.get_policy()
+                self._watcher_queue_max = max(100, int(runtime_policy.watcher_queue_max))
+                self._watcher_overflow_rescan_cooldown_sec = max(
+                    1, int(runtime_policy.watcher_overflow_rescan_cooldown_sec)
+                )
+            except (RuntimeError, ValueError):
+                # 정책 조회 실패 시 기본 안전값으로 동작한다.
+                self._watcher_queue_max = self.WATCHER_QUEUE_MAX
+                self._watcher_overflow_rescan_cooldown_sec = self.WATCHER_OVERFLOW_RESCAN_COOLDOWN_SEC
         self._stop_event = threading.Event()
         self._scheduler_thread: threading.Thread | None = None
         self._enrich_threads: list[threading.Thread] = []
         self._watcher_thread: threading.Thread | None = None
-        self._event_queue: queue.Queue[tuple[str, str, str]] = queue.Queue()
+        self._event_queue: queue.Queue[tuple[str, str, str]] = queue.Queue(maxsize=self._watcher_queue_max)
         self._l3_ready_queue: queue.Queue[FileEnrichJobDTO] = queue.Queue()
         self._watcher_debounce_ms = 300
         self._debounce_events: dict[tuple[str, str], tuple[float, str, str]] = {}
         self._debounce_lock = threading.Lock()
+        self._watcher_drop_count = 0
+        self._watcher_overflow_count = 0
+        self._watcher_last_overflow_at: str | None = None
         self._enrich_latency_samples_ms: list[float] = []
         self._throughput_samples_jobs_per_sec: list[float] = []
         self._throughput_ema_jobs_per_sec = 0.0
@@ -329,6 +369,10 @@ class FileCollectionService:
             handle_background_collection_error=self._handle_background_collection_error_proxy,
             priority_high=self.PRIORITY_HIGH,
             set_observer=self._runtime_manager.set_observer,
+            watcher_overflow_rescan_cooldown_sec=self._watcher_overflow_rescan_cooldown_sec,
+            now_monotonic=time.monotonic,
+            on_watcher_queue_overflow=self._record_watcher_queue_overflow,
+            schedule_rescan=self._schedule_rescan_from_watcher,
         )
         self._metrics_service = PipelineMetricsService(
             refresh_indexing_mode=self._enrich_engine.refresh_indexing_mode,
@@ -348,11 +392,104 @@ class FileCollectionService:
             last_error_code=self._error_policy.last_error_code,
             last_error_message=self._error_policy.last_error_message,
             last_error_at=self._error_policy.last_error_at,
+            watcher_queue_depth=lambda: self._event_queue.qsize(),
+            watcher_drop_count=self._watcher_drop_count_snapshot,
+            watcher_overflow_count=self._watcher_overflow_count_snapshot,
+            watcher_last_overflow_at=self._watcher_last_overflow_at_snapshot,
+            lsp_metrics_snapshot=self._lsp_runtime_metrics_snapshot,
         )
 
     def scan_once(self, repo_root: str) -> CollectionScanResultDTO:
-        """L1 스캔을 전용 스캐너 컴포넌트로 위임한다."""
-        return self._scanner.scan_once(repo_root)
+        """L1 스캔을 실행한다. workspace 컨테이너는 top-level repo fan-out을 수행한다."""
+        root_path = Path(repo_root).expanduser().resolve()
+        fanout_targets = self._resolve_top_level_repo_targets(root_path)
+        if len(fanout_targets) == 0:
+            return self._scanner.scan_once(str(root_path))
+        return self._scan_workspace_fanout(root_path=root_path, targets=fanout_targets)
+
+    def _scan_workspace_fanout(self, root_path: Path, targets: list[Path]) -> CollectionScanResultDTO:
+        """workspace 컨테이너 하위 repo를 top-level 단위로 순차 스캔한다."""
+        scanned_total = 0
+        indexed_total = 0
+        deleted_total = 0
+        succeeded = 0
+        failed = 0
+        results: list[CollectionScanRepoResultDTO] = []
+        for target in targets:
+            try:
+                scan_result = self._scanner.scan_once(str(target))
+                scanned_total += scan_result.scanned_count
+                indexed_total += scan_result.indexed_count
+                deleted_total += scan_result.deleted_count
+                succeeded += 1
+                results.append(
+                    CollectionScanRepoResultDTO(
+                        repo_root=str(target),
+                        scanned_count=scan_result.scanned_count,
+                        indexed_count=scan_result.indexed_count,
+                        deleted_count=scan_result.deleted_count,
+                    )
+                )
+            except CollectionError as exc:
+                failed += 1
+                results.append(
+                    CollectionScanRepoResultDTO(
+                        repo_root=str(target),
+                        scanned_count=0,
+                        indexed_count=0,
+                        deleted_count=0,
+                        status="error",
+                        error_code=exc.context.code,
+                        error_message=exc.context.message,
+                    )
+                )
+        return CollectionScanResultDTO(
+            scanned_count=scanned_total,
+            indexed_count=indexed_total,
+            deleted_count=deleted_total,
+            mode="fanout_top_level",
+            target_repo_count=len(targets),
+            succeeded_repo_count=succeeded,
+            failed_repo_count=failed,
+            repo_results=tuple(results),
+        )
+
+    def _resolve_top_level_repo_targets(self, root_path: Path) -> list[Path]:
+        """workspace 경로인 경우 top-level repo 후보를 계산한다."""
+        if not root_path.exists() or not root_path.is_dir():
+            return []
+        registered_paths = {Path(item.path).expanduser().resolve() for item in self._workspace_repo.list_all()}
+        if root_path not in registered_paths:
+            return []
+        targets: list[Path] = []
+        for child in root_path.iterdir():
+            if not child.is_dir():
+                continue
+            if child.name.startswith("."):
+                continue
+            if self._is_top_level_repo_candidate(child):
+                targets.append(child.resolve())
+        targets.sort(key=lambda item: item.name)
+        return targets
+
+    def _is_top_level_repo_candidate(self, candidate: Path) -> bool:
+        """top-level 하위 디렉터리가 repo 후보인지 판정한다."""
+        if (candidate / ".git").exists():
+            return True
+        for marker in self.WORKSPACE_SCAN_BUILD_MARKERS:
+            if (candidate / marker).exists():
+                return True
+        return self._contains_collectible_file(candidate)
+
+    def _contains_collectible_file(self, repo_root: Path) -> bool:
+        """빌드 마커가 없어도 수집 대상 파일이 존재하면 repo 후보로 간주한다."""
+        gitignore_spec = self._load_gitignore_spec(repo_root)
+        for file_path in repo_root.rglob("*"):
+            if not file_path.is_file():
+                continue
+            if self._is_collectible(file_path=file_path, repo_root=repo_root, gitignore_spec=gitignore_spec):
+                return True
+        return False
 
     def index_file(self, repo_root: str, relative_path: str) -> CollectionScanResultDTO:
         """단일 파일 인덱싱을 전용 스캐너 컴포넌트로 위임한다."""
@@ -372,7 +509,20 @@ class FileCollectionService:
 
     def _watcher_loop(self) -> None:
         """watcher 루프를 전용 이벤트 컴포넌트로 위임한다."""
-        self._watcher.watcher_loop()
+        try:
+            self._watcher.watcher_loop()
+        except CollectionError as exc:
+            if self._handle_background_collection_error_proxy(exc=exc, phase="watcher_loop", worker_name="watcher"):
+                return
+        except (sqlite3.Error, RuntimeError, OSError, ValueError, TypeError) as exc:
+            wrapped = CollectionError(
+                ErrorContext(
+                    code="ERR_WATCHER_RUNTIME_FAILED",
+                    message=f"watcher 루프 실패: {exc}",
+                )
+            )
+            if self._handle_background_collection_error_proxy(exc=wrapped, phase="watcher_loop", worker_name="watcher"):
+                return
 
     def _handle_fs_event(self, event_type: str, src_path: str, dest_path: str) -> None:
         """파일 시스템 이벤트 처리를 전용 이벤트 컴포넌트로 위임한다."""
@@ -397,6 +547,58 @@ class FileCollectionService:
     def _set_throughput_ema_jobs_per_sec(self, value: float) -> None:
         """처리량 EMA 값을 명시적으로 갱신한다."""
         self._throughput_ema_jobs_per_sec = value
+
+    def _watcher_drop_count_snapshot(self) -> int:
+        """watcher drop 카운트 스냅샷을 반환한다."""
+        with self._metrics_lock:
+            return int(self._watcher_drop_count)
+
+    def _watcher_overflow_count_snapshot(self) -> int:
+        """watcher overflow 카운트 스냅샷을 반환한다."""
+        with self._metrics_lock:
+            return int(self._watcher_overflow_count)
+
+    def _watcher_last_overflow_at_snapshot(self) -> str | None:
+        """watcher 마지막 overflow 시각을 반환한다."""
+        with self._metrics_lock:
+            return self._watcher_last_overflow_at
+
+    def _lsp_runtime_metrics_snapshot(self) -> dict[str, int]:
+        """LSP 런타임 메트릭 스냅샷을 반환한다."""
+        if hasattr(self._lsp_backend, "get_runtime_metrics"):
+            try:
+                metrics = getattr(self._lsp_backend, "get_runtime_metrics")()
+                if isinstance(metrics, dict):
+                    return {str(key): int(value) for key, value in metrics.items()}
+            except (RuntimeError, OSError, ValueError, TypeError):
+                return {}
+        return {}
+
+    def _record_watcher_queue_overflow(self, repo_root: str | None, src_path: str) -> None:
+        """watcher 큐 overflow를 기록한다."""
+        now_iso = now_iso8601_utc()
+        with self._metrics_lock:
+            self._watcher_drop_count += 1
+            self._watcher_overflow_count += 1
+            self._watcher_last_overflow_at = now_iso
+        self._error_policy.record_error_event(
+            component="event_watcher",
+            phase="watcher_overflow",
+            severity="error",
+            error_code="ERR_WATCHER_QUEUE_OVERFLOW",
+            error_message="watcher queue overflow detected; recovery rescan scheduled",
+            error_type="QueueFull",
+            repo_root=repo_root,
+            relative_path=src_path,
+            job_id=None,
+            attempt_count=0,
+            context_data={"queue_max": self._watcher_queue_max},
+            worker_name="watcher",
+        )
+
+    def _schedule_rescan_from_watcher(self, repo_root: str) -> None:
+        """watcher overflow 복구를 위해 단일 repo 재스캔을 실행한다."""
+        _ = self._scanner.scan_once(repo_root)
 
     def list_files(self, repo_root: str, limit: int, prefix: str | None) -> list[dict[str, object]]:
         if limit <= 0:

@@ -74,6 +74,9 @@ class LspHub:
         self._stop_timeout_sec = max(0.2, stop_timeout_sec)
         self._request_timeout_sec = max(0.1, request_timeout_sec)
         self._stop_cleanup = threading.Event()
+        self._forced_kill_count = 0
+        self._stop_timeout_count = 0
+        self._orphan_suspect_count = 0
         self._cleanup_thread = threading.Thread(
             target=self._idle_cleanup_loop,
             name="sari-lsp-idle-cleaner",
@@ -104,7 +107,7 @@ class LspHub:
                 if entry.server.server.is_running():
                     running_keys.append(key)
                     continue
-                self._instances.pop(key, None)
+                self._cleanup_not_running_entry_locked(key=key, entry=entry)
 
             should_scale_out = self._should_scale_out_locked(base_key=base_key, now=now, running_count=len(running_keys))
             if should_scale_out:
@@ -180,7 +183,7 @@ class LspHub:
                 if entry.server.server.is_running():
                     running_keys.append(key)
                     continue
-                self._instances.pop(key, None)
+                self._cleanup_not_running_entry_locked(key=key, entry=entry)
             while len(running_keys) < self._max_instances_per_repo_language:
                 try:
                     slot = self._next_slot_locked(language=language, repo_root=normalized_root)
@@ -217,6 +220,16 @@ class LspHub:
             message = f"LSP 서버 종료 실패 {len(failure_messages)}건: " + "; ".join(failure_messages[:3])
             raise DaemonError(ErrorContext(code="ERR_LSP_STOP_FAILED", message=message))
 
+    def get_metrics(self) -> dict[str, int]:
+        """LSP 런타임 운영 메트릭 스냅샷을 반환한다."""
+        with self._lock:
+            return {
+                "lsp_instance_count": len(self._instances),
+                "lsp_forced_kill_count": int(self._forced_kill_count),
+                "lsp_stop_timeout_count": int(self._stop_timeout_count),
+                "lsp_orphan_suspect_count": int(self._orphan_suspect_count),
+            }
+
     def _evict_idle_locked(self, now: float) -> None:
         """idle timeout을 초과한 인스턴스를 정리한다."""
         evict_keys = [
@@ -248,6 +261,30 @@ class LspHub:
                     message=f"LSP 인스턴스 정리에 실패했습니다: {key.language.value}@{key.repo_root}",
                 )
             ) from exc
+        self._instances.pop(key, None)
+        base_key = (key.language, key.repo_root)
+        self._round_robin_cursor.pop(base_key, None)
+        self._hot_acquire_hits.pop(base_key, None)
+
+    def _cleanup_not_running_entry_locked(self, key: LspRuntimeKey, entry: LspRuntimeEntry) -> None:
+        """is_running=false 엔트리를 OS 프로세스까지 정리한다."""
+        self._orphan_suspect_count += 1
+        try:
+            self._stop_server_with_timeout(entry.server)
+        except (RuntimeError, OSError, ValueError) as exc:
+            log.warning(
+                "비정상 LSP 엔트리 정리 실패(language=%s, repo=%s): %s",
+                key.language.value,
+                key.repo_root,
+                exc,
+            )
+        except DaemonError as exc:
+            log.warning(
+                "비정상 LSP 엔트리 stop 타임아웃(language=%s, repo=%s): %s",
+                key.language.value,
+                key.repo_root,
+                exc.context.code,
+            )
         self._instances.pop(key, None)
         base_key = (key.language, key.repo_root)
         self._round_robin_cursor.pop(base_key, None)
@@ -388,6 +425,7 @@ class LspHub:
         worker.start()
         finished = done.wait(timeout=self._stop_timeout_sec)
         if not finished:
+            self._stop_timeout_count += 1
             self._force_kill_server_process(server)
             raise DaemonError(
                 ErrorContext(
@@ -415,6 +453,7 @@ class LspHub:
             pgid = None
         if isinstance(pgid, int) and pgid > 0:
             try:
+                self._forced_kill_count += 1
                 os.killpg(pgid, signal.SIGTERM)
             except ProcessLookupError:
                 return
