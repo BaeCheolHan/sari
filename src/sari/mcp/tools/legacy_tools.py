@@ -122,7 +122,18 @@ class SariGuideTool:
             [
                 {
                     "name": "sari_guide",
-                    "summary": "search -> read -> symbol 순서로 탐색하고 repo 스코프를 항상 명시하세요.",
+                    "summary": "최소 호출 흐름: search -> read(file) -> search_symbol",
+                    "quick_start": [
+                        {"tool": "search", "arguments": {"repo": "/repo", "query": "AuthService", "limit": 5}},
+                        {"tool": "read", "arguments": {"repo": "/repo", "mode": "file", "target": "README.md", "limit": 40}},
+                        {"tool": "search_symbol", "arguments": {"repo": "/repo", "query": "Auth", "limit": 10}},
+                    ],
+                    "alias_map": {
+                        "read.target": ["path", "file_path", "relative_path"],
+                        "search.query": ["q", "keyword"],
+                        "search_symbol.path_prefix": ["path"],
+                        "read.mode": {"file_preview": "file", "preview": "diff_preview"},
+                    },
                 }
             ]
         )

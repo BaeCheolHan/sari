@@ -1,6 +1,7 @@
 """도구 인자 정규화 규칙을 검증한다."""
 
 from sari.mcp.tools.arg_normalizer import ARG_META_KEY, normalize_tool_arguments
+from sari.mcp.tools.arg_normalizer import ArgNormalizationError
 
 
 def test_normalize_read_maps_mode_and_path_alias() -> None:
@@ -31,3 +32,14 @@ def test_normalize_prefers_canonical_when_alias_conflicts() -> None:
         },
     )
     assert result.arguments["query"] == "canonical"
+
+
+def test_normalize_raises_ambiguous_error_for_conflicting_aliases() -> None:
+    """canonical 부재 + alias 값 충돌은 명시적 모호성 오류를 반환해야 한다."""
+    try:
+        normalize_tool_arguments("search", {"repo": "/repo", "q": "a", "keyword": "b"})
+    except ArgNormalizationError as exc:
+        assert exc.code == "ERR_ARGUMENT_AMBIGUOUS"
+        assert exc.hint.expected == ["query"]
+    else:
+        raise AssertionError("ArgNormalizationError must be raised")

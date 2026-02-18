@@ -50,7 +50,7 @@ from sari.mcp.tools.pack1 import pack1_error
 from sari.mcp.pack1_line import PackLineOptionsDTO, render_pack_v2
 from sari.mcp.tools.file_collection_tools import IndexFileTool, ListFilesTool, ReadFileTool, ScanOnceTool
 from sari.mcp.tools.symbol_tools import GetCallersTool, SearchSymbolTool
-from sari.mcp.tools.arg_normalizer import normalize_tool_arguments
+from sari.mcp.tools.arg_normalizer import ArgNormalizationError, normalize_tool_arguments
 from sari.mcp.transport import MCP_MODE_FRAMED, McpTransport, McpTransportParseError
 from sari.mcp.server_daemon_forward import DaemonForwardError, forward_once
 from sari.mcp.tools.search_tool import SearchTool
@@ -271,9 +271,9 @@ class McpServer:
             arguments = params.get('arguments', {})
             if not isinstance(arguments, dict):
                 return McpResponse(request_id=request_id, result=None, error=McpError(code=-32602, message='invalid arguments'))
-            normalized = normalize_tool_arguments(str(tool_name), arguments)
-            arguments = normalized.arguments
             try:
+                normalized = normalize_tool_arguments(str(tool_name), arguments)
+                arguments = normalized.arguments
                 handler_attr = self._tool_handler_attrs.get(str(tool_name))
                 handler = getattr(self, handler_attr) if isinstance(handler_attr, str) and hasattr(self, handler_attr) else None
                 if handler is not None and hasattr(handler, "call"):
@@ -288,6 +288,20 @@ class McpServer:
                     return McpResponse(request_id=request_id, result=raw_result, error=None)
             except ValidationError as exc:
                 payload = pack1_error(ErrorResponseDTO(code=exc.context.code, message=exc.context.message))
+                pack_result = self._render_pack_v2(
+                    tool_name=str(tool_name) if isinstance(tool_name, str) else "unknown",
+                    arguments=arguments,
+                    payload=payload,
+                )
+                return McpResponse(request_id=request_id, result=pack_result, error=None)
+            except ArgNormalizationError as exc:
+                payload = pack1_error(
+                    error=exc.to_error_dto(),
+                    expected=exc.hint.expected,
+                    received=exc.hint.received,
+                    example=exc.hint.example,
+                    normalized_from=exc.hint.normalized_from,
+                )
                 pack_result = self._render_pack_v2(
                     tool_name=str(tool_name) if isinstance(tool_name, str) else "unknown",
                     arguments=arguments,
