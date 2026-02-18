@@ -909,10 +909,12 @@ class SolidLanguageServer(ABC):
                     if include_self:
                         result.append(ReferenceInSymbol(symbol=containing_symbol, line=ref_line, character=ref_col))
                         continue
-                    log.debug(f'Found self-reference for {incoming_symbol['name']}, skipping it since include_self={include_self!r}')
+                    log.debug(f"Found self-reference for {incoming_symbol['name']}, skipping it since include_self={include_self!r}")
                     continue
                 if not include_imports and incoming_symbol is not None and (containing_symbol['name'] == incoming_symbol['name']) and (containing_symbol['kind'] == incoming_symbol['kind']):
-                    log.debug(f'Found import of referenced symbol {incoming_symbol['name']}in {containing_symbol['location']['relativePath']}, skipping')
+                    log.debug(
+                        f"Found import of referenced symbol {incoming_symbol['name']} in {containing_symbol['location']['relativePath']}, skipping"
+                    )
                     continue
                 result.append(ReferenceInSymbol(symbol=containing_symbol, line=ref_line, character=ref_col))
         return result
