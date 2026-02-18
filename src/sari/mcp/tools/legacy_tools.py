@@ -29,6 +29,7 @@ from sari.mcp.stabilization.session_state import (
     record_read_metrics,
     requires_strict_session_id,
 )
+from sari.mcp.tools.arg_normalizer import ARG_META_KEY
 from sari.mcp.tools.admin_tools import validate_repo_argument
 from sari.mcp.tools.pack1 import Pack1MetaDTO, pack1_error, pack1_success
 from sari.services.collection.ports import CollectionScanPort
@@ -74,6 +75,41 @@ def _stabilization_enabled() -> bool:
     """stabilization 활성 여부를 반환한다."""
     raw_value = os.getenv("SARI_STABILIZATION_ENABLED", "1").strip().lower()
     return raw_value not in {"0", "false", "no", "off"}
+
+
+def _argument_error(
+    *,
+    code: str,
+    message: str,
+    arguments: dict[str, object],
+    expected: list[str],
+    example: dict[str, object],
+) -> dict[str, object]:
+    """자기설명형 인자 오류 응답을 생성한다."""
+    received_keys, normalized_from = _extract_arg_meta(arguments)
+    return pack1_error(
+        ErrorResponseDTO(code=code, message=message),
+        expected=expected,
+        received=received_keys,
+        example=example,
+        normalized_from=normalized_from,
+    )
+
+
+def _extract_arg_meta(arguments: dict[str, object]) -> tuple[list[str], dict[str, str]]:
+    """정규화 메타를 추출한다."""
+    raw_meta = arguments.get(ARG_META_KEY)
+    if not isinstance(raw_meta, dict):
+        return ([], {})
+    received_raw = raw_meta.get("received_keys")
+    normalized_raw = raw_meta.get("normalized_from")
+    received_keys: list[str] = []
+    normalized_from: dict[str, str] = {}
+    if isinstance(received_raw, list):
+        received_keys = [str(item) for item in received_raw]
+    if isinstance(normalized_raw, dict):
+        normalized_from = {str(key): str(value) for key, value in normalized_raw.items()}
+    return (received_keys, normalized_from)
 def _content_hash(text: str) -> str:
     """텍스트 본문 해시를 생성한다."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
@@ -234,7 +270,13 @@ class ReadTool:
                 )
         mode_raw = arguments.get("mode", "file")
         if not isinstance(mode_raw, str) or mode_raw.strip() == "":
-            return pack1_error(ErrorResponseDTO(code="ERR_MODE_REQUIRED", message="mode is required"))
+            return _argument_error(
+                code="ERR_MODE_REQUIRED",
+                message="mode is required",
+                arguments=arguments,
+                expected=["mode"],
+                example={"repo": repo_root, "mode": "file", "target": "README.md"},
+            )
         mode = mode_raw.strip().lower()
         if mode == "ast_edit":
             return pack1_error(ErrorResponseDTO(code="ERR_AST_DISABLED", message="ast_edit mode is disabled by policy"))
@@ -246,7 +288,13 @@ class ReadTool:
             return self._read_snippet_mode(repo_root=repo_root, arguments=arguments)
         if mode == "diff_preview":
             return self._read_diff_preview_mode(repo_root=repo_root, arguments=arguments)
-        return pack1_error(ErrorResponseDTO(code="ERR_UNSUPPORTED_MODE", message=f"unsupported mode: {mode}"))
+        return _argument_error(
+            code="ERR_UNSUPPORTED_MODE",
+            message=f"unsupported mode: {mode}",
+            arguments=arguments,
+            expected=["file", "symbol", "snippet", "diff_preview"],
+            example={"repo": repo_root, "mode": "file", "target": "README.md"},
+        )
     def _build_stabilization_meta(
         self,
         arguments: dict[str, object],
@@ -318,7 +366,13 @@ class ReadTool:
         """file 모드 읽기를 수행한다."""
         target = arguments.get("target")
         if not isinstance(target, str) or target.strip() == "":
-            return pack1_error(ErrorResponseDTO(code="ERR_TARGET_REQUIRED", message="target is required"))
+            return _argument_error(
+                code="ERR_TARGET_REQUIRED",
+                message="target is required",
+                arguments=arguments,
+                expected=["target"],
+                example={"repo": repo_root, "mode": "file", "target": "README.md"},
+            )
         offset_raw = arguments.get("offset", 0)
         limit_raw = arguments.get("limit", 300)
         if not isinstance(offset_raw, int) or offset_raw < 0:

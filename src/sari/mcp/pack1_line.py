@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from typing import Mapping
 from urllib.parse import quote
 
@@ -98,10 +99,26 @@ def _build_error_lines(
                 message = raw_text.strip()
     if message == "":
         message = "tool failed"
-    return [
+    lines = [
         f"@SUM tool={_raw(tool_name)} items=0 degraded=1 fatal=1",
         f"@ERR code={_raw(code)} msg={_enc(message)}",
     ]
+    expected_raw = error.get("expected")
+    received_raw = error.get("received")
+    example_raw = error.get("example")
+    hint_tokens: list[str] = []
+    if isinstance(expected_raw, list) and len(expected_raw) > 0:
+        expected_values = [str(item) for item in expected_raw]
+        hint_tokens.append(f"expected={_enc(','.join(expected_values))}")
+    if isinstance(received_raw, list):
+        received_values = [str(item) for item in received_raw]
+        hint_tokens.append(f"received={_enc(','.join(received_values))}")
+    if isinstance(example_raw, dict):
+        serialized_example = json.dumps(example_raw, ensure_ascii=False, separators=(",", ":"))
+        hint_tokens.append(f"example={_enc(serialized_example)}")
+    if len(hint_tokens) > 0:
+        lines.append("@HINT " + " ".join(hint_tokens))
+    return lines
 
 
 def _build_success_lines(

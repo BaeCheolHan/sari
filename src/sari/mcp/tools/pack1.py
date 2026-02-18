@@ -35,6 +35,10 @@ def pack1_error(
     detailed_errors: list[dict[str, object]] | None = None,
     stabilization: dict[str, object] | None = None,
     recovery_hint: str | None = None,
+    expected: list[str] | None = None,
+    received: list[str] | None = None,
+    example: dict[str, object] | None = None,
+    normalized_from: dict[str, str] | None = None,
 ) -> dict[str, object]:
     """pack1 규격의 명시적 오류 응답을 생성한다."""
     errors_payload: list[dict[str, object]]
@@ -43,12 +47,31 @@ def pack1_error(
     else:
         errors_payload = detailed_errors
     error_payload: dict[str, object] = {"code": error.code, "message": error.message}
+    if expected is not None and len(expected) > 0:
+        error_payload["expected"] = expected
+    if received is not None:
+        error_payload["received"] = received
+    if example is not None:
+        error_payload["example"] = example
+    if normalized_from is not None and len(normalized_from) > 0:
+        error_payload["normalized_from"] = normalized_from
     if recovery_hint is not None and recovery_hint.strip() != "":
         error_payload["recovery_hint"] = recovery_hint
     if recovery_hint is not None and recovery_hint.strip() != "":
         for item in errors_payload:
             if isinstance(item, dict):
                 item["recovery_hint"] = recovery_hint
+    for item in errors_payload:
+        if not isinstance(item, dict):
+            continue
+        if expected is not None and len(expected) > 0:
+            item["expected"] = expected
+        if received is not None:
+            item["received"] = received
+        if example is not None:
+            item["example"] = example
+        if normalized_from is not None and len(normalized_from) > 0:
+            item["normalized_from"] = normalized_from
     return {
         "content": [{"type": "text", "text": error.message}],
         "structuredContent": {

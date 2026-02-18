@@ -1,0 +1,33 @@
+"""도구 인자 정규화 규칙을 검증한다."""
+
+from sari.mcp.tools.arg_normalizer import ARG_META_KEY, normalize_tool_arguments
+
+
+def test_normalize_read_maps_mode_and_path_alias() -> None:
+    """read는 file_preview/path를 file/target으로 정규화해야 한다."""
+    result = normalize_tool_arguments(
+        "read",
+        {
+            "repo": "/repo",
+            "mode": "file_preview",
+            "path": "README.md",
+        },
+    )
+    assert result.arguments["mode"] == "file"
+    assert result.arguments["target"] == "README.md"
+    assert result.normalized_from["mode"] == "file_preview"
+    assert result.normalized_from["target"] == "path"
+    assert isinstance(result.arguments[ARG_META_KEY], dict)
+
+
+def test_normalize_prefers_canonical_when_alias_conflicts() -> None:
+    """canonical 키가 있으면 alias 값보다 우선되어야 한다."""
+    result = normalize_tool_arguments(
+        "search",
+        {
+            "repo": "/repo",
+            "query": "canonical",
+            "q": "alias",
+        },
+    )
+    assert result.arguments["query"] == "canonical"

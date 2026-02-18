@@ -29,6 +29,18 @@ HIDDEN_TOOL_NAMES: frozenset[str] = frozenset(
     }
 )
 
+TOOL_EXAMPLES: dict[str, dict[str, object]] = {
+    "search": {"repo": "/repo", "query": "AuthService", "limit": 5},
+    "read": {"repo": "/repo", "mode": "file", "target": "README.md", "limit": 40},
+    "read_symbol": {"repo": "/repo", "symbol": "AuthService.login", "limit": 10},
+    "search_symbol": {"repo": "/repo", "query": "Auth", "limit": 10},
+    "get_callers": {"repo": "/repo", "symbol": "AuthService.login", "limit": 20},
+    "get_implementations": {"repo": "/repo", "symbol": "UserRepository", "limit": 20},
+    "call_graph": {"repo": "/repo", "symbol": "AuthService.login", "limit": 20},
+    "knowledge": {"repo": "/repo", "query": "JWT", "limit": 5},
+    "list_symbols": {"repo": "/repo", "query": "Auth", "limit": 20},
+}
+
 
 def is_hidden_tool_name(tool_name: object) -> bool:
     """지정 도구명이 숨김 정책 대상인지 반환한다."""
@@ -43,7 +55,7 @@ def filter_tools_list_response_payload(payload: dict[str, object]) -> dict[str, 
     tools_obj = result_obj.get("tools")
     if not isinstance(tools_obj, list):
         return payload
-    filtered_tools = [tool for tool in tools_obj if not _is_hidden_tool_entry(tool)]
+    filtered_tools = [_decorate_tool_entry(tool) for tool in tools_obj if not _is_hidden_tool_entry(tool)]
     if len(filtered_tools) == len(tools_obj):
         return payload
     copied_payload = deepcopy(payload)
@@ -58,3 +70,16 @@ def _is_hidden_tool_entry(entry: object) -> bool:
     if not isinstance(entry, dict):
         return False
     return is_hidden_tool_name(entry.get("name"))
+
+
+def _decorate_tool_entry(entry: object) -> dict[str, object]:
+    """LLM 친화 도구 힌트를 tools/list 항목에 주입한다."""
+    if not isinstance(entry, dict):
+        return {}
+    tool_name_raw = entry.get("name")
+    tool_name = tool_name_raw if isinstance(tool_name_raw, str) else ""
+    payload = deepcopy(entry)
+    example = TOOL_EXAMPLES.get(tool_name)
+    if example is not None:
+        payload["x_examples"] = [example]
+    return payload
