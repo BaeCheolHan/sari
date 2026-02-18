@@ -31,6 +31,11 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Release hard gate
+        run: |
+          chmod +x tools/ci/run_release_gate.sh
+          tools/ci/run_release_gate.sh
+
       - name: Verify tag version matches pyproject
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
@@ -57,6 +62,12 @@ jobs:
         with:
           name: release-dist
           path: dist/*
+
+      - name: Upload release gate summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-gate-summary
+          path: artifacts/ci/release-gate-summary.json
 
   publish-pypi:
     needs: build

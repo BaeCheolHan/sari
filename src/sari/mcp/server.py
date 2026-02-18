@@ -4,7 +4,6 @@ import sys
 from pathlib import Path
 from typing import BinaryIO
 from sari.core.config import AppConfig
-from sari.core.daemon_resolver import resolve_daemon_address
 from sari.core.exceptions import ValidationError
 from sari.core.models import ErrorResponseDTO
 from sari.db.repositories.runtime_repository import RuntimeRepository
@@ -31,6 +30,15 @@ from sari.db.migration import ensure_migrated
 from sari.db.schema import init_schema
 from sari.lsp.hub import LspHub
 from sari.mcp.contracts import McpError, McpResponse
+from sari.mcp.daemon_forward_policy import (
+    StartDaemonFn,
+    build_forward_error_message,
+    default_start_daemon,
+    extract_workspace_root,
+    forward_with_retry,
+    resolve_target,
+    should_forward_to_daemon,
+)
 from sari.mcp.tools.admin_tools import DoctorTool, RepoCandidatesTool, RescanTool
 from sari.mcp.tools.pipeline_admin_tools import PipelineAutoSetTool, PipelineAutoStatusTool, PipelineAutoTickTool, PipelineAlertStatusTool, PipelineDeadListTool, PipelineDeadPurgeTool, PipelineDeadRequeueTool, PipelinePolicyGetTool, PipelinePolicySetTool
 from sari.mcp.tools.pipeline_benchmark_tools import PipelineBenchmarkReportTool, PipelineBenchmarkRunTool
@@ -58,13 +66,22 @@ from sari.services.pipeline_lsp_matrix_service import PipelineLspMatrixService
 from sari.services.pipeline_quality_service import PipelineQualityService, SerenaGoldenBackend
 
 class McpServer:
+    _DEFAULT_PROTOCOL_VERSION = '2024-11-05'
+    _SUPPORTED_PROTOCOL_VERSIONS = (
+        '2025-11-25',
+        '2025-06-18',
+        '2025-03-26',
+        '2024-11-05',
+    )
 
     def __init__(self, db_path: Path) -> None:
         init_schema(db_path)
         ensure_migrated(db_path)
         self._db_path = db_path
         self._proxy_to_daemon = os.getenv('SARI_MCP_FORWARD_TO_DAEMON', '').strip().lower() in {'1', 'true', 'yes', 'on'}
+        self._daemon_autostart_on_failure = os.getenv('SARI_MCP_DAEMON_AUTOSTART', '1').strip().lower() in {'1', 'true', 'yes', 'on'}
         self._daemon_forward_timeout_sec = _parse_daemon_forward_timeout(os.getenv('SARI_MCP_DAEMON_TIMEOUT_SEC', '').strip())
+        self._daemon_start_fn: StartDaemonFn = default_start_daemon
         runtime_config = AppConfig.default()
         workspace_repo = WorkspaceRepository(db_path)
         self._workspace_repo = workspace_repo
@@ -151,7 +168,14 @@ class McpServer:
         if self._should_forward(payload, method):
             return self._forward_to_daemon(payload=payload, request_id=request_id)
         if method == 'initialize':
-            return McpResponse(request_id=request_id, result={'protocolVersion': '2024-11-05', 'serverInfo': {'name': 'sari-v2', 'version': '0.1.0'}, 'capabilities': {'tools': {}}}, error=None)
+            params = payload.get('params')
+            if not isinstance(params, dict):
+                params = {}
+            try:
+                protocol_version = self._negotiate_protocol_version(params=params)
+            except ValueError as exc:
+                return McpResponse(request_id=request_id, result=None, error=McpError(code=-32602, message=str(exc)))
+            return McpResponse(request_id=request_id, result={'protocolVersion': protocol_version, 'serverInfo': {'name': 'sari-v2', 'version': '0.1.0'}, 'capabilities': {'tools': {}}}, error=None)
         if method == 'sari/identify':
             return McpResponse(request_id=request_id, result={'name': 'sari-v2', 'version': '0.1.0', 'workspaceRoot': self._default_workspace_root(), 'pid': os.getpid()}, error=None)
         if method == 'prompts/list':
@@ -264,24 +288,26 @@ class McpServer:
         return McpResponse(request_id=request_id, result=None, error=McpError(code=-32601, message='method not found'))
 
     def _should_forward(self, payload: dict[str, object], method: str) -> bool:
-        if not self._proxy_to_daemon:
-            return False
-        if method != 'tools/call':
-            return False
-        if not isinstance(payload.get('params'), dict):
-            return False
-        return True
+        _ = payload
+        return should_forward_to_daemon(proxy_enabled=self._proxy_to_daemon, method=method)
 
     def _forward_to_daemon(self, payload: dict[str, object], request_id: object) -> McpResponse:
-        workspace_root = self._extract_workspace_root(payload)
+        workspace_root = extract_workspace_root(payload)
         try:
-            host, port = resolve_daemon_address(db_path=self._db_path, workspace_root=workspace_root)
-        except ValueError as exc:
-            return McpResponse(request_id=request_id, result=None, error=McpError(code=-32002, message=f'failed to resolve daemon address: {exc}'))
-        try:
-            forwarded = forward_once(request=payload, host=host, port=port, timeout_sec=self._daemon_forward_timeout_sec)
+            forwarded = forward_with_retry(
+                request=payload,
+                db_path=self._db_path,
+                workspace_root=workspace_root,
+                host_override=None,
+                port_override=None,
+                timeout_sec=self._daemon_forward_timeout_sec,
+                auto_start_on_failure=self._daemon_autostart_on_failure,
+                start_daemon_fn=self._daemon_start_fn,
+                resolve_target_fn=resolve_target,
+                forward_once_fn=forward_once,
+            )
         except (OSError, TimeoutError, DaemonForwardError, ValueError) as exc:
-            return McpResponse(request_id=request_id, result=None, error=McpError(code=-32002, message=f'failed to forward to daemon: {exc}'))
+            return McpResponse(request_id=request_id, result=None, error=McpError(code=-32002, message=build_forward_error_message(exc)))
         response_id = forwarded.get('id', request_id)
         error_payload = forwarded.get('error')
         if isinstance(error_payload, dict):
@@ -291,21 +317,6 @@ class McpServer:
                 return McpResponse(request_id=response_id, result=None, error=McpError(code=code, message=message))
             return McpResponse(request_id=response_id, result=None, error=McpError(code=-32003, message='invalid daemon error response'))
         return McpResponse(request_id=response_id, result=forwarded.get('result'), error=None)
-
-    def _extract_workspace_root(self, payload: dict[str, object]) -> str | None:
-        params = payload.get('params')
-        if not isinstance(params, dict):
-            return None
-        arguments = params.get('arguments')
-        if not isinstance(arguments, dict):
-            return None
-        repo = arguments.get('repo')
-        if not isinstance(repo, str):
-            return None
-        stripped = repo.strip()
-        if stripped == '':
-            return None
-        return stripped
 
     def _roots_list(self) -> list[dict[str, str]]:
         roots: list[dict[str, str]] = []
@@ -320,6 +331,42 @@ class McpServer:
         if len(workspaces) == 0:
             return ''
         return workspaces[0].path
+
+    def _negotiate_protocol_version(self, params: dict[str, object]) -> str:
+        versions = self._iter_client_protocol_versions(params=params)
+        for candidate in versions:
+            if candidate in self._SUPPORTED_PROTOCOL_VERSIONS:
+                return candidate
+        strict = os.getenv('SARI_STRICT_PROTOCOL', '').strip().lower() in {'1', 'true', 'yes', 'on'}
+        if strict and len(versions) > 0:
+            raise ValueError('Unsupported protocol version')
+        return self._DEFAULT_PROTOCOL_VERSION
+
+    def _iter_client_protocol_versions(self, params: dict[str, object]) -> list[str]:
+        versions: list[str] = []
+        seen: set[str] = set()
+
+        def _append(raw_value: object) -> None:
+            if not isinstance(raw_value, str):
+                return
+            normalized = raw_value.strip()
+            if normalized == '' or normalized in seen:
+                return
+            seen.add(normalized)
+            versions.append(normalized)
+
+        _append(params.get('protocolVersion'))
+        supported = params.get('supportedProtocolVersions')
+        if isinstance(supported, list):
+            for item in supported:
+                _append(item)
+        capabilities = params.get('capabilities')
+        if isinstance(capabilities, dict):
+            cap_versions = capabilities.get('protocolVersions')
+            if isinstance(cap_versions, list):
+                for item in cap_versions:
+                    _append(item)
+        return versions
 
 def run_stdio_streams(db_path: Path, input_stream: BinaryIO, output_stream: BinaryIO) -> int:
     server = McpServer(db_path=db_path)

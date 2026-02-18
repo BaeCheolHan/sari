@@ -412,9 +412,24 @@ def mcp() -> None:
 
 
 @mcp.command("stdio")
-def mcp_stdio() -> None:
-    """MCP stdio 서버를 실행한다."""
+@click.option("--local", is_flag=True, default=False, help="로컬 MCP 서버를 직접 실행한다.")
+@click.option("--workspace-root", type=click.Path(exists=False), default=None)
+@click.option("--host", type=str, default=None)
+@click.option("--port", type=int, default=None)
+@click.option("--timeout-sec", type=float, default=2.0)
+def mcp_stdio(local: bool, workspace_root: str | None, host: str | None, port: int | None, timeout_sec: float) -> None:
+    """MCP stdio를 실행한다. 기본은 daemon proxy 경로다."""
     config = AppConfig.default()
+    if not local:
+        raise SystemExit(
+            run_stdio_proxy(
+                db_path=config.db_path,
+                workspace_root=workspace_root,
+                host_override=host,
+                port_override=port,
+                timeout_sec=timeout_sec,
+            )
+        )
     raise SystemExit(run_stdio(config.db_path))
 
 

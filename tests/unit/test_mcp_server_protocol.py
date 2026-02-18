@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from pytest import MonkeyPatch
 from sari.core.exceptions import ErrorContext, ValidationError
 from sari.core.models import WorkspaceDTO
 from sari.db.repositories.workspace_repository import WorkspaceRepository
@@ -199,3 +200,55 @@ def test_mcp_roots_list_uses_registered_workspaces(tmp_path: Path) -> None:
     uris = {item["uri"] for item in roots}
     assert f"file://{path_a}" in uris
     assert f"file://{path_b}" in uris
+
+
+def test_mcp_initialize_negotiates_supported_protocol_version(tmp_path: Path) -> None:
+    """initialize는 클라이언트 제안 버전과 협상해야 한다."""
+    server = McpServer(db_path=tmp_path / "state.db")
+    payload = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 19,
+            "method": "initialize",
+            "params": {"supportedProtocolVersions": ["2025-03-26", "2024-11-05"]},
+        }
+    ).to_dict()
+    assert payload["result"]["protocolVersion"] == "2025-03-26"
+
+
+def test_mcp_initialize_strict_protocol_rejects_unknown_versions(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """strict protocol 모드에서 미지원 버전은 명시적으로 실패해야 한다."""
+    monkeypatch.setenv("SARI_STRICT_PROTOCOL", "1")
+    server = McpServer(db_path=tmp_path / "state.db")
+    payload = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 20,
+            "method": "initialize",
+            "params": {"supportedProtocolVersions": ["2099-01-01"]},
+        }
+    ).to_dict()
+    assert payload["error"]["code"] == -32602
+    assert payload["error"]["message"] == "Unsupported protocol version"
+
+
+def test_mcp_initialize_and_tools_list_do_not_touch_tantivy_writer(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """initialize/tools/list는 Tantivy writer 잠금과 무관하게 동작해야 한다."""
+
+    def _raise_if_writer_called(self: object) -> object:
+        del self
+        raise AssertionError("tantivy writer must not be touched in initialize/tools-list path")
+
+    monkeypatch.setattr("sari.search.candidate_search.TantivyCandidateBackend._get_writer", _raise_if_writer_called)
+    server = McpServer(db_path=tmp_path / "state.db")
+
+    init_payload = server.handle_request({"jsonrpc": "2.0", "id": 21, "method": "initialize"}).to_dict()
+    list_payload = server.handle_request({"jsonrpc": "2.0", "id": 22, "method": "tools/list"}).to_dict()
+
+    assert "error" not in init_payload
+    assert "error" not in list_payload
+    assert init_payload["result"]["serverInfo"]["name"] == "sari-v2"
+    assert isinstance(list_payload["result"]["tools"], list)

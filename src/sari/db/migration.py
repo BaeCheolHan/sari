@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 import sqlite3
 
-HEAD_VERSION = "20260217_0003"
+HEAD_VERSION = "20260218_0004"
 BASELINE_VERSION = "20260216_0001"
 
 
@@ -81,6 +81,10 @@ def _fallback_upgrade_sqlite(db_path: Path) -> None:
         if current_version < "20260217_0003":
             _fallback_upgrade_0003(conn)
             _set_version(conn, "20260217_0003")
+            current_version = "20260217_0003"
+        if current_version < "20260218_0004":
+            _fallback_upgrade_0004(conn)
+            _set_version(conn, "20260218_0004")
         conn.commit()
 
 
@@ -187,5 +191,28 @@ def _fallback_upgrade_0003(conn: sqlite3.Connection) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_lsp_symbols_symbol_key
         ON lsp_symbols(repo_root, relative_path, content_hash, symbol_key)
+        """
+    )
+
+
+def _fallback_upgrade_0004(conn: sqlite3.Connection) -> None:
+    """0004 리비전 컬럼을 적용한다."""
+    registry_cols = _table_columns(conn, "daemon_registry")
+    if "deployment_state" not in registry_cols:
+        conn.execute(
+            "ALTER TABLE daemon_registry ADD COLUMN deployment_state TEXT NOT NULL DEFAULT 'ACTIVE'"
+        )
+    if "health_fail_streak" not in registry_cols:
+        conn.execute(
+            "ALTER TABLE daemon_registry ADD COLUMN health_fail_streak INTEGER NOT NULL DEFAULT 0"
+        )
+    if "last_health_error" not in registry_cols:
+        conn.execute("ALTER TABLE daemon_registry ADD COLUMN last_health_error TEXT NULL")
+    if "last_health_at" not in registry_cols:
+        conn.execute("ALTER TABLE daemon_registry ADD COLUMN last_health_at TEXT NULL")
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_daemon_registry_workspace
+        ON daemon_registry(workspace_root, is_draining, deployment_state, last_seen_at DESC)
         """
     )

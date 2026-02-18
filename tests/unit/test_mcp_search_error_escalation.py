@@ -117,6 +117,33 @@ class _DegradedOrchestrator:
         )
 
 
+class _LockBusyFatalOrchestrator:
+    """Tantivy lock busy 치명 오류를 반환하는 테스트 오케스트레이터다."""
+
+    def search(self, query: str, limit: int, repo_root: str) -> SearchPipelineResult:
+        """lock busy 치명 오류를 반환한다."""
+        del query, limit, repo_root
+        return SearchPipelineResult(
+            items=[],
+            meta=SearchMetaDTO(
+                candidate_count=0,
+                resolved_count=0,
+                candidate_source="backend_error",
+                errors=[
+                    SearchErrorDTO(
+                        code="ERR_TANTIVY_LOCK_BUSY",
+                        message="tantivy writer lock busy",
+                        severity="FATAL",
+                        origin="candidate",
+                    )
+                ],
+                fatal_error=True,
+                degraded=True,
+                error_count=1,
+            ),
+        )
+
+
 def test_mcp_search_returns_pack1_error_on_fatal() -> None:
     """치명 오류가 있으면 MCP search는 isError=true여야 한다."""
     tool = SearchTool(orchestrator=_FatalOrchestrator())
@@ -160,3 +187,13 @@ def test_mcp_search_sets_stabilization_on_degraded_non_fatal() -> None:
     assert stabilization["fatal_error"] is False
     assert "SEARCH_DEGRADED" in stabilization["reason_codes"]
     assert len(stabilization["warnings"]) >= 1
+
+
+def test_mcp_search_returns_recovery_hint_on_tantivy_lockbusy() -> None:
+    """Tantivy lockbusy 치명 오류는 복구 힌트를 포함해야 한다."""
+    tool = SearchTool(orchestrator=_LockBusyFatalOrchestrator())
+    payload = tool.call({"repo": "/repo", "query": "hello", "limit": 5})
+
+    assert payload["isError"] is True
+    assert payload["structuredContent"]["meta"]["errors"][0]["code"] == "ERR_TANTIVY_LOCK_BUSY"
+    assert "proxy" in str(payload["structuredContent"]["error"]["recovery_hint"]).lower()

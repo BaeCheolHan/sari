@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from click.testing import CliRunner
 from pytest import MonkeyPatch, raises
 
 from sari.cli.main import cli
-from sari.core.daemon_resolver import resolve_daemon_address
+from sari.core.daemon_resolver import resolve_daemon_address, resolve_daemon_endpoint
 from sari.core.models import DaemonRegistryEntryDTO, DaemonRuntimeDTO
 from sari.db.repositories.daemon_registry_repository import DaemonRegistryRepository
 from sari.db.repositories.runtime_repository import RuntimeRepository
@@ -51,6 +52,67 @@ def test_daemon_resolver_prefers_registry_entry(tmp_path: Path) -> None:
     host, port = resolve_daemon_address(db_path=db_path, workspace_root="/repo/a")
     assert host == "127.0.0.1"
     assert port == 48888
+
+
+def test_daemon_resolver_exposes_resolution_reason(tmp_path: Path) -> None:
+    """resolver는 선택 근거를 함께 반환해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    registry_repo = DaemonRegistryRepository(db_path)
+    registry_repo.upsert(
+        DaemonRegistryEntryDTO(
+            daemon_id="d-200",
+            host="127.0.0.1",
+            port=49999,
+            pid=301,
+            workspace_root="/repo/b",
+            protocol="http",
+            started_at="2026-02-18T00:00:00+00:00",
+            last_seen_at="2026-02-18T00:00:01+00:00",
+            is_draining=False,
+        )
+    )
+    resolved = resolve_daemon_endpoint(db_path=db_path, workspace_root="/repo/b")
+    assert resolved.host == "127.0.0.1"
+    assert resolved.port == 49999
+    assert resolved.reason == "registry_active"
+
+
+def test_daemon_resolver_skips_degraded_registry_entry(tmp_path: Path) -> None:
+    """degraded 엔트리는 registry 우선순위에서 제외하고 runtime fallback을 사용해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    registry_repo = DaemonRegistryRepository(db_path)
+    registry_repo.upsert(
+        DaemonRegistryEntryDTO(
+            daemon_id="d-300",
+            host="127.0.0.1",
+            port=49998,
+            pid=302,
+            workspace_root="/repo/c",
+            protocol="http",
+            started_at="2026-02-18T00:00:00+00:00",
+            last_seen_at="2026-02-18T00:00:01+00:00",
+            is_draining=False,
+            deployment_state="DEGRADED",
+        )
+    )
+    runtime_repo = RuntimeRepository(db_path)
+    runtime_repo.upsert_runtime(
+        DaemonRuntimeDTO(
+            pid=999,
+            host="127.0.0.1",
+            port=47777,
+            state="running",
+            started_at="2026-02-18T00:00:02+00:00",
+            session_count=0,
+            last_heartbeat_at="2026-02-18T00:00:03+00:00",
+            last_exit_reason=None,
+        )
+    )
+    resolved = resolve_daemon_endpoint(db_path=db_path, workspace_root="/repo/c")
+    assert resolved.port == 47777
+    assert resolved.reason == "runtime"
 
 
 def test_proxy_target_parse_validation() -> None:
@@ -96,3 +158,252 @@ def test_cli_mcp_proxy_invokes_proxy_runner(tmp_path: Path, monkeypatch: MonkeyP
     assert called["host_override"] == "127.0.0.1"
     assert called["port_override"] == 47777
     assert called["timeout_sec"] == 1.5
+
+
+def test_cli_mcp_stdio_defaults_to_proxy(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """mcp stdio 기본 경로는 proxy runner를 호출해야 한다."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".local" / "share" / "sari-v2").mkdir(parents=True, exist_ok=True)
+    called: dict[str, object] = {}
+
+    def _fake_run_proxy(
+        db_path: Path,
+        workspace_root: str | None,
+        host_override: str | None,
+        port_override: int | None,
+        timeout_sec: float,
+    ) -> int:
+        called["proxy"] = True
+        called["db_path"] = db_path
+        called["workspace_root"] = workspace_root
+        called["host_override"] = host_override
+        called["port_override"] = port_override
+        called["timeout_sec"] = timeout_sec
+        return 0
+
+    def _fake_run_stdio(db_path: Path) -> int:
+        called["local"] = True
+        called["db_path_local"] = db_path
+        return 0
+
+    monkeypatch.setattr("sari.cli.main.run_stdio_proxy", _fake_run_proxy)
+    monkeypatch.setattr("sari.cli.main.run_stdio", _fake_run_stdio)
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["mcp", "stdio", "--workspace-root", "/repo/a", "--host", "127.0.0.1", "--port", "47777", "--timeout-sec", "1.5"],
+    )
+
+    assert result.exit_code == 0
+    assert called.get("proxy") is True
+    assert called.get("local") is None
+    assert called["workspace_root"] == "/repo/a"
+    assert called["host_override"] == "127.0.0.1"
+    assert called["port_override"] == 47777
+    assert called["timeout_sec"] == 1.5
+
+
+def test_cli_mcp_stdio_local_flag_uses_local_server(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """mcp stdio --local 경로는 run_stdio를 호출해야 한다."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".local" / "share" / "sari-v2").mkdir(parents=True, exist_ok=True)
+    called: dict[str, object] = {}
+
+    def _fake_run_proxy(
+        db_path: Path,
+        workspace_root: str | None,
+        host_override: str | None,
+        port_override: int | None,
+        timeout_sec: float,
+    ) -> int:
+        _ = (db_path, workspace_root, host_override, port_override, timeout_sec)
+        called["proxy"] = True
+        return 0
+
+    def _fake_run_stdio(db_path: Path) -> int:
+        called["local"] = True
+        called["db_path_local"] = db_path
+        return 0
+
+    monkeypatch.setattr("sari.cli.main.run_stdio_proxy", _fake_run_proxy)
+    monkeypatch.setattr("sari.cli.main.run_stdio", _fake_run_stdio)
+    runner = CliRunner()
+    result = runner.invoke(cli, ["mcp", "stdio", "--local"])
+
+    assert result.exit_code == 0
+    assert called.get("local") is True
+    assert called.get("proxy") is None
+
+
+class _ScriptedTransport:
+    """proxy 루프 검증을 위한 스크립트형 transport 더블이다."""
+
+    def __init__(self, messages: list[tuple[dict[str, object], str] | None]) -> None:
+        """읽기 시퀀스와 쓰기 버퍼를 초기화한다."""
+        self._messages = messages
+        self._index = 0
+        self.writes: list[tuple[dict[str, object], str | None]] = []
+        self.default_mode = "content-length"
+
+    def read_message(self) -> tuple[dict[str, object], str] | None:
+        """다음 입력 메시지를 반환한다."""
+        if self._index >= len(self._messages):
+            return None
+        item = self._messages[self._index]
+        self._index += 1
+        return item
+
+    def write_message(self, message: dict[str, object], mode: str | None = None) -> None:
+        """출력 메시지를 기록한다."""
+        self.writes.append((message, mode))
+
+
+def test_proxy_auto_start_retries_forward_once(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """proxy는 첫 연결 실패 시 daemon 기동 후 1회 재시도해야 한다."""
+    from sari.mcp.proxy import run_stdio_proxy
+
+    transport = _ScriptedTransport(messages=[({"jsonrpc": "2.0", "id": 7, "method": "ping"}, "content-length"), None])
+    called: dict[str, Any] = {"forward": 0, "start": 0}
+
+    def _fake_transport(*_: object, **__: object) -> _ScriptedTransport:
+        return transport
+
+    def _fake_forward_once(request: dict[str, object], host: str, port: int, timeout_sec: float) -> dict[str, object]:
+        _ = (request, host, port, timeout_sec)
+        called["forward"] += 1
+        if called["forward"] == 1:
+            raise OSError("connection refused")
+        return {"jsonrpc": "2.0", "id": 7, "result": {}}
+
+    def _fake_start_daemon(db_path: Path, workspace_root: str | None) -> bool:
+        _ = (db_path, workspace_root)
+        called["start"] += 1
+        return True
+
+    monkeypatch.setattr("sari.mcp.proxy.McpTransport", _fake_transport)
+    monkeypatch.setattr("sari.mcp.proxy.resolve_target", lambda *_: ("127.0.0.1", 47777))
+    monkeypatch.setattr("sari.mcp.proxy.forward_once", _fake_forward_once)
+
+    exit_code = run_stdio_proxy(
+        db_path=tmp_path / "state.db",
+        workspace_root="/repo/a",
+        auto_start_on_failure=True,
+        start_daemon_fn=_fake_start_daemon,
+    )
+
+    assert exit_code == 0
+    assert called["start"] == 1
+    assert called["forward"] == 2
+    assert len(transport.writes) == 1
+    assert transport.writes[0][0]["result"] == {}
+
+
+def test_proxy_auto_start_waits_until_daemon_ready(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """proxy는 auto-start 후 연결거부가 반복되더라도 준비 완료까지 재시도해야 한다."""
+    from sari.mcp.proxy import run_stdio_proxy
+
+    transport = _ScriptedTransport(messages=[({"jsonrpc": "2.0", "id": 17, "method": "ping"}, "content-length"), None])
+    called: dict[str, Any] = {"forward": 0, "start": 0}
+
+    def _fake_transport(*_: object, **__: object) -> _ScriptedTransport:
+        return transport
+
+    def _fake_forward_once(request: dict[str, object], host: str, port: int, timeout_sec: float) -> dict[str, object]:
+        _ = (request, host, port, timeout_sec)
+        called["forward"] += 1
+        if called["forward"] <= 3:
+            raise OSError("connection refused")
+        return {"jsonrpc": "2.0", "id": 17, "result": {"ok": True}}
+
+    def _fake_start_daemon(db_path: Path, workspace_root: str | None) -> bool:
+        _ = (db_path, workspace_root)
+        called["start"] += 1
+        return True
+
+    monkeypatch.setattr("sari.mcp.proxy.McpTransport", _fake_transport)
+    monkeypatch.setattr("sari.mcp.proxy.resolve_target", lambda *_: ("127.0.0.1", 47777))
+    monkeypatch.setattr("sari.mcp.proxy.forward_once", _fake_forward_once)
+
+    exit_code = run_stdio_proxy(
+        db_path=tmp_path / "state.db",
+        workspace_root="/repo/a",
+        auto_start_on_failure=True,
+        start_daemon_fn=_fake_start_daemon,
+    )
+
+    assert exit_code == 0
+    assert called["start"] == 1
+    assert called["forward"] == 4
+    assert len(transport.writes) == 1
+    assert transport.writes[0][0]["result"] == {"ok": True}
+
+
+def test_proxy_forward_failure_returns_explicit_error(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """proxy forward 실패는 명시적 오류코드 메시지로 응답해야 한다."""
+    from sari.mcp.proxy import run_stdio_proxy
+
+    transport = _ScriptedTransport(messages=[({"jsonrpc": "2.0", "id": 11, "method": "ping"}, "content-length"), None])
+
+    def _fake_transport(*_: object, **__: object) -> _ScriptedTransport:
+        return transport
+
+    monkeypatch.setattr("sari.mcp.proxy.McpTransport", _fake_transport)
+    monkeypatch.setattr("sari.mcp.proxy.resolve_target", lambda *_: ("127.0.0.1", 47777))
+    monkeypatch.setattr(
+        "sari.mcp.proxy.forward_once",
+        lambda request, host, port, timeout_sec: (_ for _ in ()).throw(TimeoutError("dial timeout")),
+    )
+
+    exit_code = run_stdio_proxy(
+        db_path=tmp_path / "state.db",
+        workspace_root="/repo/a",
+        auto_start_on_failure=False,
+    )
+
+    assert exit_code == 0
+    assert len(transport.writes) == 1
+    payload = transport.writes[0][0]
+    assert payload["error"]["code"] == -32002
+    assert str(payload["error"]["message"]).startswith("ERR_DAEMON_FORWARD_FAILED:")
+
+
+def test_proxy_reconnects_when_draining_response_received(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """draining 응답을 받으면 endpoint 재해석 후 initialize 재전송 + 요청 재시도를 수행해야 한다."""
+    from sari.mcp.proxy import run_stdio_proxy
+
+    transport = _ScriptedTransport(
+        messages=[
+            ({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}, "content-length"),
+            ({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, "content-length"),
+            None,
+        ]
+    )
+    calls: list[object] = []
+
+    def _fake_transport(*_: object, **__: object) -> _ScriptedTransport:
+        return transport
+
+    def _fake_forward_once(request: dict[str, object], host: str, port: int, timeout_sec: float) -> dict[str, object]:
+        _ = (host, port, timeout_sec)
+        calls.append(request.get("method"))
+        method = str(request.get("method", ""))
+        if method == "initialize":
+            return {"jsonrpc": "2.0", "id": request.get("id"), "result": {"protocolVersion": "2026-01-01"}}
+        if calls.count("tools/list") == 1:
+            return {"jsonrpc": "2.0", "id": request.get("id"), "error": {"code": -32001, "message": "daemon draining"}}
+        return {"jsonrpc": "2.0", "id": request.get("id"), "result": {"tools": []}}
+
+    monkeypatch.setattr("sari.mcp.proxy.McpTransport", _fake_transport)
+    monkeypatch.setattr("sari.mcp.proxy.resolve_target", lambda *_: ("127.0.0.1", 47777))
+    monkeypatch.setattr("sari.mcp.proxy.forward_once", _fake_forward_once)
+
+    exit_code = run_stdio_proxy(
+        db_path=tmp_path / "state.db",
+        workspace_root="/repo/a",
+        auto_start_on_failure=False,
+    )
+
+    assert exit_code == 0
+    assert len(transport.writes) == 2
+    assert "error" not in transport.writes[1][0]
+    assert calls == ["initialize", "tools/list", "initialize", "tools/list"]

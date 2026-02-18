@@ -51,6 +51,7 @@ from sari.services.language_probe_service import LanguageProbeService
 from sari.services.pipeline_lsp_matrix_service import PipelineLspMatrixService
 from sari.services.pipeline_quality_service import PipelineQualityService, SerenaGoldenBackend
 from sari.services.read_facade_service import ReadFacadeService
+from sari.mcp.server import McpServer
 
 log = logging.getLogger(__name__)
 
@@ -236,6 +237,7 @@ def main() -> None:
         knowledge_repo=knowledge_repo,
     )
 
+    os.environ["SARI_MCP_FORWARD_TO_DAEMON"] = "0"
     app = create_app(
         HttpContext(
             runtime_repo=runtime_repo,
@@ -249,8 +251,10 @@ def main() -> None:
             pipeline_lsp_matrix_service=pipeline_lsp_matrix_service,
             read_facade_service=read_facade_service,
             language_probe_repo=language_probe_repo,
+            db_path=config.db_path,
         )
     )
+    app.state.mcp_server = McpServer(db_path=db_path)
     stop_event = threading.Event()
     shutdown_reason: dict[str, str] = {"value": "NORMAL_SHUTDOWN"}
 
@@ -344,8 +348,8 @@ def _is_parent_alive() -> bool:
     """부모 프로세스 생존 여부를 확인한다."""
     parent_pid = os.getppid()
     if parent_pid <= 1:
-        # start_new_session으로 분리된 데몬은 ppid=1이 정상 상태다.
-        return True
+        # 부모가 init(1)으로 변경되면 고아 상태로 간주해 즉시 종료 경로를 탄다.
+        return False
     try:
         os.kill(parent_pid, 0)
     except ProcessLookupError:

@@ -43,6 +43,7 @@ from sari.http.request_parsers import (
     resolve_repo_from_value,
 )
 from sari.http.response_builders import read_response
+from sari.http.endpoint_resolver import resolve_http_endpoint
 class RuntimeSessionMiddleware(BaseHTTPMiddleware):
     def __init__(self, app, runtime_repo: RuntimeRepository) -> None:
         super().__init__(app)
@@ -62,7 +63,14 @@ class BackgroundProxyMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         target = _parse_proxy_target(os.getenv('SARI_HTTP_BG_PROXY_TARGET', '').strip())
         if target is None:
-            return await call_next(request)
+            context: HttpContext = request.app.state.context
+            if context.db_path is None:
+                return JSONResponse(
+                    {'error': {'code': 'ERR_HTTP_ENDPOINT_UNRESOLVED', 'message': 'background proxy endpoint cannot be resolved'}},
+                    status_code=503,
+                )
+            resolved = resolve_http_endpoint(db_path=context.db_path, workspace_root=None)
+            target = (resolved.host, resolved.port)
         request_port = request.url.port
         request_host = request.url.hostname
         if request_host == target[0] and request_port == target[1]:
@@ -134,6 +142,21 @@ async def status_endpoint(request) -> JSONResponse:
     if context.file_collection_service is not None:
         metrics = context.file_collection_service.get_pipeline_metrics().to_dict()
     return JSONResponse({'daemon': {'pid': runtime.pid, 'host': runtime.host, 'port': runtime.port, 'state': runtime.state, 'started_at': runtime.started_at, 'session_count': runtime.session_count, 'last_heartbeat_at': runtime.last_heartbeat_at, 'last_exit_reason': runtime.last_exit_reason}, 'workspace_count': len(workspaces), 'phase': 'phase2', 'pipeline_metrics': metrics, 'language_support': language_support, 'daemon_lifecycle': {'last_heartbeat_at': runtime.last_heartbeat_at, 'heartbeat_age_sec': _heartbeat_age_sec(runtime.last_heartbeat_at), 'last_exit_reason': runtime.last_exit_reason}})
+
+
+async def mcp_jsonrpc_endpoint(request) -> JSONResponse:
+    """데몬 내부 MCP JSON-RPC 요청을 HTTP 경유로 처리한다."""
+    mcp_server = getattr(request.app.state, "mcp_server", None)
+    if mcp_server is None:
+        return JSONResponse({"error": {"code": "ERR_MCP_SERVER_UNAVAILABLE", "message": "mcp server is unavailable"}}, status_code=503)
+    try:
+        payload_raw = await request.json()
+    except ValueError:
+        return JSONResponse({"error": {"code": "ERR_INVALID_JSON_BODY", "message": "invalid json body"}}, status_code=400)
+    if not isinstance(payload_raw, dict):
+        return JSONResponse({"error": {"code": "ERR_INVALID_JSON_BODY", "message": "json body must be object"}}, status_code=400)
+    response = mcp_server.handle_request(payload_raw)
+    return JSONResponse(response.to_dict())
 def _build_language_support_payload(probe_repo: LanguageProbeRepository | None) -> dict[str, object]:
     enabled_languages = list(get_enabled_language_names())
     snapshot_by_language: dict[str, LanguageProbeStatusDTO] = {}
@@ -537,6 +560,6 @@ async def validation_error_endpoint_handler(request, exc: ValidationError) -> JS
     error = ErrorResponseDTO(code=exc.context.code, message=exc.context.message)
     return JSONResponse({'error': {'code': error.code, 'message': error.message}}, status_code=400)
 def create_app(context: HttpContext) -> Starlette:
-    app = Starlette(debug=False, exception_handlers={ValidationError: validation_error_endpoint_handler}, middleware=[Middleware(BackgroundProxyMiddleware), Middleware(RuntimeSessionMiddleware, runtime_repo=context.runtime_repo)], routes=[Route('/health', health_endpoint), Route('/status', status_endpoint), Route('/workspaces', workspaces_endpoint), Route('/search', search_endpoint), Route('/read', read_endpoint, methods=['GET']), Route('/read_file', read_file_endpoint, methods=['GET']), Route('/read_symbol', read_symbol_endpoint, methods=['GET']), Route('/read_snippet', read_snippet_endpoint, methods=['GET']), Route('/read_diff_preview', read_diff_preview_endpoint, methods=['POST']), Route('/errors', errors_endpoint), Route('/rescan', rescan_endpoint), Route('/repo-candidates', repo_candidates_endpoint), Route('/doctor', doctor_endpoint), Route('/daemon/list', daemon_list_endpoint), Route('/pipeline/policy', pipeline_policy_get_endpoint, methods=['GET']), Route('/pipeline/policy', pipeline_policy_set_endpoint, methods=['POST']), Route('/pipeline/alert', pipeline_alert_endpoint, methods=['GET']), Route('/pipeline/dead', pipeline_dead_list_endpoint, methods=['GET']), Route('/pipeline/dead/requeue', pipeline_dead_requeue_endpoint, methods=['POST']), Route('/pipeline/dead/purge', pipeline_dead_purge_endpoint, methods=['POST']), Route('/pipeline/auto/status', pipeline_auto_status_endpoint, methods=['GET']), Route('/pipeline/auto/set', pipeline_auto_set_endpoint, methods=['POST']), Route('/pipeline/auto/tick', pipeline_auto_tick_endpoint, methods=['POST']), Route('/api/pipeline/errors', pipeline_errors_api_endpoint, methods=['GET']), Route('/api/pipeline/errors/{event_id:str}', pipeline_error_detail_api_endpoint, methods=['GET']), Route('/api/pipeline/benchmark/run', pipeline_benchmark_run_api_endpoint, methods=['POST']), Route('/api/pipeline/benchmark', pipeline_benchmark_report_api_endpoint, methods=['GET']), Route('/api/pipeline/quality/run', pipeline_quality_run_api_endpoint, methods=['POST']), Route('/api/pipeline/quality', pipeline_quality_report_api_endpoint, methods=['GET']), Route('/api/pipeline/lsp-matrix/run', pipeline_lsp_matrix_run_api_endpoint, methods=['POST']), Route('/api/pipeline/lsp-matrix', pipeline_lsp_matrix_report_api_endpoint, methods=['GET']), Route('/pipeline/errors', pipeline_errors_html_endpoint, methods=['GET']), Route('/pipeline/errors/{event_id:str}', pipeline_error_detail_html_endpoint, methods=['GET'])])
+    app = Starlette(debug=False, exception_handlers={ValidationError: validation_error_endpoint_handler}, middleware=[Middleware(BackgroundProxyMiddleware), Middleware(RuntimeSessionMiddleware, runtime_repo=context.runtime_repo)], routes=[Route('/health', health_endpoint), Route('/status', status_endpoint), Route('/workspaces', workspaces_endpoint), Route('/mcp', mcp_jsonrpc_endpoint, methods=['POST']), Route('/search', search_endpoint), Route('/read', read_endpoint, methods=['GET']), Route('/read_file', read_file_endpoint, methods=['GET']), Route('/read_symbol', read_symbol_endpoint, methods=['GET']), Route('/read_snippet', read_snippet_endpoint, methods=['GET']), Route('/read_diff_preview', read_diff_preview_endpoint, methods=['POST']), Route('/errors', errors_endpoint), Route('/rescan', rescan_endpoint), Route('/repo-candidates', repo_candidates_endpoint), Route('/doctor', doctor_endpoint), Route('/daemon/list', daemon_list_endpoint), Route('/pipeline/policy', pipeline_policy_get_endpoint, methods=['GET']), Route('/pipeline/policy', pipeline_policy_set_endpoint, methods=['POST']), Route('/pipeline/alert', pipeline_alert_endpoint, methods=['GET']), Route('/pipeline/dead', pipeline_dead_list_endpoint, methods=['GET']), Route('/pipeline/dead/requeue', pipeline_dead_requeue_endpoint, methods=['POST']), Route('/pipeline/dead/purge', pipeline_dead_purge_endpoint, methods=['POST']), Route('/pipeline/auto/status', pipeline_auto_status_endpoint, methods=['GET']), Route('/pipeline/auto/set', pipeline_auto_set_endpoint, methods=['POST']), Route('/pipeline/auto/tick', pipeline_auto_tick_endpoint, methods=['POST']), Route('/api/pipeline/errors', pipeline_errors_api_endpoint, methods=['GET']), Route('/api/pipeline/errors/{event_id:str}', pipeline_error_detail_api_endpoint, methods=['GET']), Route('/api/pipeline/benchmark/run', pipeline_benchmark_run_api_endpoint, methods=['POST']), Route('/api/pipeline/benchmark', pipeline_benchmark_report_api_endpoint, methods=['GET']), Route('/api/pipeline/quality/run', pipeline_quality_run_api_endpoint, methods=['POST']), Route('/api/pipeline/quality', pipeline_quality_report_api_endpoint, methods=['GET']), Route('/api/pipeline/lsp-matrix/run', pipeline_lsp_matrix_run_api_endpoint, methods=['POST']), Route('/api/pipeline/lsp-matrix', pipeline_lsp_matrix_report_api_endpoint, methods=['GET']), Route('/pipeline/errors', pipeline_errors_html_endpoint, methods=['GET']), Route('/pipeline/errors/{event_id:str}', pipeline_error_detail_html_endpoint, methods=['GET'])])
     app.state.context = context
     return app

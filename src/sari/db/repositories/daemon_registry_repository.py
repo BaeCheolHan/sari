@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from sari.core.models import DaemonRegistryEntryDTO
-from sari.db.row_mapper import row_bool, row_int, row_str
+from sari.db.row_mapper import row_bool, row_int, row_optional_str, row_str
 from sari.db.schema import connect
 
 
@@ -22,10 +22,12 @@ class DaemonRegistryRepository:
             conn.execute(
                 """
                 INSERT INTO daemon_registry(
-                    daemon_id, host, port, pid, workspace_root, protocol, started_at, last_seen_at, is_draining
+                    daemon_id, host, port, pid, workspace_root, protocol, started_at, last_seen_at, is_draining,
+                    deployment_state, health_fail_streak, last_health_error, last_health_at
                 )
                 VALUES(
-                    :daemon_id, :host, :port, :pid, :workspace_root, :protocol, :started_at, :last_seen_at, :is_draining
+                    :daemon_id, :host, :port, :pid, :workspace_root, :protocol, :started_at, :last_seen_at, :is_draining,
+                    :deployment_state, :health_fail_streak, :last_health_error, :last_health_at
                 )
                 ON CONFLICT(daemon_id) DO UPDATE SET
                     host=excluded.host,
@@ -35,7 +37,11 @@ class DaemonRegistryRepository:
                     protocol=excluded.protocol,
                     started_at=excluded.started_at,
                     last_seen_at=excluded.last_seen_at,
-                    is_draining=excluded.is_draining
+                    is_draining=excluded.is_draining,
+                    deployment_state=excluded.deployment_state,
+                    health_fail_streak=excluded.health_fail_streak,
+                    last_health_error=excluded.last_health_error,
+                    last_health_at=excluded.last_health_at
                 """,
                 entry.to_sql_params(),
             )
@@ -52,6 +58,38 @@ class DaemonRegistryRepository:
                 """,
                 {"daemon_id": daemon_id, "seen_at": seen_at},
             )
+            conn.commit()
+
+    def record_health_result(self, daemon_id: str, ok: bool, health_at: str, error_message: str | None = None) -> None:
+        """헬스체크 결과를 반영한다."""
+        with connect(self._db_path) as conn:
+            if ok:
+                conn.execute(
+                    """
+                    UPDATE daemon_registry
+                    SET health_fail_streak = 0,
+                        last_health_error = NULL,
+                        last_health_at = :health_at,
+                        deployment_state = 'ACTIVE'
+                    WHERE daemon_id = :daemon_id
+                    """,
+                    {"daemon_id": daemon_id, "health_at": health_at},
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE daemon_registry
+                    SET health_fail_streak = health_fail_streak + 1,
+                        last_health_error = :error_message,
+                        last_health_at = :health_at,
+                        deployment_state = CASE
+                            WHEN health_fail_streak + 1 >= 3 THEN 'DEGRADED'
+                            ELSE deployment_state
+                        END
+                    WHERE daemon_id = :daemon_id
+                    """,
+                    {"daemon_id": daemon_id, "health_at": health_at, "error_message": error_message},
+                )
             conn.commit()
 
     def remove_by_id(self, daemon_id: str) -> None:
@@ -84,7 +122,8 @@ class DaemonRegistryRepository:
         with connect(self._db_path) as conn:
             rows = conn.execute(
                 """
-                SELECT daemon_id, host, port, pid, workspace_root, protocol, started_at, last_seen_at, is_draining
+                SELECT daemon_id, host, port, pid, workspace_root, protocol, started_at, last_seen_at, is_draining,
+                       deployment_state, health_fail_streak, last_health_error, last_health_at
                 FROM daemon_registry
                 ORDER BY last_seen_at DESC, daemon_id ASC
                 """
@@ -102,6 +141,10 @@ class DaemonRegistryRepository:
                     started_at=row_str(row, "started_at"),
                     last_seen_at=row_str(row, "last_seen_at"),
                     is_draining=row_bool(row, "is_draining"),
+                    deployment_state=row_str(row, "deployment_state"),
+                    health_fail_streak=row_int(row, "health_fail_streak"),
+                    last_health_error=row_optional_str(row, "last_health_error"),
+                    last_health_at=row_optional_str(row, "last_health_at"),
                 )
             )
         return items
@@ -111,10 +154,12 @@ class DaemonRegistryRepository:
         with connect(self._db_path) as conn:
             row = conn.execute(
                 """
-                SELECT daemon_id, host, port, pid, workspace_root, protocol, started_at, last_seen_at, is_draining
+                SELECT daemon_id, host, port, pid, workspace_root, protocol, started_at, last_seen_at, is_draining,
+                       deployment_state, health_fail_streak, last_health_error, last_health_at
                 FROM daemon_registry
                 WHERE workspace_root = :workspace_root
                   AND is_draining = 0
+                  AND deployment_state = 'ACTIVE'
                 ORDER BY last_seen_at DESC, started_at DESC
                 LIMIT 1
                 """,
@@ -132,5 +177,8 @@ class DaemonRegistryRepository:
             started_at=row_str(row, "started_at"),
             last_seen_at=row_str(row, "last_seen_at"),
             is_draining=row_bool(row, "is_draining"),
+            deployment_state=row_str(row, "deployment_state"),
+            health_fail_streak=row_int(row, "health_fail_streak"),
+            last_health_error=row_optional_str(row, "last_health_error"),
+            last_health_at=row_optional_str(row, "last_health_at"),
         )
-

@@ -164,7 +164,7 @@ class TantivyCandidateBackend:
         self._index_root.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._index = self._build_index()
-        self._writer = self._index.writer(100_000_000)
+        self._writer: _TantivyWriterProtocol | None = None
         self._indexed_roots: set[str] = set()
         self._indexed_files: dict[tuple[str, str], IndexedFileStateDTO] = {}
         self._index_dirty = True
@@ -200,7 +200,7 @@ class TantivyCandidateBackend:
                     self._index_dirty = False
 
                 if mutated:
-                    self._writer.commit()
+                    self._get_writer().commit()
                 self._index.reload()
                 if apply_outcome is not None:
                     apply_outcome = self._merge_delete_visibility_failures(apply_outcome=apply_outcome)
@@ -315,8 +315,8 @@ class TantivyCandidateBackend:
                 file_hash = hashlib.sha256(raw).hexdigest()
                 doc_id = hashlib.sha256(f"{root_text}\0{relative_path}".encode("utf-8")).hexdigest()
                 if previous is not None:
-                    self._writer.delete_documents_by_term("doc_id", previous.doc_id)
-                self._writer.add_document(
+                    self._get_writer().delete_documents_by_term("doc_id", previous.doc_id)
+                self._get_writer().add_document(
                     Document(
                         doc_id=doc_id,
                         repo_root=root_text,
@@ -337,7 +337,7 @@ class TantivyCandidateBackend:
         for indexed_key, state in self._indexed_files.items():
             repo_root, _ = indexed_key
             if repo_root not in active_roots or indexed_key not in observed_keys:
-                self._writer.delete_documents_by_term("doc_id", state.doc_id)
+                self._get_writer().delete_documents_by_term("doc_id", state.doc_id)
                 removed_keys.append(indexed_key)
                 mutated = True
         for indexed_key in removed_keys:
@@ -402,8 +402,8 @@ class TantivyCandidateBackend:
         previous = self._indexed_files.get(indexed_key)
         doc_id = self._build_doc_id(repo_root=repo_root, relative_path=change.relative_path)
         if previous is not None:
-            self._writer.delete_documents_by_term("doc_id", previous.doc_id)
-        self._writer.add_document(
+            self._get_writer().delete_documents_by_term("doc_id", previous.doc_id)
+        self._get_writer().add_document(
             Document(
                 doc_id=doc_id,
                 repo_root=repo_root,
@@ -426,7 +426,7 @@ class TantivyCandidateBackend:
         indexed_key = (normalized_root, relative_path)
         previous = self._indexed_files.pop(indexed_key, None)
         doc_id = previous.doc_id if previous is not None else self._build_doc_id(repo_root=normalized_root, relative_path=relative_path)
-        self._writer.delete_documents_by_term("doc_id", doc_id)
+        self._get_writer().delete_documents_by_term("doc_id", doc_id)
         return doc_id
 
     def _reconcile_index_state(self, workspaces: list[WorkspaceDTO]) -> bool:
@@ -437,7 +437,7 @@ class TantivyCandidateBackend:
         for indexed_key, state in self._indexed_files.items():
             repo_root, _ = indexed_key
             if repo_root not in active_roots:
-                self._writer.delete_documents_by_term("doc_id", state.doc_id)
+                self._get_writer().delete_documents_by_term("doc_id", state.doc_id)
                 removed_keys.append(indexed_key)
                 mutated = True
         for indexed_key in removed_keys:
@@ -505,6 +505,21 @@ class TantivyCandidateBackend:
             first_message = apply_outcome.failed_rows[0].message
             raise ValueError(first_message)
 
+    def _get_writer(self) -> "_TantivyWriterProtocol":
+        """필요 시 Tantivy writer를 지연 생성한다."""
+        if self._writer is not None:
+            return self._writer
+        try:
+            self._writer = self._index.writer(100_000_000)
+        except ValueError as exc:
+            lowered = str(exc).lower()
+            if "lockbusy" in lowered or "failed to acquire lockfile" in lowered:
+                raise CandidateBackendError(
+                    "ERR_TANTIVY_LOCK_BUSY: tantivy writer lock is busy; use daemon proxy mode (sari mcp stdio)"
+                ) from exc
+            raise
+        return self._writer
+
     @staticmethod
     def _build_doc_id(repo_root: str, relative_path: str) -> str:
         """문서 식별자 해시를 생성한다."""
@@ -561,8 +576,8 @@ class CandidateSearchService:
             return CandidateSearchResultDTO(candidates=candidates, source=source, errors=[])
         except CandidateBackendError as primary_exc:
             log.error("후보 검색 주백엔드 실패(query=%s): %s", query, primary_exc)
+            code = _resolve_candidate_error_code(primary_exc)
             if self._fallback_backend is None:
-                code = "ERR_CANDIDATE_BACKEND"
                 return CandidateSearchResultDTO(
                     candidates=[],
                     source="backend_error",
@@ -577,7 +592,6 @@ class CandidateSearchService:
                 )
             try:
                 fallback_candidates = self._fallback_backend.search(workspaces=workspaces, query=query, limit=limit)
-                code = "ERR_CANDIDATE_BACKEND"
                 log.error("후보 검색 fallback 전환(query=%s): %s", query, primary_exc)
                 return CandidateSearchResultDTO(
                     candidates=fallback_candidates,
@@ -592,7 +606,7 @@ class CandidateSearchService:
                     ],
                 )
             except CandidateBackendError as fallback_exc:
-                code = "ERR_CANDIDATE_BACKEND"
+                code = _resolve_candidate_error_code(fallback_exc)
                 log.error("후보 검색 주/보조 백엔드 모두 실패(query=%s): %s / %s", query, primary_exc, fallback_exc)
                 return CandidateSearchResultDTO(
                     candidates=[],
@@ -644,6 +658,19 @@ def _has_index_metadata(index_root: Path) -> bool:
     return (index_root / "meta.json").exists()
 
 
+class _TantivyWriterProtocol(Protocol):
+    """Tantivy writer가 제공해야 하는 최소 메서드 집합."""
+
+    def commit(self) -> object:
+        """변경 사항을 커밋한다."""
+
+    def delete_documents_by_term(self, field_name: str, value: str) -> object:
+        """term 기반 문서 삭제를 수행한다."""
+
+    def add_document(self, document: Document) -> object:
+        """문서를 인덱스에 추가한다."""
+
+
 def _first_value_as_string(doc: Document, field_name: str) -> str | None:
     """Document 필드의 첫 번째 값을 문자열로 반환한다."""
     values = doc.get_all(field_name)
@@ -674,3 +701,11 @@ def _tokenize_query_for_fallback(raw_query: str) -> str:
     """특수문자 질의를 단순 토큰 질의로 변환한다."""
     tokens = re.findall(r"[0-9a-zA-Z_]+", raw_query)
     return " ".join(tokens).strip()
+
+
+def _resolve_candidate_error_code(exc: CandidateBackendError) -> str:
+    """후보 검색 예외에서 오류 코드를 도출한다."""
+    message = str(exc)
+    if message.startswith("ERR_TANTIVY_LOCK_BUSY:"):
+        return "ERR_TANTIVY_LOCK_BUSY"
+    return "ERR_CANDIDATE_BACKEND"

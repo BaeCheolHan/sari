@@ -45,11 +45,15 @@ CREATE TABLE IF NOT EXISTS daemon_registry (
     protocol TEXT NOT NULL,
     started_at TEXT NOT NULL,
     last_seen_at TEXT NOT NULL,
-    is_draining INTEGER NOT NULL CHECK (is_draining IN (0, 1))
+    is_draining INTEGER NOT NULL CHECK (is_draining IN (0, 1)),
+    deployment_state TEXT NOT NULL DEFAULT 'ACTIVE',
+    health_fail_streak INTEGER NOT NULL DEFAULT 0,
+    last_health_error TEXT NULL,
+    last_health_at TEXT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_daemon_registry_workspace
-ON daemon_registry(workspace_root, is_draining, last_seen_at DESC);
+ON daemon_registry(workspace_root, is_draining, deployment_state, last_seen_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_daemon_registry_seen
 ON daemon_registry(last_seen_at DESC);

@@ -1,0 +1,141 @@
+"""MCP daemon forward 공통 정책을 제공한다."""
+
+from __future__ import annotations
+
+from dataclasses import replace
+from pathlib import Path
+import time
+from typing import Callable
+
+from sari.core.config import AppConfig
+from sari.core.daemon_resolver import resolve_daemon_address
+from sari.core.exceptions import DaemonError
+from sari.db.repositories.daemon_registry_repository import DaemonRegistryRepository
+from sari.db.repositories.runtime_repository import RuntimeRepository
+from sari.db.repositories.workspace_repository import WorkspaceRepository
+from sari.mcp.server_daemon_forward import DaemonForwardError
+from sari.services.daemon_service import DaemonService
+
+StartDaemonFn = Callable[[Path, str | None], bool]
+ResolveTargetFn = Callable[[Path, str | None, str | None, int | None], tuple[str, int]]
+ForwardOnceFn = Callable[[dict[str, object], str, int, float], dict[str, object]]
+
+FORWARD_METHODS = frozenset({"tools/list", "tools/call"})
+POST_START_RETRY_MAX = 8
+POST_START_RETRY_WAIT_SEC = 0.15
+
+
+def should_forward_to_daemon(proxy_enabled: bool, method: str) -> bool:
+    """daemon forward 대상 메서드 여부를 반환한다."""
+    if not proxy_enabled:
+        return False
+    return method in FORWARD_METHODS
+
+
+def extract_workspace_root(payload: dict[str, object]) -> str | None:
+    """요청 payload에서 repo(workspace_root)를 추출한다."""
+    params = payload.get("params")
+    if not isinstance(params, dict):
+        return None
+    arguments = params.get("arguments")
+    if not isinstance(arguments, dict):
+        return None
+    repo = arguments.get("repo")
+    if not isinstance(repo, str):
+        return None
+    stripped = repo.strip()
+    if stripped == "":
+        return None
+    return stripped
+
+
+def resolve_target(
+    db_path: Path,
+    workspace_root: str | None,
+    host_override: str | None,
+    port_override: int | None,
+) -> tuple[str, int]:
+    """override 우선으로 daemon endpoint를 결정한다."""
+    if host_override is not None and host_override.strip() != "" and port_override is not None:
+        return host_override.strip(), port_override
+    return resolve_daemon_address(db_path=db_path, workspace_root=workspace_root)
+
+
+def forward_with_retry(
+    request: dict[str, object],
+    db_path: Path,
+    workspace_root: str | None,
+    host_override: str | None,
+    port_override: int | None,
+    timeout_sec: float,
+    auto_start_on_failure: bool,
+    start_daemon_fn: StartDaemonFn,
+    resolve_target_fn: ResolveTargetFn,
+    forward_once_fn: ForwardOnceFn,
+) -> dict[str, object]:
+    """forward 실패 시 자동 기동 후 1회 재시도한다."""
+    host, port = resolve_target_fn(db_path, workspace_root, host_override, port_override)
+    try:
+        return forward_once_fn(request, host, port, timeout_sec)
+    except (DaemonForwardError, OSError, TimeoutError) as first_exc:
+        if not auto_start_on_failure:
+            raise
+        if not is_retryable_error(first_exc):
+            raise
+        started = start_daemon_fn(db_path, workspace_root)
+        if not started:
+            raise
+        last_exc: BaseException | None = None
+        for _ in range(POST_START_RETRY_MAX):
+            host_retry, port_retry = resolve_target_fn(db_path, workspace_root, host_override, port_override)
+            try:
+                return forward_once_fn(request, host_retry, port_retry, timeout_sec)
+            except (DaemonForwardError, OSError, TimeoutError) as retry_exc:
+                last_exc = retry_exc
+                if not is_retryable_error(retry_exc):
+                    raise
+                time.sleep(POST_START_RETRY_WAIT_SEC)
+        if last_exc is not None:
+            raise last_exc
+        raise
+
+
+def is_retryable_error(exc: BaseException) -> bool:
+    """재시도 가능한 예외 타입인지 판정한다."""
+    return isinstance(exc, (OSError, TimeoutError, DaemonForwardError))
+
+
+def build_forward_error_message(exc: BaseException) -> str:
+    """forward 오류를 명시적 코드 접두사로 표준화한다."""
+    raw_message = str(exc)
+    if raw_message.startswith("ERR_"):
+        return raw_message
+    if isinstance(exc, TimeoutError):
+        detail_code = "ERR_DAEMON_TIMEOUT"
+    elif isinstance(exc, OSError):
+        detail_code = "ERR_DAEMON_UNAVAILABLE"
+    elif isinstance(exc, DaemonForwardError):
+        detail_code = "ERR_DAEMON_PROTOCOL"
+    else:
+        detail_code = "ERR_DAEMON_FORWARD_UNKNOWN"
+    return f"ERR_DAEMON_FORWARD_FAILED: {detail_code}: {exc}"
+
+
+def default_start_daemon(db_path: Path, workspace_root: str | None) -> bool:
+    """기본 daemon 자동 기동/attach 전략을 수행한다."""
+    _ = workspace_root
+    config = replace(AppConfig.default(), db_path=db_path)
+    runtime_repo = RuntimeRepository(db_path)
+    workspace_repo = WorkspaceRepository(db_path)
+    registry_repo = DaemonRegistryRepository(db_path)
+    service = DaemonService(
+        config=config,
+        runtime_repo=runtime_repo,
+        workspace_repo=workspace_repo,
+        registry_repo=registry_repo,
+    )
+    try:
+        service.ensure_running(run_mode=config.run_mode)
+        return True
+    except DaemonError:
+        return False

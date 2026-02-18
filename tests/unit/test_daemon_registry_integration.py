@@ -7,7 +7,7 @@ from pathlib import Path
 from pytest import MonkeyPatch
 
 from sari.core.config import AppConfig
-from sari.core.models import DaemonRuntimeDTO, WorkspaceDTO
+from sari.core.models import DaemonRegistryEntryDTO, DaemonRuntimeDTO, WorkspaceDTO
 from sari.db.repositories.daemon_registry_repository import DaemonRegistryRepository
 from sari.db.repositories.runtime_repository import RuntimeRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
@@ -240,3 +240,115 @@ def test_daemon_start_redirects_stdout_stderr_to_log_files(tmp_path: Path, monke
     assert hasattr(stderr_stream, "name")
     assert str(getattr(stdout_stream, "name")).endswith("daemon.stdout.log")
     assert str(getattr(stderr_stream, "name")).endswith("daemon.stderr.log")
+
+
+def test_daemon_ensure_running_attaches_existing_runtime(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """ensure_running은 기존 데몬이 살아있으면 attach해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    runtime_repo = RuntimeRepository(db_path)
+    workspace_repo = WorkspaceRepository(db_path)
+    registry_repo = DaemonRegistryRepository(db_path)
+    runtime = DaemonRuntimeDTO(
+        pid=54322,
+        host="127.0.0.1",
+        port=47777,
+        state="running",
+        started_at="2026-02-18T00:00:00+00:00",
+        session_count=0,
+        last_heartbeat_at="2026-02-18T00:00:00+00:00",
+        last_exit_reason=None,
+    )
+    runtime_repo.upsert_runtime(runtime)
+    service = DaemonService(
+        config=AppConfig(
+            db_path=db_path,
+            host="127.0.0.1",
+            preferred_port=47777,
+            max_port_scan=1,
+            stop_grace_sec=1,
+        ),
+        runtime_repo=runtime_repo,
+        workspace_repo=workspace_repo,
+        registry_repo=registry_repo,
+    )
+    monkeypatch.setattr(service, "_clear_stale_runtime_if_needed", lambda: None)
+    monkeypatch.setattr(service, "_is_pid_alive", lambda pid: True)
+    monkeypatch.setattr(service, "_touch_registry", lambda pid: None)
+
+    ensured = service.ensure_running(run_mode="dev")
+    assert ensured.pid == runtime.pid
+
+
+def test_daemon_ensure_running_restarts_when_registry_draining(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """ensure_running은 registry가 draining이면 기존 런타임에 attach하지 않고 재시작해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    runtime_repo = RuntimeRepository(db_path)
+    workspace_repo = WorkspaceRepository(db_path)
+    registry_repo = DaemonRegistryRepository(db_path)
+    runtime = DaemonRuntimeDTO(
+        pid=60001,
+        host="127.0.0.1",
+        port=47777,
+        state="running",
+        started_at="2026-02-18T00:00:00+00:00",
+        session_count=0,
+        last_heartbeat_at="2026-02-18T00:00:00+00:00",
+        last_exit_reason=None,
+    )
+    runtime_repo.upsert_runtime(runtime)
+    registry_repo.upsert(
+        DaemonRegistryEntryDTO(
+            daemon_id="d-restart",
+            host="127.0.0.1",
+            port=47777,
+            pid=60001,
+            workspace_root="__global__",
+            protocol="http",
+            started_at="2026-02-18T00:00:00+00:00",
+            last_seen_at="2026-02-18T00:00:01+00:00",
+            is_draining=True,
+        )
+    )
+    service = DaemonService(
+        config=AppConfig(
+            db_path=db_path,
+            host="127.0.0.1",
+            preferred_port=47777,
+            max_port_scan=1,
+            stop_grace_sec=1,
+        ),
+        runtime_repo=runtime_repo,
+        workspace_repo=workspace_repo,
+        registry_repo=registry_repo,
+    )
+    monkeypatch.setattr(service, "_clear_stale_runtime_if_needed", lambda: None)
+    monkeypatch.setattr(service, "_is_pid_alive", lambda pid: True)
+
+    called: dict[str, int] = {"stop": 0, "start": 0}
+
+    def _fake_stop() -> None:
+        called["stop"] += 1
+
+    def _fake_start(run_mode: str | None = None) -> DaemonRuntimeDTO:
+        _ = run_mode
+        called["start"] += 1
+        return DaemonRuntimeDTO(
+            pid=60002,
+            host="127.0.0.1",
+            port=47778,
+            state="running",
+            started_at="2026-02-18T00:00:02+00:00",
+            session_count=0,
+            last_heartbeat_at="2026-02-18T00:00:02+00:00",
+            last_exit_reason=None,
+        )
+
+    monkeypatch.setattr(service, "stop", _fake_stop)
+    monkeypatch.setattr(service, "start", _fake_start)
+
+    ensured = service.ensure_running(run_mode="dev")
+    assert ensured.pid == 60002
+    assert called["stop"] == 1
+    assert called["start"] == 1

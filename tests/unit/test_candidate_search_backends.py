@@ -127,3 +127,22 @@ def test_candidate_search_does_not_swallow_unexpected_exception() -> None:
             query="hello",
             limit=5,
         )
+
+
+def test_candidate_search_preserves_tantivy_lockbusy_error_code() -> None:
+    """Tantivy lockbusy 오류는 전용 코드로 유지되어야 한다."""
+    service = CandidateSearchService(
+        backend=_AlwaysFailBackend("ERR_TANTIVY_LOCK_BUSY: lock busy"),
+        fallback_backend=_SingleCandidateBackend(),
+    )
+
+    result = service.search(
+        workspaces=[WorkspaceDTO(path="/tmp/noop", name=None, indexed_at=None, is_active=True)],
+        query="hello",
+        limit=5,
+    )
+
+    assert result.source == "scan_fallback"
+    assert len(result.errors) == 1
+    assert result.errors[0].code == "ERR_TANTIVY_LOCK_BUSY"
+    assert result.errors[0].severity == "FATAL"

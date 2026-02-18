@@ -238,4 +238,6 @@ def _resolve_recovery_hint(error_code: str) -> str | None:
         )
     if error_code == "ERR_REPO_NOT_REGISTERED":
         return "해당 경로를 roots add로 등록한 뒤 다시 검색하세요."
+    if error_code == "ERR_TANTIVY_LOCK_BUSY":
+        return "현재 DB/인덱스를 다른 프로세스가 사용 중입니다. `sari mcp stdio`(proxy 기본 경로)로 연결하거나, 데몬을 단일 경로로 사용하세요."
     return None

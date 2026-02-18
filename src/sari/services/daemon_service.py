@@ -94,16 +94,29 @@ class DaemonService:
         self._register_registry_entry(runtime)
         return runtime
 
+    def ensure_running(self, run_mode: str | None = None) -> DaemonRuntimeDTO:
+        """데몬이 이미 실행 중이면 attach하고, 아니면 시작한다."""
+        self._clear_stale_runtime_if_needed()
+        existing = self._runtime_repo.get_runtime()
+        if existing is not None and self._is_pid_alive(existing.pid):
+            if self._is_attachable_registry_state(existing.pid):
+                self._touch_registry(existing.pid)
+                return existing
+            self.stop()
+        return self.start(run_mode=run_mode)
+
     def status(self) -> DaemonRuntimeDTO | None:
         """현재 데몬 상태를 조회한다."""
         runtime = self._runtime_repo.get_runtime()
         if runtime is None:
             return None
         if self._is_runtime_stale(runtime.last_heartbeat_at):
+            self._record_registry_health(pid=runtime.pid, ok=False, error_message="heartbeat stale")
             self._remove_registry_by_pid(runtime.pid)
             self._runtime_repo.clear_runtime()
             return None
         if not self._is_pid_alive(runtime.pid):
+            self._record_registry_health(pid=runtime.pid, ok=False, error_message="process dead")
             self._remove_registry_by_pid(runtime.pid)
             self._runtime_repo.clear_runtime()
             return None
@@ -260,13 +273,29 @@ class DaemonService:
         daemon_id = self._find_registry_daemon_id_by_pid(pid)
         if daemon_id is None:
             return
-        self._registry_repo.touch(daemon_id=daemon_id, seen_at=now_iso8601_utc())
+        now = now_iso8601_utc()
+        self._registry_repo.touch(daemon_id=daemon_id, seen_at=now)
+        self._registry_repo.record_health_result(daemon_id=daemon_id, ok=True, health_at=now)
 
     def _remove_registry_by_pid(self, pid: int) -> None:
         """종료된 PID의 레지스트리 엔트리를 제거한다."""
         if self._registry_repo is None:
             return
         self._registry_repo.remove_by_pid(pid=pid)
+
+    def _record_registry_health(self, pid: int, ok: bool, error_message: str | None = None) -> None:
+        """PID 기준으로 레지스트리 헬스 상태를 기록한다."""
+        if self._registry_repo is None:
+            return
+        daemon_id = self._find_registry_daemon_id_by_pid(pid)
+        if daemon_id is None:
+            return
+        self._registry_repo.record_health_result(
+            daemon_id=daemon_id,
+            ok=ok,
+            health_at=now_iso8601_utc(),
+            error_message=error_message,
+        )
 
     def _resolve_registry_workspace_root(self) -> str:
         """레지스트리 엔트리에 사용할 워크스페이스 루트를 결정한다."""
@@ -290,3 +319,17 @@ class DaemonService:
             if item.pid == pid:
                 return item.daemon_id
         return None
+
+    def _is_attachable_registry_state(self, pid: int) -> bool:
+        """현재 PID가 attach 가능한 registry 상태인지 판단한다."""
+        if self._registry_repo is None:
+            return True
+        for item in self._registry_repo.list_all():
+            if item.pid != pid:
+                continue
+            if item.is_draining:
+                return False
+            if item.deployment_state != "ACTIVE":
+                return False
+            return True
+        return True

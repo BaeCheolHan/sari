@@ -27,3 +27,5 @@ def test_release_workflow_supports_tag_and_manual_dispatch() -> None:
     assert "v*" in content
     assert "id-token: write" in content
     assert "pypa/gh-action-pypi-publish" in content
+    assert "tools/ci/run_release_gate.sh" in content
+    assert "release-gate-summary" in content

@@ -49,6 +49,10 @@ class DaemonRegistryEntryDTO:
     started_at: str
     last_seen_at: str
     is_draining: bool
+    deployment_state: str = "ACTIVE"
+    health_fail_streak: int = 0
+    last_health_error: str | None = None
+    last_health_at: str | None = None
     def to_sql_params(self) -> dict[str, object]:
         return {
             "daemon_id": self.daemon_id,
@@ -60,6 +64,10 @@ class DaemonRegistryEntryDTO:
             "started_at": self.started_at,
             "last_seen_at": self.last_seen_at,
             "is_draining": 1 if self.is_draining else 0,
+            "deployment_state": self.deployment_state,
+            "health_fail_streak": self.health_fail_streak,
+            "last_health_error": self.last_health_error,
+            "last_health_at": self.last_health_at,
         }
 @dataclass(frozen=True)
 class HealthResponseDTO:

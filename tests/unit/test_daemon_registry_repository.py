@@ -68,3 +68,33 @@ def test_daemon_registry_excludes_draining_entry(tmp_path: Path) -> None:
 
     assert repository.resolve_latest("/repo/a") is None
 
+
+def test_daemon_registry_health_result_marks_degraded(tmp_path: Path) -> None:
+    """헬스 실패 streak가 누적되면 deployment_state를 DEGRADED로 전환해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repository = DaemonRegistryRepository(db_path)
+    repository.upsert(
+        DaemonRegistryEntryDTO(
+            daemon_id="d-3",
+            host="127.0.0.1",
+            port=47779,
+            pid=333,
+            workspace_root="/repo/c",
+            protocol="http",
+            started_at="2026-02-18T10:00:00+00:00",
+            last_seen_at="2026-02-18T10:00:01+00:00",
+            is_draining=False,
+        )
+    )
+
+    repository.record_health_result("d-3", ok=False, health_at="2026-02-18T10:00:02+00:00", error_message="timeout")
+    repository.record_health_result("d-3", ok=False, health_at="2026-02-18T10:00:03+00:00", error_message="timeout")
+    repository.record_health_result("d-3", ok=False, health_at="2026-02-18T10:00:04+00:00", error_message="timeout")
+
+    items = repository.list_all()
+    assert len(items) == 1
+    item = items[0]
+    assert item.health_fail_streak == 3
+    assert item.deployment_state == "DEGRADED"
+    assert item.last_health_error == "timeout"

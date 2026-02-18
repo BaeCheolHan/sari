@@ -72,7 +72,7 @@ class PipelineLspMatrixService:
         coverage_total_languages, availability_scope = self._resolve_coverage_scope(
             strict_all_languages=strict_all_languages,
             enabled_languages=enabled_languages,
-            checked_languages=checked_languages,
+            effective_required=set(effective_required),
         )
         unavailable_in_scope = len([language for language in unavailable_languages if language in availability_scope])
         available_in_scope = max(0, coverage_total_languages - unavailable_in_scope)
@@ -81,8 +81,16 @@ class PipelineLspMatrixService:
         symbol_success_in_scope = max(0, coverage_total_languages - symbol_failed_in_scope)
         symbol_extract_success_rate = self._calculate_percent(available=symbol_success_in_scope, total=coverage_total_languages)
         strict_symbol_gate_passed = (not strict_symbol_gate) or (symbol_extract_success_rate >= PASS_THRESHOLD_PERCENT)
-        critical_unavailable_count = len([language for language in critical_languages if language in unavailable_languages])
-        critical_symbol_failed_count = len([language for language in critical_languages if language in symbol_failed_languages])
+        critical_scope = critical_languages if strict_all_languages else critical_languages.intersection(set(effective_required))
+        critical_failed_languages = sorted(
+            {
+                language
+                for language in critical_scope
+                if (language in unavailable_languages) or (strict_symbol_gate and language in symbol_failed_languages)
+            }
+        )
+        critical_unavailable_count = len([language for language in critical_scope if language in unavailable_languages])
+        critical_symbol_failed_count = len([language for language in critical_scope if language in symbol_failed_languages])
         critical_passed = (critical_unavailable_count == 0) and ((not strict_symbol_gate) or (critical_symbol_failed_count == 0))
         gate_passed = (len(failed_required) == 0) and (readiness_percent >= PASS_THRESHOLD_PERCENT) and critical_passed and strict_symbol_gate_passed
         gate_decision = "PASS" if gate_passed else "FAIL"
@@ -111,6 +119,9 @@ class PipelineLspMatrixService:
                 "failed_symbol_languages": sorted(symbol_failed_languages),
                 "pass_threshold_percent": PASS_THRESHOLD_PERCENT,
                 "critical_passed": critical_passed,
+                "critical_languages": sorted(critical_scope),
+                "critical_failed_languages": critical_failed_languages,
+                "blocking_failures": sorted(set(failed_required).union(set(critical_failed_languages))),
                 "gate_decision": gate_decision,
             },
             "languages": languages_raw,
@@ -124,6 +135,14 @@ class PipelineLspMatrixService:
         )
         if fail_on_unavailable and not gate_passed:
             failed_csv = ", ".join(failed_required)
+            if len(critical_failed_languages) > 0:
+                critical_csv = ", ".join(critical_failed_languages)
+                raise DaemonError(
+                    ErrorContext(
+                        code="ERR_LSP_CRITICAL_GATE_FAILED",
+                        message=f"critical languages failed: {critical_csv}; readiness_percent={readiness_percent}; symbol_extract_success_rate={symbol_extract_success_rate}; missing_server_count={len(missing_server_languages)}",
+                    )
+                )
             raise DaemonError(
                 ErrorContext(
                     code="ERR_LSP_MATRIX_GATE_FAILED",
@@ -205,12 +224,12 @@ class PipelineLspMatrixService:
         self,
         strict_all_languages: bool,
         enabled_languages: set[str],
-        checked_languages: set[str],
+        effective_required: set[str],
     ) -> tuple[int, set[str]]:
         """readiness 분모/분자를 계산할 언어 범위를 반환한다."""
         if strict_all_languages:
             return len(enabled_languages), enabled_languages
-        return len(checked_languages), checked_languages
+        return len(effective_required), effective_required
 
     def _calculate_percent(self, available: int, total: int) -> float:
         """가용 언어 비율(%)을 소수 2자리로 계산한다."""
