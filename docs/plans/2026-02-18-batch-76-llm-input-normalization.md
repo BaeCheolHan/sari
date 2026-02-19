@@ -25,7 +25,7 @@
 - 수정: `src/sari/mcp/pack1_line.py`
   - 오류 응답 시 `@HINT expected=... received=... example=...` 라인 출력
 
-- 수정: `src/sari/mcp/tools/legacy_tools.py`
+- 수정: `src/sari/mcp/tools/legacy_tools.py` (후속 배치에서 `read_tool.py`, `symbol_graph_tools.py`, `knowledge_tools.py`로 완전 분리 후 파일 삭제)
   - read 인자 오류를 자기설명형(`expected/example`)으로 반환
   - `ERR_MODE_REQUIRED`, `ERR_UNSUPPORTED_MODE`, `ERR_TARGET_REQUIRED`에 힌트 적용
 

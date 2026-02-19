@@ -11,7 +11,11 @@ def test_no_direct_getenv_in_mcp_http_scope() -> None:
     targets = [
         root / "src/sari/mcp/server.py",
         root / "src/sari/mcp/tools/search_tool.py",
-        root / "src/sari/mcp/tools/legacy_tools.py",
+        root / "src/sari/mcp/tools/read_tool.py",
+        root / "src/sari/mcp/tools/symbol_graph_tools.py",
+        root / "src/sari/mcp/tools/knowledge_tools.py",
+        root / "src/sari/mcp/tools/status_tool.py",
+        root / "src/sari/mcp/tools/sari_guide_tool.py",
         root / "src/sari/http/app.py",
     ]
     violations: list[str] = []

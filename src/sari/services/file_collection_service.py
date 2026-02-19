@@ -1,5 +1,4 @@
 from __future__ import annotations
-import fnmatch
 import hashlib
 import logging
 import queue
@@ -10,16 +9,12 @@ import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Protocol
-from pathspec import PathSpec
-from pathspec.patterns import GitWildMatchPattern
 from solidlsp.ls_config import Language
 from sari.core.exceptions import CollectionError, DaemonError, ErrorContext
 from sari.core.config import DEFAULT_COLLECTION_EXCLUDE_GLOBS
-from sari.core.language_registry import get_default_collection_extensions, resolve_language_from_path
-from sari.core.repo_resolver import resolve_repo_key
-from sari.core.repo_identity import compute_repo_id, resolve_workspace_root
+from sari.core.language_registry import get_default_collection_extensions
 from sari.core.text_decode import decode_bytes_with_policy
-from sari.core.models import CandidateIndexChangeDTO, CollectionPolicyDTO, CollectionScanRepoResultDTO, CollectionScanResultDTO, CollectedFileL1DTO, FileReadResultDTO, PipelineMetricsDTO, RepoIdentityDTO, now_iso8601_utc
+from sari.core.models import CandidateIndexChangeDTO, CollectionPolicyDTO, CollectionScanRepoResultDTO, CollectionScanResultDTO, CollectedFileL1DTO, FileReadResultDTO, PipelineMetricsDTO, now_iso8601_utc
 from sari.db.repositories.file_body_repository import FileBodyDecodeError, FileBodyRepository
 from sari.db.repositories.file_collection_repository import FileCollectionRepository
 from sari.db.repositories.file_enrich_queue_repository import FileEnrichQueueRepository
@@ -33,6 +28,7 @@ from sari.db.repositories.repo_registry_repository import RepoRegistryRepository
 from sari.lsp.hub import LspHub
 from sari.lsp.path_normalizer import normalize_location_to_repo_relative, normalize_repo_relative_path
 from sari.services.collection import CollectionErrorPolicy, CollectionRuntimePort, EnrichEngine, EventWatcher, FileScanner, PipelineMetricsService, PipelineWorker, RuntimeManager
+from sari.services.collection.repo_support import CollectionRepoSupport, WorkspaceFanoutResolver
 from solidlsp.ls_exceptions import SolidLSPException
 log = logging.getLogger(__name__)
 
@@ -301,15 +297,30 @@ class FileCollectionService:
         self._last_error_message: str | None = None
         self._last_error_at: str | None = None
         self._indexing_mode = 'steady'
+        self._repo_support = CollectionRepoSupport(
+            workspace_repo=self._workspace_repo,
+            policy=self._policy,
+            policy_repo=self._policy_repo,
+            lsp_backend=self._lsp_backend,
+            repo_registry_repo=self._repo_registry_repo,
+            lsp_prewarm_min_language_files=self.LSP_PREWARM_MIN_LANGUAGE_FILES,
+            lsp_prewarm_top_language_count=self.LSP_PREWARM_TOP_LANGUAGE_COUNT,
+        )
+        self._fanout_resolver = WorkspaceFanoutResolver(
+            workspace_repo=self._workspace_repo,
+            load_gitignore_spec=self._repo_support.load_gitignore_spec,
+            is_collectible=self._repo_support.is_collectible,
+            build_markers=self.WORKSPACE_SCAN_BUILD_MARKERS,
+        )
         self._scanner = FileScanner(
             file_repo=self._file_repo,
             enrich_queue_repo=self._enrich_queue_repo,
             candidate_index_sink=self._candidate_index_sink,
-            resolve_lsp_language=self._resolve_lsp_language,
-            configure_lsp_prewarm_languages=self._configure_lsp_prewarm_languages,
-            resolve_repo_identity=self._resolve_repo_identity,
-            load_gitignore_spec=self._load_gitignore_spec,
-            is_collectible=self._is_collectible,
+            resolve_lsp_language=self._repo_support.resolve_lsp_language,
+            configure_lsp_prewarm_languages=self._repo_support.configure_lsp_prewarm_languages,
+            resolve_repo_identity=self._repo_support.resolve_repo_identity,
+            load_gitignore_spec=self._repo_support.load_gitignore_spec,
+            is_collectible=self._repo_support.is_collectible,
             priority_low=self.PRIORITY_LOW,
             priority_medium=self.PRIORITY_MEDIUM,
             scan_flush_batch_size=self.SCAN_FLUSH_BATCH_SIZE,
@@ -408,7 +419,7 @@ class FileCollectionService:
     def scan_once(self, repo_root: str) -> CollectionScanResultDTO:
         """L1 스캔을 실행한다. workspace 컨테이너는 top-level repo fan-out을 수행한다."""
         root_path = Path(repo_root).expanduser().resolve()
-        fanout_targets = self._resolve_top_level_repo_targets(root_path)
+        fanout_targets = self._fanout_resolver.resolve_targets(root_path)
         if len(fanout_targets) == 0:
             return self._scanner.scan_once(str(root_path))
         return self._scan_workspace_fanout(root_path=root_path, targets=fanout_targets)
@@ -459,43 +470,6 @@ class FileCollectionService:
             failed_repo_count=failed,
             repo_results=tuple(results),
         )
-
-    def _resolve_top_level_repo_targets(self, root_path: Path) -> list[Path]:
-        """workspace 경로인 경우 top-level repo 후보를 계산한다."""
-        if not root_path.exists() or not root_path.is_dir():
-            return []
-        registered_paths = {Path(item.path).expanduser().resolve() for item in self._workspace_repo.list_all()}
-        if root_path not in registered_paths:
-            return []
-        targets: list[Path] = []
-        for child in root_path.iterdir():
-            if not child.is_dir():
-                continue
-            if child.name.startswith("."):
-                continue
-            if self._is_top_level_repo_candidate(child):
-                targets.append(child.resolve())
-        targets.sort(key=lambda item: item.name)
-        return targets
-
-    def _is_top_level_repo_candidate(self, candidate: Path) -> bool:
-        """top-level 하위 디렉터리가 repo 후보인지 판정한다."""
-        if (candidate / ".git").exists():
-            return True
-        for marker in self.WORKSPACE_SCAN_BUILD_MARKERS:
-            if (candidate / marker).exists():
-                return True
-        return self._contains_collectible_file(candidate)
-
-    def _contains_collectible_file(self, repo_root: Path) -> bool:
-        """빌드 마커가 없어도 수집 대상 파일이 존재하면 repo 후보로 간주한다."""
-        gitignore_spec = self._load_gitignore_spec(repo_root)
-        for file_path in repo_root.rglob("*"):
-            if not file_path.is_file():
-                continue
-            if self._is_collectible(file_path=file_path, repo_root=repo_root, gitignore_spec=gitignore_spec):
-                return True
-        return False
 
     def index_file(self, repo_root: str, relative_path: str) -> CollectionScanResultDTO:
         """단일 파일 인덱싱을 전용 스캐너 컴포넌트로 위임한다."""
@@ -657,43 +631,6 @@ class FileCollectionService:
         next_offset = end_index if end_index < total_lines else None
         return FileReadResultDTO(relative_path=relative_path, content='\n'.join(sliced), start_line=offset + 1, end_line=end_index, source=source, total_lines=total_lines, is_truncated=next_offset is not None, next_offset=next_offset)
 
-    def _resolve_lsp_language(self, relative_path: str) -> Language | None:
-        return resolve_language_from_path(file_path=relative_path)
-
-    def _configure_lsp_prewarm_languages(self, repo_root: str, language_counts: dict[Language, int]) -> None:
-        configure_func = getattr(self._lsp_backend, 'configure_hot_languages', None)
-        if not callable(configure_func):
-            return
-        candidates = [(language, count) for language, count in language_counts.items() if count >= self.LSP_PREWARM_MIN_LANGUAGE_FILES]
-        candidates.sort(key=lambda item: item[1], reverse=True)
-        selected = {language for language, _ in candidates[:self.LSP_PREWARM_TOP_LANGUAGE_COUNT]}
-        configure_func(repo_root=repo_root, languages=selected)
-
-    def _resolve_repo_label(self, repo_root: str) -> str:
-        """저장소 절대경로를 workspace-relative repo_key로 변환한다."""
-        try:
-            workspace_paths = [item.path for item in self._workspace_repo.list_all()]
-            return resolve_repo_key(repo_root=repo_root, workspace_paths=workspace_paths)
-        except (RuntimeError, ValueError):
-            return Path(repo_root).name
-
-    def _resolve_repo_identity(self, repo_root: str) -> RepoIdentityDTO:
-        """repo 라벨/ID를 결정론적으로 계산하고 레지스트리에 동기화한다."""
-        workspace_paths = [workspace.path for workspace in self._workspace_repo.list_all() if workspace.is_active]
-        resolved_label = self._resolve_repo_label(repo_root)
-        workspace_root = resolve_workspace_root(repo_root=repo_root, workspace_paths=workspace_paths)
-        resolved_repo_id = compute_repo_id(repo_label=resolved_label, workspace_root=workspace_root)
-        identity = RepoIdentityDTO(
-            repo_id=resolved_repo_id,
-            repo_label=resolved_label,
-            repo_root=repo_root,
-            workspace_root=workspace_root,
-            updated_at=now_iso8601_utc(),
-        )
-        if self._repo_registry_repo is not None:
-            self._repo_registry_repo.upsert(identity)
-        return identity
-
     def _rebalance_jobs_by_language(self, jobs: list[FileEnrichJobDTO]) -> list[FileEnrichJobDTO]:
         return self._enrich_engine._rebalance_jobs_by_language(jobs)
 
@@ -720,9 +657,7 @@ class FileCollectionService:
         return item.to_dict()
 
     def _is_deletion_hold_enabled(self) -> bool:
-        if self._policy_repo is None:
-            return False
-        return bool(self._policy_repo.get_policy().deletion_hold)
+        return self._repo_support.is_deletion_hold_enabled()
 
     def _record_error_event(self, component: str, phase: str, severity: str, error_code: str, error_message: str, error_type: str, repo_root: str | None, relative_path: str | None, job_id: str | None, attempt_count: int, context_data: dict[str, object], worker_name: str='collection', stacktrace_text: str | None=None) -> None:
         self._error_policy.record_error_event(component=component, phase=phase, severity=severity, error_code=error_code, error_message=error_message, error_type=error_type, repo_root=repo_root, relative_path=relative_path, job_id=job_id, attempt_count=attempt_count, context_data=context_data, worker_name=worker_name, stacktrace_text=stacktrace_text)
@@ -731,12 +666,12 @@ class FileCollectionService:
         if relative_path.strip() == '':
             raise CollectionError(ErrorContext(code='ERR_RELATIVE_PATH_REQUIRED', message='relative_path는 필수입니다'))
         root = Path(repo_root).expanduser().resolve()
-        repo_identity = self._resolve_repo_identity(str(root))
+        repo_identity = self._repo_support.resolve_repo_identity(str(root))
         file_path = (root / relative_path).resolve()
         if not file_path.exists() or not file_path.is_file():
             raise CollectionError(ErrorContext(code='ERR_FILE_NOT_FOUND', message='대상 파일을 찾을 수 없습니다'))
-        gitignore_spec = self._load_gitignore_spec(root)
-        if not self._is_collectible(file_path=file_path, repo_root=root, gitignore_spec=gitignore_spec):
+        gitignore_spec = self._repo_support.load_gitignore_spec(root)
+        if not self._repo_support.is_collectible(file_path=file_path, repo_root=root, gitignore_spec=gitignore_spec):
             # watcher 이벤트에서 정책 비대상 파일은 큐에 적재하지 않는다.
             return
         now_iso = now_iso8601_utc()
@@ -764,29 +699,6 @@ class FileCollectionService:
 
     def _prune_error_events_if_needed(self) -> None:
         self._error_policy.prune_error_events_if_needed()
-
-    def _load_gitignore_spec(self, repo_root: Path) -> PathSpec:
-        gitignore_path = repo_root / '.gitignore'
-        patterns: list[str] = []
-        if gitignore_path.exists():
-            patterns = gitignore_path.read_text(encoding='utf-8').splitlines()
-        return PathSpec.from_lines(GitWildMatchPattern, patterns)
-
-    def _is_collectible(self, file_path: Path, repo_root: Path, gitignore_spec: PathSpec) -> bool:
-        if file_path.stat().st_size > self._policy.max_file_size_bytes:
-            return False
-        relative_posix = str(file_path.relative_to(repo_root).as_posix())
-        if gitignore_spec.match_file(relative_posix):
-            return False
-        if any((part.startswith('.') for part in file_path.parts)):
-            return False
-        suffix = file_path.suffix.lower()
-        if suffix not in self._policy.include_ext:
-            return False
-        for pattern in self._policy.exclude_globs:
-            if fnmatch.fnmatch(relative_posix, pattern):
-                return False
-        return True
 
 def build_default_file_collection_service(workspace_repo: WorkspaceRepository, file_repo: FileCollectionRepository, enrich_queue_repo: FileEnrichQueueRepository, body_repo: FileBodyRepository, lsp_repo: LspToolDataRepository, readiness_repo: ToolReadinessRepository, policy_repo: PipelinePolicyRepository | None=None, event_repo: PipelineJobEventRepository | None=None, error_event_repo: PipelineErrorEventRepository | None=None, candidate_index_sink: CandidateIndexSink | None=None, vector_index_sink: VectorIndexSink | None=None, retry_max_attempts: int=5, retry_backoff_base_sec: int=1, queue_poll_interval_ms: int=500, include_ext: tuple[str, ...] | None=None, exclude_globs: tuple[str, ...] | None=None, watcher_debounce_ms: int=300, run_mode: str='dev', parent_alive_probe: Callable[[], bool] | None=None, lsp_backend: LspExtractionBackend | None=None, persist_body_for_read: bool=True) -> CollectionRuntimePort:
     resolved_include_ext = include_ext if include_ext is not None else get_default_collection_extensions()

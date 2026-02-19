@@ -15,7 +15,7 @@ from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.core.models import WorkspaceDTO
 from sari.db.schema import init_schema
 from sari.http.app import HttpContext, status_endpoint
-from sari.mcp.tools.legacy_tools import StatusTool
+from sari.mcp.tools.status_tool import StatusTool
 
 
 class _AdminServiceStub:

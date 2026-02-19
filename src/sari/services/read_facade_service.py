@@ -5,7 +5,7 @@ from __future__ import annotations
 from sari.db.repositories.knowledge_repository import KnowledgeRepository
 from sari.db.repositories.lsp_tool_data_repository import LspToolDataRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
-from sari.mcp.tools.legacy_tools import ReadTool
+from sari.mcp.tools.read_tool import ReadTool
 from sari.services.collection.ports import CollectionScanPort
 
 

@@ -52,9 +52,11 @@ from sari.mcp.tools.arg_normalizer import ArgNormalizationError, normalize_tool_
 from sari.mcp.transport import MCP_MODE_FRAMED, McpTransport, McpTransportParseError
 from sari.mcp.server_daemon_forward import forward_once
 from sari.mcp.tools.search_tool import SearchTool
+from sari.mcp.tools.knowledge_tools import ArchiveContextTool, GetContextTool, GetSnippetTool, KnowledgeTool, SaveSnippetTool
+from sari.mcp.tools.read_tool import DryRunDiffTool, ReadTool
 from sari.mcp.tools.sari_guide_tool import SariGuideTool
 from sari.mcp.tools.status_tool import StatusTool
-from sari.mcp.tools.legacy_tools import ArchiveContextTool, CallGraphHealthTool, CallGraphTool, DryRunDiffTool, GetContextTool, GetImplementationsTool, GetSnippetTool, KnowledgeTool, ListSymbolsTool, ReadSymbolTool, ReadTool, SaveSnippetTool
+from sari.mcp.tools.symbol_graph_tools import CallGraphHealthTool, CallGraphTool, GetImplementationsTool, ListSymbolsTool, ReadSymbolTool
 from sari.search.candidate_search import CandidateSearchService
 from sari.search.hierarchy_scorer import HierarchyScorer
 from sari.search.importance_scorer import ImportanceScorePolicyDTO, ImportanceScorer, ImportanceWeightsDTO

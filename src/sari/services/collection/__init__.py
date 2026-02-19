@@ -12,6 +12,7 @@ from sari.services.collection.ports import (
     CollectionScanPort,
 )
 from sari.services.collection.pipeline_worker import PipelineWorker
+from sari.services.collection.repo_support import CollectionRepoSupport, WorkspaceFanoutResolver
 from sari.services.collection.runtime_manager import RuntimeManager
 from sari.services.collection.scanner import FileScanner
 
@@ -27,5 +28,7 @@ __all__ = [
     "FileScanner",
     "PipelineMetricsService",
     "PipelineWorker",
+    "CollectionRepoSupport",
+    "WorkspaceFanoutResolver",
     "RuntimeManager",
 ]
