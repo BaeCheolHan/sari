@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import shutil
 import threading
 import time
 from dataclasses import dataclass
@@ -14,6 +15,7 @@ from typing import Callable, Protocol
 import tantivy
 from tantivy import Document
 
+from sari.core.language_registry import get_default_collection_extensions
 from sari.core.text_decode import decode_bytes_with_policy
 from sari.core.repo_identity import compute_repo_id
 from sari.core.models import CandidateFileDTO, CandidateIndexChangeDTO, SearchErrorDTO, WorkspaceDTO, now_iso8601_utc
@@ -32,6 +34,7 @@ class CandidateSearchConfig:
     """후보 검색 동작 설정을 표현한다."""
 
     max_file_size_bytes: int
+    allowed_suffixes: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -150,6 +153,7 @@ class ScanCandidateBackend:
     def __init__(self, config: CandidateSearchConfig) -> None:
         """설정값을 주입한다."""
         self._config = config
+        self._allowed_suffixes = {suffix.lower() for suffix in config.allowed_suffixes}
 
     def search(self, workspaces: list[WorkspaceDTO], query: str, limit: int) -> list[CandidateFileDTO]:
         """워크스페이스에서 질의어를 포함한 파일 후보를 반환한다."""
@@ -188,7 +192,7 @@ class ScanCandidateBackend:
             if any(part.startswith(".") for part in path.parts):
                 continue
             suffix = path.suffix.lower()
-            if suffix in {".py", ".pyi", ".ts", ".tsx", ".js", ".jsx", ".java", ".kt", ".kts", ".go", ".rs"}:
+            if suffix in self._allowed_suffixes:
                 files.append(path)
         return files
 
@@ -229,6 +233,7 @@ class TantivyCandidateBackend:
     ) -> None:
         """인덱스 경로와 설정을 주입한다."""
         self._config = config
+        self._allowed_suffixes = {suffix.lower() for suffix in config.allowed_suffixes}
         self._change_repo = change_repo
         self._index_root = index_root
         self._index_root.mkdir(parents=True, exist_ok=True)
@@ -383,7 +388,7 @@ class TantivyCandidateBackend:
             return self._index.parse_query(tokenized_query, fields)
 
     def _build_index(self) -> tantivy.Index:
-        """Tantivy 인덱스를 초기화한다."""
+        """Tantivy 인덱스를 초기화하고 손상 시 자동 복구한다."""
         builder = tantivy.SchemaBuilder()
         builder.add_text_field("doc_id", stored=True)
         builder.add_text_field("repo_root", stored=True)
@@ -391,9 +396,40 @@ class TantivyCandidateBackend:
         builder.add_text_field("file_hash", stored=True)
         builder.add_text_field("content", stored=False)
         schema = builder.build()
-        if _has_index_metadata(self._index_root):
-            return tantivy.Index(schema, path=str(self._index_root))
+        try:
+            return self._open_index_with_schema(schema)
+        except (RuntimeError, OSError, ValueError, TypeError) as exc:
+            log.warning("tantivy index open failed. rebuild start(path=%s, reason=%s)", self._index_root, exc)
+            backup_path = self._backup_index_dir(reason=str(exc))
+            if backup_path is not None:
+                log.warning("tantivy index backup completed(path=%s)", backup_path)
+            self._index_root.mkdir(parents=True, exist_ok=True)
+            try:
+                rebuilt = self._open_index_with_schema(schema)
+                log.warning("tantivy index rebuild completed(path=%s)", self._index_root)
+                return rebuilt
+            except (RuntimeError, OSError, ValueError, TypeError) as rebuild_exc:
+                raise CandidateBackendError(
+                    f"ERR_TANTIVY_INDEX_REBUILD_FAILED: index path={self._index_root}, reason={rebuild_exc}"
+                ) from rebuild_exc
+
+    def _open_index_with_schema(self, schema: object) -> tantivy.Index:
+        """주어진 스키마로 Tantivy 인덱스를 연다."""
         return tantivy.Index(schema, path=str(self._index_root))
+
+    def _backup_index_dir(self, reason: str) -> Path | None:
+        """기존 인덱스 디렉터리를 백업 경로로 이동한다."""
+        if not self._index_root.exists():
+            return None
+        suffix = f"{int(time.time() * 1000)}"
+        backup_path = self._index_root.with_name(f"{self._index_root.name}.bak.{suffix}")
+        try:
+            shutil.move(str(self._index_root), str(backup_path))
+            return backup_path
+        except (RuntimeError, OSError, ValueError, TypeError) as exc:
+            raise CandidateBackendError(
+                f"ERR_TANTIVY_INDEX_INIT_FAILED: backup failed(path={self._index_root}, reason={reason}, backup_error={exc})"
+            ) from exc
 
     def _sync_index(self, workspaces: list[WorkspaceDTO]) -> bool:
         """워크스페이스 변경을 인덱스에 반영한다."""
@@ -429,7 +465,7 @@ class TantivyCandidateBackend:
                 if any(part.startswith(".") for part in path.parts):
                     continue
                 suffix = path.suffix.lower()
-                if suffix not in {".py", ".pyi", ".ts", ".tsx", ".js", ".jsx", ".java", ".kt", ".kts", ".go", ".rs"}:
+                if suffix not in self._allowed_suffixes:
                     continue
                 stat = path.stat()
                 if stat.st_size > self._config.max_file_size_bytes:
@@ -856,9 +892,18 @@ class CandidateSearchService:
         backend_mode: str,
         enable_scan_fallback: bool,
         change_repo: CandidateIndexChangeRepository | None = None,
+        allowed_suffixes: tuple[str, ...] | None = None,
     ) -> CandidateSearchService:
         """설정 기반 기본 후보 검색 서비스를 생성한다."""
-        config = CandidateSearchConfig(max_file_size_bytes=max_file_size_bytes)
+        resolved_suffixes = (
+            allowed_suffixes
+            if allowed_suffixes is not None and len(allowed_suffixes) > 0
+            else get_default_collection_extensions()
+        )
+        config = CandidateSearchConfig(
+            max_file_size_bytes=max_file_size_bytes,
+            allowed_suffixes=resolved_suffixes,
+        )
         scan_backend = ScanCandidateBackend(config=config)
         if backend_mode == "scan":
             return cls(backend=scan_backend, fallback_backend=None)
@@ -960,11 +1005,6 @@ class CandidateSearchService:
             self._backend.enqueue_delete_change(repo_root=repo_root, relative_path=relative_path, reason=reason)
             return
         self.mark_file_dirty(repo_root=repo_root, relative_path=relative_path)
-
-
-def _has_index_metadata(index_root: Path) -> bool:
-    """인덱스 메타 파일 존재 여부를 확인한다."""
-    return (index_root / "meta.json").exists()
 
 
 class _TantivyWriterProtocol(Protocol):

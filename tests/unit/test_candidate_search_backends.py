@@ -5,9 +5,16 @@ from __future__ import annotations
 from pathlib import Path
 
 from sari.core.models import CandidateFileDTO, WorkspaceDTO
+from sari.core.language_registry import get_default_collection_extensions
 import pytest
 
-from sari.search.candidate_search import CandidateBackend, CandidateBackendError, CandidateSearchService
+from sari.search.candidate_search import (
+    CandidateBackend,
+    CandidateBackendError,
+    CandidateSearchConfig,
+    CandidateSearchService,
+    TantivyCandidateBackend,
+)
 
 
 class _AlwaysFailBackend(CandidateBackend):
@@ -97,6 +104,56 @@ def test_candidate_search_scan_mode_finds_python_file(tmp_path: Path) -> None:
     assert result.candidates[0].file_hash != ""
 
 
+def test_candidate_search_scan_mode_uses_allowed_suffixes_override(tmp_path: Path) -> None:
+    """허용 확장자 오버라이드가 적용되면 후보 검색 범위가 제한되어야 한다."""
+    repo_dir = tmp_path / "repo-ext"
+    repo_dir.mkdir()
+    (repo_dir / "alpha.py").write_text("def alpha_symbol():\n    return 1\n", encoding="utf-8")
+    (repo_dir / "beta.swift").write_text("func alpha_symbol() -> Int { 1 }\n", encoding="utf-8")
+
+    service = CandidateSearchService.build_default(
+        max_file_size_bytes=512 * 1024,
+        index_root=tmp_path / "candidate-index-ext",
+        backend_mode="scan",
+        enable_scan_fallback=False,
+        allowed_suffixes=(".py",),
+    )
+    result = service.search(
+        workspaces=[WorkspaceDTO(path=str(repo_dir.resolve()), name="repo-ext", indexed_at=None, is_active=True)],
+        query="alpha_symbol",
+        limit=10,
+    )
+
+    assert len(result.candidates) == 1
+    assert result.candidates[0].relative_path == "alpha.py"
+
+
+def test_candidate_search_scan_mode_defaults_to_language_registry_extensions(tmp_path: Path) -> None:
+    """허용 확장자 미지정 시 language_registry 기본 확장자를 사용해야 한다."""
+    repo_dir = tmp_path / "repo-default-ext"
+    repo_dir.mkdir()
+    target = repo_dir / "alpha.swift"
+    target.write_text("func alpha_symbol() -> Int { 1 }\n", encoding="utf-8")
+
+    assert ".swift" in set(get_default_collection_extensions())
+
+    service = CandidateSearchService.build_default(
+        max_file_size_bytes=512 * 1024,
+        index_root=tmp_path / "candidate-index-default-ext",
+        backend_mode="scan",
+        enable_scan_fallback=False,
+        allowed_suffixes=None,
+    )
+    result = service.search(
+        workspaces=[WorkspaceDTO(path=str(repo_dir.resolve()), name="repo-default-ext", indexed_at=None, is_active=True)],
+        query="alpha_symbol",
+        limit=10,
+    )
+
+    assert len(result.candidates) == 1
+    assert result.candidates[0].relative_path == str(target.relative_to(repo_dir).as_posix())
+
+
 def test_candidate_search_marks_fallback_success_as_fatal_error() -> None:
     """fallback 성공이어도 주백엔드 실패는 FATAL 오류로 남아야 한다."""
     service = CandidateSearchService(
@@ -163,3 +220,54 @@ def test_filter_workspaces_by_repo_allows_descendant_repo() -> None:
 
     assert len(filtered) == 1
     assert filtered[0].path == "/tmp/ws"
+
+
+def test_tantivy_build_index_rebuilds_when_first_open_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """인덱스 오픈이 1회 실패하면 백업 후 재빌드에 성공해야 한다."""
+    index_root = tmp_path / "candidate-index-init-rebuild"
+    index_root.mkdir(parents=True, exist_ok=True)
+    (index_root / "meta.json").write_text("broken", encoding="utf-8")
+    calls = {"count": 0}
+
+    from sari.search import candidate_search as module
+
+    real_index = module.tantivy.Index
+
+    def _flaky_index(schema: object, path: str) -> object:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise RuntimeError("schema mismatch")
+        return real_index(schema, path=path)
+
+    monkeypatch.setattr(module.tantivy, "Index", _flaky_index)
+
+    backend = TantivyCandidateBackend(
+        config=CandidateSearchConfig(max_file_size_bytes=512 * 1024, allowed_suffixes=(".py",)),
+        index_root=index_root,
+    )
+
+    assert backend is not None
+    assert calls["count"] >= 2
+    backups = list(tmp_path.glob("candidate-index-init-rebuild.bak.*"))
+    assert len(backups) == 1
+    assert index_root.exists()
+
+
+def test_tantivy_build_index_raises_when_rebuild_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """인덱스 오픈/재빌드가 모두 실패하면 명시 오류를 반환해야 한다."""
+    index_root = tmp_path / "candidate-index-init-fail"
+    index_root.mkdir(parents=True, exist_ok=True)
+    (index_root / "meta.json").write_text("broken", encoding="utf-8")
+    from sari.search import candidate_search as module
+
+    def _always_fail(schema: object, path: str) -> object:
+        del schema, path
+        raise RuntimeError("always fail")
+
+    monkeypatch.setattr(module.tantivy, "Index", _always_fail)
+
+    with pytest.raises(CandidateBackendError, match="ERR_TANTIVY_INDEX_REBUILD_FAILED"):
+        TantivyCandidateBackend(
+            config=CandidateSearchConfig(max_file_size_bytes=512 * 1024, allowed_suffixes=(".py",)),
+            index_root=index_root,
+        )

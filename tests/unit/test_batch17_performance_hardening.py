@@ -261,7 +261,7 @@ def test_tantivy_sync_index_skips_unchanged_file_read(tmp_path: Path, monkeypatc
     target.write_text("def alpha_symbol():\n    return 1\n", encoding="utf-8")
 
     backend = TantivyCandidateBackend(
-        config=CandidateSearchConfig(max_file_size_bytes=512 * 1024),
+        config=CandidateSearchConfig(max_file_size_bytes=512 * 1024, allowed_suffixes=(".py",)),
         index_root=tmp_path / "candidate-index",
     )
     workspace = WorkspaceDTO(path=str(repo_dir.resolve()), name="repo-a", indexed_at=None, is_active=True)
@@ -291,7 +291,7 @@ def test_tantivy_search_accepts_special_chars_query(tmp_path: Path) -> None:
     target.write_text("if (x > 0):\n    return x\n", encoding="utf-8")
 
     backend = TantivyCandidateBackend(
-        config=CandidateSearchConfig(max_file_size_bytes=512 * 1024),
+        config=CandidateSearchConfig(max_file_size_bytes=512 * 1024, allowed_suffixes=(".py",)),
         index_root=tmp_path / "candidate-index-special",
     )
     workspace = WorkspaceDTO(path=str(repo_dir.resolve()), name="repo-a", indexed_at=None, is_active=True)
@@ -309,7 +309,7 @@ def test_tantivy_search_does_not_sync_every_request(tmp_path: Path, monkeypatch)
     target.write_text("def alpha_symbol():\n    return 1\n", encoding="utf-8")
 
     backend = TantivyCandidateBackend(
-        config=CandidateSearchConfig(max_file_size_bytes=512 * 1024),
+        config=CandidateSearchConfig(max_file_size_bytes=512 * 1024, allowed_suffixes=(".py",)),
         index_root=tmp_path / "candidate-index-clean",
     )
     workspace = WorkspaceDTO(path=str(repo_dir.resolve()), name="repo-a", indexed_at=None, is_active=True)
@@ -551,7 +551,7 @@ def test_tantivy_applies_pending_change_without_full_sync(tmp_path: Path, monkey
     )
 
     backend = TantivyCandidateBackend(
-        config=CandidateSearchConfig(max_file_size_bytes=512 * 1024),
+        config=CandidateSearchConfig(max_file_size_bytes=512 * 1024, allowed_suffixes=(".py",)),
         index_root=tmp_path / "candidate-index-change",
         change_repo=change_repo,
     )
@@ -595,7 +595,7 @@ def test_tantivy_applies_delete_change_and_removes_document(tmp_path: Path) -> N
         )
     )
     backend = TantivyCandidateBackend(
-        config=CandidateSearchConfig(max_file_size_bytes=512 * 1024),
+        config=CandidateSearchConfig(max_file_size_bytes=512 * 1024, allowed_suffixes=(".py",)),
         index_root=tmp_path / "candidate-index-delete",
         change_repo=change_repo,
     )
@@ -620,7 +620,7 @@ def test_tantivy_applies_delete_change_and_removes_document(tmp_path: Path) -> N
 def test_tantivy_backend_does_not_use_tombstone_filter_field(tmp_path: Path) -> None:
     """Batch-22 이후 백엔드는 tombstone 필드에 의존하지 않아야 한다."""
     backend = TantivyCandidateBackend(
-        config=CandidateSearchConfig(max_file_size_bytes=512 * 1024),
+        config=CandidateSearchConfig(max_file_size_bytes=512 * 1024, allowed_suffixes=(".py",)),
         index_root=tmp_path / "candidate-index-no-tombstone",
     )
     assert not hasattr(backend, "_suppressed_paths")
@@ -653,7 +653,7 @@ def test_tantivy_pending_change_failure_raises_backend_error(tmp_path: Path) -> 
         )
     )
     backend = TantivyCandidateBackend(
-        config=CandidateSearchConfig(max_file_size_bytes=512 * 1024),
+        config=CandidateSearchConfig(max_file_size_bytes=512 * 1024, allowed_suffixes=(".py",)),
         index_root=tmp_path / "candidate-index-fail",
         change_repo=change_repo,
     )
@@ -691,7 +691,7 @@ def test_tantivy_delete_visibility_failure_escalates_backend_error(tmp_path: Pat
         )
     )
     backend = TantivyCandidateBackend(
-        config=CandidateSearchConfig(max_file_size_bytes=512 * 1024),
+        config=CandidateSearchConfig(max_file_size_bytes=512 * 1024, allowed_suffixes=(".py",)),
         index_root=tmp_path / "candidate-index-delete-visibility-fail",
         change_repo=change_repo,
     )
@@ -746,7 +746,7 @@ def test_tantivy_apply_allows_repo_under_active_workspace(tmp_path: Path) -> Non
     )
 
     backend = TantivyCandidateBackend(
-        config=CandidateSearchConfig(max_file_size_bytes=512 * 1024),
+        config=CandidateSearchConfig(max_file_size_bytes=512 * 1024, allowed_suffixes=(".py",)),
         index_root=tmp_path / "candidate-index-workspace-child",
         change_repo=change_repo,
     )
@@ -786,7 +786,7 @@ def test_tantivy_pending_apply_respects_batch_cap(tmp_path: Path) -> None:
         )
 
     backend = TantivyCandidateBackend(
-        config=CandidateSearchConfig(max_file_size_bytes=512 * 1024),
+        config=CandidateSearchConfig(max_file_size_bytes=512 * 1024, allowed_suffixes=(".py",)),
         index_root=tmp_path / "candidate-index-batch-cap",
         change_repo=change_repo,
         max_pending_apply_per_search=5,
@@ -826,7 +826,7 @@ def test_tantivy_pending_apply_respects_zero_time_budget(tmp_path: Path) -> None
         )
     )
     backend = TantivyCandidateBackend(
-        config=CandidateSearchConfig(max_file_size_bytes=512 * 1024),
+        config=CandidateSearchConfig(max_file_size_bytes=512 * 1024, allowed_suffixes=(".py",)),
         index_root=tmp_path / "candidate-index-budget-zero",
         change_repo=change_repo,
         max_pending_apply_per_search=10,
@@ -848,7 +848,7 @@ def test_tantivy_pending_apply_backpressure_reduces_batch_limit(tmp_path: Path, 
     workspace = WorkspaceDTO(path=str(repo_dir.resolve()), name="repo-backpressure", indexed_at=None, is_active=True)
     change_repo = CandidateIndexChangeRepository(db_path)
     backend = TantivyCandidateBackend(
-        config=CandidateSearchConfig(max_file_size_bytes=512 * 1024),
+        config=CandidateSearchConfig(max_file_size_bytes=512 * 1024, allowed_suffixes=(".py",)),
         index_root=tmp_path / "candidate-index-backpressure",
         change_repo=change_repo,
         max_pending_apply_per_search=60,

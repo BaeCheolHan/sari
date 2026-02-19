@@ -132,7 +132,14 @@ class McpServer:
         vector_sink = VectorIndexSink(repository=vector_repo, config=vector_config)
         vector_reranker = VectorReranker(repository=vector_repo, config=vector_config)
         hierarchy_scorer = HierarchyScorer()
-        candidate_service = CandidateSearchService.build_default(max_file_size_bytes=512 * 1024, index_root=db_path.parent / 'candidate_index', backend_mode='tantivy', enable_scan_fallback=True, change_repo=candidate_change_repo)
+        candidate_service = CandidateSearchService.build_default(
+            max_file_size_bytes=512 * 1024,
+            index_root=db_path.parent / 'candidate_index',
+            backend_mode='tantivy',
+            enable_scan_fallback=True,
+            change_repo=candidate_change_repo,
+            allowed_suffixes=runtime_config.collection_include_ext,
+        )
         shared_hub = LspHub(request_timeout_sec=runtime_config.lsp_request_timeout_sec)
         self._managed_lsp_hubs.append(shared_hub)
         file_collection_service = build_default_file_collection_service(workspace_repo=workspace_repo, file_repo=file_repo, enrich_queue_repo=enrich_queue_repo, body_repo=body_repo, lsp_repo=lsp_repo, readiness_repo=readiness_repo, policy_repo=policy_repo, event_repo=event_repo, error_event_repo=error_event_repo, candidate_index_sink=candidate_service, vector_index_sink=vector_sink, include_ext=runtime_config.collection_include_ext, exclude_globs=runtime_config.collection_exclude_globs, watcher_debounce_ms=runtime_config.watcher_debounce_ms, run_mode='prod', lsp_backend=SolidLspExtractionBackend(shared_hub))
