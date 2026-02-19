@@ -3,6 +3,7 @@ import hashlib
 import logging
 import queue
 import sqlite3
+import concurrent.futures
 import threading
 import time
 import traceback
@@ -10,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Protocol
 from solidlsp.ls_config import Language
-from sari.core.exceptions import CollectionError, DaemonError, ErrorContext
+from sari.core.exceptions import CollectionError, DaemonError, ErrorContext, ValidationError
 from sari.core.config import DEFAULT_COLLECTION_EXCLUDE_GLOBS
 from sari.core.language_registry import get_default_collection_extensions
 from sari.core.text_decode import decode_bytes_with_policy
@@ -37,6 +38,15 @@ class LspExtractionResultDTO:
     symbols: list[dict[str, object]]
     relations: list[dict[str, object]]
     error_message: str | None
+
+
+@dataclass
+class _InflightLspExtractState:
+    """동일 LSP 추출 요청의 in-flight 상태를 공유한다."""
+
+    event: threading.Event
+    result: LspExtractionResultDTO | None
+
 
 class LspExtractionBackend(Protocol):
 
@@ -69,14 +79,66 @@ class SolidLspExtractionBackend:
         self._prewarmed_keys: set[tuple[Language, str]] = set()
         self._hot_languages_by_repo: dict[str, set[Language]] = {}
         self._prewarm_lock = threading.Lock()
+        self._inflight_lock = threading.Lock()
+        self._inflight_extracts: dict[tuple[str, str, str], _InflightLspExtractState] = {}
+        self._inflight_wait_timeout_sec = 30.0
 
     def extract(self, repo_root: str, relative_path: str, content_hash: str) -> LspExtractionResultDTO:
-        del content_hash
         normalized_relative_path = normalize_repo_relative_path(relative_path)
+        normalized_repo_root = str(Path(repo_root).resolve())
+        dedupe_key = (normalized_repo_root, normalized_relative_path, content_hash)
+        with self._inflight_lock:
+            inflight_state = self._inflight_extracts.get(dedupe_key)
+            if inflight_state is None:
+                inflight_state = _InflightLspExtractState(event=threading.Event(), result=None)
+                self._inflight_extracts[dedupe_key] = inflight_state
+                leader = True
+            else:
+                leader = False
+        if not leader:
+            inflight_state.event.wait(self._inflight_wait_timeout_sec)
+            with self._inflight_lock:
+                finished = self._inflight_extracts.get(dedupe_key)
+                if finished is None:
+                    result = inflight_state.result
+                else:
+                    result = finished.result
+            if result is not None:
+                return result
+            return LspExtractionResultDTO(
+                symbols=[],
+                relations=[],
+                error_message=(
+                    "ERR_LSP_INFLIGHT_WAIT_TIMEOUT: "
+                    f"repo={normalized_repo_root}, path={normalized_relative_path}"
+                ),
+            )
+        result: LspExtractionResultDTO | None = None
+        try:
+            result = self._extract_once(
+                repo_root=repo_root,
+                normalized_relative_path=normalized_relative_path,
+            )
+            return result
+        except (DaemonError, ValidationError, RuntimeError, OSError, ValueError, TypeError, concurrent.futures.TimeoutError) as exc:
+            return LspExtractionResultDTO(
+                symbols=[],
+                relations=[],
+                error_message=f"LSP 추출 실패: {exc}",
+            )
+        finally:
+            with self._inflight_lock:
+                state = self._inflight_extracts.get(dedupe_key)
+                if state is not None:
+                    state.result = result
+                    state.event.set()
+                    del self._inflight_extracts[dedupe_key]
+
+    def _extract_once(self, repo_root: str, normalized_relative_path: str) -> LspExtractionResultDTO:
         try:
             language = self._hub.resolve_language(normalized_relative_path)
             self._ensure_prewarm(language=language, repo_root=repo_root)
-            lsp = self._hub.get_or_start(language=language, repo_root=repo_root)
+            lsp = self._hub.get_or_start(language=language, repo_root=repo_root, request_kind="indexing")
             document_symbols = lsp.request_document_symbols(normalized_relative_path).iter_symbols()
             raw_symbols = list(document_symbols)
         except SolidLSPException as exc:
@@ -86,7 +148,7 @@ class SolidLspExtractionBackend:
             if 'ERR_LSP_SYNC_CHANGE_FAILED' in message:
                 return LspExtractionResultDTO(symbols=[], relations=[], error_message=f'ERR_LSP_SYNC_CHANGE_FAILED: repo={repo_root}, path={normalized_relative_path}, reason={message}')
             return LspExtractionResultDTO(symbols=[], relations=[], error_message=f'ERR_LSP_DOCUMENT_SYMBOL_FAILED: repo={repo_root}, path={normalized_relative_path}, reason={message}')
-        except (DaemonError, RuntimeError, OSError, ValueError) as exc:
+        except (DaemonError, RuntimeError, OSError, ValueError, TypeError, concurrent.futures.TimeoutError) as exc:
             return LspExtractionResultDTO(symbols=[], relations=[], error_message=f'LSP 추출 실패: {exc}')
         symbols: list[dict[str, object]] = []
         for raw in raw_symbols:
@@ -153,7 +215,7 @@ class SolidLspExtractionBackend:
     def get_parallelism_for_batch(self, repo_root: str, language: Language, batch_size: int) -> int:
         """배치 크기를 반영해 풀 인스턴스를 확보하고 병렬도를 반환한다."""
         desired = max(1, int(batch_size))
-        servers = self._hub.acquire_pool(language=language, repo_root=repo_root, desired=desired)
+        servers = self._hub.acquire_pool(language=language, repo_root=repo_root, desired=desired, request_kind="indexing")
         return max(1, len(servers))
 
     def set_bulk_mode(self, repo_root: str, language: Language, enabled: bool) -> None:
@@ -230,6 +292,13 @@ class SolidLspExtractionBackend:
         """LSP 허브 런타임 메트릭을 반환한다."""
         return self._hub.get_metrics()
 
+    def get_interactive_pressure(self) -> dict[str, int]:
+        """인터랙티브 요청 압력 지표를 반환한다."""
+        getter = getattr(self._hub, "get_interactive_pressure", None)
+        if callable(getter):
+            return getter()
+        return {"pending_interactive": 0, "interactive_timeout_count": 0, "interactive_rejected_count": 0}
+
 class FileCollectionService:
     PRIORITY_HIGH = 90
     PRIORITY_MEDIUM = 60
@@ -262,7 +331,7 @@ class FileCollectionService:
         "composer.json",
     )
 
-    def __init__(self, workspace_repo: WorkspaceRepository, file_repo: FileCollectionRepository, enrich_queue_repo: FileEnrichQueueRepository, body_repo: FileBodyRepository, lsp_repo: LspToolDataRepository, readiness_repo: ToolReadinessRepository, policy: CollectionPolicyDTO, lsp_backend: LspExtractionBackend, policy_repo: PipelinePolicyRepository | None=None, event_repo: PipelineJobEventRepository | None=None, error_event_repo: PipelineErrorEventRepository | None=None, candidate_index_sink: CandidateIndexSink | None=None, vector_index_sink: VectorIndexSink | None=None, run_mode: str='dev', parent_alive_probe: Callable[[], bool] | None=None, persist_body_for_read: bool=True, repo_registry_repo: RepoRegistryRepository | None=None, l3_parallel_enabled: bool=True, l3_executor_max_workers: int=0) -> None:
+    def __init__(self, workspace_repo: WorkspaceRepository, file_repo: FileCollectionRepository, enrich_queue_repo: FileEnrichQueueRepository, body_repo: FileBodyRepository, lsp_repo: LspToolDataRepository, readiness_repo: ToolReadinessRepository, policy: CollectionPolicyDTO, lsp_backend: LspExtractionBackend, policy_repo: PipelinePolicyRepository | None=None, event_repo: PipelineJobEventRepository | None=None, error_event_repo: PipelineErrorEventRepository | None=None, candidate_index_sink: CandidateIndexSink | None=None, vector_index_sink: VectorIndexSink | None=None, run_mode: str='dev', parent_alive_probe: Callable[[], bool] | None=None, persist_body_for_read: bool=True, repo_registry_repo: RepoRegistryRepository | None=None, l3_parallel_enabled: bool=True, l3_executor_max_workers: int=0, l3_recent_success_ttl_sec: int=120, l3_backpressure_on_interactive: bool=True, l3_backpressure_cooldown_ms: int=300) -> None:
         self._workspace_repo = workspace_repo
         self._file_repo = file_repo
         self._enrich_queue_repo = enrich_queue_repo
@@ -373,6 +442,9 @@ class FileCollectionService:
             flush_max_body_bytes=self.ENRICH_FLUSH_MAX_BODY_BYTES,
             l3_parallel_enabled=self._l3_parallel_enabled,
             l3_executor_max_workers=l3_executor_max_workers,
+            l3_recent_success_ttl_sec=l3_recent_success_ttl_sec,
+            l3_backpressure_on_interactive=l3_backpressure_on_interactive,
+            l3_backpressure_cooldown_ms=l3_backpressure_cooldown_ms,
         )
         self._pipeline_worker = PipelineWorker(
             process_enrich_jobs=self._enrich_engine.process_enrich_jobs,
@@ -722,12 +794,12 @@ class FileCollectionService:
     def _prune_error_events_if_needed(self) -> None:
         self._error_policy.prune_error_events_if_needed()
 
-def build_default_file_collection_service(workspace_repo: WorkspaceRepository, file_repo: FileCollectionRepository, enrich_queue_repo: FileEnrichQueueRepository, body_repo: FileBodyRepository, lsp_repo: LspToolDataRepository, readiness_repo: ToolReadinessRepository, policy_repo: PipelinePolicyRepository | None=None, event_repo: PipelineJobEventRepository | None=None, error_event_repo: PipelineErrorEventRepository | None=None, candidate_index_sink: CandidateIndexSink | None=None, vector_index_sink: VectorIndexSink | None=None, retry_max_attempts: int=5, retry_backoff_base_sec: int=1, queue_poll_interval_ms: int=500, include_ext: tuple[str, ...] | None=None, exclude_globs: tuple[str, ...] | None=None, watcher_debounce_ms: int=300, run_mode: str='dev', parent_alive_probe: Callable[[], bool] | None=None, lsp_backend: LspExtractionBackend | None=None, persist_body_for_read: bool=True, l3_parallel_enabled: bool=True, l3_executor_max_workers: int=0) -> CollectionRuntimePort:
+def build_default_file_collection_service(workspace_repo: WorkspaceRepository, file_repo: FileCollectionRepository, enrich_queue_repo: FileEnrichQueueRepository, body_repo: FileBodyRepository, lsp_repo: LspToolDataRepository, readiness_repo: ToolReadinessRepository, policy_repo: PipelinePolicyRepository | None=None, event_repo: PipelineJobEventRepository | None=None, error_event_repo: PipelineErrorEventRepository | None=None, candidate_index_sink: CandidateIndexSink | None=None, vector_index_sink: VectorIndexSink | None=None, retry_max_attempts: int=5, retry_backoff_base_sec: int=1, queue_poll_interval_ms: int=500, include_ext: tuple[str, ...] | None=None, exclude_globs: tuple[str, ...] | None=None, watcher_debounce_ms: int=300, run_mode: str='dev', parent_alive_probe: Callable[[], bool] | None=None, lsp_backend: LspExtractionBackend | None=None, persist_body_for_read: bool=True, l3_parallel_enabled: bool=True, l3_executor_max_workers: int=0, l3_recent_success_ttl_sec: int=120, l3_backpressure_on_interactive: bool=True, l3_backpressure_cooldown_ms: int=300) -> CollectionRuntimePort:
     resolved_include_ext = include_ext if include_ext is not None else get_default_collection_extensions()
     resolved_exclude_globs = exclude_globs if exclude_globs is not None else DEFAULT_COLLECTION_EXCLUDE_GLOBS
     policy = CollectionPolicyDTO(include_ext=resolved_include_ext, exclude_globs=resolved_exclude_globs, max_file_size_bytes=512 * 1024, scan_interval_sec=180, max_enrich_batch=20, retry_max_attempts=retry_max_attempts, retry_backoff_base_sec=retry_backoff_base_sec, queue_poll_interval_ms=queue_poll_interval_ms)
     resolved_lsp_backend = lsp_backend if lsp_backend is not None else SolidLspExtractionBackend(LspHub())
     repo_registry_repo = RepoRegistryRepository(file_repo.db_path)
-    service = FileCollectionService(workspace_repo=workspace_repo, file_repo=file_repo, enrich_queue_repo=enrich_queue_repo, body_repo=body_repo, lsp_repo=lsp_repo, readiness_repo=readiness_repo, policy=policy, lsp_backend=resolved_lsp_backend, policy_repo=policy_repo, event_repo=event_repo, error_event_repo=error_event_repo, candidate_index_sink=candidate_index_sink, vector_index_sink=vector_index_sink, run_mode=run_mode, parent_alive_probe=parent_alive_probe, persist_body_for_read=persist_body_for_read, repo_registry_repo=repo_registry_repo, l3_parallel_enabled=l3_parallel_enabled, l3_executor_max_workers=l3_executor_max_workers)
+    service = FileCollectionService(workspace_repo=workspace_repo, file_repo=file_repo, enrich_queue_repo=enrich_queue_repo, body_repo=body_repo, lsp_repo=lsp_repo, readiness_repo=readiness_repo, policy=policy, lsp_backend=resolved_lsp_backend, policy_repo=policy_repo, event_repo=event_repo, error_event_repo=error_event_repo, candidate_index_sink=candidate_index_sink, vector_index_sink=vector_index_sink, run_mode=run_mode, parent_alive_probe=parent_alive_probe, persist_body_for_read=persist_body_for_read, repo_registry_repo=repo_registry_repo, l3_parallel_enabled=l3_parallel_enabled, l3_executor_max_workers=l3_executor_max_workers, l3_recent_success_ttl_sec=l3_recent_success_ttl_sec, l3_backpressure_on_interactive=l3_backpressure_on_interactive, l3_backpressure_cooldown_ms=l3_backpressure_cooldown_ms)
     service._watcher_debounce_ms = max(50, watcher_debounce_ms)
     return service

@@ -124,6 +124,8 @@ def main() -> None:
         max_instances_per_repo_language=config.lsp_max_instances_per_repo_language,
         bulk_mode_enabled=config.lsp_bulk_mode_enabled,
         bulk_max_instances_per_repo_language=config.lsp_bulk_max_instances_per_repo_language,
+        interactive_reserved_slots_per_repo_language=config.lsp_interactive_reserved_slots_per_repo_language,
+        interactive_timeout_sec=config.lsp_interactive_timeout_sec,
         lsp_global_soft_limit=config.lsp_global_soft_limit,
         scale_out_hot_hits=config.lsp_scale_out_hot_hits,
         file_buffer_idle_ttl_sec=config.lsp_file_buffer_idle_ttl_sec,
@@ -179,7 +181,11 @@ def main() -> None:
         enable_scan_fallback=config.candidate_fallback_scan,
         change_repo=candidate_change_repo,
     )
-    symbol_service = SymbolResolveService(hub=lsp_hub, cache_repo=symbol_cache_repo)
+    symbol_service = SymbolResolveService(
+        hub=lsp_hub,
+        cache_repo=symbol_cache_repo,
+        lsp_fallback_mode=config.search_lsp_fallback_mode,
+    )
     search_orchestrator = SearchOrchestrator(
         workspace_repo=workspace_repo,
         candidate_service=candidate_service,
@@ -230,6 +236,9 @@ def main() -> None:
         lsp_backend=SolidLspExtractionBackend(lsp_hub),
         l3_parallel_enabled=config.l3_parallel_enabled,
         l3_executor_max_workers=config.l3_executor_max_workers,
+        l3_recent_success_ttl_sec=config.l3_recent_success_ttl_sec,
+        l3_backpressure_on_interactive=config.l3_backpressure_on_interactive,
+        l3_backpressure_cooldown_ms=config.l3_backpressure_cooldown_ms,
     )
     pipeline_control_service = PipelineControlService(
         policy_repo=policy_repo,

@@ -144,6 +144,9 @@ class PipelineMetricsService:
             lsp_forced_kill_count=int(lsp_metrics.get("lsp_forced_kill_count", 0)),
             lsp_stop_timeout_count=int(lsp_metrics.get("lsp_stop_timeout_count", 0)),
             lsp_orphan_suspect_count=int(lsp_metrics.get("lsp_orphan_suspect_count", 0)),
+            lsp_interactive_pending_count=int(lsp_metrics.get("lsp_interactive_pending_count", 0)),
+            lsp_interactive_timeout_count=int(lsp_metrics.get("lsp_interactive_timeout_count", 0)),
+            lsp_interactive_rejected_count=int(lsp_metrics.get("lsp_interactive_rejected_count", 0)),
         )
 
     def record_enrich_latency(self, latency_ms: float) -> None:

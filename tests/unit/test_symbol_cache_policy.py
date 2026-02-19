@@ -150,6 +150,37 @@ def test_symbol_resolve_exposes_backend_failure_message(tmp_path) -> None:
     assert "backend crashed" in errors[0].message
 
 
+def test_symbol_resolve_strict_mode_blocks_lsp_fallback_on_cache_miss(tmp_path) -> None:
+    """strict 모드에서는 캐시 미스 시 LSP fallback을 차단해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+
+    backend = CountingBackend()
+    cache_repo = SymbolCacheRepository(db_path)
+    service = SymbolResolveService(
+        hub=LspHub(),
+        cache_repo=cache_repo,
+        backend=backend,
+        lsp_fallback_mode="strict",
+    )
+
+    candidates = [
+        CandidateFileDTO(
+            repo_root=str(tmp_path),
+            relative_path="sample.py",
+            score=1.0,
+            file_hash="hash-a",
+        )
+    ]
+
+    items, errors = service.resolve(candidates=candidates, query="abc", limit=5)
+
+    assert items == []
+    assert len(errors) == 1
+    assert errors[0].code == "ERR_LSP_FALLBACK_BLOCKED"
+    assert backend.calls == 0
+
+
 class _FakeDocumentSymbols:
     """documentSymbol 반복자를 제공하는 테스트 더블이다."""
 

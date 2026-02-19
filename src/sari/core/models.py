@@ -508,6 +508,9 @@ class PipelineMetricsDTO:
     lsp_forced_kill_count: int = 0
     lsp_stop_timeout_count: int = 0
     lsp_orphan_suspect_count: int = 0
+    lsp_interactive_pending_count: int = 0
+    lsp_interactive_timeout_count: int = 0
+    lsp_interactive_rejected_count: int = 0
     def to_dict(self) -> dict[str, object]:
         return {
             "queue_depth": self.queue_depth,
@@ -541,6 +544,9 @@ class PipelineMetricsDTO:
             "lsp_forced_kill_count": self.lsp_forced_kill_count,
             "lsp_stop_timeout_count": self.lsp_stop_timeout_count,
             "lsp_orphan_suspect_count": self.lsp_orphan_suspect_count,
+            "lsp_interactive_pending_count": self.lsp_interactive_pending_count,
+            "lsp_interactive_timeout_count": self.lsp_interactive_timeout_count,
+            "lsp_interactive_rejected_count": self.lsp_interactive_rejected_count,
         }
 @dataclass(frozen=True)
 class PipelineErrorEventDTO:

@@ -61,6 +61,8 @@ class LspHub:
         request_timeout_sec: float = 20.0,
         file_buffer_idle_ttl_sec: float = 20.0,
         file_buffer_max_open: int = 512,
+        interactive_reserved_slots_per_repo_language: int = 0,
+        interactive_timeout_sec: float = 2.5,
         clock: Callable[[], float] | None = None,
     ) -> None:
         """내부 인스턴스 캐시를 초기화한다."""
@@ -88,6 +90,11 @@ class LspHub:
         self._request_timeout_sec = max(0.1, request_timeout_sec)
         self._file_buffer_idle_ttl_sec = max(1.0, float(file_buffer_idle_ttl_sec))
         self._file_buffer_max_open = max(16, int(file_buffer_max_open))
+        self._interactive_reserved_slots_per_repo_language = max(0, int(interactive_reserved_slots_per_repo_language))
+        self._interactive_timeout_sec = max(0.1, float(interactive_timeout_sec))
+        self._interactive_pending_count = 0
+        self._interactive_timeout_count = 0
+        self._interactive_rejected_count = 0
         self._stop_cleanup = threading.Event()
         self._forced_kill_count = 0
         self._stop_timeout_count = 0
@@ -106,48 +113,76 @@ class LspHub:
             return resolved
         raise DaemonError(ErrorContext(code="ERR_UNSUPPORTED_LANGUAGE", message="지원하지 않는 언어 확장자입니다"))
 
-    def get_or_start(self, language: Language, repo_root: str) -> SolidLanguageServer:
+    def get_or_start(self, language: Language, repo_root: str, request_kind: str = "indexing") -> SolidLanguageServer:
         """언어/저장소 기준으로 LSP를 가져오거나 시작한다."""
         normalized_root = str(Path(repo_root).resolve())
         base_key = (language, normalized_root)
-        with self._lock:
-            now = self._clock()
-            self._evict_idle_locked(now)
-            existing_keys = self._runtime_keys_for_locked(language=language, repo_root=normalized_root)
-            running_keys: list[LspRuntimeKey] = []
-            for key in existing_keys:
-                entry = self._instances.get(key)
-                if entry is None:
-                    continue
-                if entry.server.server.is_running():
-                    running_keys.append(key)
-                    continue
-                self._cleanup_not_running_entry_locked(key=key, entry=entry)
+        normalized_kind = self._normalize_request_kind(request_kind)
+        wait_timeout_sec = self._interactive_timeout_sec if normalized_kind == "interactive" else self._request_timeout_sec
+        if normalized_kind == "interactive":
+            with self._lock:
+                self._interactive_pending_count += 1
+        try:
+            with self._lock:
+                now = self._clock()
+                self._evict_idle_locked(now)
+                existing_keys = self._runtime_keys_for_locked(language=language, repo_root=normalized_root)
+                running_keys: list[LspRuntimeKey] = []
+                for key in existing_keys:
+                    entry = self._instances.get(key)
+                    if entry is None:
+                        continue
+                    if entry.server.server.is_running():
+                        if not self._is_slot_allowed_for_kind(
+                            base_key=base_key,
+                            slot=key.slot,
+                            request_kind=normalized_kind,
+                        ):
+                            continue
+                        running_keys.append(key)
+                        continue
+                    self._cleanup_not_running_entry_locked(key=key, entry=entry)
 
-            should_scale_out = self._should_scale_out_locked(base_key=base_key, now=now, running_count=len(running_keys))
-            if should_scale_out:
-                try:
-                    slot = self._next_slot_locked(language=language, repo_root=normalized_root)
-                except DaemonError as exc:
-                    if exc.context.code != "ERR_LSP_SLOT_EXHAUSTED" or len(running_keys) == 0:
-                        raise
+                should_scale_out = self._should_scale_out_locked(base_key=base_key, now=now, running_count=len(running_keys))
+                if should_scale_out:
+                    try:
+                        slot = self._next_slot_locked(
+                            language=language,
+                            repo_root=normalized_root,
+                            request_kind=normalized_kind,
+                        )
+                    except DaemonError as exc:
+                        if exc.context.code != "ERR_LSP_SLOT_EXHAUSTED" or len(running_keys) == 0:
+                            if normalized_kind == "interactive":
+                                self._interactive_rejected_count += 1
+                            raise
+                        selected_key = self._select_round_robin_key_locked(base_key=base_key, keys=running_keys)
+                        selected_entry = self._instances[selected_key]
+                        selected_entry.last_used_at = now
+                        self._last_acquire_at[base_key] = now
+                        return selected_entry.server
+                    self._last_acquire_at[base_key] = now
+                elif len(running_keys) > 0:
                     selected_key = self._select_round_robin_key_locked(base_key=base_key, keys=running_keys)
                     selected_entry = self._instances[selected_key]
                     selected_entry.last_used_at = now
                     self._last_acquire_at[base_key] = now
                     return selected_entry.server
-                self._last_acquire_at[base_key] = now
-            elif len(running_keys) > 0:
-                selected_key = self._select_round_robin_key_locked(base_key=base_key, keys=running_keys)
-                selected_entry = self._instances[selected_key]
-                selected_entry.last_used_at = now
-                self._last_acquire_at[base_key] = now
-                return selected_entry.server
-            else:
-                self._last_acquire_at[base_key] = now
-                slot = 0
+                else:
+                    self._last_acquire_at[base_key] = now
+                    slot = self._first_allowed_slot(base_key=base_key, request_kind=normalized_kind)
 
-        return self._start_or_wait_for_slot(language=language, repo_root=normalized_root, slot=slot)
+            return self._start_or_wait_for_slot(
+                language=language,
+                repo_root=normalized_root,
+                slot=slot,
+                wait_timeout_sec=wait_timeout_sec,
+                request_kind=normalized_kind,
+            )
+        finally:
+            if normalized_kind == "interactive":
+                with self._lock:
+                    self._interactive_pending_count = max(0, self._interactive_pending_count - 1)
 
     def ensure_healthy(self, language: Language, repo_root: str) -> None:
         """등록된 LSP 인스턴스의 실행 상태를 확인한다."""
@@ -201,12 +236,18 @@ class LspHub:
                 if len(running_keys) >= self._max_instances_per_repo_language:
                     return
                 try:
-                    slot = self._next_slot_locked(language=language, repo_root=normalized_root)
+                    slot = self._next_slot_locked(language=language, repo_root=normalized_root, request_kind="indexing")
                 except DaemonError as exc:
                     if exc.context.code == "ERR_LSP_SLOT_EXHAUSTED":
                         return
                     raise
-            self._start_or_wait_for_slot(language=language, repo_root=normalized_root, slot=slot)
+            self._start_or_wait_for_slot(
+                language=language,
+                repo_root=normalized_root,
+                slot=slot,
+                wait_timeout_sec=self._request_timeout_sec,
+                request_kind="indexing",
+            )
 
     def stop_all(self) -> None:
         """Hub가 관리하는 LSP 서버를 모두 종료한다."""
@@ -241,6 +282,18 @@ class LspHub:
                 "lsp_forced_kill_count": int(self._forced_kill_count),
                 "lsp_stop_timeout_count": int(self._stop_timeout_count),
                 "lsp_orphan_suspect_count": int(self._orphan_suspect_count),
+                "lsp_interactive_pending_count": int(self._interactive_pending_count),
+                "lsp_interactive_timeout_count": int(self._interactive_timeout_count),
+                "lsp_interactive_rejected_count": int(self._interactive_rejected_count),
+            }
+
+    def get_interactive_pressure(self) -> dict[str, int]:
+        """인터랙티브 요청 압력 지표를 반환한다."""
+        with self._lock:
+            return {
+                "pending_interactive": int(self._interactive_pending_count),
+                "interactive_timeout_count": int(self._interactive_timeout_count),
+                "interactive_rejected_count": int(self._interactive_rejected_count),
             }
 
     def get_running_instance_count(self, language: Language, repo_root: str) -> int:
@@ -256,11 +309,12 @@ class LspHub:
                     running += 1
             return running
 
-    def acquire_pool(self, language: Language, repo_root: str, desired: int) -> list[SolidLanguageServer]:
+    def acquire_pool(self, language: Language, repo_root: str, desired: int, request_kind: str = "indexing") -> list[SolidLanguageServer]:
         """요청된 개수만큼 풀 인스턴스를 확보해 반환한다."""
         normalized_root = str(Path(repo_root).resolve())
+        normalized_kind = self._normalize_request_kind(request_kind)
         target_count = max(1, min(self._max_instances_for_key((language, normalized_root)), int(desired)))
-        first = self.get_or_start(language=language, repo_root=normalized_root)
+        first = self.get_or_start(language=language, repo_root=normalized_root, request_kind=normalized_kind)
         servers: list[SolidLanguageServer] = [first]
         self.prewarm_language_pool(language=language, repo_root=normalized_root)
         with self._lock:
@@ -268,6 +322,12 @@ class LspHub:
             for key in self._runtime_keys_for_locked(language=language, repo_root=normalized_root):
                 entry = self._instances.get(key)
                 if entry is not None and entry.server.server.is_running():
+                    if not self._is_slot_allowed_for_kind(
+                        base_key=(language, normalized_root),
+                        slot=key.slot,
+                        request_kind=normalized_kind,
+                    ):
+                        continue
                     running_keys.append(key)
             for key in running_keys:
                 entry = self._instances.get(key)
@@ -377,11 +437,17 @@ class LspHub:
             key=lambda key: key.slot,
         )
 
-    def _next_slot_locked(self, language: Language, repo_root: str) -> int:
+    def _next_slot_locked(self, language: Language, repo_root: str, request_kind: str = "indexing") -> int:
         """새로운 인스턴스에 사용할 슬롯 번호를 계산한다."""
         used_slots = {key.slot for key in self._runtime_keys_for_locked(language=language, repo_root=repo_root)}
         max_slots = self._max_instances_for_key((language, repo_root))
         for slot in range(max_slots):
+            if not self._is_slot_allowed_for_kind(
+                base_key=(language, repo_root),
+                slot=slot,
+                request_kind=request_kind,
+            ):
+                continue
             if slot not in used_slots:
                 return slot
         raise DaemonError(
@@ -434,7 +500,14 @@ class LspHub:
         self._round_robin_cursor[base_key] = (index + 1) % len(keys)
         return selected
 
-    def _start_or_wait_for_slot(self, language: Language, repo_root: str, slot: int) -> SolidLanguageServer:
+    def _start_or_wait_for_slot(
+        self,
+        language: Language,
+        repo_root: str,
+        slot: int,
+        wait_timeout_sec: float,
+        request_kind: str,
+    ) -> SolidLanguageServer:
         """동일 슬롯의 중복 기동을 방지하며 LSP 서버를 시작하거나 기존 기동을 기다린다."""
         key = LspRuntimeKey(language=language, repo_root=repo_root, slot=slot)
         while True:
@@ -470,13 +543,53 @@ class LspHub:
                     if event is not None:
                         event.set()
                 return started
-            if not start_event.wait(timeout=self._request_timeout_sec):
+            if not start_event.wait(timeout=wait_timeout_sec):
+                if request_kind == "interactive":
+                    with self._lock:
+                        self._interactive_timeout_count += 1
                 raise DaemonError(
                     ErrorContext(
-                        code="ERR_LSP_START_TIMEOUT",
-                        message=f"LSP 서버 기동 대기 시간이 초과되었습니다: {language.value}@{repo_root}",
+                        code="ERR_LSP_INTERACTIVE_TIMEOUT" if request_kind == "interactive" else "ERR_LSP_START_TIMEOUT",
+                        message=f"LSP 서버 기동 대기 시간이 초과되었습니다: {language.value}@{repo_root} (kind={request_kind})",
                     )
                 )
+
+    def _normalize_request_kind(self, request_kind: str) -> str:
+        """요청 종류 값을 정규화한다."""
+        if request_kind.strip().lower() == "interactive":
+            return "interactive"
+        return "indexing"
+
+    def _reserved_slots_for_key(self, base_key: tuple[Language, str]) -> int:
+        """키별 인터랙티브 예약 슬롯 수를 계산한다."""
+        max_slots = self._max_instances_for_key(base_key)
+        if max_slots <= 1:
+            return 0
+        return max(0, min(self._interactive_reserved_slots_per_repo_language, max_slots - 1))
+
+    def _is_slot_allowed_for_kind(self, base_key: tuple[Language, str], slot: int, request_kind: str) -> bool:
+        """요청 종류에 따라 슬롯 사용 가능 여부를 판정한다."""
+        if request_kind == "interactive":
+            return True
+        max_slots = self._max_instances_for_key(base_key)
+        reserved = self._reserved_slots_for_key(base_key)
+        indexing_ceiling = max(1, max_slots - reserved)
+        return slot < indexing_ceiling
+
+    def _first_allowed_slot(self, base_key: tuple[Language, str], request_kind: str) -> int:
+        """요청 종류별 기본 시작 슬롯을 반환한다."""
+        max_slots = self._max_instances_for_key(base_key)
+        for slot in range(max_slots):
+            if self._is_slot_allowed_for_kind(base_key=base_key, slot=slot, request_kind=request_kind):
+                return slot
+        if request_kind == "interactive":
+            self._interactive_rejected_count += 1
+        raise DaemonError(
+            ErrorContext(
+                code="ERR_LSP_ACQUIRE_REJECTED",
+                message=f"요청 종류({request_kind})에 허용된 LSP 슬롯이 없습니다: {base_key[0].value}@{base_key[1]}",
+            )
+        )
 
     def _create_and_start_server(self, language: Language, repo_root: str) -> SolidLanguageServer:
         """락 밖에서 단일 LSP 서버를 생성/시작한다."""

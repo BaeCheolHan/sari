@@ -5,6 +5,7 @@ from __future__ import annotations
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 import hashlib
+from datetime import datetime, timezone
 import queue
 import time
 import traceback
@@ -72,6 +73,9 @@ class EnrichEngine:
         flush_max_body_bytes: int,
         l3_parallel_enabled: bool,
         l3_executor_max_workers: int,
+        l3_recent_success_ttl_sec: int,
+        l3_backpressure_on_interactive: bool,
+        l3_backpressure_cooldown_ms: int,
     ) -> None:
         """엔진 실행에 필요한 의존성을 주입받는다."""
         self._file_repo = file_repo
@@ -95,6 +99,11 @@ class EnrichEngine:
         self._flush_max_body_bytes = flush_max_body_bytes
         self._l3_parallel_enabled = bool(l3_parallel_enabled)
         self._l3_executor_max_workers = max(1, int(l3_executor_max_workers)) if int(l3_executor_max_workers) > 0 else 32
+        self._l3_recent_success_ttl_sec = max(0, int(l3_recent_success_ttl_sec))
+        self._l3_backpressure_on_interactive = bool(l3_backpressure_on_interactive)
+        self._l3_backpressure_cooldown_sec = max(0.01, float(max(10, int(l3_backpressure_cooldown_ms))) / 1000.0)
+        self._l3_backpressure_until = 0.0
+        self._last_interactive_timeout_count = 0
         self._l3_executor = ThreadPoolExecutor(max_workers=self._l3_executor_max_workers, thread_name_prefix="enrich-l3")
         self._l3_executor_closed = False
         self._indexing_mode = "steady"
@@ -720,6 +729,24 @@ class EnrichEngine:
         requested_parallelism = min(len(jobs), max(1, executor_cap))
         if requested_parallelism <= 1:
             return 1
+        now = time.monotonic()
+        if self._l3_backpressure_on_interactive:
+            pressure_getter = getattr(self._lsp_backend, "get_interactive_pressure", None)
+            if callable(pressure_getter):
+                try:
+                    pressure = pressure_getter()
+                except (RuntimeError, OSError, ValueError, TypeError):
+                    pressure = None
+                if isinstance(pressure, dict):
+                    pending_interactive = int(pressure.get("pending_interactive", 0))
+                    timeout_count = int(pressure.get("interactive_timeout_count", 0))
+                    if timeout_count > self._last_interactive_timeout_count:
+                        self._l3_backpressure_until = now + self._l3_backpressure_cooldown_sec
+                    self._last_interactive_timeout_count = max(self._last_interactive_timeout_count, timeout_count)
+                    if pending_interactive > 0:
+                        return 1
+            if now < self._l3_backpressure_until:
+                requested_parallelism = max(1, requested_parallelism // 2)
         getter = getattr(self._lsp_backend, "get_parallelism", None)
         batch_getter = getattr(self._lsp_backend, "get_parallelism_for_batch", None)
         if callable(batch_getter):
@@ -765,6 +792,36 @@ class EnrichEngine:
                 done_id = job.job_id
                 finished_status = "DONE"
             elif file_row.content_hash != job.content_hash:
+                done_id = job.job_id
+                finished_status = "DONE"
+            elif self._is_recent_tool_ready(job=job):
+                now_iso = now_iso8601_utc()
+                state_update = EnrichStateUpdateDTO(
+                    repo_root=job.repo_root,
+                    relative_path=job.relative_path,
+                    enrich_state="TOOL_READY",
+                    updated_at=now_iso,
+                )
+                readiness_update = ToolReadinessStateDTO(
+                    repo_root=job.repo_root,
+                    relative_path=job.relative_path,
+                    content_hash=job.content_hash,
+                    list_files_ready=True,
+                    read_file_ready=True,
+                    search_symbol_ready=True,
+                    get_callers_ready=True,
+                    consistency_ready=True,
+                    quality_ready=True,
+                    tool_ready=True,
+                    last_reason="skip_recent_success",
+                    updated_at=now_iso,
+                )
+                if not self._is_deletion_hold_enabled():
+                    body_delete = FileBodyDeleteTargetDTO(
+                        repo_root=job.repo_root,
+                        relative_path=job.relative_path,
+                        content_hash=job.content_hash,
+                    )
                 done_id = job.job_id
                 finished_status = "DONE"
             else:
@@ -891,6 +948,26 @@ class EnrichEngine:
             readiness_update=readiness_update,
             dev_error=dev_error,
         )
+
+    def _is_recent_tool_ready(self, job: FileEnrichJobDTO) -> bool:
+        """최근 성공 상태면 L3 재추출을 건너뛸지 판단한다."""
+        if self._l3_recent_success_ttl_sec <= 0:
+            return False
+        state = self._readiness_repo.get_state(job.repo_root, job.relative_path)
+        if state is None:
+            return False
+        if not state.tool_ready:
+            return False
+        if state.content_hash != job.content_hash:
+            return False
+        try:
+            updated_at = datetime.fromisoformat(state.updated_at)
+        except ValueError:
+            return False
+        if updated_at.tzinfo is None:
+            updated_at = updated_at.replace(tzinfo=timezone.utc)
+        age_sec = (datetime.now(timezone.utc) - updated_at).total_seconds()
+        return age_sec <= float(self._l3_recent_success_ttl_sec)
 
     def _merge_l3_result(
         self,
