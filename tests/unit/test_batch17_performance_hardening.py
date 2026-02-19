@@ -151,8 +151,8 @@ def test_solid_lsp_extraction_backend_accepts_document_symbol_without_relative_p
             del relative_path
             return Language.PYTHON
 
-        def get_or_start(self, language: Language, repo_root: str) -> _FakeLsp:
-            del language, repo_root
+        def get_or_start(self, language: Language, repo_root: str, request_kind: str = "indexing") -> _FakeLsp:
+            del language, repo_root, request_kind
             return _FakeLsp()
 
         def prewarm_language_pool(self, language: Language, repo_root: str) -> None:
@@ -193,8 +193,8 @@ def test_solid_lsp_extraction_backend_dedupes_inflight_same_request() -> None:
             del relative_path
             return Language.PYTHON
 
-        def get_or_start(self, language: Language, repo_root: str) -> _FakeLsp:
-            del language, repo_root
+        def get_or_start(self, language: Language, repo_root: str, request_kind: str = "indexing") -> _FakeLsp:
+            del language, repo_root, request_kind
             return self.lsp
 
         def prewarm_language_pool(self, language: Language, repo_root: str) -> None:
@@ -979,3 +979,61 @@ def test_tantivy_pending_apply_backpressure_reduces_batch_limit(tmp_path: Path, 
     _ = backend.search(workspaces=[workspace], query="alpha", limit=10)
 
     assert captured_limit["value"] == 24
+
+
+def test_tantivy_pending_apply_does_not_fail_on_other_registered_repo_changes(tmp_path: Path) -> None:
+    """검색 대상 workspace 외 repo 변경이 pending에 있어도 검색이 실패하면 안 된다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    repo_a = workspace_root / "repo-a"
+    repo_b = workspace_root / "repo-b"
+    repo_a.mkdir()
+    repo_b.mkdir()
+
+    file_a = repo_a / "alpha.py"
+    file_b = repo_b / "beta.py"
+    file_a.write_text("def alpha_symbol():\n    return 1\n", encoding="utf-8")
+    file_b.write_text("def beta_symbol():\n    return 2\n", encoding="utf-8")
+
+    change_repo = CandidateIndexChangeRepository(db_path)
+    raw_a = file_a.read_bytes()
+    raw_b = file_b.read_bytes()
+    change_repo.enqueue_upsert(
+        CandidateIndexChangeDTO(
+            repo_id="r_repo_a",
+            repo_root=str(repo_a.resolve()),
+            relative_path="alpha.py",
+            absolute_path=str(file_a.resolve()),
+            content_hash=hashlib.sha256(raw_a).hexdigest(),
+            mtime_ns=file_a.stat().st_mtime_ns,
+            size_bytes=file_a.stat().st_size,
+            event_source="scan",
+            recorded_at="2026-02-19T00:00:00+00:00",
+        )
+    )
+    change_repo.enqueue_upsert(
+        CandidateIndexChangeDTO(
+            repo_id="r_repo_b",
+            repo_root=str(repo_b.resolve()),
+            relative_path="beta.py",
+            absolute_path=str(file_b.resolve()),
+            content_hash=hashlib.sha256(raw_b).hexdigest(),
+            mtime_ns=file_b.stat().st_mtime_ns,
+            size_bytes=file_b.stat().st_size,
+            event_source="scan",
+            recorded_at="2026-02-19T00:00:01+00:00",
+        )
+    )
+
+    backend = TantivyCandidateBackend(
+        config=CandidateSearchConfig(max_file_size_bytes=512 * 1024, allowed_suffixes=(".py",)),
+        index_root=tmp_path / "candidate-index-cross-repo-pending",
+        change_repo=change_repo,
+    )
+
+    workspace = WorkspaceDTO(path=str(repo_a.resolve()), name="repo-a", indexed_at=None, is_active=True)
+    items = backend.search(workspaces=[workspace], query="alpha_symbol", limit=10)
+
+    assert any(item.relative_path == "alpha.py" for item in items)

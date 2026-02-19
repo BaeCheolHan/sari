@@ -16,7 +16,19 @@ python3 -m pip install sari
 sari doctor
 sari daemon start
 sari roots add /absolute/path/to/repo
+sari roots deactivate /absolute/path/to/repo
+sari roots activate /absolute/path/to/repo
 ```
+
+## Workspace 활성 정책 (Soft-OFF)
+
+`is_active`는 수집/도구 접근 제어 플래그다.
+
+- `is_active=true`: 수집 루프와 MCP/HTTP repo 해석 경로에서 정상 접근된다.
+- `is_active=false`: 수집 스케줄 및 watcher 등록에서 제외되고, 도구 접근은 `ERR_WORKSPACE_INACTIVE`로 차단된다.
+- Soft-OFF 정책: 비활성화 시 기존 인덱스/메타데이터는 즉시 삭제하지 않는다(데이터 유지).
+
+자세한 운영 규칙은 `docs/workspace_activation_policy.md`를 참고한다.
 
 ## MCP 연동 (권장)
 

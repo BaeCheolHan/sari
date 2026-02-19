@@ -24,6 +24,17 @@ class MockWorkspaceRepository:
         if path in self.workspaces:
             del self.workspaces[path]
 
+    def set_active(self, path: str, is_active: bool) -> None:
+        workspace = self.workspaces.get(path)
+        if workspace is None:
+            return
+        self.workspaces[path] = Workspace(
+            path=workspace.path,
+            name=workspace.name,
+            indexed_at=workspace.indexed_at,
+            is_active=is_active,
+        )
+
 @pytest.fixture
 def workspace_service() -> WorkspaceService:
     repo = MockWorkspaceRepository()
@@ -59,3 +70,14 @@ def test_add_workspace_duplicate_path(workspace_service: WorkspaceService, tmp_p
     # When & Then: 중복 등록 시 WorkspaceError 발생 확인
     with pytest.raises(WorkspaceError, match="이미 등록된 워크스페이스입니다"):
         workspace_service.add_workspace(path)
+
+
+def test_set_workspace_active_success(workspace_service: WorkspaceService, tmp_path: Path) -> None:
+    path = str(tmp_path / "repo-c")
+    os.mkdir(path)
+    workspace_service.add_workspace(path)
+
+    updated = workspace_service.set_workspace_active(path, False)
+
+    assert updated.is_active is False
+    assert workspace_service.list_workspaces()[0].is_active is False

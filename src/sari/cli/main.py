@@ -281,6 +281,50 @@ def roots_remove(path: str) -> None:
     _print_json({"removed": str(Path(path).expanduser().resolve())})
 
 
+@roots.command("activate")
+@click.argument("path", type=click.Path(exists=False))
+def roots_activate(path: str) -> None:
+    """워크스페이스를 활성화한다."""
+    services = _build_services()
+    try:
+        workspace = services.workspace_service.set_workspace_active(path, True)
+    except WorkspaceError as exc:
+        _print_json({"error": asdict(exc.context)}, exit_code=1)
+        return
+    _print_json(
+        {
+            "workspace": {
+                "path": workspace.path,
+                "name": workspace.name,
+                "indexed_at": workspace.indexed_at,
+                "is_active": workspace.is_active,
+            }
+        }
+    )
+
+
+@roots.command("deactivate")
+@click.argument("path", type=click.Path(exists=False))
+def roots_deactivate(path: str) -> None:
+    """워크스페이스를 비활성화한다."""
+    services = _build_services()
+    try:
+        workspace = services.workspace_service.set_workspace_active(path, False)
+    except WorkspaceError as exc:
+        _print_json({"error": asdict(exc.context)}, exit_code=1)
+        return
+    _print_json(
+        {
+            "workspace": {
+                "path": workspace.path,
+                "name": workspace.name,
+                "indexed_at": workspace.indexed_at,
+                "is_active": workspace.is_active,
+            }
+        }
+    )
+
+
 @cli.group()
 def daemon() -> None:
     """데몬 관리 명령 그룹이다."""

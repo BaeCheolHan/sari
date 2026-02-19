@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import queue
 import time
 from pathlib import Path
@@ -13,6 +14,8 @@ from watchdog.observers import Observer
 
 from sari.core.exceptions import CollectionError
 from sari.core.models import now_iso8601_utc
+
+log = logging.getLogger(__name__)
 
 
 class _WatcherHandler(FileSystemEventHandler):
@@ -101,6 +104,11 @@ class EventWatcher:
         workspaces = self._workspace_repo.list_all()
         for workspace in workspaces:
             if not workspace.is_active:
+                log.debug(
+                    "inactive workspace skip(worker=watcher, workspace_path=%s, is_active=%s)",
+                    workspace.path,
+                    workspace.is_active,
+                )
                 continue
             observer.schedule(handler, workspace.path, recursive=True)
         observer.start()

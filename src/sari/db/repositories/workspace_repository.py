@@ -63,6 +63,19 @@ class WorkspaceRepository:
             conn.execute("DELETE FROM workspaces WHERE path = :path", {"path": path})
             conn.commit()
 
+    def set_active(self, path: str, is_active: bool) -> None:
+        """워크스페이스 활성 상태를 변경한다."""
+        with connect(self._db_path) as conn:
+            conn.execute(
+                """
+                UPDATE workspaces
+                SET is_active = :is_active
+                WHERE path = :path
+                """,
+                {"path": path, "is_active": 1 if is_active else 0},
+            )
+            conn.commit()
+
     def _workspace_from_row(self, row: object) -> WorkspaceDTO:
         """DB Row를 WorkspaceDTO로 엄격 매핑한다."""
         if not hasattr(row, "__getitem__"):

@@ -344,3 +344,34 @@ def test_mcp_scan_once_single_child_repo_does_not_fanout(tmp_path: Path) -> None
     assert payload["result"]["isError"] is False
     scan_item = payload["result"]["structuredContent"]["items"][0]
     assert scan_item["mode"] == "single_repo"
+
+
+def test_mcp_list_files_rejects_inactive_workspace(tmp_path: Path) -> None:
+    """비활성 workspace는 파일 조회 도구 호출이 차단되어야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_dir = tmp_path / "repo-inactive"
+    repo_dir.mkdir()
+    target = repo_dir / "alpha.py"
+    target.write_text("def alpha():\n    return 7\n", encoding="utf-8")
+
+    workspace_repo = WorkspaceRepository(db_path)
+    WorkspaceService(workspace_repo).add_workspace(str(repo_dir))
+    workspace_repo.set_active(str(repo_dir.resolve()), False)
+
+    server = McpServer(db_path=db_path)
+    response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 399,
+            "method": "tools/call",
+            "params": {
+                "name": "list_files",
+                "arguments": {"repo": str(repo_dir.resolve()), "limit": 10, "options": {"structured": 1}},
+            },
+        }
+    )
+    payload = response.to_dict()
+    assert payload["result"]["isError"] is True
+    error = payload["result"]["structuredContent"]["meta"]["errors"][0]
+    assert error["code"] == "ERR_WORKSPACE_INACTIVE"

@@ -73,6 +73,10 @@ class VectorIndexSink(Protocol):
         ...
 
 class SolidLspExtractionBackend:
+    """인덱싱 전용 LSP 추출 백엔드.
+
+    LspHub get_or_start/acquire_pool 호출 시 request_kind 인자를 전달하는 계약을 사용한다.
+    """
 
     def __init__(self, hub: LspHub) -> None:
         self._hub = hub

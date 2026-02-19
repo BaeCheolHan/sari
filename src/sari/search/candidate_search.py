@@ -23,6 +23,7 @@ from sari.db.repositories.candidate_index_change_repository import CandidateInde
 from sari.search.error_policy import classify_search_error
 
 log = logging.getLogger(__name__)
+_INACTIVE_WORKSPACE_PENDING_MESSAGE = "candidate apply skipped: workspace is inactive"
 
 
 class CandidateBackendError(Exception):
@@ -614,8 +615,8 @@ class TantivyCandidateBackend:
         if change.absolute_path is None or change.content_hash is None or change.mtime_ns is None or change.size_bytes is None:
             raise ValueError("upsert payload is incomplete")
         repo_root = str(Path(change.repo_root).resolve())
-        if not self._is_active_repo_root(workspace_roots=workspace_roots, repo_root=repo_root):
-            raise ValueError("repo is not active workspace")
+        if not self._is_registered_repo_root(workspace_roots=workspace_roots, repo_root=repo_root):
+            raise ValueError(_INACTIVE_WORKSPACE_PENDING_MESSAGE)
         file_path = Path(change.absolute_path).resolve()
         if not file_path.exists() or not file_path.is_file():
             return PendingUpsertPlanDTO(
@@ -706,8 +707,8 @@ class TantivyCandidateBackend:
         if change.absolute_path is None or change.content_hash is None or change.mtime_ns is None or change.size_bytes is None:
             raise ValueError("upsert payload is incomplete")
         repo_root = str(Path(change.repo_root).resolve())
-        if not self._is_active_repo_root(workspace_roots=workspace_roots, repo_root=repo_root):
-            raise ValueError("repo is not active workspace")
+        if not self._is_registered_repo_root(workspace_roots=workspace_roots, repo_root=repo_root):
+            raise ValueError(_INACTIVE_WORKSPACE_PENDING_MESSAGE)
         file_path = Path(change.absolute_path).resolve()
         if not file_path.exists() or not file_path.is_file():
             self._apply_delete_change(repo_root=repo_root, relative_path=change.relative_path)
@@ -753,22 +754,23 @@ class TantivyCandidateBackend:
 
     def _reconcile_index_state(self, workspaces: list[WorkspaceDTO]) -> bool:
         """주기적으로 비활성 저장소 문서를 정리한다."""
-        active_roots = {str(Path(item.path).resolve()) for item in workspaces if Path(item.path).exists()}
+        registered_roots = {str(Path(item.path).resolve()) for item in workspaces if Path(item.path).exists()}
+        registered_roots.update(self._indexed_roots)
         removed_keys: list[tuple[str, str]] = []
         mutated = False
         for indexed_key, state in self._indexed_files.items():
             repo_root, _ = indexed_key
-            if not self._is_active_repo_root(workspace_roots=active_roots, repo_root=repo_root):
+            if not self._is_registered_repo_root(workspace_roots=registered_roots, repo_root=repo_root):
                 self._get_writer().delete_documents_by_term("doc_id", state.doc_id)
                 removed_keys.append(indexed_key)
                 mutated = True
         for indexed_key in removed_keys:
             self._indexed_files.pop(indexed_key, None)
-        self._indexed_roots = active_roots
+        self._indexed_roots = registered_roots
         return mutated
 
-    def _is_active_repo_root(self, workspace_roots: set[str], repo_root: str) -> bool:
-        """repo_root가 활성 workspace 자체이거나 하위 경로인지 판정한다."""
+    def _is_registered_repo_root(self, workspace_roots: set[str], repo_root: str) -> bool:
+        """repo_root가 등록 workspace 자체이거나 하위 경로인지 판정한다."""
         if repo_root in workspace_roots:
             return True
         repo_path = Path(repo_root)
@@ -837,8 +839,9 @@ class TantivyCandidateBackend:
                 error_message=failed_row.message,
                 updated_at=now_iso,
             )
-        if len(apply_outcome.failed_rows) > 0:
-            first_message = apply_outcome.failed_rows[0].message
+        fatal_rows = [row for row in apply_outcome.failed_rows if _INACTIVE_WORKSPACE_PENDING_MESSAGE not in row.message]
+        if len(fatal_rows) > 0:
+            first_message = fatal_rows[0].message
             raise ValueError(first_message)
 
     def _get_writer(self) -> "_TantivyWriterProtocol":

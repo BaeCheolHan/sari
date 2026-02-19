@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 import threading
 import time
@@ -13,6 +14,8 @@ from watchdog.observers import Observer
 
 from sari.core.exceptions import CollectionError, ErrorContext
 from sari.core.models import now_iso8601_utc
+
+log = logging.getLogger(__name__)
 
 
 class RuntimeManager:
@@ -116,6 +119,11 @@ class RuntimeManager:
                 continue
             for workspace in workspaces:
                 if not workspace.is_active:
+                    log.debug(
+                        "inactive workspace skip(worker=scheduler, workspace_path=%s, is_active=%s)",
+                        workspace.path,
+                        workspace.is_active,
+                    )
                     continue
                 try:
                     self._scan_once(workspace.path)

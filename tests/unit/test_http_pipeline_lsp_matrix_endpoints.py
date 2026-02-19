@@ -70,7 +70,7 @@ def test_http_pipeline_lsp_matrix_run_and_report(tmp_path: Path) -> None:
     service = _FakeLspMatrixService()
     repo_dir = tmp_path / "repo"
     repo_dir.mkdir()
-    workspace_repo = SimpleNamespace(list_all=lambda: [SimpleNamespace(path=str(repo_dir.resolve()))])
+    workspace_repo = SimpleNamespace(list_all=lambda: [SimpleNamespace(path=str(repo_dir.resolve()), is_active=True)])
     context = HttpContext(
         runtime_repo=SimpleNamespace(),
         workspace_repo=workspace_repo,

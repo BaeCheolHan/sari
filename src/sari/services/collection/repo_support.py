@@ -70,7 +70,7 @@ class CollectionRepoSupport:
 
     def resolve_repo_identity(self, repo_root: str) -> RepoIdentityDTO:
         """repo 라벨/ID를 계산하고 레지스트리에 동기화한다."""
-        workspace_paths = [workspace.path for workspace in self._workspace_repo.list_all() if workspace.is_active]
+        workspace_paths = [workspace.path for workspace in self._workspace_repo.list_all()]
         resolved_label = self.resolve_repo_label(repo_root)
         workspace_root = resolve_workspace_root(repo_root=repo_root, workspace_paths=workspace_paths)
         resolved_repo_id = compute_repo_id(repo_label=resolved_label, workspace_root=workspace_root)

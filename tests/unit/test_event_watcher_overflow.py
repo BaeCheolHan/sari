@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import queue
 import threading
 from dataclasses import dataclass
@@ -17,11 +18,12 @@ class _WorkspaceStub:
 
 
 class _WorkspaceRepoStub:
-    def __init__(self, roots: list[str]) -> None:
+    def __init__(self, roots: list[str], active_map: dict[str, bool] | None = None) -> None:
         self._roots = roots
+        self._active_map = active_map or {}
 
     def list_all(self) -> list[_WorkspaceStub]:
-        return [_WorkspaceStub(path=item, is_active=True) for item in self._roots]
+        return [_WorkspaceStub(path=item, is_active=self._active_map.get(item, True)) for item in self._roots]
 
 
 class _FileRepoStub:
@@ -79,3 +81,56 @@ def test_event_watcher_queue_overflow_schedules_rescan_with_cooldown(tmp_path: P
     assert len(overflow_events) == 2
     assert len(scheduled_roots) == 1
     assert scheduled_roots[0] == str(workspace_root.resolve())
+
+
+def test_event_watcher_loop_skips_inactive_workspace_paths(tmp_path: Path, monkeypatch, caplog) -> None:
+    """watcher loop은 is_active=false workspace 경로를 스케줄하지 않아야 한다."""
+    caplog.set_level(logging.DEBUG)
+    workspace_active = tmp_path / "ws-active"
+    workspace_inactive = tmp_path / "ws-inactive"
+    workspace_active.mkdir()
+    workspace_inactive.mkdir()
+    scheduled_paths: list[str] = []
+
+    class _ObserverStub:
+        def schedule(self, handler, path: str, recursive: bool) -> None:  # type: ignore[no-untyped-def]
+            _ = handler
+            assert recursive is True
+            scheduled_paths.append(path)
+
+        def start(self) -> None:
+            return None
+
+    monkeypatch.setattr("sari.services.collection.event_watcher.Observer", _ObserverStub)
+
+    stop_event = threading.Event()
+    stop_event.set()
+    watcher = EventWatcher(
+        workspace_repo=_WorkspaceRepoStub(
+            [str(workspace_active.resolve()), str(workspace_inactive.resolve())],
+            active_map={str(workspace_inactive.resolve()): False},
+        ),
+        file_repo=_FileRepoStub(),
+        candidate_index_sink=None,
+        event_queue=queue.Queue(),
+        stop_event=stop_event,
+        debounce_events={},
+        debounce_lock=threading.Lock(),
+        watcher_debounce_ms=lambda: 10,
+        assert_parent_alive=lambda worker_name: None,
+        index_file_with_priority=lambda repo_root, relative_path, priority, enqueue_source: None,
+        handle_background_collection_error=lambda exc, phase, worker_name: False,
+        priority_high=90,
+        set_observer=lambda observer: None,
+        watcher_overflow_rescan_cooldown_sec=30,
+        now_monotonic=lambda: 0.0,
+        on_watcher_queue_overflow=lambda repo_root, src_path: None,
+        schedule_rescan=lambda repo_root: None,
+    )
+
+    watcher.watcher_loop()
+
+    assert str(workspace_active.resolve()) in scheduled_paths
+    assert str(workspace_inactive.resolve()) not in scheduled_paths
+    assert "inactive workspace skip" in caplog.text
+    assert str(workspace_inactive.resolve()) in caplog.text

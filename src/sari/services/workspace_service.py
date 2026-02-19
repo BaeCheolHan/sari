@@ -22,6 +22,9 @@ class WorkspaceRepositoryProtocol(Protocol):
     def remove(self, path: str) -> None:
         """워크스페이스를 삭제한다."""
 
+    def set_active(self, path: str, is_active: bool) -> None:
+        """워크스페이스 활성 상태를 변경한다."""
+
 
 class WorkspaceService:
     """워크스페이스 규칙을 담당한다."""
@@ -52,3 +55,15 @@ class WorkspaceService:
         """워크스페이스를 삭제한다."""
         normalized_path = str(Path(path).expanduser().resolve())
         self._repository.remove(normalized_path)
+
+    def set_workspace_active(self, path: str, is_active: bool) -> WorkspaceDTO:
+        """워크스페이스 활성 상태를 변경한다."""
+        normalized_path = str(Path(path).expanduser().resolve())
+        workspace = self._repository.get_by_path(normalized_path)
+        if workspace is None:
+            raise WorkspaceError(ErrorContext(code="ERR_WORKSPACE_NOT_FOUND", message="존재하지 않는 경로입니다"))
+        self._repository.set_active(normalized_path, is_active)
+        updated = self._repository.get_by_path(normalized_path)
+        if updated is None:
+            raise WorkspaceError(ErrorContext(code="ERR_WORKSPACE_NOT_FOUND", message="존재하지 않는 경로입니다"))
+        return updated

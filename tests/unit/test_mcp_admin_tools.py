@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from sari.core.models import WorkspaceDTO
+from sari.core.repo_context_resolver import ERR_WORKSPACE_INACTIVE, WORKSPACE_INACTIVE_MESSAGE
 from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.db.schema import init_schema
 from sari.mcp.server import McpServer
+from sari.mcp.tools.admin_tools import validate_repo_argument
 from sari.services.workspace_service import WorkspaceService
 
 
@@ -65,3 +68,20 @@ def test_mcp_rescan_returns_invalidation_count(tmp_path: Path) -> None:
     assert result["isError"] is False
     structured = result["structuredContent"]
     assert "invalidated_cache_rows" in structured
+
+
+def test_validate_repo_argument_rejects_inactive_workspace(tmp_path: Path) -> None:
+    """validate_repo_argument는 비활성 workspace를 명시적으로 거부해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_dir = tmp_path / "repo-inactive"
+    repo_dir.mkdir()
+    workspace_repo = WorkspaceRepository(db_path)
+    workspace_repo.add(WorkspaceDTO(path=str(repo_dir.resolve()), name="repo-inactive", indexed_at=None, is_active=False))
+
+    arguments: dict[str, object] = {"repo": str(repo_dir.resolve())}
+    error = validate_repo_argument(arguments=arguments, workspace_repo=workspace_repo)
+
+    assert error is not None
+    assert error.code == ERR_WORKSPACE_INACTIVE
+    assert error.message == WORKSPACE_INACTIVE_MESSAGE

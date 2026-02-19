@@ -223,6 +223,27 @@ def test_cli_roots_add_invalid_path_returns_error_contract(tmp_path: Path, monke
     assert isinstance(error.get("message"), str)
 
 
+def test_cli_roots_activate_deactivate_updates_workspace_state(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """roots activate/deactivate는 workspace is_active 상태를 갱신해야 한다."""
+    _prepare_home(tmp_path=tmp_path, monkeypatch=monkeypatch)
+    runner = CliRunner()
+    repo_dir = tmp_path / "repo-a"
+    repo_dir.mkdir()
+
+    add_result = runner.invoke(cli, ["roots", "add", str(repo_dir)])
+    assert add_result.exit_code == 0
+
+    deactivate_result = runner.invoke(cli, ["roots", "deactivate", str(repo_dir)])
+    assert deactivate_result.exit_code == 0
+    deactivate_payload = json.loads(deactivate_result.output)
+    assert deactivate_payload["workspace"]["is_active"] is False
+
+    activate_result = runner.invoke(cli, ["roots", "activate", str(repo_dir)])
+    assert activate_result.exit_code == 0
+    activate_payload = json.loads(activate_result.output)
+    assert activate_payload["workspace"]["is_active"] is True
+
+
 def test_cli_pipeline_policy_show_outputs_policy_fields(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     """pipeline policy show는 정책 필드를 포함한 JSON을 출력해야 한다."""
     _prepare_home(tmp_path=tmp_path, monkeypatch=monkeypatch)

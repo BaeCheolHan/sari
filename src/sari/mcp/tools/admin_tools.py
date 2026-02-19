@@ -4,9 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sari.core.exceptions import ValidationError
 from sari.core.models import ErrorResponseDTO
-from sari.core.repo_resolver import resolve_repo_key, resolve_repo_root
+from sari.core.repo_context_resolver import (
+    ERR_WORKSPACE_INACTIVE,
+    WORKSPACE_INACTIVE_MESSAGE,
+    resolve_repo_context,
+)
+from sari.core.repo_resolver import resolve_repo_key
 from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.mcp.tools.pack1 import Pack1MetaDTO, pack1_error, pack1_success
 from sari.services.admin_service import AdminService
@@ -21,28 +25,26 @@ def validate_repo_argument(arguments: dict[str, object], workspace_repo: Workspa
     if not isinstance(repo, str) or repo.strip() == "":
         return ErrorResponseDTO(code="ERR_REPO_REQUIRED", message="repo_id is required (alias: repo)")
     repo_key_raw = arguments.get("repo_key")
+    raw_repo = repo_key_raw.strip() if isinstance(repo_key_raw, str) and repo_key_raw.strip() != "" else repo.strip()
+    resolved_context, context_error = resolve_repo_context(
+        raw_repo=raw_repo,
+        workspace_repo=workspace_repo,
+        repo_registry_repo=None,
+        allow_absolute_input=False,
+    )
+    if context_error is None and resolved_context is not None:
+        arguments["repo"] = resolved_context.repo_root
+        arguments["repo_key"] = resolved_context.repo_key
+        return None
+    workspace_match = workspace_repo.get_by_path(repo.strip())
+    if workspace_match is None:
+        assert context_error is not None
+        return context_error
+    if not workspace_match.is_active:
+        return ErrorResponseDTO(code=ERR_WORKSPACE_INACTIVE, message=WORKSPACE_INACTIVE_MESSAGE)
     workspace_paths = [item.path for item in workspace_repo.list_all()]
-    try:
-        if isinstance(repo_key_raw, str) and repo_key_raw.strip() != "":
-            resolved_repo = resolve_repo_root(
-                repo_or_path=repo_key_raw.strip(),
-                workspace_paths=workspace_paths,
-                allow_absolute_input=False,
-            )
-        else:
-            resolved_repo = resolve_repo_root(
-                repo_or_path=repo.strip(),
-                workspace_paths=workspace_paths,
-                allow_absolute_input=False,
-            )
-    except ValidationError as exc:
-        workspace_match = workspace_repo.get_by_path(repo.strip())
-        if workspace_match is None:
-            return ErrorResponseDTO(code=exc.context.code, message=exc.context.message)
-        resolved_repo = workspace_match.path
-    resolved_key = resolve_repo_key(repo_root=resolved_repo, workspace_paths=workspace_paths)
-    arguments["repo"] = resolved_repo
-    arguments["repo_key"] = resolved_key
+    arguments["repo"] = workspace_match.path
+    arguments["repo_key"] = resolve_repo_key(repo_root=workspace_match.path, workspace_paths=workspace_paths)
     return None
 
 

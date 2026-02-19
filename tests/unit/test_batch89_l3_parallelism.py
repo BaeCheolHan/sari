@@ -35,17 +35,22 @@ def _sample_job(path: str) -> FileEnrichJobDTO:
     )
 
 
-def test_l3_parallelism_disabled_forces_single_worker() -> None:
+def _build_engine_for_parallelism(backend: object, *, enabled: bool) -> EnrichEngine:
+    """_resolve_l3_parallelism 테스트에 필요한 최소 상태를 채운 엔진을 생성한다."""
     engine = object.__new__(EnrichEngine)
-    engine._l3_parallel_enabled = False
-    engine._lsp_backend = _BackendWithParallelism(8)
+    engine._l3_parallel_enabled = enabled
+    engine._lsp_backend = backend
+    engine._l3_backpressure_on_interactive = False
+    return engine
+
+
+def test_l3_parallelism_disabled_forces_single_worker() -> None:
+    engine = _build_engine_for_parallelism(_BackendWithParallelism(8), enabled=False)
     jobs = [_sample_job("a.py"), _sample_job("b.py")]
     assert engine._resolve_l3_parallelism(jobs) == 1
 
 
 def test_l3_parallelism_uses_backend_hint_with_job_count_cap() -> None:
-    engine = object.__new__(EnrichEngine)
-    engine._l3_parallel_enabled = True
-    engine._lsp_backend = _BackendWithParallelism(8)
+    engine = _build_engine_for_parallelism(_BackendWithParallelism(8), enabled=True)
     jobs = [_sample_job("a.py"), _sample_job("b.py"), _sample_job("c.py")]
     assert engine._resolve_l3_parallelism(jobs) == 3
