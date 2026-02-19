@@ -53,7 +53,11 @@ class SolidLspQueryBackend:
             if exc.context.code != "ERR_LSP_UNHEALTHY":
                 raise
             self._hub.restart_if_unhealthy(language=language, repo_root=repo_root)  # type: ignore[attr-defined]
-        lsp = self._hub.get_or_start(language=language, repo_root=repo_root)
+        try:
+            lsp = self._hub.get_or_start(language=language, repo_root=repo_root, request_kind="interactive")
+        except TypeError:
+            # 이전 테스트 더블/구현체 호환을 위한 positional fallback이다.
+            lsp = self._hub.get_or_start(language=language, repo_root=repo_root)  # type: ignore[call-arg]
         normalized_query = query.strip().lower()
         items: list[SearchItemDTO] = []
         for relative_path in relative_paths:
@@ -62,6 +66,13 @@ class SolidLspQueryBackend:
                 raw_symbols = list(lsp.request_document_symbols(normalized_relative_path).iter_symbols())
             except SolidLSPException as exc:
                 message = str(exc)
+                if "ERR_LSP_INTERACTIVE_TIMEOUT" in message:
+                    raise DaemonError(
+                        ErrorContext(
+                            code="ERR_LSP_INTERACTIVE_TIMEOUT",
+                            message=f"인터랙티브 LSP 타임아웃(path={normalized_relative_path}): {message}",
+                        )
+                    ) from exc
                 if "ERR_LSP_SYNC_OPEN_FAILED" in message:
                     raise DaemonError(
                         ErrorContext(
@@ -140,11 +151,14 @@ class SymbolResolveService:
         hub: LspHub,
         cache_repo: SymbolCacheRepository,
         backend: LspQueryBackend | None = None,
+        lsp_fallback_mode: str = "normal",
     ) -> None:
         """LSP Hub/캐시 저장소/백엔드를 주입한다."""
         self._hub = hub
         self._cache_repo = cache_repo
         self._backend = backend or SolidLspQueryBackend(hub)
+        normalized_mode = lsp_fallback_mode.strip().lower()
+        self._lsp_fallback_mode = "strict" if normalized_mode == "strict" else "normal"
 
     def resolve(self, candidates: list[CandidateFileDTO], query: str, limit: int) -> tuple[list[SearchItemDTO], list[SearchErrorDTO]]:
         """후보 파일 기반으로 LSP 심볼 결과를 생성한다."""
@@ -166,6 +180,19 @@ class SymbolResolveService:
                     items.append(cached)
                     if len(items) >= limit:
                         return items[:limit], errors
+                continue
+            if self._lsp_fallback_mode == "strict":
+                errors.append(
+                    SearchErrorDTO(
+                        code="ERR_LSP_FALLBACK_BLOCKED",
+                        message=(
+                            "캐시 미스에서 LSP fallback이 차단되었습니다: "
+                            f"repo={candidate.repo_root}, path={candidate.relative_path}"
+                        ),
+                        severity=classify_search_error("ERR_LSP_FALLBACK_BLOCKED"),
+                        origin="symbol_resolve",
+                    )
+                )
                 continue
 
             miss_candidates.append(candidate)

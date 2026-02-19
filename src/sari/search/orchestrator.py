@@ -138,6 +138,7 @@ class SearchOrchestrator:
         fatal_error = has_fatal_errors(merged_errors)
         degraded = len(merged_errors) > 0
         error_count = len(merged_errors)
+        lsp_fallback_blocked = any(error.code == "ERR_LSP_FALLBACK_BLOCKED" for error in merged_errors)
         candidate_items = [
             SearchItemDTO(
                 item_type="file",
@@ -221,8 +222,8 @@ class SearchOrchestrator:
                 vector_skipped_count=vector_skipped_count,
                 vector_threshold=vector_threshold,
                 lsp_sync_mode="did_open_did_change",
-                lsp_fallback_used=False,
-                lsp_fallback_reason=None,
+                lsp_fallback_used=lsp_fallback_blocked,
+                lsp_fallback_reason="strict_cache_only" if lsp_fallback_blocked else None,
                 ranking_stage="blend",
                 blend_config_version=self._blend_config.version,
                 ranking_version="v3-hierarchy",

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+import time
 
 import hashlib
 
-from sari.core.models import CandidateIndexChangeDTO, CollectedFileL1DTO, CollectionPolicyDTO, FileEnrichJobDTO, WorkspaceDTO
+from sari.core.models import CandidateIndexChangeDTO, CollectedFileL1DTO, CollectionPolicyDTO, FileEnrichJobDTO, ToolReadinessStateDTO, WorkspaceDTO
 from sari.db.repositories.candidate_index_change_repository import CandidateIndexChangeRepository
 from sari.db.repositories.file_body_repository import FileBodyRepository
 from sari.db.repositories.file_collection_repository import FileCollectionRepository
@@ -164,6 +166,55 @@ def test_solid_lsp_extraction_backend_accepts_document_symbol_without_relative_p
     assert isinstance(result.symbols[0]["symbol_key"], str)
     assert result.symbols[0]["parent_symbol_key"] is None
     assert int(result.symbols[0]["depth"]) == 0
+
+
+def test_solid_lsp_extraction_backend_dedupes_inflight_same_request() -> None:
+    """동일 (repo,path,hash) 동시 요청은 LSP 1회 호출로 병합해야 한다."""
+
+    class _Symbols:
+        def iter_symbols(self) -> list[dict[str, object]]:
+            return [{"name": "alpha", "kind": "function", "location": {"range": {"start": {"line": 1}, "end": {"line": 1}}}}]
+
+    class _FakeLsp:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def request_document_symbols(self, relative_path: str) -> _Symbols:
+            del relative_path
+            time.sleep(0.05)
+            self.calls += 1
+            return _Symbols()
+
+    class _FakeHub:
+        def __init__(self) -> None:
+            self.lsp = _FakeLsp()
+
+        def resolve_language(self, relative_path: str) -> Language:
+            del relative_path
+            return Language.PYTHON
+
+        def get_or_start(self, language: Language, repo_root: str) -> _FakeLsp:
+            del language, repo_root
+            return self.lsp
+
+        def prewarm_language_pool(self, language: Language, repo_root: str) -> None:
+            del language, repo_root
+
+    hub = _FakeHub()
+    backend = SolidLspExtractionBackend(hub=hub)  # type: ignore[arg-type]
+
+    def _run_extract() -> LspExtractionResultDTO:
+        return backend.extract(repo_root="/repo", relative_path="a.py", content_hash="h1")
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first_future = executor.submit(_run_extract)
+        second_future = executor.submit(_run_extract)
+        first = first_future.result()
+        second = second_future.result()
+
+    assert first.error_message is None
+    assert second.error_message is None
+    assert hub.lsp.calls == 1
 
 
 def _policy() -> CollectionPolicyDTO:
@@ -428,6 +479,63 @@ def test_vector_embedding_failure_marks_job_failed(tmp_path: Path) -> None:
     state = FileCollectionRepository(db_path).get_file(str(repo_dir.resolve()), "a.py")
     assert state is not None
     assert state.enrich_state == "FAILED"
+
+
+def test_enrich_l3_skips_recent_successful_same_hash(tmp_path: Path) -> None:
+    """최근 성공 + 동일 hash면 L3 추출을 건너뛰어야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_dir = tmp_path / "repo-l3-skip"
+    repo_dir.mkdir()
+    (repo_dir / "a.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+
+    class _CountingLspBackend(LspExtractionBackend):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def extract(self, repo_root: str, relative_path: str, content_hash: str) -> LspExtractionResultDTO:
+            del repo_root, relative_path, content_hash
+            self.calls += 1
+            return LspExtractionResultDTO(symbols=[], relations=[], error_message=None)
+
+    backend = _CountingLspBackend()
+    service = FileCollectionService(
+        workspace_repo=WorkspaceRepository(db_path),
+        file_repo=FileCollectionRepository(db_path),
+        enrich_queue_repo=FileEnrichQueueRepository(db_path),
+        body_repo=FileBodyRepository(db_path),
+        lsp_repo=LspToolDataRepository(db_path),
+        readiness_repo=ToolReadinessRepository(db_path),
+        policy=_policy(),
+        lsp_backend=backend,
+        l3_recent_success_ttl_sec=3600,
+    )
+    repo_root = str(repo_dir.resolve())
+    service.scan_once(repo_root)
+    _ = service.process_enrich_jobs_l2(limit=50)
+    file_row = FileCollectionRepository(db_path).get_file(repo_root=repo_root, relative_path="a.py")
+    assert file_row is not None
+    ToolReadinessRepository(db_path).upsert_state(
+        ToolReadinessStateDTO(
+            repo_root=repo_root,
+            relative_path="a.py",
+            content_hash=file_row.content_hash,
+            list_files_ready=True,
+            read_file_ready=True,
+            search_symbol_ready=True,
+            get_callers_ready=True,
+            consistency_ready=True,
+            quality_ready=True,
+            tool_ready=True,
+            last_reason="ok",
+            updated_at="2099-01-01T00:00:00+00:00",
+        )
+    )
+
+    processed = service.process_enrich_jobs_l3(limit=10)
+
+    assert processed >= 1
+    assert backend.calls == 0
 
 
 def test_file_collection_scan_once_marks_candidate_index_dirty(tmp_path: Path) -> None:
