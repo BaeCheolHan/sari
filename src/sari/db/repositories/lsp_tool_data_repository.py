@@ -126,18 +126,9 @@ class LspToolDataRepository:
                     """,
                     {"repo_root": item.repo_root, "relative_path": item.relative_path},
                 )
+                symbol_rows: list[dict[str, object]] = []
                 for symbol in self._dedupe_symbols(item.symbols):
-                    conn.execute(
-                        """
-                        INSERT INTO lsp_symbols(
-                            repo_root, relative_path, content_hash, name, kind, line, end_line,
-                            symbol_key, parent_symbol_key, depth, container_name, created_at
-                        )
-                        VALUES(
-                            :repo_root, :relative_path, :content_hash, :name, :kind, :line, :end_line,
-                            :symbol_key, :parent_symbol_key, :depth, :container_name, :created_at
-                        )
-                        """,
+                    symbol_rows.append(
                         {
                             "repo_root": item.repo_root,
                             "relative_path": item.relative_path,
@@ -151,7 +142,21 @@ class LspToolDataRepository:
                             "depth": int(symbol.get("depth", 0)),
                             "container_name": _optional_str(symbol.get("container_name")),
                             "created_at": item.created_at,
-                        },
+                        }
+                    )
+                if len(symbol_rows) > 0:
+                    conn.executemany(
+                        """
+                        INSERT INTO lsp_symbols(
+                            repo_root, relative_path, content_hash, name, kind, line, end_line,
+                            symbol_key, parent_symbol_key, depth, container_name, created_at
+                        )
+                        VALUES(
+                            :repo_root, :relative_path, :content_hash, :name, :kind, :line, :end_line,
+                            :symbol_key, :parent_symbol_key, :depth, :container_name, :created_at
+                        )
+                        """,
+                        symbol_rows,
                     )
 
                 conn.execute(
@@ -162,16 +167,9 @@ class LspToolDataRepository:
                     """,
                     {"repo_root": item.repo_root, "relative_path": item.relative_path},
                 )
+                relation_rows: list[dict[str, object]] = []
                 for relation in self._dedupe_relations(item.relations):
-                    conn.execute(
-                        """
-                        INSERT INTO lsp_call_relations(
-                            repo_root, relative_path, content_hash, from_symbol, to_symbol, line, created_at
-                        )
-                        VALUES(
-                            :repo_root, :relative_path, :content_hash, :from_symbol, :to_symbol, :line, :created_at
-                        )
-                        """,
+                    relation_rows.append(
                         {
                             "repo_root": item.repo_root,
                             "relative_path": item.relative_path,
@@ -180,7 +178,19 @@ class LspToolDataRepository:
                             "to_symbol": str(relation.get("to_symbol", "")),
                             "line": int(relation.get("line", 0)),
                             "created_at": item.created_at,
-                        },
+                        }
+                    )
+                if len(relation_rows) > 0:
+                    conn.executemany(
+                        """
+                        INSERT INTO lsp_call_relations(
+                            repo_root, relative_path, content_hash, from_symbol, to_symbol, line, created_at
+                        )
+                        VALUES(
+                            :repo_root, :relative_path, :content_hash, :from_symbol, :to_symbol, :line, :created_at
+                        )
+                        """,
+                        relation_rows,
                     )
             conn.commit()
 

@@ -58,8 +58,17 @@ class AppConfig:
     daemon_stale_timeout_sec: int = 15
     lsp_request_timeout_sec: float = 20.0
     lsp_max_instances_per_repo_language: int = 2
+    lsp_bulk_mode_enabled: bool = True
+    lsp_bulk_max_instances_per_repo_language: int = 4
+    lsp_interactive_reserved_slots_per_repo_language: int = 1
+    lsp_interactive_timeout_sec: float = 2.5
+    lsp_interactive_queue_max: int = 256
     lsp_global_soft_limit: int = 0
     lsp_scale_out_hot_hits: int = 24
+    l3_executor_max_workers: int = 0
+    l3_recent_success_ttl_sec: int = 120
+    l3_backpressure_on_interactive: bool = True
+    l3_backpressure_cooldown_ms: int = 300
     lsp_file_buffer_idle_ttl_sec: float = 20.0
     lsp_file_buffer_max_open: int = 512
     orphan_ppid_check_interval_sec: int = 1
@@ -97,6 +106,7 @@ class AppConfig:
     ranking_w_importance: float = 0.30
     ranking_w_vector: float = 0.15
     ranking_w_hierarchy: float = 0.15
+    search_lsp_fallback_mode: str = "normal"
     mcp_forward_to_daemon: bool = False
     mcp_daemon_autostart: bool = True
     mcp_daemon_timeout_sec: float = 2.0
@@ -133,9 +143,45 @@ class AppConfig:
             "SARI_LSP_MAX_INSTANCES_PER_REPO_LANGUAGE",
             str(file_config.get("lsp_max_instances_per_repo_language", 2)),
         ).strip()
+        lsp_bulk_mode_enabled_raw = os.getenv(
+            "SARI_LSP_BULK_MODE_ENABLED",
+            str(file_config.get("lsp_bulk_mode_enabled", True)),
+        ).strip().lower()
+        lsp_bulk_max_per_repo_lang_raw = os.getenv(
+            "SARI_LSP_BULK_MAX_INSTANCES_PER_REPO_LANGUAGE",
+            str(file_config.get("lsp_bulk_max_instances_per_repo_language", 4)),
+        ).strip()
+        lsp_interactive_reserved_slots_raw = os.getenv(
+            "SARI_LSP_INTERACTIVE_RESERVED_SLOTS_PER_REPO_LANGUAGE",
+            str(file_config.get("lsp_interactive_reserved_slots_per_repo_language", 1)),
+        ).strip()
+        lsp_interactive_timeout_raw = os.getenv(
+            "SARI_LSP_INTERACTIVE_TIMEOUT_SEC",
+            str(file_config.get("lsp_interactive_timeout_sec", 2.5)),
+        ).strip()
+        lsp_interactive_queue_max_raw = os.getenv(
+            "SARI_LSP_INTERACTIVE_QUEUE_MAX",
+            str(file_config.get("lsp_interactive_queue_max", 256)),
+        ).strip()
         lsp_global_soft_limit_raw = os.getenv(
             "SARI_LSP_GLOBAL_SOFT_LIMIT",
             str(file_config.get("lsp_global_soft_limit", 0)),
+        ).strip()
+        l3_executor_max_workers_raw = os.getenv(
+            "SARI_L3_EXECUTOR_MAX_WORKERS",
+            str(file_config.get("l3_executor_max_workers", 0)),
+        ).strip()
+        l3_recent_success_ttl_raw = os.getenv(
+            "SARI_L3_RECENT_SUCCESS_TTL_SEC",
+            str(file_config.get("l3_recent_success_ttl_sec", 120)),
+        ).strip()
+        l3_backpressure_on_interactive_raw = os.getenv(
+            "SARI_L3_BACKPRESSURE_ON_INTERACTIVE",
+            str(file_config.get("l3_backpressure_on_interactive", True)),
+        ).strip().lower()
+        l3_backpressure_cooldown_ms_raw = os.getenv(
+            "SARI_L3_BACKPRESSURE_COOLDOWN_MS",
+            str(file_config.get("l3_backpressure_cooldown_ms", 300)),
         ).strip()
         lsp_scale_out_hot_hits_raw = os.getenv(
             "SARI_LSP_SCALE_OUT_HOT_HITS",
@@ -186,6 +232,10 @@ class AppConfig:
             "SARI_RANKING_W_HIERARCHY",
             str(file_config.get("ranking_w_hierarchy", 0.15)),
         ).strip()
+        search_lsp_fallback_mode_raw = os.getenv(
+            "SARI_SEARCH_LSP_FALLBACK_MODE",
+            str(file_config.get("search_lsp_fallback_mode", "normal")),
+        ).strip().lower()
         mcp_forward_to_daemon_raw = os.getenv("SARI_MCP_FORWARD_TO_DAEMON", str(file_config.get("mcp_forward_to_daemon", False))).strip().lower()
         mcp_daemon_autostart_raw = os.getenv("SARI_MCP_DAEMON_AUTOSTART", str(file_config.get("mcp_daemon_autostart", True))).strip().lower()
         mcp_daemon_timeout_raw = os.getenv("SARI_MCP_DAEMON_TIMEOUT_SEC", str(file_config.get("mcp_daemon_timeout_sec", 2.0))).strip()
@@ -250,6 +300,34 @@ class AppConfig:
             lsp_global_soft_limit = max(0, int(lsp_global_soft_limit_raw))
         except ValueError:
             lsp_global_soft_limit = 0
+        try:
+            lsp_bulk_max_instances_per_repo_language = max(1, int(lsp_bulk_max_per_repo_lang_raw))
+        except ValueError:
+            lsp_bulk_max_instances_per_repo_language = 4
+        try:
+            lsp_interactive_reserved_slots_per_repo_language = max(0, int(lsp_interactive_reserved_slots_raw))
+        except ValueError:
+            lsp_interactive_reserved_slots_per_repo_language = 1
+        try:
+            lsp_interactive_timeout_sec = max(0.1, float(lsp_interactive_timeout_raw))
+        except ValueError:
+            lsp_interactive_timeout_sec = 2.5
+        try:
+            lsp_interactive_queue_max = max(16, int(lsp_interactive_queue_max_raw))
+        except ValueError:
+            lsp_interactive_queue_max = 256
+        try:
+            l3_executor_max_workers = max(0, int(l3_executor_max_workers_raw))
+        except ValueError:
+            l3_executor_max_workers = 0
+        try:
+            l3_recent_success_ttl_sec = max(0, int(l3_recent_success_ttl_raw))
+        except ValueError:
+            l3_recent_success_ttl_sec = 120
+        try:
+            l3_backpressure_cooldown_ms = max(10, int(l3_backpressure_cooldown_ms_raw))
+        except ValueError:
+            l3_backpressure_cooldown_ms = 300
         try:
             lsp_scale_out_hot_hits = max(2, int(lsp_scale_out_hot_hits_raw))
         except ValueError:
@@ -336,6 +414,7 @@ class AppConfig:
         normalized_mode = importance_normalize_mode.lower()
         if normalized_mode not in {"none", "log1p", "minmax"}:
             normalized_mode = "log1p"
+        search_lsp_fallback_mode = "strict" if search_lsp_fallback_mode_raw == "strict" else "normal"
         include_ext_raw = os.getenv("SARI_COLLECTION_INCLUDE_EXT", "")
         exclude_globs_raw = os.getenv("SARI_COLLECTION_EXCLUDE_GLOBS", "")
         vector_apply_types_raw = os.getenv("SARI_VECTOR_APPLY_TO_ITEM_TYPES", "")
@@ -396,8 +475,17 @@ class AppConfig:
             daemon_stale_timeout_sec=stale_timeout_sec,
             lsp_request_timeout_sec=lsp_request_timeout_sec,
             lsp_max_instances_per_repo_language=lsp_max_instances_per_repo_language,
+            lsp_bulk_mode_enabled=lsp_bulk_mode_enabled_raw in {"1", "true", "yes", "on"},
+            lsp_bulk_max_instances_per_repo_language=lsp_bulk_max_instances_per_repo_language,
+            lsp_interactive_reserved_slots_per_repo_language=lsp_interactive_reserved_slots_per_repo_language,
+            lsp_interactive_timeout_sec=lsp_interactive_timeout_sec,
+            lsp_interactive_queue_max=lsp_interactive_queue_max,
             lsp_global_soft_limit=lsp_global_soft_limit,
             lsp_scale_out_hot_hits=lsp_scale_out_hot_hits,
+            l3_executor_max_workers=l3_executor_max_workers,
+            l3_recent_success_ttl_sec=l3_recent_success_ttl_sec,
+            l3_backpressure_on_interactive=l3_backpressure_on_interactive_raw in {"1", "true", "yes", "on"},
+            l3_backpressure_cooldown_ms=l3_backpressure_cooldown_ms,
             lsp_file_buffer_idle_ttl_sec=lsp_file_buffer_idle_ttl_sec,
             lsp_file_buffer_max_open=lsp_file_buffer_max_open,
             orphan_ppid_check_interval_sec=orphan_check_sec,
@@ -422,6 +510,7 @@ class AppConfig:
             ranking_w_importance=ranking_w_importance,
             ranking_w_vector=ranking_w_vector,
             ranking_w_hierarchy=ranking_w_hierarchy,
+            search_lsp_fallback_mode=search_lsp_fallback_mode,
             mcp_forward_to_daemon=mcp_forward_to_daemon_raw in {"1", "true", "yes", "on"},
             mcp_daemon_autostart=mcp_daemon_autostart_raw in {"1", "true", "yes", "on"},
             mcp_daemon_timeout_sec=mcp_daemon_timeout_sec,
