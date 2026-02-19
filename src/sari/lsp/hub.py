@@ -51,6 +51,8 @@ class LspHub:
         idle_timeout_sec: int = 900,
         max_instances: int = 32,
         max_instances_per_repo_language: int = 1,
+        bulk_mode_enabled: bool = True,
+        bulk_max_instances_per_repo_language: int = 4,
         lsp_global_soft_limit: int = 0,
         hot_acquire_window_sec: float = 1.0,
         scale_out_hot_hits: int = 24,
@@ -66,6 +68,12 @@ class LspHub:
         self._idle_timeout_sec = max(1, idle_timeout_sec)
         self._max_instances = max(1, max_instances)
         self._max_instances_per_repo_language = max(1, max_instances_per_repo_language)
+        self._bulk_mode_enabled = bool(bulk_mode_enabled)
+        self._bulk_max_instances_per_repo_language = max(
+            self._max_instances_per_repo_language,
+            int(bulk_max_instances_per_repo_language),
+        )
+        self._bulk_active_keys: set[tuple[Language, str]] = set()
         self._lsp_global_soft_limit = max(0, lsp_global_soft_limit)
         self._hot_acquire_window_sec = max(0.1, hot_acquire_window_sec)
         self._scale_out_hot_hits = max(2, scale_out_hot_hits)
@@ -251,7 +259,7 @@ class LspHub:
     def acquire_pool(self, language: Language, repo_root: str, desired: int) -> list[SolidLanguageServer]:
         """요청된 개수만큼 풀 인스턴스를 확보해 반환한다."""
         normalized_root = str(Path(repo_root).resolve())
-        target_count = max(1, min(self._max_instances_per_repo_language, int(desired)))
+        target_count = max(1, min(self._max_instances_for_key((language, normalized_root)), int(desired)))
         first = self.get_or_start(language=language, repo_root=normalized_root)
         servers: list[SolidLanguageServer] = [first]
         self.prewarm_language_pool(language=language, repo_root=normalized_root)
@@ -285,6 +293,17 @@ class LspHub:
                 self._cleanup_not_running_entry_locked(key=key, entry=entry)
             self._evict_idle_locked(now)
             return max(0, before_count - len(self._instances))
+
+    def set_bulk_mode(self, language: Language, repo_root: str, enabled: bool) -> None:
+        """언어/저장소 키의 bulk 모드 활성 상태를 설정한다."""
+        if not self._bulk_mode_enabled:
+            return
+        key = (language, str(Path(repo_root).resolve()))
+        with self._lock:
+            if enabled:
+                self._bulk_active_keys.add(key)
+            else:
+                self._bulk_active_keys.discard(key)
 
     def _evict_idle_locked(self, now: float) -> None:
         """idle timeout을 초과한 인스턴스를 정리한다."""
@@ -361,7 +380,8 @@ class LspHub:
     def _next_slot_locked(self, language: Language, repo_root: str) -> int:
         """새로운 인스턴스에 사용할 슬롯 번호를 계산한다."""
         used_slots = {key.slot for key in self._runtime_keys_for_locked(language=language, repo_root=repo_root)}
-        for slot in range(self._max_instances_per_repo_language):
+        max_slots = self._max_instances_for_key((language, repo_root))
+        for slot in range(max_slots):
             if slot not in used_slots:
                 return slot
         raise DaemonError(
@@ -379,10 +399,19 @@ class LspHub:
         # 전역 소프트 상한을 넘기면 추가 scale-out을 차단한다.
         if self._lsp_global_soft_limit > 0 and len(self._instances) >= self._lsp_global_soft_limit:
             return False
-        if running_count >= self._max_instances_per_repo_language:
+        max_instances_for_key = self._max_instances_for_key(base_key)
+        if running_count >= max_instances_for_key:
             return False
         hits = self._hot_acquire_hits.get(base_key, 0)
+        if base_key in self._bulk_active_keys:
+            return hits >= max(2, self._scale_out_hot_hits // 2)
         return hits >= self._scale_out_hot_hits
+
+    def _max_instances_for_key(self, base_key: tuple[Language, str]) -> int:
+        """키별 허용 인스턴스 상한을 계산한다."""
+        if self._bulk_mode_enabled and base_key in self._bulk_active_keys:
+            return max(self._max_instances_per_repo_language, self._bulk_max_instances_per_repo_language)
+        return self._max_instances_per_repo_language
 
     def _record_hot_hit_locked(self, base_key: tuple[Language, str], now: float) -> None:
         """동일 키의 단기 호출 누적 횟수를 갱신한다."""

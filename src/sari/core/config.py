@@ -58,8 +58,11 @@ class AppConfig:
     daemon_stale_timeout_sec: int = 15
     lsp_request_timeout_sec: float = 20.0
     lsp_max_instances_per_repo_language: int = 2
+    lsp_bulk_mode_enabled: bool = True
+    lsp_bulk_max_instances_per_repo_language: int = 4
     lsp_global_soft_limit: int = 0
     lsp_scale_out_hot_hits: int = 24
+    l3_executor_max_workers: int = 0
     lsp_file_buffer_idle_ttl_sec: float = 20.0
     lsp_file_buffer_max_open: int = 512
     orphan_ppid_check_interval_sec: int = 1
@@ -133,9 +136,21 @@ class AppConfig:
             "SARI_LSP_MAX_INSTANCES_PER_REPO_LANGUAGE",
             str(file_config.get("lsp_max_instances_per_repo_language", 2)),
         ).strip()
+        lsp_bulk_mode_enabled_raw = os.getenv(
+            "SARI_LSP_BULK_MODE_ENABLED",
+            str(file_config.get("lsp_bulk_mode_enabled", True)),
+        ).strip().lower()
+        lsp_bulk_max_per_repo_lang_raw = os.getenv(
+            "SARI_LSP_BULK_MAX_INSTANCES_PER_REPO_LANGUAGE",
+            str(file_config.get("lsp_bulk_max_instances_per_repo_language", 4)),
+        ).strip()
         lsp_global_soft_limit_raw = os.getenv(
             "SARI_LSP_GLOBAL_SOFT_LIMIT",
             str(file_config.get("lsp_global_soft_limit", 0)),
+        ).strip()
+        l3_executor_max_workers_raw = os.getenv(
+            "SARI_L3_EXECUTOR_MAX_WORKERS",
+            str(file_config.get("l3_executor_max_workers", 0)),
         ).strip()
         lsp_scale_out_hot_hits_raw = os.getenv(
             "SARI_LSP_SCALE_OUT_HOT_HITS",
@@ -250,6 +265,14 @@ class AppConfig:
             lsp_global_soft_limit = max(0, int(lsp_global_soft_limit_raw))
         except ValueError:
             lsp_global_soft_limit = 0
+        try:
+            lsp_bulk_max_instances_per_repo_language = max(1, int(lsp_bulk_max_per_repo_lang_raw))
+        except ValueError:
+            lsp_bulk_max_instances_per_repo_language = 4
+        try:
+            l3_executor_max_workers = max(0, int(l3_executor_max_workers_raw))
+        except ValueError:
+            l3_executor_max_workers = 0
         try:
             lsp_scale_out_hot_hits = max(2, int(lsp_scale_out_hot_hits_raw))
         except ValueError:
@@ -396,8 +419,11 @@ class AppConfig:
             daemon_stale_timeout_sec=stale_timeout_sec,
             lsp_request_timeout_sec=lsp_request_timeout_sec,
             lsp_max_instances_per_repo_language=lsp_max_instances_per_repo_language,
+            lsp_bulk_mode_enabled=lsp_bulk_mode_enabled_raw in {"1", "true", "yes", "on"},
+            lsp_bulk_max_instances_per_repo_language=lsp_bulk_max_instances_per_repo_language,
             lsp_global_soft_limit=lsp_global_soft_limit,
             lsp_scale_out_hot_hits=lsp_scale_out_hot_hits,
+            l3_executor_max_workers=l3_executor_max_workers,
             lsp_file_buffer_idle_ttl_sec=lsp_file_buffer_idle_ttl_sec,
             lsp_file_buffer_max_open=lsp_file_buffer_max_open,
             orphan_ppid_check_interval_sec=orphan_check_sec,

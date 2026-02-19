@@ -122,6 +122,8 @@ def main() -> None:
     lsp_hub = LspHub(
         request_timeout_sec=config.lsp_request_timeout_sec,
         max_instances_per_repo_language=config.lsp_max_instances_per_repo_language,
+        bulk_mode_enabled=config.lsp_bulk_mode_enabled,
+        bulk_max_instances_per_repo_language=config.lsp_bulk_max_instances_per_repo_language,
         lsp_global_soft_limit=config.lsp_global_soft_limit,
         scale_out_hot_hits=config.lsp_scale_out_hot_hits,
         file_buffer_idle_ttl_sec=config.lsp_file_buffer_idle_ttl_sec,
@@ -227,6 +229,7 @@ def main() -> None:
         parent_alive_probe=(lambda: _is_parent_alive(launch_parent_pid, detached_mode=detached_mode)),
         lsp_backend=SolidLspExtractionBackend(lsp_hub),
         l3_parallel_enabled=config.l3_parallel_enabled,
+        l3_executor_max_workers=config.l3_executor_max_workers,
     )
     pipeline_control_service = PipelineControlService(
         policy_repo=policy_repo,

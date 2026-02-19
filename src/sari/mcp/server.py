@@ -149,14 +149,16 @@ class McpServer:
         shared_hub = LspHub(
             request_timeout_sec=runtime_config.lsp_request_timeout_sec,
             max_instances_per_repo_language=runtime_config.lsp_max_instances_per_repo_language,
+            bulk_mode_enabled=runtime_config.lsp_bulk_mode_enabled,
+            bulk_max_instances_per_repo_language=runtime_config.lsp_bulk_max_instances_per_repo_language,
             lsp_global_soft_limit=runtime_config.lsp_global_soft_limit,
             scale_out_hot_hits=runtime_config.lsp_scale_out_hot_hits,
             file_buffer_idle_ttl_sec=runtime_config.lsp_file_buffer_idle_ttl_sec,
             file_buffer_max_open=runtime_config.lsp_file_buffer_max_open,
         )
         self._managed_lsp_hubs.append(shared_hub)
-        file_collection_service = build_default_file_collection_service(workspace_repo=workspace_repo, file_repo=file_repo, enrich_queue_repo=enrich_queue_repo, body_repo=body_repo, lsp_repo=lsp_repo, readiness_repo=readiness_repo, policy_repo=policy_repo, event_repo=event_repo, error_event_repo=error_event_repo, candidate_index_sink=candidate_service, vector_index_sink=vector_sink, include_ext=runtime_config.collection_include_ext, exclude_globs=runtime_config.collection_exclude_globs, watcher_debounce_ms=runtime_config.watcher_debounce_ms, run_mode='prod', lsp_backend=SolidLspExtractionBackend(shared_hub), l3_parallel_enabled=runtime_config.l3_parallel_enabled)
-        benchmark_collection_service = build_default_file_collection_service(workspace_repo=workspace_repo, file_repo=file_repo, enrich_queue_repo=enrich_queue_repo, body_repo=body_repo, lsp_repo=lsp_repo, readiness_repo=readiness_repo, policy_repo=policy_repo, event_repo=event_repo, error_event_repo=error_event_repo, run_mode='prod', lsp_backend=BenchmarkLspExtractionBackend(), persist_body_for_read=False, l3_parallel_enabled=runtime_config.l3_parallel_enabled)
+        file_collection_service = build_default_file_collection_service(workspace_repo=workspace_repo, file_repo=file_repo, enrich_queue_repo=enrich_queue_repo, body_repo=body_repo, lsp_repo=lsp_repo, readiness_repo=readiness_repo, policy_repo=policy_repo, event_repo=event_repo, error_event_repo=error_event_repo, candidate_index_sink=candidate_service, vector_index_sink=vector_sink, include_ext=runtime_config.collection_include_ext, exclude_globs=runtime_config.collection_exclude_globs, watcher_debounce_ms=runtime_config.watcher_debounce_ms, run_mode='prod', lsp_backend=SolidLspExtractionBackend(shared_hub), l3_parallel_enabled=runtime_config.l3_parallel_enabled, l3_executor_max_workers=runtime_config.l3_executor_max_workers)
+        benchmark_collection_service = build_default_file_collection_service(workspace_repo=workspace_repo, file_repo=file_repo, enrich_queue_repo=enrich_queue_repo, body_repo=body_repo, lsp_repo=lsp_repo, readiness_repo=readiness_repo, policy_repo=policy_repo, event_repo=event_repo, error_event_repo=error_event_repo, run_mode='prod', lsp_backend=BenchmarkLspExtractionBackend(), persist_body_for_read=False, l3_parallel_enabled=runtime_config.l3_parallel_enabled, l3_executor_max_workers=runtime_config.l3_executor_max_workers)
         benchmark_service = PipelineBenchmarkService(file_collection_service=benchmark_collection_service, queue_repo=enrich_queue_repo, lsp_repo=lsp_repo, policy_repo=policy_repo, benchmark_repo=benchmark_repo, artifact_root=db_path.parent / 'artifacts')
         perf_service = PipelinePerfService(
             file_collection_service=file_collection_service,
