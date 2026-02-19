@@ -232,6 +232,21 @@ class LspHub:
                 "lsp_orphan_suspect_count": int(self._orphan_suspect_count),
             }
 
+    def reconcile_runtime(self) -> int:
+        """비정상/유휴 LSP 엔트리를 즉시 정리하고 정리 건수를 반환한다."""
+        with self._lock:
+            before_count = len(self._instances)
+            now = self._clock()
+            for key in list(self._instances.keys()):
+                entry = self._instances.get(key)
+                if entry is None:
+                    continue
+                if entry.server.server.is_running():
+                    continue
+                self._cleanup_not_running_entry_locked(key=key, entry=entry)
+            self._evict_idle_locked(now)
+            return max(0, before_count - len(self._instances))
+
     def _evict_idle_locked(self, now: float) -> None:
         """idle timeout을 초과한 인스턴스를 정리한다."""
         evict_keys = [

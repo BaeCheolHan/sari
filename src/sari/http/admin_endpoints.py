@@ -36,3 +36,9 @@ async def daemon_list_endpoint(request) -> JSONResponse:
     """실행 중인 데몬 목록을 반환한다."""
     context: HttpContext = request.app.state.context
     return JSONResponse({"items": context.admin_service.daemon_list()})
+
+
+async def daemon_reconcile_endpoint(request) -> JSONResponse:
+    """런타임 불일치 정리를 실행하고 결과를 반환한다."""
+    context: HttpContext = request.app.state.context
+    return JSONResponse({"result": context.admin_service.runtime_reconcile()})

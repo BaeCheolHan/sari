@@ -6,9 +6,9 @@ import hashlib
 import os
 from collections.abc import Callable
 
-from sari.core.exceptions import ValidationError
 from sari.core.models import ErrorResponseDTO
-from sari.core.repo_resolver import resolve_repo_root
+from sari.core.repo_context_resolver import resolve_repo_context
+from sari.db.repositories.repo_registry_repository import RepoRegistryRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.mcp.stabilization.reason_codes import ReasonCode
 from sari.mcp.stabilization.session_state import record_search_metrics
@@ -25,11 +25,13 @@ class SearchTool:
         orchestrator: SearchOrchestrator,
         workspace_repo: WorkspaceRepository | None = None,
         metrics_provider: Callable[[], object] | None = None,
+        repo_registry_repo: RepoRegistryRepository | None = None,
     ) -> None:
         """검색 오케스트레이터를 주입한다."""
         self._orchestrator = orchestrator
         self._workspace_repo = workspace_repo
         self._metrics_provider = metrics_provider
+        self._repo_registry_repo = repo_registry_repo
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """도구 입력을 검증하고 pack1 결과를 반환한다."""
@@ -42,14 +44,19 @@ class SearchTool:
                 ErrorResponseDTO(code="ERR_REPO_REQUIRED", message="repo is required"),
                 recovery_hint="search 호출 시 repo 파라미터를 반드시 제공해야 합니다.",
             )
+        repo_id: str | None = None
         if self._workspace_repo is not None:
-            try:
-                repo = resolve_repo_root(
-                    repo_or_path=repo.strip(),
-                    workspace_paths=[item.path for item in self._workspace_repo.list_all()],
-                )
-            except ValidationError as exc:
-                return pack1_error(ErrorResponseDTO(code=exc.context.code, message=exc.context.message))
+            context, context_error = resolve_repo_context(
+                raw_repo=repo.strip(),
+                workspace_repo=self._workspace_repo,
+                repo_registry_repo=self._repo_registry_repo,
+                allow_absolute_input=True,
+            )
+            if context_error is not None:
+                return pack1_error(context_error)
+            assert context is not None
+            repo = context.repo_root
+            repo_id = context.repo_id
         if not isinstance(query, str) or query.strip() == "":
             return pack1_error(
                 ErrorResponseDTO(code="ERR_QUERY_REQUIRED", message="query is required"),
@@ -61,7 +68,11 @@ class SearchTool:
                 recovery_hint="limit은 1 이상의 정수여야 합니다.",
             )
 
-        result = self._orchestrator.search(query=query, limit=limit, repo_root=repo)
+        try:
+            result = self._orchestrator.search(query=query, limit=limit, repo_root=repo, repo_id=repo_id)
+        except TypeError:
+            # 이전 시그니처 호환 경로
+            result = self._orchestrator.search(query=query, limit=limit, repo_root=repo)
         stabilization_meta = _build_search_stabilization(
             arguments=arguments,
             repo=repo,

@@ -340,11 +340,76 @@ def _run_call_flow() -> int:
     return 0
 
 
+def _run_soak() -> int:
+    """Gemini/Codex 동시 호출을 장시간 반복해 안정성을 점검한다."""
+    probe_repo = os.getenv("SARI_MCP_PROBE_REPO", "").strip()
+    if probe_repo == "":
+        raise RuntimeError("SARI_MCP_PROBE_REPO is required for soak mode")
+    _ensure_probe_repo_registered(probe_repo)
+    duration_sec = int(os.getenv("SARI_MCP_SOAK_DURATION_SEC", "1800"))
+    interval_sec = float(os.getenv("SARI_MCP_SOAK_INTERVAL_SEC", "1.0"))
+    lanes = ("gemini", "codex")
+    # 본격 루프 전에 한 번 인덱싱해 콜드스타트 잡음을 줄인다.
+    _ = subprocess.run([sys.executable, "-m", "sari.cli.main", "index"], check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    started_at = time.time()
+    attempts = 0
+    successes = 0
+    failures = 0
+    timeout_failures = 0
+    lane_failures: dict[str, int] = {lane: 0 for lane in lanes}
+    fail_samples: list[dict[str, object]] = []
+
+    while time.time() - started_at < float(duration_sec):
+        lane_results: list[tuple[str, bool, dict[str, object]]] = []
+        lock = threading.Lock()
+
+        def _run_lane(lane: str) -> None:
+            ok, detail = _run_internal_client(run_call_flow=True, repo=probe_repo)
+            with lock:
+                lane_results.append((lane, ok, detail))
+
+        threads = [threading.Thread(target=_run_lane, args=(lane,), daemon=True) for lane in lanes]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        for lane, ok, detail in lane_results:
+            attempts += 1
+            if ok:
+                successes += 1
+                continue
+            failures += 1
+            lane_failures[lane] = lane_failures.get(lane, 0) + 1
+            detail_text = json.dumps(detail, ensure_ascii=False)
+            if "timeout" in detail_text.lower():
+                timeout_failures += 1
+            if len(fail_samples) < 10:
+                fail_samples.append({"lane": lane, "detail": detail})
+        time.sleep(max(0.1, interval_sec))
+
+    ok = failures == 0
+    summary = {
+        "duration_sec": duration_sec,
+        "attempts": attempts,
+        "successes": successes,
+        "failures": failures,
+        "timeout_failures": timeout_failures,
+        "lane_failures": lane_failures,
+        "fail_samples": fail_samples,
+    }
+    _emit_summary(mode="soak", ok=ok, detail=summary)
+    if not ok:
+        raise RuntimeError(f"mcp soak failed: {summary}")
+    return 0
+
+
 def main() -> int:
     subprocess.run(["pkill", "-f", "sari.*daemon"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     subprocess.run(["pkill", "-f", "sari daemon run"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if len(sys.argv) < 2:
-        raise SystemExit("usage: release_gate_mcp_probe.py [handshake|concurrency|call_flow]")
+        raise SystemExit("usage: release_gate_mcp_probe.py [handshake|concurrency|call_flow|soak]")
     mode = sys.argv[1].strip().lower()
     if mode == "handshake":
         return _run_handshake()
@@ -352,6 +417,8 @@ def main() -> int:
         return _run_concurrency()
     if mode == "call_flow":
         return _run_call_flow()
+    if mode == "soak":
+        return _run_soak()
     raise SystemExit(f"unknown mode: {mode}")
 
 

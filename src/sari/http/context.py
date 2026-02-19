@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Callable
 
 from sari.db.repositories.language_probe_repository import LanguageProbeRepository
+from sari.db.repositories.repo_registry_repository import RepoRegistryRepository
 from sari.db.repositories.runtime_repository import RuntimeRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.search.orchestrator import SearchOrchestrator
@@ -33,6 +35,8 @@ class HttpContext:
         pipeline_lsp_matrix_service: PipelineLspMatrixService | None = None,
         read_facade_service: ReadFacadeService | None = None,
         language_probe_repo: LanguageProbeRepository | None = None,
+        repo_registry_repo: RepoRegistryRepository | None = None,
+        lsp_metrics_provider: Callable[[], dict[str, int]] | None = None,
         db_path: Path | None = None,
     ) -> None:
         """HTTP 계층에서 사용하는 서비스 집합을 초기화한다."""
@@ -47,4 +51,6 @@ class HttpContext:
         self.pipeline_lsp_matrix_service = pipeline_lsp_matrix_service
         self.read_facade_service = read_facade_service
         self.language_probe_repo = language_probe_repo
+        self.repo_registry_repo = repo_registry_repo
+        self.lsp_metrics_provider = lsp_metrics_provider
         self.db_path = db_path

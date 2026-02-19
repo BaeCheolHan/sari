@@ -1,0 +1,46 @@
+name: MCP Soak Nightly
+
+on:
+  schedule:
+    - cron: "30 4 * * *"
+  workflow_dispatch:
+    inputs:
+      duration_sec:
+        description: "Soak duration in seconds"
+        required: false
+        default: "1800"
+
+jobs:
+  soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -e .
+
+      - name: Run Gemini/Codex concurrent soak
+        env:
+          SARI_MCP_PROBE_REPO: ${{ github.workspace }}
+          SARI_MCP_SOAK_DURATION_SEC: ${{ inputs.duration_sec || '1800' }}
+          SARI_MCP_SOAK_INTERVAL_SEC: "1.0"
+        run: |
+          mkdir -p artifacts/ci
+          python3 tools/ci/release_gate_mcp_probe.py soak | tee artifacts/ci/mcp-soak-nightly.log
+
+      - name: Upload soak artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcp-soak-nightly-artifacts
+          path: artifacts/ci/mcp-soak-nightly.log
+          if-no-files-found: warn

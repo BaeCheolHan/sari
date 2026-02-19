@@ -112,6 +112,9 @@ def test_ensure_migrated_upgrades_baseline_columns(tmp_path: Path) -> None:
         matrix_cols = {str(row["name"]) for row in conn.execute("PRAGMA table_info(pipeline_lsp_matrix_runs)").fetchall()}
         probe_cols = {str(row["name"]) for row in conn.execute("PRAGMA table_info(language_probe_status)").fetchall()}
         symbol_cols = {str(row["name"]) for row in conn.execute("PRAGMA table_info(lsp_symbols)").fetchall()}
+        registry_row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'repositories'"
+        ).fetchone()
 
     assert version_row is not None
     assert str(version_row["version_num"]) == HEAD_VERSION
@@ -123,3 +126,6 @@ def test_ensure_migrated_upgrades_baseline_columns(tmp_path: Path) -> None:
     assert "required_languages_json" in matrix_cols
     assert "enabled" in probe_cols
     assert "symbol_key" in symbol_cols
+    assert "repo_id" in queue_cols
+    assert "repo_id" in symbol_cols
+    assert registry_row is not None

@@ -56,6 +56,14 @@ def test_main_stops_lsp_hub_on_shutdown(monkeypatch: MonkeyPatch, tmp_path: Path
             """종료 호출 여부를 기록한다."""
             captured["stop_all_called"] = True
 
+        def reconcile_runtime(self) -> int:
+            """테스트 reconcile 호출을 흉내낸다."""
+            return 0
+
+        def get_metrics(self) -> dict[str, int]:
+            """테스트 메트릭 스냅샷을 반환한다."""
+            return {"lsp_instance_count": 0}
+
     def _fake_parse_args() -> Namespace:
         return Namespace(db_path=str(db_path), host="127.0.0.1", port=40124, run_mode="dev")
 

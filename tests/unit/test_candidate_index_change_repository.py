@@ -15,6 +15,7 @@ def test_candidate_index_change_repository_coalesces_latest_upsert(tmp_path: Pat
     init_schema(db_path)
     repo = CandidateIndexChangeRepository(db_path)
     first = CandidateIndexChangeDTO(
+        repo_id="r_repo_a",
         repo_root="/repo-a",
         relative_path="a.py",
         absolute_path="/repo-a/a.py",
@@ -25,6 +26,7 @@ def test_candidate_index_change_repository_coalesces_latest_upsert(tmp_path: Pat
         recorded_at="2026-02-16T00:00:00+00:00",
     )
     second = CandidateIndexChangeDTO(
+        repo_id="r_repo_a",
         repo_root="/repo-a",
         relative_path="a.py",
         absolute_path="/repo-a/a.py",
@@ -51,6 +53,7 @@ def test_candidate_index_change_repository_delete_overwrites_pending_upsert(tmp_
     init_schema(db_path)
     repo = CandidateIndexChangeRepository(db_path)
     dto = CandidateIndexChangeDTO(
+        repo_id="r_repo_a",
         repo_root="/repo-a",
         relative_path="a.py",
         absolute_path="/repo-a/a.py",
@@ -63,6 +66,7 @@ def test_candidate_index_change_repository_delete_overwrites_pending_upsert(tmp_
 
     repo.enqueue_upsert(dto)
     repo.enqueue_delete(
+        repo_id="r_repo_a",
         repo_root="/repo-a",
         relative_path="a.py",
         event_source="watcher",
@@ -73,4 +77,3 @@ def test_candidate_index_change_repository_delete_overwrites_pending_upsert(tmp_
     assert len(items) == 1
     assert items[0].change_type == "DELETE"
     assert items[0].event_source == "watcher"
-

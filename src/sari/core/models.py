@@ -16,6 +16,26 @@ class WorkspaceDTO:
             "is_active": 1 if self.is_active else 0,
         }
 Workspace = WorkspaceDTO
+
+
+@dataclass(frozen=True)
+class RepoIdentityDTO:
+    """저장소 식별자 메타데이터를 표현한다."""
+
+    repo_id: str
+    repo_label: str
+    repo_root: str
+    workspace_root: str | None
+    updated_at: str
+
+    def to_sql_params(self) -> dict[str, object]:
+        return {
+            "repo_id": self.repo_id,
+            "repo_label": self.repo_label,
+            "repo_root": self.repo_root,
+            "workspace_root": self.workspace_root,
+            "updated_at": self.updated_at,
+        }
 @dataclass(frozen=True)
 class DaemonRuntimeDTO:
     pid: int
@@ -154,6 +174,7 @@ class CandidateFileDTO:
     file_hash: str
 @dataclass(frozen=True)
 class CandidateIndexChangeDTO:
+    repo_id: str
     repo_root: str
     relative_path: str
     absolute_path: str
@@ -164,6 +185,7 @@ class CandidateIndexChangeDTO:
     recorded_at: str
     def to_sql_params(self) -> dict[str, object]:
         return {
+            "repo_id": self.repo_id,
             "repo_root": self.repo_root,
             "relative_path": self.relative_path,
             "absolute_path": self.absolute_path,
@@ -178,6 +200,7 @@ class CandidateIndexChangeLogDTO:
     change_id: int
     change_type: str
     status: str
+    repo_id: str
     repo_root: str
     relative_path: str
     absolute_path: str | None
@@ -236,6 +259,7 @@ class SearchItemDTO:
     final_score: float = 0.0
 @dataclass(frozen=True)
 class CollectedFileL1DTO:
+    repo_id: str
     repo_root: str
     relative_path: str
     absolute_path: str
@@ -249,6 +273,7 @@ class CollectedFileL1DTO:
     enrich_state: str
     def to_sql_params(self) -> dict[str, object]:
         return {
+            "repo_id": self.repo_id,
             "repo_root": self.repo_root,
             "relative_path": self.relative_path,
             "absolute_path": self.absolute_path,
@@ -264,6 +289,7 @@ class CollectedFileL1DTO:
 @dataclass(frozen=True)
 class FileEnrichJobDTO:
     job_id: str
+    repo_id: str
     repo_root: str
     relative_path: str
     content_hash: str
@@ -278,6 +304,7 @@ class FileEnrichJobDTO:
     def to_sql_params(self) -> dict[str, object]:
         return {
             "job_id": self.job_id,
+            "repo_id": self.repo_id,
             "repo_root": self.repo_root,
             "relative_path": self.relative_path,
             "content_hash": self.content_hash,
@@ -299,6 +326,7 @@ class FileEnrichFailureUpdateDTO:
     backoff_base_sec: int
 @dataclass(frozen=True)
 class EnqueueRequestDTO:
+    repo_id: str
     repo_root: str
     relative_path: str
     content_hash: str
@@ -307,6 +335,7 @@ class EnqueueRequestDTO:
     now_iso: str
 @dataclass(frozen=True)
 class CollectedFileBodyDTO:
+    repo_id: str
     repo_root: str
     relative_path: str
     content_hash: str
@@ -317,6 +346,7 @@ class CollectedFileBodyDTO:
     updated_at: str
     def to_sql_params(self) -> dict[str, object]:
         return {
+            "repo_id": self.repo_id,
             "repo_root": self.repo_root,
             "relative_path": self.relative_path,
             "content_hash": self.content_hash,

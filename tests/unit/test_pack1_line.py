@@ -35,6 +35,36 @@ def test_render_pack_v2_success_default_hides_structured() -> None:
     assert "@SUM " in text
     assert "@R " in text
     assert "@NEXT " in text
+    assert "score=" not in text
+
+
+def test_render_pack_v2_includes_score_when_requested() -> None:
+    """include_score 옵션이 켜지면 @R 라인에 score를 노출해야 한다."""
+    payload = {
+        "isError": False,
+        "structuredContent": {
+            "items": [
+                {
+                    "type": "symbol",
+                    "repo_id": "sari",
+                    "relative_path": "a.py",
+                    "name": "hello",
+                    "kind": "function",
+                    "score": 0.9,
+                    "source": "rrf",
+                }
+            ],
+            "meta": {"stabilization": {"degraded": False, "fatal_error": False}},
+        },
+    }
+    rendered = render_pack_v2(
+        tool_name="search",
+        arguments={"repo_id": "sari"},
+        payload=payload,
+        options=PackLineOptionsDTO(include_structured=False, include_score=True),
+    )
+    text = str(rendered["content"][0]["text"])
+    assert "score=0.9000" in text
 
 
 def test_render_pack_v2_error_contains_err_line() -> None:
@@ -131,7 +161,7 @@ def test_render_pack_v2_search_symbol_enforces_strict_contract() -> None:
         tool_name="search_symbol",
         arguments={"repo": "/repo"},
         payload=payload,
-        options=PackLineOptionsDTO(include_structured=False),
+        options=PackLineOptionsDTO(include_structured=False, include_score=True),
     )
     assert rendered["isError"] is True
     text = str(rendered["content"][0]["text"])

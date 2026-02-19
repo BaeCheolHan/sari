@@ -146,6 +146,7 @@ def _build_services() -> CliServiceBundle:
             workspace_repo=workspace_repo,
             runtime_repo=runtime_repo,
             symbol_cache_repo=symbol_cache_repo,
+            queue_repo=queue_repo,
         ),
         pipeline_control_service=PipelineControlService(
             policy_repo=policy_repo,

@@ -90,7 +90,11 @@ def forward_with_retry(
             raise
         started = start_daemon_fn(db_path, workspace_root)
         if not started:
-            raise
+            method_raw = request.get("method")
+            method = str(method_raw).strip().lower() if isinstance(method_raw, str) else ""
+            if method == "initialize":
+                raise TimeoutError("ERR_DAEMON_HANDSHAKE_TIMEOUT")
+            raise TimeoutError("ERR_DAEMON_FORWARD_RETRY_EXHAUSTED")
         last_exc: BaseException | None = None
         for _ in range(retry_max):
             host_retry, port_retry = resolve_target_fn(db_path, workspace_root, host_override, port_override)
@@ -102,7 +106,11 @@ def forward_with_retry(
                     raise
                 time.sleep(retry_wait_sec)
         if last_exc is not None:
-            raise last_exc
+            method_raw = request.get("method")
+            method = str(method_raw).strip().lower() if isinstance(method_raw, str) else ""
+            if method == "initialize":
+                raise TimeoutError("ERR_DAEMON_HANDSHAKE_TIMEOUT")
+            raise TimeoutError("ERR_DAEMON_FORWARD_RETRY_EXHAUSTED")
         raise
 
 

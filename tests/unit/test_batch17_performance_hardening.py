@@ -375,6 +375,7 @@ def test_file_collection_scan_once_does_not_delete_file_seen_after_scan_start(tm
     now = "2026-02-17T00:00:00+00:00"
     file_repo.upsert_file(
         CollectedFileL1DTO(
+            repo_id="r_repo",
             repo_root="/repo",
             relative_path="new.py",
             absolute_path="/repo/new.py",
@@ -513,10 +514,10 @@ def test_file_collection_rebalance_jobs_by_language_round_robin(tmp_path: Path) 
     )
 
     jobs = [
-        FileEnrichJobDTO("j1", "/r", "a.py", "h1", 90, "scan", "RUNNING", 0, None, "t", "t", "t"),
-        FileEnrichJobDTO("j2", "/r", "b.py", "h2", 90, "scan", "RUNNING", 0, None, "t", "t", "t"),
-        FileEnrichJobDTO("j3", "/r", "c.kt", "h3", 90, "scan", "RUNNING", 0, None, "t", "t", "t"),
-        FileEnrichJobDTO("j4", "/r", "d.kt", "h4", 90, "scan", "RUNNING", 0, None, "t", "t", "t"),
+        FileEnrichJobDTO(job_id="j1", repo_id="r_r", repo_root="/r", relative_path="a.py", content_hash="h1", priority=90, enqueue_source="scan", status="RUNNING", attempt_count=0, last_error=None, next_retry_at="t", created_at="t", updated_at="t"),
+        FileEnrichJobDTO(job_id="j2", repo_id="r_r", repo_root="/r", relative_path="b.py", content_hash="h2", priority=90, enqueue_source="scan", status="RUNNING", attempt_count=0, last_error=None, next_retry_at="t", created_at="t", updated_at="t"),
+        FileEnrichJobDTO(job_id="j3", repo_id="r_r", repo_root="/r", relative_path="c.kt", content_hash="h3", priority=90, enqueue_source="scan", status="RUNNING", attempt_count=0, last_error=None, next_retry_at="t", created_at="t", updated_at="t"),
+        FileEnrichJobDTO(job_id="j4", repo_id="r_r", repo_root="/r", relative_path="d.kt", content_hash="h4", priority=90, enqueue_source="scan", status="RUNNING", attempt_count=0, last_error=None, next_retry_at="t", created_at="t", updated_at="t"),
     ]
 
     rebalanced = service._rebalance_jobs_by_language(jobs)
@@ -537,6 +538,7 @@ def test_tantivy_applies_pending_change_without_full_sync(tmp_path: Path, monkey
     change_repo = CandidateIndexChangeRepository(db_path)
     change_repo.enqueue_upsert(
         CandidateIndexChangeDTO(
+            repo_id="r_repo_c",
             repo_root=str(repo_dir.resolve()),
             relative_path="alpha.py",
             absolute_path=str(target.resolve()),
@@ -581,6 +583,7 @@ def test_tantivy_applies_delete_change_and_removes_document(tmp_path: Path) -> N
     repo_root = str(repo_dir.resolve())
     change_repo.enqueue_upsert(
         CandidateIndexChangeDTO(
+            repo_id="r_repo_d",
             repo_root=repo_root,
             relative_path="alpha.py",
             absolute_path=str(target.resolve()),
@@ -601,6 +604,7 @@ def test_tantivy_applies_delete_change_and_removes_document(tmp_path: Path) -> N
     assert len(indexed) == 1
 
     change_repo.enqueue_delete(
+        repo_id="r_repo_d",
         repo_root=repo_root,
         relative_path="alpha.py",
         event_source="watcher",
@@ -637,6 +641,7 @@ def test_tantivy_pending_change_failure_raises_backend_error(tmp_path: Path) -> 
     # mtime/size를 의도적으로 잘못 넣어 apply 실패를 유도한다.
     change_repo.enqueue_upsert(
         CandidateIndexChangeDTO(
+            repo_id="r_repo_e",
             repo_root=str(repo_dir.resolve()),
             relative_path="alpha.py",
             absolute_path=str(target.resolve()),
@@ -674,6 +679,7 @@ def test_tantivy_delete_visibility_failure_escalates_backend_error(tmp_path: Pat
     repo_root = str(repo_dir.resolve())
     change_repo.enqueue_upsert(
         CandidateIndexChangeDTO(
+            repo_id="r_repo_f",
             repo_root=repo_root,
             relative_path="alpha.py",
             absolute_path=str(target.resolve()),
@@ -692,6 +698,7 @@ def test_tantivy_delete_visibility_failure_escalates_backend_error(tmp_path: Pat
     workspace = WorkspaceDTO(path=repo_root, name="repo-f", indexed_at=None, is_active=True)
     _ = backend.search(workspaces=[workspace], query="alpha_symbol", limit=10)
     change_repo.enqueue_delete(
+        repo_id="r_repo_f",
         repo_root=repo_root,
         relative_path="alpha.py",
         event_source="watcher",
@@ -726,6 +733,7 @@ def test_tantivy_apply_allows_repo_under_active_workspace(tmp_path: Path) -> Non
     repo_root = str(repo_dir.resolve())
     change_repo.enqueue_upsert(
         CandidateIndexChangeDTO(
+            repo_id="r_repo_g",
             repo_root=repo_root,
             relative_path="alpha.py",
             absolute_path=str(target.resolve()),

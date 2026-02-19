@@ -16,20 +16,26 @@ class FileCollectionRepository:
         """저장소에 사용할 DB 경로를 저장한다."""
         self._db_path = db_path
 
+    @property
+    def db_path(self) -> Path:
+        """저장소 DB 경로를 반환한다."""
+        return self._db_path
+
     def upsert_file(self, file_row: CollectedFileL1DTO) -> None:
         """L1 파일 메타데이터를 업서트한다."""
         with connect(self._db_path) as conn:
             conn.execute(
                 """
                 INSERT INTO collected_files_l1(
-                    repo_root, relative_path, absolute_path, repo_label, mtime_ns, size_bytes,
+                    repo_id, repo_root, relative_path, absolute_path, repo_label, mtime_ns, size_bytes,
                     content_hash, is_deleted, last_seen_at, updated_at, enrich_state
                 )
                 VALUES(
-                    :repo_root, :relative_path, :absolute_path, :repo_label, :mtime_ns, :size_bytes,
+                    :repo_id, :repo_root, :relative_path, :absolute_path, :repo_label, :mtime_ns, :size_bytes,
                     :content_hash, :is_deleted, :last_seen_at, :updated_at, :enrich_state
                 )
                 ON CONFLICT(repo_root, relative_path) DO UPDATE SET
+                    repo_id = excluded.repo_id,
                     absolute_path = excluded.absolute_path,
                     repo_label = excluded.repo_label,
                     mtime_ns = excluded.mtime_ns,
@@ -53,14 +59,15 @@ class FileCollectionRepository:
                 conn.execute(
                     """
                     INSERT INTO collected_files_l1(
-                        repo_root, relative_path, absolute_path, repo_label, mtime_ns, size_bytes,
+                        repo_id, repo_root, relative_path, absolute_path, repo_label, mtime_ns, size_bytes,
                         content_hash, is_deleted, last_seen_at, updated_at, enrich_state
                     )
                     VALUES(
-                        :repo_root, :relative_path, :absolute_path, :repo_label, :mtime_ns, :size_bytes,
+                        :repo_id, :repo_root, :relative_path, :absolute_path, :repo_label, :mtime_ns, :size_bytes,
                         :content_hash, :is_deleted, :last_seen_at, :updated_at, :enrich_state
                     )
                     ON CONFLICT(repo_root, relative_path) DO UPDATE SET
+                        repo_id = excluded.repo_id,
                         absolute_path = excluded.absolute_path,
                         repo_label = excluded.repo_label,
                         mtime_ns = excluded.mtime_ns,
@@ -86,6 +93,25 @@ class FileCollectionRepository:
                   AND (repo_label IS NULL OR repo_label = '' OR repo_label != :repo_label)
                 """,
                 {"repo_root": repo_root, "repo_label": repo_label},
+            )
+            conn.commit()
+            return int(cur.rowcount if cur.rowcount is not None else 0)
+
+    def sync_repo_identity(self, repo_root: str, repo_label: str, repo_id: str) -> int:
+        """특정 저장소의 기존 행 repo_label/repo_id를 현재 정책 값으로 동기화한다."""
+        with connect(self._db_path) as conn:
+            cur = conn.execute(
+                """
+                UPDATE collected_files_l1
+                SET repo_label = :repo_label,
+                    repo_id = :repo_id
+                WHERE repo_root = :repo_root
+                  AND (
+                    repo_label IS NULL OR repo_label = '' OR repo_label != :repo_label
+                    OR repo_id IS NULL OR repo_id = '' OR repo_id != :repo_id
+                  )
+                """,
+                {"repo_root": repo_root, "repo_label": repo_label, "repo_id": repo_id},
             )
             conn.commit()
             return int(cur.rowcount if cur.rowcount is not None else 0)
@@ -131,7 +157,7 @@ class FileCollectionRepository:
         with connect(self._db_path) as conn:
             row = conn.execute(
                 """
-                SELECT repo_root, relative_path, absolute_path, repo_label, mtime_ns, size_bytes, content_hash,
+                SELECT repo_id, repo_root, relative_path, absolute_path, repo_label, mtime_ns, size_bytes, content_hash,
                        is_deleted, last_seen_at, updated_at, enrich_state
                 FROM collected_files_l1
                 WHERE repo_root = :repo_root
@@ -142,6 +168,7 @@ class FileCollectionRepository:
         if row is None:
             return None
         return CollectedFileL1DTO(
+            repo_id=row_str(row, "repo_id"),
             repo_root=row_str(row, "repo_root"),
             relative_path=row_str(row, "relative_path"),
             absolute_path=row_str(row, "absolute_path"),

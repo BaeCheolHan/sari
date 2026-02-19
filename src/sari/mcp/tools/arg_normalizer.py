@@ -103,6 +103,13 @@ def normalize_tool_arguments(tool_name: str, arguments: Mapping[str, object]) ->
     normalized_from: dict[str, str] = {}
     rules = _TOOL_RULES.get(tool_name, ())
 
+    # `repo_id`를 외부 표준 입력으로 허용하되 내부 호환성을 위해 `repo`로 정규화한다.
+    repo_value = normalized.get("repo")
+    repo_id_value = normalized.get("repo_id")
+    if not _has_value(repo_value) and _has_value(repo_id_value):
+        normalized["repo"] = repo_id_value
+        normalized_from["repo"] = "repo_id"
+
     for rule in rules:
         canonical_value = normalized.get(rule.canonical)
         if _has_value(canonical_value):

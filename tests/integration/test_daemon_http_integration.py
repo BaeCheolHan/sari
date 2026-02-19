@@ -126,6 +126,10 @@ def test_daemon_start_status_stop_and_http(tmp_path: Path) -> None:
         assert isinstance(lifecycle, dict)
         assert isinstance(lifecycle["last_heartbeat_at"], str)
         assert isinstance(lifecycle["heartbeat_age_sec"], float)
+        assert "lsp_metrics" in status_payload
+        lsp_metrics = status_payload["lsp_metrics"]
+        assert isinstance(lsp_metrics, dict)
+        assert "lsp_instance_count" in lsp_metrics
 
         repo_dir = tmp_path / "repo-a"
         repo_dir.mkdir()
@@ -199,6 +203,15 @@ def test_daemon_start_status_stop_and_http(tmp_path: Path) -> None:
         assert "result" in dead_purge
         assert "meta" in dead_purge
         assert "queue_snapshot" in dead_purge["meta"]
+
+        reconcile_payload = _post_empty(f"http://{runtime.host}:{runtime.port}/daemon/reconcile")
+        assert "result" in reconcile_payload
+        reconcile_result = reconcile_payload["result"]
+        assert isinstance(reconcile_result, dict)
+        assert "reconciled_daemons" in reconcile_result
+        assert "reaped_lsp" in reconcile_result
+        assert "orphan_workers_stopped" in reconcile_result
+        assert "stale_registry_cleaned" in reconcile_result
 
         status = daemon_service.status()
         assert status is not None

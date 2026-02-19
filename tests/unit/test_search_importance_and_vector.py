@@ -25,6 +25,7 @@ def test_importance_scorer_applies_fan_in_kind_path_and_recency(tmp_path: Path) 
     current_mtime_ns = time.time_ns()
     file_repo.upsert_file(
         CollectedFileL1DTO(
+            repo_id="r_repo",
             repo_root="/repo",
             relative_path="src/core/main.py",
             absolute_path="/repo/src/core/main.py",
@@ -40,6 +41,7 @@ def test_importance_scorer_applies_fan_in_kind_path_and_recency(tmp_path: Path) 
     )
     file_repo.upsert_file(
         CollectedFileL1DTO(
+            repo_id="r_repo",
             repo_root="/repo",
             relative_path="src/other/a.py",
             absolute_path="/repo/src/other/a.py",
@@ -55,6 +57,7 @@ def test_importance_scorer_applies_fan_in_kind_path_and_recency(tmp_path: Path) 
     )
     file_repo.upsert_file(
         CollectedFileL1DTO(
+            repo_id="r_repo",
             repo_root="/repo",
             relative_path="src/other/b.py",
             absolute_path="/repo/src/other/b.py",
@@ -175,6 +178,7 @@ def test_importance_scorer_applies_log_normalize_and_cap(tmp_path: Path) -> None
     now_iso = now_iso8601_utc()
     file_repo.upsert_file(
         CollectedFileL1DTO(
+            repo_id="r_repo",
             repo_root="/repo",
             relative_path="src/core/mega.py",
             absolute_path="/repo/src/core/mega.py",

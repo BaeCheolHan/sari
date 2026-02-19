@@ -9,9 +9,10 @@ from sari.db.repositories.file_body_repository import FileBodyRepository
 from sari.db.repositories.file_collection_repository import FileCollectionRepository
 from sari.db.repositories.file_enrich_queue_repository import FileEnrichQueueRepository
 from sari.db.repositories.lsp_tool_data_repository import LspToolDataRepository
+from sari.db.repositories.repo_registry_repository import RepoRegistryRepository
 from sari.db.repositories.tool_readiness_repository import ToolReadinessRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
-from sari.db.schema import init_schema
+from sari.db.schema import connect, init_schema
 from sari.services.file_collection_service import FileCollectionService, LspExtractionBackend, LspExtractionResultDTO
 
 
@@ -69,6 +70,7 @@ def test_scan_persists_workspace_relative_repo_label(tmp_path: Path) -> None:
         lsp_backend=_NoopLspBackend(),
         policy_repo=None,
         event_repo=None,
+        repo_registry_repo=RepoRegistryRepository(db_path),
     )
 
     _ = service.scan_once(str(nested_repo.resolve()))
@@ -76,6 +78,20 @@ def test_scan_persists_workspace_relative_repo_label(tmp_path: Path) -> None:
 
     assert row is not None
     assert row.repo_label == "apps/repo-a"
+    assert row.repo_id.startswith("r_")
+    with connect(db_path) as conn:
+        registry = conn.execute(
+            """
+            SELECT repo_id, repo_label, repo_root
+            FROM repositories
+            WHERE repo_root = :repo_root
+            LIMIT 1
+            """,
+            {"repo_root": str(nested_repo.resolve())},
+        ).fetchone()
+    assert registry is not None
+    assert str(registry["repo_id"]) == row.repo_id
+    assert str(registry["repo_label"]) == "apps/repo-a"
 
 
 def test_sync_repo_label_updates_existing_rows(tmp_path: Path) -> None:
@@ -88,6 +104,7 @@ def test_sync_repo_label_updates_existing_rows(tmp_path: Path) -> None:
 
     file_repo.upsert_file(
         file_row=CollectedFileL1DTO(
+            repo_id="r_apps_repo_a",
             repo_root=repo_root,
             relative_path="main.py",
             absolute_path=str((tmp_path / "workspace" / "repo-a" / "main.py").resolve()),

@@ -17,6 +17,7 @@ from sari.core.models import ErrorResponseDTO, HealthResponseDTO, LanguageProbeS
 from sari.db.repositories.runtime_repository import RuntimeRepository
 from sari.db.repositories.language_probe_repository import LanguageProbeRepository
 from sari.http.admin_endpoints import (
+    daemon_reconcile_endpoint,
     daemon_list_endpoint,
     doctor_endpoint,
     errors_endpoint,
@@ -133,15 +134,16 @@ async def status_endpoint(request) -> JSONResponse:
     runtime = context.runtime_repo.get_runtime()
     workspaces = context.workspace_repo.list_all()
     language_support = _build_language_support_payload(context.language_probe_repo)
+    lsp_metrics = context.lsp_metrics_provider() if context.lsp_metrics_provider is not None else {}
     if runtime is None:
         metrics = None
         if context.file_collection_service is not None:
             metrics = context.file_collection_service.get_pipeline_metrics().to_dict()
-        return JSONResponse({'daemon': None, 'workspace_count': len(workspaces), 'phase': 'phase2', 'run_mode': context.admin_service.run_mode(), 'pipeline_metrics': metrics, 'language_support': language_support, 'daemon_lifecycle': None})
+        return JSONResponse({'daemon': None, 'workspace_count': len(workspaces), 'phase': 'phase2', 'run_mode': context.admin_service.run_mode(), 'pipeline_metrics': metrics, 'language_support': language_support, 'daemon_lifecycle': None, 'lsp_metrics': lsp_metrics})
     metrics = None
     if context.file_collection_service is not None:
         metrics = context.file_collection_service.get_pipeline_metrics().to_dict()
-    return JSONResponse({'daemon': {'pid': runtime.pid, 'host': runtime.host, 'port': runtime.port, 'state': runtime.state, 'started_at': runtime.started_at, 'session_count': runtime.session_count, 'last_heartbeat_at': runtime.last_heartbeat_at, 'last_exit_reason': runtime.last_exit_reason}, 'workspace_count': len(workspaces), 'phase': 'phase2', 'run_mode': context.admin_service.run_mode(), 'pipeline_metrics': metrics, 'language_support': language_support, 'daemon_lifecycle': {'last_heartbeat_at': runtime.last_heartbeat_at, 'heartbeat_age_sec': _heartbeat_age_sec(runtime.last_heartbeat_at), 'last_exit_reason': runtime.last_exit_reason}})
+    return JSONResponse({'daemon': {'pid': runtime.pid, 'host': runtime.host, 'port': runtime.port, 'state': runtime.state, 'started_at': runtime.started_at, 'session_count': runtime.session_count, 'last_heartbeat_at': runtime.last_heartbeat_at, 'last_exit_reason': runtime.last_exit_reason}, 'workspace_count': len(workspaces), 'phase': 'phase2', 'run_mode': context.admin_service.run_mode(), 'pipeline_metrics': metrics, 'language_support': language_support, 'daemon_lifecycle': {'last_heartbeat_at': runtime.last_heartbeat_at, 'heartbeat_age_sec': _heartbeat_age_sec(runtime.last_heartbeat_at), 'last_exit_reason': runtime.last_exit_reason}, 'lsp_metrics': lsp_metrics})
 
 
 async def mcp_jsonrpc_endpoint(request) -> JSONResponse:
@@ -189,9 +191,10 @@ async def read_endpoint(request) -> JSONResponse:
     if context.read_facade_service is None:
         error = ErrorResponseDTO(code='ERR_HTTP_READ_UNAVAILABLE', message='read service is unavailable')
         return JSONResponse({'error': {'code': error.code, 'message': error.message}}, status_code=503)
-    repo, repo_key, error_response = resolve_repo_from_query(context, request)
+    repo_id, repo, repo_key, error_response = resolve_repo_from_query(context, request)
     if error_response is not None:
         return error_response
+    assert repo_id is not None
     assert repo is not None
     mode_raw = str(request.query_params.get('mode', '')).strip().lower()
     if mode_raw == '':
@@ -205,6 +208,7 @@ async def read_endpoint(request) -> JSONResponse:
     if arg_error is not None:
         return arg_error
     assert arguments is not None
+    arguments["repo_id"] = repo_id
     payload = context.read_facade_service.read(arguments=arguments)
     return read_response(payload=payload, output_format=output_format)
 async def read_file_endpoint(request) -> JSONResponse:
@@ -235,9 +239,10 @@ async def read_diff_preview_endpoint(request) -> JSONResponse:
     if not isinstance(body_raw, dict):
         error = ErrorResponseDTO(code='ERR_INVALID_JSON_BODY', message='json body must be object')
         return JSONResponse({'error': {'code': error.code, 'message': error.message}}, status_code=400)
-    repo, repo_key, error_response = resolve_repo_from_value(context, body_raw.get('repo'))
+    repo_id, repo, repo_key, error_response = resolve_repo_from_value(context, body_raw.get('repo'))
     if error_response is not None:
         return error_response
+    assert repo_id is not None
     assert repo is not None
     output_format, format_error = resolve_format(body_raw.get('format'))
     if format_error is not None:
@@ -246,13 +251,15 @@ async def read_diff_preview_endpoint(request) -> JSONResponse:
     if arg_error is not None:
         return arg_error
     assert arguments is not None
+    arguments["repo_id"] = repo_id
     payload = context.read_facade_service.read(arguments=arguments)
     return read_response(payload=payload, output_format=output_format)
 async def search_endpoint(request) -> JSONResponse:
     context: HttpContext = request.app.state.context
-    repo, _repo_key, error_response = resolve_repo_from_query(context, request)
+    repo_id, repo, _repo_key, error_response = resolve_repo_from_query(context, request)
     if error_response is not None:
         return error_response
+    assert repo_id is not None
     assert repo is not None
     query = str(request.query_params.get('q', '')).strip()
     limit_raw = str(request.query_params.get('limit', '20'))
@@ -268,7 +275,7 @@ async def search_endpoint(request) -> JSONResponse:
         error = ErrorResponseDTO(code='ERR_INVALID_LIMIT', message='limit는 1 이상이어야 합니다')
         return JSONResponse({'error': {'code': error.code, 'message': error.message}}, status_code=400)
     try:
-        result = context.search_orchestrator.search(query=query, limit=limit, repo_root=repo, resolve_symbols=False)
+        result = context.search_orchestrator.search(query=query, limit=limit, repo_root=repo, repo_id=repo_id, resolve_symbols=False)
     except TypeError:
         result = context.search_orchestrator.search(query=query, limit=limit, repo_root=repo)
     progress_meta = _search_progress_meta(context)
@@ -373,7 +380,7 @@ async def pipeline_dead_list_endpoint(request) -> JSONResponse:
     if context.pipeline_control_service is None:
         error = ErrorResponseDTO(code='ERR_PIPELINE_ALERT_UNAVAILABLE', message='pipeline control is unavailable')
         return JSONResponse({'error': {'code': error.code, 'message': error.message}}, status_code=503)
-    repo, _repo_key, error_response = resolve_repo_from_query(context, request)
+    _repo_id, repo, _repo_key, error_response = resolve_repo_from_query(context, request)
     if error_response is not None:
         return error_response
     assert repo is not None
@@ -404,7 +411,7 @@ async def pipeline_dead_requeue_endpoint(request) -> JSONResponse:
     if context.pipeline_control_service is None:
         error = ErrorResponseDTO(code='ERR_PIPELINE_ALERT_UNAVAILABLE', message='pipeline control is unavailable')
         return JSONResponse({'error': {'code': error.code, 'message': error.message}}, status_code=503)
-    repo, _repo_key, error_response = resolve_repo_from_query(context, request)
+    _repo_id, repo, _repo_key, error_response = resolve_repo_from_query(context, request)
     if error_response is not None:
         return error_response
     assert repo is not None
@@ -427,7 +434,7 @@ async def pipeline_dead_purge_endpoint(request) -> JSONResponse:
     if context.pipeline_control_service is None:
         error = ErrorResponseDTO(code='ERR_PIPELINE_ALERT_UNAVAILABLE', message='pipeline control is unavailable')
         return JSONResponse({'error': {'code': error.code, 'message': error.message}}, status_code=503)
-    repo, _repo_key, error_response = resolve_repo_from_query(context, request)
+    _repo_id, repo, _repo_key, error_response = resolve_repo_from_query(context, request)
     if error_response is not None:
         return error_response
     assert repo is not None
@@ -477,7 +484,7 @@ async def pipeline_quality_run_api_endpoint(request) -> JSONResponse:
     if context.pipeline_quality_service is None:
         error = ErrorResponseDTO(code='ERR_PIPELINE_QUALITY_UNAVAILABLE', message='pipeline quality is unavailable')
         return JSONResponse({'error': {'code': error.code, 'message': error.message}}, status_code=503)
-    repo, _repo_key, error_response = resolve_repo_from_query(context, request)
+    _repo_id, repo, _repo_key, error_response = resolve_repo_from_query(context, request)
     if error_response is not None:
         return error_response
     assert repo is not None
@@ -502,7 +509,7 @@ async def pipeline_benchmark_run_api_endpoint(request) -> JSONResponse:
     if context.pipeline_benchmark_service is None:
         error = ErrorResponseDTO(code='ERR_PIPELINE_BENCHMARK_UNAVAILABLE', message='pipeline benchmark is unavailable')
         return JSONResponse({'error': {'code': error.code, 'message': error.message}}, status_code=503)
-    repo, _repo_key, error_response = resolve_repo_from_query(context, request)
+    _repo_id, repo, _repo_key, error_response = resolve_repo_from_query(context, request)
     if error_response is not None:
         return error_response
     assert repo is not None
@@ -541,7 +548,7 @@ async def pipeline_quality_report_api_endpoint(request) -> JSONResponse:
     if context.pipeline_quality_service is None:
         error = ErrorResponseDTO(code='ERR_PIPELINE_QUALITY_UNAVAILABLE', message='pipeline quality is unavailable')
         return JSONResponse({'error': {'code': error.code, 'message': error.message}}, status_code=503)
-    repo, _repo_key, error_response = resolve_repo_from_query(context, request)
+    _repo_id, repo, _repo_key, error_response = resolve_repo_from_query(context, request)
     if error_response is not None:
         return error_response
     assert repo is not None
@@ -556,7 +563,7 @@ async def pipeline_lsp_matrix_run_api_endpoint(request) -> JSONResponse:
     if context.pipeline_lsp_matrix_service is None:
         error = ErrorResponseDTO(code='ERR_PIPELINE_LSP_MATRIX_UNAVAILABLE', message='pipeline lsp matrix is unavailable')
         return JSONResponse({'error': {'code': error.code, 'message': error.message}}, status_code=503)
-    repo, _repo_key, error_response = resolve_repo_from_query(context, request)
+    _repo_id, repo, _repo_key, error_response = resolve_repo_from_query(context, request)
     if error_response is not None:
         return error_response
     assert repo is not None
@@ -583,7 +590,7 @@ async def pipeline_lsp_matrix_report_api_endpoint(request) -> JSONResponse:
     if context.pipeline_lsp_matrix_service is None:
         error = ErrorResponseDTO(code='ERR_PIPELINE_LSP_MATRIX_UNAVAILABLE', message='pipeline lsp matrix is unavailable')
         return JSONResponse({'error': {'code': error.code, 'message': error.message}}, status_code=503)
-    repo, _repo_key, error_response = resolve_repo_from_query(context, request)
+    _repo_id, repo, _repo_key, error_response = resolve_repo_from_query(context, request)
     if error_response is not None:
         return error_response
     assert repo is not None
@@ -598,6 +605,6 @@ async def validation_error_endpoint_handler(request, exc: ValidationError) -> JS
     error = ErrorResponseDTO(code=exc.context.code, message=exc.context.message)
     return JSONResponse({'error': {'code': error.code, 'message': error.message}}, status_code=400)
 def create_app(context: HttpContext) -> Starlette:
-    app = Starlette(debug=False, exception_handlers={ValidationError: validation_error_endpoint_handler}, middleware=[Middleware(BackgroundProxyMiddleware), Middleware(RuntimeSessionMiddleware, runtime_repo=context.runtime_repo)], routes=[Route('/health', health_endpoint), Route('/status', status_endpoint), Route('/workspaces', workspaces_endpoint), Route('/mcp', mcp_jsonrpc_endpoint, methods=['POST']), Route('/search', search_endpoint), Route('/read', read_endpoint, methods=['GET']), Route('/read_file', read_file_endpoint, methods=['GET']), Route('/read_symbol', read_symbol_endpoint, methods=['GET']), Route('/read_snippet', read_snippet_endpoint, methods=['GET']), Route('/read_diff_preview', read_diff_preview_endpoint, methods=['POST']), Route('/errors', errors_endpoint), Route('/rescan', rescan_endpoint), Route('/repo-candidates', repo_candidates_endpoint), Route('/doctor', doctor_endpoint), Route('/daemon/list', daemon_list_endpoint), Route('/pipeline/policy', pipeline_policy_get_endpoint, methods=['GET']), Route('/pipeline/policy', pipeline_policy_set_endpoint, methods=['POST']), Route('/pipeline/alert', pipeline_alert_endpoint, methods=['GET']), Route('/pipeline/dead', pipeline_dead_list_endpoint, methods=['GET']), Route('/pipeline/dead/requeue', pipeline_dead_requeue_endpoint, methods=['POST']), Route('/pipeline/dead/purge', pipeline_dead_purge_endpoint, methods=['POST']), Route('/pipeline/auto/status', pipeline_auto_status_endpoint, methods=['GET']), Route('/pipeline/auto/set', pipeline_auto_set_endpoint, methods=['POST']), Route('/pipeline/auto/tick', pipeline_auto_tick_endpoint, methods=['POST']), Route('/api/pipeline/errors', pipeline_errors_api_endpoint, methods=['GET']), Route('/api/pipeline/errors/{event_id:str}', pipeline_error_detail_api_endpoint, methods=['GET']), Route('/api/pipeline/benchmark/run', pipeline_benchmark_run_api_endpoint, methods=['POST']), Route('/api/pipeline/benchmark', pipeline_benchmark_report_api_endpoint, methods=['GET']), Route('/api/pipeline/quality/run', pipeline_quality_run_api_endpoint, methods=['POST']), Route('/api/pipeline/quality', pipeline_quality_report_api_endpoint, methods=['GET']), Route('/api/pipeline/lsp-matrix/run', pipeline_lsp_matrix_run_api_endpoint, methods=['POST']), Route('/api/pipeline/lsp-matrix', pipeline_lsp_matrix_report_api_endpoint, methods=['GET']), Route('/pipeline/errors', pipeline_errors_html_endpoint, methods=['GET']), Route('/pipeline/errors/{event_id:str}', pipeline_error_detail_html_endpoint, methods=['GET'])])
+    app = Starlette(debug=False, exception_handlers={ValidationError: validation_error_endpoint_handler}, middleware=[Middleware(BackgroundProxyMiddleware), Middleware(RuntimeSessionMiddleware, runtime_repo=context.runtime_repo)], routes=[Route('/health', health_endpoint), Route('/status', status_endpoint), Route('/workspaces', workspaces_endpoint), Route('/mcp', mcp_jsonrpc_endpoint, methods=['POST']), Route('/search', search_endpoint), Route('/read', read_endpoint, methods=['GET']), Route('/read_file', read_file_endpoint, methods=['GET']), Route('/read_symbol', read_symbol_endpoint, methods=['GET']), Route('/read_snippet', read_snippet_endpoint, methods=['GET']), Route('/read_diff_preview', read_diff_preview_endpoint, methods=['POST']), Route('/errors', errors_endpoint), Route('/rescan', rescan_endpoint), Route('/repo-candidates', repo_candidates_endpoint), Route('/doctor', doctor_endpoint), Route('/daemon/list', daemon_list_endpoint), Route('/daemon/reconcile', daemon_reconcile_endpoint, methods=['POST']), Route('/pipeline/policy', pipeline_policy_get_endpoint, methods=['GET']), Route('/pipeline/policy', pipeline_policy_set_endpoint, methods=['POST']), Route('/pipeline/alert', pipeline_alert_endpoint, methods=['GET']), Route('/pipeline/dead', pipeline_dead_list_endpoint, methods=['GET']), Route('/pipeline/dead/requeue', pipeline_dead_requeue_endpoint, methods=['POST']), Route('/pipeline/dead/purge', pipeline_dead_purge_endpoint, methods=['POST']), Route('/pipeline/auto/status', pipeline_auto_status_endpoint, methods=['GET']), Route('/pipeline/auto/set', pipeline_auto_set_endpoint, methods=['POST']), Route('/pipeline/auto/tick', pipeline_auto_tick_endpoint, methods=['POST']), Route('/api/pipeline/errors', pipeline_errors_api_endpoint, methods=['GET']), Route('/api/pipeline/errors/{event_id:str}', pipeline_error_detail_api_endpoint, methods=['GET']), Route('/api/pipeline/benchmark/run', pipeline_benchmark_run_api_endpoint, methods=['POST']), Route('/api/pipeline/benchmark', pipeline_benchmark_report_api_endpoint, methods=['GET']), Route('/api/pipeline/quality/run', pipeline_quality_run_api_endpoint, methods=['POST']), Route('/api/pipeline/quality', pipeline_quality_report_api_endpoint, methods=['GET']), Route('/api/pipeline/lsp-matrix/run', pipeline_lsp_matrix_run_api_endpoint, methods=['POST']), Route('/api/pipeline/lsp-matrix', pipeline_lsp_matrix_report_api_endpoint, methods=['GET']), Route('/pipeline/errors', pipeline_errors_html_endpoint, methods=['GET']), Route('/pipeline/errors/{event_id:str}', pipeline_error_detail_html_endpoint, methods=['GET'])])
     app.state.context = context
     return app

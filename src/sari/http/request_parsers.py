@@ -7,49 +7,41 @@ from collections.abc import Mapping
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from sari.core.exceptions import ValidationError
+from sari.core.repo_context_resolver import resolve_repo_context
 from sari.core.models import ErrorResponseDTO
-from sari.core.repo_resolver import resolve_repo_key, resolve_repo_root
 from sari.http.context import HttpContext
 
 
-def resolve_repo_from_query(context: HttpContext, request: Request) -> tuple[str | None, str | None, JSONResponse | None]:
-    """쿼리스트링의 repo_key를 검증하고 repo_root/repo_key를 반환한다."""
-    raw_repo = str(request.query_params.get("repo", "")).strip()
+def resolve_repo_from_query(context: HttpContext, request: Request) -> tuple[str | None, str | None, str | None, JSONResponse | None]:
+    """쿼리스트링의 repo를 검증하고 repo_id/repo_root/repo_key를 반환한다."""
+    raw_repo = str(request.query_params.get("repo_id", "")).strip()
     if raw_repo == "":
-        error = ErrorResponseDTO(code="ERR_REPO_REQUIRED", message="repo is required")
-        return (None, None, JSONResponse({"error": {"code": error.code, "message": error.message}}, status_code=400))
-    try:
-        workspace_paths = [item.path for item in context.workspace_repo.list_all()]
-        resolved_repo = resolve_repo_root(
-            repo_or_path=raw_repo,
-            workspace_paths=workspace_paths,
-            allow_absolute_input=False,
-        )
-        resolved_key = resolve_repo_key(repo_root=resolved_repo, workspace_paths=workspace_paths)
-    except ValidationError as exc:
-        error = ErrorResponseDTO(code=exc.context.code, message=exc.context.message)
-        return (None, None, JSONResponse({"error": {"code": error.code, "message": error.message}}, status_code=400))
-    return (resolved_repo, resolved_key, None)
+        raw_repo = str(request.query_params.get("repo", "")).strip()
+    resolved, error = resolve_repo_context(
+        raw_repo=raw_repo,
+        workspace_repo=context.workspace_repo,
+        repo_registry_repo=context.repo_registry_repo,
+        allow_absolute_input=True,
+    )
+    if error is not None:
+        return (None, None, None, JSONResponse({"error": {"code": error.code, "message": error.message}}, status_code=400))
+    assert resolved is not None
+    return (resolved.repo_id, resolved.repo_root, resolved.repo_key, None)
 
 
-def resolve_repo_from_value(context: HttpContext, raw_repo: object) -> tuple[str | None, str | None, JSONResponse | None]:
-    """일반 값 입력의 repo_key를 검증하고 repo_root/repo_key를 반환한다."""
-    if not isinstance(raw_repo, str) or raw_repo.strip() == "":
-        error = ErrorResponseDTO(code="ERR_REPO_REQUIRED", message="repo is required")
-        return (None, None, JSONResponse({"error": {"code": error.code, "message": error.message}}, status_code=400))
-    try:
-        workspace_paths = [item.path for item in context.workspace_repo.list_all()]
-        resolved_repo = resolve_repo_root(
-            repo_or_path=raw_repo.strip(),
-            workspace_paths=workspace_paths,
-            allow_absolute_input=False,
-        )
-        resolved_key = resolve_repo_key(repo_root=resolved_repo, workspace_paths=workspace_paths)
-    except ValidationError as exc:
-        error = ErrorResponseDTO(code=exc.context.code, message=exc.context.message)
-        return (None, None, JSONResponse({"error": {"code": error.code, "message": error.message}}, status_code=400))
-    return (resolved_repo, resolved_key, None)
+def resolve_repo_from_value(context: HttpContext, raw_repo: object) -> tuple[str | None, str | None, str | None, JSONResponse | None]:
+    """일반 값 입력의 repo를 검증하고 repo_id/repo_root/repo_key를 반환한다."""
+    raw_value = raw_repo if isinstance(raw_repo, str) else ""
+    resolved, error = resolve_repo_context(
+        raw_repo=raw_value,
+        workspace_repo=context.workspace_repo,
+        repo_registry_repo=context.repo_registry_repo,
+        allow_absolute_input=True,
+    )
+    if error is not None:
+        return (None, None, None, JSONResponse({"error": {"code": error.code, "message": error.message}}, status_code=400))
+    assert resolved is not None
+    return (resolved.repo_id, resolved.repo_root, resolved.repo_key, None)
 
 
 def to_int(value: object) -> int | None:

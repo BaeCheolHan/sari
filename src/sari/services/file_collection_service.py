@@ -17,8 +17,9 @@ from sari.core.exceptions import CollectionError, DaemonError, ErrorContext
 from sari.core.config import DEFAULT_COLLECTION_EXCLUDE_GLOBS
 from sari.core.language_registry import get_default_collection_extensions, resolve_language_from_path
 from sari.core.repo_resolver import resolve_repo_key
+from sari.core.repo_identity import compute_repo_id, resolve_workspace_root
 from sari.core.text_decode import decode_bytes_with_policy
-from sari.core.models import CandidateIndexChangeDTO, CollectionPolicyDTO, CollectionScanRepoResultDTO, CollectionScanResultDTO, CollectedFileL1DTO, FileReadResultDTO, PipelineMetricsDTO, now_iso8601_utc
+from sari.core.models import CandidateIndexChangeDTO, CollectionPolicyDTO, CollectionScanRepoResultDTO, CollectionScanResultDTO, CollectedFileL1DTO, FileReadResultDTO, PipelineMetricsDTO, RepoIdentityDTO, now_iso8601_utc
 from sari.db.repositories.file_body_repository import FileBodyDecodeError, FileBodyRepository
 from sari.db.repositories.file_collection_repository import FileCollectionRepository
 from sari.db.repositories.file_enrich_queue_repository import FileEnrichQueueRepository
@@ -28,6 +29,7 @@ from sari.db.repositories.pipeline_error_event_repository import PipelineErrorEv
 from sari.db.repositories.pipeline_policy_repository import PipelinePolicyRepository
 from sari.db.repositories.tool_readiness_repository import ToolReadinessRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
+from sari.db.repositories.repo_registry_repository import RepoRegistryRepository
 from sari.lsp.hub import LspHub
 from sari.lsp.path_normalizer import normalize_location_to_repo_relative, normalize_repo_relative_path
 from sari.services.collection import CollectionErrorPolicy, CollectionRuntimePort, EnrichEngine, EventWatcher, FileScanner, PipelineMetricsService, PipelineWorker, RuntimeManager
@@ -246,7 +248,7 @@ class FileCollectionService:
         "composer.json",
     )
 
-    def __init__(self, workspace_repo: WorkspaceRepository, file_repo: FileCollectionRepository, enrich_queue_repo: FileEnrichQueueRepository, body_repo: FileBodyRepository, lsp_repo: LspToolDataRepository, readiness_repo: ToolReadinessRepository, policy: CollectionPolicyDTO, lsp_backend: LspExtractionBackend, policy_repo: PipelinePolicyRepository | None=None, event_repo: PipelineJobEventRepository | None=None, error_event_repo: PipelineErrorEventRepository | None=None, candidate_index_sink: CandidateIndexSink | None=None, vector_index_sink: VectorIndexSink | None=None, run_mode: str='dev', parent_alive_probe: Callable[[], bool] | None=None, persist_body_for_read: bool=True) -> None:
+    def __init__(self, workspace_repo: WorkspaceRepository, file_repo: FileCollectionRepository, enrich_queue_repo: FileEnrichQueueRepository, body_repo: FileBodyRepository, lsp_repo: LspToolDataRepository, readiness_repo: ToolReadinessRepository, policy: CollectionPolicyDTO, lsp_backend: LspExtractionBackend, policy_repo: PipelinePolicyRepository | None=None, event_repo: PipelineJobEventRepository | None=None, error_event_repo: PipelineErrorEventRepository | None=None, candidate_index_sink: CandidateIndexSink | None=None, vector_index_sink: VectorIndexSink | None=None, run_mode: str='dev', parent_alive_probe: Callable[[], bool] | None=None, persist_body_for_read: bool=True, repo_registry_repo: RepoRegistryRepository | None=None) -> None:
         self._workspace_repo = workspace_repo
         self._file_repo = file_repo
         self._enrich_queue_repo = enrich_queue_repo
@@ -260,6 +262,7 @@ class FileCollectionService:
         self._error_event_repo = error_event_repo
         self._candidate_index_sink = candidate_index_sink
         self._vector_index_sink = vector_index_sink
+        self._repo_registry_repo = repo_registry_repo
         self._run_mode = 'prod' if run_mode == 'prod' else 'dev'
         self._parent_alive_probe = parent_alive_probe
         self._persist_body_for_read = persist_body_for_read
@@ -304,7 +307,7 @@ class FileCollectionService:
             candidate_index_sink=self._candidate_index_sink,
             resolve_lsp_language=self._resolve_lsp_language,
             configure_lsp_prewarm_languages=self._configure_lsp_prewarm_languages,
-            resolve_repo_label=self._resolve_repo_label,
+            resolve_repo_identity=self._resolve_repo_identity,
             load_gitignore_spec=self._load_gitignore_spec,
             is_collectible=self._is_collectible,
             priority_low=self.PRIORITY_LOW,
@@ -674,6 +677,23 @@ class FileCollectionService:
         except (RuntimeError, ValueError):
             return Path(repo_root).name
 
+    def _resolve_repo_identity(self, repo_root: str) -> RepoIdentityDTO:
+        """repo 라벨/ID를 결정론적으로 계산하고 레지스트리에 동기화한다."""
+        workspace_paths = [workspace.path for workspace in self._workspace_repo.list_all() if workspace.is_active]
+        resolved_label = self._resolve_repo_label(repo_root)
+        workspace_root = resolve_workspace_root(repo_root=repo_root, workspace_paths=workspace_paths)
+        resolved_repo_id = compute_repo_id(repo_label=resolved_label, workspace_root=workspace_root)
+        identity = RepoIdentityDTO(
+            repo_id=resolved_repo_id,
+            repo_label=resolved_label,
+            repo_root=repo_root,
+            workspace_root=workspace_root,
+            updated_at=now_iso8601_utc(),
+        )
+        if self._repo_registry_repo is not None:
+            self._repo_registry_repo.upsert(identity)
+        return identity
+
     def _rebalance_jobs_by_language(self, jobs: list[FileEnrichJobDTO]) -> list[FileEnrichJobDTO]:
         return self._enrich_engine._rebalance_jobs_by_language(jobs)
 
@@ -711,6 +731,7 @@ class FileCollectionService:
         if relative_path.strip() == '':
             raise CollectionError(ErrorContext(code='ERR_RELATIVE_PATH_REQUIRED', message='relative_path는 필수입니다'))
         root = Path(repo_root).expanduser().resolve()
+        repo_identity = self._resolve_repo_identity(str(root))
         file_path = (root / relative_path).resolve()
         if not file_path.exists() or not file_path.is_file():
             raise CollectionError(ErrorContext(code='ERR_FILE_NOT_FOUND', message='대상 파일을 찾을 수 없습니다'))
@@ -721,11 +742,11 @@ class FileCollectionService:
         now_iso = now_iso8601_utc()
         content_bytes = file_path.read_bytes()
         content_hash = hashlib.sha256(content_bytes).hexdigest()
-        l1_row = CollectedFileL1DTO(repo_root=str(root), relative_path=str(file_path.relative_to(root).as_posix()), absolute_path=str(file_path), repo_label=self._resolve_repo_label(str(root)), mtime_ns=file_path.stat().st_mtime_ns, size_bytes=file_path.stat().st_size, content_hash=content_hash, is_deleted=False, last_seen_at=now_iso, updated_at=now_iso, enrich_state='PENDING')
+        l1_row = CollectedFileL1DTO(repo_id=repo_identity.repo_id, repo_root=str(root), relative_path=str(file_path.relative_to(root).as_posix()), absolute_path=str(file_path), repo_label=repo_identity.repo_label, mtime_ns=file_path.stat().st_mtime_ns, size_bytes=file_path.stat().st_size, content_hash=content_hash, is_deleted=False, last_seen_at=now_iso, updated_at=now_iso, enrich_state='PENDING')
         self._file_repo.upsert_file(l1_row)
-        self._enrich_queue_repo.enqueue(repo_root=str(root), relative_path=str(file_path.relative_to(root).as_posix()), content_hash=content_hash, priority=priority, enqueue_source=enqueue_source, now_iso=now_iso)
+        self._enrich_queue_repo.enqueue(repo_id=repo_identity.repo_id, repo_root=str(root), relative_path=str(file_path.relative_to(root).as_posix()), content_hash=content_hash, priority=priority, enqueue_source=enqueue_source, now_iso=now_iso)
         if self._candidate_index_sink is not None:
-            self._candidate_index_sink.record_upsert(CandidateIndexChangeDTO(repo_root=str(root), relative_path=str(file_path.relative_to(root).as_posix()), absolute_path=str(file_path), content_hash=content_hash, mtime_ns=file_path.stat().st_mtime_ns, size_bytes=file_path.stat().st_size, event_source=enqueue_source, recorded_at=now_iso))
+            self._candidate_index_sink.record_upsert(CandidateIndexChangeDTO(repo_id=repo_identity.repo_id, repo_root=str(root), relative_path=str(file_path.relative_to(root).as_posix()), absolute_path=str(file_path), content_hash=content_hash, mtime_ns=file_path.stat().st_mtime_ns, size_bytes=file_path.stat().st_size, event_source=enqueue_source, recorded_at=now_iso))
 
     def _assert_parent_alive(self, worker_name: str) -> None:
         if self._parent_alive_probe is None:
@@ -772,6 +793,7 @@ def build_default_file_collection_service(workspace_repo: WorkspaceRepository, f
     resolved_exclude_globs = exclude_globs if exclude_globs is not None else DEFAULT_COLLECTION_EXCLUDE_GLOBS
     policy = CollectionPolicyDTO(include_ext=resolved_include_ext, exclude_globs=resolved_exclude_globs, max_file_size_bytes=512 * 1024, scan_interval_sec=180, max_enrich_batch=20, retry_max_attempts=retry_max_attempts, retry_backoff_base_sec=retry_backoff_base_sec, queue_poll_interval_ms=queue_poll_interval_ms)
     resolved_lsp_backend = lsp_backend if lsp_backend is not None else SolidLspExtractionBackend(LspHub())
-    service = FileCollectionService(workspace_repo=workspace_repo, file_repo=file_repo, enrich_queue_repo=enrich_queue_repo, body_repo=body_repo, lsp_repo=lsp_repo, readiness_repo=readiness_repo, policy=policy, lsp_backend=resolved_lsp_backend, policy_repo=policy_repo, event_repo=event_repo, error_event_repo=error_event_repo, candidate_index_sink=candidate_index_sink, vector_index_sink=vector_index_sink, run_mode=run_mode, parent_alive_probe=parent_alive_probe, persist_body_for_read=persist_body_for_read)
+    repo_registry_repo = RepoRegistryRepository(file_repo.db_path)
+    service = FileCollectionService(workspace_repo=workspace_repo, file_repo=file_repo, enrich_queue_repo=enrich_queue_repo, body_repo=body_repo, lsp_repo=lsp_repo, readiness_repo=readiness_repo, policy=policy, lsp_backend=resolved_lsp_backend, policy_repo=policy_repo, event_repo=event_repo, error_event_repo=error_event_repo, candidate_index_sink=candidate_index_sink, vector_index_sink=vector_index_sink, run_mode=run_mode, parent_alive_probe=parent_alive_probe, persist_body_for_read=persist_body_for_read, repo_registry_repo=repo_registry_repo)
     service._watcher_debounce_ms = max(50, watcher_debounce_ms)
     return service

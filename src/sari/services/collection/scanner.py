@@ -15,11 +15,12 @@ from pathspec import PathSpec
 from solidlsp.ls_config import Language
 
 from sari.core.exceptions import CollectionError, ErrorContext
-from sari.core.models import CandidateIndexChangeDTO, CollectionScanResultDTO, CollectedFileL1DTO, EnqueueRequestDTO, now_iso8601_utc
+from sari.core.models import CandidateIndexChangeDTO, CollectionScanResultDTO, CollectedFileL1DTO, EnqueueRequestDTO, RepoIdentityDTO, now_iso8601_utc
 
 
 @dataclass(frozen=True)
 class _ScanHashJobDTO:
+    repo_id: str
     repo_root: str
     relative_path: str
     absolute_path: str
@@ -31,6 +32,7 @@ class _ScanHashJobDTO:
 
 @dataclass(frozen=True)
 class _ScanHashResultDTO:
+    repo_id: str
     repo_root: str
     relative_path: str
     absolute_path: str
@@ -52,7 +54,7 @@ class FileScanner:
         candidate_index_sink: object | None,
         resolve_lsp_language: Callable[[str], Language | None],
         configure_lsp_prewarm_languages: Callable[[str, dict[Language, int]], None],
-        resolve_repo_label: Callable[[str], str],
+        resolve_repo_identity: Callable[[str], RepoIdentityDTO],
         load_gitignore_spec: Callable[[Path], PathSpec],
         is_collectible: Callable[[Path, Path, PathSpec], bool],
         priority_low: int,
@@ -67,7 +69,7 @@ class FileScanner:
         self._candidate_index_sink = candidate_index_sink
         self._resolve_lsp_language = resolve_lsp_language
         self._configure_lsp_prewarm_languages = configure_lsp_prewarm_languages
-        self._resolve_repo_label = resolve_repo_label
+        self._resolve_repo_identity = resolve_repo_identity
         self._load_gitignore_spec = load_gitignore_spec
         self._is_collectible = is_collectible
         self._priority_low = priority_low
@@ -84,8 +86,10 @@ class FileScanner:
         gitignore_spec = self._load_gitignore_spec(root)
         scan_started_at = now_iso8601_utc()
         now_iso = scan_started_at
-        repo_label = self._resolve_repo_label(str(root))
-        self._file_repo.sync_repo_label(repo_root=str(root), repo_label=repo_label)
+        repo_identity = self._resolve_repo_identity(str(root))
+        repo_label = repo_identity.repo_label
+        repo_id = repo_identity.repo_id
+        self._file_repo.sync_repo_identity(repo_root=str(root), repo_label=repo_label, repo_id=repo_id)
         seen_paths: list[str] = []
         scanned_count = 0
         indexed_count = 0
@@ -116,6 +120,7 @@ class FileScanner:
             ):
                 l1_rows.append(
                     CollectedFileL1DTO(
+                        repo_id=repo_id,
                         repo_root=str(root),
                         relative_path=relative_path,
                         absolute_path=str(file_path.resolve()),
@@ -137,6 +142,7 @@ class FileScanner:
                 continue
             hash_jobs.append(
                 _ScanHashJobDTO(
+                    repo_id=repo_id,
                     repo_root=str(root),
                     relative_path=relative_path,
                     absolute_path=str(file_path.resolve()),
@@ -150,6 +156,7 @@ class FileScanner:
             indexed_count += 1
             l1_rows.append(
                 CollectedFileL1DTO(
+                    repo_id=hash_result.repo_id,
                     repo_root=hash_result.repo_root,
                     relative_path=hash_result.relative_path,
                     absolute_path=hash_result.absolute_path,
@@ -165,6 +172,7 @@ class FileScanner:
             )
             enqueue_requests.append(
                 EnqueueRequestDTO(
+                    repo_id=hash_result.repo_id,
                     repo_root=hash_result.repo_root,
                     relative_path=hash_result.relative_path,
                     content_hash=hash_result.content_hash,
@@ -176,6 +184,7 @@ class FileScanner:
             if self._candidate_index_sink is not None:
                 candidate_changes.append(
                     CandidateIndexChangeDTO(
+                        repo_id=hash_result.repo_id,
                         repo_root=hash_result.repo_root,
                         relative_path=hash_result.relative_path,
                         absolute_path=hash_result.absolute_path,
@@ -210,10 +219,13 @@ class FileScanner:
         if not self._is_collectible(file_path=file_path, repo_root=root, gitignore_spec=gitignore_spec):
             raise CollectionError(ErrorContext(code="ERR_FILE_NOT_COLLECTIBLE", message="수집 정책 대상 파일이 아닙니다"))
         now_iso = now_iso8601_utc()
-        repo_label = self._resolve_repo_label(str(root))
+        repo_identity = self._resolve_repo_identity(str(root))
+        repo_label = repo_identity.repo_label
+        repo_id = repo_identity.repo_id
         content_bytes = file_path.read_bytes()
         content_hash = hashlib.sha256(content_bytes).hexdigest()
         l1_row = CollectedFileL1DTO(
+            repo_id=repo_id,
             repo_root=str(root),
             relative_path=str(file_path.relative_to(root).as_posix()),
             absolute_path=str(file_path),
@@ -228,6 +240,7 @@ class FileScanner:
         )
         self._file_repo.upsert_file(l1_row)
         self._enrich_queue_repo.enqueue(
+            repo_id=repo_id,
             repo_root=str(root),
             relative_path=str(file_path.relative_to(root).as_posix()),
             content_hash=content_hash,
@@ -238,6 +251,7 @@ class FileScanner:
         if self._candidate_index_sink is not None:
             self._candidate_index_sink.record_upsert(
                 CandidateIndexChangeDTO(
+                    repo_id=repo_id,
                     repo_root=str(root),
                     relative_path=str(file_path.relative_to(root).as_posix()),
                     absolute_path=str(file_path),
@@ -266,6 +280,7 @@ class FileScanner:
             raise CollectionError(ErrorContext(code="ERR_SCAN_READ_FAILED", message=f"scan read failed: {job.relative_path}: {exc}")) from exc
         content_hash = hashlib.sha256(raw_bytes).hexdigest()
         return _ScanHashResultDTO(
+            repo_id=job.repo_id,
             repo_root=job.repo_root,
             relative_path=job.relative_path,
             absolute_path=job.absolute_path,

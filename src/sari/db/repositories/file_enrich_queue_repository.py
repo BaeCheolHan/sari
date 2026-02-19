@@ -26,11 +26,14 @@ class FileEnrichQueueRepository:
         priority: int,
         enqueue_source: str,
         now_iso: str,
+        repo_id: str | None = None,
     ) -> str:
         """L2 본문 보강 큐 작업을 적재한다."""
+        resolved_repo_id = repo_id if repo_id is not None and repo_id.strip() != "" else f"r_{uuid.uuid5(uuid.NAMESPACE_URL, repo_root).hex[:20]}"
         job_id = str(uuid.uuid4())
         job = FileEnrichJobDTO(
             job_id=job_id,
+            repo_id=resolved_repo_id,
             repo_root=repo_root,
             relative_path=relative_path,
             content_hash=content_hash,
@@ -48,13 +51,14 @@ class FileEnrichQueueRepository:
                 """
                 SELECT job_id, priority
                 FROM file_enrich_queue
-                WHERE repo_root = :repo_root
+                WHERE repo_id = :repo_id
+                  AND repo_root = :repo_root
                   AND relative_path = :relative_path
                   AND status IN ('PENDING', 'FAILED')
                 ORDER BY updated_at DESC
                 LIMIT 1
                 """,
-                {"repo_root": repo_root, "relative_path": relative_path},
+                {"repo_id": resolved_repo_id, "repo_root": repo_root, "relative_path": relative_path},
             ).fetchone()
             if existing is not None:
                 existing_job_id = row_str(existing, "job_id")
@@ -85,11 +89,11 @@ class FileEnrichQueueRepository:
             conn.execute(
                 """
                 INSERT INTO file_enrich_queue(
-                    job_id, repo_root, relative_path, content_hash, content_raw, content_encoding,
+                    job_id, repo_id, repo_root, relative_path, content_hash, content_raw, content_encoding,
                     priority, enqueue_source, status, attempt_count, last_error, next_retry_at, created_at, updated_at
                 )
                 VALUES(
-                    :job_id, :repo_root, :relative_path, :content_hash, '', 'utf-8',
+                    :job_id, :repo_id, :repo_root, :relative_path, :content_hash, '', 'utf-8',
                     :priority, :enqueue_source, :status, :attempt_count, :last_error, :next_retry_at, :created_at, :updated_at
                 )
                 """,
@@ -105,9 +109,15 @@ class FileEnrichQueueRepository:
         enqueued_ids: list[str] = []
         with connect(self._db_path) as conn:
             for request in requests:
+                resolved_repo_id = (
+                    request.repo_id
+                    if request.repo_id.strip() != ""
+                    else f"r_{uuid.uuid5(uuid.NAMESPACE_URL, request.repo_root).hex[:20]}"
+                )
                 job_id = str(uuid.uuid4())
                 job = FileEnrichJobDTO(
                     job_id=job_id,
+                    repo_id=resolved_repo_id,
                     repo_root=request.repo_root,
                     relative_path=request.relative_path,
                     content_hash=request.content_hash,
@@ -124,13 +134,14 @@ class FileEnrichQueueRepository:
                     """
                     SELECT job_id, priority
                     FROM file_enrich_queue
-                    WHERE repo_root = :repo_root
+                    WHERE repo_id = :repo_id
+                      AND repo_root = :repo_root
                       AND relative_path = :relative_path
                       AND status IN ('PENDING', 'FAILED')
                     ORDER BY updated_at DESC
                     LIMIT 1
                     """,
-                    {"repo_root": request.repo_root, "relative_path": request.relative_path},
+                    {"repo_id": resolved_repo_id, "repo_root": request.repo_root, "relative_path": request.relative_path},
                 ).fetchone()
                 if existing is not None:
                     existing_job_id = row_str(existing, "job_id")
@@ -161,11 +172,11 @@ class FileEnrichQueueRepository:
                 conn.execute(
                     """
                     INSERT INTO file_enrich_queue(
-                        job_id, repo_root, relative_path, content_hash, content_raw, content_encoding,
+                        job_id, repo_id, repo_root, relative_path, content_hash, content_raw, content_encoding,
                         priority, enqueue_source, status, attempt_count, last_error, next_retry_at, created_at, updated_at
                     )
                     VALUES(
-                        :job_id, :repo_root, :relative_path, :content_hash, '', 'utf-8',
+                        :job_id, :repo_id, :repo_root, :relative_path, :content_hash, '', 'utf-8',
                         :priority, :enqueue_source, :status, :attempt_count, :last_error, :next_retry_at, :created_at, :updated_at
                     )
                     """,
@@ -212,7 +223,7 @@ class FileEnrichQueueRepository:
                 WHERE job_id IN (SELECT job_id FROM picked)
                   AND status IN ('PENDING', 'FAILED')
                   AND next_retry_at <= :now_iso
-                RETURNING job_id, repo_root, relative_path, content_hash, priority, enqueue_source,
+                RETURNING job_id, repo_id, repo_root, relative_path, content_hash, priority, enqueue_source,
                           status, attempt_count, last_error, next_retry_at, created_at, updated_at
                 """,
                 {"limit": limit, "now_iso": now_iso},
@@ -223,6 +234,7 @@ class FileEnrichQueueRepository:
                 jobs.append(
                     FileEnrichJobDTO(
                         job_id=row_str(row, "job_id"),
+                        repo_id=row_str(row, "repo_id"),
                         repo_root=row_str(row, "repo_root"),
                         relative_path=row_str(row, "relative_path"),
                         content_hash=row_str(row, "content_hash"),

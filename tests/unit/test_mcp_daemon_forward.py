@@ -59,7 +59,7 @@ def test_mcp_forward_failure_returns_jsonrpc_error(tmp_path: Path, monkeypatch: 
     )
     payload = response.to_dict()
     assert payload["error"]["code"] == -32002
-    assert str(payload["error"]["message"]).startswith("ERR_DAEMON_FORWARD_FAILED:")
+    assert str(payload["error"]["message"]).startswith("ERR_DAEMON_FORWARD_")
 
 
 def test_mcp_tools_list_forwards_to_daemon_when_enabled(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:

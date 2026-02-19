@@ -58,6 +58,21 @@ ON daemon_registry(workspace_root, is_draining, deployment_state, last_seen_at D
 CREATE INDEX IF NOT EXISTS idx_daemon_registry_seen
 ON daemon_registry(last_seen_at DESC);
 
+CREATE TABLE IF NOT EXISTS repositories (
+    repo_id TEXT PRIMARY KEY,
+    repo_label TEXT NOT NULL,
+    repo_root TEXT NOT NULL,
+    workspace_root TEXT NULL,
+    updated_at TEXT NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_repositories_workspace_label
+ON repositories(workspace_root, repo_label);
+
+CREATE INDEX IF NOT EXISTS idx_repositories_root
+ON repositories(repo_root);
+
 CREATE TABLE IF NOT EXISTS lsp_symbol_cache (
     repo_root TEXT NOT NULL CHECK (repo_root <> ''),
     relative_path TEXT NOT NULL,
@@ -73,6 +88,7 @@ CREATE INDEX IF NOT EXISTS idx_lsp_symbol_cache_lookup
 ON lsp_symbol_cache(repo_root, query, invalidated);
 
 CREATE TABLE IF NOT EXISTS collected_files_l1 (
+    repo_id TEXT NOT NULL DEFAULT '',
     repo_root TEXT NOT NULL CHECK (repo_root <> ''),
     relative_path TEXT NOT NULL,
     absolute_path TEXT NOT NULL,
@@ -90,6 +106,9 @@ CREATE TABLE IF NOT EXISTS collected_files_l1 (
 CREATE INDEX IF NOT EXISTS idx_collected_files_l1_repo
 ON collected_files_l1(repo_root, is_deleted);
 
+CREATE INDEX IF NOT EXISTS idx_collected_files_l1_repo_id
+ON collected_files_l1(repo_id, is_deleted);
+
 CREATE INDEX IF NOT EXISTS idx_collected_files_l1_label
 ON collected_files_l1(repo_label, is_deleted);
 
@@ -98,6 +117,7 @@ ON collected_files_l1(repo_root, last_seen_at);
 
 CREATE TABLE IF NOT EXISTS file_enrich_queue (
     job_id TEXT PRIMARY KEY,
+    repo_id TEXT NOT NULL DEFAULT '',
     repo_root TEXT NOT NULL CHECK (repo_root <> ''),
     relative_path TEXT NOT NULL,
     content_hash TEXT NOT NULL,
@@ -119,6 +139,9 @@ ON file_enrich_queue(status, next_retry_at);
 CREATE INDEX IF NOT EXISTS idx_file_enrich_queue_path
 ON file_enrich_queue(repo_root, relative_path);
 
+CREATE INDEX IF NOT EXISTS idx_file_enrich_queue_repo_id
+ON file_enrich_queue(repo_id, status, next_retry_at);
+
 CREATE INDEX IF NOT EXISTS idx_file_enrich_queue_sched
 ON file_enrich_queue(status, priority DESC, next_retry_at, created_at);
 
@@ -126,6 +149,7 @@ CREATE TABLE IF NOT EXISTS candidate_index_changes (
     change_id INTEGER PRIMARY KEY AUTOINCREMENT,
     change_type TEXT NOT NULL,
     status TEXT NOT NULL,
+    repo_id TEXT NOT NULL DEFAULT '',
     repo_root TEXT NOT NULL CHECK (repo_root <> ''),
     relative_path TEXT NOT NULL,
     absolute_path TEXT NULL,
@@ -144,7 +168,11 @@ ON candidate_index_changes(status, change_id);
 CREATE INDEX IF NOT EXISTS idx_candidate_index_changes_path_status
 ON candidate_index_changes(repo_root, relative_path, status);
 
+CREATE INDEX IF NOT EXISTS idx_candidate_index_changes_repo_id_status
+ON candidate_index_changes(repo_id, status, change_id);
+
 CREATE TABLE IF NOT EXISTS collected_file_bodies_l2 (
+    repo_id TEXT NOT NULL DEFAULT '',
     repo_root TEXT NOT NULL CHECK (repo_root <> ''),
     relative_path TEXT NOT NULL,
     content_hash TEXT NOT NULL,
@@ -157,6 +185,7 @@ CREATE TABLE IF NOT EXISTS collected_file_bodies_l2 (
 );
 
 CREATE TABLE IF NOT EXISTS lsp_symbols (
+    repo_id TEXT NOT NULL DEFAULT '',
     repo_root TEXT NOT NULL CHECK (repo_root <> ''),
     relative_path TEXT NOT NULL,
     content_hash TEXT NOT NULL,
@@ -179,6 +208,7 @@ CREATE INDEX IF NOT EXISTS idx_lsp_symbols_symbol_key
 ON lsp_symbols(repo_root, relative_path, content_hash, symbol_key);
 
 CREATE TABLE IF NOT EXISTS lsp_call_relations (
+    repo_id TEXT NOT NULL DEFAULT '',
     repo_root TEXT NOT NULL CHECK (repo_root <> ''),
     relative_path TEXT NOT NULL,
     content_hash TEXT NOT NULL,

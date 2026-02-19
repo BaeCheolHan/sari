@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 from sari.core.models import CandidateIndexChangeDTO, CandidateIndexChangeLogDTO
@@ -18,18 +19,25 @@ class CandidateIndexChangeRepository:
 
     def enqueue_upsert(self, change: CandidateIndexChangeDTO) -> int:
         """동일 파일 pending 변경을 최신 upsert로 coalesce한다."""
+        resolved_repo_id = (
+            change.repo_id
+            if change.repo_id.strip() != ""
+            else f"r_{hashlib.sha1(change.repo_root.encode('utf-8')).hexdigest()[:20]}"
+        )
         with connect(self._db_path) as conn:
             existing = conn.execute(
                 """
                 SELECT change_id
                 FROM candidate_index_changes
-                WHERE repo_root = :repo_root
+                WHERE repo_id = :repo_id
+                  AND repo_root = :repo_root
                   AND relative_path = :relative_path
                   AND status = 'PENDING'
                 ORDER BY change_id DESC
                 LIMIT 1
                 """,
                 {
+                    "repo_id": resolved_repo_id,
                     "repo_root": change.repo_root,
                     "relative_path": change.relative_path,
                 },
@@ -65,33 +73,42 @@ class CandidateIndexChangeRepository:
             cursor = conn.execute(
                 """
                 INSERT INTO candidate_index_changes(
-                    change_type, status, repo_root, relative_path, absolute_path,
+                    change_type, status, repo_id, repo_root, relative_path, absolute_path,
                     content_hash, mtime_ns, size_bytes, event_source, reason, created_at, updated_at
                 )
                 VALUES(
-                    'UPSERT', 'PENDING', :repo_root, :relative_path, :absolute_path,
+                    'UPSERT', 'PENDING', :repo_id, :repo_root, :relative_path, :absolute_path,
                     :content_hash, :mtime_ns, :size_bytes, :event_source, NULL, :recorded_at, :recorded_at
                 )
                 """,
-                change.to_sql_params(),
+                {
+                    **change.to_sql_params(),
+                    "repo_id": resolved_repo_id,
+                },
             )
             conn.commit()
             return int(cursor.lastrowid)
 
-    def enqueue_delete(self, repo_root: str, relative_path: str, event_source: str, recorded_at: str) -> int:
+    def enqueue_delete(self, repo_root: str, relative_path: str, event_source: str, recorded_at: str, repo_id: str | None = None) -> int:
         """동일 파일 pending 변경을 delete 이벤트로 coalesce한다."""
+        resolved_repo_id = (
+            repo_id
+            if repo_id is not None and repo_id.strip() != ""
+            else f"r_{hashlib.sha1(repo_root.encode('utf-8')).hexdigest()[:20]}"
+        )
         with connect(self._db_path) as conn:
             existing = conn.execute(
                 """
                 SELECT change_id
                 FROM candidate_index_changes
-                WHERE repo_root = :repo_root
+                WHERE repo_id = :repo_id
+                  AND repo_root = :repo_root
                   AND relative_path = :relative_path
                   AND status = 'PENDING'
                 ORDER BY change_id DESC
                 LIMIT 1
                 """,
-                {"repo_root": repo_root, "relative_path": relative_path},
+                {"repo_id": resolved_repo_id, "repo_root": repo_root, "relative_path": relative_path},
             ).fetchone()
             if existing is not None:
                 change_id = row_int(existing, "change_id")
@@ -116,15 +133,16 @@ class CandidateIndexChangeRepository:
             cursor = conn.execute(
                 """
                 INSERT INTO candidate_index_changes(
-                    change_type, status, repo_root, relative_path, absolute_path,
+                    change_type, status, repo_id, repo_root, relative_path, absolute_path,
                     content_hash, mtime_ns, size_bytes, event_source, reason, created_at, updated_at
                 )
                 VALUES(
-                    'DELETE', 'PENDING', :repo_root, :relative_path, NULL,
+                    'DELETE', 'PENDING', :repo_id, :repo_root, :relative_path, NULL,
                     NULL, NULL, NULL, :event_source, 'deleted', :recorded_at, :recorded_at
                 )
                 """,
                 {
+                    "repo_id": resolved_repo_id,
                     "repo_root": repo_root,
                     "relative_path": relative_path,
                     "event_source": event_source,
@@ -139,7 +157,7 @@ class CandidateIndexChangeRepository:
         with connect(self._db_path) as conn:
             rows = conn.execute(
                 """
-                SELECT change_id, change_type, status, repo_root, relative_path, absolute_path,
+                SELECT change_id, change_type, status, repo_id, repo_root, relative_path, absolute_path,
                        content_hash, mtime_ns, size_bytes, event_source, reason, created_at, updated_at
                 FROM candidate_index_changes
                 WHERE status = 'PENDING'
@@ -159,6 +177,7 @@ class CandidateIndexChangeRepository:
                     change_id=row_int(row, "change_id"),
                     change_type=row_str(row, "change_type"),
                     status=row_str(row, "status"),
+                    repo_id=row_str(row, "repo_id"),
                     repo_root=row_str(row, "repo_root"),
                     relative_path=row_str(row, "relative_path"),
                     absolute_path=row_optional_str(row, "absolute_path"),

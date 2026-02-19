@@ -15,6 +15,7 @@ import tantivy
 from tantivy import Document
 
 from sari.core.text_decode import decode_bytes_with_policy
+from sari.core.repo_identity import compute_repo_id
 from sari.core.models import CandidateFileDTO, CandidateIndexChangeDTO, SearchErrorDTO, WorkspaceDTO, now_iso8601_utc
 from sari.db.repositories.candidate_index_change_repository import CandidateIndexChangeRepository
 from sari.search.error_policy import classify_search_error
@@ -245,7 +246,9 @@ class TantivyCandidateBackend:
         if self._change_repo is None:
             self.mark_dirty()
             return
+        derived_repo_id = compute_repo_id(repo_label=Path(repo_root).name, workspace_root=None)
         self._change_repo.enqueue_delete(
+            repo_id=derived_repo_id,
             repo_root=repo_root,
             relative_path=relative_path,
             event_source=reason,

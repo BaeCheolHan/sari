@@ -4,12 +4,18 @@ from __future__ import annotations
 
 import importlib.metadata
 import json
+import os
+import subprocess
+from typing import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 from sari import __version__ as SARI_RUNTIME_VERSION
 from sari.core.config import AppConfig
+from sari.core.models import now_iso8601_utc
+from sari.db.repositories.daemon_registry_repository import DaemonRegistryRepository
+from sari.db.repositories.file_enrich_queue_repository import FileEnrichQueueRepository
 from sari.db.repositories.runtime_repository import RuntimeRepository
 from sari.db.repositories.symbol_cache_repository import SymbolCacheRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
@@ -32,12 +38,18 @@ class AdminService:
         workspace_repo: WorkspaceRepository,
         runtime_repo: RuntimeRepository,
         symbol_cache_repo: SymbolCacheRepository,
+        queue_repo: FileEnrichQueueRepository | None = None,
+        registry_repo: DaemonRegistryRepository | None = None,
+        lsp_reconciler: Callable[[], int] | None = None,
     ) -> None:
         """서비스에 필요한 저장소와 설정을 주입한다."""
         self._config = config
         self._workspace_repo = workspace_repo
         self._runtime_repo = runtime_repo
         self._symbol_cache_repo = symbol_cache_repo
+        self._queue_repo = queue_repo
+        self._registry_repo = registry_repo
+        self._lsp_reconciler = lsp_reconciler
 
     def doctor(self) -> list[DoctorCheckDTO]:
         """핵심 런타임 상태를 점검한다."""
@@ -356,3 +368,47 @@ class AdminService:
     def repo_candidates(self) -> list[dict[str, object]]:
         """등록된 워크스페이스를 후보 저장소 목록으로 반환한다."""
         return [{"repo": ws.path, "name": ws.name} for ws in self._workspace_repo.list_all()]
+
+    def runtime_reconcile(self) -> dict[str, int]:
+        """런타임/레지스트리 불일치를 정리하고 정리 건수를 반환한다."""
+        reconciled_daemons = 0
+        stale_registry_cleaned = 0
+        reaped_lsp = 0
+        orphan_workers_stopped = 0
+        runtime = self._runtime_repo.get_runtime()
+        if runtime is not None and not self._is_pid_alive(runtime.pid):
+            self._runtime_repo.clear_runtime()
+            reconciled_daemons += 1
+            if self._registry_repo is not None:
+                self._registry_repo.remove_by_pid(runtime.pid)
+                stale_registry_cleaned += 1
+        if self._queue_repo is not None:
+            orphan_workers_stopped = self._queue_repo.reset_running_to_failed(now_iso=now_iso8601_utc())
+        if self._lsp_reconciler is not None:
+            reaped_lsp = max(0, int(self._lsp_reconciler()))
+        return {
+            "reconciled_daemons": reconciled_daemons,
+            "reaped_lsp": reaped_lsp,
+            "orphan_workers_stopped": orphan_workers_stopped,
+            "stale_registry_cleaned": stale_registry_cleaned,
+        }
+
+    def _is_pid_alive(self, pid: int) -> bool:
+        """PID가 살아있는지 확인한다."""
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        stat = self._read_process_stat(pid)
+        if stat.startswith("Z"):
+            return False
+        return True
+
+    def _read_process_stat(self, pid: int) -> str:
+        """프로세스 상태 문자열(ps stat)을 조회한다."""
+        process = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True)
+        if process.returncode != 0:
+            return ""
+        return process.stdout.strip()

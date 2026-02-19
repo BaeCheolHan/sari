@@ -15,8 +15,11 @@ from sari.services.admin_service import AdminService
 def validate_repo_argument(arguments: dict[str, object], workspace_repo: WorkspaceRepository) -> ErrorResponseDTO | None:
     """repo 인자를 검증하고 오류 DTO를 반환한다."""
     repo = arguments.get("repo")
+    if (not isinstance(repo, str) or repo.strip() == "") and isinstance(arguments.get("repo_id"), str):
+        arguments["repo"] = str(arguments["repo_id"])
+        repo = arguments["repo"]
     if not isinstance(repo, str) or repo.strip() == "":
-        return ErrorResponseDTO(code="ERR_REPO_REQUIRED", message="repo is required")
+        return ErrorResponseDTO(code="ERR_REPO_REQUIRED", message="repo_id is required (alias: repo)")
     repo_key_raw = arguments.get("repo_key")
     workspace_paths = [item.path for item in workspace_repo.list_all()]
     try:

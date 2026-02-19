@@ -21,6 +21,7 @@ def test_read_body_text_raises_decode_error_for_corrupted_zlib(tmp_path: Path) -
     now_iso = now_iso8601_utc()
     repo.upsert_body(
         CollectedFileBodyDTO(
+            repo_id="r_repo",
             repo_root="/repo",
             relative_path="a.py",
             content_hash="hash-1",

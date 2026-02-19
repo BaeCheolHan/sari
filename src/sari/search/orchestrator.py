@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from sari.core.models import SearchErrorDTO, SearchItemDTO
+from sari.db.repositories.repo_registry_repository import RepoRegistryRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.search.candidate_search import CandidateSearchResultDTO, CandidateSearchService
 from sari.search.error_policy import has_fatal_errors
@@ -80,6 +81,7 @@ class SearchOrchestrator:
         hierarchy_scorer: HierarchyScorer | None = None,
         vector_reranker: VectorReranker | None = None,
         blend_config: RankingBlendConfigDTO | None = None,
+        repo_registry_repo: RepoRegistryRepository | None = None,
     ) -> None:
         """검색 구성요소를 주입한다."""
         self._workspace_repo = workspace_repo
@@ -90,6 +92,7 @@ class SearchOrchestrator:
         self._vector_reranker = vector_reranker
         self._rrf_k = 60
         self._blend_config = blend_config if blend_config is not None else RankingBlendConfigDTO()
+        self._repo_registry_repo = repo_registry_repo
         self._w_rrf = self._blend_config.w_rrf
         self._w_importance = self._blend_config.w_importance
         self._w_vector = self._blend_config.w_vector
@@ -102,10 +105,24 @@ class SearchOrchestrator:
             w_hierarchy=self._w_hierarchy,
         )
 
-    def search(self, query: str, limit: int, repo_root: str, resolve_symbols: bool = True) -> SearchPipelineResult:
+    def search(
+        self,
+        query: str,
+        limit: int,
+        repo_root: str | None = None,
+        resolve_symbols: bool = True,
+        repo_id: str | None = None,
+    ) -> SearchPipelineResult:
         """질의어 기반 검색 결과를 반환한다."""
+        resolved_repo_root = repo_root
+        if (resolved_repo_root is None or resolved_repo_root.strip() == "") and repo_id is not None and self._repo_registry_repo is not None:
+            identity = self._repo_registry_repo.get_by_repo_id(repo_id)
+            if identity is not None:
+                resolved_repo_root = identity.repo_root
+        if resolved_repo_root is None or resolved_repo_root.strip() == "":
+            raise ValueError("repo_root is required")
         workspaces = self._workspace_repo.list_all()
-        filtered_workspaces = self._candidate_service.filter_workspaces_by_repo(workspaces, repo_root)
+        filtered_workspaces = self._candidate_service.filter_workspaces_by_repo(workspaces, resolved_repo_root)
         candidate_result: CandidateSearchResultDTO = self._candidate_service.search(
             workspaces=filtered_workspaces,
             query=query,

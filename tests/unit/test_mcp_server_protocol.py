@@ -30,7 +30,6 @@ def test_mcp_initialize_and_tools_list(tmp_path: Path) -> None:
     tools = list_payload["result"]["tools"]
     tool_names = {tool["name"] for tool in tools}
     assert tool_names == {
-        "archive_context",
         "call_graph",
         "call_graph_health",
         "search",
@@ -51,36 +50,12 @@ def test_mcp_initialize_and_tools_list(tmp_path: Path) -> None:
         "get_callers",
         "get_implementations",
         "knowledge",
-        "save_snippet",
-        "get_snippet",
-        "get_context",
-        "pipeline_policy_get",
-        "pipeline_policy_set",
-        "pipeline_alert_status",
-        "pipeline_dead_list",
-        "pipeline_dead_requeue",
-        "pipeline_dead_purge",
-        "pipeline_auto_status",
-        "pipeline_auto_set",
-        "pipeline_auto_tick",
-        "pipeline_benchmark_run",
-        "pipeline_benchmark_report",
-        "pipeline_quality_run",
-        "pipeline_quality_report",
-        "pipeline_lsp_matrix_run",
-        "pipeline_lsp_matrix_report",
     }
     tools_by_name = {tool["name"]: tool for tool in tools}
-    benchmark_props = tools_by_name["pipeline_benchmark_run"]["inputSchema"]["properties"]
-    assert "language_filter" in benchmark_props
-    assert "per_language_report" in benchmark_props
-    quality_props = tools_by_name["pipeline_quality_run"]["inputSchema"]["properties"]
-    assert "language_filter" in quality_props
-    lsp_matrix_props = tools_by_name["pipeline_lsp_matrix_run"]["inputSchema"]["properties"]
-    assert "required_languages" in lsp_matrix_props
-    assert "fail_on_unavailable" in lsp_matrix_props
-    assert "strict_all_languages" in lsp_matrix_props
-    assert "strict_symbol_gate" in lsp_matrix_props
+    search_props = tools_by_name["search"]["inputSchema"]["properties"]
+    assert "repo_id" in search_props
+    assert "repo" in search_props
+    assert "x_examples" in tools_by_name["search"]
     server.close()
 
 

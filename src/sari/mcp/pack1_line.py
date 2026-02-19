@@ -46,6 +46,7 @@ class PackLineOptionsDTO:
     """라인 포맷 렌더링 옵션을 표현한다."""
 
     include_structured: bool = False
+    include_score: bool = False
 
 
 def render_pack_v2(
@@ -66,7 +67,14 @@ def render_pack_v2(
         lines.extend(_build_error_lines(tool_name=tool_name, structured=structured, payload=payload))
     else:
         try:
-            lines.extend(_build_success_lines(tool_name=tool_name, arguments=arguments, structured=structured))
+            lines.extend(
+                _build_success_lines(
+                    tool_name=tool_name,
+                    arguments=arguments,
+                    structured=structured,
+                    include_score=options.include_score,
+                )
+            )
         except PackContractViolationError as exc:
             lines = ["@V 2", f"@SUM tool={_raw(tool_name)} items=0 degraded=1 fatal=1", f"@ERR code=ERR_PACK_CONTRACT_VIOLATION msg={_enc(str(exc))}"]
             is_error = True
@@ -127,6 +135,7 @@ def _build_success_lines(
     tool_name: str,
     arguments: Mapping[str, object],
     structured: Mapping[str, object],
+    include_score: bool,
 ) -> list[str]:
     """성공 응답 라인을 생성한다."""
     strict_mode = tool_name in STRICT_CONTRACT_TOOLS
@@ -183,23 +192,23 @@ def _build_success_lines(
         if strict_mode and kind == "symbol" and symbol_kind in {"-", "", "unknown"}:
             raise PackContractViolationError("sk is required for symbol")
         score = _resolve_score(item)
-        if strict_mode:
+        if strict_mode and include_score:
             _validate_score(score)
         source = _resolve_source(item)
         if strict_mode and source.strip() in {"", "-"}:
             raise PackContractViolationError("src is required")
-        lines.append(
-            (
-                "@R "
-                f"kind={_raw(kind)} "
-                f"rid={_enc(rid)} "
-                f"path={_enc(path)} "
-                f"name={_enc(name)} "
-                f"sk={_enc(symbol_kind)} "
-                f"score={_raw(score)} "
-                f"src={_enc(source)}"
-            )
-        )
+        row_tokens = [
+            "@R",
+            f"kind={_raw(kind)}",
+            f"rid={_enc(rid)}",
+            f"path={_enc(path)}",
+            f"name={_enc(name)}",
+            f"sk={_enc(symbol_kind)}",
+            f"src={_enc(source)}",
+        ]
+        if include_score:
+            row_tokens.append(f"score={_raw(score)}")
+        lines.append(" ".join(row_tokens))
 
     next_calls = stabilization.get("next_calls")
     if isinstance(next_calls, list) and len(next_calls) > 0 and isinstance(next_calls[0], dict):
@@ -338,11 +347,11 @@ def _resolve_rid(item: Mapping[str, object], arguments: Mapping[str, object]) ->
 
 def _resolve_repo_token(item: Mapping[str, object], arguments: Mapping[str, object]) -> str:
     """repo 식별자를 repo_key 우선으로 추출한다."""
-    for key in ("repo_key", "repo"):
+    for key in ("repo_key", "repo_id", "repo"):
         value = item.get(key)
         if isinstance(value, str) and value.strip() != "":
             return _normalize_repo_token(value)
-    for key in ("repo_key", "repo"):
+    for key in ("repo_key", "repo_id", "repo"):
         value = arguments.get(key)
         if isinstance(value, str) and value.strip() != "":
             return _normalize_repo_token(value)

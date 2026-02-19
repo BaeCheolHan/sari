@@ -43,3 +43,16 @@ def test_normalize_raises_ambiguous_error_for_conflicting_aliases() -> None:
         assert exc.hint.expected == ["query"]
     else:
         raise AssertionError("ArgNormalizationError must be raised")
+
+
+def test_normalize_maps_repo_id_to_repo() -> None:
+    """repo_id 입력은 내부 canonical인 repo로 정규화되어야 한다."""
+    result = normalize_tool_arguments(
+        "search",
+        {
+            "repo_id": "sari",
+            "query": "AuthService",
+        },
+    )
+    assert result.arguments["repo"] == "sari"
+    assert result.normalized_from["repo"] == "repo_id"

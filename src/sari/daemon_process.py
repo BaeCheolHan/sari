@@ -29,6 +29,7 @@ from sari.db.repositories.pipeline_benchmark_repository import PipelineBenchmark
 from sari.db.repositories.pipeline_quality_repository import PipelineQualityRepository
 from sari.db.repositories.language_probe_repository import LanguageProbeRepository
 from sari.db.repositories.pipeline_lsp_matrix_repository import PipelineLspMatrixRepository
+from sari.db.repositories.repo_registry_repository import RepoRegistryRepository
 from sari.db.repositories.tool_readiness_repository import ToolReadinessRepository
 from sari.db.migration import ensure_migrated
 from sari.db.schema import init_schema
@@ -101,6 +102,7 @@ def main() -> None:
     quality_repo = PipelineQualityRepository(db_path)
     language_probe_repo = LanguageProbeRepository(db_path)
     lsp_matrix_repo = PipelineLspMatrixRepository(db_path)
+    repo_registry_repo = RepoRegistryRepository(db_path)
     vector_repo = VectorEmbeddingRepository(db_path)
     candidate_change_repo = CandidateIndexChangeRepository(db_path)
     config = AppConfig(
@@ -173,6 +175,7 @@ def main() -> None:
         importance_scorer=importance_scorer,
         hierarchy_scorer=hierarchy_scorer,
         vector_reranker=vector_reranker,
+        repo_registry_repo=repo_registry_repo,
         blend_config=RankingBlendConfigDTO(
             w_rrf=config.ranking_w_rrf,
             w_importance=config.ranking_w_importance,
@@ -186,6 +189,9 @@ def main() -> None:
         workspace_repo=workspace_repo,
         runtime_repo=runtime_repo,
         symbol_cache_repo=symbol_cache_repo,
+        queue_repo=enrich_queue_repo,
+        registry_repo=daemon_registry_repo,
+        lsp_reconciler=lsp_hub.reconcile_runtime,
     )
     detached_mode = os.getenv("SARI_DAEMON_DETACHED", "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -262,6 +268,8 @@ def main() -> None:
             pipeline_lsp_matrix_service=pipeline_lsp_matrix_service,
             read_facade_service=read_facade_service,
             language_probe_repo=language_probe_repo,
+            repo_registry_repo=repo_registry_repo,
+            lsp_metrics_provider=lsp_hub.get_metrics,
             db_path=config.db_path,
         )
     )

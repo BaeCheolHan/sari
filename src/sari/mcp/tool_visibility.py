@@ -30,15 +30,15 @@ HIDDEN_TOOL_NAMES: frozenset[str] = frozenset(
 )
 
 TOOL_EXAMPLES: dict[str, dict[str, object]] = {
-    "search": {"repo": "/repo", "query": "AuthService", "limit": 5},
-    "read": {"repo": "/repo", "mode": "file", "target": "README.md", "limit": 40},
-    "read_symbol": {"repo": "/repo", "symbol": "AuthService.login", "limit": 10},
-    "search_symbol": {"repo": "/repo", "query": "Auth", "limit": 10},
-    "get_callers": {"repo": "/repo", "symbol": "AuthService.login", "limit": 20},
-    "get_implementations": {"repo": "/repo", "symbol": "UserRepository", "limit": 20},
-    "call_graph": {"repo": "/repo", "symbol": "AuthService.login", "limit": 20},
-    "knowledge": {"repo": "/repo", "query": "JWT", "limit": 5},
-    "list_symbols": {"repo": "/repo", "query": "Auth", "limit": 20},
+    "search": {"repo_id": "sari", "query": "AuthService", "limit": 5},
+    "read": {"repo_id": "sari", "mode": "file", "target": "README.md", "limit": 40},
+    "read_symbol": {"repo_id": "sari", "symbol": "AuthService.login", "limit": 10},
+    "search_symbol": {"repo_id": "sari", "query": "Auth", "limit": 10},
+    "get_callers": {"repo_id": "sari", "symbol": "AuthService.login", "limit": 20},
+    "get_implementations": {"repo_id": "sari", "symbol": "UserRepository", "limit": 20},
+    "call_graph": {"repo_id": "sari", "symbol": "AuthService.login", "limit": 20},
+    "knowledge": {"repo_id": "sari", "query": "JWT", "limit": 5},
+    "list_symbols": {"repo_id": "sari", "query": "Auth", "limit": 20},
 }
 
 
@@ -56,7 +56,7 @@ def filter_tools_list_response_payload(payload: dict[str, object]) -> dict[str, 
     if not isinstance(tools_obj, list):
         return payload
     filtered_tools = [_decorate_tool_entry(tool) for tool in tools_obj if not _is_hidden_tool_entry(tool)]
-    if len(filtered_tools) == len(tools_obj):
+    if filtered_tools == tools_obj:
         return payload
     copied_payload = deepcopy(payload)
     copied_result = copied_payload.get("result")
@@ -82,4 +82,26 @@ def _decorate_tool_entry(entry: object) -> dict[str, object]:
     example = TOOL_EXAMPLES.get(tool_name)
     if example is not None:
         payload["x_examples"] = [example]
+    payload = _decorate_repo_id_hint(payload)
     return payload
+
+
+def _decorate_repo_id_hint(entry: dict[str, object]) -> dict[str, object]:
+    """repo 입력 스키마를 repo_id 우선 안내로 보강한다."""
+    schema_obj = entry.get("inputSchema")
+    if not isinstance(schema_obj, dict):
+        return entry
+    properties_obj = schema_obj.get("properties")
+    if not isinstance(properties_obj, dict):
+        return entry
+    repo_obj = properties_obj.get("repo")
+    if not isinstance(repo_obj, dict):
+        return entry
+    repo_description = "repository id(권장). alias: repo(하위호환)."
+    properties_obj["repo_id"] = {
+        "type": "string",
+        "description": repo_description,
+    }
+    if "description" not in repo_obj:
+        repo_obj["description"] = repo_description
+    return entry
