@@ -1,7 +1,6 @@
 """레거시 MCP 도구 구현."""
 from __future__ import annotations
 import hashlib
-import os
 from pathlib import Path
 from sari.core.exceptions import CollectionError
 from sari.core.language_registry import get_enabled_language_names
@@ -71,12 +70,6 @@ def _normalize_source_path(repo_root: str, source_path: Path) -> str:
         return str(source_path.resolve().relative_to(Path(repo_root).resolve()))
     except ValueError:
         return str(source_path.resolve())
-def _stabilization_enabled() -> bool:
-    """stabilization 활성 여부를 반환한다."""
-    raw_value = os.getenv("SARI_STABILIZATION_ENABLED", "1").strip().lower()
-    return raw_value not in {"0", "false", "no", "off"}
-
-
 def _argument_error(
     *,
     code: str,
@@ -240,18 +233,20 @@ class ReadTool:
         file_collection_service: CollectionScanPort,
         lsp_repo: LspToolDataRepository,
         knowledge_repo: KnowledgeRepository,
+        stabilization_enabled: bool = True,
     ) -> None:
         """필요 저장소/서비스 의존성을 주입한다."""
         self._workspace_repo = workspace_repo
         self._file_collection_service = file_collection_service
         self._lsp_repo = lsp_repo
         self._knowledge_repo = knowledge_repo
+        self._stabilization_enabled = stabilization_enabled
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """모드별 read 응답을 반환한다."""
         error = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
         if error is not None:
             return pack1_error(error)
-        stabilization_enabled = _stabilization_enabled()
+        stabilization_enabled = self._stabilization_enabled
         if stabilization_enabled and requires_strict_session_id(arguments):
             return pack1_error(
                 ErrorResponseDTO(code="ERR_SESSION_ID_REQUIRED", message="session_id is required by strict session policy."),
@@ -320,7 +315,7 @@ class ReadTool:
         degraded: bool,
     ) -> dict[str, object] | None:
         """read 성공 응답용 stabilization 메타를 생성한다."""
-        if not _stabilization_enabled():
+        if not self._stabilization_enabled:
             return None
         metrics_snapshot = record_read_metrics(
             arguments,

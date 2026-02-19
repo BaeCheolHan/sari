@@ -1,6 +1,5 @@
 import html
 import http.client
-import os
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from starlette.applications import Starlette
@@ -60,11 +59,11 @@ class RuntimeSessionMiddleware(BaseHTTPMiddleware):
             self._runtime_repo.decrement_session()
 class BackgroundProxyMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
-        if not _is_background_proxy_enabled():
+        context: HttpContext = request.app.state.context
+        if not context.http_bg_proxy_enabled:
             return await call_next(request)
-        target = _parse_proxy_target(os.getenv('SARI_HTTP_BG_PROXY_TARGET', '').strip())
+        target = _parse_proxy_target(context.http_bg_proxy_target.strip())
         if target is None:
-            context: HttpContext = request.app.state.context
             if context.db_path is None:
                 return JSONResponse(
                     {'error': {'code': 'ERR_HTTP_ENDPOINT_UNRESOLVED', 'message': 'background proxy endpoint cannot be resolved'}},
@@ -83,8 +82,6 @@ class BackgroundProxyMiddleware(BaseHTTPMiddleware):
             return _forward_upstream_request(host=target[0], port=target[1], request=request, request_body=request_body)
         except (OSError, TimeoutError, ValueError) as exc:
             return JSONResponse({'error': {'code': 'ERR_HTTP_PROXY_FAILED', 'message': f'background proxy failed: {exc}'}}, status_code=502)
-def _is_background_proxy_enabled() -> bool:
-    return os.getenv('SARI_HTTP_BG_PROXY', '').strip().lower() in {'1', 'true', 'yes', 'on'}
 def _parse_proxy_target(raw_target: str) -> tuple[str, int] | None:
     if raw_target == '':
         return None

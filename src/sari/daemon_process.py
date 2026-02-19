@@ -271,6 +271,8 @@ def main() -> None:
             repo_registry_repo=repo_registry_repo,
             lsp_metrics_provider=lsp_hub.get_metrics,
             db_path=config.db_path,
+            http_bg_proxy_enabled=config.http_bg_proxy_enabled,
+            http_bg_proxy_target=config.http_bg_proxy_target,
         )
     )
     app.state.mcp_server = McpServer(db_path=db_path)

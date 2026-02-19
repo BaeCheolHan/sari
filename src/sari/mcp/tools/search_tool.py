@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import os
 from collections.abc import Callable
 
 from sari.core.models import ErrorResponseDTO
@@ -26,12 +25,14 @@ class SearchTool:
         workspace_repo: WorkspaceRepository | None = None,
         metrics_provider: Callable[[], object] | None = None,
         repo_registry_repo: RepoRegistryRepository | None = None,
+        stabilization_enabled: bool = True,
     ) -> None:
         """검색 오케스트레이터를 주입한다."""
         self._orchestrator = orchestrator
         self._workspace_repo = workspace_repo
         self._metrics_provider = metrics_provider
         self._repo_registry_repo = repo_registry_repo
+        self._stabilization_enabled = stabilization_enabled
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """도구 입력을 검증하고 pack1 결과를 반환한다."""
@@ -80,6 +81,7 @@ class SearchTool:
             items=result.items,
             degraded=result.meta.degraded,
             fatal_error=result.meta.fatal_error,
+            stabilization_enabled=self._stabilization_enabled,
             errors=[error.to_dict() for error in result.meta.errors],
         )
         progress_meta = self._build_progress_meta()
@@ -156,10 +158,11 @@ def _build_search_stabilization(
     items: list[object],
     degraded: bool,
     fatal_error: bool,
+    stabilization_enabled: bool,
     errors: list[dict[str, object]],
 ) -> dict[str, object] | None:
     """search 응답용 stabilization 메타를 생성한다."""
-    if not _stabilization_enabled():
+    if not stabilization_enabled:
         return None
     top_paths = [str(getattr(item, "relative_path", "") or "") for item in items[:10]]
     candidates = _candidate_mapping(query=query, items=items)
@@ -200,12 +203,6 @@ def _build_search_stabilization(
         "degraded": degraded,
         "fatal_error": fatal_error,
     }
-
-
-def _stabilization_enabled() -> bool:
-    """stabilization 활성 여부를 반환한다."""
-    raw_value = os.getenv("SARI_STABILIZATION_ENABLED", "1").strip().lower()
-    return raw_value not in {"0", "false", "no", "off"}
 
 
 def _candidate_mapping(query: str, items: list[object]) -> dict[str, str]:

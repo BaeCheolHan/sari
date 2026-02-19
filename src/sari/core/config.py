@@ -91,6 +91,13 @@ class AppConfig:
     ranking_w_importance: float = 0.30
     ranking_w_vector: float = 0.15
     ranking_w_hierarchy: float = 0.15
+    mcp_forward_to_daemon: bool = False
+    mcp_daemon_autostart: bool = True
+    mcp_daemon_timeout_sec: float = 2.0
+    strict_protocol: bool = False
+    stabilization_enabled: bool = True
+    http_bg_proxy_enabled: bool = False
+    http_bg_proxy_target: str = ""
 
     @classmethod
     def default(cls) -> "AppConfig":
@@ -152,6 +159,13 @@ class AppConfig:
             "SARI_RANKING_W_HIERARCHY",
             str(file_config.get("ranking_w_hierarchy", 0.15)),
         ).strip()
+        mcp_forward_to_daemon_raw = os.getenv("SARI_MCP_FORWARD_TO_DAEMON", str(file_config.get("mcp_forward_to_daemon", False))).strip().lower()
+        mcp_daemon_autostart_raw = os.getenv("SARI_MCP_DAEMON_AUTOSTART", str(file_config.get("mcp_daemon_autostart", True))).strip().lower()
+        mcp_daemon_timeout_raw = os.getenv("SARI_MCP_DAEMON_TIMEOUT_SEC", str(file_config.get("mcp_daemon_timeout_sec", 2.0))).strip()
+        strict_protocol_raw = os.getenv("SARI_STRICT_PROTOCOL", str(file_config.get("strict_protocol", False))).strip().lower()
+        stabilization_enabled_raw = os.getenv("SARI_STABILIZATION_ENABLED", str(file_config.get("stabilization_enabled", True))).strip().lower()
+        http_bg_proxy_enabled_raw = os.getenv("SARI_HTTP_BG_PROXY", str(file_config.get("http_bg_proxy_enabled", False))).strip().lower()
+        http_bg_proxy_target = os.getenv("SARI_HTTP_BG_PROXY_TARGET", str(file_config.get("http_bg_proxy_target", ""))).strip()
         run_mode = "prod" if run_mode_raw == "prod" else "dev"
         try:
             retry_max = max(1, int(retry_max_raw))
@@ -257,6 +271,10 @@ class AppConfig:
             ranking_w_hierarchy = max(0.0, min(1.0, float(ranking_w_hierarchy_raw)))
         except ValueError:
             ranking_w_hierarchy = 0.15
+        try:
+            mcp_daemon_timeout_sec = max(0.1, float(mcp_daemon_timeout_raw))
+        except ValueError:
+            mcp_daemon_timeout_sec = 2.0
         total_weight = ranking_w_rrf + ranking_w_importance + ranking_w_vector + ranking_w_hierarchy
         if total_weight > 0.0:
             ranking_w_rrf = ranking_w_rrf / total_weight
@@ -351,6 +369,13 @@ class AppConfig:
             ranking_w_importance=ranking_w_importance,
             ranking_w_vector=ranking_w_vector,
             ranking_w_hierarchy=ranking_w_hierarchy,
+            mcp_forward_to_daemon=mcp_forward_to_daemon_raw in {"1", "true", "yes", "on"},
+            mcp_daemon_autostart=mcp_daemon_autostart_raw in {"1", "true", "yes", "on"},
+            mcp_daemon_timeout_sec=mcp_daemon_timeout_sec,
+            strict_protocol=strict_protocol_raw in {"1", "true", "yes", "on"},
+            stabilization_enabled=stabilization_enabled_raw not in {"0", "false", "no", "off"},
+            http_bg_proxy_enabled=http_bg_proxy_enabled_raw in {"1", "true", "yes", "on"},
+            http_bg_proxy_target=http_bg_proxy_target,
         )
 
 

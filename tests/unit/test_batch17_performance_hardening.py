@@ -755,3 +755,119 @@ def test_tantivy_apply_allows_repo_under_active_workspace(tmp_path: Path) -> Non
 
     assert len(items) == 1
     assert items[0].relative_path == "alpha.py"
+
+
+def test_tantivy_pending_apply_respects_batch_cap(tmp_path: Path) -> None:
+    """검색 1회당 pending apply는 설정된 배치 상한을 넘기면 안 된다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_dir = tmp_path / "repo-batch-cap"
+    repo_dir.mkdir()
+    change_repo = CandidateIndexChangeRepository(db_path)
+    repo_root = str(repo_dir.resolve())
+    workspace = WorkspaceDTO(path=repo_root, name="repo-batch-cap", indexed_at=None, is_active=True)
+
+    for index in range(15):
+        target = repo_dir / f"alpha_{index}.py"
+        target.write_text(f"def alpha_symbol_{index}():\n    return {index}\n", encoding="utf-8")
+        raw = target.read_bytes()
+        change_repo.enqueue_upsert(
+            CandidateIndexChangeDTO(
+                repo_id="r_repo_batch_cap",
+                repo_root=repo_root,
+                relative_path=f"alpha_{index}.py",
+                absolute_path=str(target.resolve()),
+                content_hash=hashlib.sha256(raw).hexdigest(),
+                mtime_ns=target.stat().st_mtime_ns,
+                size_bytes=target.stat().st_size,
+                event_source="scan",
+                recorded_at="2026-02-19T00:00:00+00:00",
+            )
+        )
+
+    backend = TantivyCandidateBackend(
+        config=CandidateSearchConfig(max_file_size_bytes=512 * 1024),
+        index_root=tmp_path / "candidate-index-batch-cap",
+        change_repo=change_repo,
+        max_pending_apply_per_search=5,
+        max_maintenance_ms_per_search=1000,
+    )
+
+    first_items = backend.search(workspaces=[workspace], query="alpha_symbol", limit=50)
+    assert len(first_items) == 5
+    assert len(change_repo.acquire_pending(limit=100)) == 10
+
+    second_items = backend.search(workspaces=[workspace], query="alpha_symbol", limit=50)
+    assert len(second_items) == 10
+
+
+def test_tantivy_pending_apply_respects_zero_time_budget(tmp_path: Path) -> None:
+    """maintenance 시간 예산이 0이면 pending apply는 이월되어야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_dir = tmp_path / "repo-budget-zero"
+    repo_dir.mkdir()
+    target = repo_dir / "alpha.py"
+    target.write_text("def alpha_symbol():\n    return 1\n", encoding="utf-8")
+    raw = target.read_bytes()
+    change_repo = CandidateIndexChangeRepository(db_path)
+    repo_root = str(repo_dir.resolve())
+    change_repo.enqueue_upsert(
+        CandidateIndexChangeDTO(
+            repo_id="r_repo_budget_zero",
+            repo_root=repo_root,
+            relative_path="alpha.py",
+            absolute_path=str(target.resolve()),
+            content_hash=hashlib.sha256(raw).hexdigest(),
+            mtime_ns=target.stat().st_mtime_ns,
+            size_bytes=target.stat().st_size,
+            event_source="scan",
+            recorded_at="2026-02-19T00:00:00+00:00",
+        )
+    )
+    backend = TantivyCandidateBackend(
+        config=CandidateSearchConfig(max_file_size_bytes=512 * 1024),
+        index_root=tmp_path / "candidate-index-budget-zero",
+        change_repo=change_repo,
+        max_pending_apply_per_search=10,
+        max_maintenance_ms_per_search=0,
+    )
+    workspace = WorkspaceDTO(path=repo_root, name="repo-budget-zero", indexed_at=None, is_active=True)
+
+    items = backend.search(workspaces=[workspace], query="alpha_symbol", limit=10)
+    assert len(items) == 0
+    assert len(change_repo.acquire_pending(limit=10)) == 1
+
+
+def test_tantivy_pending_apply_backpressure_reduces_batch_limit(tmp_path: Path, monkeypatch) -> None:
+    """pending 큐 압력이 높으면 적용 배치 상한이 자동 축소되어야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_dir = tmp_path / "repo-backpressure"
+    repo_dir.mkdir()
+    workspace = WorkspaceDTO(path=str(repo_dir.resolve()), name="repo-backpressure", indexed_at=None, is_active=True)
+    change_repo = CandidateIndexChangeRepository(db_path)
+    backend = TantivyCandidateBackend(
+        config=CandidateSearchConfig(max_file_size_bytes=512 * 1024),
+        index_root=tmp_path / "candidate-index-backpressure",
+        change_repo=change_repo,
+        max_pending_apply_per_search=60,
+        min_pending_apply_on_pressure=24,
+        max_maintenance_ms_per_search=1000,
+    )
+
+    captured_limit = {"value": 0}
+
+    def _high_pressure_count() -> int:
+        return 6000
+
+    def _capture_acquire_pending(limit: int):  # type: ignore[no-untyped-def]
+        captured_limit["value"] = limit
+        return []
+
+    monkeypatch.setattr(change_repo, "count_pending_changes", _high_pressure_count)
+    monkeypatch.setattr(change_repo, "acquire_pending", _capture_acquire_pending)
+
+    _ = backend.search(workspaces=[workspace], query="alpha", limit=10)
+
+    assert captured_limit["value"] == 24

@@ -38,6 +38,8 @@ class HttpContext:
         repo_registry_repo: RepoRegistryRepository | None = None,
         lsp_metrics_provider: Callable[[], dict[str, int]] | None = None,
         db_path: Path | None = None,
+        http_bg_proxy_enabled: bool = False,
+        http_bg_proxy_target: str = "",
     ) -> None:
         """HTTP 계층에서 사용하는 서비스 집합을 초기화한다."""
         self.runtime_repo = runtime_repo
@@ -54,3 +56,5 @@ class HttpContext:
         self.repo_registry_repo = repo_registry_repo
         self.lsp_metrics_provider = lsp_metrics_provider
         self.db_path = db_path
+        self.http_bg_proxy_enabled = http_bg_proxy_enabled
+        self.http_bg_proxy_target = http_bg_proxy_target

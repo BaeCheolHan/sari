@@ -34,13 +34,10 @@ from sari.lsp.hub import LspHub
 from sari.mcp.contracts import McpError, McpResponse
 from sari.mcp.daemon_forward_policy import (
     StartDaemonFn,
-    build_forward_error_message,
     default_start_daemon,
-    extract_workspace_root,
-    forward_with_retry,
     resolve_target,
-    should_forward_to_daemon,
 )
+from sari.mcp.daemon_router import DaemonRouter, DaemonRouterConfig
 from sari.mcp.tools.admin_tools import DoctorTool, RepoCandidatesTool, RescanTool
 from sari.mcp.tool_visibility import filter_tools_list_response_payload, is_hidden_tool_name
 from sari.mcp.tools.pipeline_admin_tools import PipelineAutoSetTool, PipelineAutoStatusTool, PipelineAutoTickTool, PipelineAlertStatusTool, PipelineDeadListTool, PipelineDeadPurgeTool, PipelineDeadRequeueTool, PipelinePolicyGetTool, PipelinePolicySetTool
@@ -53,9 +50,11 @@ from sari.mcp.tools.file_collection_tools import IndexFileTool, ListFilesTool, R
 from sari.mcp.tools.symbol_tools import GetCallersTool, SearchSymbolTool
 from sari.mcp.tools.arg_normalizer import ArgNormalizationError, normalize_tool_arguments
 from sari.mcp.transport import MCP_MODE_FRAMED, McpTransport, McpTransportParseError
-from sari.mcp.server_daemon_forward import DaemonForwardError, forward_once
+from sari.mcp.server_daemon_forward import forward_once
 from sari.mcp.tools.search_tool import SearchTool
-from sari.mcp.tools.legacy_tools import ArchiveContextTool, CallGraphHealthTool, CallGraphTool, DryRunDiffTool, GetContextTool, GetImplementationsTool, GetSnippetTool, KnowledgeTool, ListSymbolsTool, ReadSymbolTool, ReadTool, SariGuideTool, SaveSnippetTool, StatusTool
+from sari.mcp.tools.sari_guide_tool import SariGuideTool
+from sari.mcp.tools.status_tool import StatusTool
+from sari.mcp.tools.legacy_tools import ArchiveContextTool, CallGraphHealthTool, CallGraphTool, DryRunDiffTool, GetContextTool, GetImplementationsTool, GetSnippetTool, KnowledgeTool, ListSymbolsTool, ReadSymbolTool, ReadTool, SaveSnippetTool
 from sari.search.candidate_search import CandidateSearchService
 from sari.search.hierarchy_scorer import HierarchyScorer
 from sari.search.importance_scorer import ImportanceScorePolicyDTO, ImportanceScorer, ImportanceWeightsDTO
@@ -83,14 +82,26 @@ class McpServer:
     def __init__(self, db_path: Path) -> None:
         init_schema(db_path)
         ensure_migrated(db_path)
+        runtime_config = AppConfig.default()
+        self._runtime_config = runtime_config
         self._db_path = db_path
-        self._proxy_to_daemon = os.getenv('SARI_MCP_FORWARD_TO_DAEMON', '').strip().lower() in {'1', 'true', 'yes', 'on'}
-        self._daemon_autostart_on_failure = os.getenv('SARI_MCP_DAEMON_AUTOSTART', '1').strip().lower() in {'1', 'true', 'yes', 'on'}
-        self._daemon_forward_timeout_sec = _parse_daemon_forward_timeout(os.getenv('SARI_MCP_DAEMON_TIMEOUT_SEC', '').strip())
+        self._proxy_to_daemon = runtime_config.mcp_forward_to_daemon
+        self._daemon_autostart_on_failure = runtime_config.mcp_daemon_autostart
+        self._daemon_forward_timeout_sec = _parse_daemon_forward_timeout(str(runtime_config.mcp_daemon_timeout_sec))
         self._daemon_start_fn: StartDaemonFn = default_start_daemon
+        self._daemon_router = DaemonRouter(
+            db_path=db_path,
+            config=DaemonRouterConfig(
+                proxy_to_daemon=self._proxy_to_daemon,
+                auto_start_on_failure=self._daemon_autostart_on_failure,
+                timeout_sec=self._daemon_forward_timeout_sec,
+            ),
+            start_daemon_fn=self._daemon_start_fn,
+            resolve_target_fn=resolve_target,
+            forward_once_fn=forward_once,
+        )
         self._closed = False
         self._managed_lsp_hubs: list[LspHub] = []
-        runtime_config = AppConfig.default()
         workspace_repo = WorkspaceRepository(db_path)
         self._workspace_repo = workspace_repo
         runtime_repo = RuntimeRepository(db_path)
@@ -140,7 +151,13 @@ class McpServer:
         orchestrator = SearchOrchestrator(workspace_repo=workspace_repo, candidate_service=candidate_service, symbol_service=SymbolResolveService(hub=shared_hub, cache_repo=symbol_cache_repo), importance_scorer=importance_scorer, hierarchy_scorer=hierarchy_scorer, vector_reranker=vector_reranker, blend_config=RankingBlendConfigDTO(w_rrf=runtime_config.ranking_w_rrf, w_importance=runtime_config.ranking_w_importance, w_vector=runtime_config.ranking_w_vector, w_hierarchy=runtime_config.ranking_w_hierarchy, version='v2-config'), repo_registry_repo=repo_registry_repo)
         self._file_collection_service = file_collection_service
         self._benchmark_collection_service = benchmark_collection_service
-        self._search_tool = SearchTool(orchestrator=orchestrator, workspace_repo=workspace_repo, metrics_provider=file_collection_service.get_pipeline_metrics, repo_registry_repo=repo_registry_repo)
+        self._search_tool = SearchTool(
+            orchestrator=orchestrator,
+            workspace_repo=workspace_repo,
+            metrics_provider=file_collection_service.get_pipeline_metrics,
+            repo_registry_repo=repo_registry_repo,
+            stabilization_enabled=runtime_config.stabilization_enabled,
+        )
         self._doctor_tool = DoctorTool(admin_service=admin_service, workspace_repo=workspace_repo)
         self._rescan_tool = RescanTool(admin_service=admin_service, workspace_repo=workspace_repo)
         self._repo_candidates_tool = RepoCandidatesTool(admin_service=admin_service, workspace_repo=workspace_repo)
@@ -152,7 +169,13 @@ class McpServer:
         self._get_callers_tool = GetCallersTool(workspace_repo=workspace_repo, lsp_repo=lsp_repo)
         self._sari_guide_tool = SariGuideTool()
         self._status_tool = StatusTool(workspace_repo=workspace_repo, runtime_repo=runtime_repo, file_repo=file_repo, lsp_repo=lsp_repo, language_probe_repo=language_probe_repo)
-        self._read_tool = ReadTool(workspace_repo=workspace_repo, file_collection_service=file_collection_service, lsp_repo=lsp_repo, knowledge_repo=knowledge_repo)
+        self._read_tool = ReadTool(
+            workspace_repo=workspace_repo,
+            file_collection_service=file_collection_service,
+            lsp_repo=lsp_repo,
+            knowledge_repo=knowledge_repo,
+            stabilization_enabled=runtime_config.stabilization_enabled,
+        )
         self._dry_run_diff_tool = DryRunDiffTool(read_tool=self._read_tool)
         self._list_symbols_tool = ListSymbolsTool(workspace_repo=workspace_repo, lsp_repo=lsp_repo)
         self._read_symbol_tool = ReadSymbolTool(workspace_repo=workspace_repo, lsp_repo=lsp_repo)
@@ -358,34 +381,24 @@ class McpServer:
 
     def _should_forward(self, payload: dict[str, object], method: str) -> bool:
         _ = payload
-        return should_forward_to_daemon(proxy_enabled=self._proxy_to_daemon, method=method)
+        return self._daemon_router.should_forward(method=method)
 
     def _forward_to_daemon(self, payload: dict[str, object], request_id: object) -> McpResponse:
-        workspace_root = extract_workspace_root(payload)
-        try:
-            forwarded = forward_with_retry(
-                request=payload,
-                db_path=self._db_path,
-                workspace_root=workspace_root,
-                host_override=None,
-                port_override=None,
-                timeout_sec=self._daemon_forward_timeout_sec,
+        self._daemon_router = DaemonRouter(
+            db_path=self._db_path,
+            config=DaemonRouterConfig(
+                proxy_to_daemon=self._proxy_to_daemon,
                 auto_start_on_failure=self._daemon_autostart_on_failure,
-                start_daemon_fn=self._daemon_start_fn,
-                resolve_target_fn=resolve_target,
-                forward_once_fn=forward_once,
-            )
-        except (OSError, TimeoutError, DaemonForwardError, ValueError) as exc:
-            return McpResponse(request_id=request_id, result=None, error=McpError(code=-32002, message=build_forward_error_message(exc)))
-        response_id = forwarded.get('id', request_id)
-        error_payload = forwarded.get('error')
-        if isinstance(error_payload, dict):
-            code = error_payload.get('code')
-            message = error_payload.get('message')
-            if isinstance(code, int) and isinstance(message, str):
-                return McpResponse(request_id=response_id, result=None, error=McpError(code=code, message=message))
-            return McpResponse(request_id=response_id, result=None, error=McpError(code=-32003, message='invalid daemon error response'))
-        result_payload = forwarded.get("result")
+                timeout_sec=self._daemon_forward_timeout_sec,
+            ),
+            start_daemon_fn=self._daemon_start_fn,
+            resolve_target_fn=resolve_target,
+            forward_once_fn=forward_once,
+        )
+        response = self._daemon_router.forward(payload=payload, request_id=request_id)
+        if response.error is not None:
+            return response
+        result_payload = response.result
         if str(payload.get("method", "")).strip() == "tools/list" and isinstance(result_payload, dict):
             if "schemaVersion" not in result_payload:
                 result_payload["schemaVersion"] = self._TOOLS_SCHEMA_VERSION
@@ -395,7 +408,7 @@ class McpServer:
             decorated_result = decorated_payload.get("result")
             if isinstance(decorated_result, dict):
                 result_payload = decorated_result
-        return McpResponse(request_id=response_id, result=result_payload, error=None)
+        return McpResponse(request_id=response.request_id, result=result_payload, error=None)
 
     def _roots_list(self) -> list[dict[str, str]]:
         roots: list[dict[str, str]] = []
@@ -416,7 +429,7 @@ class McpServer:
         for candidate in versions:
             if candidate in self._SUPPORTED_PROTOCOL_VERSIONS:
                 return candidate
-        strict = os.getenv('SARI_STRICT_PROTOCOL', '').strip().lower() in {'1', 'true', 'yes', 'on'}
+        strict = self._runtime_config.strict_protocol
         if strict and len(versions) > 0:
             raise ValueError('Unsupported protocol version')
         return self._DEFAULT_PROTOCOL_VERSION

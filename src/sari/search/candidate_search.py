@@ -52,6 +52,8 @@ class PendingApplyOutcomeDTO:
     failed_rows: list["PendingApplyFailureDTO"]
     delete_probes: list["DeleteVisibilityProbeDTO"]
     mutated: bool
+    deferred_count: int = 0
+    deferred_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -63,12 +65,76 @@ class PendingApplyFailureDTO:
 
 
 @dataclass(frozen=True)
+class PendingUpsertPlanDTO:
+    """pending upsert 적용 계획을 표현한다."""
+
+    change_id: int
+    repo_root: str
+    relative_path: str
+    mtime_ns: int
+    size_bytes: int
+    doc_id: str
+    file_hash: str
+    content_lower: str
+
+
+@dataclass(frozen=True)
+class PendingDeletePlanDTO:
+    """pending delete 적용 계획을 표현한다."""
+
+    change_id: int
+    repo_root: str
+    relative_path: str
+
+
+@dataclass(frozen=True)
+class PendingApplyPlanDTO:
+    """pending 적용 전체 계획을 표현한다."""
+
+    upserts: list[PendingUpsertPlanDTO]
+    deletes: list[PendingDeletePlanDTO]
+    failed_rows: list[PendingApplyFailureDTO]
+    deferred_count: int
+    deferred_reason: str | None = None
+
+
+@dataclass(frozen=True)
 class DeleteVisibilityProbeDTO:
     """삭제 반영 후 가시성 검증 대상을 표현한다."""
 
     change_id: int
     repo_root: str
     relative_path: str
+
+
+@dataclass(frozen=True)
+class SyncUpsertPlanDTO:
+    """증분 동기화 upsert 적용 계획을 표현한다."""
+
+    repo_root: str
+    relative_path: str
+    mtime_ns: int
+    size_bytes: int
+    doc_id: str
+    file_hash: str
+    content_lower: str
+
+
+@dataclass(frozen=True)
+class SyncDeletePlanDTO:
+    """증분 동기화 delete 적용 계획을 표현한다."""
+
+    indexed_key: tuple[str, str]
+    expected_doc_id: str
+
+
+@dataclass(frozen=True)
+class IndexSyncPlanDTO:
+    """증분 동기화 전체 적용 계획을 표현한다."""
+
+    active_roots: set[str]
+    upserts: list[SyncUpsertPlanDTO]
+    deletes: list[SyncDeletePlanDTO]
 
 
 class CandidateBackend(Protocol):
@@ -157,6 +223,9 @@ class TantivyCandidateBackend:
         change_repo: CandidateIndexChangeRepository | None = None,
         sync_interval_sec: int = 1800,
         clock: Callable[[], float] | None = None,
+        max_pending_apply_per_search: int = 64,
+        max_maintenance_ms_per_search: int = 120,
+        min_pending_apply_on_pressure: int = 24,
     ) -> None:
         """인덱스 경로와 설정을 주입한다."""
         self._config = config
@@ -164,6 +233,7 @@ class TantivyCandidateBackend:
         self._index_root = index_root
         self._index_root.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
+        self._sync_lock = threading.Lock()
         self._index = self._build_index()
         self._writer: _TantivyWriterProtocol | None = None
         self._indexed_roots: set[str] = set()
@@ -173,6 +243,9 @@ class TantivyCandidateBackend:
         self._last_sync_at = 0.0
         self._sync_interval_sec = max(1, sync_interval_sec)
         self._clock = clock if clock is not None else time.monotonic
+        self._max_pending_apply_per_search = max(1, max_pending_apply_per_search)
+        self._max_maintenance_ms_per_search = max(0, max_maintenance_ms_per_search)
+        self._min_pending_apply_on_pressure = max(1, min_pending_apply_on_pressure)
 
     def search(self, workspaces: list[WorkspaceDTO], query: str, limit: int) -> list[CandidateFileDTO]:
         """Tantivy 인덱스 질의로 후보 파일을 조회한다."""
@@ -180,23 +253,60 @@ class TantivyCandidateBackend:
         if normalized_query == "":
             return []
         try:
+            pre_sync_required = False
+            now = self._clock()
+            with self._lock:
+                if self._change_repo is not None:
+                    if (
+                        not self._bootstrap_completed
+                        and not self._change_repo.has_pending_changes()
+                        and len(self._indexed_files) == 0
+                    ):
+                        # 초기 변경로그가 없는 경우에만 1회 bootstrap 동기화를 허용한다.
+                        pre_sync_required = True
+                elif self._index_dirty or (now - self._last_sync_at) >= float(self._sync_interval_sec):
+                    pre_sync_required = True
+
+            pre_sync_mutated = False
+            if pre_sync_required:
+                pre_sync_mutated = bool(self._sync_index(workspaces))
+
+            pending_outside_outcome: PendingApplyOutcomeDTO | None = None
+            if self._change_repo is not None:
+                pending_batch_limit = self._resolve_pending_batch_limit()
+                budget_sec = float(self._max_maintenance_ms_per_search) / 1000.0
+                if budget_sec <= 0.0:
+                    deferred = pending_batch_limit if self._change_repo.has_pending_changes() else 0
+                    pending_outside_outcome = PendingApplyOutcomeDTO(
+                        applied_ids=[],
+                        failed_rows=[],
+                        delete_probes=[],
+                        mutated=False,
+                        deferred_count=deferred,
+                        deferred_reason="PENDING_BUDGET_EXCEEDED",
+                    )
+                else:
+                    pending_outside_outcome = self._apply_pending_changes(
+                        workspaces=workspaces,
+                        batch_limit=pending_batch_limit,
+                        deadline_monotonic=self._clock() + budget_sec,
+                    )
+
             with self._lock:
                 now = self._clock()
-                mutated = False
+                mutated = pre_sync_mutated
                 apply_outcome: PendingApplyOutcomeDTO | None = None
                 if self._change_repo is not None:
-                    if not self._bootstrap_completed and not self._change_repo.has_pending_changes() and len(self._indexed_files) == 0:
-                        # 초기 변경로그가 없는 경우에만 1회 bootstrap 동기화를 허용한다.
-                        mutated = self._sync_index(workspaces) or mutated
-                    apply_outcome = self._apply_pending_changes(workspaces=workspaces)
+                    apply_outcome = pending_outside_outcome
+                    if apply_outcome is None:
+                        apply_outcome = PendingApplyOutcomeDTO(applied_ids=[], failed_rows=[], delete_probes=[], mutated=False)
                     mutated = apply_outcome.mutated or mutated
                     if (now - self._last_sync_at) >= float(self._sync_interval_sec):
                         mutated = self._reconcile_index_state(workspaces=workspaces) or mutated
                         self._last_sync_at = now
                     self._index_dirty = False
                     self._bootstrap_completed = True
-                elif self._index_dirty or (now - self._last_sync_at) >= float(self._sync_interval_sec):
-                    mutated = self._sync_index(workspaces) or mutated
+                elif pre_sync_required:
                     self._last_sync_at = now
                     self._index_dirty = False
 
@@ -287,9 +397,26 @@ class TantivyCandidateBackend:
 
     def _sync_index(self, workspaces: list[WorkspaceDTO]) -> bool:
         """워크스페이스 변경을 인덱스에 반영한다."""
+        with self._sync_lock:
+            with self._lock:
+                baseline_indexed_files = dict(self._indexed_files)
+            plan = self._build_sync_plan(workspaces=workspaces, baseline_indexed_files=baseline_indexed_files)
+            if len(plan.upserts) == 0 and len(plan.deletes) == 0:
+                with self._lock:
+                    self._indexed_roots = plan.active_roots
+                return False
+            with self._lock:
+                return self._apply_sync_plan(plan=plan)
+
+    def _build_sync_plan(
+        self,
+        workspaces: list[WorkspaceDTO],
+        baseline_indexed_files: dict[tuple[str, str], IndexedFileStateDTO],
+    ) -> IndexSyncPlanDTO:
+        """파일시스템을 순회해 동기화 적용 계획을 생성한다."""
         active_roots: set[str] = set()
         observed_keys: set[tuple[str, str]] = set()
-        mutated = False
+        upserts: list[SyncUpsertPlanDTO] = []
         for workspace in workspaces:
             root = Path(workspace.path).resolve()
             if not root.exists() or not root.is_dir():
@@ -310,77 +437,233 @@ class TantivyCandidateBackend:
                 relative_path = str(path.relative_to(root).as_posix())
                 indexed_key = (root_text, relative_path)
                 observed_keys.add(indexed_key)
-                previous = self._indexed_files.get(indexed_key)
+                previous = baseline_indexed_files.get(indexed_key)
                 if previous is not None and previous.mtime_ns == stat.st_mtime_ns and previous.size_bytes == stat.st_size:
                     continue
 
                 raw = path.read_bytes()
                 file_hash = hashlib.sha256(raw).hexdigest()
                 doc_id = hashlib.sha256(f"{root_text}\0{relative_path}".encode("utf-8")).hexdigest()
-                if previous is not None:
-                    self._get_writer().delete_documents_by_term("doc_id", previous.doc_id)
-                self._get_writer().add_document(
-                    Document(
-                        doc_id=doc_id,
+                upserts.append(
+                    SyncUpsertPlanDTO(
                         repo_root=root_text,
                         relative_path=relative_path,
+                        mtime_ns=stat.st_mtime_ns,
+                        size_bytes=stat.st_size,
+                        doc_id=doc_id,
                         file_hash=file_hash,
-                        content=decode_bytes_with_policy(raw).text.lower(),
+                        content_lower=decode_bytes_with_policy(raw).text.lower(),
                     )
                 )
-                self._indexed_files[indexed_key] = IndexedFileStateDTO(
-                    mtime_ns=stat.st_mtime_ns,
-                    size_bytes=stat.st_size,
-                    doc_id=doc_id,
-                    file_hash=file_hash,
-                )
-                mutated = True
 
-        removed_keys: list[tuple[str, str]] = []
-        for indexed_key, state in self._indexed_files.items():
+        deletes: list[SyncDeletePlanDTO] = []
+        for indexed_key, state in baseline_indexed_files.items():
             repo_root, _ = indexed_key
             if repo_root not in active_roots or indexed_key not in observed_keys:
-                self._get_writer().delete_documents_by_term("doc_id", state.doc_id)
-                removed_keys.append(indexed_key)
-                mutated = True
-        for indexed_key in removed_keys:
-            self._indexed_files.pop(indexed_key, None)
-        self._indexed_roots = active_roots
+                deletes.append(SyncDeletePlanDTO(indexed_key=indexed_key, expected_doc_id=state.doc_id))
+        return IndexSyncPlanDTO(active_roots=active_roots, upserts=upserts, deletes=deletes)
+
+    def _apply_sync_plan(self, plan: IndexSyncPlanDTO) -> bool:
+        """동기화 적용 계획을 인덱스와 상태 맵에 반영한다."""
+        mutated = False
+        for upsert in plan.upserts:
+            indexed_key = (upsert.repo_root, upsert.relative_path)
+            previous = self._indexed_files.get(indexed_key)
+            if previous is not None:
+                self._get_writer().delete_documents_by_term("doc_id", previous.doc_id)
+            self._get_writer().add_document(
+                Document(
+                    doc_id=upsert.doc_id,
+                    repo_root=upsert.repo_root,
+                    relative_path=upsert.relative_path,
+                    file_hash=upsert.file_hash,
+                    content=upsert.content_lower,
+                )
+            )
+            self._indexed_files[indexed_key] = IndexedFileStateDTO(
+                mtime_ns=upsert.mtime_ns,
+                size_bytes=upsert.size_bytes,
+                doc_id=upsert.doc_id,
+                file_hash=upsert.file_hash,
+            )
+            mutated = True
+        for delete_plan in plan.deletes:
+            current = self._indexed_files.get(delete_plan.indexed_key)
+            if current is None:
+                continue
+            if current.doc_id != delete_plan.expected_doc_id:
+                # 동기화 계획 생성 이후 변경된 항목은 제거하지 않는다.
+                continue
+            self._get_writer().delete_documents_by_term("doc_id", current.doc_id)
+            self._indexed_files.pop(delete_plan.indexed_key, None)
+            mutated = True
+        self._indexed_roots = plan.active_roots
         return mutated
 
-    def _apply_pending_changes(self, workspaces: list[WorkspaceDTO], batch_limit: int = 1000) -> PendingApplyOutcomeDTO:
+    def _apply_pending_changes(
+        self,
+        workspaces: list[WorkspaceDTO],
+        batch_limit: int = 1000,
+        deadline_monotonic: float | None = None,
+    ) -> PendingApplyOutcomeDTO:
         """pending 변경 로그를 Tantivy 인덱스에 증분 반영한다."""
         if self._change_repo is None:
             return PendingApplyOutcomeDTO(applied_ids=[], failed_rows=[], delete_probes=[], mutated=False)
         pending = self._change_repo.acquire_pending(limit=batch_limit)
         if len(pending) == 0:
             return PendingApplyOutcomeDTO(applied_ids=[], failed_rows=[], delete_probes=[], mutated=False)
+
         workspace_roots = {str(Path(item.path).resolve()) for item in workspaces}
-        applied_ids: list[int] = []
+        plan = self._build_pending_apply_plan(
+            workspace_roots=workspace_roots,
+            pending=pending,
+            deadline_monotonic=deadline_monotonic,
+        )
+        return self._apply_pending_plan(plan=plan)
+
+    def _resolve_pending_batch_limit(self) -> int:
+        """pending 큐 압력에 따라 적용 배치 상한을 동적으로 조정한다."""
+        if self._change_repo is None:
+            return self._max_pending_apply_per_search
+        pending_count = self._change_repo.count_pending_changes()
+        limit = self._max_pending_apply_per_search
+        if pending_count >= 5000:
+            limit = max(self._min_pending_apply_on_pressure, limit // 3)
+        elif pending_count >= 1000:
+            limit = max(self._min_pending_apply_on_pressure, limit // 2)
+        return limit
+
+    def _build_pending_apply_plan(
+        self,
+        workspace_roots: set[str],
+        pending: list,  # type: ignore[type-arg]
+        deadline_monotonic: float | None,
+    ) -> PendingApplyPlanDTO:
+        """pending 변경 로그에서 적용 계획을 생성한다."""
+        upserts: list[PendingUpsertPlanDTO] = []
+        deletes: list[PendingDeletePlanDTO] = []
         failed_rows: list[PendingApplyFailureDTO] = []
-        delete_probes: list[DeleteVisibilityProbeDTO] = []
-        mutated = False
-        for change in pending:
+        deferred_count = 0
+        deferred_reason: str | None = None
+        for index, change in enumerate(pending):
+            if deadline_monotonic is not None and self._clock() > deadline_monotonic:
+                deferred_count = len(pending) - index
+                deferred_reason = "PENDING_BUDGET_EXCEEDED"
+                break
             try:
                 if change.change_type == "UPSERT":
-                    self._apply_upsert_change(workspace_roots=workspace_roots, change=change)
-                    mutated = True
+                    upserts.append(self._build_pending_upsert_plan(workspace_roots=workspace_roots, change=change))
                 elif change.change_type == "DELETE":
-                    self._apply_delete_change(repo_root=change.repo_root, relative_path=change.relative_path)
-                    delete_probes.append(
-                        DeleteVisibilityProbeDTO(
+                    deletes.append(
+                        PendingDeletePlanDTO(
                             change_id=change.change_id,
                             repo_root=str(Path(change.repo_root).resolve()),
                             relative_path=change.relative_path,
                         )
                     )
-                    mutated = True
                 else:
                     raise ValueError(f"unsupported change_type: {change.change_type}")
-                applied_ids.append(change.change_id)
             except (RuntimeError, OSError, ValueError, TypeError) as exc:
                 failed_rows.append(PendingApplyFailureDTO(change_id=change.change_id, message=f"candidate apply failed: {exc}"))
-        return PendingApplyOutcomeDTO(applied_ids=applied_ids, failed_rows=failed_rows, delete_probes=delete_probes, mutated=mutated)
+        return PendingApplyPlanDTO(
+            upserts=upserts,
+            deletes=deletes,
+            failed_rows=failed_rows,
+            deferred_count=deferred_count,
+            deferred_reason=deferred_reason,
+        )
+
+    def _build_pending_upsert_plan(self, workspace_roots: set[str], change) -> PendingUpsertPlanDTO:  # type: ignore[no-untyped-def]
+        """pending upsert 로그를 파일 기준 적용 계획으로 변환한다."""
+        if change.absolute_path is None or change.content_hash is None or change.mtime_ns is None or change.size_bytes is None:
+            raise ValueError("upsert payload is incomplete")
+        repo_root = str(Path(change.repo_root).resolve())
+        if not self._is_active_repo_root(workspace_roots=workspace_roots, repo_root=repo_root):
+            raise ValueError("repo is not active workspace")
+        file_path = Path(change.absolute_path).resolve()
+        if not file_path.exists() or not file_path.is_file():
+            return PendingUpsertPlanDTO(
+                change_id=change.change_id,
+                repo_root=repo_root,
+                relative_path=change.relative_path,
+                mtime_ns=0,
+                size_bytes=0,
+                doc_id="",
+                file_hash="",
+                content_lower="",
+            )
+        stat = file_path.stat()
+        if stat.st_mtime_ns != change.mtime_ns or stat.st_size != change.size_bytes:
+            raise ValueError("mtime/size mismatch")
+        raw = file_path.read_bytes()
+        computed_hash = hashlib.sha256(raw).hexdigest()
+        if computed_hash != change.content_hash:
+            raise ValueError("content hash mismatch")
+        return PendingUpsertPlanDTO(
+            change_id=change.change_id,
+            repo_root=repo_root,
+            relative_path=change.relative_path,
+            mtime_ns=stat.st_mtime_ns,
+            size_bytes=stat.st_size,
+            doc_id=self._build_doc_id(repo_root=repo_root, relative_path=change.relative_path),
+            file_hash=computed_hash,
+            content_lower=decode_bytes_with_policy(raw).text.lower(),
+        )
+
+    def _apply_pending_plan(self, plan: PendingApplyPlanDTO) -> PendingApplyOutcomeDTO:
+        """pending 적용 계획을 인덱스와 상태맵에 반영한다."""
+        applied_ids: list[int] = []
+        failed_rows = list(plan.failed_rows)
+        delete_probes: list[DeleteVisibilityProbeDTO] = []
+        mutated = False
+        with self._lock:
+            for upsert in plan.upserts:
+                if upsert.doc_id == "":
+                    self._apply_delete_change(repo_root=upsert.repo_root, relative_path=upsert.relative_path)
+                    applied_ids.append(upsert.change_id)
+                    mutated = True
+                    continue
+                indexed_key = (upsert.repo_root, upsert.relative_path)
+                previous = self._indexed_files.get(indexed_key)
+                if previous is not None:
+                    self._get_writer().delete_documents_by_term("doc_id", previous.doc_id)
+                self._get_writer().add_document(
+                    Document(
+                        doc_id=upsert.doc_id,
+                        repo_root=upsert.repo_root,
+                        relative_path=upsert.relative_path,
+                        file_hash=upsert.file_hash,
+                        content=upsert.content_lower,
+                    )
+                )
+                self._indexed_files[indexed_key] = IndexedFileStateDTO(
+                    mtime_ns=upsert.mtime_ns,
+                    size_bytes=upsert.size_bytes,
+                    doc_id=upsert.doc_id,
+                    file_hash=upsert.file_hash,
+                )
+                self._indexed_roots.add(upsert.repo_root)
+                applied_ids.append(upsert.change_id)
+                mutated = True
+            for delete_plan in plan.deletes:
+                self._apply_delete_change(repo_root=delete_plan.repo_root, relative_path=delete_plan.relative_path)
+                delete_probes.append(
+                    DeleteVisibilityProbeDTO(
+                        change_id=delete_plan.change_id,
+                        repo_root=delete_plan.repo_root,
+                        relative_path=delete_plan.relative_path,
+                    )
+                )
+                applied_ids.append(delete_plan.change_id)
+                mutated = True
+        return PendingApplyOutcomeDTO(
+            applied_ids=applied_ids,
+            failed_rows=failed_rows,
+            delete_probes=delete_probes,
+            mutated=mutated,
+            deferred_count=plan.deferred_count,
+            deferred_reason=plan.deferred_reason,
+        )
 
     def _apply_upsert_change(self, workspace_roots: set[str], change) -> None:  # type: ignore[no-untyped-def]
         """upsert 변경 로그를 인덱스 문서로 반영한다."""

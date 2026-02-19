@@ -205,6 +205,23 @@ class CandidateIndexChangeRepository:
             ).fetchone()
         return row is not None
 
+    def count_pending_changes(self) -> int:
+        """pending 변경 로그 개수를 반환한다."""
+        with connect(self._db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS total_count
+                FROM candidate_index_changes
+                WHERE status = 'PENDING'
+                """
+            ).fetchone()
+        if row is None:
+            return 0
+        raw = row["total_count"]
+        if isinstance(raw, int):
+            return raw
+        return int(raw)
+
     def mark_applied(self, change_id: int, updated_at: str) -> None:
         """변경 로그를 적용 완료 상태로 전환한다."""
         with connect(self._db_path) as conn:
