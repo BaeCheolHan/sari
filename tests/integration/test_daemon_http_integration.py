@@ -210,6 +210,8 @@ def test_daemon_start_status_stop_and_http(tmp_path: Path) -> None:
         assert isinstance(reconcile_result, dict)
         assert "reconciled_daemons" in reconcile_result
         assert "reaped_lsp" in reconcile_result
+        assert "reaped_lsp_by_language" in reconcile_result
+        assert "drain_failures" in reconcile_result
         assert "orphan_workers_stopped" in reconcile_result
         assert "stale_registry_cleaned" in reconcile_result
 

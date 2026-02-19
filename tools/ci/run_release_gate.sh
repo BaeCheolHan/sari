@@ -161,8 +161,20 @@ reconcile_url, payload = resolve_reconcile_payload()
 result = payload.get("result")
 if not isinstance(result, dict):
     raise SystemExit("reconcile result missing")
-required_keys = ("reconciled_daemons", "reaped_lsp", "orphan_workers_stopped", "stale_registry_cleaned")
+required_keys = (
+    "reconciled_daemons",
+    "reaped_lsp",
+    "reaped_lsp_by_language",
+    "drain_failures",
+    "orphan_workers_stopped",
+    "stale_registry_cleaned",
+)
 for key in required_keys:
+    if key == "reaped_lsp_by_language":
+        breakdown = result.get(key, {})
+        if not isinstance(breakdown, dict) or len(breakdown) != 0:
+            raise SystemExit(f"reconcile strict-zero failed: {result}")
+        continue
     if int(result.get(key, 0)) != 0:
         raise SystemExit(f"reconcile strict-zero failed: {result}")
 print(json.dumps({"url": reconcile_url, "result": result}, ensure_ascii=False))

@@ -13,6 +13,7 @@ from pathlib import Path
 
 from sari import __version__ as SARI_RUNTIME_VERSION
 from sari.core.config import AppConfig
+from sari.core.exceptions import DaemonError, ErrorContext
 from sari.core.models import now_iso8601_utc
 from sari.db.repositories.daemon_registry_repository import DaemonRegistryRepository
 from sari.db.repositories.file_enrich_queue_repository import FileEnrichQueueRepository
@@ -50,6 +51,8 @@ class AdminService:
         self._queue_repo = queue_repo
         self._registry_repo = registry_repo
         self._lsp_reconciler = lsp_reconciler
+        self._last_runtime_reconcile_at: str | None = None
+        self._last_runtime_reconcile_result: str | None = None
 
     def doctor(self) -> list[DoctorCheckDTO]:
         """핵심 런타임 상태를 점검한다."""
@@ -369,12 +372,14 @@ class AdminService:
         """등록된 워크스페이스를 후보 저장소 목록으로 반환한다."""
         return [{"repo": ws.path, "name": ws.name} for ws in self._workspace_repo.list_all()]
 
-    def runtime_reconcile(self) -> dict[str, int]:
+    def runtime_reconcile(self) -> dict[str, object]:
         """런타임/레지스트리 불일치를 정리하고 정리 건수를 반환한다."""
         reconciled_daemons = 0
         stale_registry_cleaned = 0
         reaped_lsp = 0
         orphan_workers_stopped = 0
+        reaped_lsp_by_language: dict[str, int] = {}
+        drain_failures = 0
         runtime = self._runtime_repo.get_runtime()
         if runtime is not None and not self._is_pid_alive(runtime.pid):
             self._runtime_repo.clear_runtime()
@@ -385,12 +390,54 @@ class AdminService:
         if self._queue_repo is not None:
             orphan_workers_stopped = self._queue_repo.reset_running_to_failed(now_iso=now_iso8601_utc())
         if self._lsp_reconciler is not None:
-            reaped_lsp = max(0, int(self._lsp_reconciler()))
+            try:
+                raw_result = self._lsp_reconciler()
+            except (RuntimeError, OSError, ValueError, TypeError) as exc:
+                self._last_runtime_reconcile_at = now_iso8601_utc()
+                self._last_runtime_reconcile_result = "failed"
+                raise DaemonError(
+                    ErrorContext(
+                        code="ERR_RUNTIME_RECONCILE_FAILED",
+                        message=f"runtime reconcile failed: {exc}",
+                    )
+                ) from exc
+            try:
+                if isinstance(raw_result, dict):
+                    reaped_lsp = max(0, int(raw_result.get("reaped_lsp", 0)))
+                    drain_failures = max(0, int(raw_result.get("drain_failures", 0)))
+                    raw_breakdown = raw_result.get("reaped_lsp_by_language", {})
+                    if isinstance(raw_breakdown, dict):
+                        reaped_lsp_by_language = {
+                            str(language): max(0, int(count))
+                            for language, count in raw_breakdown.items()
+                        }
+                else:
+                    reaped_lsp = max(0, int(raw_result))
+            except (TypeError, ValueError) as exc:
+                self._last_runtime_reconcile_at = now_iso8601_utc()
+                self._last_runtime_reconcile_result = "failed"
+                raise DaemonError(
+                    ErrorContext(
+                        code="ERR_RUNTIME_RECONCILE_FAILED",
+                        message=f"runtime reconcile payload invalid: {exc}",
+                    )
+                ) from exc
+        self._last_runtime_reconcile_at = now_iso8601_utc()
+        self._last_runtime_reconcile_result = "ok"
         return {
             "reconciled_daemons": reconciled_daemons,
             "reaped_lsp": reaped_lsp,
+            "reaped_lsp_by_language": reaped_lsp_by_language,
+            "drain_failures": drain_failures,
             "orphan_workers_stopped": orphan_workers_stopped,
             "stale_registry_cleaned": stale_registry_cleaned,
+        }
+
+    def get_runtime_reconcile_state(self) -> dict[str, object]:
+        """마지막 reconcile 실행 상태를 반환한다."""
+        return {
+            "reconcile_last_run_ts": self._last_runtime_reconcile_at,
+            "reconcile_last_result": self._last_runtime_reconcile_result,
         }
 
     def _is_pid_alive(self, pid: int) -> bool:

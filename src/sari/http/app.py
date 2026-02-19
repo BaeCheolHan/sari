@@ -132,15 +132,16 @@ async def status_endpoint(request) -> JSONResponse:
     workspaces = context.workspace_repo.list_all()
     language_support = _build_language_support_payload(context.language_probe_repo)
     lsp_metrics = context.lsp_metrics_provider() if context.lsp_metrics_provider is not None else {}
+    reconcile_state = context.admin_service.get_runtime_reconcile_state()
     if runtime is None:
         metrics = None
         if context.file_collection_service is not None:
             metrics = context.file_collection_service.get_pipeline_metrics().to_dict()
-        return JSONResponse({'daemon': None, 'workspace_count': len(workspaces), 'phase': 'phase2', 'run_mode': context.admin_service.run_mode(), 'pipeline_metrics': metrics, 'language_support': language_support, 'daemon_lifecycle': None, 'lsp_metrics': lsp_metrics})
+        return JSONResponse({'daemon': None, 'workspace_count': len(workspaces), 'phase': 'phase2', 'run_mode': context.admin_service.run_mode(), 'pipeline_metrics': metrics, 'language_support': language_support, 'daemon_lifecycle': None, 'lsp_metrics': lsp_metrics, 'reconcile_state': reconcile_state})
     metrics = None
     if context.file_collection_service is not None:
         metrics = context.file_collection_service.get_pipeline_metrics().to_dict()
-    return JSONResponse({'daemon': {'pid': runtime.pid, 'host': runtime.host, 'port': runtime.port, 'state': runtime.state, 'started_at': runtime.started_at, 'session_count': runtime.session_count, 'last_heartbeat_at': runtime.last_heartbeat_at, 'last_exit_reason': runtime.last_exit_reason}, 'workspace_count': len(workspaces), 'phase': 'phase2', 'run_mode': context.admin_service.run_mode(), 'pipeline_metrics': metrics, 'language_support': language_support, 'daemon_lifecycle': {'last_heartbeat_at': runtime.last_heartbeat_at, 'heartbeat_age_sec': _heartbeat_age_sec(runtime.last_heartbeat_at), 'last_exit_reason': runtime.last_exit_reason}, 'lsp_metrics': lsp_metrics})
+    return JSONResponse({'daemon': {'pid': runtime.pid, 'host': runtime.host, 'port': runtime.port, 'state': runtime.state, 'started_at': runtime.started_at, 'session_count': runtime.session_count, 'last_heartbeat_at': runtime.last_heartbeat_at, 'last_exit_reason': runtime.last_exit_reason}, 'workspace_count': len(workspaces), 'phase': 'phase2', 'run_mode': context.admin_service.run_mode(), 'pipeline_metrics': metrics, 'language_support': language_support, 'daemon_lifecycle': {'last_heartbeat_at': runtime.last_heartbeat_at, 'heartbeat_age_sec': _heartbeat_age_sec(runtime.last_heartbeat_at), 'last_exit_reason': runtime.last_exit_reason}, 'lsp_metrics': lsp_metrics, 'reconcile_state': reconcile_state})
 
 
 async def mcp_jsonrpc_endpoint(request) -> JSONResponse:

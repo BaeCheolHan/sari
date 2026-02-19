@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import threading
 from pathlib import Path
 import sys
 
@@ -68,3 +69,72 @@ def test_main_routes_call_flow(monkeypatch):
 
     assert probe.main() == 0
     assert called["call_flow"] is True
+
+
+def test_run_soak_passes_under_threshold(monkeypatch):
+    """soak은 허용 실패율/타임아웃 상한 이내일 때 성공해야 한다."""
+    probe = _load_probe_module()
+    monkeypatch.setenv("SARI_MCP_PROBE_REPO", "/tmp/repo")
+    monkeypatch.setenv("SARI_MCP_SOAK_DURATION_SEC", "1")
+    monkeypatch.setenv("SARI_MCP_SOAK_INTERVAL_SEC", "0.1")
+    monkeypatch.setenv("SARI_MCP_SOAK_MAX_FAILURE_RATE", "0.6")
+    monkeypatch.setenv("SARI_MCP_SOAK_MAX_TIMEOUT_FAILURES", "1")
+    monkeypatch.setenv("SARI_MCP_SOAK_MIN_ATTEMPTS", "2")
+    monkeypatch.setattr(probe, "_ensure_probe_repo_registered", lambda _: None)
+    monkeypatch.setattr(
+        probe.subprocess,
+        "run",
+        lambda *args, **kwargs: type("R", (), {"returncode": 0, "stdout": b"", "stderr": b""})(),
+    )
+    monkeypatch.setattr(probe.time, "sleep", lambda _x: None)
+
+    time_values = iter([0.0, 0.2, 1.2])
+    monkeypatch.setattr(probe.time, "time", lambda: next(time_values))
+    outcomes = [True, False]
+    lock = threading.Lock()
+
+    def _run_internal_client(**kwargs):
+        with lock:
+            ok = outcomes.pop(0) if len(outcomes) > 0 else True
+        if ok:
+            return True, {"stage": "ok"}
+        return False, {"stage": "timeout", "reason": "timeout"}
+
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(probe, "_run_internal_client", _run_internal_client)
+    monkeypatch.setattr(probe, "_emit_summary", lambda mode, ok, detail: captured.update({"mode": mode, "ok": ok, "detail": detail}))
+
+    assert probe._run_soak() == 0
+    assert captured["mode"] == "soak"
+    assert captured["ok"] is True
+
+
+def test_run_soak_fails_when_timeout_failures_exceed_limit(monkeypatch):
+    """soak은 타임아웃 실패 상한을 초과하면 실패해야 한다."""
+    probe = _load_probe_module()
+    monkeypatch.setenv("SARI_MCP_PROBE_REPO", "/tmp/repo")
+    monkeypatch.setenv("SARI_MCP_SOAK_DURATION_SEC", "1")
+    monkeypatch.setenv("SARI_MCP_SOAK_INTERVAL_SEC", "0.1")
+    monkeypatch.setenv("SARI_MCP_SOAK_MAX_FAILURE_RATE", "1.0")
+    monkeypatch.setenv("SARI_MCP_SOAK_MAX_TIMEOUT_FAILURES", "0")
+    monkeypatch.setenv("SARI_MCP_SOAK_MIN_ATTEMPTS", "2")
+    monkeypatch.setattr(probe, "_ensure_probe_repo_registered", lambda _: None)
+    monkeypatch.setattr(
+        probe.subprocess,
+        "run",
+        lambda *args, **kwargs: type("R", (), {"returncode": 0, "stdout": b"", "stderr": b""})(),
+    )
+    monkeypatch.setattr(probe.time, "sleep", lambda _x: None)
+
+    time_values = iter([0.0, 0.2, 1.2])
+    monkeypatch.setattr(probe.time, "time", lambda: next(time_values))
+    monkeypatch.setattr(probe, "_run_internal_client", lambda **kwargs: (False, {"stage": "timeout", "reason": "timeout"}))
+
+    try:
+        _ = probe._run_soak()
+    except RuntimeError as exc:
+        message = str(exc)
+        assert "mcp soak failed" in message
+        assert "timeout_failures" in message
+    else:
+        raise AssertionError("RuntimeError must be raised when timeout failures exceed limit")

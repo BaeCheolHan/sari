@@ -19,6 +19,9 @@ def test_release_gate_script_contains_required_checks() -> None:
     assert "mcp_concurrency_passed" in content
     assert "queue_ops_passed" in content
     assert "reconcile_passed" in content
+    assert "reaped_lsp_by_language" in content
+    assert "drain_failures" in content
+    assert "reconcile strict-zero failed" in content
     assert "final_decision" in content
     assert "run_lsp_matrix_gate.sh --report-only true" in content
     assert "release-gate-critical-lsp.log" in content

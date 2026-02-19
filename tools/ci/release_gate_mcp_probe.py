@@ -348,6 +348,9 @@ def _run_soak() -> int:
     _ensure_probe_repo_registered(probe_repo)
     duration_sec = int(os.getenv("SARI_MCP_SOAK_DURATION_SEC", "1800"))
     interval_sec = float(os.getenv("SARI_MCP_SOAK_INTERVAL_SEC", "1.0"))
+    max_failure_rate = float(os.getenv("SARI_MCP_SOAK_MAX_FAILURE_RATE", "0.0"))
+    max_timeout_failures = int(os.getenv("SARI_MCP_SOAK_MAX_TIMEOUT_FAILURES", "0"))
+    min_attempts = int(os.getenv("SARI_MCP_SOAK_MIN_ATTEMPTS", "2"))
     lanes = ("gemini", "codex")
     # 본격 루프 전에 한 번 인덱싱해 콜드스타트 잡음을 줄인다.
     _ = subprocess.run([sys.executable, "-m", "sari.cli.main", "index"], check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -389,13 +392,20 @@ def _run_soak() -> int:
                 fail_samples.append({"lane": lane, "detail": detail})
         time.sleep(max(0.1, interval_sec))
 
-    ok = failures == 0
+    failure_rate = 0.0
+    if attempts > 0:
+        failure_rate = float(failures) / float(attempts)
+    ok = attempts >= max(1, min_attempts) and failure_rate <= max_failure_rate and timeout_failures <= max_timeout_failures
     summary = {
         "duration_sec": duration_sec,
         "attempts": attempts,
         "successes": successes,
         "failures": failures,
+        "failure_rate": failure_rate,
         "timeout_failures": timeout_failures,
+        "max_failure_rate": max_failure_rate,
+        "max_timeout_failures": max_timeout_failures,
+        "min_attempts": min_attempts,
         "lane_failures": lane_failures,
         "fail_samples": fail_samples,
     }

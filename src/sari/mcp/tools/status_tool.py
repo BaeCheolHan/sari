@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Callable
+
 from sari.core.language_registry import get_enabled_language_names
 from sari.core.models import LanguageProbeStatusDTO
 from sari.db.repositories.file_collection_repository import FileCollectionRepository
@@ -91,6 +93,8 @@ class StatusTool:
         file_repo: FileCollectionRepository,
         lsp_repo: LspToolDataRepository,
         language_probe_repo: LanguageProbeRepository | None = None,
+        lsp_metrics_provider: Callable[[], dict[str, int]] | None = None,
+        reconcile_state_provider: Callable[[], dict[str, object]] | None = None,
     ) -> None:
         """필요 저장소 의존성을 주입한다."""
         self._workspace_repo = workspace_repo
@@ -98,6 +102,8 @@ class StatusTool:
         self._file_repo = file_repo
         self._lsp_repo = lsp_repo
         self._language_probe_repo = language_probe_repo
+        self._lsp_metrics_provider = lsp_metrics_provider
+        self._reconcile_state_provider = reconcile_state_provider
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """저장소 단위 상태 요약을 반환한다."""
@@ -114,6 +120,23 @@ class StatusTool:
                 break
         graph_health = self._lsp_repo.get_repo_call_graph_health(repo_root=repo_root)
         language_support = _build_language_support_payload(self._language_probe_repo)
+        lsp_metrics: dict[str, int] = {}
+        if self._lsp_metrics_provider is not None:
+            raw_metrics = self._lsp_metrics_provider()
+            if isinstance(raw_metrics, dict):
+                for key, value in raw_metrics.items():
+                    lsp_metrics[str(key)] = int(value)
+        reconcile_state: dict[str, object] = {
+            "reconcile_last_run_ts": None,
+            "reconcile_last_result": None,
+        }
+        if self._reconcile_state_provider is not None:
+            raw_state = self._reconcile_state_provider()
+            if isinstance(raw_state, dict):
+                reconcile_state = {
+                    "reconcile_last_run_ts": raw_state.get("reconcile_last_run_ts"),
+                    "reconcile_last_result": raw_state.get("reconcile_last_result"),
+                }
         return _success(
             [
                 {
@@ -124,6 +147,8 @@ class StatusTool:
                     "relation_count": graph_health["relation_count"],
                     "orphan_relation_count": graph_health["orphan_relation_count"],
                     "language_support": language_support,
+                    "lsp_metrics": lsp_metrics,
+                    "reconcile_state": reconcile_state,
                 }
             ]
         )

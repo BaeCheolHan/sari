@@ -71,6 +71,8 @@ from sari.services.language_probe_service import LanguageProbeService
 from sari.services.pipeline_lsp_matrix_service import PipelineLspMatrixService
 from sari.services.pipeline_quality_service import PipelineQualityService, SerenaGoldenBackend
 
+MAX_CONSECUTIVE_INVALID_FRAMES = 3
+
 class McpServer:
     _TOOLS_SCHEMA_VERSION = "2026-02-18.pack1.v2-line"
     _DEFAULT_PROTOCOL_VERSION = '2024-11-05'
@@ -177,7 +179,15 @@ class McpServer:
         self._search_symbol_tool = SearchSymbolTool(workspace_repo=workspace_repo, lsp_repo=lsp_repo)
         self._get_callers_tool = GetCallersTool(workspace_repo=workspace_repo, lsp_repo=lsp_repo)
         self._sari_guide_tool = SariGuideTool()
-        self._status_tool = StatusTool(workspace_repo=workspace_repo, runtime_repo=runtime_repo, file_repo=file_repo, lsp_repo=lsp_repo, language_probe_repo=language_probe_repo)
+        self._status_tool = StatusTool(
+            workspace_repo=workspace_repo,
+            runtime_repo=runtime_repo,
+            file_repo=file_repo,
+            lsp_repo=lsp_repo,
+            language_probe_repo=language_probe_repo,
+            lsp_metrics_provider=shared_hub.get_metrics,
+            reconcile_state_provider=admin_service.get_runtime_reconcile_state,
+        )
         self._read_tool = ReadTool(
             workspace_repo=workspace_repo,
             file_collection_service=file_collection_service,
@@ -537,16 +547,23 @@ def run_stdio_streams(db_path: Path, input_stream: BinaryIO, output_stream: Bina
         server._runtime_repo.increment_session()
     transport = McpTransport(input_stream=input_stream, output_stream=output_stream, allow_jsonl=True)
     transport.default_mode = MCP_MODE_FRAMED
+    consecutive_invalid_frames = 0
     try:
         while True:
             try:
                 read_result = transport.read_message()
             except McpTransportParseError as exc:
+                consecutive_invalid_frames += 1
                 parse_response = McpResponse(request_id=None, result=None, error=McpError(code=-32700, message=str(exc)))
                 transport.write_message(parse_response.to_dict(), mode=exc.mode)
+                if (not exc.recoverable) or consecutive_invalid_frames > MAX_CONSECUTIVE_INVALID_FRAMES:
+                    return 0
+                if not transport.drain_for_resync(mode=exc.mode):
+                    return 0
                 continue
             if read_result is None:
                 return 0
+            consecutive_invalid_frames = 0
             payload, mode = read_result
             response = server.handle_request(payload)
             response_payload = response.to_dict()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from starlette.responses import JSONResponse
 
+from sari.core.exceptions import DaemonError
 from sari.http.context import HttpContext
 
 
@@ -41,4 +42,8 @@ async def daemon_list_endpoint(request) -> JSONResponse:
 async def daemon_reconcile_endpoint(request) -> JSONResponse:
     """런타임 불일치 정리를 실행하고 결과를 반환한다."""
     context: HttpContext = request.app.state.context
-    return JSONResponse({"result": context.admin_service.runtime_reconcile()})
+    try:
+        result = context.admin_service.runtime_reconcile()
+    except DaemonError as exc:
+        return JSONResponse({"error": {"code": exc.context.code, "message": exc.context.message}}, status_code=503)
+    return JSONResponse({"result": result})

@@ -25,6 +25,10 @@ class _AdminServiceStub:
         """현재 모드를 반환한다."""
         return "prod"
 
+    def get_runtime_reconcile_state(self) -> dict[str, object]:
+        """마지막 reconcile 상태를 반환한다."""
+        return {"reconcile_last_run_ts": None, "reconcile_last_result": None}
+
 
 def test_http_status_exposes_language_readiness_snapshot(tmp_path: Path) -> None:
     """HTTP status는 언어 readiness 스냅샷 목록을 포함해야 한다."""
@@ -96,6 +100,16 @@ def test_mcp_status_exposes_language_readiness_snapshot(tmp_path: Path) -> None:
         file_repo=FileCollectionRepository(db_path),
         lsp_repo=LspToolDataRepository(db_path),
         language_probe_repo=probe_repo,
+        lsp_metrics_provider=lambda: {
+            "lsp_instance_count": 4,
+            "lsp_forced_kill_count": 1,
+            "lsp_stop_timeout_count": 0,
+            "lsp_orphan_suspect_count": 2,
+        },
+        reconcile_state_provider=lambda: {
+            "reconcile_last_run_ts": "2026-02-19T12:00:00+00:00",
+            "reconcile_last_result": "ok",
+        },
     )
     payload = tool.call({"repo": str(repo_root.resolve())})
 
@@ -104,3 +118,6 @@ def test_mcp_status_exposes_language_readiness_snapshot(tmp_path: Path) -> None:
     language_support = item["language_support"]
     assert len(language_support["languages"]) >= 1
     assert any(entry["language"] == "python" for entry in language_support["languages"])
+    assert item["lsp_metrics"]["lsp_instance_count"] == 4
+    assert item["lsp_metrics"]["lsp_orphan_suspect_count"] == 2
+    assert item["reconcile_state"]["reconcile_last_run_ts"] == "2026-02-19T12:00:00+00:00"

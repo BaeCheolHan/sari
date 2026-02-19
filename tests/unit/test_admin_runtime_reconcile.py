@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from sari.core.exceptions import DaemonError
 from sari.core.config import AppConfig
 from sari.core.models import DaemonRuntimeDTO, WorkspaceDTO
 from sari.db.migration import ensure_migrated
@@ -90,3 +91,41 @@ def test_runtime_reconcile_clears_stale_runtime_pid(tmp_path: Path) -> None:
 
     payload = service.runtime_reconcile()
     assert payload["reconciled_daemons"] == 1
+
+
+def test_runtime_reconcile_includes_lsp_breakdown_and_drain_failures(tmp_path: Path) -> None:
+    """reconcile 결과는 LSP 상세 정리 통계를 포함해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    ensure_migrated(db_path)
+    service = _build_service(db_path)
+    service._lsp_reconciler = lambda: {  # type: ignore[assignment]
+        "reaped_lsp": 3,
+        "reaped_lsp_by_language": {"python": 2, "java": 1},
+        "drain_failures": 1,
+    }
+
+    payload = service.runtime_reconcile()
+    assert payload["reaped_lsp"] == 3
+    assert payload["drain_failures"] == 1
+    assert payload["reaped_lsp_by_language"] == {"python": 2, "java": 1}
+
+
+def test_runtime_reconcile_raises_explicit_error_when_lsp_reconcile_fails(tmp_path: Path) -> None:
+    """LSP 정리 실패는 명시적 도메인 오류로 승격해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    ensure_migrated(db_path)
+    service = _build_service(db_path)
+
+    def _raise_reconcile_failure() -> int:
+        raise RuntimeError("reconcile hang")
+
+    service._lsp_reconciler = _raise_reconcile_failure  # type: ignore[assignment]
+    try:
+        _ = service.runtime_reconcile()
+    except DaemonError as exc:
+        assert exc.context.code == "ERR_RUNTIME_RECONCILE_FAILED"
+        assert "reconcile hang" in exc.context.message
+    else:
+        raise AssertionError("DaemonError must be raised when LSP reconcile fails")
