@@ -7,6 +7,7 @@ import pathlib
 import shutil
 import subprocess
 import threading
+import time as monotonic_time
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Hashable, Iterator
@@ -54,6 +55,7 @@ class LSPFileBuffer:
         self._content_hash: str | None = None
         self._is_open_in_ls = False
         self._last_synced_hash: str | None = None
+        self.last_used_at = monotonic_time.monotonic()
         if open_in_ls:
             self._open_in_ls()
 
@@ -71,9 +73,16 @@ class LSPFileBuffer:
 
     def ensure_open_in_ls(self) -> None:
         self._open_in_ls()
+        self.touch()
 
     def mark_content_updated(self) -> None:
         self._content_hash = None
+
+    def mark_incremental_change_synced(self) -> None:
+        self._last_synced_hash = self.content_hash
+
+    def touch(self) -> None:
+        self.last_used_at = monotonic_time.monotonic()
 
     def sync_changes_to_ls(self) -> None:
         if not self._is_open_in_ls:
@@ -276,6 +285,16 @@ class SolidLanguageServer(ABC):
         self._ignore_spec = pathspec.PathSpec.from_lines(pathspec.patterns.GitWildMatchPattern, processed_patterns)
         self._request_timeout: float | None = None
         self._has_waited_for_cross_file_references = False
+        buffer_idle_ttl_raw = self._custom_settings.get("open_file_buffer_idle_ttl_sec", 20.0)
+        buffer_max_open_raw = self._custom_settings.get("open_file_buffer_max_open", 512)
+        try:
+            self._open_file_buffer_idle_ttl_sec = max(1.0, float(buffer_idle_ttl_raw))
+        except (TypeError, ValueError):
+            self._open_file_buffer_idle_ttl_sec = 20.0
+        try:
+            self._open_file_buffer_max_open = max(16, int(buffer_max_open_raw))
+        except (TypeError, ValueError):
+            self._open_file_buffer_max_open = 512
 
     def _create_dependency_provider(self) -> LanguageServerDependencyProvider:
         raise NotImplementedError(f'{self.__class__.__name__} must implement _create_dependency_provider() or pass process_launch_info to __init__()')
@@ -376,11 +395,51 @@ class SolidLanguageServer(ABC):
     def _get_language_id_for_file(self, relative_file_path: str) -> str:
         return self.language_id
 
+    def _evict_open_file_buffers(self, force_lru: bool) -> None:
+        now = monotonic_time.monotonic()
+        stale_uris: list[str] = []
+        for uri, buffer in self.open_file_buffers.items():
+            if buffer.ref_count > 0:
+                continue
+            if (now - buffer.last_used_at) >= self._open_file_buffer_idle_ttl_sec:
+                stale_uris.append(uri)
+        for uri in stale_uris:
+            buffer = self.open_file_buffers.get(uri)
+            if buffer is None:
+                continue
+            try:
+                buffer.close()
+            except (RuntimeError, OSError, ValueError, TypeError) as exc:
+                raise SolidLSPException(f"ERR_LSP_BUFFER_EVICT_FAILED: {exc}") from exc
+            self.open_file_buffers.pop(uri, None)
+        if not force_lru:
+            return
+        while len(self.open_file_buffers) > self._open_file_buffer_max_open:
+            lru_uri: str | None = None
+            lru_time = float("inf")
+            for uri, buffer in self.open_file_buffers.items():
+                if buffer.ref_count > 0:
+                    continue
+                if buffer.last_used_at < lru_time:
+                    lru_time = buffer.last_used_at
+                    lru_uri = uri
+            if lru_uri is None:
+                return
+            lru_buffer = self.open_file_buffers.get(lru_uri)
+            if lru_buffer is None:
+                continue
+            try:
+                lru_buffer.close()
+            except (RuntimeError, OSError, ValueError, TypeError) as exc:
+                raise SolidLSPException(f"ERR_LSP_BUFFER_EVICT_FAILED: {exc}") from exc
+            self.open_file_buffers.pop(lru_uri, None)
+
     @contextmanager
     def open_file(self, relative_file_path: str, open_in_ls: bool=True) -> Iterator[LSPFileBuffer]:
         if not self.server_started:
             log.error('open_file called before Language Server started')
             raise SolidLSPException('Language Server not started')
+        self._evict_open_file_buffers(force_lru=True)
         absolute_file_path = str(PurePath(self.repository_root_path, relative_file_path))
         uri = pathlib.Path(absolute_file_path).as_uri()
         if uri in self.open_file_buffers:
@@ -388,10 +447,12 @@ class SolidLanguageServer(ABC):
             assert fb.uri == uri
             assert fb.ref_count >= 1
             fb.ref_count += 1
+            fb.touch()
             if open_in_ls:
                 fb.ensure_open_in_ls()
             yield fb
             fb.ref_count -= 1
+            fb.touch()
         else:
             contents = FileUtils.read_file(absolute_file_path, self._encoding)
             version = 0
@@ -400,9 +461,8 @@ class SolidLanguageServer(ABC):
             self.open_file_buffers[uri] = fb
             yield fb
             fb.ref_count -= 1
-        if self.open_file_buffers[uri].ref_count == 0:
-            self.open_file_buffers[uri].close()
-            del self.open_file_buffers[uri]
+            fb.touch()
+        self._evict_open_file_buffers(force_lru=True)
 
     @contextmanager
     def _open_file_context(self, relative_file_path: str, file_buffer: LSPFileBuffer | None=None, open_in_ls: bool=True) -> Iterator[LSPFileBuffer]:
@@ -427,6 +487,7 @@ class SolidLanguageServer(ABC):
         file_buffer.contents = new_contents
         file_buffer.mark_content_updated()
         self.server.notify.did_change_text_document({LSPConstants.TEXT_DOCUMENT: {LSPConstants.VERSION: file_buffer.version, LSPConstants.URI: file_buffer.uri}, LSPConstants.CONTENT_CHANGES: [{LSPConstants.RANGE: {'start': {'line': line, 'character': column}, 'end': {'line': line, 'character': column}}, 'text': text_to_be_inserted}]})
+        file_buffer.mark_incremental_change_synced()
         return ls_types.Position(line=new_l, character=new_c)
 
     def delete_text_between_positions(self, relative_file_path: str, start: ls_types.Position, end: ls_types.Position) -> str:
@@ -442,6 +503,7 @@ class SolidLanguageServer(ABC):
         file_buffer.contents = new_contents
         file_buffer.mark_content_updated()
         self.server.notify.did_change_text_document({LSPConstants.TEXT_DOCUMENT: {LSPConstants.VERSION: file_buffer.version, LSPConstants.URI: file_buffer.uri}, LSPConstants.CONTENT_CHANGES: [{LSPConstants.RANGE: {'start': start, 'end': end}, 'text': ''}]})
+        file_buffer.mark_incremental_change_synced()
         return deleted_text
 
     def _send_definition_request(self, definition_params: DefinitionParams) -> Definition | list[LocationLink] | None:

@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 import sqlite3
 
-HEAD_VERSION = "20260219_0006"
+HEAD_VERSION = "20260219_0007"
 BASELINE_VERSION = "20260216_0001"
 
 
@@ -102,6 +102,10 @@ def _fallback_upgrade_sqlite(db_path: Path) -> None:
         if current_version < "20260219_0006":
             _fallback_upgrade_0006(conn)
             _set_version(conn, "20260219_0006")
+            current_version = "20260219_0006"
+        if current_version < "20260219_0007":
+            _fallback_upgrade_0007(conn)
+            _set_version(conn, "20260219_0007")
         conn.commit()
 
 
@@ -369,3 +373,27 @@ def _fallback_upgrade_0006(conn: sqlite3.Connection) -> None:
             ON candidate_index_changes(repo_id, status, change_id)
             """
         )
+
+
+def _fallback_upgrade_0007(conn: sqlite3.Connection) -> None:
+    """0007 리비전 pipeline perf 실행 테이블을 적용한다."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS pipeline_perf_runs (
+            run_id TEXT PRIMARY KEY,
+            repo_root TEXT NOT NULL CHECK (repo_root <> ''),
+            target_files INTEGER NOT NULL,
+            profile TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            finished_at TEXT NULL,
+            status TEXT NOT NULL,
+            summary_json TEXT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_pipeline_perf_runs_started
+        ON pipeline_perf_runs(started_at DESC)
+        """
+    )

@@ -13,7 +13,7 @@ from pathlib import Path
 import click
 
 from sari.core.config import AppConfig
-from sari.core.exceptions import BenchmarkError, DaemonError, QualityError, SariBaseError, WorkspaceError
+from sari.core.exceptions import BenchmarkError, DaemonError, PerfError, QualityError, SariBaseError, WorkspaceError
 from sari.db.repositories.file_body_repository import FileBodyRepository
 from sari.db.repositories.file_collection_repository import FileCollectionRepository
 from sari.db.repositories.runtime_repository import RuntimeRepository
@@ -22,6 +22,7 @@ from sari.db.repositories.file_enrich_queue_repository import FileEnrichQueueRep
 from sari.db.repositories.daemon_registry_repository import DaemonRegistryRepository
 from sari.db.repositories.lsp_tool_data_repository import LspToolDataRepository
 from sari.db.repositories.pipeline_benchmark_repository import PipelineBenchmarkRepository
+from sari.db.repositories.pipeline_perf_repository import PipelinePerfRepository
 from sari.db.repositories.pipeline_quality_repository import PipelineQualityRepository
 from sari.db.repositories.pipeline_control_state_repository import PipelineControlStateRepository
 from sari.db.repositories.pipeline_job_event_repository import PipelineJobEventRepository
@@ -39,6 +40,7 @@ from sari.services.admin_service import AdminService
 from sari.services.daemon_service import DaemonService
 from sari.services.file_collection_service import build_default_file_collection_service
 from sari.services.pipeline_benchmark_service import BenchmarkLspExtractionBackend, PipelineBenchmarkService
+from sari.services.pipeline_perf_service import PipelinePerfService
 from sari.services.pipeline_quality_service import PipelineQualityService, SerenaGoldenBackend
 from sari.services.pipeline_control_service import PipelineControlService
 from sari.services.language_probe_service import LanguageProbeService
@@ -84,6 +86,7 @@ class CliServiceBundle:
     admin_service: AdminService
     pipeline_control_service: PipelineControlService
     pipeline_benchmark_service: PipelineBenchmarkService
+    pipeline_perf_service: PipelinePerfService
     pipeline_quality_service: PipelineQualityService
     language_probe_service: LanguageProbeService
     pipeline_lsp_matrix_service: PipelineLspMatrixService
@@ -121,17 +124,41 @@ def _build_services() -> CliServiceBundle:
         run_mode=config.run_mode,
         lsp_backend=BenchmarkLspExtractionBackend(),
         persist_body_for_read=False,
+        l3_parallel_enabled=config.l3_parallel_enabled,
     )
     benchmark_repo = PipelineBenchmarkRepository(config.db_path)
+    perf_repo = PipelinePerfRepository(config.db_path)
     quality_repo = PipelineQualityRepository(config.db_path)
     language_probe_repo = LanguageProbeRepository(config.db_path)
     lsp_matrix_repo = PipelineLspMatrixRepository(config.db_path)
-    quality_hub = LspHub(request_timeout_sec=config.lsp_request_timeout_sec)
-    probe_hub = LspHub(request_timeout_sec=config.lsp_request_timeout_sec)
+    quality_hub = LspHub(
+        request_timeout_sec=config.lsp_request_timeout_sec,
+        max_instances_per_repo_language=config.lsp_max_instances_per_repo_language,
+        lsp_global_soft_limit=config.lsp_global_soft_limit,
+        scale_out_hot_hits=config.lsp_scale_out_hot_hits,
+        file_buffer_idle_ttl_sec=config.lsp_file_buffer_idle_ttl_sec,
+        file_buffer_max_open=config.lsp_file_buffer_max_open,
+    )
+    probe_hub = LspHub(
+        request_timeout_sec=config.lsp_request_timeout_sec,
+        max_instances_per_repo_language=config.lsp_max_instances_per_repo_language,
+        lsp_global_soft_limit=config.lsp_global_soft_limit,
+        scale_out_hot_hits=config.lsp_scale_out_hot_hits,
+        file_buffer_idle_ttl_sec=config.lsp_file_buffer_idle_ttl_sec,
+        file_buffer_max_open=config.lsp_file_buffer_max_open,
+    )
     language_probe_service = LanguageProbeService(
         workspace_repo=workspace_repo,
         lsp_hub=probe_hub,
         probe_repo=language_probe_repo,
+    )
+    pipeline_benchmark_service = PipelineBenchmarkService(
+        file_collection_service=file_collection_service,
+        queue_repo=queue_repo,
+        lsp_repo=lsp_repo,
+        policy_repo=policy_repo,
+        benchmark_repo=benchmark_repo,
+        artifact_root=config.db_path.parent / "artifacts",
     )
     return CliServiceBundle(
         workspace_service=WorkspaceService(workspace_repo),
@@ -154,12 +181,12 @@ def _build_services() -> CliServiceBundle:
             queue_repo=queue_repo,
             control_state_repo=control_state_repo,
         ),
-        pipeline_benchmark_service=PipelineBenchmarkService(
+        pipeline_benchmark_service=pipeline_benchmark_service,
+        pipeline_perf_service=PipelinePerfService(
             file_collection_service=file_collection_service,
             queue_repo=queue_repo,
-            lsp_repo=lsp_repo,
-            policy_repo=policy_repo,
-            benchmark_repo=benchmark_repo,
+            benchmark_service=pipeline_benchmark_service,
+            perf_repo=perf_repo,
             artifact_root=config.db_path.parent / "artifacts",
         ),
         pipeline_quality_service=PipelineQualityService(
@@ -695,6 +722,46 @@ def pipeline_benchmark_report_command(latest: bool) -> None:
         _print_json({"error": asdict(exc.context)}, exit_code=1)
         return
     _print_json({"benchmark": summary})
+
+
+@pipeline_group.group("perf")
+def pipeline_perf_group() -> None:
+    """파이프라인 성능 실측 명령 그룹이다."""
+
+
+@pipeline_perf_group.command("run")
+@click.option("--repo", type=str, required=True)
+@click.option("--target-files", type=int, default=2_000, show_default=True)
+@click.option("--profile", type=str, default="realistic_v1", show_default=True)
+@click.option("--dataset-mode", type=click.Choice(["isolated", "legacy"], case_sensitive=False), default="isolated", show_default=True)
+def pipeline_perf_run_command(repo: str, target_files: int, profile: str, dataset_mode: str) -> None:
+    """혼합지표 성능 실측을 실행하고 요약 결과를 출력한다."""
+    services = _build_services()
+    try:
+        summary = services.pipeline_perf_service.run(
+            repo_root=repo,
+            target_files=target_files,
+            profile=profile,
+            dataset_mode=dataset_mode.lower(),
+        )
+    except PerfError as exc:
+        _print_json({"error": asdict(exc.context)}, exit_code=1)
+        return
+    _print_json({"perf": summary})
+
+
+@pipeline_perf_group.command("report")
+@click.option("--repo", type=str, required=True)
+def pipeline_perf_report_command(repo: str) -> None:
+    """최신 성능 실측 리포트를 출력한다."""
+    del repo
+    services = _build_services()
+    try:
+        summary = services.pipeline_perf_service.get_latest_report()
+    except PerfError as exc:
+        _print_json({"error": asdict(exc.context)}, exit_code=1)
+        return
+    _print_json({"perf": summary})
 
 
 @pipeline_group.group("quality")

@@ -30,6 +30,11 @@ def test_release_gate_script_contains_required_checks() -> None:
     assert "release-gate-queue-ops.log" in content
     assert "release-gate-reconcile.log" in content
     assert "\"logs\"" in content
+    assert "\"probe_details\"" in content
+    assert "\"probe_details_valid\"" in content
+    assert "\"probe_validation_errors\"" in content
+    assert "validate_probe_summary" in content
+    assert "missing_or_invalid_summary" in content
     assert "release-gate-critical-fixture" in content
     assert "prepare_critical_fixture" in content
     assert "Main.java" in content

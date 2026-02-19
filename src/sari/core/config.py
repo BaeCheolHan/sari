@@ -52,10 +52,16 @@ class AppConfig:
     pipeline_dead_ratio_threshold_bps: int = 10
     pipeline_alert_window_sec: int = 300
     pipeline_auto_tick_interval_sec: int = 5
+    l3_parallel_enabled: bool = True
     run_mode: str = "prod"
     daemon_heartbeat_interval_sec: int = 2
     daemon_stale_timeout_sec: int = 15
     lsp_request_timeout_sec: float = 20.0
+    lsp_max_instances_per_repo_language: int = 2
+    lsp_global_soft_limit: int = 0
+    lsp_scale_out_hot_hits: int = 24
+    lsp_file_buffer_idle_ttl_sec: float = 20.0
+    lsp_file_buffer_max_open: int = 512
     orphan_ppid_check_interval_sec: int = 1
     shutdown_join_timeout_sec: int = 2
     importance_kind_class: float = 600.0
@@ -118,10 +124,31 @@ class AppConfig:
         dead_ratio_raw = os.getenv("SARI_PIPELINE_DEAD_RATIO_THRESHOLD_BPS", str(file_config.get("pipeline_dead_ratio_threshold_bps", 10))).strip()
         alert_window_raw = os.getenv("SARI_PIPELINE_ALERT_WINDOW_SEC", str(file_config.get("pipeline_alert_window_sec", 300))).strip()
         auto_tick_raw = os.getenv("SARI_PIPELINE_AUTO_TICK_INTERVAL_SEC", str(file_config.get("pipeline_auto_tick_interval_sec", 5))).strip()
+        l3_parallel_enabled_raw = os.getenv("SARI_L3_PARALLEL_ENABLED", str(file_config.get("l3_parallel_enabled", True))).strip().lower()
         run_mode_raw = os.getenv("SARI_RUN_MODE", str(file_config.get("run_mode", "prod"))).strip().lower()
         heartbeat_raw = os.getenv("SARI_DAEMON_HEARTBEAT_INTERVAL_SEC", str(file_config.get("daemon_heartbeat_interval_sec", 2))).strip()
         stale_timeout_raw = os.getenv("SARI_DAEMON_STALE_TIMEOUT_SEC", str(file_config.get("daemon_stale_timeout_sec", 15))).strip()
         lsp_timeout_raw = os.getenv("SARI_LSP_REQUEST_TIMEOUT_SEC", str(file_config.get("lsp_request_timeout_sec", 20.0))).strip()
+        lsp_max_per_repo_lang_raw = os.getenv(
+            "SARI_LSP_MAX_INSTANCES_PER_REPO_LANGUAGE",
+            str(file_config.get("lsp_max_instances_per_repo_language", 2)),
+        ).strip()
+        lsp_global_soft_limit_raw = os.getenv(
+            "SARI_LSP_GLOBAL_SOFT_LIMIT",
+            str(file_config.get("lsp_global_soft_limit", 0)),
+        ).strip()
+        lsp_scale_out_hot_hits_raw = os.getenv(
+            "SARI_LSP_SCALE_OUT_HOT_HITS",
+            str(file_config.get("lsp_scale_out_hot_hits", 24)),
+        ).strip()
+        lsp_file_buffer_idle_ttl_raw = os.getenv(
+            "SARI_LSP_FILE_BUFFER_IDLE_TTL_SEC",
+            str(file_config.get("lsp_file_buffer_idle_ttl_sec", 20.0)),
+        ).strip()
+        lsp_file_buffer_max_open_raw = os.getenv(
+            "SARI_LSP_FILE_BUFFER_MAX_OPEN",
+            str(file_config.get("lsp_file_buffer_max_open", 512)),
+        ).strip()
         orphan_check_raw = os.getenv("SARI_ORPHAN_PPID_CHECK_INTERVAL_SEC", str(file_config.get("orphan_ppid_check_interval_sec", 1))).strip()
         shutdown_join_raw = os.getenv("SARI_SHUTDOWN_JOIN_TIMEOUT_SEC", str(file_config.get("shutdown_join_timeout_sec", 2))).strip()
         vector_enabled_raw = os.getenv("SARI_VECTOR_ENABLED", str(file_config.get("vector_enabled", False))).strip().lower()
@@ -215,6 +242,26 @@ class AppConfig:
             lsp_request_timeout_sec = max(0.1, float(lsp_timeout_raw))
         except ValueError:
             lsp_request_timeout_sec = 20.0
+        try:
+            lsp_max_instances_per_repo_language = max(1, int(lsp_max_per_repo_lang_raw))
+        except ValueError:
+            lsp_max_instances_per_repo_language = 2
+        try:
+            lsp_global_soft_limit = max(0, int(lsp_global_soft_limit_raw))
+        except ValueError:
+            lsp_global_soft_limit = 0
+        try:
+            lsp_scale_out_hot_hits = max(2, int(lsp_scale_out_hot_hits_raw))
+        except ValueError:
+            lsp_scale_out_hot_hits = 24
+        try:
+            lsp_file_buffer_idle_ttl_sec = max(1.0, float(lsp_file_buffer_idle_ttl_raw))
+        except ValueError:
+            lsp_file_buffer_idle_ttl_sec = 20.0
+        try:
+            lsp_file_buffer_max_open = max(16, int(lsp_file_buffer_max_open_raw))
+        except ValueError:
+            lsp_file_buffer_max_open = 512
         try:
             orphan_check_sec = max(1, int(orphan_check_raw))
         except ValueError:
@@ -343,10 +390,16 @@ class AppConfig:
             pipeline_dead_ratio_threshold_bps=dead_ratio_bps,
             pipeline_alert_window_sec=alert_window_sec,
             pipeline_auto_tick_interval_sec=auto_tick_sec,
+            l3_parallel_enabled=l3_parallel_enabled_raw in {"1", "true", "yes", "on"},
             run_mode=run_mode,
             daemon_heartbeat_interval_sec=heartbeat_sec,
             daemon_stale_timeout_sec=stale_timeout_sec,
             lsp_request_timeout_sec=lsp_request_timeout_sec,
+            lsp_max_instances_per_repo_language=lsp_max_instances_per_repo_language,
+            lsp_global_soft_limit=lsp_global_soft_limit,
+            lsp_scale_out_hot_hits=lsp_scale_out_hot_hits,
+            lsp_file_buffer_idle_ttl_sec=lsp_file_buffer_idle_ttl_sec,
+            lsp_file_buffer_max_open=lsp_file_buffer_max_open,
             orphan_ppid_check_interval_sec=orphan_check_sec,
             shutdown_join_timeout_sec=shutdown_join_sec,
             importance_normalize_mode=normalized_mode,

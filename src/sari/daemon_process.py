@@ -26,6 +26,7 @@ from sari.db.repositories.pipeline_job_event_repository import PipelineJobEventR
 from sari.db.repositories.pipeline_error_event_repository import PipelineErrorEventRepository
 from sari.db.repositories.pipeline_policy_repository import PipelinePolicyRepository
 from sari.db.repositories.pipeline_benchmark_repository import PipelineBenchmarkRepository
+from sari.db.repositories.pipeline_perf_repository import PipelinePerfRepository
 from sari.db.repositories.pipeline_quality_repository import PipelineQualityRepository
 from sari.db.repositories.language_probe_repository import LanguageProbeRepository
 from sari.db.repositories.pipeline_lsp_matrix_repository import PipelineLspMatrixRepository
@@ -48,6 +49,7 @@ from sari.services.admin_service import AdminService
 from sari.services.file_collection_service import SolidLspExtractionBackend, build_default_file_collection_service
 from sari.services.pipeline_control_service import PipelineControlService
 from sari.services.pipeline_benchmark_service import PipelineBenchmarkService
+from sari.services.pipeline_perf_service import PipelinePerfService
 from sari.services.language_probe_service import LanguageProbeService
 from sari.services.pipeline_lsp_matrix_service import PipelineLspMatrixService
 from sari.services.pipeline_quality_service import PipelineQualityService, SerenaGoldenBackend
@@ -99,6 +101,7 @@ def main() -> None:
     event_repo = PipelineJobEventRepository(db_path)
     error_event_repo = PipelineErrorEventRepository(db_path)
     benchmark_repo = PipelineBenchmarkRepository(db_path)
+    perf_repo = PipelinePerfRepository(db_path)
     quality_repo = PipelineQualityRepository(db_path)
     language_probe_repo = LanguageProbeRepository(db_path)
     lsp_matrix_repo = PipelineLspMatrixRepository(db_path)
@@ -116,7 +119,14 @@ def main() -> None:
     this_pid = os.getpid()
     launch_parent_pid = os.getppid()
 
-    lsp_hub = LspHub(request_timeout_sec=config.lsp_request_timeout_sec)
+    lsp_hub = LspHub(
+        request_timeout_sec=config.lsp_request_timeout_sec,
+        max_instances_per_repo_language=config.lsp_max_instances_per_repo_language,
+        lsp_global_soft_limit=config.lsp_global_soft_limit,
+        scale_out_hot_hits=config.lsp_scale_out_hot_hits,
+        file_buffer_idle_ttl_sec=config.lsp_file_buffer_idle_ttl_sec,
+        file_buffer_max_open=config.lsp_file_buffer_max_open,
+    )
     importance_scorer = ImportanceScorer(
         file_repo=file_repo,
         lsp_repo=lsp_repo,
@@ -216,6 +226,7 @@ def main() -> None:
         run_mode=config.run_mode,
         parent_alive_probe=(lambda: _is_parent_alive(launch_parent_pid, detached_mode=detached_mode)),
         lsp_backend=SolidLspExtractionBackend(lsp_hub),
+        l3_parallel_enabled=config.l3_parallel_enabled,
     )
     pipeline_control_service = PipelineControlService(
         policy_repo=policy_repo,
@@ -236,6 +247,13 @@ def main() -> None:
         lsp_repo=lsp_repo,
         policy_repo=policy_repo,
         benchmark_repo=benchmark_repo,
+        artifact_root=config.db_path.parent / "artifacts",
+    )
+    pipeline_perf_service = PipelinePerfService(
+        file_collection_service=file_collection_service,
+        queue_repo=enrich_queue_repo,
+        benchmark_service=pipeline_benchmark_service,
+        perf_repo=perf_repo,
         artifact_root=config.db_path.parent / "artifacts",
     )
     language_probe_service = LanguageProbeService(
@@ -264,6 +282,7 @@ def main() -> None:
             file_collection_service=file_collection_service,
             pipeline_control_service=pipeline_control_service,
             pipeline_benchmark_service=pipeline_benchmark_service,
+            pipeline_perf_service=pipeline_perf_service,
             pipeline_quality_service=pipeline_quality_service,
             pipeline_lsp_matrix_service=pipeline_lsp_matrix_service,
             read_facade_service=read_facade_service,

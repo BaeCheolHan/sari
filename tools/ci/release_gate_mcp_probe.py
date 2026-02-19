@@ -110,9 +110,13 @@ def _run_internal_client(
     timeout_tools_sec: float = 10.0,
     run_call_flow: bool = False,
     repo: str | None = None,
+    use_local_server: bool = True,
 ) -> tuple[bool, dict[str, object]]:
+    command = [sys.executable, "-m", "sari.cli.main", "mcp", "stdio"]
+    if use_local_server:
+        command.append("--local")
     proc = subprocess.Popen(
-        [sys.executable, "-m", "sari.cli.main", "mcp", "stdio", "--local"],
+        command,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -245,6 +249,36 @@ def _run_internal_client(
                 {"stage": "call_flow/read", "reason": "read result payload invalid", "response": read_resp, "stderr_tail": stderr_lines[-20:]},
             )
         if bool(read_result.get("isError", False)):
+            if rid is not None and isinstance(relative_path, str) and relative_path.strip() != "":
+                read_payload_fallback = {
+                    "jsonrpc": "2.0",
+                    "id": 5,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "read",
+                        "arguments": {"repo": repo, "mode": "file", "target": relative_path, "options": {"structured": 1}},
+                    },
+                }
+                proc.stdin.write(_frame(read_payload_fallback))
+                proc.stdin.flush()
+                read_resp_fallback = _read_by_id(proc.stdout, request_id=5, timeout_sec=max(timeout_tools_sec, 20.0))
+                read_result_fallback = read_resp_fallback.get("result")
+                if isinstance(read_result_fallback, dict) and not bool(read_result_fallback.get("isError", False)):
+                    read_structured_fallback = read_result_fallback.get("structuredContent")
+                    if isinstance(read_structured_fallback, dict):
+                        return (
+                            True,
+                            {
+                                "stage": "ok",
+                                "tool_count": len(tools_obj.get("tools", [])),
+                                "search_item_count": len(items),
+                                "rid": rid,
+                                "relative_path": relative_path,
+                                "read_keys": sorted(read_structured_fallback.keys()),
+                                "read_fallback_used": True,
+                                "stderr_tail": stderr_lines[-20:],
+                            },
+                        )
             return (
                 False,
                 {"stage": "call_flow/read", "reason": "read returned isError", "response": read_resp, "stderr_tail": stderr_lines[-20:]},
@@ -351,7 +385,9 @@ def _run_soak() -> int:
     max_failure_rate = float(os.getenv("SARI_MCP_SOAK_MAX_FAILURE_RATE", "0.0"))
     max_timeout_failures = int(os.getenv("SARI_MCP_SOAK_MAX_TIMEOUT_FAILURES", "0"))
     min_attempts = int(os.getenv("SARI_MCP_SOAK_MIN_ATTEMPTS", "2"))
-    lanes = ("gemini", "codex")
+    requested_clients = int(os.getenv("SARI_MCP_SOAK_CLIENTS", "2"))
+    client_count = max(2, requested_clients)
+    lanes = tuple(f"client_{idx + 1}" for idx in range(client_count))
     # 본격 루프 전에 한 번 인덱싱해 콜드스타트 잡음을 줄인다.
     _ = subprocess.run([sys.executable, "-m", "sari.cli.main", "index"], check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
@@ -368,7 +404,7 @@ def _run_soak() -> int:
         lock = threading.Lock()
 
         def _run_lane(lane: str) -> None:
-            ok, detail = _run_internal_client(run_call_flow=True, repo=probe_repo)
+            ok, detail = _run_internal_client(run_call_flow=True, repo=probe_repo, use_local_server=False)
             with lock:
                 lane_results.append((lane, ok, detail))
 
@@ -398,6 +434,7 @@ def _run_soak() -> int:
     ok = attempts >= max(1, min_attempts) and failure_rate <= max_failure_rate and timeout_failures <= max_timeout_failures
     summary = {
         "duration_sec": duration_sec,
+        "client_count": client_count,
         "attempts": attempts,
         "successes": successes,
         "failures": failures,

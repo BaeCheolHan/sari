@@ -91,9 +91,11 @@ def test_run_soak_passes_under_threshold(monkeypatch):
     time_values = iter([0.0, 0.2, 1.2])
     monkeypatch.setattr(probe.time, "time", lambda: next(time_values))
     outcomes = [True, False]
+    calls: list[dict[str, object]] = []
     lock = threading.Lock()
 
     def _run_internal_client(**kwargs):
+        calls.append(kwargs)
         with lock:
             ok = outcomes.pop(0) if len(outcomes) > 0 else True
         if ok:
@@ -107,6 +109,8 @@ def test_run_soak_passes_under_threshold(monkeypatch):
     assert probe._run_soak() == 0
     assert captured["mode"] == "soak"
     assert captured["ok"] is True
+    assert len(calls) > 0
+    assert all(call.get("use_local_server") is False for call in calls)
 
 
 def test_run_soak_fails_when_timeout_failures_exceed_limit(monkeypatch):

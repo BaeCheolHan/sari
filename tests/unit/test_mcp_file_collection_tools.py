@@ -313,3 +313,34 @@ def test_mcp_scan_once_fanout_workspace_top_level_repos(tmp_path: Path) -> None:
     items_b = list_b["result"]["structuredContent"]["items"]
     paths_b = {str(item["relative_path"]) for item in items_b}
     assert "beta.ts" in paths_b
+
+
+def test_mcp_scan_once_single_child_repo_does_not_fanout(tmp_path: Path) -> None:
+    """workspace 하위 후보가 1개면 단일 repo 스캔으로 처리되어야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+
+    workspace_dir = tmp_path / "study"
+    workspace_dir.mkdir()
+    dataset_dir = workspace_dir / "benchmark_dataset"
+    dataset_dir.mkdir()
+    (dataset_dir / "bench_0.py").write_text("def bench_0():\n    return 0\n", encoding="utf-8")
+
+    WorkspaceService(WorkspaceRepository(db_path)).add_workspace(str(workspace_dir))
+    server = McpServer(db_path=db_path)
+
+    scan_response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 303,
+            "method": "tools/call",
+            "params": {
+                "name": "scan_once",
+                "arguments": {"repo": workspace_dir.name, "options": {"structured": 1}},
+            },
+        }
+    )
+    payload = scan_response.to_dict()
+    assert payload["result"]["isError"] is False
+    scan_item = payload["result"]["structuredContent"]["items"][0]
+    assert scan_item["mode"] == "single_repo"

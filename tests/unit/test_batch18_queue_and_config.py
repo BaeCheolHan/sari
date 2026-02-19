@@ -57,6 +57,9 @@ def test_app_config_loads_json_and_env_override(tmp_path: Path, monkeypatch) -> 
                 "ranking_w_importance": 0.3,
                 "ranking_w_vector": 0.1,
                 "ranking_w_hierarchy": 0.2,
+                "l3_parallel_enabled": False,
+                "lsp_file_buffer_idle_ttl_sec": 15.0,
+                "lsp_file_buffer_max_open": 256,
             }
         ),
         encoding="utf-8",
@@ -73,6 +76,9 @@ def test_app_config_loads_json_and_env_override(tmp_path: Path, monkeypatch) -> 
     monkeypatch.setenv("SARI_RANKING_W_VECTOR", "0.1")
     monkeypatch.setenv("SARI_RANKING_W_HIERARCHY", "0.1")
     monkeypatch.setenv("SARI_LSP_REQUEST_TIMEOUT_SEC", "12.5")
+    monkeypatch.setenv("SARI_L3_PARALLEL_ENABLED", "true")
+    monkeypatch.setenv("SARI_LSP_FILE_BUFFER_IDLE_TTL_SEC", "25.0")
+    monkeypatch.setenv("SARI_LSP_FILE_BUFFER_MAX_OPEN", "1024")
     monkeypatch.delenv("SARI_COLLECTION_INCLUDE_EXT", raising=False)
     monkeypatch.delenv("SARI_COLLECTION_EXCLUDE_GLOBS", raising=False)
 
@@ -96,6 +102,9 @@ def test_app_config_loads_json_and_env_override(tmp_path: Path, monkeypatch) -> 
     assert config.ranking_w_vector == pytest.approx(0.0909090909)
     assert config.ranking_w_hierarchy == pytest.approx(0.0909090909)
     assert config.lsp_request_timeout_sec == pytest.approx(12.5)
+    assert config.l3_parallel_enabled is True
+    assert config.lsp_file_buffer_idle_ttl_sec == pytest.approx(25.0)
+    assert config.lsp_file_buffer_max_open == 1024
 
 
 def test_app_config_default_exclude_globs_include_build_artifact_paths(tmp_path: Path, monkeypatch) -> None:

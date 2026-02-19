@@ -15,6 +15,7 @@ from sari.services.collection.ports import CollectionRuntimePort
 from sari.services.pipeline_benchmark_service import PipelineBenchmarkService
 from sari.services.pipeline_control_service import PipelineControlService
 from sari.services.pipeline_lsp_matrix_service import PipelineLspMatrixService
+from sari.services.pipeline_perf_service import PipelinePerfService
 from sari.services.pipeline_quality_service import PipelineQualityService
 from sari.services.read_facade_service import ReadFacadeService
 
@@ -31,6 +32,7 @@ class HttpContext:
         file_collection_service: CollectionRuntimePort | None = None,
         pipeline_control_service: PipelineControlService | None = None,
         pipeline_benchmark_service: PipelineBenchmarkService | None = None,
+        pipeline_perf_service: PipelinePerfService | None = None,
         pipeline_quality_service: PipelineQualityService | None = None,
         pipeline_lsp_matrix_service: PipelineLspMatrixService | None = None,
         read_facade_service: ReadFacadeService | None = None,
@@ -49,6 +51,7 @@ class HttpContext:
         self.file_collection_service = file_collection_service
         self.pipeline_control_service = pipeline_control_service
         self.pipeline_benchmark_service = pipeline_benchmark_service
+        self.pipeline_perf_service = pipeline_perf_service
         self.pipeline_quality_service = pipeline_quality_service
         self.pipeline_lsp_matrix_service = pipeline_lsp_matrix_service
         self.read_facade_service = read_facade_service

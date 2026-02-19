@@ -31,19 +31,23 @@ jobs:
       - name: Run Gemini/Codex concurrent soak
         env:
           SARI_MCP_PROBE_REPO: ${{ github.workspace }}
-          SARI_MCP_SOAK_DURATION_SEC: ${{ inputs.duration_sec || '1800' }}
-          SARI_MCP_SOAK_INTERVAL_SEC: "1.0"
-          SARI_MCP_SOAK_MAX_FAILURE_RATE: "0.02"
-          SARI_MCP_SOAK_MAX_TIMEOUT_FAILURES: "0"
-          SARI_MCP_SOAK_MIN_ATTEMPTS: "120"
+          SOAK_DURATION_SEC: ${{ inputs.duration_sec || '1800' }}
+          SOAK_INTERVAL_SEC: "1.0"
+          SOAK_MAX_FAILURE_RATE: "0.0"
+          SOAK_MAX_TIMEOUT_FAILURES: "0"
+          SOAK_MIN_ATTEMPTS: "120"
+          SOAK_CLIENTS: "4"
         run: |
           mkdir -p artifacts/ci
-          python3 tools/ci/release_gate_mcp_probe.py soak | tee artifacts/ci/mcp-soak-nightly.log
+          chmod +x tools/ci/run_mcp_multi_cli_soak.sh
+          tools/ci/run_mcp_multi_cli_soak.sh
 
       - name: Upload soak artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: mcp-soak-nightly-artifacts
-          path: artifacts/ci/mcp-soak-nightly.log
+          path: |
+            artifacts/ci/mcp-multi-cli-soak.log
+            artifacts/ci/mcp-multi-cli-soak-summary.json
           if-no-files-found: warn

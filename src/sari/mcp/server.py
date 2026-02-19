@@ -19,6 +19,7 @@ from sari.db.repositories.lsp_tool_data_repository import LspToolDataRepository
 from sari.db.repositories.knowledge_repository import KnowledgeRepository
 from sari.db.repositories.vector_embedding_repository import VectorEmbeddingRepository
 from sari.db.repositories.pipeline_benchmark_repository import PipelineBenchmarkRepository
+from sari.db.repositories.pipeline_perf_repository import PipelinePerfRepository
 from sari.db.repositories.pipeline_quality_repository import PipelineQualityRepository
 from sari.db.repositories.language_probe_repository import LanguageProbeRepository
 from sari.db.repositories.pipeline_lsp_matrix_repository import PipelineLspMatrixRepository
@@ -42,6 +43,7 @@ from sari.mcp.tools.admin_tools import DoctorTool, RepoCandidatesTool, RescanToo
 from sari.mcp.tool_visibility import filter_tools_list_response_payload, is_hidden_tool_name
 from sari.mcp.tools.pipeline_admin_tools import PipelineAutoSetTool, PipelineAutoStatusTool, PipelineAutoTickTool, PipelineAlertStatusTool, PipelineDeadListTool, PipelineDeadPurgeTool, PipelineDeadRequeueTool, PipelinePolicyGetTool, PipelinePolicySetTool
 from sari.mcp.tools.pipeline_benchmark_tools import PipelineBenchmarkReportTool, PipelineBenchmarkRunTool
+from sari.mcp.tools.pipeline_perf_tools import PipelinePerfReportTool, PipelinePerfRunTool
 from sari.mcp.tools.pipeline_lsp_matrix_tools import PipelineLspMatrixReportTool, PipelineLspMatrixRunTool
 from sari.mcp.tools.pipeline_quality_tools import PipelineQualityReportTool, PipelineQualityRunTool
 from sari.mcp.tools.pack1 import pack1_error
@@ -66,6 +68,7 @@ from sari.search.vector_reranker import VectorConfigDTO, VectorIndexSink, Vector
 from sari.services.admin_service import AdminService
 from sari.services.file_collection_service import SolidLspExtractionBackend, build_default_file_collection_service
 from sari.services.pipeline_benchmark_service import BenchmarkLspExtractionBackend, PipelineBenchmarkService
+from sari.services.pipeline_perf_service import PipelinePerfService
 from sari.services.pipeline_control_service import PipelineControlService
 from sari.services.language_probe_service import LanguageProbeService
 from sari.services.pipeline_lsp_matrix_service import PipelineLspMatrixService
@@ -123,6 +126,7 @@ class McpServer:
         event_repo = PipelineJobEventRepository(db_path)
         error_event_repo = PipelineErrorEventRepository(db_path)
         benchmark_repo = PipelineBenchmarkRepository(db_path)
+        perf_repo = PipelinePerfRepository(db_path)
         quality_repo = PipelineQualityRepository(db_path)
         language_probe_repo = LanguageProbeRepository(db_path)
         lsp_matrix_repo = PipelineLspMatrixRepository(db_path)
@@ -142,11 +146,25 @@ class McpServer:
             change_repo=candidate_change_repo,
             allowed_suffixes=runtime_config.collection_include_ext,
         )
-        shared_hub = LspHub(request_timeout_sec=runtime_config.lsp_request_timeout_sec)
+        shared_hub = LspHub(
+            request_timeout_sec=runtime_config.lsp_request_timeout_sec,
+            max_instances_per_repo_language=runtime_config.lsp_max_instances_per_repo_language,
+            lsp_global_soft_limit=runtime_config.lsp_global_soft_limit,
+            scale_out_hot_hits=runtime_config.lsp_scale_out_hot_hits,
+            file_buffer_idle_ttl_sec=runtime_config.lsp_file_buffer_idle_ttl_sec,
+            file_buffer_max_open=runtime_config.lsp_file_buffer_max_open,
+        )
         self._managed_lsp_hubs.append(shared_hub)
-        file_collection_service = build_default_file_collection_service(workspace_repo=workspace_repo, file_repo=file_repo, enrich_queue_repo=enrich_queue_repo, body_repo=body_repo, lsp_repo=lsp_repo, readiness_repo=readiness_repo, policy_repo=policy_repo, event_repo=event_repo, error_event_repo=error_event_repo, candidate_index_sink=candidate_service, vector_index_sink=vector_sink, include_ext=runtime_config.collection_include_ext, exclude_globs=runtime_config.collection_exclude_globs, watcher_debounce_ms=runtime_config.watcher_debounce_ms, run_mode='prod', lsp_backend=SolidLspExtractionBackend(shared_hub))
-        benchmark_collection_service = build_default_file_collection_service(workspace_repo=workspace_repo, file_repo=file_repo, enrich_queue_repo=enrich_queue_repo, body_repo=body_repo, lsp_repo=lsp_repo, readiness_repo=readiness_repo, policy_repo=policy_repo, event_repo=event_repo, error_event_repo=error_event_repo, run_mode='prod', lsp_backend=BenchmarkLspExtractionBackend(), persist_body_for_read=False)
+        file_collection_service = build_default_file_collection_service(workspace_repo=workspace_repo, file_repo=file_repo, enrich_queue_repo=enrich_queue_repo, body_repo=body_repo, lsp_repo=lsp_repo, readiness_repo=readiness_repo, policy_repo=policy_repo, event_repo=event_repo, error_event_repo=error_event_repo, candidate_index_sink=candidate_service, vector_index_sink=vector_sink, include_ext=runtime_config.collection_include_ext, exclude_globs=runtime_config.collection_exclude_globs, watcher_debounce_ms=runtime_config.watcher_debounce_ms, run_mode='prod', lsp_backend=SolidLspExtractionBackend(shared_hub), l3_parallel_enabled=runtime_config.l3_parallel_enabled)
+        benchmark_collection_service = build_default_file_collection_service(workspace_repo=workspace_repo, file_repo=file_repo, enrich_queue_repo=enrich_queue_repo, body_repo=body_repo, lsp_repo=lsp_repo, readiness_repo=readiness_repo, policy_repo=policy_repo, event_repo=event_repo, error_event_repo=error_event_repo, run_mode='prod', lsp_backend=BenchmarkLspExtractionBackend(), persist_body_for_read=False, l3_parallel_enabled=runtime_config.l3_parallel_enabled)
         benchmark_service = PipelineBenchmarkService(file_collection_service=benchmark_collection_service, queue_repo=enrich_queue_repo, lsp_repo=lsp_repo, policy_repo=policy_repo, benchmark_repo=benchmark_repo, artifact_root=db_path.parent / 'artifacts')
+        perf_service = PipelinePerfService(
+            file_collection_service=file_collection_service,
+            queue_repo=enrich_queue_repo,
+            benchmark_service=benchmark_service,
+            perf_repo=perf_repo,
+            artifact_root=db_path.parent / "artifacts",
+        )
         quality_service = PipelineQualityService(file_repo=file_repo, lsp_repo=lsp_repo, quality_repo=quality_repo, golden_backend=SerenaGoldenBackend(hub=shared_hub), artifact_root=db_path.parent / 'artifacts')
         language_probe_service = LanguageProbeService(workspace_repo=workspace_repo, lsp_hub=shared_hub, probe_repo=language_probe_repo)
         pipeline_lsp_matrix_service = PipelineLspMatrixService(probe_service=language_probe_service, run_repo=lsp_matrix_repo)
@@ -217,6 +235,8 @@ class McpServer:
         self._pipeline_auto_tick_tool = PipelineAutoTickTool(workspace_repo=workspace_repo, service=pipeline_control_service)
         self._pipeline_benchmark_run_tool = PipelineBenchmarkRunTool(workspace_repo=workspace_repo, benchmark_service=benchmark_service)
         self._pipeline_benchmark_report_tool = PipelineBenchmarkReportTool(workspace_repo=workspace_repo, benchmark_service=benchmark_service)
+        self._pipeline_perf_run_tool = PipelinePerfRunTool(workspace_repo=workspace_repo, perf_service=perf_service)
+        self._pipeline_perf_report_tool = PipelinePerfReportTool(workspace_repo=workspace_repo, perf_service=perf_service)
         self._pipeline_quality_run_tool = PipelineQualityRunTool(workspace_repo=workspace_repo, quality_service=quality_service)
         self._pipeline_quality_report_tool = PipelineQualityReportTool(workspace_repo=workspace_repo, quality_service=quality_service)
         self._pipeline_lsp_matrix_run_tool = PipelineLspMatrixRunTool(workspace_repo=workspace_repo, matrix_service=pipeline_lsp_matrix_service)
@@ -257,6 +277,8 @@ class McpServer:
             "pipeline_auto_tick": "_pipeline_auto_tick_tool",
             "pipeline_benchmark_run": "_pipeline_benchmark_run_tool",
             "pipeline_benchmark_report": "_pipeline_benchmark_report_tool",
+            "pipeline_perf_run": "_pipeline_perf_run_tool",
+            "pipeline_perf_report": "_pipeline_perf_report_tool",
             "pipeline_quality_run": "_pipeline_quality_run_tool",
             "pipeline_quality_report": "_pipeline_quality_report_tool",
             "pipeline_lsp_matrix_run": "_pipeline_lsp_matrix_run_tool",

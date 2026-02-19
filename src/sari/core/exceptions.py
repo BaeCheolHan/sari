@@ -42,3 +42,7 @@ class BenchmarkError(SariBaseError):
 
 class QualityError(SariBaseError):
     """L3 품질 평가 처리 오류를 표현한다."""
+
+
+class PerfError(SariBaseError):
+    """성능 실측 처리 오류를 표현한다."""

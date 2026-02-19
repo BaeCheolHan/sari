@@ -229,6 +229,13 @@ class DaemonService:
             return
         except OSError:
             return
+        # 현재 프로세스와 같은 그룹이면 자기 자신까지 종료될 수 있으므로 killpg를 생략한다.
+        try:
+            current_pgid = os.getpgrp()
+        except OSError:
+            current_pgid = -1
+        if pgid == current_pgid:
+            return
         try:
             os.killpg(pgid, sig)
         except ProcessLookupError:

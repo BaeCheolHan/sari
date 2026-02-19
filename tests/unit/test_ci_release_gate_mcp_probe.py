@@ -12,6 +12,7 @@ def test_release_gate_mcp_probe_uses_structured_summary_and_safe_pkill() -> None
     content = script_path.read_text(encoding="utf-8")
 
     assert "PROBE_SUMMARY:" in content
+    assert "SARI_MCP_SOAK_CLIENTS" in content
     assert "subprocess.run([\"pkill\", \"-f\", \"sari.*daemon\"]" in content
     assert "subprocess.run([\"pkill\", \"-f\", \"sari daemon run\"]" in content
     assert "shell=True" not in content

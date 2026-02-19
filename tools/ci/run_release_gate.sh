@@ -123,17 +123,31 @@ def run_ensure() -> dict[str, object]:
         raise SystemExit("daemon ensure payload is not object")
     return loaded
 
+
+def wait_until_health(current_host: str, current_port: int) -> None:
+    health_url = f"http://{current_host}:{current_port}/health"
+    last_error: Exception | None = None
+    for _ in range(10):
+        try:
+            with urlopen(health_url, timeout=3.0):
+                return
+        except URLError as exc:
+            last_error = exc
+            time.sleep(0.5)
+    raise SystemExit(f"daemon health wait failed: {last_error}")
+
 ensure_payload = run_ensure()
 daemon = ensure_payload.get("daemon")
 if not isinstance(daemon, dict):
     raise SystemExit("daemon ensure payload missing daemon")
 host = str(daemon.get("host", "127.0.0.1"))
 port = int(daemon.get("port", 47777))
+wait_until_health(host, port)
 def resolve_reconcile_payload() -> tuple[str, dict[str, object]]:
     current_host = host
     current_port = port
     last_error: Exception | None = None
-    for _attempt in range(3):
+    for _attempt in range(8):
         health_url = f"http://{current_host}:{current_port}/health"
         reconcile_url = f"http://{current_host}:{current_port}/daemon/reconcile"
         try:
@@ -154,7 +168,7 @@ def resolve_reconcile_payload() -> tuple[str, dict[str, object]]:
                 raise SystemExit("daemon ensure payload missing daemon after retry")
             current_host = str(daemon_retry.get("host", "127.0.0.1"))
             current_port = int(daemon_retry.get("port", 47777))
-            time.sleep(0.5)
+            wait_until_health(current_host, current_port)
     raise SystemExit(f"reconcile request failed after retry: {last_error}")
 
 reconcile_url, payload = resolve_reconcile_payload()
@@ -182,12 +196,7 @@ _ = subprocess.run([sys.executable, "-m", "sari.cli.main", "daemon", "stop"], ch
 PY
 )"
 
-FINAL_DECISION="PASS"
-if [[ "${DAEMON_PROXY_PASSED}" != "true" || "${CLI_E2E_PASSED}" != "true" || "${CRITICAL_LSP_PASSED}" != "true" || "${MCP_HANDSHAKE_PASSED}" != "true" || "${MCP_CONCURRENCY_PASSED}" != "true" || "${QUEUE_OPS_PASSED}" != "true" || "${RECONCILE_PASSED}" != "true" ]]; then
-  FINAL_DECISION="FAIL"
-fi
-
-python3 - <<'PY' "${SUMMARY_FILE}" "${DAEMON_PROXY_PASSED}" "${CLI_E2E_PASSED}" "${CRITICAL_LSP_PASSED}" "${MCP_HANDSHAKE_PASSED}" "${MCP_CONCURRENCY_PASSED}" "${QUEUE_OPS_PASSED}" "${RECONCILE_PASSED}" "${FINAL_DECISION}" "${MCP_HANDSHAKE_LOG}" "${MCP_CONCURRENCY_LOG}" "${RECONCILE_LOG}"
+python3 - <<'PY' "${SUMMARY_FILE}" "${DAEMON_PROXY_PASSED}" "${CLI_E2E_PASSED}" "${CRITICAL_LSP_PASSED}" "${MCP_HANDSHAKE_PASSED}" "${MCP_CONCURRENCY_PASSED}" "${QUEUE_OPS_PASSED}" "${RECONCILE_PASSED}" "${MCP_HANDSHAKE_LOG}" "${MCP_CONCURRENCY_LOG}" "${RECONCILE_LOG}"
 import json
 import sys
 from pathlib import Path
@@ -200,10 +209,9 @@ mcp_handshake_passed = sys.argv[5].lower() == "true"
 mcp_concurrency_passed = sys.argv[6].lower() == "true"
 queue_ops_passed = sys.argv[7].lower() == "true"
 reconcile_passed = sys.argv[8].lower() == "true"
-final_decision = sys.argv[9]
-handshake_log_path = Path(sys.argv[10])
-concurrency_log_path = Path(sys.argv[11])
-reconcile_log_path = Path(sys.argv[12])
+handshake_log_path = Path(sys.argv[9])
+concurrency_log_path = Path(sys.argv[10])
+reconcile_log_path = Path(sys.argv[11])
 release_gate_passed = daemon_proxy_passed and cli_e2e_passed and critical_lsp_passed and mcp_handshake_passed and mcp_concurrency_passed and queue_ops_passed and reconcile_passed
 
 
@@ -237,8 +245,30 @@ if reconcile_log_path.exists():
             reconcile_summary = json.loads(lines[-1])
         except json.JSONDecodeError:
             reconcile_summary = {"parse_error": "invalid_reconcile_json", "raw": lines[-1]}
+
+
+def validate_probe_summary(name: str, summary: object) -> list[str]:
+    if not isinstance(summary, dict):
+        return [f"{name}: missing_or_invalid_summary"]
+    errors: list[str] = []
+    if "ok" not in summary:
+        errors.append(f"{name}: missing_ok")
+    if "detail" not in summary:
+        errors.append(f"{name}: missing_detail")
+    if "mode" not in summary:
+        errors.append(f"{name}: missing_mode")
+    return errors
+
+
+probe_validation_errors: list[str] = []
+probe_validation_errors.extend(validate_probe_summary("mcp_handshake", handshake_probe_summary))
+probe_validation_errors.extend(validate_probe_summary("mcp_concurrency", concurrency_probe_summary))
+probe_details_valid = len(probe_validation_errors) == 0
+final_decision = "PASS" if release_gate_passed and probe_details_valid else "FAIL"
 payload = {
     "release_gate_passed": release_gate_passed,
+    "probe_details_valid": probe_details_valid,
+    "probe_validation_errors": probe_validation_errors,
     "daemon_proxy_passed": daemon_proxy_passed,
     "cli_e2e_passed": cli_e2e_passed,
     "critical_lsp_passed": critical_lsp_passed,
@@ -264,6 +294,16 @@ payload = {
 }
 summary_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 PY
+
+FINAL_DECISION="$(python3 - <<'PY' "${SUMMARY_FILE}"
+import json
+import sys
+from pathlib import Path
+
+summary = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+print(str(summary.get("final_decision", "FAIL")))
+PY
+)"
 
 if [[ "${FINAL_DECISION}" != "PASS" ]]; then
   echo "[release gate] failed. see ${SUMMARY_FILE}" >&2

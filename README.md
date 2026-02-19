@@ -76,5 +76,5 @@ tools/manual/test_local_wheel_ephemeral.sh
 ```bash
 tools/manual/repair_global_sari_tool.sh
 # 특정 버전으로 복구
-tools/manual/repair_global_sari_tool.sh 2.0.11
+tools/manual/repair_global_sari_tool.sh 2.0.13
 ```

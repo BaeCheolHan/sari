@@ -57,24 +57,29 @@ class LspHub:
         idle_cleanup_interval_sec: float = 5.0,
         stop_timeout_sec: float = 3.0,
         request_timeout_sec: float = 20.0,
+        file_buffer_idle_ttl_sec: float = 20.0,
+        file_buffer_max_open: int = 512,
         clock: Callable[[], float] | None = None,
     ) -> None:
         """내부 인스턴스 캐시를 초기화한다."""
         self._instances: dict[LspRuntimeKey, LspRuntimeEntry] = {}
         self._idle_timeout_sec = max(1, idle_timeout_sec)
         self._max_instances = max(1, max_instances)
-        self._max_instances_per_repo_language = max(1, min(2, max_instances_per_repo_language))
+        self._max_instances_per_repo_language = max(1, max_instances_per_repo_language)
         self._lsp_global_soft_limit = max(0, lsp_global_soft_limit)
         self._hot_acquire_window_sec = max(0.1, hot_acquire_window_sec)
         self._scale_out_hot_hits = max(2, scale_out_hot_hits)
         self._round_robin_cursor: dict[tuple[Language, str], int] = {}
         self._last_acquire_at: dict[tuple[Language, str], float] = {}
         self._hot_acquire_hits: dict[tuple[Language, str], int] = {}
+        self._starting_events: dict[LspRuntimeKey, threading.Event] = {}
         self._clock = clock if clock is not None else time.monotonic
         self._lock = threading.RLock()
         self._idle_cleanup_interval_sec = max(0.5, idle_cleanup_interval_sec)
         self._stop_timeout_sec = max(0.2, stop_timeout_sec)
         self._request_timeout_sec = max(0.1, request_timeout_sec)
+        self._file_buffer_idle_ttl_sec = max(1.0, float(file_buffer_idle_ttl_sec))
+        self._file_buffer_max_open = max(16, int(file_buffer_max_open))
         self._stop_cleanup = threading.Event()
         self._forced_kill_count = 0
         self._stop_timeout_count = 0
@@ -123,20 +128,18 @@ class LspHub:
                     selected_entry.last_used_at = now
                     self._last_acquire_at[base_key] = now
                     return selected_entry.server
-                server = self._start_server_locked(language=language, repo_root=normalized_root, slot=slot, now=now)
                 self._last_acquire_at[base_key] = now
-                return server
-
-            if len(running_keys) > 0:
+            elif len(running_keys) > 0:
                 selected_key = self._select_round_robin_key_locked(base_key=base_key, keys=running_keys)
                 selected_entry = self._instances[selected_key]
                 selected_entry.last_used_at = now
                 self._last_acquire_at[base_key] = now
                 return selected_entry.server
+            else:
+                self._last_acquire_at[base_key] = now
+                slot = 0
 
-            server = self._start_server_locked(language=language, repo_root=normalized_root, slot=0, now=now)
-            self._last_acquire_at[base_key] = now
-            return server
+        return self._start_or_wait_for_slot(language=language, repo_root=normalized_root, slot=slot)
 
     def ensure_healthy(self, language: Language, repo_root: str) -> None:
         """등록된 LSP 인스턴스의 실행 상태를 확인한다."""
@@ -174,31 +177,28 @@ class LspHub:
         normalized_root = str(Path(repo_root).resolve())
         if self._max_instances_per_repo_language <= 1:
             return
-        with self._lock:
-            now = self._clock()
-            self._evict_idle_locked(now)
-            running_keys: list[LspRuntimeKey] = []
-            for key in self._runtime_keys_for_locked(language=language, repo_root=normalized_root):
-                entry = self._instances.get(key)
-                if entry is None:
-                    continue
-                if entry.server.server.is_running():
-                    running_keys.append(key)
-                    continue
-                self._cleanup_not_running_entry_locked(key=key, entry=entry)
-            while len(running_keys) < self._max_instances_per_repo_language:
+        while True:
+            with self._lock:
+                now = self._clock()
+                self._evict_idle_locked(now)
+                running_keys: list[LspRuntimeKey] = []
+                for key in self._runtime_keys_for_locked(language=language, repo_root=normalized_root):
+                    entry = self._instances.get(key)
+                    if entry is None:
+                        continue
+                    if entry.server.server.is_running():
+                        running_keys.append(key)
+                        continue
+                    self._cleanup_not_running_entry_locked(key=key, entry=entry)
+                if len(running_keys) >= self._max_instances_per_repo_language:
+                    return
                 try:
                     slot = self._next_slot_locked(language=language, repo_root=normalized_root)
                 except DaemonError as exc:
                     if exc.context.code == "ERR_LSP_SLOT_EXHAUSTED":
-                        break
+                        return
                     raise
-                self._start_server_locked(language=language, repo_root=normalized_root, slot=slot, now=now)
-                running_keys = []
-                for key in self._runtime_keys_for_locked(language=language, repo_root=normalized_root):
-                    entry = self._instances.get(key)
-                    if entry is not None and entry.server.server.is_running():
-                        running_keys.append(key)
+            self._start_or_wait_for_slot(language=language, repo_root=normalized_root, slot=slot)
 
     def stop_all(self) -> None:
         """Hub가 관리하는 LSP 서버를 모두 종료한다."""
@@ -218,6 +218,9 @@ class LspHub:
                     log.exception("LSP 서버 종료 타임아웃(language=%s, repo=%s): %s", key.language.value, key.repo_root, exc.context.message)
                     failure_messages.append(f"{key.language.value}@{key.repo_root}: {exc.context.code}")
                 self._instances.pop(key, None)
+            for event in self._starting_events.values():
+                event.set()
+            self._starting_events.clear()
         if len(failure_messages) > 0:
             message = f"LSP 서버 종료 실패 {len(failure_messages)}건: " + "; ".join(failure_messages[:3])
             raise DaemonError(ErrorContext(code="ERR_LSP_STOP_FAILED", message=message))
@@ -231,6 +234,42 @@ class LspHub:
                 "lsp_stop_timeout_count": int(self._stop_timeout_count),
                 "lsp_orphan_suspect_count": int(self._orphan_suspect_count),
             }
+
+    def get_running_instance_count(self, language: Language, repo_root: str) -> int:
+        """지정 언어/저장소 조합의 실행 중 인스턴스 수를 반환한다."""
+        normalized_root = str(Path(repo_root).resolve())
+        with self._lock:
+            running = 0
+            for key in self._runtime_keys_for_locked(language=language, repo_root=normalized_root):
+                entry = self._instances.get(key)
+                if entry is None:
+                    continue
+                if entry.server.server.is_running():
+                    running += 1
+            return running
+
+    def acquire_pool(self, language: Language, repo_root: str, desired: int) -> list[SolidLanguageServer]:
+        """요청된 개수만큼 풀 인스턴스를 확보해 반환한다."""
+        normalized_root = str(Path(repo_root).resolve())
+        target_count = max(1, min(self._max_instances_per_repo_language, int(desired)))
+        first = self.get_or_start(language=language, repo_root=normalized_root)
+        servers: list[SolidLanguageServer] = [first]
+        self.prewarm_language_pool(language=language, repo_root=normalized_root)
+        with self._lock:
+            running_keys: list[LspRuntimeKey] = []
+            for key in self._runtime_keys_for_locked(language=language, repo_root=normalized_root):
+                entry = self._instances.get(key)
+                if entry is not None and entry.server.server.is_running():
+                    running_keys.append(key)
+            for key in running_keys:
+                entry = self._instances.get(key)
+                if entry is None:
+                    continue
+                if entry.server not in servers:
+                    servers.append(entry.server)
+                if len(servers) >= target_count:
+                    break
+        return servers[:target_count]
 
     def reconcile_runtime(self) -> int:
         """비정상/유휴 LSP 엔트리를 즉시 정리하고 정리 건수를 반환한다."""
@@ -333,7 +372,7 @@ class LspHub:
         )
 
     def _should_scale_out_locked(self, base_key: tuple[Language, str], now: float, running_count: int) -> bool:
-        """짧은 시간 내 재요청이 몰리면 동일 언어/레포 풀을 2개까지 확장한다."""
+        """짧은 시간 내 재요청이 몰리면 동일 언어/레포 풀을 확장한다."""
         self._record_hot_hit_locked(base_key=base_key, now=now)
         if running_count == 0:
             return True
@@ -366,9 +405,52 @@ class LspHub:
         self._round_robin_cursor[base_key] = (index + 1) % len(keys)
         return selected
 
-    def _start_server_locked(self, language: Language, repo_root: str, slot: int, now: float) -> SolidLanguageServer:
-        """단일 LSP 서버를 생성하고 캐시에 등록한다."""
-        self._evict_lru_if_needed_locked()
+    def _start_or_wait_for_slot(self, language: Language, repo_root: str, slot: int) -> SolidLanguageServer:
+        """동일 슬롯의 중복 기동을 방지하며 LSP 서버를 시작하거나 기존 기동을 기다린다."""
+        key = LspRuntimeKey(language=language, repo_root=repo_root, slot=slot)
+        while True:
+            with self._lock:
+                existing = self._instances.get(key)
+                if existing is not None and existing.server.server.is_running():
+                    existing.last_used_at = self._clock()
+                    return existing.server
+                if existing is not None:
+                    self._cleanup_not_running_entry_locked(key=key, entry=existing)
+                start_event = self._starting_events.get(key)
+                if start_event is None:
+                    self._evict_lru_if_needed_locked()
+                    start_event = threading.Event()
+                    self._starting_events[key] = start_event
+                    owner = True
+                else:
+                    owner = False
+            if owner:
+                try:
+                    started = self._create_and_start_server(language=language, repo_root=repo_root)
+                except (DaemonError, RuntimeError, OSError, ValueError, TypeError, AssertionError) as exc:
+                    with self._lock:
+                        event = self._starting_events.pop(key, None)
+                        if event is not None:
+                            event.set()
+                    if isinstance(exc, DaemonError):
+                        raise
+                    raise DaemonError(ErrorContext(code="ERR_LSP_UNAVAILABLE", message="LSP 서버를 시작하지 못했습니다")) from exc
+                with self._lock:
+                    self._instances[key] = LspRuntimeEntry(server=started, last_used_at=self._clock())
+                    event = self._starting_events.pop(key, None)
+                    if event is not None:
+                        event.set()
+                return started
+            if not start_event.wait(timeout=self._request_timeout_sec):
+                raise DaemonError(
+                    ErrorContext(
+                        code="ERR_LSP_START_TIMEOUT",
+                        message=f"LSP 서버 기동 대기 시간이 초과되었습니다: {language.value}@{repo_root}",
+                    )
+                )
+
+    def _create_and_start_server(self, language: Language, repo_root: str) -> SolidLanguageServer:
+        """락 밖에서 단일 LSP 서버를 생성/시작한다."""
         # NuGet/HTTPS 다운로드가 필요한 LSP가 인증서 검증 실패로 중단되지 않도록 기본 CA 번들을 주입한다.
         if certifi is not None:
             os.environ.setdefault("SSL_CERT_FILE", certifi.where())
@@ -377,6 +459,10 @@ class LspHub:
         try:
             config = LanguageServerConfig(code_language=language)
             settings = SolidLSPSettings()
+            settings.ls_specific_settings[language] = {
+                "open_file_buffer_idle_ttl_sec": self._file_buffer_idle_ttl_sec,
+                "open_file_buffer_max_open": self._file_buffer_max_open,
+            }
             ls = SolidLanguageServer.create(
                 config=config,
                 repository_root_path=repo_root,
@@ -388,8 +474,6 @@ class LspHub:
                 setattr(ls, "started", True)
         except (ImportError, RuntimeError, OSError, ValueError, TypeError, AssertionError) as exc:
             raise DaemonError(ErrorContext(code="ERR_LSP_UNAVAILABLE", message="LSP 서버를 시작하지 못했습니다")) from exc
-        key = LspRuntimeKey(language=language, repo_root=repo_root, slot=slot)
-        self._instances[key] = LspRuntimeEntry(server=ls, last_used_at=now)
         return ls
 
     def _validate_runtime_requirements(self, language: Language) -> None:

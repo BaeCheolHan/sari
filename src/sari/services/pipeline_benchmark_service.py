@@ -125,13 +125,6 @@ class PipelineBenchmarkService:
                 max_items=max(target_files, 1_000),
                 language_filter=normalized_filter,
             )
-            if normalized_filter is not None and len(per_language) == 0:
-                raise BenchmarkError(
-                    ErrorContext(
-                        code="ERR_BENCHMARK_EMPTY_LANGUAGE_FILTER",
-                        message="language filter에 해당하는 인덱싱 파일이 없습니다",
-                    )
-                )
 
             recommended_l3_p95 = max(1_000, int(search_p95 * 1.3))
             recommended_dead_ratio = max(5, dead_ratio_bps * 2)

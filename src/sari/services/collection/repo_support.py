@@ -149,6 +149,9 @@ class WorkspaceFanoutResolver:
                 continue
             if self._is_top_level_repo_candidate(child):
                 targets.append(child.resolve())
+        # 단일 후보만 있으면 workspace fan-out이 아니라 단일 repo 스캔으로 본다.
+        if len(targets) <= 1:
+            return []
         targets.sort(key=lambda item: item.name)
         return targets
 

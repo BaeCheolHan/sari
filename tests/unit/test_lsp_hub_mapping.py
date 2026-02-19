@@ -1,5 +1,6 @@
 """LSP Hub 확장자 매핑을 검증한다."""
 
+import threading
 import time
 import subprocess
 import pytest
@@ -647,3 +648,98 @@ def test_lsp_hub_runtime_probe_failure_raises_explicit_error(monkeypatch) -> Non
         hub.get_or_start(language=Language.KOTLIN, repo_root="/repo-a")
 
     assert exc_info.value.context.code == "ERR_LSP_RUNTIME_PROBE_FAILED"
+
+
+def test_lsp_hub_max_instances_per_repo_language_not_clamped_to_two() -> None:
+    """repo/language 풀 상한은 설정값을 그대로 반영해야 한다."""
+    hub = LspHub(max_instances_per_repo_language=6)
+    assert hub._max_instances_per_repo_language == 6
+    hub.stop_all()
+
+
+def test_lsp_hub_parallel_get_or_start_avoids_duplicate_start(monkeypatch) -> None:
+    """동시 get_or_start에서도 동일 슬롯 중복 기동 없이 단일 인스턴스를 재사용해야 한다."""
+
+    class _FakeRuntimeServer:
+        def is_running(self) -> bool:
+            return True
+
+    class _FakeLanguageServer:
+        def __init__(self) -> None:
+            self.server = _FakeRuntimeServer()
+
+        def start(self) -> None:
+            time.sleep(0.05)
+
+        def stop(self) -> None:
+            return None
+
+    created_count = {"value": 0}
+    created_lock = threading.Lock()
+
+    def _fake_create(*args, **kwargs) -> _FakeLanguageServer:
+        del args, kwargs
+        with created_lock:
+            created_count["value"] += 1
+        return _FakeLanguageServer()
+
+    monkeypatch.setattr("sari.lsp.hub.SolidLanguageServer.create", _fake_create)
+
+    hub = LspHub(max_instances_per_repo_language=1, scale_out_hot_hits=128, request_timeout_sec=2.0)
+    barrier = threading.Barrier(2)
+    results: list[object] = []
+    errors: list[BaseException] = []
+
+    def _worker() -> None:
+        try:
+            barrier.wait(timeout=1.0)
+            results.append(hub.get_or_start(language=Language.PYTHON, repo_root="/repo-a"))
+        except BaseException as exc:  # pragma: no cover - 동시성 방어 경계
+            errors.append(exc)
+
+    first = threading.Thread(target=_worker, daemon=True)
+    second = threading.Thread(target=_worker, daemon=True)
+    first.start()
+    second.start()
+    first.join(timeout=2.0)
+    second.join(timeout=2.0)
+
+    assert len(errors) == 0
+    assert len(results) == 2
+    assert results[0] is results[1]
+    assert created_count["value"] == 1
+    hub.stop_all()
+
+
+def test_lsp_hub_passes_file_buffer_settings_to_solidlsp(monkeypatch) -> None:
+    """허브 설정으로 전달한 file-buffer 정책이 SolidLSP settings에 반영되어야 한다."""
+
+    class _FakeRuntimeServer:
+        def is_running(self) -> bool:
+            return True
+
+    class _FakeLanguageServer:
+        def __init__(self) -> None:
+            self.server = _FakeRuntimeServer()
+
+        def start(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+    captured: dict[str, object] = {}
+
+    def _fake_create(*args, **kwargs) -> _FakeLanguageServer:
+        del args
+        captured["settings"] = kwargs.get("solidlsp_settings")
+        return _FakeLanguageServer()
+
+    monkeypatch.setattr("sari.lsp.hub.SolidLanguageServer.create", _fake_create)
+    hub = LspHub(file_buffer_idle_ttl_sec=31.0, file_buffer_max_open=777)
+    _ = hub.get_or_start(language=Language.PYTHON, repo_root="/repo-a")
+    settings = captured["settings"]
+    language_settings = settings.ls_specific_settings[Language.PYTHON]
+    assert language_settings["open_file_buffer_idle_ttl_sec"] == pytest.approx(31.0)
+    assert language_settings["open_file_buffer_max_open"] == 777
+    hub.stop_all()
