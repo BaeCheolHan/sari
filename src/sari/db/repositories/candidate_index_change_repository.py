@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+from typing import Any
 
 from sari.core.models import CandidateIndexChangeDTO, CandidateIndexChangeLogDTO
 from sari.db.row_mapper import row_int, row_optional_str, row_str
@@ -87,7 +88,7 @@ class CandidateIndexChangeRepository:
                 },
             )
             conn.commit()
-            return int(cursor.lastrowid)
+            return _extract_lastrowid(conn=conn, raw_lastrowid=cursor.lastrowid)
 
     def enqueue_delete(self, repo_root: str, relative_path: str, event_source: str, recorded_at: str, repo_id: str | None = None) -> int:
         """동일 파일 pending 변경을 delete 이벤트로 coalesce한다."""
@@ -150,7 +151,7 @@ class CandidateIndexChangeRepository:
                 },
             )
             conn.commit()
-            return int(cursor.lastrowid)
+            return _extract_lastrowid(conn=conn, raw_lastrowid=cursor.lastrowid)
 
     def acquire_pending(self, limit: int) -> list[CandidateIndexChangeLogDTO]:
         """pending 변경 로그를 배치로 조회한다."""
@@ -254,3 +255,36 @@ class CandidateIndexChangeRepository:
                 },
             )
             conn.commit()
+
+
+def _extract_lastrowid(*, conn: Any, raw_lastrowid: object) -> int:
+    """INSERT 직후 안전한 lastrowid를 계산한다."""
+    resolved = _to_optional_int(raw_lastrowid)
+    if resolved is not None:
+        return resolved
+    fallback_row = conn.execute("SELECT last_insert_rowid() AS lastrowid").fetchone()
+    if fallback_row is not None:
+        fallback_value = fallback_row["lastrowid"]
+        resolved_fallback = _to_optional_int(fallback_value)
+        if resolved_fallback is not None:
+            return resolved_fallback
+    raise RuntimeError("failed to resolve last inserted change_id")
+
+
+def _to_optional_int(value: object) -> int | None:
+    """임의 값을 안전하게 int로 변환한다."""
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped == "":
+            return None
+        try:
+            return int(stripped)
+        except ValueError:
+            return None
+    return None

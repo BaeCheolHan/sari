@@ -4,7 +4,7 @@ from pathlib import Path
 
 from pytest import MonkeyPatch
 from sari import __version__ as SARI_VERSION
-from sari.core.exceptions import ErrorContext, ValidationError
+from sari.core.exceptions import DaemonError, ErrorContext, ValidationError
 from sari.core.models import WorkspaceDTO
 from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.db.schema import init_schema
@@ -242,3 +242,21 @@ def test_mcp_server_close_is_idempotent(tmp_path: Path) -> None:
     server = McpServer(db_path=tmp_path / "state.db")
     server.close()
     server.close()
+
+
+def test_mcp_server_close_raises_domain_error_when_hub_stop_fails(tmp_path: Path) -> None:
+    """LSP hub 종료 실패는 ERR_MCP_CLOSE_FAILED로 감싸져야 한다."""
+
+    class _BrokenHub:
+        def stop_all(self) -> None:
+            raise DaemonError(ErrorContext(code="ERR_DAEMON_UNAVAILABLE", message="hub stop failed"))
+
+    server = McpServer(db_path=tmp_path / "state.db")
+    server._managed_lsp_hubs = [_BrokenHub()]  # type: ignore[assignment]
+    try:
+        server.close()
+    except DaemonError as exc:
+        assert exc.context.code == "ERR_MCP_CLOSE_FAILED"
+        assert "ERR_DAEMON_UNAVAILABLE" in exc.context.message
+    else:
+        raise AssertionError("DaemonError was not raised")

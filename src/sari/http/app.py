@@ -291,7 +291,47 @@ def _search_progress_meta(context: HttpContext) -> dict[str, object] | None:
     if context.file_collection_service is None:
         return None
     payload = context.file_collection_service.get_pipeline_metrics().to_dict()
-    return {'progress_percent_l2': float(payload.get('progress_percent_l2', 0.0)), 'progress_percent_l3': float(payload.get('progress_percent_l3', 0.0)), 'eta_l2_sec': int(payload.get('eta_l2_sec', -1)), 'eta_l3_sec': int(payload.get('eta_l3_sec', -1)), 'remaining_jobs_l2': int(payload.get('remaining_jobs_l2', 0)), 'remaining_jobs_l3': int(payload.get('remaining_jobs_l3', 0)), 'worker_state': str(payload.get('worker_state', 'unknown'))}
+    def _safe_float(value: object, default: float) -> float:
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped == "":
+                return default
+            try:
+                return float(stripped)
+            except ValueError:
+                return default
+        return default
+
+    def _safe_int(value: object, default: int) -> int:
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped == "":
+                return default
+            try:
+                return int(stripped)
+            except ValueError:
+                return default
+        return default
+
+    raw_worker_state = payload.get('worker_state', 'unknown')
+    worker_state = raw_worker_state if isinstance(raw_worker_state, str) and raw_worker_state.strip() != '' else 'unknown'
+    return {
+        'progress_percent_l2': _safe_float(payload.get('progress_percent_l2', 0.0), 0.0),
+        'progress_percent_l3': _safe_float(payload.get('progress_percent_l3', 0.0), 0.0),
+        'eta_l2_sec': _safe_int(payload.get('eta_l2_sec', -1), -1),
+        'eta_l3_sec': _safe_int(payload.get('eta_l3_sec', -1), -1),
+        'remaining_jobs_l2': _safe_int(payload.get('remaining_jobs_l2', 0), 0),
+        'remaining_jobs_l3': _safe_int(payload.get('remaining_jobs_l3', 0), 0),
+        'worker_state': worker_state,
+    }
 async def pipeline_policy_get_endpoint(request) -> JSONResponse:
     context: HttpContext = request.app.state.context
     if context.pipeline_control_service is None:

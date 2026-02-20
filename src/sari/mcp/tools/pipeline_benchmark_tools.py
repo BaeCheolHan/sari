@@ -36,9 +36,10 @@ class PipelineBenchmarkRunTool:
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """벤치마크 실행 결과를 pack1 형식으로 반환한다."""
-        error = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
-        if error is not None:
-            return pack1_error(error)
+        validation = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
+        if validation.error is not None:
+            return pack1_error(validation.error)
+        warnings_payload = [warning.to_dict() for warning in validation.warnings]
         repo = str(arguments["repo"])
         target_raw = arguments.get("target_files", 50_000)
         profile_raw = arguments.get("profile", "default")
@@ -70,6 +71,7 @@ class PipelineBenchmarkRunTool:
                     resolved_count=1,
                     cache_hit=None,
                     errors=[],
+                    warnings=warnings_payload,
                 ).to_dict(),
             }
         )
@@ -85,9 +87,10 @@ class PipelineBenchmarkReportTool:
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """최신 벤치마크 결과를 pack1 형식으로 반환한다."""
-        error = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
-        if error is not None:
-            return pack1_error(error)
+        validation = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
+        if validation.error is not None:
+            return pack1_error(validation.error)
+        warnings_payload = [warning.to_dict() for warning in validation.warnings]
         try:
             summary = self._benchmark_service.get_latest_report()
         except BenchmarkError as exc:
@@ -100,6 +103,7 @@ class PipelineBenchmarkReportTool:
                     resolved_count=1,
                     cache_hit=None,
                     errors=[],
+                    warnings=warnings_payload,
                 ).to_dict(),
             }
         )

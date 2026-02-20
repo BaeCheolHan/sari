@@ -175,3 +175,17 @@ def test_read_diff_preview_split_endpoint(tmp_path: Path) -> None:
     payload = json.loads(response.body.decode("utf-8"))
     assert isinstance(payload["items"], list)
     assert payload["items"][0]["path"] == "main.py"
+
+
+def test_read_prefers_repo_over_repo_id_when_both_present(tmp_path: Path) -> None:
+    """repo/repo_id가 동시에 들어오면 repo를 우선 사용해야 한다."""
+    context, repo = _build_context(tmp_path)
+    request = SimpleNamespace(
+        query_params={"repo": repo, "repo_id": "invalid-repo-id", "mode": "file", "target": "main.py"},
+        app=SimpleNamespace(state=SimpleNamespace(context=context)),
+    )
+    response = asyncio.run(read_endpoint(request))
+    assert response.status_code == 200
+    payload = json.loads(response.body.decode("utf-8"))
+    assert isinstance(payload["items"], list)
+    assert payload["items"][0]["relative_path"] == "main.py"

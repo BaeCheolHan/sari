@@ -143,3 +143,51 @@ def test_read_missing_target_returns_self_describing_error(tmp_path: Path) -> No
     assert "example" in error
     text = payload["result"]["content"][0]["text"]
     assert "@HINT expected=" in text
+
+
+def test_read_includes_validation_warnings_in_meta(tmp_path: Path) -> None:
+    """repo_key partial fallback이 발생하면 meta.warnings를 포함해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir(parents=True, exist_ok=True)
+    target_file = repo_path / "main.py"
+    target_file.write_text("print('a')\n", encoding="utf-8")
+    repo_root = str(repo_path.resolve())
+    WorkspaceRepository(db_path).add(WorkspaceDTO(path=repo_root, name="repo", indexed_at=None, is_active=True))
+    server = McpServer(db_path=db_path)
+    scan_payload = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 6041,
+            "method": "tools/call",
+            "params": {
+                "name": "scan_once",
+                "arguments": {"repo": repo_root, "options": {"structured": 1}},
+            },
+        }
+    ).to_dict()
+    assert scan_payload["result"]["isError"] is False
+
+    response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 6042,
+            "method": "tools/call",
+            "params": {
+                "name": "read",
+                "arguments": {
+                    "repo": "repo",
+                    "repo_key": "missing-repo",
+                    "mode": "file",
+                    "target": "main.py",
+                    "options": {"structured": 1},
+                },
+            },
+        }
+    )
+    payload = response.to_dict()
+    assert payload["result"]["isError"] is False
+    meta = payload["result"]["structuredContent"]["meta"]
+    assert isinstance(meta.get("warnings"), list)
+    assert meta["warnings"][0]["code"] == "WARN_REPO_ARG_PARTIAL_FALLBACK"

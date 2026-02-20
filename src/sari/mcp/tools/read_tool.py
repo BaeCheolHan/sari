@@ -52,9 +52,10 @@ class ReadTool:
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """모드별 read 응답을 반환한다."""
-        error = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
-        if error is not None:
-            return pack1_error(error)
+        validation = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
+        if validation.error is not None:
+            return pack1_error(validation.error)
+        warnings_payload = [warning.to_dict() for warning in validation.warnings]
         stabilization_enabled = self._stabilization_enabled
         if stabilization_enabled and requires_strict_session_id(arguments):
             return pack1_error(
@@ -97,13 +98,13 @@ class ReadTool:
         if mode == "ast_edit":
             return pack1_error(ErrorResponseDTO(code="ERR_AST_DISABLED", message="ast_edit mode is disabled by policy"))
         if mode == "file":
-            return self._read_file_mode(repo_root=repo_root, arguments=arguments)
+            return self._read_file_mode(repo_root=repo_root, arguments=arguments, warnings_payload=warnings_payload)
         if mode == "symbol":
-            return self._read_symbol_mode(repo_root=repo_root, arguments=arguments)
+            return self._read_symbol_mode(repo_root=repo_root, arguments=arguments, warnings_payload=warnings_payload)
         if mode == "snippet":
-            return self._read_snippet_mode(repo_root=repo_root, arguments=arguments)
+            return self._read_snippet_mode(repo_root=repo_root, arguments=arguments, warnings_payload=warnings_payload)
         if mode == "diff_preview":
-            return self._read_diff_preview_mode(repo_root=repo_root, arguments=arguments)
+            return self._read_diff_preview_mode(repo_root=repo_root, arguments=arguments, warnings_payload=warnings_payload)
         return argument_error(
             code="ERR_UNSUPPORTED_MODE",
             message=f"unsupported mode: {mode}",
@@ -181,7 +182,12 @@ class ReadTool:
             return [{"tool": "read", "arguments": {"mode": "file", "target": alternatives[0]}}]
         return [{"tool": "search", "arguments": {"query": target, "limit": 5}}]
 
-    def _read_file_mode(self, repo_root: str, arguments: dict[str, object]) -> dict[str, object]:
+    def _read_file_mode(
+        self,
+        repo_root: str,
+        arguments: dict[str, object],
+        warnings_payload: list[dict[str, object]],
+    ) -> dict[str, object]:
         """file 모드 읽기를 수행한다."""
         target = arguments.get("target")
         if not isinstance(target, str) or target.strip() == "":
@@ -241,9 +247,15 @@ class ReadTool:
             ],
             cache_hit=result.source == "l2",
             stabilization=stabilization,
+            warnings=warnings_payload,
         )
 
-    def _read_symbol_mode(self, repo_root: str, arguments: dict[str, object]) -> dict[str, object]:
+    def _read_symbol_mode(
+        self,
+        repo_root: str,
+        arguments: dict[str, object],
+        warnings_payload: list[dict[str, object]],
+    ) -> dict[str, object]:
         """symbol 모드 읽기를 수행한다."""
         target = arguments.get("target")
         if not isinstance(target, str) or target.strip() == "":
@@ -267,9 +279,14 @@ class ReadTool:
             warnings=[],
             degraded=False,
         )
-        return pack1_items_success(row_items, cache_hit=True, stabilization=stabilization)
+        return pack1_items_success(row_items, cache_hit=True, stabilization=stabilization, warnings=warnings_payload)
 
-    def _read_snippet_mode(self, repo_root: str, arguments: dict[str, object]) -> dict[str, object]:
+    def _read_snippet_mode(
+        self,
+        repo_root: str,
+        arguments: dict[str, object],
+        warnings_payload: list[dict[str, object]],
+    ) -> dict[str, object]:
         """snippet 모드 읽기를 수행한다."""
         target = arguments.get("target")
         query = None if not isinstance(target, str) else target.strip()
@@ -306,9 +323,14 @@ class ReadTool:
             warnings=soft_warnings,
             degraded=degraded,
         )
-        return pack1_items_success(row_items, cache_hit=True, stabilization=stabilization)
+        return pack1_items_success(row_items, cache_hit=True, stabilization=stabilization, warnings=warnings_payload)
 
-    def _read_diff_preview_mode(self, repo_root: str, arguments: dict[str, object]) -> dict[str, object]:
+    def _read_diff_preview_mode(
+        self,
+        repo_root: str,
+        arguments: dict[str, object],
+        warnings_payload: list[dict[str, object]],
+    ) -> dict[str, object]:
         """diff_preview 모드 읽기를 수행한다."""
         target = arguments.get("target")
         content = arguments.get("content")
@@ -357,6 +379,7 @@ class ReadTool:
                 }
             ],
             stabilization=stabilization,
+            warnings=warnings_payload,
         )
 
 
@@ -374,4 +397,3 @@ class DryRunDiffTool:
         transformed["mode"] = "diff_preview"
         transformed["target"] = target
         return self._read_tool.call(transformed)
-

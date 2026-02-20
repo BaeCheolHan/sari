@@ -129,3 +129,76 @@ def test_ensure_migrated_upgrades_baseline_columns(tmp_path: Path) -> None:
     assert "repo_id" in queue_cols
     assert "repo_id" in symbol_cols
     assert registry_row is not None
+
+
+def test_init_schema_handles_legacy_db_missing_repo_id_columns(tmp_path: Path) -> None:
+    """legacy DB에서도 init_schema가 repo_id 인덱스 오류 없이 완료되어야 한다."""
+    db_path = tmp_path / "legacy-init.db"
+    with connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS collected_files_l1 (
+                repo_root TEXT NOT NULL,
+                relative_path TEXT NOT NULL,
+                absolute_path TEXT NOT NULL,
+                repo_label TEXT NOT NULL,
+                mtime_ns INTEGER NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                content_hash TEXT NOT NULL,
+                is_deleted INTEGER NOT NULL DEFAULT 0,
+                last_seen_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                enrich_state TEXT NOT NULL,
+                PRIMARY KEY(repo_root, relative_path)
+            );
+            CREATE TABLE IF NOT EXISTS file_enrich_queue (
+                job_id TEXT PRIMARY KEY,
+                repo_root TEXT NOT NULL,
+                relative_path TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                content_raw TEXT NOT NULL DEFAULT '',
+                content_encoding TEXT NOT NULL DEFAULT 'utf-8',
+                priority INTEGER NOT NULL DEFAULT 30,
+                enqueue_source TEXT NOT NULL DEFAULT 'scan',
+                status TEXT NOT NULL,
+                attempt_count INTEGER NOT NULL,
+                last_error TEXT NULL,
+                next_retry_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS candidate_index_changes (
+                change_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                change_type TEXT NOT NULL,
+                status TEXT NOT NULL,
+                repo_root TEXT NOT NULL,
+                relative_path TEXT NOT NULL,
+                absolute_path TEXT NULL,
+                content_hash TEXT NULL,
+                mtime_ns INTEGER NULL,
+                size_bytes INTEGER NULL,
+                event_source TEXT NOT NULL,
+                reason TEXT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS alembic_version (
+                version_num VARCHAR(32) NOT NULL PRIMARY KEY
+            );
+            DELETE FROM alembic_version;
+            INSERT INTO alembic_version(version_num) VALUES('20260218_0005');
+            """
+        )
+        conn.commit()
+
+    init_schema(db_path)
+
+    with connect(db_path) as conn:
+        l1_cols = {str(row["name"]) for row in conn.execute("PRAGMA table_info(collected_files_l1)").fetchall()}
+        queue_cols = {str(row["name"]) for row in conn.execute("PRAGMA table_info(file_enrich_queue)").fetchall()}
+        version_row = conn.execute("SELECT version_num FROM alembic_version LIMIT 1").fetchone()
+
+    assert "repo_id" in l1_cols
+    assert "repo_id" in queue_cols
+    assert version_row is not None
+    assert str(version_row["version_num"]) == HEAD_VERSION

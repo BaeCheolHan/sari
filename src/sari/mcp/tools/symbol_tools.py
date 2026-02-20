@@ -20,9 +20,10 @@ class SearchSymbolTool:
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """심볼 인덱스 검색 결과를 pack1 형식으로 반환한다."""
-        error = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
-        if error is not None:
-            return pack1_error(error)
+        validation = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
+        if validation.error is not None:
+            return pack1_error(validation.error)
+        warnings_payload = [warning.to_dict() for warning in validation.warnings]
 
         query_raw, query_error = parse_non_empty_string(arguments=arguments, key="query")
         if query_error is not None:
@@ -42,6 +43,7 @@ class SearchSymbolTool:
                     resolved_count=len(rows),
                     cache_hit=True,
                     errors=[],
+                    warnings=warnings_payload,
                 ).to_dict(),
             }
         )
@@ -57,9 +59,10 @@ class GetCallersTool:
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """호출자 관계 조회 결과를 pack1 형식으로 반환한다."""
-        error = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
-        if error is not None:
-            return pack1_error(error)
+        validation = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
+        if validation.error is not None:
+            return pack1_error(validation.error)
+        warnings_payload = [warning.to_dict() for warning in validation.warnings]
 
         symbol_name = self._resolve_symbol_name(arguments)
         if symbol_name is None:
@@ -81,6 +84,7 @@ class GetCallersTool:
                     resolved_count=len(rows),
                     cache_hit=True,
                     errors=[],
+                    warnings=warnings_payload,
                 ).to_dict(),
             }
         )

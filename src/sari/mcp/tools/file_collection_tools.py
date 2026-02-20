@@ -26,9 +26,10 @@ class ScanOnceTool:
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """저장소 전체 1회 스캔을 실행한다."""
-        error = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
-        if error is not None:
-            return pack1_error(error)
+        validation = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
+        if validation.error is not None:
+            return pack1_error(validation.error)
+        warnings_payload = [warning.to_dict() for warning in validation.warnings]
         repo = str(arguments["repo"])
 
         try:
@@ -66,6 +67,7 @@ class ScanOnceTool:
                     resolved_count=result.indexed_count,
                     cache_hit=None,
                     errors=errors,
+                    warnings=warnings_payload,
                 ).to_dict(),
             }
         )
@@ -81,9 +83,10 @@ class ListFilesTool:
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """파일 목록을 pack1 형식으로 반환한다."""
-        error = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
-        if error is not None:
-            return pack1_error(error)
+        validation = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
+        if validation.error is not None:
+            return pack1_error(validation.error)
+        warnings_payload = [warning.to_dict() for warning in validation.warnings]
         repo = str(arguments["repo"])
 
         limit_raw, limit_error = parse_positive_int(arguments=arguments, key="limit", default=20)
@@ -104,6 +107,7 @@ class ListFilesTool:
                     resolved_count=len(items),
                     cache_hit=None,
                     errors=[],
+                    warnings=warnings_payload,
                 ).to_dict(),
             }
         )
@@ -119,9 +123,10 @@ class ReadFileTool:
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """파일 내용을 pack1 형식으로 반환한다."""
-        error = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
-        if error is not None:
-            return pack1_error(error)
+        validation = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
+        if validation.error is not None:
+            return pack1_error(validation.error)
+        warnings_payload = [warning.to_dict() for warning in validation.warnings]
         repo = str(arguments["repo"])
 
         relative_path_raw, path_error = parse_non_empty_string(arguments=arguments, key="relative_path")
@@ -162,6 +167,7 @@ class ReadFileTool:
                     resolved_count=1,
                     cache_hit=result.source == "l2",
                     errors=[],
+                    warnings=warnings_payload,
                 ).to_dict(),
             }
         )
@@ -177,9 +183,10 @@ class IndexFileTool:
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """단일 파일 증분 인덱싱을 실행한다."""
-        error = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
-        if error is not None:
-            return pack1_error(error)
+        validation = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
+        if validation.error is not None:
+            return pack1_error(validation.error)
+        warnings_payload = [warning.to_dict() for warning in validation.warnings]
         repo = str(arguments["repo"])
 
         relative_path_raw, path_error = parse_non_empty_string(arguments=arguments, key="relative_path")
@@ -206,6 +213,7 @@ class IndexFileTool:
                     resolved_count=result.indexed_count,
                     cache_hit=None,
                     errors=[],
+                    warnings=warnings_payload,
                 ).to_dict(),
             }
         )

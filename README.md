@@ -38,7 +38,27 @@ sari install --host codex
 ```
 
 - Gemini/Codex 설정에 `command = "sari"` + `args = ["mcp","stdio"]`를 자동 반영한다.
+- Codex 설정에는 `startup_timeout_sec = 45`를 기본 반영한다.
 - 기존 설정 파일은 `.bak.<timestamp>`로 백업된다.
+
+### MCP handshake timeout 대응
+
+MCP 클라이언트에서 아래와 같은 메시지가 보이면 startup timeout이 짧은 경우가 많다.
+
+- `MCP client for "sari" timed out after 10 seconds`
+- `MCP startup incomplete`
+
+Codex 설정(`~/.codex/config.toml`)에서 `startup_timeout_sec`를 늘려준다.
+
+```toml
+[mcp_servers.sari]
+command = "sari"
+args = ["mcp", "stdio"]
+startup_timeout_sec = 45
+```
+
+- 권장 시작값: `30`
+- 대형 DB/느린 디스크/초기 마이그레이션 환경: `45~60`
 
 ## 수동 설정 예시
 
@@ -61,6 +81,40 @@ sari install --host codex
 [mcp_servers.sari]
 command = "sari"
 args = ["mcp", "stdio"]
+startup_timeout_sec = 45
+```
+
+## Troubleshooting
+
+### `sqlite3.OperationalError: no such column: repo_id`
+
+기존(구버전) `state.db`를 현재 바이너리와 함께 사용할 때 발생할 수 있다.
+
+복구 절차:
+
+1. 기존 DB 백업
+2. 새 DB 경로로 부팅해 초기 스키마/마이그레이션을 완료
+3. `sari doctor`와 MCP 연결 재확인
+
+예시:
+
+```bash
+# 1) 백업
+cp ~/.local/share/sari-v2/state.db ~/.local/share/sari-v2/state.db.bak.$(date +%Y%m%d-%H%M%S)
+
+# 2) 새 DB로 실행(임시/영구 경로 모두 가능)
+export SARI_DB_PATH=~/.local/share/sari-v2/state.new.db
+
+# 3) 상태 확인
+sari doctor
+```
+
+### 설치 직후 최소 점검 순서
+
+```bash
+sari doctor
+sari install --host codex
+# Codex config.toml에서 startup_timeout_sec = 30~60 확인
 ```
 
 ## 개발 검증
@@ -70,6 +124,23 @@ pytest -q
 tools/ci/run_release_gate.sh
 tools/manual/test_mcp_call_flow.sh /absolute/path/to/repo
 ```
+
+## GitHub Actions 배포
+
+Release 워크플로우 파일: `.github/workflows/release-pypi.yml`
+
+### 1) TestPyPI 선검증 (권장)
+
+1. GitHub Actions에서 `Release PyPI`를 수동 실행한다.
+2. 입력값 `publish_to_testpypi=true`로 실행한다.
+3. `build` job에서 release gate + wheel/sdist 빌드 + twine check 통과를 확인한다.
+4. `publish-testpypi` job 성공과 `release-dist` artifact 업로드를 확인한다.
+
+### 2) PyPI 실배포
+
+1. `pyproject.toml` 버전을 확정한다.
+2. 동일 버전 태그(`v<version>`)를 push 한다. 예: `v2.0.14`
+3. 워크플로우의 tag/version 일치 검증 통과 후 `publish-pypi` job 성공을 확인한다.
 
 ## 로컬 wheel 테스트 (글로벌 tool 오염 방지)
 

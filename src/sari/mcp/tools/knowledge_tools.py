@@ -20,16 +20,17 @@ class KnowledgeTool:
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """지식 엔트리 조회 결과를 반환한다."""
-        error = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
-        if error is not None:
-            return pack1_error(error)
+        validation = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
+        if validation.error is not None:
+            return pack1_error(validation.error)
+        warnings_payload = [warning.to_dict() for warning in validation.warnings]
         query_raw = arguments.get("query")
         query = query_raw if isinstance(query_raw, str) else None
         limit_raw = arguments.get("limit", 20)
         if not isinstance(limit_raw, int) or limit_raw <= 0:
             return pack1_error(ErrorResponseDTO(code="ERR_INVALID_LIMIT", message="limit must be positive integer"))
         rows = self._knowledge_repo.query_knowledge(repo_root=str(arguments["repo"]), kind="knowledge", query=query, limit=limit_raw)
-        return pack1_items_success([row.to_dict() for row in rows], cache_hit=True)
+        return pack1_items_success([row.to_dict() for row in rows], cache_hit=True, warnings=warnings_payload)
 
 
 class SaveSnippetTool:
@@ -42,9 +43,10 @@ class SaveSnippetTool:
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """파일 구간 스니펫을 저장한다."""
-        error = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
-        if error is not None:
-            return pack1_error(error)
+        validation = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
+        if validation.error is not None:
+            return pack1_error(validation.error)
+        warnings_payload = [warning.to_dict() for warning in validation.warnings]
         repo_root = str(arguments["repo"])
         path_raw = arguments.get("path")
         if not isinstance(path_raw, str) or path_raw.strip() == "":
@@ -81,7 +83,7 @@ class SaveSnippetTool:
                 created_at=now_iso8601_utc(),
             )
         )
-        return pack1_items_success([{"snippet_id": snippet_id, "tag": tag_raw.strip()}])
+        return pack1_items_success([{"snippet_id": snippet_id, "tag": tag_raw.strip()}], warnings=warnings_payload)
 
 
 class GetSnippetTool:
@@ -94,9 +96,10 @@ class GetSnippetTool:
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """저장된 스니펫을 조회한다."""
-        error = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
-        if error is not None:
-            return pack1_error(error)
+        validation = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
+        if validation.error is not None:
+            return pack1_error(validation.error)
+        warnings_payload = [warning.to_dict() for warning in validation.warnings]
         tag = arguments.get("tag") if isinstance(arguments.get("tag"), str) else None
         query = arguments.get("query") if isinstance(arguments.get("query"), str) else None
         if (tag is None or tag.strip() == "") and (query is None or query.strip() == ""):
@@ -110,7 +113,7 @@ class GetSnippetTool:
             query=None if query is None else query.strip(),
             limit=limit_raw,
         )
-        return pack1_items_success([row.to_dict() for row in rows], cache_hit=True)
+        return pack1_items_success([row.to_dict() for row in rows], cache_hit=True, warnings=warnings_payload)
 
 
 class ArchiveContextTool:
@@ -123,9 +126,10 @@ class ArchiveContextTool:
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """문맥 정보를 보존 저장한다."""
-        error = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
-        if error is not None:
-            return pack1_error(error)
+        validation = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
+        if validation.error is not None:
+            return pack1_error(validation.error)
+        warnings_payload = [warning.to_dict() for warning in validation.warnings]
         topic_raw = arguments.get("topic")
         content_raw = arguments.get("content")
         if not isinstance(topic_raw, str) or topic_raw.strip() == "":
@@ -155,7 +159,7 @@ class ArchiveContextTool:
                 created_at=now_iso8601_utc(),
             )
         )
-        return pack1_items_success([{"entry_id": entry_id, "topic": topic_raw.strip()}])
+        return pack1_items_success([{"entry_id": entry_id, "topic": topic_raw.strip()}], warnings=warnings_payload)
 
 
 class GetContextTool:
@@ -168,13 +172,14 @@ class GetContextTool:
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """저장된 문맥 엔트리를 조회한다."""
-        error = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
-        if error is not None:
-            return pack1_error(error)
+        validation = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
+        if validation.error is not None:
+            return pack1_error(validation.error)
+        warnings_payload = [warning.to_dict() for warning in validation.warnings]
         query = arguments.get("query") if isinstance(arguments.get("query"), str) else None
         limit_raw = arguments.get("limit", 20)
         if not isinstance(limit_raw, int) or limit_raw <= 0:
             return pack1_error(ErrorResponseDTO(code="ERR_INVALID_LIMIT", message="limit must be positive integer"))
         rows = self._knowledge_repo.query_knowledge(repo_root=str(arguments["repo"]), kind="context", query=query, limit=limit_raw)
-        return pack1_items_success([row.to_dict() for row in rows], cache_hit=True)
+        return pack1_items_success([row.to_dict() for row in rows], cache_hit=True, warnings=warnings_payload)
 

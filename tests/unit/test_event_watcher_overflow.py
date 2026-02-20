@@ -134,3 +134,70 @@ def test_event_watcher_loop_skips_inactive_workspace_paths(tmp_path: Path, monke
     assert str(workspace_inactive.resolve()) not in scheduled_paths
     assert "inactive workspace skip" in caplog.text
     assert str(workspace_inactive.resolve()) in caplog.text
+
+
+def test_event_watcher_selects_deepest_workspace_root_for_nested_paths(tmp_path: Path) -> None:
+    """중첩 workspace에서 더 구체적인 경계를 repo_root로 선택해야 한다."""
+    workspace_root = tmp_path / "workspace"
+    nested_root = workspace_root / "nested"
+    nested_root.mkdir(parents=True)
+    nested_file = nested_root / "alpha.py"
+    nested_file.write_text("print('nested')\n", encoding="utf-8")
+
+    watcher = EventWatcher(
+        workspace_repo=_WorkspaceRepoStub([str(workspace_root.resolve()), str(nested_root.resolve())]),
+        file_repo=_FileRepoStub(),
+        candidate_index_sink=None,
+        event_queue=queue.Queue(),
+        stop_event=threading.Event(),
+        debounce_events={},
+        debounce_lock=threading.Lock(),
+        watcher_debounce_ms=lambda: 10,
+        assert_parent_alive=lambda worker_name: None,
+        index_file_with_priority=lambda repo_root, relative_path, priority, enqueue_source: None,
+        handle_background_collection_error=lambda exc, phase, worker_name: False,
+        priority_high=90,
+        set_observer=lambda observer: None,
+        watcher_overflow_rescan_cooldown_sec=30,
+        now_monotonic=lambda: 0.0,
+        on_watcher_queue_overflow=lambda repo_root, src_path: None,
+        schedule_rescan=lambda repo_root: None,
+    )
+
+    resolved_repo_root = watcher._resolve_repo_root_for_path(nested_file)  # noqa: SLF001
+    assert resolved_repo_root == str(nested_root.resolve())
+
+
+def test_event_watcher_ignores_inactive_workspace_during_event_matching(tmp_path: Path) -> None:
+    """비활성 workspace 파일 이벤트는 디바운스 큐에 적재되지 않아야 한다."""
+    workspace_inactive = tmp_path / "ws-inactive"
+    workspace_inactive.mkdir()
+    source_file = workspace_inactive / "beta.py"
+    source_file.write_text("print('inactive')\n", encoding="utf-8")
+
+    debounce_events: dict[tuple[str, str], tuple[float, str, str]] = {}
+    watcher = EventWatcher(
+        workspace_repo=_WorkspaceRepoStub(
+            [str(workspace_inactive.resolve())],
+            active_map={str(workspace_inactive.resolve()): False},
+        ),
+        file_repo=_FileRepoStub(),
+        candidate_index_sink=None,
+        event_queue=queue.Queue(),
+        stop_event=threading.Event(),
+        debounce_events=debounce_events,
+        debounce_lock=threading.Lock(),
+        watcher_debounce_ms=lambda: 10,
+        assert_parent_alive=lambda worker_name: None,
+        index_file_with_priority=lambda repo_root, relative_path, priority, enqueue_source: None,
+        handle_background_collection_error=lambda exc, phase, worker_name: False,
+        priority_high=90,
+        set_observer=lambda observer: None,
+        watcher_overflow_rescan_cooldown_sec=30,
+        now_monotonic=lambda: 0.0,
+        on_watcher_queue_overflow=lambda repo_root, src_path: None,
+        schedule_rescan=lambda repo_root: None,
+    )
+
+    watcher.push_debounced_event("modified", str(source_file.resolve()), "")
+    assert debounce_events == {}

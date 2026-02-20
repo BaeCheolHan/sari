@@ -16,6 +16,7 @@ class Pack1MetaDTO:
     cache_hit: bool | None
     errors: list[dict[str, object]]
     stabilization: dict[str, object] | None = None
+    warnings: list[dict[str, object]] | None = None
 
     def to_dict(self) -> dict[str, object]:
         """JSON 직렬화 가능한 딕셔너리로 변환한다."""
@@ -27,6 +28,8 @@ class Pack1MetaDTO:
         }
         if self.stabilization is not None:
             payload["stabilization"] = self.stabilization
+        if self.warnings is not None and len(self.warnings) > 0:
+            payload["warnings"] = self.warnings
         return payload
 
 

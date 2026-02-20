@@ -49,9 +49,10 @@ class PipelineLspMatrixRunTool:
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """LSP 매트릭스 실행 결과를 pack1 형식으로 반환한다."""
-        error = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
-        if error is not None:
-            return pack1_error(error)
+        validation = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
+        if validation.error is not None:
+            return pack1_error(validation.error)
+        warnings_payload = [warning.to_dict() for warning in validation.warnings]
         repo = str(arguments["repo"])
         required_languages, required_error = _parse_required_languages(arguments)
         if required_error is not None:
@@ -78,7 +79,13 @@ class PipelineLspMatrixRunTool:
         return pack1_success(
             {
                 "items": [result],
-                "meta": Pack1MetaDTO(candidate_count=1, resolved_count=1, cache_hit=None, errors=[]).to_dict(),
+                "meta": Pack1MetaDTO(
+                    candidate_count=1,
+                    resolved_count=1,
+                    cache_hit=None,
+                    errors=[],
+                    warnings=warnings_payload,
+                ).to_dict(),
             }
         )
 
@@ -93,9 +100,10 @@ class PipelineLspMatrixReportTool:
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """최신 LSP 매트릭스 리포트를 pack1 형식으로 반환한다."""
-        error = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
-        if error is not None:
-            return pack1_error(error)
+        validation = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
+        if validation.error is not None:
+            return pack1_error(validation.error)
+        warnings_payload = [warning.to_dict() for warning in validation.warnings]
         repo = str(arguments["repo"])
         try:
             result = self._matrix_service.get_latest_report(repo_root=repo)
@@ -104,6 +112,12 @@ class PipelineLspMatrixReportTool:
         return pack1_success(
             {
                 "items": [result],
-                "meta": Pack1MetaDTO(candidate_count=1, resolved_count=1, cache_hit=None, errors=[]).to_dict(),
+                "meta": Pack1MetaDTO(
+                    candidate_count=1,
+                    resolved_count=1,
+                    cache_hit=None,
+                    errors=[],
+                    warnings=warnings_payload,
+                ).to_dict(),
             }
         )

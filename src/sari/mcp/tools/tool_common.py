@@ -15,6 +15,7 @@ def pack1_items_success(
     *,
     cache_hit: bool = False,
     stabilization: dict[str, object] | None = None,
+    warnings: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     """표준 pack1 성공 응답을 생성한다."""
     return pack1_success(
@@ -26,6 +27,7 @@ def pack1_items_success(
                 cache_hit=cache_hit,
                 errors=[],
                 stabilization=stabilization,
+                warnings=warnings,
             ).to_dict(),
         }
     )
@@ -94,4 +96,3 @@ def normalize_source_path(repo_root: str, source_path: Path) -> str:
 def content_hash(text: str) -> str:
     """텍스트 본문의 짧은 해시를 계산한다."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
-

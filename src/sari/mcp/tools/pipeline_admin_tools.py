@@ -26,14 +26,21 @@ class PipelinePolicyGetTool:
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """파이프라인 정책을 반환한다."""
-        error = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
-        if error is not None:
-            return pack1_error(error)
+        validation = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
+        if validation.error is not None:
+            return pack1_error(validation.error)
+        warnings_payload = [warning.to_dict() for warning in validation.warnings]
         item = self._service.get_policy().to_dict()
         return pack1_success(
             {
                 "items": [item],
-                "meta": Pack1MetaDTO(candidate_count=1, resolved_count=1, cache_hit=None, errors=[]).to_dict(),
+                "meta": Pack1MetaDTO(
+                    candidate_count=1,
+                    resolved_count=1,
+                    cache_hit=None,
+                    errors=[],
+                    warnings=warnings_payload,
+                ).to_dict(),
             }
         )
 
@@ -48,9 +55,10 @@ class PipelinePolicySetTool:
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """파이프라인 정책을 갱신한다."""
-        error = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
-        if error is not None:
-            return pack1_error(error)
+        validation = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
+        if validation.error is not None:
+            return pack1_error(validation.error)
+        warnings_payload = [warning.to_dict() for warning in validation.warnings]
         deletion_hold, deletion_error = parse_optional_boolean(arguments=arguments, key="deletion_hold")
         if deletion_error is not None:
             return pack1_error(ErrorResponseDTO(code="ERR_POLICY_INVALID", message="invalid deletion_hold"))
@@ -116,7 +124,13 @@ class PipelinePolicySetTool:
         return pack1_success(
             {
                 "items": [item],
-                "meta": Pack1MetaDTO(candidate_count=1, resolved_count=1, cache_hit=None, errors=[]).to_dict(),
+                "meta": Pack1MetaDTO(
+                    candidate_count=1,
+                    resolved_count=1,
+                    cache_hit=None,
+                    errors=[],
+                    warnings=warnings_payload,
+                ).to_dict(),
             }
         )
 
@@ -131,14 +145,21 @@ class PipelineAlertStatusTool:
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """알람 스냅샷을 반환한다."""
-        error = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
-        if error is not None:
-            return pack1_error(error)
+        validation = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
+        if validation.error is not None:
+            return pack1_error(validation.error)
+        warnings_payload = [warning.to_dict() for warning in validation.warnings]
         item = self._service.get_alert_status().to_dict()
         return pack1_success(
             {
                 "items": [item],
-                "meta": Pack1MetaDTO(candidate_count=1, resolved_count=1, cache_hit=None, errors=[]).to_dict(),
+                "meta": Pack1MetaDTO(
+                    candidate_count=1,
+                    resolved_count=1,
+                    cache_hit=None,
+                    errors=[],
+                    warnings=warnings_payload,
+                ).to_dict(),
             }
         )
 
@@ -153,9 +174,10 @@ class PipelineDeadListTool:
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """DEAD 작업 목록을 반환한다."""
-        error = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
-        if error is not None:
-            return pack1_error(error)
+        validation = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
+        if validation.error is not None:
+            return pack1_error(validation.error)
+        warnings_payload = [warning.to_dict() for warning in validation.warnings]
         repo = str(arguments["repo"])
         limit, limit_error = parse_optional_loose_int(arguments=arguments, key="limit")
         if limit_error is not None:
@@ -170,7 +192,13 @@ class PipelineDeadListTool:
         return pack1_success(
             {
                 "items": [item.to_dict() for item in items],
-                "meta": Pack1MetaDTO(candidate_count=len(items), resolved_count=len(items), cache_hit=None, errors=[]).to_dict(),
+                "meta": Pack1MetaDTO(
+                    candidate_count=len(items),
+                    resolved_count=len(items),
+                    cache_hit=None,
+                    errors=[],
+                    warnings=warnings_payload,
+                ).to_dict(),
             }
         )
 
@@ -185,9 +213,10 @@ class PipelineDeadRequeueTool:
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """DEAD 작업을 재큐잉한다."""
-        error = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
-        if error is not None:
-            return pack1_error(error)
+        validation = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
+        if validation.error is not None:
+            return pack1_error(validation.error)
+        warnings_payload = [warning.to_dict() for warning in validation.warnings]
         repo = str(arguments["repo"])
         limit, limit_error = parse_optional_loose_int(arguments=arguments, key="limit")
         if limit_error is not None:
@@ -210,7 +239,13 @@ class PipelineDeadRequeueTool:
             {
                 "items": [],
                 "requeued_count": result.requeued_count,
-                "meta": Pack1MetaDTO(candidate_count=0, resolved_count=result.requeued_count, cache_hit=None, errors=[]).to_dict(),
+                "meta": Pack1MetaDTO(
+                    candidate_count=0,
+                    resolved_count=result.requeued_count,
+                    cache_hit=None,
+                    errors=[],
+                    warnings=warnings_payload,
+                ).to_dict(),
             }
         )
 
@@ -225,9 +260,10 @@ class PipelineDeadPurgeTool:
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """DEAD 작업을 삭제한다."""
-        error = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
-        if error is not None:
-            return pack1_error(error)
+        validation = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
+        if validation.error is not None:
+            return pack1_error(validation.error)
+        warnings_payload = [warning.to_dict() for warning in validation.warnings]
         repo = str(arguments["repo"])
         limit, limit_error = parse_optional_loose_int(arguments=arguments, key="limit")
         if limit_error is not None:
@@ -250,7 +286,13 @@ class PipelineDeadPurgeTool:
             {
                 "items": [],
                 "purged_count": result.purged_count,
-                "meta": Pack1MetaDTO(candidate_count=0, resolved_count=result.purged_count, cache_hit=None, errors=[]).to_dict(),
+                "meta": Pack1MetaDTO(
+                    candidate_count=0,
+                    resolved_count=result.purged_count,
+                    cache_hit=None,
+                    errors=[],
+                    warnings=warnings_payload,
+                ).to_dict(),
             }
         )
 
@@ -265,14 +307,21 @@ class PipelineAutoStatusTool:
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """자동제어 상태를 반환한다."""
-        error = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
-        if error is not None:
-            return pack1_error(error)
+        validation = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
+        if validation.error is not None:
+            return pack1_error(validation.error)
+        warnings_payload = [warning.to_dict() for warning in validation.warnings]
         item = self._service.get_auto_control_state().to_dict()
         return pack1_success(
             {
                 "items": [item],
-                "meta": Pack1MetaDTO(candidate_count=1, resolved_count=1, cache_hit=None, errors=[]).to_dict(),
+                "meta": Pack1MetaDTO(
+                    candidate_count=1,
+                    resolved_count=1,
+                    cache_hit=None,
+                    errors=[],
+                    warnings=warnings_payload,
+                ).to_dict(),
             }
         )
 
@@ -287,9 +336,10 @@ class PipelineAutoSetTool:
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """자동제어 활성화를 설정한다."""
-        error = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
-        if error is not None:
-            return pack1_error(error)
+        validation = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
+        if validation.error is not None:
+            return pack1_error(validation.error)
+        warnings_payload = [warning.to_dict() for warning in validation.warnings]
         enabled, enabled_error = parse_optional_boolean(arguments=arguments, key="enabled")
         if enabled_error is not None:
             return pack1_error(ErrorResponseDTO(code="ERR_POLICY_INVALID", message="invalid enabled"))
@@ -299,7 +349,13 @@ class PipelineAutoSetTool:
         return pack1_success(
             {
                 "items": [item],
-                "meta": Pack1MetaDTO(candidate_count=1, resolved_count=1, cache_hit=None, errors=[]).to_dict(),
+                "meta": Pack1MetaDTO(
+                    candidate_count=1,
+                    resolved_count=1,
+                    cache_hit=None,
+                    errors=[],
+                    warnings=warnings_payload,
+                ).to_dict(),
             }
         )
 
@@ -314,13 +370,20 @@ class PipelineAutoTickTool:
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """자동제어 평가를 1회 수행한다."""
-        error = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
-        if error is not None:
-            return pack1_error(error)
+        validation = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
+        if validation.error is not None:
+            return pack1_error(validation.error)
+        warnings_payload = [warning.to_dict() for warning in validation.warnings]
         item = self._service.evaluate_auto_hold()
         return pack1_success(
             {
                 "items": [item],
-                "meta": Pack1MetaDTO(candidate_count=1, resolved_count=1, cache_hit=None, errors=[]).to_dict(),
+                "meta": Pack1MetaDTO(
+                    candidate_count=1,
+                    resolved_count=1,
+                    cache_hit=None,
+                    errors=[],
+                    warnings=warnings_payload,
+                ).to_dict(),
             }
         )

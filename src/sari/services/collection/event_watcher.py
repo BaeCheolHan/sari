@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import logging
 import queue
 import time
@@ -16,6 +17,88 @@ from sari.core.exceptions import CollectionError
 from sari.core.models import now_iso8601_utc
 
 log = logging.getLogger(__name__)
+
+
+@dataclass
+class WorkspaceWatchRegistry:
+    """workspace path별 observer watch 핸들을 보관한다."""
+
+    _watches: dict[str, object]
+    _lock: Lock
+
+    def upsert(self, workspace_path: str, watch: object) -> None:
+        with self._lock:
+            self._watches[workspace_path] = watch
+
+    def remove(self, workspace_path: str) -> object | None:
+        with self._lock:
+            return self._watches.pop(workspace_path, None)
+
+    def paths(self) -> set[str]:
+        with self._lock:
+            return set(self._watches.keys())
+
+
+@dataclass
+class DebounceBufferPruner:
+    """workspace 상태 변경 시 debounce 버퍼를 정리한다."""
+
+    debounce_events: dict[tuple[str, str], tuple[float, str, str]]
+    debounce_lock: Lock
+
+    def prune_repo_root(self, repo_root: str) -> None:
+        with self.debounce_lock:
+            remove_keys = [key for key in self.debounce_events if key[0] == repo_root]
+            for key in remove_keys:
+                self.debounce_events.pop(key, None)
+
+
+class WorkspaceWatchSynchronizer:
+    """활성 workspace 집합과 observer watch 상태를 동기화한다."""
+
+    def __init__(
+        self,
+        *,
+        workspace_repo: object,
+        watch_registry: WorkspaceWatchRegistry,
+        debounce_pruner: DebounceBufferPruner,
+    ) -> None:
+        self._workspace_repo = workspace_repo
+        self._watch_registry = watch_registry
+        self._debounce_pruner = debounce_pruner
+
+    def sync(self, *, observer: Observer, handler: FileSystemEventHandler) -> None:
+        active_paths = self._resolve_active_workspace_paths()
+        existing_paths = self._watch_registry.paths()
+        add_paths = sorted(active_paths - existing_paths)
+        remove_paths = sorted(existing_paths - active_paths)
+
+        for workspace_path in add_paths:
+            watch = observer.schedule(handler, workspace_path, recursive=True)
+            self._watch_registry.upsert(workspace_path, watch)
+        for workspace_path in remove_paths:
+            watch = self._watch_registry.remove(workspace_path)
+            if watch is None:
+                continue
+            try:
+                observer.unschedule(watch)
+            except (RuntimeError, OSError, ValueError):
+                continue
+            self._debounce_pruner.prune_repo_root(workspace_path)
+
+    def _resolve_active_workspace_paths(self) -> set[str]:
+        active_paths: set[str] = set()
+        for workspace in self._workspace_repo.list_all():
+            normalized = str(Path(workspace.path).resolve())
+            if not workspace.is_active:
+                log.debug(
+                    "inactive workspace skip(worker=watcher, workspace_path=%s, is_active=%s)",
+                    workspace.path,
+                    workspace.is_active,
+                )
+                continue
+            active_paths.add(normalized)
+        return active_paths
 
 
 class _WatcherHandler(FileSystemEventHandler):
@@ -73,6 +156,7 @@ class EventWatcher:
         on_watcher_queue_overflow: Callable[[str | None, str], None],
         schedule_rescan: Callable[[str], None],
         on_watcher_file_race: Callable[[str, str, str], None] | None = None,
+        workspace_sync_interval_sec: float = 1.0,
     ) -> None:
         """watcher 동작에 필요한 의존성만 주입받는다."""
         self._workspace_repo = workspace_repo
@@ -96,25 +180,28 @@ class EventWatcher:
         self._pending_rescan_roots: set[str] = set()
         self._overflow_last_by_repo: dict[str, float] = {}
         self._overflow_lock = Lock()
+        self._workspace_sync_interval_sec = max(0.2, float(workspace_sync_interval_sec))
+        self._last_workspace_sync_at = 0.0
+        self._watch_registry = WorkspaceWatchRegistry(_watches={}, _lock=Lock())
+        self._workspace_synchronizer = WorkspaceWatchSynchronizer(
+            workspace_repo=self._workspace_repo,
+            watch_registry=self._watch_registry,
+            debounce_pruner=DebounceBufferPruner(
+                debounce_events=self._debounce_events,
+                debounce_lock=self._debounce_lock,
+            ),
+        )
 
     def watcher_loop(self) -> None:
         """watchdog 이벤트 루프를 실행한다."""
         observer = Observer()
         handler = _WatcherHandler(self.enqueue_event)
-        workspaces = self._workspace_repo.list_all()
-        for workspace in workspaces:
-            if not workspace.is_active:
-                log.debug(
-                    "inactive workspace skip(worker=watcher, workspace_path=%s, is_active=%s)",
-                    workspace.path,
-                    workspace.is_active,
-                )
-                continue
-            observer.schedule(handler, workspace.path, recursive=True)
+        self._sync_workspace_watches(observer=observer, handler=handler, force=True)
         observer.start()
         self._set_observer(observer)
         while not self._stop_event.is_set():
             self._assert_parent_alive(worker_name="watcher")
+            self._sync_workspace_watches(observer=observer, handler=handler, force=False)
             self.flush_debounced_events()
             self.process_pending_rescans()
             try:
@@ -122,6 +209,14 @@ class EventWatcher:
             except queue.Empty:
                 continue
             self.push_debounced_event(event_type=event_type, src_path=src_path, dest_path=dest_path)
+
+    def _sync_workspace_watches(self, *, observer: Observer, handler: FileSystemEventHandler, force: bool) -> None:
+        """observer watch 등록 상태를 active workspace와 동기화한다."""
+        now = self._now_monotonic()
+        if not force and (now - self._last_workspace_sync_at) < self._workspace_sync_interval_sec:
+            return
+        self._workspace_synchronizer.sync(observer=observer, handler=handler)
+        self._last_workspace_sync_at = now
 
     def enqueue_event(self, event_type: str, src_path: str, dest_path: str) -> None:
         """watchdog 이벤트를 큐에 적재하고 overflow를 감지한다."""
@@ -159,13 +254,7 @@ class EventWatcher:
     def handle_fs_event(self, event_type: str, src_path: str, dest_path: str) -> None:
         """단일 파일 시스템 이벤트를 처리한다."""
         source_path = Path(src_path).resolve()
-        workspaces = self._workspace_repo.list_all()
-        matched_root: Path | None = None
-        for workspace in workspaces:
-            root = Path(workspace.path).resolve()
-            if _path_is_relative_to(source_path, root):
-                matched_root = root
-                break
+        matched_root = self._select_best_workspace_root(source_path)
         if matched_root is None:
             return
         relative_path = str(source_path.relative_to(matched_root).as_posix())
@@ -210,13 +299,7 @@ class EventWatcher:
     def push_debounced_event(self, event_type: str, src_path: str, dest_path: str) -> None:
         """디바운스 버퍼에 이벤트를 적재한다."""
         source_path = Path(src_path).resolve()
-        workspaces = self._workspace_repo.list_all()
-        matched_root: Path | None = None
-        for workspace in workspaces:
-            root = Path(workspace.path).resolve()
-            if _path_is_relative_to(source_path, root):
-                matched_root = root
-                break
+        matched_root = self._select_best_workspace_root(source_path)
         if matched_root is None:
             return
         relative_path = str(source_path.relative_to(matched_root).as_posix())
@@ -247,12 +330,27 @@ class EventWatcher:
     def _resolve_repo_root_for_path(self, path_value: Path) -> str | None:
         """입력 파일 경로가 속한 workspace root를 반환한다."""
         source_path = path_value.resolve()
-        workspaces = self._workspace_repo.list_all()
-        for workspace in workspaces:
-            root = Path(workspace.path).resolve()
-            if _path_is_relative_to(source_path, root):
-                return str(root)
+        matched_root = self._select_best_workspace_root(source_path)
+        if matched_root is not None:
+            return str(matched_root)
         return None
+
+    def _select_best_workspace_root(self, source_path: Path) -> Path | None:
+        """활성 workspace 중 source_path를 포함하는 가장 구체 경계를 반환한다."""
+        for root in self._active_workspace_roots():
+            if _path_is_relative_to(source_path, root):
+                return root
+        return None
+
+    def _active_workspace_roots(self) -> list[Path]:
+        """활성 workspace 루트를 구체 경계 우선순위로 반환한다."""
+        roots: list[Path] = []
+        for workspace in self._workspace_repo.list_all():
+            if not workspace.is_active:
+                continue
+            roots.append(Path(workspace.path).resolve())
+        roots.sort(key=lambda item: (len(item.parts), str(item)), reverse=True)
+        return roots
 
     def _record_file_race(self, repo_root: str, relative_path: str, reason: str) -> None:
         """경합으로 사라진 파일 이벤트를 저심각도 이벤트로 기록한다."""

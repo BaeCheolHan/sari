@@ -25,9 +25,10 @@ class PipelinePerfRunTool:
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """성능 실측 결과를 pack1 형식으로 반환한다."""
-        error = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
-        if error is not None:
-            return pack1_error(error)
+        validation = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
+        if validation.error is not None:
+            return pack1_error(validation.error)
+        warnings_payload = [warning.to_dict() for warning in validation.warnings]
         repo = str(arguments["repo"])
         target_raw = arguments.get("target_files", 2000)
         profile_raw = arguments.get("profile", "realistic_v1")
@@ -48,7 +49,13 @@ class PipelinePerfRunTool:
         return pack1_success(
             {
                 "items": [summary],
-                "meta": Pack1MetaDTO(candidate_count=1, resolved_count=1, cache_hit=None, errors=[]).to_dict(),
+                "meta": Pack1MetaDTO(
+                    candidate_count=1,
+                    resolved_count=1,
+                    cache_hit=None,
+                    errors=[],
+                    warnings=warnings_payload,
+                ).to_dict(),
             }
         )
 
@@ -63,9 +70,10 @@ class PipelinePerfReportTool:
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """최신 성능 실측 결과를 pack1 형식으로 반환한다."""
-        error = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
-        if error is not None:
-            return pack1_error(error)
+        validation = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
+        if validation.error is not None:
+            return pack1_error(validation.error)
+        warnings_payload = [warning.to_dict() for warning in validation.warnings]
         try:
             summary = self._perf_service.get_latest_report()
         except PerfError as exc:
@@ -73,6 +81,12 @@ class PipelinePerfReportTool:
         return pack1_success(
             {
                 "items": [summary],
-                "meta": Pack1MetaDTO(candidate_count=1, resolved_count=1, cache_hit=None, errors=[]).to_dict(),
+                "meta": Pack1MetaDTO(
+                    candidate_count=1,
+                    resolved_count=1,
+                    cache_hit=None,
+                    errors=[],
+                    warnings=warnings_payload,
+                ).to_dict(),
             }
         )

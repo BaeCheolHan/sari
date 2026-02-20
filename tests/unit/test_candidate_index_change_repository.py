@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from sari.core.models import CandidateIndexChangeDTO
-from sari.db.repositories.candidate_index_change_repository import CandidateIndexChangeRepository
+from sari.db.repositories.candidate_index_change_repository import CandidateIndexChangeRepository, _extract_lastrowid
 from sari.db.schema import init_schema
 
 
@@ -77,3 +77,37 @@ def test_candidate_index_change_repository_delete_overwrites_pending_upsert(tmp_
     assert len(items) == 1
     assert items[0].change_type == "DELETE"
     assert items[0].event_source == "watcher"
+
+
+def test_extract_lastrowid_uses_fallback_query_when_raw_is_none() -> None:
+    """raw lastrowid가 None이면 fallback query를 사용해야 한다."""
+
+    class _Conn:
+        def execute(self, query: str) -> object:
+            _ = query
+            return self
+
+        def fetchone(self) -> dict[str, object]:
+            return {"lastrowid": 7}
+
+    resolved = _extract_lastrowid(conn=_Conn(), raw_lastrowid=None)
+    assert resolved == 7
+
+
+def test_extract_lastrowid_raises_when_both_raw_and_fallback_invalid() -> None:
+    """raw/fallback 모두 무효하면 명시적 RuntimeError를 반환해야 한다."""
+
+    class _Conn:
+        def execute(self, query: str) -> object:
+            _ = query
+            return self
+
+        def fetchone(self) -> dict[str, object]:
+            return {"lastrowid": object()}
+
+    try:
+        _extract_lastrowid(conn=_Conn(), raw_lastrowid=None)
+    except RuntimeError as exc:
+        assert "failed to resolve last inserted change_id" in str(exc)
+    else:
+        raise AssertionError("RuntimeError was not raised")

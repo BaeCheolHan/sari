@@ -14,9 +14,9 @@ from sari.http.context import HttpContext
 
 def resolve_repo_from_query(context: HttpContext, request: Request) -> tuple[str | None, str | None, str | None, JSONResponse | None]:
     """쿼리스트링의 repo를 검증하고 repo_id/repo_root/repo_key를 반환한다."""
-    raw_repo = str(request.query_params.get("repo_id", "")).strip()
+    raw_repo = str(request.query_params.get("repo", "")).strip()
     if raw_repo == "":
-        raw_repo = str(request.query_params.get("repo", "")).strip()
+        raw_repo = str(request.query_params.get("repo_id", "")).strip()
     resolved, error = resolve_repo_context(
         raw_repo=raw_repo,
         workspace_repo=context.workspace_repo,

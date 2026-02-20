@@ -98,6 +98,27 @@ class HealthResponseDTO:
 class ErrorResponseDTO:
     code: str
     message: str
+
+
+@dataclass(frozen=True)
+class WarningDTO:
+    """경고 메시지 계약을 표현한다."""
+
+    code: str
+    message: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {"code": self.code, "message": self.message}
+
+
+@dataclass(frozen=True)
+class RepoValidationResultDTO:
+    """repo 입력 검증 결과를 표현한다."""
+
+    repo_root: str | None
+    repo_key: str | None
+    error: ErrorResponseDTO | None
+    warnings: tuple[WarningDTO, ...] = ()
 @dataclass(frozen=True)
 class LanguageProbeStatusDTO:
     language: str

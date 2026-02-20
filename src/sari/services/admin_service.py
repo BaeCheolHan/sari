@@ -127,7 +127,7 @@ class AdminService:
             metadata_version = importlib.metadata.version("sari").strip()
         except importlib.metadata.PackageNotFoundError:
             metadata_version = "unavailable"
-        except (importlib.metadata.InvalidVersion, ValueError):
+        except ValueError:
             metadata_version = "unavailable"
         if metadata_version == "unavailable":
             return True, f"runtime={runtime_version}, metadata=unavailable"
@@ -155,6 +155,7 @@ class AdminService:
                         "sari": {
                             "command": "sari",
                             "args": args,
+                            "startup_timeout_sec": 45,
                         }
                     }
                 },
@@ -241,18 +242,22 @@ class AdminService:
             }
         command_obj = sari_obj.get("command")
         args_obj = sari_obj.get("args")
+        timeout_obj = sari_obj.get("startup_timeout_sec")
         command = str(command_obj).strip() if isinstance(command_obj, str) else ""
         if command == "" or not isinstance(args_obj, list):
             return {
                 "host": "codex",
                 "error": {"code": "ERR_INSTALL_SNIPPET_INVALID", "message": "codex snippet 필수 필드가 누락되었습니다"},
             }
+        startup_timeout_sec = int(timeout_obj) if isinstance(timeout_obj, int) else None
         args_line = json.dumps([str(item) for item in args_obj], ensure_ascii=False)
         block = [
             "[mcp_servers.sari]",
             f'command = "{command}"',
             f"args = {args_line}",
         ]
+        if startup_timeout_sec is not None and startup_timeout_sec > 0:
+            block.append(f"startup_timeout_sec = {startup_timeout_sec}")
         merged = self._replace_toml_section(existing_text=existing, section_header="[mcp_servers.sari]", replacement_lines=block)
         target_path.parent.mkdir(parents=True, exist_ok=True)
         target_path.write_text(merged, encoding="utf-8")

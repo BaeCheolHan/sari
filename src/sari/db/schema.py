@@ -106,9 +106,6 @@ CREATE TABLE IF NOT EXISTS collected_files_l1 (
 CREATE INDEX IF NOT EXISTS idx_collected_files_l1_repo
 ON collected_files_l1(repo_root, is_deleted);
 
-CREATE INDEX IF NOT EXISTS idx_collected_files_l1_repo_id
-ON collected_files_l1(repo_id, is_deleted);
-
 CREATE INDEX IF NOT EXISTS idx_collected_files_l1_label
 ON collected_files_l1(repo_label, is_deleted);
 
@@ -139,9 +136,6 @@ ON file_enrich_queue(status, next_retry_at);
 CREATE INDEX IF NOT EXISTS idx_file_enrich_queue_path
 ON file_enrich_queue(repo_root, relative_path);
 
-CREATE INDEX IF NOT EXISTS idx_file_enrich_queue_repo_id
-ON file_enrich_queue(repo_id, status, next_retry_at);
-
 CREATE INDEX IF NOT EXISTS idx_file_enrich_queue_sched
 ON file_enrich_queue(status, priority DESC, next_retry_at, created_at);
 
@@ -167,9 +161,6 @@ ON candidate_index_changes(status, change_id);
 
 CREATE INDEX IF NOT EXISTS idx_candidate_index_changes_path_status
 ON candidate_index_changes(repo_root, relative_path, status);
-
-CREATE INDEX IF NOT EXISTS idx_candidate_index_changes_repo_id_status
-ON candidate_index_changes(repo_id, status, change_id);
 
 CREATE TABLE IF NOT EXISTS collected_file_bodies_l2 (
     repo_id TEXT NOT NULL DEFAULT '',
@@ -468,13 +459,83 @@ def connect(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
+def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    """테이블 존재 여부를 반환한다."""
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = :name",
+        {"name": table_name},
+    ).fetchone()
+    return row is not None
+
+
+def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    """테이블 컬럼 이름 집합을 조회한다."""
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return {str(row["name"]) for row in rows}
+
+
+def _create_repo_id_indexes(conn: sqlite3.Connection) -> None:
+    """repo_id 기반 인덱스를 컬럼 존재 시에만 생성한다."""
+    if _table_exists(conn, "collected_files_l1"):
+        l1_cols = _table_columns(conn, "collected_files_l1")
+        if {"repo_id", "is_deleted"}.issubset(l1_cols):
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_collected_files_l1_repo_id
+                ON collected_files_l1(repo_id, is_deleted)
+                """
+            )
+    if _table_exists(conn, "file_enrich_queue"):
+        queue_cols = _table_columns(conn, "file_enrich_queue")
+        if {"repo_id", "status", "next_retry_at"}.issubset(queue_cols):
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_file_enrich_queue_repo_id
+                ON file_enrich_queue(repo_id, status, next_retry_at)
+                """
+            )
+    if _table_exists(conn, "candidate_index_changes"):
+        change_cols = _table_columns(conn, "candidate_index_changes")
+        if {"repo_id", "status", "change_id"}.issubset(change_cols):
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_candidate_index_changes_repo_id_status
+                ON candidate_index_changes(repo_id, status, change_id)
+                """
+            )
+
+
+def _has_user_tables(conn: sqlite3.Connection) -> bool:
+    """sqlite 내부 테이블을 제외한 사용자 테이블 존재 여부를 반환한다."""
+    row = conn.execute(
+        """
+        SELECT COUNT(1) AS cnt
+        FROM sqlite_master
+        WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+        """
+    ).fetchone()
+    if row is None:
+        return False
+    return int(row["cnt"]) > 0
+
+
 def init_schema(db_path: Path) -> None:
     """필수 테이블을 생성한다."""
     ensure_parent_dir(db_path)
+    has_tables = False
+    with connect(db_path) as conn:
+        has_tables = _has_user_tables(conn)
+    if has_tables:
+        # 기존 DB는 먼저 마이그레이션해 컬럼 호환성을 맞춘다.
+        ensure_migrated(db_path)
     with connect(db_path) as conn:
         # WAL은 초기화(쓰기 가능) 단계에서만 고정한다.
         conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript(SCHEMA_SQL)
         conn.commit()
-    # 스키마 마이그레이션의 단일 진실 소스는 Alembic head다.
-    ensure_migrated(db_path)
+    # 신규 DB는 baseline 생성 후 head까지 마이그레이션한다.
+    if not has_tables:
+        ensure_migrated(db_path)
+    with connect(db_path) as conn:
+        _create_repo_id_indexes(conn)
+        conn.commit()

@@ -54,13 +54,14 @@
               "properties": {
                 "sari": {
                   "type": "object",
-                  "required": ["command", "args"],
+                  "required": ["command", "args", "startup_timeout_sec"],
                   "properties": {
                     "command": { "type": "string" },
                     "args": {
                       "type": "array",
                       "items": { "type": "string" }
-                    }
+                    },
+                    "startup_timeout_sec": { "type": "integer" }
                   }
                 }
               }

@@ -31,9 +31,10 @@ class PipelineQualityRunTool:
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """품질 실행 결과를 pack1 형식으로 반환한다."""
-        error = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
-        if error is not None:
-            return pack1_error(error)
+        validation = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
+        if validation.error is not None:
+            return pack1_error(validation.error)
+        warnings_payload = [warning.to_dict() for warning in validation.warnings]
         repo = str(arguments["repo"])
         limit_raw = arguments.get("limit_files", 2_000)
         profile_raw = arguments.get("profile", "default")
@@ -56,7 +57,13 @@ class PipelineQualityRunTool:
         return pack1_success(
             {
                 "items": [summary],
-                "meta": Pack1MetaDTO(candidate_count=1, resolved_count=1, cache_hit=None, errors=[]).to_dict(),
+                "meta": Pack1MetaDTO(
+                    candidate_count=1,
+                    resolved_count=1,
+                    cache_hit=None,
+                    errors=[],
+                    warnings=warnings_payload,
+                ).to_dict(),
             }
         )
 
@@ -71,9 +78,10 @@ class PipelineQualityReportTool:
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """최신 품질 리포트를 pack1 형식으로 반환한다."""
-        error = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
-        if error is not None:
-            return pack1_error(error)
+        validation = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
+        if validation.error is not None:
+            return pack1_error(validation.error)
+        warnings_payload = [warning.to_dict() for warning in validation.warnings]
         repo = str(arguments["repo"])
         try:
             summary = self._quality_service.get_latest_report(repo_root=repo)
@@ -82,6 +90,12 @@ class PipelineQualityReportTool:
         return pack1_success(
             {
                 "items": [summary],
-                "meta": Pack1MetaDTO(candidate_count=1, resolved_count=1, cache_hit=None, errors=[]).to_dict(),
+                "meta": Pack1MetaDTO(
+                    candidate_count=1,
+                    resolved_count=1,
+                    cache_hit=None,
+                    errors=[],
+                    warnings=warnings_payload,
+                ).to_dict(),
             }
         )

@@ -20,16 +20,17 @@ class ListSymbolsTool:
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """심볼 목록 조회 결과를 반환한다."""
-        error = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
-        if error is not None:
-            return pack1_error(error)
+        validation = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
+        if validation.error is not None:
+            return pack1_error(validation.error)
+        warnings_payload = [warning.to_dict() for warning in validation.warnings]
         query_raw = arguments.get("query", "")
         query = query_raw.strip() if isinstance(query_raw, str) else ""
         limit_raw = arguments.get("limit", 50)
         if not isinstance(limit_raw, int) or limit_raw <= 0:
             return pack1_error(ErrorResponseDTO(code="ERR_INVALID_LIMIT", message="limit must be positive integer"))
         rows = self._lsp_repo.search_symbols(repo_root=str(arguments["repo"]), query=query, limit=limit_raw, path_prefix=None)
-        return pack1_items_success([row.to_dict() for row in rows], cache_hit=True)
+        return pack1_items_success([row.to_dict() for row in rows], cache_hit=True, warnings=warnings_payload)
 
 
 class ReadSymbolTool:
@@ -42,9 +43,10 @@ class ReadSymbolTool:
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """심볼 상세 조회 결과를 반환한다."""
-        error = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
-        if error is not None:
-            return pack1_error(error)
+        validation = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
+        if validation.error is not None:
+            return pack1_error(validation.error)
+        warnings_payload = [warning.to_dict() for warning in validation.warnings]
         symbol_key = resolve_symbol_key(arguments)
         if symbol_key is None:
             return pack1_error(ErrorResponseDTO(code="ERR_SYMBOL_REQUIRED", message="name/symbol_id/sid is required"))
@@ -59,7 +61,7 @@ class ReadSymbolTool:
             limit=limit_raw,
             path_prefix=path_prefix,
         )
-        return pack1_items_success([row.to_dict() for row in rows], cache_hit=True)
+        return pack1_items_success([row.to_dict() for row in rows], cache_hit=True, warnings=warnings_payload)
 
 
 class GetImplementationsTool:
@@ -72,9 +74,10 @@ class GetImplementationsTool:
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """구현 후보 심볼 목록을 반환한다."""
-        error = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
-        if error is not None:
-            return pack1_error(error)
+        validation = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
+        if validation.error is not None:
+            return pack1_error(validation.error)
+        warnings_payload = [warning.to_dict() for warning in validation.warnings]
         symbol_key = resolve_symbol_key(arguments)
         if symbol_key is None:
             return pack1_error(ErrorResponseDTO(code="ERR_SYMBOL_REQUIRED", message="symbol or symbol_id is required"))
@@ -82,7 +85,7 @@ class GetImplementationsTool:
         if not isinstance(limit_raw, int) or limit_raw <= 0:
             return pack1_error(ErrorResponseDTO(code="ERR_INVALID_LIMIT", message="limit must be positive integer"))
         rows = self._lsp_repo.find_implementations(repo_root=str(arguments["repo"]), symbol_name=symbol_key, limit=limit_raw)
-        return pack1_items_success([row.to_dict() for row in rows], cache_hit=True)
+        return pack1_items_success([row.to_dict() for row in rows], cache_hit=True, warnings=warnings_payload)
 
 
 class CallGraphTool:
@@ -95,9 +98,10 @@ class CallGraphTool:
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """호출 그래프 요약(호출자/피호출자)을 반환한다."""
-        error = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
-        if error is not None:
-            return pack1_error(error)
+        validation = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
+        if validation.error is not None:
+            return pack1_error(validation.error)
+        warnings_payload = [warning.to_dict() for warning in validation.warnings]
         symbol_key = resolve_symbol_key(arguments)
         if symbol_key is None:
             return pack1_error(ErrorResponseDTO(code="ERR_SYMBOL_REQUIRED", message="symbol or symbol_id is required"))
@@ -118,6 +122,7 @@ class CallGraphTool:
                 }
             ],
             cache_hit=True,
+            warnings=warnings_payload,
         )
 
 
@@ -131,10 +136,10 @@ class CallGraphHealthTool:
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """호출 그래프 건강 지표를 반환한다."""
-        error = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
-        if error is not None:
-            return pack1_error(error)
+        validation = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
+        if validation.error is not None:
+            return pack1_error(validation.error)
+        warnings_payload = [warning.to_dict() for warning in validation.warnings]
         repo_root = str(arguments["repo"])
         health = self._lsp_repo.get_repo_call_graph_health(repo_root=repo_root)
-        return pack1_items_success([{"repo": repo_root, **health}], cache_hit=True)
-
+        return pack1_items_success([{"repo": repo_root, **health}], cache_hit=True, warnings=warnings_payload)

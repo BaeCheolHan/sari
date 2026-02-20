@@ -205,6 +205,7 @@ def test_cli_install_apply_updates_codex_config_with_section_merge(tmp_path: Pat
     assert "[mcp_servers.sari]" in content
     assert "command = \"sari\"" in content
     assert "args = [\"mcp\", \"stdio\"]" in content
+    assert "startup_timeout_sec = 45" in content
 
 
 def test_cli_roots_add_invalid_path_returns_error_contract(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:

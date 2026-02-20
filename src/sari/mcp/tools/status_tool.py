@@ -15,7 +15,7 @@ from sari.mcp.tools.admin_tools import validate_repo_argument
 from sari.mcp.tools.pack1 import Pack1MetaDTO, pack1_error, pack1_success
 
 
-def _success(items: list[dict[str, object]]) -> dict[str, object]:
+def _success(items: list[dict[str, object]], *, warnings: list[dict[str, object]] | None = None) -> dict[str, object]:
     """pack1 success 응답을 생성한다."""
     return pack1_success(
         {
@@ -26,6 +26,7 @@ def _success(items: list[dict[str, object]]) -> dict[str, object]:
                 cache_hit=False,
                 errors=[],
                 stabilization=None,
+                warnings=warnings,
             ).to_dict(),
         }
     )
@@ -107,9 +108,10 @@ class StatusTool:
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """저장소 단위 상태 요약을 반환한다."""
-        error = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
-        if error is not None:
-            return pack1_error(error)
+        validation = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
+        if validation.error is not None:
+            return pack1_error(validation.error)
+        warnings_payload = [warning.to_dict() for warning in validation.warnings]
         repo_root = str(arguments["repo"])
         runtime = self._runtime_repo.get_runtime()
         repo_stats = self._file_repo.get_repo_stats()
@@ -150,5 +152,6 @@ class StatusTool:
                     "lsp_metrics": lsp_metrics,
                     "reconcile_state": reconcile_state,
                 }
-            ]
+            ],
+            warnings=warnings_payload,
         )
