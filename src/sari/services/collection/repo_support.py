@@ -60,6 +60,34 @@ class CollectionRepoSupport:
         selected = {language for language, _ in candidates[: self._lsp_prewarm_top_language_count]}
         configure_func(repo_root=repo_root, languages=selected)
 
+    def schedule_lsp_probe_for_file(self, repo_root: str, relative_path: str) -> None:
+        """파일 경로를 기준으로 비동기 LSP probe를 스케줄한다."""
+        scheduler = getattr(self._lsp_backend, "schedule_probe_for_file", None)
+        if not callable(scheduler):
+            return
+        scheduler(repo_root=repo_root, relative_path=relative_path, force=False, trigger="background")
+
+    def force_lsp_probe_for_file(self, repo_root: str, relative_path: str) -> None:
+        """실사용 경로에서 즉시 probe를 강제 수행한다."""
+        scheduler = getattr(self._lsp_backend, "schedule_probe_for_file", None)
+        if not callable(scheduler):
+            return
+        scheduler(repo_root=repo_root, relative_path=relative_path, force=True, trigger="force")
+
+    def invalidate_lsp_probe_ready(self, repo_root: str, relative_path: str) -> None:
+        """READY/WARMING 상태를 무효화한다."""
+        resolver = getattr(self._lsp_backend, "invalidate_probe_ready_for_file", None)
+        if not callable(resolver):
+            return
+        resolver(repo_root=repo_root, relative_path=relative_path)
+
+    def shutdown_probe_executor(self) -> None:
+        """비동기 probe executor를 종료한다."""
+        shutdown = getattr(self._lsp_backend, "shutdown_probe_executor", None)
+        if not callable(shutdown):
+            return
+        shutdown()
+
     def resolve_repo_label(self, repo_root: str) -> str:
         """저장소 절대경로를 workspace-relative repo_key로 변환한다."""
         try:

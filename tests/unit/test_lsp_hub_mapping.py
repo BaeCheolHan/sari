@@ -2,12 +2,14 @@
 
 import threading
 import time
+import os
 import subprocess
 import pytest
 
 from sari.core.exceptions import DaemonError
 from sari.core.language_registry import get_enabled_languages
 from sari.lsp.hub import LspHub, LspRuntimeEntry, LspRuntimeKey
+from sari.lsp.runtime_broker import RuntimeLaunchContextDTO, RuntimeRequirementDTO
 from solidlsp.ls_config import Language
 
 
@@ -614,40 +616,48 @@ def test_lsp_hub_cleans_up_not_running_entry_before_reuse(monkeypatch) -> None:
     hub.stop_all()
 
 
-def test_lsp_hub_fails_fast_when_java_runtime_is_too_old(monkeypatch) -> None:
-    """Java/Kotlin LSP는 런타임 요구사항 미충족 시 즉시 명시 오류를 반환해야 한다."""
+def test_lsp_hub_applies_runtime_overrides_only_during_server_boot(monkeypatch) -> None:
+    """런타임 오버라이드는 서버 시작 구간에만 적용되고 이후 원복되어야 한다."""
 
-    class _Result:
-        def __init__(self, stderr: str) -> None:
-            self.stderr = stderr
-            self.stdout = ""
+    class _FakeRuntimeServer:
+        def is_running(self) -> bool:
+            return True
 
-    monkeypatch.setattr(
-        "sari.lsp.hub.subprocess.run",
-        lambda *args, **kwargs: _Result(stderr='openjdk version "11.0.24" 2024-07-16\n'),
-    )
+    class _FakeLanguageServer:
+        def __init__(self) -> None:
+            self.server = _FakeRuntimeServer()
 
-    hub = LspHub()
-    with pytest.raises(DaemonError) as exc_info:
-        hub.get_or_start(language=Language.JAVA, repo_root="/repo-a")
+        def start(self) -> None:
+            return None
 
-    assert exc_info.value.context.code == "ERR_LSP_RUNTIME_MISMATCH"
-    assert "Java 17+" in exc_info.value.context.message
+        def stop(self) -> None:
+            return None
 
+    class _FakeRuntimeBroker:
+        def resolve(self, language: Language) -> RuntimeLaunchContextDTO:
+            assert language == Language.JAVA
+            return RuntimeLaunchContextDTO(
+                requirement=RuntimeRequirementDTO(language=Language.JAVA, runtime_name="java", minimum_major=17),
+                env_overrides={"JAVA_HOME": "/tmp/jdk-21", "PATH": "/tmp/jdk-21/bin:/usr/bin"},
+                selected_executable="/tmp/jdk-21/bin/java",
+                selected_major=21,
+                selected_source="mock",
+                auto_provision_expected=False,
+            )
 
-def test_lsp_hub_runtime_probe_failure_raises_explicit_error(monkeypatch) -> None:
-    """런타임 probe 실패 시 침묵하지 않고 명시 오류를 반환해야 한다."""
+    original_java_home = os.environ.get("JAVA_HOME")
 
-    def _raise_run(*args, **kwargs) -> subprocess.CompletedProcess[str]:
-        raise OSError("java not found")
+    def _fake_create(*args, **kwargs) -> _FakeLanguageServer:
+        del args, kwargs
+        assert os.environ.get("JAVA_HOME") == "/tmp/jdk-21"
+        return _FakeLanguageServer()
 
-    monkeypatch.setattr("sari.lsp.hub.subprocess.run", _raise_run)
+    monkeypatch.setattr("sari.lsp.hub.SolidLanguageServer.create", _fake_create)
+    hub = LspHub(runtime_broker=_FakeRuntimeBroker())
+    _ = hub.get_or_start(language=Language.JAVA, repo_root="/repo-a")
+    hub.stop_all()
 
-    hub = LspHub()
-    with pytest.raises(DaemonError) as exc_info:
-        hub.get_or_start(language=Language.KOTLIN, repo_root="/repo-a")
-
-    assert exc_info.value.context.code == "ERR_LSP_RUNTIME_PROBE_FAILED"
+    assert os.environ.get("JAVA_HOME") == original_java_home
 
 
 def test_lsp_hub_max_instances_per_repo_language_not_clamped_to_two() -> None:

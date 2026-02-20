@@ -157,9 +157,12 @@ class McpServer:
             scale_out_hot_hits=runtime_config.lsp_scale_out_hot_hits,
             file_buffer_idle_ttl_sec=runtime_config.lsp_file_buffer_idle_ttl_sec,
             file_buffer_max_open=runtime_config.lsp_file_buffer_max_open,
+            java_min_major=runtime_config.lsp_java_min_major,
+            max_concurrent_starts=runtime_config.lsp_max_concurrent_starts,
+            max_concurrent_l1_probes=runtime_config.lsp_max_concurrent_l1_probes,
         )
         self._managed_lsp_hubs.append(shared_hub)
-        file_collection_service = build_default_file_collection_service(workspace_repo=workspace_repo, file_repo=file_repo, enrich_queue_repo=enrich_queue_repo, body_repo=body_repo, lsp_repo=lsp_repo, readiness_repo=readiness_repo, policy_repo=policy_repo, event_repo=event_repo, error_event_repo=error_event_repo, candidate_index_sink=candidate_service, vector_index_sink=vector_sink, include_ext=runtime_config.collection_include_ext, exclude_globs=runtime_config.collection_exclude_globs, watcher_debounce_ms=runtime_config.watcher_debounce_ms, run_mode='prod', lsp_backend=SolidLspExtractionBackend(shared_hub), l3_parallel_enabled=runtime_config.l3_parallel_enabled, l3_executor_max_workers=runtime_config.l3_executor_max_workers, l3_recent_success_ttl_sec=runtime_config.l3_recent_success_ttl_sec, l3_backpressure_on_interactive=runtime_config.l3_backpressure_on_interactive, l3_backpressure_cooldown_ms=runtime_config.l3_backpressure_cooldown_ms)
+        file_collection_service = build_default_file_collection_service(workspace_repo=workspace_repo, file_repo=file_repo, enrich_queue_repo=enrich_queue_repo, body_repo=body_repo, lsp_repo=lsp_repo, readiness_repo=readiness_repo, policy_repo=policy_repo, event_repo=event_repo, error_event_repo=error_event_repo, candidate_index_sink=candidate_service, vector_index_sink=vector_sink, include_ext=runtime_config.collection_include_ext, exclude_globs=runtime_config.collection_exclude_globs, watcher_debounce_ms=runtime_config.watcher_debounce_ms, run_mode='prod', lsp_backend=SolidLspExtractionBackend(shared_hub, probe_workers=runtime_config.lsp_probe_workers, force_join_ms=runtime_config.lsp_probe_force_join_ms, warming_retry_sec=runtime_config.lsp_probe_warming_retry_sec, warming_threshold=runtime_config.lsp_probe_warming_threshold, permanent_backoff_sec=runtime_config.lsp_probe_permanent_backoff_sec), l3_parallel_enabled=runtime_config.l3_parallel_enabled, l3_executor_max_workers=runtime_config.l3_executor_max_workers, l3_recent_success_ttl_sec=runtime_config.l3_recent_success_ttl_sec, l3_backpressure_on_interactive=runtime_config.l3_backpressure_on_interactive, l3_backpressure_cooldown_ms=runtime_config.l3_backpressure_cooldown_ms)
         benchmark_collection_service = build_default_file_collection_service(workspace_repo=workspace_repo, file_repo=file_repo, enrich_queue_repo=enrich_queue_repo, body_repo=body_repo, lsp_repo=lsp_repo, readiness_repo=readiness_repo, policy_repo=policy_repo, event_repo=event_repo, error_event_repo=error_event_repo, run_mode='prod', lsp_backend=BenchmarkLspExtractionBackend(), persist_body_for_read=False, l3_parallel_enabled=runtime_config.l3_parallel_enabled, l3_executor_max_workers=runtime_config.l3_executor_max_workers, l3_recent_success_ttl_sec=runtime_config.l3_recent_success_ttl_sec, l3_backpressure_on_interactive=runtime_config.l3_backpressure_on_interactive, l3_backpressure_cooldown_ms=runtime_config.l3_backpressure_cooldown_ms)
         benchmark_service = PipelineBenchmarkService(file_collection_service=benchmark_collection_service, queue_repo=enrich_queue_repo, lsp_repo=lsp_repo, policy_repo=policy_repo, benchmark_repo=benchmark_repo, artifact_root=db_path.parent / 'artifacts')
         perf_service = PipelinePerfService(
@@ -170,7 +173,15 @@ class McpServer:
             artifact_root=db_path.parent / "artifacts",
         )
         quality_service = PipelineQualityService(file_repo=file_repo, lsp_repo=lsp_repo, quality_repo=quality_repo, golden_backend=SerenaGoldenBackend(hub=shared_hub), artifact_root=db_path.parent / 'artifacts')
-        language_probe_service = LanguageProbeService(workspace_repo=workspace_repo, lsp_hub=shared_hub, probe_repo=language_probe_repo)
+        language_probe_service = LanguageProbeService(
+            workspace_repo=workspace_repo,
+            lsp_hub=shared_hub,
+            probe_repo=language_probe_repo,
+            per_language_timeout_sec=runtime_config.lsp_probe_timeout_default_sec,
+            per_language_timeout_overrides={"go": runtime_config.lsp_probe_timeout_go_sec},
+            lsp_request_timeout_sec=runtime_config.lsp_request_timeout_sec,
+            go_warmup_timeout_sec=runtime_config.lsp_probe_timeout_go_sec,
+        )
         pipeline_lsp_matrix_service = PipelineLspMatrixService(probe_service=language_probe_service, run_repo=lsp_matrix_repo)
         pipeline_control_service = PipelineControlService(policy_repo=policy_repo, event_repo=event_repo, queue_repo=enrich_queue_repo, control_state_repo=control_state_repo)
         admin_service = AdminService(

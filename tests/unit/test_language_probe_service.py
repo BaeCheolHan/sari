@@ -77,6 +77,48 @@ class _SlowHub:
         return _SlowLsp()
 
 
+class _AssertionLsp:
+    """request_document_symbols에서 AssertionError를 발생시키는 더블이다."""
+
+    def request_document_symbols(self, relative_path: str) -> _FakeDocumentSymbols:
+        _ = relative_path
+        raise AssertionError("forced assertion during probe")
+
+
+class _AssertionHub:
+    """항상 AssertionError를 발생시키는 LSP를 반환한다."""
+
+    def get_or_start(self, language: Language, repo_root: str) -> _AssertionLsp:
+        _ = (language, repo_root)
+        return _AssertionLsp()
+
+
+class _GoWarmupLsp:
+    """Go warm-up 호출 여부를 기록하는 테스트 더블이다."""
+
+    def __init__(self) -> None:
+        self.requested_paths: list[str] = []
+        self.request_timeout_values: list[float | None] = []
+
+    def set_request_timeout(self, timeout: float | None) -> None:
+        self.request_timeout_values.append(timeout)
+
+    def request_document_symbols(self, relative_path: str) -> _FakeDocumentSymbols:
+        self.requested_paths.append(relative_path)
+        return _FakeDocumentSymbols()
+
+
+class _GoWarmupHub:
+    """항상 동일한 Go LSP 인스턴스를 반환한다."""
+
+    def __init__(self, lsp: _GoWarmupLsp) -> None:
+        self._lsp = lsp
+
+    def get_or_start(self, language: Language, repo_root: str) -> _GoWarmupLsp:
+        _ = (language, repo_root)
+        return self._lsp
+
+
 def _register_repo(db_path: Path, repo_root: Path) -> None:
     """테스트 저장소를 워크스페이스에 등록한다."""
     workspace_repo = WorkspaceRepository(db_path)
@@ -195,3 +237,102 @@ def test_language_probe_marks_timeout_as_explicit_error(tmp_path: Path) -> None:
     assert first["available"] is False
     assert first["last_error_code"] == "ERR_LSP_TIMEOUT"
     assert first["timeout_occurred"] is True
+
+
+def test_language_probe_maps_assertion_error_without_crash(tmp_path: Path) -> None:
+    """probe worker에서 AssertionError가 발생해도 IndexError 없이 명시 오류로 매핑해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_root = tmp_path / "repo-a"
+    repo_root.mkdir(parents=True, exist_ok=True)
+    (repo_root / "sample.py").write_text("def ok():\n    return 1\n", encoding="utf-8")
+    _register_repo(db_path=db_path, repo_root=repo_root)
+
+    service = LanguageProbeService(
+        workspace_repo=WorkspaceRepository(db_path),
+        lsp_hub=_AssertionHub(),  # type: ignore[arg-type]
+        entries=(LanguageSupportEntry(language=Language.PYTHON, extensions=(".py",)),),
+        now_provider=lambda: "2026-02-17T00:00:00+00:00",
+    )
+    result = service.run(repo_root=str(repo_root.resolve()))
+
+    first = result["languages"][0]
+    assert first["available"] is False
+    assert first["last_error_code"] in {"ERR_LSP_PROBE_INTERNAL", "ERR_LSP_DOCUMENT_SYMBOL_FAILED"}
+    assert "assertion" in str(first["last_error_message"])
+
+
+def test_language_probe_applies_go_specific_timeout_override(tmp_path: Path) -> None:
+    """Go는 per-language timeout override를 우선 적용해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_root = tmp_path / "repo-go"
+    repo_root.mkdir(parents=True, exist_ok=True)
+    (repo_root / "sample.go").write_text("package main\nfunc main(){}\n", encoding="utf-8")
+    _register_repo(db_path=db_path, repo_root=repo_root)
+
+    service = LanguageProbeService(
+        workspace_repo=WorkspaceRepository(db_path),
+        lsp_hub=_SlowHub(),  # type: ignore[arg-type]
+        entries=(LanguageSupportEntry(language=Language.GO, extensions=(".go",)),),
+        now_provider=lambda: "2026-02-17T00:00:00+00:00",
+        per_language_timeout_sec=0.05,
+        per_language_timeout_overrides={"go": 0.30},
+        go_warmup_enabled=False,
+    )
+    result = service.run(repo_root=str(repo_root.resolve()))
+
+    first = result["languages"][0]
+    assert first["available"] is True
+    assert first["last_error_code"] is None
+
+
+def test_language_probe_prefers_small_non_test_go_sample(tmp_path: Path) -> None:
+    """Go 샘플은 작은 비테스트 파일을 우선 선택해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_root = tmp_path / "repo-go"
+    repo_root.mkdir(parents=True, exist_ok=True)
+    (repo_root / "z_large.go").write_text("package main\n" + ("x:=1\n" * 500), encoding="utf-8")
+    (repo_root / "a_small_test.go").write_text("package main\nfunc TestX(){}\n", encoding="utf-8")
+    (repo_root / "m_small.go").write_text("package main\nfunc ok(){}\n", encoding="utf-8")
+    _register_repo(db_path=db_path, repo_root=repo_root)
+
+    lsp = _GoWarmupLsp()
+    service = LanguageProbeService(
+        workspace_repo=WorkspaceRepository(db_path),
+        lsp_hub=_GoWarmupHub(lsp),  # type: ignore[arg-type]
+        entries=(LanguageSupportEntry(language=Language.GO, extensions=(".go",)),),
+        now_provider=lambda: "2026-02-17T00:00:00+00:00",
+        go_warmup_enabled=False,
+    )
+    _ = service.run(repo_root=str(repo_root.resolve()))
+
+    assert len(lsp.requested_paths) == 1
+    assert lsp.requested_paths[0] == "m_small.go"
+
+
+def test_language_probe_go_warmup_runs_once_per_repo(tmp_path: Path) -> None:
+    """Go warm-up은 repo 단위로 1회만 실행되어야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_root = tmp_path / "repo-go"
+    repo_root.mkdir(parents=True, exist_ok=True)
+    (repo_root / "sample.go").write_text("package main\nfunc main(){}\n", encoding="utf-8")
+    _register_repo(db_path=db_path, repo_root=repo_root)
+
+    lsp = _GoWarmupLsp()
+    service = LanguageProbeService(
+        workspace_repo=WorkspaceRepository(db_path),
+        lsp_hub=_GoWarmupHub(lsp),  # type: ignore[arg-type]
+        entries=(LanguageSupportEntry(language=Language.GO, extensions=(".go",)),),
+        now_provider=lambda: "2026-02-17T00:00:00+00:00",
+        lsp_request_timeout_sec=20.0,
+        go_warmup_timeout_sec=45.0,
+    )
+    _ = service.run(repo_root=str(repo_root.resolve()))
+    _ = service.run(repo_root=str(repo_root.resolve()))
+
+    # 1회차는 warm-up + probe(2회), 2회차는 probe(1회)
+    assert len(lsp.requested_paths) == 3
+    assert lsp.request_timeout_values == [45.0, 20.0]

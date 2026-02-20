@@ -217,6 +217,68 @@ def test_solid_lsp_extraction_backend_dedupes_inflight_same_request() -> None:
     assert hub.lsp.calls == 1
 
 
+def test_solid_lsp_extraction_backend_probe_schedule_dedupes_inflight() -> None:
+    """동일 key probe는 inflight 중복 submit을 허용하지 않아야 한다."""
+
+    class _FakeLsp:
+        def request_document_symbols(self, relative_path: str):  # noqa: ANN001
+            del relative_path
+            time.sleep(0.05)
+
+            class _Symbols:
+                def iter_symbols(self) -> list[dict[str, object]]:
+                    return []
+
+            return _Symbols()
+
+    class _FakeHub:
+        def get_or_start(self, language: Language, repo_root: str, request_kind: str = "indexing") -> _FakeLsp:
+            del language, repo_root, request_kind
+            return _FakeLsp()
+
+        def prewarm_language_pool(self, language: Language, repo_root: str) -> None:
+            del language, repo_root
+
+    backend = SolidLspExtractionBackend(hub=_FakeHub())  # type: ignore[arg-type]
+    first = backend.schedule_probe_for_file(repo_root="/repo", relative_path="a.py")
+    second = backend.schedule_probe_for_file(repo_root="/repo", relative_path="a.py")
+    backend.shutdown_probe_executor()
+
+    assert first == "scheduled"
+    assert second in {"inflight", "ready"}
+
+
+def test_solid_lsp_extraction_backend_force_does_not_double_submit_when_inflight() -> None:
+    """force 요청도 inflight가 있으면 추가 submit하지 않아야 한다."""
+
+    class _FakeLsp:
+        def request_document_symbols(self, relative_path: str):  # noqa: ANN001
+            del relative_path
+            time.sleep(0.05)
+
+            class _Symbols:
+                def iter_symbols(self) -> list[dict[str, object]]:
+                    return []
+
+            return _Symbols()
+
+    class _FakeHub:
+        def get_or_start(self, language: Language, repo_root: str, request_kind: str = "indexing") -> _FakeLsp:
+            del language, repo_root, request_kind
+            return _FakeLsp()
+
+        def prewarm_language_pool(self, language: Language, repo_root: str) -> None:
+            del language, repo_root
+
+    backend = SolidLspExtractionBackend(hub=_FakeHub(), force_join_ms=0)  # type: ignore[arg-type]
+    first = backend.schedule_probe_for_file(repo_root="/repo", relative_path="a.py")
+    forced = backend.schedule_probe_for_file(repo_root="/repo", relative_path="a.py", force=True, trigger="force")
+    backend.shutdown_probe_executor()
+
+    assert first == "scheduled"
+    assert forced in {"inflight", "starting"}
+
+
 def _policy() -> CollectionPolicyDTO:
     """테스트 기본 수집 정책을 반환한다."""
     return CollectionPolicyDTO(

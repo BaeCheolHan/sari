@@ -2,19 +2,19 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 import logging
 import os
 from pathlib import Path
-import re
 import signal
-import subprocess
 import threading
 import time
 from typing import Callable
 
 from sari.core.language_registry import resolve_language_from_path
 from sari.core.exceptions import DaemonError, ErrorContext
+from sari.lsp.runtime_broker import LspRuntimeBroker
 from solidlsp.ls import SolidLanguageServer
 from solidlsp.ls_config import Language, LanguageServerConfig
 from solidlsp.settings import SolidLSPSettings
@@ -63,6 +63,10 @@ class LspHub:
         file_buffer_max_open: int = 512,
         interactive_reserved_slots_per_repo_language: int = 0,
         interactive_timeout_sec: float = 2.5,
+        java_min_major: int = 17,
+        max_concurrent_starts: int = 2,
+        max_concurrent_l1_probes: int = 2,
+        runtime_broker: LspRuntimeBroker | None = None,
         clock: Callable[[], float] | None = None,
     ) -> None:
         """내부 인스턴스 캐시를 초기화한다."""
@@ -95,6 +99,12 @@ class LspHub:
         self._interactive_pending_count = 0
         self._interactive_timeout_count = 0
         self._interactive_rejected_count = 0
+        self._runtime_broker = runtime_broker if runtime_broker is not None else LspRuntimeBroker(java_min_major=java_min_major)
+        self._environment_patch_lock = threading.RLock()
+        self._start_semaphore = threading.Semaphore(max(1, int(max_concurrent_starts)))
+        self._l1_probe_semaphore = threading.Semaphore(max(1, int(max_concurrent_l1_probes)))
+        self._start_semaphore_wait_ms_total = 0.0
+        self._l1_probe_semaphore_wait_ms_total = 0.0
         self._stop_cleanup = threading.Event()
         self._forced_kill_count = 0
         self._stop_timeout_count = 0
@@ -285,7 +295,22 @@ class LspHub:
                 "lsp_interactive_pending_count": int(self._interactive_pending_count),
                 "lsp_interactive_timeout_count": int(self._interactive_timeout_count),
                 "lsp_interactive_rejected_count": int(self._interactive_rejected_count),
+                "lsp_start_semaphore_wait_ms_total": int(self._start_semaphore_wait_ms_total),
+                "lsp_l1_probe_semaphore_wait_ms_total": int(self._l1_probe_semaphore_wait_ms_total),
             }
+
+    @contextmanager
+    def acquire_l1_probe_slot(self):
+        """documentSymbol 등 L1 probe 요청 동시성을 제한한다."""
+        started_at = self._clock()
+        self._l1_probe_semaphore.acquire()
+        waited_ms = max(0.0, float(self._clock() - started_at) * 1000.0)
+        with self._lock:
+            self._l1_probe_semaphore_wait_ms_total += waited_ms
+        try:
+            yield
+        finally:
+            self._l1_probe_semaphore.release()
 
     def get_interactive_pressure(self) -> dict[str, int]:
         """인터랙티브 요청 압력 지표를 반환한다."""
@@ -528,7 +553,15 @@ class LspHub:
                     owner = False
             if owner:
                 try:
-                    started = self._create_and_start_server(language=language, repo_root=repo_root)
+                    started_at = self._clock()
+                    self._start_semaphore.acquire()
+                    waited_ms = max(0.0, float(self._clock() - started_at) * 1000.0)
+                    with self._lock:
+                        self._start_semaphore_wait_ms_total += waited_ms
+                    try:
+                        started = self._create_and_start_server(language=language, repo_root=repo_root)
+                    finally:
+                        self._start_semaphore.release()
                 except (DaemonError, RuntimeError, OSError, ValueError, TypeError, AssertionError) as exc:
                     with self._lock:
                         event = self._starting_events.pop(key, None)
@@ -596,104 +629,47 @@ class LspHub:
         # NuGet/HTTPS 다운로드가 필요한 LSP가 인증서 검증 실패로 중단되지 않도록 기본 CA 번들을 주입한다.
         if certifi is not None:
             os.environ.setdefault("SSL_CERT_FILE", certifi.where())
-        self._validate_runtime_requirements(language=language)
-        self._ensure_user_tool_paths(language=language)
+        runtime_context = self._runtime_broker.resolve(language)
         try:
-            config = LanguageServerConfig(code_language=language)
-            settings = SolidLSPSettings()
-            settings.ls_specific_settings[language] = {
-                "open_file_buffer_idle_ttl_sec": self._file_buffer_idle_ttl_sec,
-                "open_file_buffer_max_open": self._file_buffer_max_open,
-            }
-            ls = SolidLanguageServer.create(
-                config=config,
-                repository_root_path=repo_root,
-                timeout=self._request_timeout_sec,
-                solidlsp_settings=settings,
-            )
-            ls.start()
-            if not hasattr(ls, "started"):
-                setattr(ls, "started", True)
+            with self._temporary_process_env(runtime_context.env_overrides):
+                config = LanguageServerConfig(code_language=language)
+                settings = SolidLSPSettings()
+                settings.ls_specific_settings[language] = {
+                    "open_file_buffer_idle_ttl_sec": self._file_buffer_idle_ttl_sec,
+                    "open_file_buffer_max_open": self._file_buffer_max_open,
+                }
+                ls = SolidLanguageServer.create(
+                    config=config,
+                    repository_root_path=repo_root,
+                    timeout=self._request_timeout_sec,
+                    solidlsp_settings=settings,
+                )
+                ls.start()
+                if not hasattr(ls, "started"):
+                    setattr(ls, "started", True)
         except (ImportError, RuntimeError, OSError, ValueError, TypeError, AssertionError) as exc:
             raise DaemonError(ErrorContext(code="ERR_LSP_UNAVAILABLE", message="LSP 서버를 시작하지 못했습니다")) from exc
         return ls
 
-    def _validate_runtime_requirements(self, language: Language) -> None:
-        """언어별 런타임 최소 요구사항을 사전 검증한다."""
-        if language not in {Language.JAVA, Language.KOTLIN}:
+    @contextmanager
+    def _temporary_process_env(self, env_overrides: dict[str, str]):
+        """LSP 시작 구간에만 프로세스 환경을 임시 주입한다."""
+        if len(env_overrides) == 0:
+            yield
             return
-        try:
-            result = subprocess.run(
-                ["java", "-version"],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=2.0,
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise DaemonError(
-                ErrorContext(
-                    code="ERR_LSP_RUNTIME_PROBE_FAILED",
-                    message=f"Java 런타임 점검 실패: {exc}",
-                )
-            ) from exc
-        version_text = f"{result.stderr}\n{result.stdout}"
-        major = self._parse_java_major_version(version_text)
-        if major is None:
-            raise DaemonError(
-                ErrorContext(
-                    code="ERR_LSP_RUNTIME_PROBE_FAILED",
-                    message="Java 버전을 해석할 수 없습니다",
-                )
-            )
-        if major < 17:
-            raise DaemonError(
-                ErrorContext(
-                    code="ERR_LSP_RUNTIME_MISMATCH",
-                    message=f"Java 17+ 런타임이 필요합니다(현재: {major})",
-                )
-            )
-
-    def _parse_java_major_version(self, version_text: str) -> int | None:
-        """`java -version` 출력에서 major 버전을 파싱한다."""
-        match = re.search(r'version\s+"([^"]+)"', version_text)
-        if match is None:
-            return None
-        raw_version = match.group(1).strip()
-        if raw_version.startswith("1."):
-            parts = raw_version.split(".")
-            if len(parts) >= 2 and parts[1].isdigit():
-                return int(parts[1])
-            return None
-        major_text = raw_version.split(".")[0]
-        if major_text.isdigit():
-            return int(major_text)
-        return None
-
-    def _ensure_user_tool_paths(self, language: Language) -> None:
-        """사용자 로컬 설치 경로를 PATH/런타임 변수에 보강한다."""
-        home = str(Path.home())
-        extra_paths: list[str] = []
-        if language == Language.GO:
-            extra_paths.append(f"{home}/go/bin")
-        if language == Language.RUBY:
-            extra_paths.extend([f"{home}/.gem/ruby/2.6.0/bin", "/opt/homebrew/lib/ruby/gems/4.0.0/bin", "/opt/homebrew/opt/ruby/bin"])
-        if language == Language.PERL:
-            extra_paths.append(f"{home}/perl5/bin")
-            current_perl5 = os.environ.get("PERL5LIB", "").strip()
-            perl_lib = f"{home}/perl5/lib/perl5"
-            if len(current_perl5) == 0:
-                os.environ["PERL5LIB"] = perl_lib
-            elif perl_lib not in current_perl5.split(":"):
-                os.environ["PERL5LIB"] = f"{perl_lib}:{current_perl5}"
-        if len(extra_paths) == 0:
-            return
-        current_path = os.environ.get("PATH", "")
-        parts = [part for part in current_path.split(":") if len(part) > 0]
-        for path_item in reversed(extra_paths):
-            if path_item not in parts and Path(path_item).exists():
-                parts.insert(0, path_item)
-        os.environ["PATH"] = ":".join(parts)
+        with self._environment_patch_lock:
+            backup: dict[str, str | None] = {}
+            for key, value in env_overrides.items():
+                backup[key] = os.environ.get(key)
+                os.environ[key] = value
+            try:
+                yield
+            finally:
+                for key, previous in backup.items():
+                    if previous is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = previous
 
     def _idle_cleanup_loop(self) -> None:
         """유휴 인스턴스를 주기적으로 정리한다."""

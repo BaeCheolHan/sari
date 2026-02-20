@@ -71,6 +71,16 @@ class AppConfig:
     l3_backpressure_cooldown_ms: int = 300
     lsp_file_buffer_idle_ttl_sec: float = 20.0
     lsp_file_buffer_max_open: int = 512
+    lsp_java_min_major: int = 17
+    lsp_probe_timeout_default_sec: float = 20.0
+    lsp_probe_timeout_go_sec: float = 45.0
+    lsp_probe_workers: int = 4
+    lsp_probe_force_join_ms: int = 300
+    lsp_probe_warming_retry_sec: int = 5
+    lsp_probe_warming_threshold: int = 6
+    lsp_probe_permanent_backoff_sec: int = 1800
+    lsp_max_concurrent_starts: int = 2
+    lsp_max_concurrent_l1_probes: int = 2
     orphan_ppid_check_interval_sec: int = 1
     shutdown_join_timeout_sec: int = 2
     importance_kind_class: float = 600.0
@@ -194,6 +204,46 @@ class AppConfig:
         lsp_file_buffer_max_open_raw = os.getenv(
             "SARI_LSP_FILE_BUFFER_MAX_OPEN",
             str(file_config.get("lsp_file_buffer_max_open", 512)),
+        ).strip()
+        lsp_java_min_major_raw = os.getenv(
+            "SARI_LSP_JAVA_MIN_MAJOR",
+            str(file_config.get("lsp_java_min_major", 17)),
+        ).strip()
+        lsp_probe_timeout_default_raw = os.getenv(
+            "SARI_LSP_PROBE_TIMEOUT_DEFAULT_SEC",
+            str(file_config.get("lsp_probe_timeout_default_sec", 20.0)),
+        ).strip()
+        lsp_probe_timeout_go_raw = os.getenv(
+            "SARI_LSP_PROBE_TIMEOUT_GO_SEC",
+            str(file_config.get("lsp_probe_timeout_go_sec", 45.0)),
+        ).strip()
+        lsp_probe_workers_raw = os.getenv(
+            "SARI_LSP_PROBE_WORKERS",
+            str(file_config.get("lsp_probe_workers", 4)),
+        ).strip()
+        lsp_probe_force_join_ms_raw = os.getenv(
+            "SARI_LSP_PROBE_FORCE_JOIN_MS",
+            str(file_config.get("lsp_probe_force_join_ms", 300)),
+        ).strip()
+        lsp_probe_warming_retry_sec_raw = os.getenv(
+            "SARI_LSP_PROBE_WARMING_RETRY_SEC",
+            str(file_config.get("lsp_probe_warming_retry_sec", 5)),
+        ).strip()
+        lsp_probe_warming_threshold_raw = os.getenv(
+            "SARI_LSP_PROBE_WARMING_THRESHOLD",
+            str(file_config.get("lsp_probe_warming_threshold", 6)),
+        ).strip()
+        lsp_probe_permanent_backoff_sec_raw = os.getenv(
+            "SARI_LSP_PROBE_PERMANENT_BACKOFF_SEC",
+            str(file_config.get("lsp_probe_permanent_backoff_sec", 1800)),
+        ).strip()
+        lsp_max_concurrent_starts_raw = os.getenv(
+            "SARI_LSP_MAX_CONCURRENT_STARTS",
+            str(file_config.get("lsp_max_concurrent_starts", 2)),
+        ).strip()
+        lsp_max_concurrent_l1_probes_raw = os.getenv(
+            "SARI_LSP_MAX_CONCURRENT_L1_PROBES",
+            str(file_config.get("lsp_max_concurrent_l1_probes", 2)),
         ).strip()
         orphan_check_raw = os.getenv("SARI_ORPHAN_PPID_CHECK_INTERVAL_SEC", str(file_config.get("orphan_ppid_check_interval_sec", 1))).strip()
         shutdown_join_raw = os.getenv("SARI_SHUTDOWN_JOIN_TIMEOUT_SEC", str(file_config.get("shutdown_join_timeout_sec", 2))).strip()
@@ -340,6 +390,46 @@ class AppConfig:
             lsp_file_buffer_max_open = max(16, int(lsp_file_buffer_max_open_raw))
         except ValueError:
             lsp_file_buffer_max_open = 512
+        try:
+            lsp_java_min_major = max(8, int(lsp_java_min_major_raw))
+        except ValueError:
+            lsp_java_min_major = 17
+        try:
+            lsp_probe_timeout_default_sec = max(0.1, float(lsp_probe_timeout_default_raw))
+        except ValueError:
+            lsp_probe_timeout_default_sec = 20.0
+        try:
+            lsp_probe_timeout_go_sec = max(0.1, float(lsp_probe_timeout_go_raw))
+        except ValueError:
+            lsp_probe_timeout_go_sec = 45.0
+        try:
+            lsp_probe_workers = max(1, int(lsp_probe_workers_raw))
+        except ValueError:
+            lsp_probe_workers = 4
+        try:
+            lsp_probe_force_join_ms = max(0, int(lsp_probe_force_join_ms_raw))
+        except ValueError:
+            lsp_probe_force_join_ms = 300
+        try:
+            lsp_probe_warming_retry_sec = max(1, int(lsp_probe_warming_retry_sec_raw))
+        except ValueError:
+            lsp_probe_warming_retry_sec = 5
+        try:
+            lsp_probe_warming_threshold = max(1, int(lsp_probe_warming_threshold_raw))
+        except ValueError:
+            lsp_probe_warming_threshold = 6
+        try:
+            lsp_probe_permanent_backoff_sec = max(60, int(lsp_probe_permanent_backoff_sec_raw))
+        except ValueError:
+            lsp_probe_permanent_backoff_sec = 1800
+        try:
+            lsp_max_concurrent_starts = min(2, max(1, int(lsp_max_concurrent_starts_raw)))
+        except ValueError:
+            lsp_max_concurrent_starts = 2
+        try:
+            lsp_max_concurrent_l1_probes = min(4, max(1, int(lsp_max_concurrent_l1_probes_raw)))
+        except ValueError:
+            lsp_max_concurrent_l1_probes = 2
         try:
             orphan_check_sec = max(1, int(orphan_check_raw))
         except ValueError:
@@ -488,6 +578,16 @@ class AppConfig:
             l3_backpressure_cooldown_ms=l3_backpressure_cooldown_ms,
             lsp_file_buffer_idle_ttl_sec=lsp_file_buffer_idle_ttl_sec,
             lsp_file_buffer_max_open=lsp_file_buffer_max_open,
+            lsp_java_min_major=lsp_java_min_major,
+            lsp_probe_timeout_default_sec=lsp_probe_timeout_default_sec,
+            lsp_probe_timeout_go_sec=lsp_probe_timeout_go_sec,
+            lsp_probe_workers=lsp_probe_workers,
+            lsp_probe_force_join_ms=lsp_probe_force_join_ms,
+            lsp_probe_warming_retry_sec=lsp_probe_warming_retry_sec,
+            lsp_probe_warming_threshold=lsp_probe_warming_threshold,
+            lsp_probe_permanent_backoff_sec=lsp_probe_permanent_backoff_sec,
+            lsp_max_concurrent_starts=lsp_max_concurrent_starts,
+            lsp_max_concurrent_l1_probes=lsp_max_concurrent_l1_probes,
             orphan_ppid_check_interval_sec=orphan_check_sec,
             shutdown_join_timeout_sec=shutdown_join_sec,
             importance_normalize_mode=normalized_mode,

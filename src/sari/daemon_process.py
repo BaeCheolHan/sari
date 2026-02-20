@@ -130,6 +130,9 @@ def main() -> None:
         scale_out_hot_hits=config.lsp_scale_out_hot_hits,
         file_buffer_idle_ttl_sec=config.lsp_file_buffer_idle_ttl_sec,
         file_buffer_max_open=config.lsp_file_buffer_max_open,
+        java_min_major=config.lsp_java_min_major,
+        max_concurrent_starts=config.lsp_max_concurrent_starts,
+        max_concurrent_l1_probes=config.lsp_max_concurrent_l1_probes,
     )
     importance_scorer = ImportanceScorer(
         file_repo=file_repo,
@@ -233,7 +236,14 @@ def main() -> None:
         watcher_debounce_ms=config.watcher_debounce_ms,
         run_mode=config.run_mode,
         parent_alive_probe=(lambda: _is_parent_alive(launch_parent_pid, detached_mode=detached_mode)),
-        lsp_backend=SolidLspExtractionBackend(lsp_hub),
+        lsp_backend=SolidLspExtractionBackend(
+            lsp_hub,
+            probe_workers=config.lsp_probe_workers,
+            force_join_ms=config.lsp_probe_force_join_ms,
+            warming_retry_sec=config.lsp_probe_warming_retry_sec,
+            warming_threshold=config.lsp_probe_warming_threshold,
+            permanent_backoff_sec=config.lsp_probe_permanent_backoff_sec,
+        ),
         l3_parallel_enabled=config.l3_parallel_enabled,
         l3_executor_max_workers=config.l3_executor_max_workers,
         l3_recent_success_ttl_sec=config.l3_recent_success_ttl_sec,
@@ -272,6 +282,10 @@ def main() -> None:
         workspace_repo=workspace_repo,
         lsp_hub=lsp_hub,
         probe_repo=language_probe_repo,
+        per_language_timeout_sec=config.lsp_probe_timeout_default_sec,
+        per_language_timeout_overrides={"go": config.lsp_probe_timeout_go_sec},
+        lsp_request_timeout_sec=config.lsp_request_timeout_sec,
+        go_warmup_timeout_sec=config.lsp_probe_timeout_go_sec,
     )
     pipeline_lsp_matrix_service = PipelineLspMatrixService(
         probe_service=language_probe_service,

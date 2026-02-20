@@ -146,6 +146,9 @@ def _build_services() -> CliServiceBundle:
         scale_out_hot_hits=config.lsp_scale_out_hot_hits,
         file_buffer_idle_ttl_sec=config.lsp_file_buffer_idle_ttl_sec,
         file_buffer_max_open=config.lsp_file_buffer_max_open,
+        java_min_major=config.lsp_java_min_major,
+        max_concurrent_starts=config.lsp_max_concurrent_starts,
+        max_concurrent_l1_probes=config.lsp_max_concurrent_l1_probes,
     )
     probe_hub = LspHub(
         request_timeout_sec=config.lsp_request_timeout_sec,
@@ -158,11 +161,18 @@ def _build_services() -> CliServiceBundle:
         scale_out_hot_hits=config.lsp_scale_out_hot_hits,
         file_buffer_idle_ttl_sec=config.lsp_file_buffer_idle_ttl_sec,
         file_buffer_max_open=config.lsp_file_buffer_max_open,
+        java_min_major=config.lsp_java_min_major,
+        max_concurrent_starts=config.lsp_max_concurrent_starts,
+        max_concurrent_l1_probes=config.lsp_max_concurrent_l1_probes,
     )
     language_probe_service = LanguageProbeService(
         workspace_repo=workspace_repo,
         lsp_hub=probe_hub,
         probe_repo=language_probe_repo,
+        per_language_timeout_sec=config.lsp_probe_timeout_default_sec,
+        per_language_timeout_overrides={"go": config.lsp_probe_timeout_go_sec},
+        lsp_request_timeout_sec=config.lsp_request_timeout_sec,
+        go_warmup_timeout_sec=config.lsp_probe_timeout_go_sec,
     )
     pipeline_benchmark_service = PipelineBenchmarkService(
         file_collection_service=file_collection_service,

@@ -54,6 +54,7 @@ class FileScanner:
         candidate_index_sink: object | None,
         resolve_lsp_language: Callable[[str], Language | None],
         configure_lsp_prewarm_languages: Callable[[str, dict[Language, int]], None],
+        schedule_lsp_probe_for_file: Callable[[str, str], None] | None,
         resolve_repo_identity: Callable[[str], RepoIdentityDTO],
         load_gitignore_spec: Callable[[Path], PathSpec],
         is_collectible: Callable[[Path, Path, PathSpec], bool],
@@ -69,6 +70,7 @@ class FileScanner:
         self._candidate_index_sink = candidate_index_sink
         self._resolve_lsp_language = resolve_lsp_language
         self._configure_lsp_prewarm_languages = configure_lsp_prewarm_languages
+        self._schedule_lsp_probe_for_file = schedule_lsp_probe_for_file
         self._resolve_repo_identity = resolve_repo_identity
         self._load_gitignore_spec = load_gitignore_spec
         self._is_collectible = is_collectible
@@ -98,6 +100,7 @@ class FileScanner:
         candidate_changes: list[CandidateIndexChangeDTO] = []
         hash_jobs: list[_ScanHashJobDTO] = []
         language_counts: dict[Language, int] = defaultdict(int)
+        seen_extensions: set[str] = set()
         last_flush_at = time.perf_counter()
         for file_path in root.rglob("*"):
             if not file_path.is_file():
@@ -109,6 +112,14 @@ class FileScanner:
             if resolved_language is not None:
                 language_counts[resolved_language] += 1
             relative_path = str(file_path.relative_to(root).as_posix())
+            suffix = file_path.suffix.lower()
+            if self._schedule_lsp_probe_for_file is not None and suffix != "" and suffix not in seen_extensions:
+                seen_extensions.add(suffix)
+                try:
+                    self._schedule_lsp_probe_for_file(str(root), relative_path)
+                except (RuntimeError, ValueError, OSError) as exc:
+                    # probe 스케줄 실패가 L1 스캔을 중단시키지 않도록 격리한다.
+                    _ = exc
             seen_paths.append(relative_path)
             stat = file_path.stat()
             existing = self._file_repo.get_file(str(root), relative_path)

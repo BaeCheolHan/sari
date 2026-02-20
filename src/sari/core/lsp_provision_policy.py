@@ -58,7 +58,7 @@ _POLICY_BY_LANGUAGE: dict[str, LspProvisionPolicyDTO] = {
     "go": LspProvisionPolicyDTO(
         language="go",
         provisioning_mode="requires_system_binary",
-        install_hint="gopls가 필요합니다. 예: go install golang.org/x/tools/gopls@latest",
+        install_hint="gopls가 필요합니다. 예: go install golang.org/x/tools/gopls@latest (설치 후 GOPATH/bin 또는 ~/go/bin을 PATH에 포함)",
     ),
     "rust": LspProvisionPolicyDTO(
         language="rust",
@@ -148,7 +148,7 @@ _POLICY_BY_LANGUAGE: dict[str, LspProvisionPolicyDTO] = {
     "scala": LspProvisionPolicyDTO(
         language="scala",
         provisioning_mode="requires_system_binary",
-        install_hint="JDK와 coursier(cs), Metals가 필요합니다.",
+        install_hint="JDK 17+와 coursier(cs), Metals가 필요합니다.",
     ),
     "al": LspProvisionPolicyDTO(
         language="al",
@@ -219,4 +219,3 @@ def get_lsp_provision_policy(language: str) -> LspProvisionPolicyDTO:
         provisioning_mode="requires_system_binary",
         install_hint=f"{normalized} 언어 서버 설치가 필요합니다.",
     )
-

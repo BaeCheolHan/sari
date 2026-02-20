@@ -8,12 +8,13 @@ import threading
 import time
 import traceback
 from dataclasses import dataclass
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Protocol
 from solidlsp.ls_config import Language
 from sari.core.exceptions import CollectionError, DaemonError, ErrorContext, ValidationError
 from sari.core.config import DEFAULT_COLLECTION_EXCLUDE_GLOBS
-from sari.core.language_registry import get_default_collection_extensions
+from sari.core.language_registry import get_default_collection_extensions, resolve_language_from_path
 from sari.core.text_decode import decode_bytes_with_policy
 from sari.core.models import CandidateIndexChangeDTO, CollectionPolicyDTO, CollectionScanRepoResultDTO, CollectionScanResultDTO, CollectedFileL1DTO, FileReadResultDTO, PipelineMetricsDTO, now_iso8601_utc
 from sari.db.repositories.file_body_repository import FileBodyDecodeError, FileBodyRepository
@@ -48,6 +49,19 @@ class _InflightLspExtractState:
     result: LspExtractionResultDTO | None
 
 
+@dataclass
+class _ProbeStateRecord:
+    """LSP probe 상태를 key 단위로 관리한다."""
+
+    status: str = "IDLE"
+    fail_count: int = 0
+    warming_count: int = 0
+    next_retry_monotonic: float = 0.0
+    last_error_code: str | None = None
+    last_error_time_monotonic: float | None = None
+    last_seen_monotonic: float = 0.0
+
+
 class LspExtractionBackend(Protocol):
 
     def extract(self, repo_root: str, relative_path: str, content_hash: str) -> LspExtractionResultDTO:
@@ -78,7 +92,16 @@ class SolidLspExtractionBackend:
     LspHub get_or_start/acquire_pool 호출 시 request_kind 인자를 전달하는 계약을 사용한다.
     """
 
-    def __init__(self, hub: LspHub) -> None:
+    def __init__(
+        self,
+        hub: LspHub,
+        *,
+        probe_workers: int = 4,
+        force_join_ms: int = 300,
+        warming_retry_sec: int = 5,
+        warming_threshold: int = 6,
+        permanent_backoff_sec: int = 1800,
+    ) -> None:
         self._hub = hub
         self._prewarmed_keys: set[tuple[Language, str]] = set()
         self._hot_languages_by_repo: dict[str, set[Language]] = {}
@@ -86,6 +109,19 @@ class SolidLspExtractionBackend:
         self._inflight_lock = threading.Lock()
         self._inflight_extracts: dict[tuple[str, str, str], _InflightLspExtractState] = {}
         self._inflight_wait_timeout_sec = 30.0
+        self._probe_lock = threading.Lock()
+        self._probe_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=max(1, int(probe_workers)),
+            thread_name_prefix="lsp-probe",
+        )
+        self._probe_stopping = False
+        self._probe_inflight: dict[tuple[str, Language], concurrent.futures.Future[None]] = {}
+        self._probe_state: dict[tuple[str, Language], _ProbeStateRecord] = {}
+        self._probe_force_join_sec = max(0.0, float(max(0, int(force_join_ms))) / 1000.0)
+        self._probe_warming_retry_sec = max(1.0, float(max(1, int(warming_retry_sec))))
+        self._probe_warming_threshold = max(1, int(warming_threshold))
+        self._probe_permanent_backoff_sec = max(60.0, float(max(60, int(permanent_backoff_sec))))
+        self._probe_timeout_window_sec = 30.0
 
     def extract(self, repo_root: str, relative_path: str, content_hash: str) -> LspExtractionResultDTO:
         normalized_relative_path = normalize_repo_relative_path(relative_path)
@@ -119,10 +155,22 @@ class SolidLspExtractionBackend:
             )
         result: LspExtractionResultDTO | None = None
         try:
-            result = self._extract_once(
-                repo_root=repo_root,
-                normalized_relative_path=normalized_relative_path,
-            )
+            result = self._extract_once(repo_root=repo_root, normalized_relative_path=normalized_relative_path)
+            if result.error_message is not None:
+                error_code = _extract_error_code_from_message(result.error_message)
+                if self._should_force_recover_from_extract_error(
+                    repo_root=normalized_repo_root,
+                    relative_path=normalized_relative_path,
+                    error_code=error_code,
+                ):
+                    self.invalidate_probe_ready_for_file(repo_root=normalized_repo_root, relative_path=normalized_relative_path)
+                    self.schedule_probe_for_file(
+                        repo_root=normalized_repo_root,
+                        relative_path=normalized_relative_path,
+                        force=True,
+                        trigger="force",
+                    )
+                    result = self._extract_once(repo_root=repo_root, normalized_relative_path=normalized_relative_path)
             return result
         except (DaemonError, ValidationError, RuntimeError, OSError, ValueError, TypeError, concurrent.futures.TimeoutError) as exc:
             return LspExtractionResultDTO(
@@ -143,7 +191,8 @@ class SolidLspExtractionBackend:
             language = self._hub.resolve_language(normalized_relative_path)
             self._ensure_prewarm(language=language, repo_root=repo_root)
             lsp = self._hub.get_or_start(language=language, repo_root=repo_root, request_kind="indexing")
-            document_symbols = lsp.request_document_symbols(normalized_relative_path).iter_symbols()
+            with self._acquire_l1_probe_slot():
+                document_symbols = lsp.request_document_symbols(normalized_relative_path).iter_symbols()
             raw_symbols = list(document_symbols)
         except SolidLSPException as exc:
             message = str(exc)
@@ -292,6 +341,148 @@ class SolidLspExtractionBackend:
         with self._prewarm_lock:
             self._hot_languages_by_repo[normalized] = set(languages)
 
+    def schedule_probe_for_file(self, repo_root: str, relative_path: str, force: bool = False, trigger: str = "background") -> str:
+        """파일 기준 LSP probe를 비동기 스케줄한다."""
+        del trigger
+        normalized_root = str(Path(repo_root).resolve())
+        normalized_relative_path = normalize_repo_relative_path(relative_path)
+        language = resolve_language_from_path(file_path=normalized_relative_path)
+        if language is None:
+            return "unknown_language"
+        key = (normalized_root, language)
+        now = time.monotonic()
+        with self._probe_lock:
+            if self._probe_stopping:
+                return "stopping"
+            inflight = self._probe_inflight.get(key)
+            if inflight is not None:
+                if force and self._probe_force_join_sec > 0.0:
+                    try:
+                        inflight.result(timeout=self._probe_force_join_sec)
+                    except (concurrent.futures.TimeoutError, RuntimeError, ValueError):
+                        return "starting"
+                return "inflight"
+            state = self._probe_state.get(key)
+            if state is None:
+                state = _ProbeStateRecord(status="IDLE", last_seen_monotonic=now)
+                self._probe_state[key] = state
+            state.last_seen_monotonic = now
+            if (not force) and state.status in {"READY_L0", "WARMING"}:
+                return "ready"
+            if (not force) and now < state.next_retry_monotonic:
+                return "cooldown"
+            future = self._probe_executor.submit(self._probe_worker, key, normalized_relative_path)
+            self._probe_inflight[key] = future
+            return "scheduled"
+
+    def invalidate_probe_ready_for_file(self, repo_root: str, relative_path: str) -> None:
+        """READY/WARMING 상태를 제거한다."""
+        normalized_root = str(Path(repo_root).resolve())
+        language = resolve_language_from_path(file_path=normalize_repo_relative_path(relative_path))
+        if language is None:
+            return
+        key = (normalized_root, language)
+        with self._probe_lock:
+            state = self._probe_state.get(key)
+            if state is None:
+                return
+            if state.status in {"READY_L0", "WARMING"}:
+                state.status = "IDLE"
+            state.fail_count = 0
+            state.warming_count = 0
+            state.next_retry_monotonic = 0.0
+            state.last_error_code = None
+
+    def shutdown_probe_executor(self) -> None:
+        """probe executor를 종료한다."""
+        with self._probe_lock:
+            self._probe_stopping = True
+        self._probe_executor.shutdown(wait=True)
+
+    def _probe_worker(self, key: tuple[str, Language], sample_relative_path: str) -> None:
+        """단일 key probe worker."""
+        now = time.monotonic()
+        status = "failure"
+        with self._probe_lock:
+            state = self._probe_state.get(key)
+            if state is None:
+                state = _ProbeStateRecord(status="IDLE", last_seen_monotonic=now)
+                self._probe_state[key] = state
+            state.status = "IDLE"
+        try:
+            repo_root, language = key
+            self._ensure_prewarm(language=language, repo_root=repo_root)
+            lsp = self._hub.get_or_start(language=language, repo_root=repo_root, request_kind="indexing")
+            with self._probe_lock:
+                state = self._probe_state[key]
+                state.status = "READY_L0"
+                state.fail_count = 0
+                state.last_error_code = None
+            if language in {Language.GO, Language.JAVA, Language.KOTLIN}:
+                try:
+                    with self._acquire_l1_probe_slot():
+                        symbol_items = list(lsp.request_document_symbols(sample_relative_path).iter_symbols())
+                    _ = symbol_items
+                    status = "success"
+                    with self._probe_lock:
+                        state = self._probe_state[key]
+                        state.status = "READY_L0"
+                        state.warming_count = 0
+                        state.next_retry_monotonic = 0.0
+                except (SolidLSPException, DaemonError, RuntimeError, OSError, ValueError, TypeError) as exc:
+                    error_message = str(exc)
+                    error_code = _extract_error_code_from_message(error_message)
+                    with self._probe_lock:
+                        state = self._probe_state[key]
+                        if _is_warming_probe_error(code=error_code, message=error_message):
+                            state.status = "WARMING"
+                            state.warming_count += 1
+                            if state.warming_count > self._probe_warming_threshold:
+                                state.status = "COOLDOWN"
+                                state.fail_count += 1
+                                state.next_retry_monotonic = now + _next_transient_backoff_sec(state.fail_count)
+                            else:
+                                state.next_retry_monotonic = now + self._probe_warming_retry_sec
+                            status = "warming"
+                        else:
+                            state.status = "COOLDOWN"
+                            state.fail_count += 1
+                            state.last_error_code = error_code
+                            state.last_error_time_monotonic = now
+                            if _is_permanent_probe_error(error_code):
+                                state.next_retry_monotonic = now + self._probe_permanent_backoff_sec
+                            else:
+                                state.next_retry_monotonic = now + _next_transient_backoff_sec(state.fail_count)
+                            status = "failure"
+            else:
+                status = "success"
+                with self._probe_lock:
+                    state = self._probe_state[key]
+                    state.status = "READY_L0"
+                    state.warming_count = 0
+                    state.next_retry_monotonic = 0.0
+        except (SolidLSPException, DaemonError, RuntimeError, OSError, ValueError, TypeError) as exc:
+            error_message = str(exc)
+            error_code = _extract_error_code_from_message(error_message)
+            with self._probe_lock:
+                state = self._probe_state[key]
+                state.status = "COOLDOWN"
+                state.fail_count += 1
+                state.last_error_code = error_code
+                state.last_error_time_monotonic = now
+                if _is_permanent_probe_error(error_code):
+                    state.next_retry_monotonic = now + self._probe_permanent_backoff_sec
+                else:
+                    state.next_retry_monotonic = now + _next_transient_backoff_sec(state.fail_count)
+            status = "failure"
+        finally:
+            with self._probe_lock:
+                state = self._probe_state.get(key)
+                if state is not None:
+                    state.last_seen_monotonic = time.monotonic()
+                self._probe_inflight.pop(key, None)
+            _ = status
+
     def get_runtime_metrics(self) -> dict[str, int]:
         """LSP 허브 런타임 메트릭을 반환한다."""
         return self._hub.get_metrics()
@@ -302,6 +493,38 @@ class SolidLspExtractionBackend:
         if callable(getter):
             return getter()
         return {"pending_interactive": 0, "interactive_timeout_count": 0, "interactive_rejected_count": 0}
+
+    @contextmanager
+    def _acquire_l1_probe_slot(self):
+        """Hub가 세마포어 API를 제공하지 않아도 안전하게 동작한다."""
+        acquire = getattr(self._hub, "acquire_l1_probe_slot", None)
+        if callable(acquire):
+            with acquire():
+                yield
+            return
+        yield
+
+    def _should_force_recover_from_extract_error(self, repo_root: str, relative_path: str, error_code: str) -> bool:
+        """실사용 오류 코드에 따라 READY/WARMING 무효화 여부를 판단한다."""
+        language = resolve_language_from_path(file_path=relative_path)
+        if language is None:
+            return False
+        key = (repo_root, language)
+        now = time.monotonic()
+        with self._probe_lock:
+            state = self._probe_state.get(key)
+            if state is None:
+                return False
+            if error_code in {"ERR_BROKEN_PIPE", "ERR_SERVER_EXITED", "ERR_INIT_FAILED"}:
+                return state.status in {"READY_L0", "WARMING"}
+            if error_code != "ERR_RPC_TIMEOUT":
+                return False
+            if state.last_error_code == "ERR_RPC_TIMEOUT" and state.last_error_time_monotonic is not None:
+                if (now - state.last_error_time_monotonic) <= self._probe_timeout_window_sec:
+                    return state.status in {"READY_L0", "WARMING"}
+            state.last_error_code = "ERR_RPC_TIMEOUT"
+            state.last_error_time_monotonic = now
+            return False
 
 class FileCollectionService:
     PRIORITY_HIGH = 90
@@ -410,6 +633,7 @@ class FileCollectionService:
             candidate_index_sink=self._candidate_index_sink,
             resolve_lsp_language=self._repo_support.resolve_lsp_language,
             configure_lsp_prewarm_languages=self._repo_support.configure_lsp_prewarm_languages,
+            schedule_lsp_probe_for_file=self._repo_support.schedule_lsp_probe_for_file,
             resolve_repo_identity=self._repo_support.resolve_repo_identity,
             load_gitignore_spec=self._repo_support.load_gitignore_spec,
             is_collectible=self._repo_support.is_collectible,
@@ -739,6 +963,7 @@ class FileCollectionService:
     def stop_background(self) -> None:
         self._runtime_manager.stop_background()
         self._enrich_engine.shutdown()
+        self._repo_support.shutdown_probe_executor()
 
     def list_error_events(self, limit: int, offset: int=0, repo_root: str | None=None, error_code: str | None=None) -> list[dict[str, object]]:
         if self._error_event_repo is None:
@@ -807,3 +1032,38 @@ def build_default_file_collection_service(workspace_repo: WorkspaceRepository, f
     service = FileCollectionService(workspace_repo=workspace_repo, file_repo=file_repo, enrich_queue_repo=enrich_queue_repo, body_repo=body_repo, lsp_repo=lsp_repo, readiness_repo=readiness_repo, policy=policy, lsp_backend=resolved_lsp_backend, policy_repo=policy_repo, event_repo=event_repo, error_event_repo=error_event_repo, candidate_index_sink=candidate_index_sink, vector_index_sink=vector_index_sink, run_mode=run_mode, parent_alive_probe=parent_alive_probe, persist_body_for_read=persist_body_for_read, repo_registry_repo=repo_registry_repo, l3_parallel_enabled=l3_parallel_enabled, l3_executor_max_workers=l3_executor_max_workers, l3_recent_success_ttl_sec=l3_recent_success_ttl_sec, l3_backpressure_on_interactive=l3_backpressure_on_interactive, l3_backpressure_cooldown_ms=l3_backpressure_cooldown_ms)
     service._watcher_debounce_ms = max(50, watcher_debounce_ms)
     return service
+
+
+def _extract_error_code_from_message(message: str) -> str:
+    trimmed = message.strip()
+    if trimmed.startswith("ERR_"):
+        return trimmed.split(":", 1)[0].strip()
+    lowered = trimmed.lower()
+    if "broken pipe" in lowered:
+        return "ERR_BROKEN_PIPE"
+    if "timed out" in lowered or "timeout" in lowered:
+        return "ERR_RPC_TIMEOUT"
+    if "server exited" in lowered:
+        return "ERR_SERVER_EXITED"
+    return "ERR_LSP_PROBE_FAILED"
+
+
+def _is_warming_probe_error(code: str, message: str) -> bool:
+    if code == "ERR_LSP_INDEXING_WARMING":
+        return True
+    lowered = message.lower()
+    return ("indexing" in lowered) or ("workspace loading" in lowered) or ("timeout" in lowered)
+
+
+def _is_permanent_probe_error(code: str) -> bool:
+    return code in {"ERR_LSP_SERVER_MISSING", "ERR_CONFIG_INVALID", "ERR_RUNTIME_MISMATCH"}
+
+
+def _next_transient_backoff_sec(fail_count: int) -> float:
+    if fail_count <= 1:
+        return 5.0
+    if fail_count == 2:
+        return 15.0
+    if fail_count == 3:
+        return 30.0
+    return 60.0

@@ -60,6 +60,16 @@ def test_app_config_loads_json_and_env_override(tmp_path: Path, monkeypatch) -> 
                 "l3_parallel_enabled": False,
                 "lsp_file_buffer_idle_ttl_sec": 15.0,
                 "lsp_file_buffer_max_open": 256,
+                "lsp_java_min_major": 19,
+                "lsp_probe_timeout_default_sec": 18.0,
+                "lsp_probe_timeout_go_sec": 40.0,
+                "lsp_probe_workers": 3,
+                "lsp_probe_force_join_ms": 250,
+                "lsp_probe_warming_retry_sec": 7,
+                "lsp_probe_warming_threshold": 9,
+                "lsp_probe_permanent_backoff_sec": 2400,
+                "lsp_max_concurrent_starts": 1,
+                "lsp_max_concurrent_l1_probes": 3,
             }
         ),
         encoding="utf-8",
@@ -79,6 +89,16 @@ def test_app_config_loads_json_and_env_override(tmp_path: Path, monkeypatch) -> 
     monkeypatch.setenv("SARI_L3_PARALLEL_ENABLED", "true")
     monkeypatch.setenv("SARI_LSP_FILE_BUFFER_IDLE_TTL_SEC", "25.0")
     monkeypatch.setenv("SARI_LSP_FILE_BUFFER_MAX_OPEN", "1024")
+    monkeypatch.setenv("SARI_LSP_JAVA_MIN_MAJOR", "21")
+    monkeypatch.setenv("SARI_LSP_PROBE_TIMEOUT_DEFAULT_SEC", "22.5")
+    monkeypatch.setenv("SARI_LSP_PROBE_TIMEOUT_GO_SEC", "55")
+    monkeypatch.setenv("SARI_LSP_PROBE_WORKERS", "5")
+    monkeypatch.setenv("SARI_LSP_PROBE_FORCE_JOIN_MS", "400")
+    monkeypatch.setenv("SARI_LSP_PROBE_WARMING_RETRY_SEC", "8")
+    monkeypatch.setenv("SARI_LSP_PROBE_WARMING_THRESHOLD", "10")
+    monkeypatch.setenv("SARI_LSP_PROBE_PERMANENT_BACKOFF_SEC", "3600")
+    monkeypatch.setenv("SARI_LSP_MAX_CONCURRENT_STARTS", "2")
+    monkeypatch.setenv("SARI_LSP_MAX_CONCURRENT_L1_PROBES", "4")
     monkeypatch.delenv("SARI_COLLECTION_INCLUDE_EXT", raising=False)
     monkeypatch.delenv("SARI_COLLECTION_EXCLUDE_GLOBS", raising=False)
 
@@ -105,6 +125,16 @@ def test_app_config_loads_json_and_env_override(tmp_path: Path, monkeypatch) -> 
     assert config.l3_parallel_enabled is True
     assert config.lsp_file_buffer_idle_ttl_sec == pytest.approx(25.0)
     assert config.lsp_file_buffer_max_open == 1024
+    assert config.lsp_java_min_major == 21
+    assert config.lsp_probe_timeout_default_sec == pytest.approx(22.5)
+    assert config.lsp_probe_timeout_go_sec == pytest.approx(55.0)
+    assert config.lsp_probe_workers == 5
+    assert config.lsp_probe_force_join_ms == 400
+    assert config.lsp_probe_warming_retry_sec == 8
+    assert config.lsp_probe_warming_threshold == 10
+    assert config.lsp_probe_permanent_backoff_sec == 3600
+    assert config.lsp_max_concurrent_starts == 2
+    assert config.lsp_max_concurrent_l1_probes == 4
 
 
 def test_app_config_default_exclude_globs_include_build_artifact_paths(tmp_path: Path, monkeypatch) -> None:
