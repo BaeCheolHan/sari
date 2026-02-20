@@ -76,6 +76,7 @@ class EnrichEngine:
         l3_recent_success_ttl_sec: int,
         l3_backpressure_on_interactive: bool,
         l3_backpressure_cooldown_ms: int,
+        lsp_probe_l1_languages: tuple[str, ...],
     ) -> None:
         """엔진 실행에 필요한 의존성을 주입받는다."""
         self._file_repo = file_repo
@@ -108,6 +109,7 @@ class EnrichEngine:
         self._l3_executor_closed = False
         self._indexing_mode = "steady"
         self._bootstrap_started_at = time.monotonic()
+        self._lsp_probe_l1_languages = self._parse_lsp_probe_l1_languages(lsp_probe_l1_languages)
 
     def shutdown(self) -> None:
         """L3 전역 executor를 종료한다."""
@@ -256,6 +258,7 @@ class EnrichEngine:
                     )
                 extraction = self._lsp_backend.extract(job.repo_root, job.relative_path, job.content_hash)
                 if extraction.error_message is not None:
+                    self._schedule_l1_probe_after_l3_fallback(job=job)
                     failure_now = now_iso8601_utc()
                     state_updates.append(EnrichStateUpdateDTO(repo_root=job.repo_root, relative_path=job.relative_path, enrich_state="FAILED", updated_at=failure_now))
                     failed_updates.append(
@@ -828,6 +831,7 @@ class EnrichEngine:
                 now_iso = now_iso8601_utc()
                 extraction = self._lsp_backend.extract(job.repo_root, job.relative_path, job.content_hash)
                 if extraction.error_message is not None:
+                    self._schedule_l1_probe_after_l3_fallback(job=job)
                     failure_now = now_iso8601_utc()
                     state_update = EnrichStateUpdateDTO(
                         repo_root=job.repo_root,
@@ -948,6 +952,43 @@ class EnrichEngine:
             readiness_update=readiness_update,
             dev_error=dev_error,
         )
+
+    def _schedule_l1_probe_after_l3_fallback(self, job: FileEnrichJobDTO) -> None:
+        """L3 fail-open 시 백그라운드 L1 probe를 조건부로 예약한다."""
+        language = resolve_language_from_path(file_path=job.relative_path)
+        if language is None or language not in self._lsp_probe_l1_languages:
+            return
+        inflight_checker = getattr(self._lsp_backend, "is_probe_inflight_for_file", None)
+        if callable(inflight_checker):
+            try:
+                if bool(inflight_checker(repo_root=job.repo_root, relative_path=job.relative_path)):
+                    return
+            except (RuntimeError, OSError, ValueError, TypeError):
+                return
+        scheduler = getattr(self._lsp_backend, "schedule_probe_for_file", None)
+        if not callable(scheduler):
+            return
+        try:
+            scheduler(
+                repo_root=job.repo_root,
+                relative_path=job.relative_path,
+                force=False,
+                trigger="l3_fallback",
+            )
+        except (RuntimeError, OSError, ValueError, TypeError):
+            return
+
+    def _parse_lsp_probe_l1_languages(self, items: tuple[str, ...]) -> set[Language]:
+        """lsp_probe_l1_languages 설정을 Language 집합으로 변환한다."""
+        parsed: set[Language] = set()
+        for item in items:
+            raw = item.strip().lower()
+            if raw == "":
+                continue
+            language = resolve_language_from_path(file_path=f"file.{raw}")
+            if language is not None:
+                parsed.add(language)
+        return parsed
 
     def _is_recent_tool_ready(self, job: FileEnrichJobDTO) -> bool:
         """최근 성공 상태면 L3 재추출을 건너뛸지 판단한다."""

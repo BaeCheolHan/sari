@@ -97,6 +97,7 @@ class SolidLspExtractionBackend:
         hub: LspHub,
         *,
         probe_workers: int = 4,
+        l1_workers: int = 2,
         force_join_ms: int = 300,
         warming_retry_sec: int = 5,
         warming_threshold: int = 6,
@@ -113,6 +114,10 @@ class SolidLspExtractionBackend:
         self._probe_executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=max(1, int(probe_workers)),
             thread_name_prefix="lsp-probe",
+        )
+        self._l1_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=max(1, int(l1_workers)),
+            thread_name_prefix="lsp-probe-l1",
         )
         self._probe_stopping = False
         self._probe_inflight: dict[tuple[str, Language], concurrent.futures.Future[None]] = {}
@@ -398,6 +403,27 @@ class SolidLspExtractionBackend:
         with self._probe_lock:
             self._probe_stopping = True
         self._probe_executor.shutdown(wait=True)
+        self._l1_executor.shutdown(wait=True)
+
+    def reset_probe_state(self) -> None:
+        """probe 상태를 초기화한다."""
+        with self._probe_lock:
+            self._probe_inflight.clear()
+            self._probe_state.clear()
+
+    def reset_lsp_runtime(self) -> None:
+        """LSP 런타임을 정리한다."""
+        self._hub.stop_all()
+
+    def is_probe_inflight_for_file(self, repo_root: str, relative_path: str) -> bool:
+        """(repo, language) probe inflight 여부를 반환한다."""
+        normalized_root = str(Path(repo_root).resolve())
+        language = resolve_language_from_path(file_path=normalize_repo_relative_path(relative_path))
+        if language is None:
+            return False
+        key = (normalized_root, language)
+        with self._probe_lock:
+            return key in self._probe_inflight
 
     def _probe_worker(self, key: tuple[str, Language], sample_relative_path: str) -> None:
         """단일 key probe worker."""
@@ -418,49 +444,14 @@ class SolidLspExtractionBackend:
                 state.status = "READY_L0"
                 state.fail_count = 0
                 state.last_error_code = None
+            status = "success"
+            with self._probe_lock:
+                state = self._probe_state[key]
+                state.status = "READY_L0"
+                state.warming_count = 0
+                state.next_retry_monotonic = 0.0
             if language in {Language.GO, Language.JAVA, Language.KOTLIN}:
-                try:
-                    with self._acquire_l1_probe_slot():
-                        symbol_items = list(lsp.request_document_symbols(sample_relative_path).iter_symbols())
-                    _ = symbol_items
-                    status = "success"
-                    with self._probe_lock:
-                        state = self._probe_state[key]
-                        state.status = "READY_L0"
-                        state.warming_count = 0
-                        state.next_retry_monotonic = 0.0
-                except (SolidLSPException, DaemonError, RuntimeError, OSError, ValueError, TypeError) as exc:
-                    error_message = str(exc)
-                    error_code = _extract_error_code_from_message(error_message)
-                    with self._probe_lock:
-                        state = self._probe_state[key]
-                        if _is_warming_probe_error(code=error_code, message=error_message):
-                            state.status = "WARMING"
-                            state.warming_count += 1
-                            if state.warming_count > self._probe_warming_threshold:
-                                state.status = "COOLDOWN"
-                                state.fail_count += 1
-                                state.next_retry_monotonic = now + _next_transient_backoff_sec(state.fail_count)
-                            else:
-                                state.next_retry_monotonic = now + self._probe_warming_retry_sec
-                            status = "warming"
-                        else:
-                            state.status = "COOLDOWN"
-                            state.fail_count += 1
-                            state.last_error_code = error_code
-                            state.last_error_time_monotonic = now
-                            if _is_permanent_probe_error(error_code):
-                                state.next_retry_monotonic = now + self._probe_permanent_backoff_sec
-                            else:
-                                state.next_retry_monotonic = now + _next_transient_backoff_sec(state.fail_count)
-                            status = "failure"
-            else:
-                status = "success"
-                with self._probe_lock:
-                    state = self._probe_state[key]
-                    state.status = "READY_L0"
-                    state.warming_count = 0
-                    state.next_retry_monotonic = 0.0
+                self._l1_executor.submit(self._run_l1_probe, key, sample_relative_path)
         except (SolidLSPException, DaemonError, RuntimeError, OSError, ValueError, TypeError) as exc:
             error_message = str(exc)
             error_code = _extract_error_code_from_message(error_message)
@@ -482,6 +473,49 @@ class SolidLspExtractionBackend:
                     state.last_seen_monotonic = time.monotonic()
                 self._probe_inflight.pop(key, None)
             _ = status
+
+    def _run_l1_probe(self, key: tuple[str, Language], sample_relative_path: str) -> None:
+        """READY_L0 이후 L1(documentSymbol) probe를 지연 실행한다."""
+        now = time.monotonic()
+        try:
+            repo_root, language = key
+            lsp = self._hub.get_or_start(language=language, repo_root=repo_root, request_kind="indexing")
+            with self._acquire_l1_probe_slot():
+                _ = list(lsp.request_document_symbols(sample_relative_path).iter_symbols())
+            with self._probe_lock:
+                state = self._probe_state.get(key)
+                if state is None:
+                    return
+                state.status = "READY_L0"
+                state.warming_count = 0
+                state.next_retry_monotonic = 0.0
+                state.last_seen_monotonic = now
+        except (SolidLSPException, DaemonError, RuntimeError, OSError, ValueError, TypeError) as exc:
+            error_message = str(exc)
+            error_code = _extract_error_code_from_message(error_message)
+            with self._probe_lock:
+                state = self._probe_state.get(key)
+                if state is None:
+                    return
+                if _is_warming_probe_error(code=error_code, message=error_message):
+                    state.status = "WARMING"
+                    state.warming_count += 1
+                    if state.warming_count > self._probe_warming_threshold:
+                        state.status = "COOLDOWN"
+                        state.fail_count += 1
+                        state.next_retry_monotonic = now + _next_transient_backoff_sec(state.fail_count)
+                    else:
+                        state.next_retry_monotonic = now + self._probe_warming_retry_sec
+                else:
+                    state.status = "COOLDOWN"
+                    state.fail_count += 1
+                    state.last_error_code = error_code
+                    state.last_error_time_monotonic = now
+                    if _is_permanent_probe_error(error_code):
+                        state.next_retry_monotonic = now + self._probe_permanent_backoff_sec
+                    else:
+                        state.next_retry_monotonic = now + _next_transient_backoff_sec(state.fail_count)
+                state.last_seen_monotonic = now
 
     def get_runtime_metrics(self) -> dict[str, int]:
         """LSP 허브 런타임 메트릭을 반환한다."""
@@ -558,7 +592,7 @@ class FileCollectionService:
         "composer.json",
     )
 
-    def __init__(self, workspace_repo: WorkspaceRepository, file_repo: FileCollectionRepository, enrich_queue_repo: FileEnrichQueueRepository, body_repo: FileBodyRepository, lsp_repo: LspToolDataRepository, readiness_repo: ToolReadinessRepository, policy: CollectionPolicyDTO, lsp_backend: LspExtractionBackend, policy_repo: PipelinePolicyRepository | None=None, event_repo: PipelineJobEventRepository | None=None, error_event_repo: PipelineErrorEventRepository | None=None, candidate_index_sink: CandidateIndexSink | None=None, vector_index_sink: VectorIndexSink | None=None, run_mode: str='dev', parent_alive_probe: Callable[[], bool] | None=None, persist_body_for_read: bool=True, repo_registry_repo: RepoRegistryRepository | None=None, l3_parallel_enabled: bool=True, l3_executor_max_workers: int=0, l3_recent_success_ttl_sec: int=120, l3_backpressure_on_interactive: bool=True, l3_backpressure_cooldown_ms: int=300) -> None:
+    def __init__(self, workspace_repo: WorkspaceRepository, file_repo: FileCollectionRepository, enrich_queue_repo: FileEnrichQueueRepository, body_repo: FileBodyRepository, lsp_repo: LspToolDataRepository, readiness_repo: ToolReadinessRepository, policy: CollectionPolicyDTO, lsp_backend: LspExtractionBackend, policy_repo: PipelinePolicyRepository | None=None, event_repo: PipelineJobEventRepository | None=None, error_event_repo: PipelineErrorEventRepository | None=None, candidate_index_sink: CandidateIndexSink | None=None, vector_index_sink: VectorIndexSink | None=None, run_mode: str='dev', parent_alive_probe: Callable[[], bool] | None=None, persist_body_for_read: bool=True, repo_registry_repo: RepoRegistryRepository | None=None, l3_parallel_enabled: bool=True, l3_executor_max_workers: int=0, l3_recent_success_ttl_sec: int=120, l3_backpressure_on_interactive: bool=True, l3_backpressure_cooldown_ms: int=300, lsp_probe_bootstrap_file_window: int=256, lsp_probe_bootstrap_top_k: int=3, lsp_probe_language_priority: tuple[str, ...]=("go:1.5", "java:1.4", "kotlin:1.3"), lsp_probe_l1_languages: tuple[str, ...]=("go", "java", "kotlin")) -> None:
         self._workspace_repo = workspace_repo
         self._file_repo = file_repo
         self._enrich_queue_repo = enrich_queue_repo
@@ -577,6 +611,10 @@ class FileCollectionService:
         self._parent_alive_probe = parent_alive_probe
         self._persist_body_for_read = persist_body_for_read
         self._l3_parallel_enabled = bool(l3_parallel_enabled)
+        self._lsp_probe_bootstrap_file_window = max(1, int(lsp_probe_bootstrap_file_window))
+        self._lsp_probe_bootstrap_top_k = max(1, int(lsp_probe_bootstrap_top_k))
+        self._lsp_probe_language_priority_weights = _parse_language_priority_weights(lsp_probe_language_priority)
+        self._lsp_probe_l1_languages = tuple(item.strip() for item in lsp_probe_l1_languages if item.strip() != "")
         self._watcher_queue_max = self.WATCHER_QUEUE_MAX
         self._watcher_overflow_rescan_cooldown_sec = self.WATCHER_OVERFLOW_RESCAN_COOLDOWN_SEC
         if self._policy_repo is not None:
@@ -642,6 +680,9 @@ class FileCollectionService:
             scan_flush_batch_size=self.SCAN_FLUSH_BATCH_SIZE,
             scan_flush_interval_sec=self.SCAN_FLUSH_INTERVAL_SEC,
             scan_hash_max_workers=self.SCAN_HASH_MAX_WORKERS,
+            bootstrap_file_window=self._lsp_probe_bootstrap_file_window,
+            bootstrap_top_k=self._lsp_probe_bootstrap_top_k,
+            language_priority_weights=self._lsp_probe_language_priority_weights,
         )
         self._error_policy = CollectionErrorPolicy(
             error_event_repo=self._error_event_repo,
@@ -673,6 +714,7 @@ class FileCollectionService:
             l3_recent_success_ttl_sec=l3_recent_success_ttl_sec,
             l3_backpressure_on_interactive=l3_backpressure_on_interactive,
             l3_backpressure_cooldown_ms=l3_backpressure_cooldown_ms,
+            lsp_probe_l1_languages=self._lsp_probe_l1_languages,
         )
         self._pipeline_worker = PipelineWorker(
             process_enrich_jobs=self._enrich_engine.process_enrich_jobs,
@@ -965,6 +1007,22 @@ class FileCollectionService:
         self._enrich_engine.shutdown()
         self._repo_support.shutdown_probe_executor()
 
+    def reset_probe_state(self) -> None:
+        """성능 측정/진단용으로 probe 상태를 초기화한다."""
+        resetter = getattr(self._lsp_backend, "reset_probe_state", None)
+        if callable(resetter):
+            resetter()
+
+    def reset_lsp_runtime(self) -> None:
+        """성능 측정/진단용으로 LSP 런타임을 종료한다."""
+        resetter = getattr(self._lsp_backend, "reset_lsp_runtime", None)
+        if callable(resetter):
+            resetter()
+
+    def reset_runtime_state(self) -> None:
+        """성능 측정/진단용으로 인메모리 런타임 상태를 초기화한다."""
+        self._enrich_engine.reset_runtime_state()
+
     def list_error_events(self, limit: int, offset: int=0, repo_root: str | None=None, error_code: str | None=None) -> list[dict[str, object]]:
         if self._error_event_repo is None:
             return []
@@ -1023,13 +1081,13 @@ class FileCollectionService:
     def _prune_error_events_if_needed(self) -> None:
         self._error_policy.prune_error_events_if_needed()
 
-def build_default_file_collection_service(workspace_repo: WorkspaceRepository, file_repo: FileCollectionRepository, enrich_queue_repo: FileEnrichQueueRepository, body_repo: FileBodyRepository, lsp_repo: LspToolDataRepository, readiness_repo: ToolReadinessRepository, policy_repo: PipelinePolicyRepository | None=None, event_repo: PipelineJobEventRepository | None=None, error_event_repo: PipelineErrorEventRepository | None=None, candidate_index_sink: CandidateIndexSink | None=None, vector_index_sink: VectorIndexSink | None=None, retry_max_attempts: int=5, retry_backoff_base_sec: int=1, queue_poll_interval_ms: int=500, include_ext: tuple[str, ...] | None=None, exclude_globs: tuple[str, ...] | None=None, watcher_debounce_ms: int=300, run_mode: str='dev', parent_alive_probe: Callable[[], bool] | None=None, lsp_backend: LspExtractionBackend | None=None, persist_body_for_read: bool=True, l3_parallel_enabled: bool=True, l3_executor_max_workers: int=0, l3_recent_success_ttl_sec: int=120, l3_backpressure_on_interactive: bool=True, l3_backpressure_cooldown_ms: int=300) -> CollectionRuntimePort:
+def build_default_file_collection_service(workspace_repo: WorkspaceRepository, file_repo: FileCollectionRepository, enrich_queue_repo: FileEnrichQueueRepository, body_repo: FileBodyRepository, lsp_repo: LspToolDataRepository, readiness_repo: ToolReadinessRepository, policy_repo: PipelinePolicyRepository | None=None, event_repo: PipelineJobEventRepository | None=None, error_event_repo: PipelineErrorEventRepository | None=None, candidate_index_sink: CandidateIndexSink | None=None, vector_index_sink: VectorIndexSink | None=None, retry_max_attempts: int=5, retry_backoff_base_sec: int=1, queue_poll_interval_ms: int=500, include_ext: tuple[str, ...] | None=None, exclude_globs: tuple[str, ...] | None=None, watcher_debounce_ms: int=300, run_mode: str='dev', parent_alive_probe: Callable[[], bool] | None=None, lsp_backend: LspExtractionBackend | None=None, persist_body_for_read: bool=True, l3_parallel_enabled: bool=True, l3_executor_max_workers: int=0, l3_recent_success_ttl_sec: int=120, l3_backpressure_on_interactive: bool=True, l3_backpressure_cooldown_ms: int=300, lsp_probe_bootstrap_file_window: int=256, lsp_probe_bootstrap_top_k: int=3, lsp_probe_language_priority: tuple[str, ...]=("go:1.5", "java:1.4", "kotlin:1.3"), lsp_probe_l1_languages: tuple[str, ...]=("go", "java", "kotlin")) -> CollectionRuntimePort:
     resolved_include_ext = include_ext if include_ext is not None else get_default_collection_extensions()
     resolved_exclude_globs = exclude_globs if exclude_globs is not None else DEFAULT_COLLECTION_EXCLUDE_GLOBS
     policy = CollectionPolicyDTO(include_ext=resolved_include_ext, exclude_globs=resolved_exclude_globs, max_file_size_bytes=512 * 1024, scan_interval_sec=180, max_enrich_batch=20, retry_max_attempts=retry_max_attempts, retry_backoff_base_sec=retry_backoff_base_sec, queue_poll_interval_ms=queue_poll_interval_ms)
     resolved_lsp_backend = lsp_backend if lsp_backend is not None else SolidLspExtractionBackend(LspHub())
     repo_registry_repo = RepoRegistryRepository(file_repo.db_path)
-    service = FileCollectionService(workspace_repo=workspace_repo, file_repo=file_repo, enrich_queue_repo=enrich_queue_repo, body_repo=body_repo, lsp_repo=lsp_repo, readiness_repo=readiness_repo, policy=policy, lsp_backend=resolved_lsp_backend, policy_repo=policy_repo, event_repo=event_repo, error_event_repo=error_event_repo, candidate_index_sink=candidate_index_sink, vector_index_sink=vector_index_sink, run_mode=run_mode, parent_alive_probe=parent_alive_probe, persist_body_for_read=persist_body_for_read, repo_registry_repo=repo_registry_repo, l3_parallel_enabled=l3_parallel_enabled, l3_executor_max_workers=l3_executor_max_workers, l3_recent_success_ttl_sec=l3_recent_success_ttl_sec, l3_backpressure_on_interactive=l3_backpressure_on_interactive, l3_backpressure_cooldown_ms=l3_backpressure_cooldown_ms)
+    service = FileCollectionService(workspace_repo=workspace_repo, file_repo=file_repo, enrich_queue_repo=enrich_queue_repo, body_repo=body_repo, lsp_repo=lsp_repo, readiness_repo=readiness_repo, policy=policy, lsp_backend=resolved_lsp_backend, policy_repo=policy_repo, event_repo=event_repo, error_event_repo=error_event_repo, candidate_index_sink=candidate_index_sink, vector_index_sink=vector_index_sink, run_mode=run_mode, parent_alive_probe=parent_alive_probe, persist_body_for_read=persist_body_for_read, repo_registry_repo=repo_registry_repo, l3_parallel_enabled=l3_parallel_enabled, l3_executor_max_workers=l3_executor_max_workers, l3_recent_success_ttl_sec=l3_recent_success_ttl_sec, l3_backpressure_on_interactive=l3_backpressure_on_interactive, l3_backpressure_cooldown_ms=l3_backpressure_cooldown_ms, lsp_probe_bootstrap_file_window=lsp_probe_bootstrap_file_window, lsp_probe_bootstrap_top_k=lsp_probe_bootstrap_top_k, lsp_probe_language_priority=lsp_probe_language_priority, lsp_probe_l1_languages=lsp_probe_l1_languages)
     service._watcher_debounce_ms = max(50, watcher_debounce_ms)
     return service
 
@@ -1067,3 +1125,22 @@ def _next_transient_backoff_sec(fail_count: int) -> float:
     if fail_count == 3:
         return 30.0
     return 60.0
+
+
+def _parse_language_priority_weights(items: tuple[str, ...]) -> dict[Language, float]:
+    """언어 우선순위 설정 문자열을 가중치 맵으로 파싱한다."""
+    weights: dict[Language, float] = {}
+    for item in items:
+        raw = item.strip()
+        if raw == "" or ":" not in raw:
+            continue
+        name, raw_weight = raw.split(":", 1)
+        language = resolve_language_from_path(file_path=f"file.{name.strip().lower()}")
+        if language is None:
+            continue
+        try:
+            weight = max(0.1, float(raw_weight.strip()))
+        except ValueError:
+            continue
+        weights[language] = weight
+    return weights

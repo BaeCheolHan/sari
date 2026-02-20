@@ -114,7 +114,15 @@ def test_pipeline_perf_run_and_report_endpoint(tmp_path: Path) -> None:
     """성능 실행/리포트 API가 정상 응답을 반환해야 한다."""
     context = _build_context(tmp_path)
     run_request = SimpleNamespace(
-        query_params={"repo": "repo-a", "target_files": "2000", "profile": "realistic_v1", "dataset_mode": "isolated"},
+        query_params={
+            "repo": "repo-a",
+            "target_files": "2000",
+            "profile": "realistic_v1",
+            "dataset_mode": "isolated",
+            "fresh_db": "true",
+            "reset_probe_state": "true",
+            "cold_lsp_reset": "true",
+        },
         app=SimpleNamespace(state=SimpleNamespace(context=context)),
     )
     run_response = asyncio.run(pipeline_perf_run_api_endpoint(run_request))
@@ -122,6 +130,10 @@ def test_pipeline_perf_run_and_report_endpoint(tmp_path: Path) -> None:
     run_payload = json.loads(run_response.body.decode("utf-8"))
     assert run_payload["perf"]["status"] == "COMPLETED"
     assert run_payload["perf"]["dataset_mode"] == "isolated"
+    workspace = next(item for item in run_payload["perf"]["datasets"] if item["dataset_type"] == "workspace_real")
+    assert workspace["run_context"]["fresh_db"] is True
+    assert workspace["run_context"]["pre_state_reset"] is True
+    assert workspace["run_context"]["cold_lsp_reset"] is True
 
     report_request = SimpleNamespace(
         query_params={"repo": "repo-a"},

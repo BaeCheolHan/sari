@@ -239,6 +239,7 @@ def main() -> None:
         lsp_backend=SolidLspExtractionBackend(
             lsp_hub,
             probe_workers=config.lsp_probe_workers,
+            l1_workers=config.lsp_probe_l1_workers,
             force_join_ms=config.lsp_probe_force_join_ms,
             warming_retry_sec=config.lsp_probe_warming_retry_sec,
             warming_threshold=config.lsp_probe_warming_threshold,
@@ -249,6 +250,10 @@ def main() -> None:
         l3_recent_success_ttl_sec=config.l3_recent_success_ttl_sec,
         l3_backpressure_on_interactive=config.l3_backpressure_on_interactive,
         l3_backpressure_cooldown_ms=config.l3_backpressure_cooldown_ms,
+        lsp_probe_bootstrap_file_window=config.lsp_probe_bootstrap_file_window,
+        lsp_probe_bootstrap_top_k=config.lsp_probe_bootstrap_top_k,
+        lsp_probe_language_priority=config.lsp_probe_language_priority,
+        lsp_probe_l1_languages=config.lsp_probe_l1_languages,
     )
     pipeline_control_service = PipelineControlService(
         policy_repo=policy_repo,

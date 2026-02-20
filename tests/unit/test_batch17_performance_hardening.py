@@ -234,6 +234,7 @@ def test_solid_lsp_extraction_backend_probe_schedule_dedupes_inflight() -> None:
     class _FakeHub:
         def get_or_start(self, language: Language, repo_root: str, request_kind: str = "indexing") -> _FakeLsp:
             del language, repo_root, request_kind
+            time.sleep(0.05)
             return _FakeLsp()
 
         def prewarm_language_pool(self, language: Language, repo_root: str) -> None:
@@ -598,6 +599,102 @@ def test_enrich_l3_skips_recent_successful_same_hash(tmp_path: Path) -> None:
 
     assert processed >= 1
     assert backend.calls == 0
+
+
+def test_enrich_l3_failure_schedules_l3_fallback_probe_once(tmp_path: Path) -> None:
+    """L3 추출 실패 시 해당 언어가 허용 목록이면 l3_fallback probe를 예약해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_dir = tmp_path / "repo-l3-fallback"
+    repo_dir.mkdir()
+    (repo_dir / "a.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+
+    class _FailingBackend(LspExtractionBackend):
+        def __init__(self) -> None:
+            self.scheduled: list[tuple[str, str, bool, str]] = []
+
+        def extract(self, repo_root: str, relative_path: str, content_hash: str) -> LspExtractionResultDTO:
+            del repo_root, relative_path, content_hash
+            return LspExtractionResultDTO(symbols=[], relations=[], error_message="ERR_LSP_DOCUMENT_SYMBOL_FAILED: timeout")
+
+        def is_probe_inflight_for_file(self, repo_root: str, relative_path: str) -> bool:
+            del repo_root, relative_path
+            return False
+
+        def schedule_probe_for_file(self, repo_root: str, relative_path: str, force: bool = False, trigger: str = "background") -> str:
+            self.scheduled.append((repo_root, relative_path, force, trigger))
+            return "scheduled"
+
+    backend = _FailingBackend()
+    service = FileCollectionService(
+        workspace_repo=WorkspaceRepository(db_path),
+        file_repo=FileCollectionRepository(db_path),
+        enrich_queue_repo=FileEnrichQueueRepository(db_path),
+        body_repo=FileBodyRepository(db_path),
+        lsp_repo=LspToolDataRepository(db_path),
+        readiness_repo=ToolReadinessRepository(db_path),
+        policy=_policy(),
+        lsp_backend=backend,
+        lsp_probe_l1_languages=("py",),
+        run_mode="prod",
+    )
+    repo_root = str(repo_dir.resolve())
+    service.scan_once(repo_root)
+    _ = service.process_enrich_jobs_l2(limit=50)
+    _ = service.process_enrich_jobs_l3(limit=50)
+
+    fallback_scheduled = [item for item in backend.scheduled if item[3] == "l3_fallback"]
+    assert len(fallback_scheduled) == 1
+    scheduled = fallback_scheduled[0]
+    assert scheduled[1] == "a.py"
+    assert scheduled[2] is False
+    assert scheduled[3] == "l3_fallback"
+
+
+def test_enrich_l3_failure_does_not_schedule_when_probe_inflight(tmp_path: Path) -> None:
+    """이미 probe가 inflight면 l3_fallback 예약을 추가로 만들지 않아야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_dir = tmp_path / "repo-l3-fallback-inflight"
+    repo_dir.mkdir()
+    (repo_dir / "a.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+
+    class _FailingInflightBackend(LspExtractionBackend):
+        def __init__(self) -> None:
+            self.scheduled: list[tuple[str, str, bool, str]] = []
+
+        def extract(self, repo_root: str, relative_path: str, content_hash: str) -> LspExtractionResultDTO:
+            del repo_root, relative_path, content_hash
+            return LspExtractionResultDTO(symbols=[], relations=[], error_message="ERR_LSP_DOCUMENT_SYMBOL_FAILED: timeout")
+
+        def is_probe_inflight_for_file(self, repo_root: str, relative_path: str) -> bool:
+            del repo_root, relative_path
+            return True
+
+        def schedule_probe_for_file(self, repo_root: str, relative_path: str, force: bool = False, trigger: str = "background") -> str:
+            self.scheduled.append((repo_root, relative_path, force, trigger))
+            return "scheduled"
+
+    backend = _FailingInflightBackend()
+    service = FileCollectionService(
+        workspace_repo=WorkspaceRepository(db_path),
+        file_repo=FileCollectionRepository(db_path),
+        enrich_queue_repo=FileEnrichQueueRepository(db_path),
+        body_repo=FileBodyRepository(db_path),
+        lsp_repo=LspToolDataRepository(db_path),
+        readiness_repo=ToolReadinessRepository(db_path),
+        policy=_policy(),
+        lsp_backend=backend,
+        lsp_probe_l1_languages=("py",),
+        run_mode="prod",
+    )
+    repo_root = str(repo_dir.resolve())
+    service.scan_once(repo_root)
+    _ = service.process_enrich_jobs_l2(limit=50)
+    _ = service.process_enrich_jobs_l3(limit=50)
+
+    fallback_scheduled = [item for item in backend.scheduled if item[3] == "l3_fallback"]
+    assert fallback_scheduled == []
 
 
 def test_file_collection_scan_once_marks_candidate_index_dirty(tmp_path: Path) -> None:

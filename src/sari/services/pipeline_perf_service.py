@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import time
 from pathlib import Path
 
@@ -29,7 +30,17 @@ class PipelinePerfService:
         self._perf_repo = perf_repo
         self._artifact_root = artifact_root
 
-    def run(self, repo_root: str, target_files: int, profile: str, dataset_mode: str = "isolated") -> dict[str, object]:
+    def run(
+        self,
+        repo_root: str,
+        target_files: int,
+        profile: str,
+        dataset_mode: str = "isolated",
+        *,
+        fresh_db: bool = False,
+        reset_probe_state: bool = False,
+        cold_lsp_reset: bool = False,
+    ) -> dict[str, object]:
         """샘플 2k + 실데이터 2트랙 실측을 실행하고 요약을 반환한다."""
         root = Path(repo_root).expanduser().resolve()
         if not root.exists() or not root.is_dir():
@@ -41,6 +52,22 @@ class PipelinePerfService:
         normalized_dataset_mode = dataset_mode.strip().lower()
         if normalized_dataset_mode not in ("isolated", "legacy"):
             raise PerfError(ErrorContext(code="ERR_INVALID_DATASET_MODE", message="dataset_mode must be isolated or legacy"))
+        cold_requested = bool(cold_lsp_reset)
+        pre_state_reset_requested = bool(reset_probe_state or cold_requested)
+        run_context = self._prepare_measurement_context(
+            repo_root=str(root),
+            target_files=target_files,
+            profile=profile,
+            dataset_mode=normalized_dataset_mode,
+            fresh_db=bool(fresh_db),
+            pre_state_reset=pre_state_reset_requested,
+            cold_lsp_reset=cold_requested,
+        )
+        self._apply_pre_run_reset(
+            fresh_db=bool(fresh_db),
+            reset_probe_state=pre_state_reset_requested,
+            cold_lsp_reset=cold_requested,
+        )
 
         started_at = now_iso8601_utc()
         run_id = self._perf_repo.create_run(
@@ -51,12 +78,30 @@ class PipelinePerfService:
         )
         try:
             if normalized_dataset_mode == "isolated":
-                workspace_dataset = self._measure_workspace_dataset(repo_root=str(root), dataset_mode=normalized_dataset_mode)
-                sample_dataset = self._measure_sample_dataset(repo_root=str(root), target_files=target_files, dataset_mode=normalized_dataset_mode)
+                workspace_dataset = self._measure_workspace_dataset(
+                    repo_root=str(root),
+                    dataset_mode=normalized_dataset_mode,
+                    run_context=run_context,
+                )
+                sample_dataset = self._measure_sample_dataset(
+                    repo_root=str(root),
+                    target_files=target_files,
+                    dataset_mode=normalized_dataset_mode,
+                    run_context=run_context,
+                )
                 datasets = [workspace_dataset, sample_dataset]
             else:
-                sample_dataset = self._measure_sample_dataset(repo_root=str(root), target_files=target_files, dataset_mode=normalized_dataset_mode)
-                workspace_dataset = self._measure_workspace_dataset(repo_root=str(root), dataset_mode=normalized_dataset_mode)
+                sample_dataset = self._measure_sample_dataset(
+                    repo_root=str(root),
+                    target_files=target_files,
+                    dataset_mode=normalized_dataset_mode,
+                    run_context=run_context,
+                )
+                workspace_dataset = self._measure_workspace_dataset(
+                    repo_root=str(root),
+                    dataset_mode=normalized_dataset_mode,
+                    run_context=run_context,
+                )
                 datasets = [sample_dataset, workspace_dataset]
             gate_passed = all(bool(item.get("gate_passed")) for item in datasets)
             summary: dict[str, object] = {
@@ -122,7 +167,13 @@ class PipelinePerfService:
             return summary
         return latest
 
-    def _measure_sample_dataset(self, repo_root: str, target_files: int, dataset_mode: str) -> dict[str, object]:
+    def _measure_sample_dataset(
+        self,
+        repo_root: str,
+        target_files: int,
+        dataset_mode: str,
+        run_context: dict[str, object],
+    ) -> dict[str, object]:
         """샘플 2k 기준 실측 지표를 계산한다."""
         summary = self._benchmark_service.run(
             repo_root=repo_root,
@@ -149,10 +200,15 @@ class PipelinePerfService:
             start_counts=None,
             end_counts=None,
             measurement_scope=f"sample_2k_{dataset_mode}",
-            run_context={"fresh_db": False, "pre_state_reset": False},
+            run_context=run_context,
         )
 
-    def _measure_workspace_dataset(self, repo_root: str, dataset_mode: str) -> dict[str, object]:
+    def _measure_workspace_dataset(
+        self,
+        repo_root: str,
+        dataset_mode: str,
+        run_context: dict[str, object],
+    ) -> dict[str, object]:
         """실데이터 기준 실측 지표를 계산한다."""
         start_counts = self._queue_counts_snapshot()
         scan_started = time.perf_counter()
@@ -176,8 +232,62 @@ class PipelinePerfService:
             start_counts=start_counts,
             end_counts=end_counts,
             measurement_scope=f"workspace_real_{dataset_mode}",
-            run_context={"fresh_db": False, "pre_state_reset": False},
+            run_context=run_context,
         )
+
+    def _apply_pre_run_reset(self, *, fresh_db: bool, reset_probe_state: bool, cold_lsp_reset: bool) -> None:
+        """요청된 cold 측정 reset을 실행한다."""
+        if fresh_db:
+            # 현재 perf run에서는 DB 파일 재생성 대신 논리 reset만 허용한다.
+            reset_runtime = getattr(self._file_collection_service, "reset_runtime_state", None)
+            if callable(reset_runtime):
+                reset_runtime()
+        if reset_probe_state:
+            reset_probe = getattr(self._file_collection_service, "reset_probe_state", None)
+            if callable(reset_probe):
+                reset_probe()
+        if cold_lsp_reset:
+            reset_lsp = getattr(self._file_collection_service, "reset_lsp_runtime", None)
+            if callable(reset_lsp):
+                reset_lsp()
+
+    def _prepare_measurement_context(
+        self,
+        *,
+        repo_root: str,
+        target_files: int,
+        profile: str,
+        dataset_mode: str,
+        fresh_db: bool,
+        pre_state_reset: bool,
+        cold_lsp_reset: bool,
+    ) -> dict[str, object]:
+        """측정 범위 메타데이터를 구성한다."""
+        return {
+            "fresh_db": fresh_db,
+            "pre_state_reset": pre_state_reset,
+            "cold_lsp_reset": cold_lsp_reset,
+            "git_sha": self._resolve_git_sha(repo_root),
+            "config_snapshot": {
+                "target_files": target_files,
+                "profile": profile,
+                "dataset_mode": dataset_mode,
+            },
+        }
+
+    def _resolve_git_sha(self, repo_root: str) -> str | None:
+        """repo의 git sha를 best-effort로 반환한다."""
+        try:
+            output = subprocess.check_output(
+                ["git", "-C", repo_root, "rev-parse", "HEAD"],
+                stderr=subprocess.DEVNULL,
+                text=True,
+            ).strip()
+            if output == "":
+                return None
+            return output
+        except (OSError, subprocess.SubprocessError):
+            return None
 
     def _drain_enrich_queue(self, max_wait_sec: float) -> None:
         """큐가 비워질 때까지 보강 작업을 반복 실행한다."""

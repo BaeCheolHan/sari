@@ -33,17 +33,34 @@ class PipelinePerfRunTool:
         target_raw = arguments.get("target_files", 2000)
         profile_raw = arguments.get("profile", "realistic_v1")
         dataset_mode_raw = arguments.get("dataset_mode", "isolated")
+        fresh_db_raw = arguments.get("fresh_db", False)
+        reset_probe_state_raw = arguments.get("reset_probe_state", False)
+        cold_lsp_reset_raw = arguments.get("cold_lsp_reset", False)
         if not isinstance(target_raw, int):
             return pack1_error(ErrorResponseDTO(code="ERR_INVALID_TARGET_FILES", message="target_files must be integer"))
         if not isinstance(profile_raw, str) or profile_raw.strip() == "":
             return pack1_error(ErrorResponseDTO(code="ERR_INVALID_PROFILE", message="profile must be non-empty string"))
         if not isinstance(dataset_mode_raw, str):
             return pack1_error(ErrorResponseDTO(code="ERR_INVALID_DATASET_MODE", message="dataset_mode must be string"))
+        if not isinstance(fresh_db_raw, bool):
+            return pack1_error(ErrorResponseDTO(code="ERR_INVALID_FRESH_DB", message="fresh_db must be boolean"))
+        if not isinstance(reset_probe_state_raw, bool):
+            return pack1_error(ErrorResponseDTO(code="ERR_INVALID_RESET_PROBE_STATE", message="reset_probe_state must be boolean"))
+        if not isinstance(cold_lsp_reset_raw, bool):
+            return pack1_error(ErrorResponseDTO(code="ERR_INVALID_COLD_LSP_RESET", message="cold_lsp_reset must be boolean"))
         dataset_mode = dataset_mode_raw.strip().lower()
         if dataset_mode not in ("isolated", "legacy"):
             return pack1_error(ErrorResponseDTO(code="ERR_INVALID_DATASET_MODE", message="dataset_mode must be isolated or legacy"))
         try:
-            summary = self._perf_service.run(repo_root=repo, target_files=target_raw, profile=profile_raw, dataset_mode=dataset_mode)
+            summary = self._perf_service.run(
+                repo_root=repo,
+                target_files=target_raw,
+                profile=profile_raw,
+                dataset_mode=dataset_mode,
+                fresh_db=fresh_db_raw,
+                reset_probe_state=reset_probe_state_raw,
+                cold_lsp_reset=cold_lsp_reset_raw,
+            )
         except PerfError as exc:
             return _perf_error(exc)
         return pack1_success(

@@ -41,6 +41,9 @@ def test_cli_pipeline_perf_run_and_report(tmp_path: Path, monkeypatch: MonkeyPat
             "realistic_v1",
             "--dataset-mode",
             "isolated",
+            "--fresh-db",
+            "--reset-probe-state",
+            "--cold-lsp-reset",
         ],
     )
     assert run_result.exit_code == 0
@@ -48,6 +51,10 @@ def test_cli_pipeline_perf_run_and_report(tmp_path: Path, monkeypatch: MonkeyPat
     assert run_payload["perf"]["status"] == "COMPLETED"
     assert run_payload["perf"]["threshold_profile"] == "realistic_v1"
     assert run_payload["perf"]["dataset_mode"] == "isolated"
+    workspace = next(item for item in run_payload["perf"]["datasets"] if item["dataset_type"] == "workspace_real")
+    assert workspace["run_context"]["fresh_db"] is True
+    assert workspace["run_context"]["pre_state_reset"] is True
+    assert workspace["run_context"]["cold_lsp_reset"] is True
 
     report_result = runner.invoke(
         cli,

@@ -63,6 +63,9 @@ class FileScanner:
         scan_flush_batch_size: int,
         scan_flush_interval_sec: float,
         scan_hash_max_workers: int,
+        bootstrap_file_window: int = 256,
+        bootstrap_top_k: int = 3,
+        language_priority_weights: dict[Language, float] | None = None,
     ) -> None:
         """필요 의존성만 주입받는다."""
         self._file_repo = file_repo
@@ -79,6 +82,9 @@ class FileScanner:
         self._scan_flush_batch_size = scan_flush_batch_size
         self._scan_flush_interval_sec = scan_flush_interval_sec
         self._scan_hash_max_workers = scan_hash_max_workers
+        self._bootstrap_file_window = max(1, int(bootstrap_file_window))
+        self._bootstrap_top_k = max(1, int(bootstrap_top_k))
+        self._language_priority_weights = language_priority_weights or {}
 
     def scan_once(self, repo_root: str) -> CollectionScanResultDTO:
         """단일 저장소 스캔을 실행한다."""
@@ -101,6 +107,7 @@ class FileScanner:
         hash_jobs: list[_ScanHashJobDTO] = []
         language_counts: dict[Language, int] = defaultdict(int)
         seen_extensions: set[str] = set()
+        self._schedule_bootstrap_probes(root=root, gitignore_spec=gitignore_spec)
         last_flush_at = time.perf_counter()
         for file_path in root.rglob("*"):
             if not file_path.is_file():
@@ -217,6 +224,50 @@ class FileScanner:
         if self._candidate_index_sink is not None and deleted_count > 0:
             self._candidate_index_sink.mark_repo_dirty(str(root))
         return CollectionScanResultDTO(scanned_count=scanned_count, indexed_count=indexed_count, deleted_count=deleted_count)
+
+    def _schedule_bootstrap_probes(self, root: Path, gitignore_spec: PathSpec) -> None:
+        """스캔 시작 직후 상위 언어 L0 probe를 선기동한다."""
+        if self._schedule_lsp_probe_for_file is None:
+            return
+        counts: dict[Language, int] = defaultdict(int)
+        sample_paths: dict[Language, str] = {}
+        window_seen = 0
+        skip_dirs = {".git", "node_modules", "dist", "build", ".venv", "__pycache__"}
+        for current_root, dirs, files in os.walk(root):
+            dirs[:] = [item for item in dirs if item not in skip_dirs]
+            for name in files:
+                if window_seen >= self._bootstrap_file_window:
+                    break
+                file_path = Path(current_root) / name
+                if not file_path.is_file():
+                    continue
+                if not self._is_collectible(file_path=file_path, repo_root=root, gitignore_spec=gitignore_spec):
+                    continue
+                relative_path = str(file_path.relative_to(root).as_posix())
+                language = self._resolve_lsp_language(relative_path=relative_path)
+                window_seen += 1
+                if language is None:
+                    continue
+                counts[language] += 1
+                if language not in sample_paths:
+                    sample_paths[language] = relative_path
+            if window_seen >= self._bootstrap_file_window:
+                break
+        if len(counts) == 0:
+            return
+        ranked = sorted(
+            counts.items(),
+            key=lambda item: (float(item[1]) * float(self._language_priority_weights.get(item[0], 1.0)), item[1]),
+            reverse=True,
+        )
+        for language, _count in ranked[: self._bootstrap_top_k]:
+            relative_path = sample_paths.get(language)
+            if relative_path is None:
+                continue
+            try:
+                self._schedule_lsp_probe_for_file(str(root), relative_path)
+            except (RuntimeError, ValueError, OSError):
+                continue
 
     def index_file(self, repo_root: str, relative_path: str) -> CollectionScanResultDTO:
         """단일 파일 강제 인덱싱을 실행한다."""

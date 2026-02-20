@@ -56,6 +56,9 @@ class _FakeCollectionService:
     def __init__(self) -> None:
         """보강 처리 호출 횟수를 초기화한다."""
         self._calls = 0
+        self.reset_runtime_state_calls = 0
+        self.reset_probe_state_calls = 0
+        self.reset_lsp_runtime_calls = 0
 
     def scan_once(self, repo_root: str):  # noqa: ANN201
         """스캔 더미 결과를 반환한다."""
@@ -73,6 +76,18 @@ class _FakeCollectionService:
         if self._calls == 1:
             return 100
         return 0
+
+    def reset_runtime_state(self) -> None:
+        """fresh_db 사전 리셋 호출을 기록한다."""
+        self.reset_runtime_state_calls += 1
+
+    def reset_probe_state(self) -> None:
+        """probe 상태 리셋 호출을 기록한다."""
+        self.reset_probe_state_calls += 1
+
+    def reset_lsp_runtime(self) -> None:
+        """cold LSP 리셋 호출을 기록한다."""
+        self.reset_lsp_runtime_calls += 1
 
 
 def test_pipeline_perf_service_run_returns_gate_summary(tmp_path: Path) -> None:
@@ -139,3 +154,37 @@ def test_pipeline_perf_service_rejects_invalid_dataset_mode(tmp_path: Path) -> N
     )
     with pytest.raises(PerfError, match="dataset_mode must be isolated or legacy"):
         service.run(repo_root=str(repo_dir), target_files=2000, profile="realistic_v1", dataset_mode="invalid")
+
+
+def test_pipeline_perf_service_applies_cold_reset_options(tmp_path: Path) -> None:
+    """cold 측정 옵션이 사전 리셋 루틴을 호출해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_dir = tmp_path / "repo-a"
+    repo_dir.mkdir()
+    collection_service = _FakeCollectionService()
+    service = PipelinePerfService(
+        file_collection_service=collection_service,
+        queue_repo=_FakeQueueRepository(),
+        benchmark_service=_FakeBenchmarkService(),
+        perf_repo=PipelinePerfRepository(db_path),
+        artifact_root=tmp_path / "artifacts",
+    )
+    summary = service.run(
+        repo_root=str(repo_dir),
+        target_files=2000,
+        profile="realistic_v1",
+        dataset_mode="isolated",
+        fresh_db=True,
+        reset_probe_state=True,
+        cold_lsp_reset=True,
+    )
+    assert summary["status"] == "COMPLETED"
+    assert collection_service.reset_runtime_state_calls == 1
+    assert collection_service.reset_probe_state_calls == 1
+    assert collection_service.reset_lsp_runtime_calls == 1
+    datasets = summary["datasets"]
+    workspace = next(item for item in datasets if item["dataset_type"] == "workspace_real")
+    assert workspace["run_context"]["fresh_db"] is True
+    assert workspace["run_context"]["pre_state_reset"] is True
+    assert workspace["run_context"]["cold_lsp_reset"] is True

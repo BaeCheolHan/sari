@@ -75,10 +75,15 @@ class AppConfig:
     lsp_probe_timeout_default_sec: float = 20.0
     lsp_probe_timeout_go_sec: float = 45.0
     lsp_probe_workers: int = 4
+    lsp_probe_l1_workers: int = 2
     lsp_probe_force_join_ms: int = 300
     lsp_probe_warming_retry_sec: int = 5
     lsp_probe_warming_threshold: int = 6
     lsp_probe_permanent_backoff_sec: int = 1800
+    lsp_probe_bootstrap_file_window: int = 256
+    lsp_probe_bootstrap_top_k: int = 3
+    lsp_probe_language_priority: tuple[str, ...] = ("go:1.5", "java:1.4", "kotlin:1.3")
+    lsp_probe_l1_languages: tuple[str, ...] = ("go", "java", "kotlin")
     lsp_max_concurrent_starts: int = 2
     lsp_max_concurrent_l1_probes: int = 2
     orphan_ppid_check_interval_sec: int = 1
@@ -221,6 +226,10 @@ class AppConfig:
             "SARI_LSP_PROBE_WORKERS",
             str(file_config.get("lsp_probe_workers", 4)),
         ).strip()
+        lsp_probe_l1_workers_raw = os.getenv(
+            "SARI_LSP_PROBE_L1_WORKERS",
+            str(file_config.get("lsp_probe_l1_workers", 2)),
+        ).strip()
         lsp_probe_force_join_ms_raw = os.getenv(
             "SARI_LSP_PROBE_FORCE_JOIN_MS",
             str(file_config.get("lsp_probe_force_join_ms", 300)),
@@ -236,6 +245,22 @@ class AppConfig:
         lsp_probe_permanent_backoff_sec_raw = os.getenv(
             "SARI_LSP_PROBE_PERMANENT_BACKOFF_SEC",
             str(file_config.get("lsp_probe_permanent_backoff_sec", 1800)),
+        ).strip()
+        lsp_probe_bootstrap_file_window_raw = os.getenv(
+            "SARI_LSP_PROBE_BOOTSTRAP_FILE_WINDOW",
+            str(file_config.get("lsp_probe_bootstrap_file_window", 256)),
+        ).strip()
+        lsp_probe_bootstrap_top_k_raw = os.getenv(
+            "SARI_LSP_PROBE_BOOTSTRAP_TOP_K",
+            str(file_config.get("lsp_probe_bootstrap_top_k", 3)),
+        ).strip()
+        lsp_probe_language_priority_raw = os.getenv(
+            "SARI_LSP_PROBE_LANGUAGE_PRIORITY",
+            str(",".join(_read_tuple_setting(file_config, "lsp_probe_language_priority", cls.lsp_probe_language_priority))),
+        ).strip()
+        lsp_probe_l1_languages_raw = os.getenv(
+            "SARI_LSP_PROBE_L1_LANGUAGES",
+            str(",".join(_read_tuple_setting(file_config, "lsp_probe_l1_languages", cls.lsp_probe_l1_languages))),
         ).strip()
         lsp_max_concurrent_starts_raw = os.getenv(
             "SARI_LSP_MAX_CONCURRENT_STARTS",
@@ -407,6 +432,10 @@ class AppConfig:
         except ValueError:
             lsp_probe_workers = 4
         try:
+            lsp_probe_l1_workers = max(1, int(lsp_probe_l1_workers_raw))
+        except ValueError:
+            lsp_probe_l1_workers = 2
+        try:
             lsp_probe_force_join_ms = max(0, int(lsp_probe_force_join_ms_raw))
         except ValueError:
             lsp_probe_force_join_ms = 300
@@ -422,6 +451,16 @@ class AppConfig:
             lsp_probe_permanent_backoff_sec = max(60, int(lsp_probe_permanent_backoff_sec_raw))
         except ValueError:
             lsp_probe_permanent_backoff_sec = 1800
+        try:
+            lsp_probe_bootstrap_file_window = max(1, int(lsp_probe_bootstrap_file_window_raw))
+        except ValueError:
+            lsp_probe_bootstrap_file_window = 256
+        try:
+            lsp_probe_bootstrap_top_k = max(1, int(lsp_probe_bootstrap_top_k_raw))
+        except ValueError:
+            lsp_probe_bootstrap_top_k = 3
+        lsp_probe_language_priority = _parse_csv_setting(lsp_probe_language_priority_raw, cls.lsp_probe_language_priority)
+        lsp_probe_l1_languages = _parse_csv_setting(lsp_probe_l1_languages_raw, cls.lsp_probe_l1_languages)
         try:
             lsp_max_concurrent_starts = min(2, max(1, int(lsp_max_concurrent_starts_raw)))
         except ValueError:
@@ -582,10 +621,15 @@ class AppConfig:
             lsp_probe_timeout_default_sec=lsp_probe_timeout_default_sec,
             lsp_probe_timeout_go_sec=lsp_probe_timeout_go_sec,
             lsp_probe_workers=lsp_probe_workers,
+            lsp_probe_l1_workers=lsp_probe_l1_workers,
             lsp_probe_force_join_ms=lsp_probe_force_join_ms,
             lsp_probe_warming_retry_sec=lsp_probe_warming_retry_sec,
             lsp_probe_warming_threshold=lsp_probe_warming_threshold,
             lsp_probe_permanent_backoff_sec=lsp_probe_permanent_backoff_sec,
+            lsp_probe_bootstrap_file_window=lsp_probe_bootstrap_file_window,
+            lsp_probe_bootstrap_top_k=lsp_probe_bootstrap_top_k,
+            lsp_probe_language_priority=lsp_probe_language_priority,
+            lsp_probe_l1_languages=lsp_probe_l1_languages,
             lsp_max_concurrent_starts=lsp_max_concurrent_starts,
             lsp_max_concurrent_l1_probes=lsp_max_concurrent_l1_probes,
             orphan_ppid_check_interval_sec=orphan_check_sec,

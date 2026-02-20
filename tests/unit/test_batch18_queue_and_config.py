@@ -68,6 +68,7 @@ def test_app_config_loads_json_and_env_override(tmp_path: Path, monkeypatch) -> 
                 "lsp_probe_warming_retry_sec": 7,
                 "lsp_probe_warming_threshold": 9,
                 "lsp_probe_permanent_backoff_sec": 2400,
+                "lsp_probe_l1_languages": ["go", "java"],
                 "lsp_max_concurrent_starts": 1,
                 "lsp_max_concurrent_l1_probes": 3,
             }
@@ -97,6 +98,7 @@ def test_app_config_loads_json_and_env_override(tmp_path: Path, monkeypatch) -> 
     monkeypatch.setenv("SARI_LSP_PROBE_WARMING_RETRY_SEC", "8")
     monkeypatch.setenv("SARI_LSP_PROBE_WARMING_THRESHOLD", "10")
     monkeypatch.setenv("SARI_LSP_PROBE_PERMANENT_BACKOFF_SEC", "3600")
+    monkeypatch.setenv("SARI_LSP_PROBE_L1_LANGUAGES", "go,kotlin")
     monkeypatch.setenv("SARI_LSP_MAX_CONCURRENT_STARTS", "2")
     monkeypatch.setenv("SARI_LSP_MAX_CONCURRENT_L1_PROBES", "4")
     monkeypatch.delenv("SARI_COLLECTION_INCLUDE_EXT", raising=False)
@@ -133,6 +135,7 @@ def test_app_config_loads_json_and_env_override(tmp_path: Path, monkeypatch) -> 
     assert config.lsp_probe_warming_retry_sec == 8
     assert config.lsp_probe_warming_threshold == 10
     assert config.lsp_probe_permanent_backoff_sec == 3600
+    assert config.lsp_probe_l1_languages == ("go", "kotlin")
     assert config.lsp_max_concurrent_starts == 2
     assert config.lsp_max_concurrent_l1_probes == 4
 
