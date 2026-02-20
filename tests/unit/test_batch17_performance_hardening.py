@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from pathlib import Path
+import sqlite3
 import time
 
 import hashlib
@@ -21,6 +23,7 @@ from solidlsp.ls_config import Language
 from sari.search.candidate_search import CandidateBackendError, CandidateSearchConfig, CandidateSearchResultDTO, TantivyCandidateBackend
 from sari.search.orchestrator import SearchOrchestrator
 from sari.services.file_collection_service import FileCollectionService, LspExtractionBackend, LspExtractionResultDTO, SolidLspExtractionBackend
+import sari.db.repositories.file_collection_repository as file_collection_repository_module
 
 
 class _NoopLspBackend(LspExtractionBackend):
@@ -277,7 +280,40 @@ def test_solid_lsp_extraction_backend_force_does_not_double_submit_when_inflight
     backend.shutdown_probe_executor()
 
     assert first == "scheduled"
-    assert forced in {"inflight", "starting"}
+    assert forced in {"inflight", "starting", "ready"}
+
+
+def test_solid_lsp_extraction_backend_force_returns_ready_after_recent_success() -> None:
+    """probe가 최근 성공(READY) 상태면 force도 재제출 대신 ready를 반환해야 한다."""
+
+    class _FakeLsp:
+        def request_document_symbols(self, relative_path: str):  # noqa: ANN001
+            del relative_path
+
+            class _Symbols:
+                def iter_symbols(self) -> list[dict[str, object]]:
+                    return []
+
+            return _Symbols()
+
+    class _FakeHub:
+        def get_or_start(self, language: Language, repo_root: str, request_kind: str = "indexing") -> _FakeLsp:
+            del language, repo_root, request_kind
+            return _FakeLsp()
+
+        def prewarm_language_pool(self, language: Language, repo_root: str) -> None:
+            del language, repo_root
+
+    backend = SolidLspExtractionBackend(hub=_FakeHub(), force_join_ms=0)  # type: ignore[arg-type]
+    first = backend.schedule_probe_for_file(repo_root="/repo", relative_path="a.py")
+    deadline = time.monotonic() + 1.0
+    while backend.is_probe_inflight_for_file(repo_root="/repo", relative_path="a.py") and time.monotonic() < deadline:
+        time.sleep(0.001)
+    forced = backend.schedule_probe_for_file(repo_root="/repo", relative_path="a.py", force=True, trigger="force")
+    backend.shutdown_probe_executor()
+
+    assert first == "scheduled"
+    assert forced == "ready"
 
 
 def _policy() -> CollectionPolicyDTO:
@@ -514,6 +550,76 @@ def test_file_collection_scan_once_does_not_delete_file_seen_after_scan_start(tm
     assert deleted == 0
     assert row is not None
     assert row.is_deleted is False
+
+
+def test_mark_missing_as_deleted_handles_large_seen_paths_without_sql_variable_overflow(tmp_path: Path, monkeypatch) -> None:
+    """seen 목록이 커도 SQLite 변수 한도 오류 없이 누락 파일만 삭제해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    file_repo = FileCollectionRepository(db_path)
+    now = "2026-02-17T00:00:00+00:00"
+    scan_started_at = "2026-02-17T00:05:00+00:00"
+
+    @contextmanager
+    def _limited_connect(path: Path):
+        with connect(path) as conn:
+            conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
+            yield conn
+
+    monkeypatch.setattr(file_collection_repository_module, "connect", _limited_connect)
+
+    repo_root = "/repo"
+    stale_to_delete = "stale.py"
+    seen_keep = [f"seen_{i}.py" for i in range(1200)]
+
+    file_repo.upsert_file(
+        CollectedFileL1DTO(
+            repo_id="r_repo",
+            repo_root=repo_root,
+            relative_path=stale_to_delete,
+            absolute_path=f"{repo_root}/{stale_to_delete}",
+            repo_label="repo",
+            mtime_ns=1,
+            size_bytes=1,
+            content_hash="h-stale",
+            is_deleted=False,
+            last_seen_at="2026-02-17T00:00:01+00:00",
+            updated_at=now,
+            enrich_state="PENDING",
+        )
+    )
+    for index, rel_path in enumerate(seen_keep):
+        file_repo.upsert_file(
+            CollectedFileL1DTO(
+                repo_id="r_repo",
+                repo_root=repo_root,
+                relative_path=rel_path,
+                absolute_path=f"{repo_root}/{rel_path}",
+                repo_label="repo",
+                mtime_ns=index + 2,
+                size_bytes=1,
+                content_hash=f"h-{index}",
+                is_deleted=False,
+                last_seen_at="2026-02-17T00:00:02+00:00",
+                updated_at=now,
+                enrich_state="PENDING",
+            )
+        )
+
+    deleted = file_repo.mark_missing_as_deleted(
+        repo_root=repo_root,
+        seen_relative_paths=seen_keep,
+        updated_at=now,
+        scan_started_at=scan_started_at,
+    )
+
+    stale_row = file_repo.get_file(repo_root=repo_root, relative_path=stale_to_delete)
+    seen_row = file_repo.get_file(repo_root=repo_root, relative_path=seen_keep[0])
+    assert deleted == 1
+    assert stale_row is not None
+    assert stale_row.is_deleted is True
+    assert seen_row is not None
+    assert seen_row.is_deleted is False
 
 
 def test_vector_embedding_failure_marks_job_failed(tmp_path: Path) -> None:

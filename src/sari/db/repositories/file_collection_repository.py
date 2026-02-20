@@ -201,15 +201,21 @@ class FileCollectionRepository:
                 conn.commit()
                 return int(cur.rowcount if cur.rowcount is not None else 0)
 
-            placeholders: list[str] = []
-            params: dict[str, object] = {"repo_root": repo_root, "updated_at": updated_at, "scan_started_at": scan_started_at}
-            for index, value in enumerate(seen_relative_paths):
-                key = f"seen_{index}"
-                placeholders.append(f":{key}")
-                params[key] = value
+            conn.execute(
+                """
+                CREATE TEMP TABLE IF NOT EXISTS temp_seen_relative_paths(
+                    relative_path TEXT PRIMARY KEY
+                )
+                """
+            )
+            conn.execute("DELETE FROM temp_seen_relative_paths")
+            conn.executemany(
+                "INSERT OR IGNORE INTO temp_seen_relative_paths(relative_path) VALUES (?)",
+                ((relative_path,) for relative_path in seen_relative_paths),
+            )
 
             cur = conn.execute(
-                f"""
+                """
                 UPDATE collected_files_l1
                 SET is_deleted = 1,
                     updated_at = :updated_at,
@@ -217,9 +223,13 @@ class FileCollectionRepository:
                 WHERE repo_root = :repo_root
                   AND is_deleted = 0
                   AND last_seen_at < :scan_started_at
-                  AND relative_path NOT IN ({", ".join(placeholders)})
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM temp_seen_relative_paths AS seen
+                      WHERE seen.relative_path = collected_files_l1.relative_path
+                  )
                 """,
-                params,
+                {"repo_root": repo_root, "updated_at": updated_at, "scan_started_at": scan_started_at},
             )
             conn.commit()
             return int(cur.rowcount if cur.rowcount is not None else 0)

@@ -372,7 +372,7 @@ class SolidLspExtractionBackend:
                 state = _ProbeStateRecord(status="IDLE", last_seen_monotonic=now)
                 self._probe_state[key] = state
             state.last_seen_monotonic = now
-            if (not force) and state.status in {"READY_L0", "WARMING"}:
+            if state.status in {"READY_L0", "WARMING"}:
                 return "ready"
             if (not force) and now < state.next_retry_monotonic:
                 return "cooldown"
