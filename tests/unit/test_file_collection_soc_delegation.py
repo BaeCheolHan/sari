@@ -13,6 +13,7 @@ from sari.db.repositories.tool_readiness_repository import ToolReadinessReposito
 from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.db.schema import connect, init_schema
 from sari.services.file_collection_service import FileCollectionService, LspExtractionBackend, LspExtractionResultDTO
+from solidlsp.ls_config import Language
 
 
 class _NoopLspBackend(LspExtractionBackend):
@@ -189,3 +190,57 @@ def test_file_collection_service_watcher_path_skips_non_collectible_files(tmp_pa
         row = conn.execute("SELECT COUNT(*) AS cnt FROM file_enrich_queue").fetchone()
         assert row is not None
         assert int(row["cnt"]) == 0
+
+
+def test_file_collection_service_watcher_signal_updates_hotness_and_broker_can_grant_hot_lease(tmp_path: Path) -> None:
+    """watcher cheap signal -> hotness tracker -> broker hot lane baseline 흐름을 검증한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+
+    repo_dir = tmp_path / "repo-hot"
+    (repo_dir / "app").mkdir(parents=True)
+    file_path = repo_dir / "app" / "main.ts"
+    file_path.write_text("export const x = 1;\n", encoding="utf-8")
+
+    service = FileCollectionService(
+        workspace_repo=WorkspaceRepository(db_path),
+        file_repo=FileCollectionRepository(db_path),
+        enrich_queue_repo=FileEnrichQueueRepository(db_path),
+        body_repo=FileBodyRepository(db_path),
+        lsp_repo=LspToolDataRepository(db_path),
+        readiness_repo=ToolReadinessRepository(db_path),
+        policy=_policy(),
+        lsp_backend=_NoopLspBackend(),
+        policy_repo=None,
+        event_repo=None,
+        lsp_session_broker_enabled=True,
+    )
+
+    service._on_watcher_signal(  # noqa: SLF001
+        event_type="modified",
+        repo_root=str(repo_dir.resolve()),
+        relative_path="app/main.ts",
+        dest_path="",
+    )
+
+    scope_hint = service._derive_hotness_scope_hint(  # noqa: SLF001
+        repo_root=str(repo_dir.resolve()),
+        relative_path="app/main.ts",
+    )
+    assert isinstance(scope_hint, str)
+    hotness = service._watcher_hotness_tracker.get_scope_hotness(  # noqa: SLF001
+        language=Language.TYPESCRIPT,
+        lsp_scope_root=scope_hint,
+    )
+    assert hotness > 0.0
+
+    lease = service._lsp_session_broker.acquire_lease(  # noqa: SLF001
+        language=Language.TYPESCRIPT,
+        lsp_scope_root=scope_hint,
+        lane="hot",
+        hotness_score=hotness,
+        pending_jobs_in_scope=3,
+    )
+    assert lease.granted is True
+    assert lease.lane == "hot"
+    service._lsp_session_broker.release_lease(lease)  # noqa: SLF001

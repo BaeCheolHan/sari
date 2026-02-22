@@ -42,6 +42,9 @@ class LspRuntimeEntry:
 
     server: SolidLanguageServer
     last_used_at: float
+    retention_expires_at: float = 0.0
+    retention_tier: str | None = None
+    retention_hotness: float = 0.0
 
 
 class LspHub:
@@ -106,6 +109,10 @@ class LspHub:
         self._l1_probe_semaphore = threading.Semaphore(max(1, int(max_concurrent_l1_probes)))
         self._start_semaphore_wait_ms_total = 0.0
         self._l1_probe_semaphore_wait_ms_total = 0.0
+        self._scale_out_guard_block_count = 0
+        self._retention_touch_count = 0
+        self._retention_prune_count = 0
+        self._scale_out_guard: Callable[[Language, str], bool] | None = None
         self._stop_cleanup = threading.Event()
         self._forced_kill_count = 0
         self._stop_timeout_count = 0
@@ -313,7 +320,73 @@ class LspHub:
                 "lsp_interactive_rejected_count": int(self._interactive_rejected_count),
                 "lsp_start_semaphore_wait_ms_total": int(self._start_semaphore_wait_ms_total),
                 "lsp_l1_probe_semaphore_wait_ms_total": int(self._l1_probe_semaphore_wait_ms_total),
+                "lsp_scale_out_guard_block_count": int(self._scale_out_guard_block_count),
+                "lsp_retention_touch_count": int(self._retention_touch_count),
+                "lsp_retention_prune_count": int(self._retention_prune_count),
             }
+
+    def set_scale_out_guard(self, guard: Callable[[Language, str], bool] | None) -> None:
+        """추가 scale-out 증설 차단 가드를 설정한다 (첫 기동은 허용)."""
+        with self._lock:
+            self._scale_out_guard = guard
+
+    def touch(
+        self,
+        *,
+        language: Language,
+        repo_root: str,
+        ttl_override_sec: float,
+        retention_tier: str = "standby",
+        hotness_score: float = 0.0,
+    ) -> int:
+        """해당 언어/스코프 인스턴스의 idle eviction 보호 만료시각을 연장한다."""
+        normalized_root = str(Path(repo_root).resolve())
+        ttl_sec = max(0.0, float(ttl_override_sec))
+        if ttl_sec <= 0.0:
+            return 0
+        now = self._clock()
+        changed = 0
+        with self._lock:
+            for key in self._runtime_keys_for_locked(language=language, repo_root=normalized_root):
+                entry = self._instances.get(key)
+                if entry is None or not entry.server.server.is_running():
+                    continue
+                new_exp = now + ttl_sec
+                entry.last_used_at = now
+                entry.retention_expires_at = max(float(entry.retention_expires_at), float(new_exp))
+                entry.retention_tier = retention_tier
+                entry.retention_hotness = max(float(entry.retention_hotness), float(hotness_score))
+                changed += 1
+            if changed > 0:
+                self._retention_touch_count += changed
+        return changed
+
+    def prune_retention(
+        self,
+        *,
+        language: Language,
+        keep_repo_roots: set[str],
+        retention_tier: str = "standby",
+    ) -> int:
+        """지정 언어의 retention 보호를 keep set 외 범위에서 해제한다."""
+        normalized_keep = {str(Path(root).resolve()) for root in keep_repo_roots}
+        changed = 0
+        with self._lock:
+            for key, entry in self._instances.items():
+                if key.language != language:
+                    continue
+                if retention_tier and entry.retention_tier != retention_tier:
+                    continue
+                if key.repo_root in normalized_keep:
+                    continue
+                if entry.retention_expires_at > 0.0 or entry.retention_tier is not None:
+                    entry.retention_expires_at = 0.0
+                    entry.retention_tier = None
+                    entry.retention_hotness = 0.0
+                    changed += 1
+            if changed > 0:
+                self._retention_prune_count += changed
+        return changed
 
     @contextmanager
     def acquire_l1_probe_slot(self):
@@ -412,6 +485,7 @@ class LspHub:
             key
             for key, entry in self._instances.items()
             if (now - entry.last_used_at) >= float(self._idle_timeout_sec)
+            and now >= float(entry.retention_expires_at)
         ]
         for key in evict_keys:
             self._stop_entry_locked(key)
@@ -419,7 +493,12 @@ class LspHub:
     def _evict_lru_if_needed_locked(self) -> None:
         """최대 인스턴스 수를 넘기기 전에 LRU 인스턴스를 정리한다."""
         while len(self._instances) >= self._max_instances:
-            lru_key = min(self._instances.keys(), key=lambda key: self._instances[key].last_used_at)
+            def _lru_key_sort(key: LspRuntimeKey) -> tuple[int, float, float]:
+                entry = self._instances[key]
+                # retention 보호가 없는 항목을 먼저 정리한다.
+                retention_rank = 1 if entry.retention_expires_at > self._clock() else 0
+                return (retention_rank, float(entry.last_used_at), float(entry.retention_hotness))
+            lru_key = min(self._instances.keys(), key=_lru_key_sort)
             self._stop_entry_locked(lru_key)
 
     def _stop_entry_locked(self, key: LspRuntimeKey) -> None:
@@ -503,6 +582,15 @@ class LspHub:
         self._record_hot_hit_locked(base_key=base_key, now=now)
         if running_count == 0:
             return True
+        guard = self._scale_out_guard
+        if guard is not None:
+            try:
+                if bool(guard(base_key[0], base_key[1])):
+                    self._scale_out_guard_block_count += 1
+                    return False
+            except Exception:
+                # guard 오류는 서비스 가용성보다 낮은 우선순위다.
+                pass
         # 전역 소프트 상한을 넘기면 추가 scale-out을 차단한다.
         if self._lsp_global_soft_limit > 0 and len(self._instances) >= self._lsp_global_soft_limit:
             return False

@@ -93,6 +93,7 @@ class LspSessionBroker:
         self._defer_count_by_lang: dict[str, int] = {}
         self._defer_count_by_lang_reason: dict[tuple[str, str], int] = {}
         self._same_scope_reuse_count_by_lang: dict[str, int] = {}
+        self._scope_hotness_by_lang_scope: dict[tuple[str, str], float] = {}
         self._optional_cost_class_counts: dict[str, int] = {}
         self._optional_cost_estimate_total_by_class: dict[str, int] = {}
         self._optional_cost_latency_ms_total_by_class: dict[str, int] = {}
@@ -134,7 +135,6 @@ class LspSessionBroker:
         hotness_score: float,
         pending_jobs_in_scope: int,
     ) -> LspSessionLeaseResult:
-        del hotness_score
         lang_key = language.value.lower()
         lane_key = lane.lower()
         profile = self._profiles.get(lang_key)
@@ -161,6 +161,10 @@ class LspSessionBroker:
                 cost_estimate=cost_estimate,
             )
         with self._lock:
+            self._scope_hotness_by_lang_scope[(lang_key, lsp_scope_root)] = max(
+                0.0,
+                float(hotness_score),
+            )
             fairness_key = self._fairness_key_for(lang_key, profile)
             hot_streak_limit = self._max_hot_streak_before_backlog()
             if lane_key == "hot" and hot_streak_limit is not None and fairness_key in self._backlog_demand_pending:
@@ -364,6 +368,58 @@ class LspSessionBroker:
                 lease.language == lang_key and lease.lsp_scope_root == lsp_scope_root
                 for lease in self._leases.values()
             )
+
+    def get_standby_retention_plan(
+        self,
+        *,
+        language: Language,
+        requested_ttl_sec: float,
+    ) -> tuple[float, set[str]]:
+        """Warm retention baseline 계획(topK/cap 기반)을 반환한다.
+
+        반환값:
+        - ttl_override_sec (0이면 touch 금지)
+        - keep_scope_roots (해당 언어/예산그룹에서 retention 유지 대상)
+        """
+        lang_key = language.value.lower()
+        profile = self._profiles.get(lang_key)
+        if profile is None:
+            return (0.0, set())
+        with self._lock:
+            lang_items = [
+                (scope, float(score))
+                for (l, scope), score in self._scope_hotness_by_lang_scope.items()
+                if l == lang_key
+            ]
+            lang_items.sort(key=lambda item: (-item[1], item[0]))
+            lang_keep = {scope for scope, _score in lang_items[: max(0, self._max_standby_sessions_per_lang)]}
+
+            keep = set(lang_keep)
+            budget_group = profile.shared_budget_group
+            if budget_group:
+                members = self._budget_group_members.get(budget_group, set())
+                group_items = [
+                    ((l, scope), float(score))
+                    for (l, scope), score in self._scope_hotness_by_lang_scope.items()
+                    if l in members
+                ]
+                group_items.sort(key=lambda item: (-item[1], item[0][0], item[0][1]))
+                group_cap = self._budget_group_active_caps.get(
+                    budget_group,
+                    self._max_standby_sessions_per_budget_group,
+                )
+                group_keep_pairs = {pair for pair, _score in group_items[: max(0, group_cap)]}
+                keep = {
+                    scope for scope in keep
+                    if (lang_key, scope) in group_keep_pairs
+                }
+
+            ttl_req = max(0.0, float(requested_ttl_sec))
+            ttl_cap = max(0.0, float(profile.sticky_idle_ttl_sec))
+            ttl = min(ttl_req, ttl_cap)
+            if len(keep) == 0:
+                return (0.0, set())
+            return (ttl, keep)
 
     def _predict_cost_scaffold(
         self,

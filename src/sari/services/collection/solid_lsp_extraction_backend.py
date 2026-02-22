@@ -285,6 +285,12 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
         self._session_broker = session_broker
         self._watcher_hotness_tracker = watcher_hotness_tracker
         self._session_broker_enabled = bool(enabled) and session_broker is not None
+        set_guard = getattr(self._hub, "set_scale_out_guard", None)
+        if callable(set_guard):
+            if self._session_broker_enabled and session_broker is not None:
+                set_guard(lambda language, _repo_root: bool(session_broker.is_profiled_language(language)))
+            else:
+                set_guard(None)
 
     def _normalized_scope_candidate_dir(self, *, repo_root: str, relative_path: str) -> str:
         normalized_relative = normalize_repo_relative_path(relative_path)
@@ -437,7 +443,14 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
                     request_kind=request_kind,
                     lane=lane,
                 ):
-                    return self._hub.get_or_start(language=language, repo_root=runtime_scope_root, request_kind=request_kind)
+                    lsp = self._hub.get_or_start(language=language, repo_root=runtime_scope_root, request_kind=request_kind)
+                self._apply_standby_retention_touch(
+                    language=language,
+                    runtime_scope_root=runtime_scope_root,
+                    lane=lane_key if (lane_key := lane.lower()) else lane,
+                    hotness_score=hotness,
+                )
+                return lsp
         with self._perf_tracer.span(
             trace_name,
             phase=trace_phase,
@@ -446,7 +459,45 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
             request_kind=request_kind,
             lane=lane,
         ):
-            return self._hub.get_or_start(language=language, repo_root=runtime_scope_root, request_kind=request_kind)
+            lsp = self._hub.get_or_start(language=language, repo_root=runtime_scope_root, request_kind=request_kind)
+        return lsp
+
+    def _apply_standby_retention_touch(
+        self,
+        *,
+        language: Language,
+        runtime_scope_root: str,
+        lane: str,
+        hotness_score: float,
+    ) -> None:
+        """Phase 1 baseline: topK/cap 기반 warm retention touch/prune를 best-effort로 적용한다."""
+        if lane != "hot":
+            return
+        broker = self._session_broker
+        if not self._session_broker_enabled or broker is None or not broker.is_profiled_language(language):
+            return
+        plan_fn = getattr(broker, "get_standby_retention_plan", None)
+        touch_fn = getattr(self._hub, "touch", None)
+        prune_fn = getattr(self._hub, "prune_retention", None)
+        if not callable(plan_fn) or not callable(touch_fn):
+            return
+        try:
+            ttl_override_sec, keep_scopes = plan_fn(
+                language=language,
+                requested_ttl_sec=60.0,
+            )
+            if runtime_scope_root in keep_scopes and float(ttl_override_sec) > 0.0:
+                touch_fn(
+                    language=language,
+                    repo_root=runtime_scope_root,
+                    ttl_override_sec=float(ttl_override_sec),
+                    retention_tier="standby",
+                    hotness_score=float(hotness_score),
+                )
+            if callable(prune_fn):
+                prune_fn(language=language, keep_repo_roots=set(keep_scopes), retention_tier="standby")
+        except Exception:
+            return
 
     def _is_profiled_broker_language(self, language: Language) -> bool:
         broker = self._session_broker

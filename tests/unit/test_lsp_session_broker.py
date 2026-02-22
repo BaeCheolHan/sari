@@ -46,13 +46,15 @@ def _new_broker(
     *,
     backlog_min_share: float = 0.0,
     optional_scaffolding_enabled: bool = False,
+    max_standby_sessions_per_lang: int = 2,
+    max_standby_sessions_per_budget_group: int = 2,
 ) -> LspSessionBroker:
     if now_ref is None:
         now_ref = {"t": 100.0}
     return LspSessionBroker(
         profiles=_profiles(),
-        max_standby_sessions_per_lang=2,
-        max_standby_sessions_per_budget_group=2,
+        max_standby_sessions_per_lang=max_standby_sessions_per_lang,
+        max_standby_sessions_per_budget_group=max_standby_sessions_per_budget_group,
         backlog_min_share=backlog_min_share,
         optional_scaffolding_enabled=optional_scaffolding_enabled,
         now_monotonic=lambda: now_ref["t"],
@@ -389,3 +391,74 @@ def test_broker_metrics_include_lane_switch_defer_and_reuse_counters() -> None:
     assert metrics.get("broker_active_budget_group_ts-vue", 0) == 0
     # initial assign + switch 중 최소 1회는 lane switch로 기록돼야 한다.
     assert metrics.get("broker_lane_switch_count_typescript_hot", 0) >= 1
+
+
+def test_broker_standby_retention_plan_selects_topk_by_hotness_per_language() -> None:
+    now_ref = {"t": 100.0}
+    broker = _new_broker(
+        now_ref,
+        max_standby_sessions_per_lang=1,
+        max_standby_sessions_per_budget_group=4,
+    )
+
+    lease_a = broker.acquire_lease(
+        language=Language.JAVA,
+        lsp_scope_root="/workspace/java-a",
+        lane="hot",
+        hotness_score=10.0,
+        pending_jobs_in_scope=10,
+    )
+    broker.release_lease(lease_a)
+    now_ref["t"] += 6.0  # java hot lane switch cooldown 초과
+
+    lease_b = broker.acquire_lease(
+        language=Language.JAVA,
+        lsp_scope_root="/workspace/java-b",
+        lane="hot",
+        hotness_score=3.0,
+        pending_jobs_in_scope=10,
+    )
+    assert lease_a.granted is True
+    assert lease_b.granted is True
+    broker.release_lease(lease_b)
+
+    ttl, keep = broker.get_standby_retention_plan(language=Language.JAVA, requested_ttl_sec=9999.0)
+    assert ttl == pytest.approx(600.0)
+    assert keep == {"/workspace/java-a"}
+
+
+def test_broker_standby_retention_plan_respects_shared_budget_group_cap() -> None:
+    now_ref = {"t": 100.0}
+    broker = _new_broker(
+        now_ref,
+        max_standby_sessions_per_lang=5,
+        max_standby_sessions_per_budget_group=1,
+    )
+
+    ts_lease = broker.acquire_lease(
+        language=Language.TYPESCRIPT,
+        lsp_scope_root="/workspace/app-ts",
+        lane="hot",
+        hotness_score=5.0,
+        pending_jobs_in_scope=10,
+    )
+    broker.release_lease(ts_lease)
+    now_ref["t"] += 3.0
+
+    vue_lease = broker.acquire_lease(
+        language=Language.VUE,
+        lsp_scope_root="/workspace/app-vue",
+        lane="hot",
+        hotness_score=9.0,
+        pending_jobs_in_scope=10,
+    )
+    assert ts_lease.granted is True
+    assert vue_lease.granted is True
+    broker.release_lease(vue_lease)
+
+    ts_ttl, ts_keep = broker.get_standby_retention_plan(language=Language.TYPESCRIPT, requested_ttl_sec=999.0)
+    vue_ttl, vue_keep = broker.get_standby_retention_plan(language=Language.VUE, requested_ttl_sec=999.0)
+    assert ts_ttl == pytest.approx(0.0)
+    assert vue_ttl == pytest.approx(240.0)
+    assert ts_keep == set()
+    assert vue_keep == {"/workspace/app-vue"}

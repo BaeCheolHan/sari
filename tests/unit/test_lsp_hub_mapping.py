@@ -267,10 +267,125 @@ def test_lsp_hub_scales_out_hot_path_and_round_robins(monkeypatch) -> None:
     assert first is not second
     assert len(created) == 2
 
-    now_state["ts"] = 2.0
-    rr1 = hub.get_or_start(language=Language.PYTHON, repo_root="/repo-a")
-    rr2 = hub.get_or_start(language=Language.PYTHON, repo_root="/repo-a")
-    assert rr1 is not rr2
+
+def test_lsp_hub_scale_out_guard_blocks_additional_slot(monkeypatch) -> None:
+    """profiled 언어 guard가 활성화되면 기존 인스턴스가 있는 상태에서 추가 scale-out은 차단되어야 한다."""
+
+    class _FakeRuntimeServer:
+        def is_running(self) -> bool:
+            return True
+
+    class _FakeLanguageServer:
+        def __init__(self, idx: int) -> None:
+            self.server = _FakeRuntimeServer()
+            self.idx = idx
+
+        def start(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+    created: list[_FakeLanguageServer] = []
+
+    def _fake_create(*args, **kwargs) -> _FakeLanguageServer:
+        del args, kwargs
+        server = _FakeLanguageServer(len(created))
+        created.append(server)
+        return server
+
+    now_state = {"ts": 0.0}
+
+    def _clock() -> float:
+        return float(now_state["ts"])
+
+    monkeypatch.setattr("sari.lsp.hub.SolidLanguageServer.create", _fake_create)
+
+    hub = LspHub(
+        idle_timeout_sec=60,
+        max_instances=8,
+        max_instances_per_repo_language=3,
+        hot_acquire_window_sec=5.0,
+        scale_out_hot_hits=2,
+        clock=_clock,
+    )
+    hub.set_scale_out_guard(lambda language, repo_root: language == Language.JAVA and repo_root.endswith("/repo-a"))
+
+    first = hub.get_or_start(language=Language.JAVA, repo_root="/repo-a")
+    now_state["ts"] = 0.2
+    second = hub.get_or_start(language=Language.JAVA, repo_root="/repo-a")
+    now_state["ts"] = 0.4
+    third = hub.get_or_start(language=Language.JAVA, repo_root="/repo-a")
+
+    assert first is second is third
+    assert len(created) == 1
+    metrics = hub.get_metrics()
+    assert metrics["lsp_scale_out_guard_block_count"] >= 1
+    hub.stop_all()
+
+
+def test_lsp_hub_retention_touch_and_prune_protects_then_releases_idle_eviction(monkeypatch) -> None:
+    """retention touch는 idle eviction을 연기하고 prune 후에는 다시 eviction 대상이 되어야 한다."""
+
+    class _FakeRuntimeServer:
+        def is_running(self) -> bool:
+            return True
+
+    class _FakeLanguageServer:
+        def __init__(self) -> None:
+            self.server = _FakeRuntimeServer()
+            self.stopped = False
+
+        def start(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            self.stopped = True
+
+    created: list[_FakeLanguageServer] = []
+
+    def _fake_create(*args, **kwargs) -> _FakeLanguageServer:
+        del args, kwargs
+        server = _FakeLanguageServer()
+        created.append(server)
+        return server
+
+    now_state = {"ts": 0.0}
+
+    def _clock() -> float:
+        return float(now_state["ts"])
+
+    monkeypatch.setattr("sari.lsp.hub.SolidLanguageServer.create", _fake_create)
+
+    hub = LspHub(idle_timeout_sec=5, max_instances=8, clock=_clock)
+    protected = hub.get_or_start(language=Language.JAVA, repo_root="/repo-protected")
+    unprotected = hub.get_or_start(language=Language.JAVA, repo_root="/repo-unprotected")
+
+    touched = hub.touch(
+        language=Language.JAVA,
+        repo_root="/repo-protected",
+        ttl_override_sec=30.0,
+        retention_tier="standby",
+        hotness_score=10.0,
+    )
+    assert touched == 1
+
+    now_state["ts"] = 10.0
+    hub.get_or_start(language=Language.PYTHON, repo_root="/repo-trigger-evict")
+
+    assert unprotected.stopped is True
+    assert protected.stopped is False
+
+    pruned = hub.prune_retention(language=Language.JAVA, keep_repo_roots=set(), retention_tier="standby")
+    assert pruned >= 1
+    now_state["ts"] = 20.0
+    hub.get_or_start(language=Language.TYPESCRIPT, repo_root="/repo-trigger-evict-2")
+
+    assert protected.stopped is True
+    metrics = hub.get_metrics()
+    assert metrics["lsp_retention_touch_count"] >= 1
+    assert metrics["lsp_retention_prune_count"] >= 1
+    hub.stop_all()
 
 
 def test_lsp_hub_prewarm_starts_all_slots_immediately(monkeypatch) -> None:
