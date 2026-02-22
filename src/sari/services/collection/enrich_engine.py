@@ -634,6 +634,12 @@ class EnrichEngine:
             group_count += 1
             group_started_at = time.perf_counter()
             group_language = self._resolve_lsp_language(group[0].relative_path).value if len(group) > 0 and self._resolve_lsp_language(group[0].relative_path) is not None else "unknown"
+            prime_pending_hints = getattr(self._lsp_backend, "prime_l3_group_pending_hints", None)
+            if callable(prime_pending_hints):
+                try:
+                    prime_pending_hints(group_jobs=group)
+                except Exception:
+                    pass
             self._set_group_bulk_mode(group=group, enabled=True)
             group_parallelism = self._resolve_l3_parallelism(group)
             try:
@@ -1273,7 +1279,7 @@ class EnrichEngine:
 
     def _try_defer_after_broker_lease_denial(self, *, job: FileEnrichJobDTO, error_message: str) -> bool:
         """broker lease 거부 오류는 실패가 아니라 queue defer로 되돌린다."""
-        if not error_message.strip().startswith("ERR_LSP_BROKER_LEASE_REQUIRED"):
+        if "ERR_LSP_BROKER_LEASE_REQUIRED" not in error_message:
             return False
         defer_writer = getattr(self._enrich_queue_repo, "defer_jobs_to_pending", None)
         if not callable(defer_writer):

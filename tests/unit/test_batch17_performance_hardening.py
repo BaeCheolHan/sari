@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 import threading
 import sqlite3
@@ -268,6 +269,45 @@ def test_enrich_engine_l3_extract_error_broker_lease_denial_defers_pending() -> 
     assert len(queue_repo.calls) == 0  # scope escalation 경로와 혼동되면 안 된다.
     assert engine._schedule_l1_probe_after_l3_fallback_called == 0
     assert ("ERR_L3_DEFERRED_BY_BROKER", "enrich_l3_broker_defer") in error_policy.events
+
+
+def test_enrich_engine_l3_extract_error_wrapped_broker_lease_denial_defers_pending() -> None:
+    """실제 extract 래핑 메시지('LSP 추출 실패: ...')도 broker defer로 인식해야 한다."""
+    queue_repo = _CaptureEscalateQueueRepo()
+    error_policy = _StubErrorPolicy()
+    engine = _build_min_enrich_engine_for_l3_test(
+        lsp_backend=_StubExtractBackend(
+            "LSP 추출 실패: ERR_LSP_BROKER_LEASE_REQUIRED: "
+            "lang=java, scope=/workspace/repo_a, lane=backlog, reason=cooldown"
+        ),
+        queue_repo=queue_repo,
+        error_policy=error_policy,
+    )
+    job = FileEnrichJobDTO(
+        job_id="j-broker-defer-wrapped",
+        repo_id="r1",
+        repo_root="/workspace",
+        relative_path="repo_a/src/a.py",
+        content_hash="h1",
+        priority=10,
+        enqueue_source="l3",
+        status="RUNNING",
+        attempt_count=1,
+        last_error=None,
+        next_retry_at=None,
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+        scope_level="module",
+        scope_root="/workspace/repo_a",
+        scope_attempts=0,
+    )
+
+    result = engine._process_single_l3_job(job)
+
+    assert result.finished_status == "PENDING"
+    assert result.failure_update is None
+    assert len(queue_repo.defer_calls) == 1
+    assert queue_repo.defer_calls[0]["defer_reason"] == "broker_defer:cooldown"
 
 
 def test_enrich_engine_l3_extract_error_scope_trigger_stops_after_max_escalations() -> None:
@@ -2541,6 +2581,151 @@ def test_solid_lsp_backend_broker_lease_guard_rejects_profiled_get_or_start() ->
     assert "ERR_LSP_BROKER_LEASE_REQUIRED" in result.error_message
     assert hub.get_or_start_calls == 0
     assert backend.get_runtime_metrics().get("broker_guard_reject_count") == 1
+
+
+def test_solid_lsp_backend_broker_guard_bypasses_unprofiled_language() -> None:
+    """PR3 baseline: 비프로파일 언어는 broker lease 거부 없이 hub로 직접 진행해야 한다."""
+
+    class _FakeLsp:
+        def request_document_symbols(self, relative_path: str):  # noqa: ANN001
+            del relative_path
+            class _Req:
+                def iter_symbols(self_inner):  # noqa: ANN001
+                    del self_inner
+                    return iter([])
+            return _Req()
+
+    class _FakeHub:
+        def __init__(self) -> None:
+            self.get_or_start_calls = 0
+
+        def resolve_language(self, relative_path: str) -> Language:
+            del relative_path
+            return Language.MARKDOWN
+
+        def get_or_start(self, language: Language, repo_root: str, request_kind: str = "indexing"):  # noqa: ANN001
+            del language, repo_root, request_kind
+            self.get_or_start_calls += 1
+            return _FakeLsp()
+
+        def prewarm_language_pool(self, language: Language, repo_root: str) -> None:
+            del language, repo_root
+
+        def get_metrics(self) -> dict[str, int]:
+            return {}
+
+    # java만 프로파일링된 broker
+    broker = LspSessionBroker(
+        profiles={
+            "java": LspBrokerLanguageProfile(
+                language="java",
+                hot_lanes=1,
+                backlog_lanes=1,
+                sticky_idle_ttl_sec=10.0,
+                switch_cooldown_sec=0.0,
+                min_lease_ms=0,
+            )
+        },
+        max_standby_sessions_per_lang=1,
+        max_standby_sessions_per_budget_group=1,
+        now_monotonic=time.monotonic,
+    )
+    hub = _FakeHub()
+    backend = SolidLspExtractionBackend(hub=hub)  # type: ignore[arg-type]
+    backend.configure_session_runtime(
+        session_broker=broker,
+        watcher_hotness_tracker=WatcherHotnessTracker(now_monotonic=time.monotonic),
+        enabled=True,
+    )
+
+    result = backend.extract(repo_root="/workspace/repo-a", relative_path="README.md", content_hash="h1")
+    assert result.error_message is None
+    assert hub.get_or_start_calls == 1
+    assert backend.get_runtime_metrics().get("broker_guard_reject_count", 0) == 0
+
+
+def test_solid_lsp_backend_uses_group_pending_hints_for_broker_backlog_lane() -> None:
+    """PR3.1 tuning: L3 그룹 힌트를 broker pending_jobs_in_scope 입력으로 사용해야 한다."""
+
+    class _FakeLsp:
+        def request_document_symbols(self, relative_path: str):  # noqa: ANN001
+            del relative_path
+
+            class _Req:
+                def iter_symbols(self_inner):  # noqa: ANN001
+                    del self_inner
+                    return iter([])
+
+            return _Req()
+
+    class _FakeHub:
+        def __init__(self) -> None:
+            self.lsp = _FakeLsp()
+
+        def resolve_language(self, relative_path: str) -> Language:
+            del relative_path
+            return Language.JAVA
+
+        def prewarm_language_pool(self, language: Language, repo_root: str) -> None:
+            del language, repo_root
+
+        def get_or_start(self, language: Language, repo_root: str, request_kind: str = "indexing"):  # noqa: ANN001
+            del language, repo_root, request_kind
+            return self.lsp
+
+        def get_metrics(self) -> dict[str, int]:
+            return {}
+
+    class _Lease:
+        def __init__(self, pending: int, seen: list[int]) -> None:
+            self.granted = True
+            self.reason = "admitted"
+            self._seen = seen
+            self._pending = pending
+
+        def __enter__(self):  # noqa: ANN001
+            self._seen.append(self._pending)
+            return self
+
+        def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
+            return False
+
+    class _FakeBroker:
+        def __init__(self) -> None:
+            self.seen_pending: list[int] = []
+
+        def is_profiled_language(self, language: Language) -> bool:
+            return language == Language.JAVA
+
+        def lease(self, *, language: Language, lsp_scope_root: str, lane: str, hotness_score: float, pending_jobs_in_scope: int):  # noqa: ANN001
+            del language, lsp_scope_root, lane, hotness_score
+            return _Lease(pending_jobs_in_scope, self.seen_pending)
+
+    @dataclass
+    class _Job:
+        repo_root: str
+        relative_path: str
+
+    hub = _FakeHub()
+    broker = _FakeBroker()
+    backend = SolidLspExtractionBackend(hub=hub)  # type: ignore[arg-type]
+    backend.configure_session_runtime(
+        session_broker=broker,  # type: ignore[arg-type]
+        watcher_hotness_tracker=WatcherHotnessTracker(now_monotonic=time.monotonic),
+        enabled=True,
+    )
+
+    group = [
+        _Job("/workspace/repo-a", "src/A.java"),
+        _Job("/workspace/repo-a", "src/B.java"),
+        _Job("/workspace/repo-a", "src/C.java"),
+    ]
+    backend.prime_l3_group_pending_hints(group_jobs=group)
+
+    _ = backend.extract(repo_root="/workspace/repo-a", relative_path="src/A.java", content_hash="h1")
+
+    assert broker.seen_pending, "broker lease should be called"
+    assert broker.seen_pending[0] >= 2, "group pending hint should be greater than per-file default"
 
 
 def test_solid_lsp_probe_worker_uses_scope_planner_runtime_root() -> None:

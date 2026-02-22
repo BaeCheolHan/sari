@@ -119,6 +119,8 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
         self._session_broker_enabled = False
         self._broker_guard_reject_count = 0
         self._broker_parallelism_guard_skip_count = 0
+        self._l3_scope_pending_hint_lock = threading.Lock()
+        self._l3_scope_pending_hints: dict[tuple[str, str], int] = {}
 
     def extract(self, repo_root: str, relative_path: str, content_hash: str) -> LspExtractionResultDTO:
         normalized_relative_path = normalize_repo_relative_path(relative_path)
@@ -414,7 +416,7 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
         trace_phase: str = "l3_extract",
     ):
         broker = self._session_broker
-        if self._session_broker_enabled and broker is not None:
+        if self._session_broker_enabled and broker is not None and self._is_profiled_broker_language(language):
             hotness = 0.0
             tracker = self._watcher_hotness_tracker
             if tracker is not None:
@@ -549,6 +551,49 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
         active_reuse_rank = 0 if has_active else 1
         return (tier_rank, active_reuse_rank, -hotness, f"{runtime_scope_root}:{language.value}")
 
+    def prime_l3_group_pending_hints(self, *, group_jobs: list[object]) -> None:
+        """Phase 1 tuning: L3 그룹 파일들을 runtime scope별 pending 힌트로 누적한다.
+
+        group_jobs는 FileEnrichJobDTO 리스트를 기대하지만, import 순환 방지를 위해 duck typing으로 처리.
+        """
+        if not self._session_broker_enabled or self._session_broker is None:
+            return
+        local_counts: dict[tuple[str, str], int] = {}
+        for job in group_jobs:
+            repo_root = getattr(job, "repo_root", None)
+            relative_path = getattr(job, "relative_path", None)
+            if not isinstance(repo_root, str) or not isinstance(relative_path, str):
+                continue
+            normalized_relative = normalize_repo_relative_path(relative_path)
+            try:
+                language = self._hub.resolve_language(normalized_relative)
+            except Exception:
+                continue
+            if not self._is_profiled_broker_language(language):
+                continue
+            runtime_scope_root, _runtime_relative = self._resolve_lsp_runtime_scope(
+                repo_root=repo_root,
+                normalized_relative_path=normalized_relative,
+                language=language,
+            )
+            key = (language.value, runtime_scope_root)
+            local_counts[key] = int(local_counts.get(key, 0)) + 1
+        if not local_counts:
+            return
+        with self._l3_scope_pending_hint_lock:
+            for key, count in local_counts.items():
+                self._l3_scope_pending_hints[key] = max(int(count), int(self._l3_scope_pending_hints.get(key, 0)))
+
+    def _consume_l3_scope_pending_hint(self, *, language: Language, runtime_scope_root: str) -> int:
+        key = (language.value, runtime_scope_root)
+        with self._l3_scope_pending_hint_lock:
+            current = int(self._l3_scope_pending_hints.get(key, 0))
+            if current <= 1:
+                self._l3_scope_pending_hints.pop(key, None)
+                return max(current, 0)
+            self._l3_scope_pending_hints[key] = current - 1
+            return current
+
     def _extract_once(self, repo_root: str, normalized_relative_path: str) -> LspExtractionResultDTO:
         try:
             language = self._hub.resolve_language(normalized_relative_path)
@@ -563,7 +608,10 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
                 language=language,
                 runtime_scope_root=runtime_scope_root,
                 lane="backlog",
-                pending_jobs_in_scope=0,
+                pending_jobs_in_scope=max(
+                    1,
+                    self._consume_l3_scope_pending_hint(language=language, runtime_scope_root=runtime_scope_root),
+                ),
                 request_kind="indexing",
                 trace_name="extract_once.get_or_start",
                 trace_phase="l3_extract",
