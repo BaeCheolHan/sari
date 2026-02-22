@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -239,16 +240,14 @@ class LspScopePlanner:
             return {}
         index: dict[Path, str] = {}
         try:
-            for path in repo_path.rglob("*"):
-                if not path.is_file():
+            for root, dirs, files in os.walk(repo_path, topdown=True):
+                dirs[:] = [d for d in dirs if d not in self._ignore_dirs]
+                marker_file = next((name for name in files if name in markers), None)
+                if marker_file is None:
                     continue
-                if path.name not in markers:
-                    continue
-                parent = path.parent.resolve()
-                if any(part in self._ignore_dirs for part in parent.parts):
-                    continue
+                parent = Path(root).resolve()
                 if parent not in index:
-                    index[parent] = path.name
+                    index[parent] = marker_file
         except (OSError, RuntimeError):
             return {}
         return index

@@ -1,6 +1,7 @@
 from __future__ import annotations
 import hashlib
 import logging
+import os
 import queue
 import sqlite3
 import concurrent.futures
@@ -161,6 +162,7 @@ class SolidLspExtractionBackend:
         self._lsp_scope_planner_shadow_count = 0
         self._lsp_scope_planner_applied_count = 0
         self._lsp_scope_planner_fallback_index_building_count = 0
+        self._scope_override_hit_count = 0
 
     def extract(self, repo_root: str, relative_path: str, content_hash: str) -> LspExtractionResultDTO:
         normalized_relative_path = normalize_repo_relative_path(relative_path)
@@ -336,6 +338,16 @@ class SolidLspExtractionBackend:
             return False
 
     def _resolve_lsp_runtime_scope(self, *, repo_root: str, normalized_relative_path: str, language: Language) -> tuple[str, str]:
+        override = self.get_scope_override(repo_root=repo_root, relative_path=normalized_relative_path)
+        if override is not None and not self._lsp_scope_planner_shadow_mode:
+            override_scope_root, _override_scope_level = override
+            self._scope_override_hit_count += 1
+            runtime_relative_path = self._to_scope_relative_path_or_fallback(
+                repo_root=repo_root,
+                normalized_relative_path=normalized_relative_path,
+                runtime_root=override_scope_root,
+            )
+            return (override_scope_root, runtime_relative_path)
         planner = self._lsp_scope_planner
         if planner is None or not self._lsp_scope_planner_enabled:
             return (repo_root, normalized_relative_path)
@@ -362,19 +374,46 @@ class SolidLspExtractionBackend:
         self._lsp_scope_planner_applied_count += 1
         runtime_root_path = Path(resolution.lsp_scope_root).resolve()
         runtime_root = str(runtime_root_path)
+        runtime_relative_path = self._to_scope_relative_path_or_fallback(
+            repo_root=repo_root,
+            normalized_relative_path=normalized_relative_path,
+            runtime_root=runtime_root,
+            planner=planner,
+        )
+        return (runtime_root, runtime_relative_path)
+
+    def _to_scope_relative_path_or_fallback(
+        self,
+        *,
+        repo_root: str,
+        normalized_relative_path: str,
+        runtime_root: str,
+        planner: LspScopePlanner | None = None,
+    ) -> str:
+        repo_root_path = Path(repo_root).resolve()
+        runtime_root_path = Path(runtime_root).resolve()
+        abs_file_path = (repo_root_path / normalized_relative_path).resolve()
         try:
-            scope_candidate_root = str(runtime_root_path.relative_to(Path(repo_root).resolve()).as_posix())
+            abs_file_path.relative_to(runtime_root_path)
         except ValueError:
-            scope_candidate_root = "."
-        path_converter = getattr(planner, "to_scope_relative_path", None)
+            return normalized_relative_path
+
+        if planner is None:
+            planner = self._lsp_scope_planner
+        path_converter = getattr(planner, "to_scope_relative_path", None) if planner is not None else None
         if callable(path_converter):
-            runtime_relative_path = path_converter(
+            try:
+                scope_candidate_root = str(runtime_root_path.relative_to(repo_root_path).as_posix())
+            except ValueError:
+                scope_candidate_root = "."
+            return path_converter(
                 workspace_relative_path=normalized_relative_path,
                 scope_candidate_root=scope_candidate_root,
             )
-        else:
-            runtime_relative_path = normalized_relative_path
-        return (runtime_root, runtime_relative_path)
+        try:
+            return Path(os.path.relpath(str(abs_file_path), str(runtime_root_path))).as_posix()
+        except (ValueError, OSError):
+            return normalized_relative_path
 
     def _extract_once(self, repo_root: str, normalized_relative_path: str) -> LspExtractionResultDTO:
         try:
@@ -852,6 +891,7 @@ class SolidLspExtractionBackend:
         metrics["scope_planner_fallback_index_building_count"] = int(
             self._lsp_scope_planner_fallback_index_building_count
         )
+        metrics["scope_override_hit_count"] = int(self._scope_override_hit_count)
         return metrics
 
     def get_interactive_pressure(self) -> dict[str, int]:

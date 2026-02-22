@@ -564,16 +564,86 @@ class FileEnrichQueueRepository:
         """strict eligible(v1) queue-job 기준 집계를 반환한다.
 
         Phase B v1 정의:
-        - eligible_total = PENDING_AVAILABLE + RUNNING + DONE + FAILED
-        - eligible_deferred = PENDING_DEFERRED (eligible_total에서 제외)
+        - queue job 기준 집계
+        - PENDING_DEFERRED는 eligible_total에서 제외
+        - DONE은 tool_readiness(tool_ready=1,last_reason='ok',hash match)만 포함
+        - FAILED는 영구 unavailable/config/workspace mismatch 계열 제외
         """
-        status_counts = self.get_status_counts()
-        split = self.get_pending_split_counts(now_iso=now_iso)
-        pending_available = int(split.get("PENDING_AVAILABLE", 0))
-        pending_deferred = int(split.get("PENDING_DEFERRED", 0))
-        running = int(status_counts.get("RUNNING", 0))
-        done = int(status_counts.get("DONE", 0))
-        failed = int(status_counts.get("FAILED", 0))
+        with connect(self._db_path) as conn:
+            row = conn.execute(
+                """
+                WITH current_jobs AS (
+                    SELECT q.job_id,
+                           q.status,
+                           q.repo_root,
+                           q.relative_path,
+                           q.content_hash,
+                           q.next_retry_at,
+                           q.defer_reason,
+                           q.last_error
+                    FROM file_enrich_queue q
+                    JOIN collected_files_l1 f
+                      ON f.repo_root = q.repo_root
+                     AND f.relative_path = q.relative_path
+                     AND f.is_deleted = 0
+                     AND f.content_hash = q.content_hash
+                )
+                SELECT
+                    SUM(
+                        CASE
+                            WHEN status = 'PENDING'
+                             AND (next_retry_at IS NULL OR next_retry_at <= :now_iso)
+                            THEN 1 ELSE 0
+                        END
+                    ) AS pending_available,
+                    SUM(
+                        CASE
+                            WHEN status = 'PENDING'
+                             AND next_retry_at > :now_iso
+                             AND defer_reason LIKE 'broker_defer:%'
+                            THEN 1 ELSE 0
+                        END
+                    ) AS pending_deferred,
+                    SUM(CASE WHEN status = 'RUNNING' THEN 1 ELSE 0 END) AS running_count,
+                    SUM(
+                        CASE
+                            WHEN status = 'DONE'
+                             AND EXISTS (
+                                 SELECT 1
+                                 FROM tool_readiness_state trs
+                                 WHERE trs.repo_root = current_jobs.repo_root
+                                   AND trs.relative_path = current_jobs.relative_path
+                                   AND trs.content_hash = current_jobs.content_hash
+                                   AND trs.tool_ready = 1
+                                   AND trs.last_reason = 'ok'
+                             )
+                            THEN 1 ELSE 0
+                        END
+                    ) AS done_count,
+                    SUM(
+                        CASE
+                            WHEN status = 'FAILED'
+                             AND (
+                                 last_error IS NULL OR (
+                                     last_error NOT LIKE '%ERR_LSP_SERVER_MISSING%'
+                                     AND last_error NOT LIKE '%ERR_LSP_SERVER_SPAWN_FAILED%'
+                                     AND last_error NOT LIKE '%ERR_RUNTIME_MISMATCH%'
+                                     AND last_error NOT LIKE '%ERR_LSP_WORKSPACE_MISMATCH%'
+                                     AND last_error NOT LIKE '%ERR_CONFIG_INVALID%'
+                                 )
+                             )
+                            THEN 1 ELSE 0
+                        END
+                    ) AS failed_count
+                FROM current_jobs
+                """,
+                {"now_iso": now_iso},
+            ).fetchone()
+        pending_available = int(row["pending_available"]) if row is not None and row["pending_available"] is not None else 0
+        pending_deferred = int(row["pending_deferred"]) if row is not None and row["pending_deferred"] is not None else 0
+        running = int(row["running_count"]) if row is not None and row["running_count"] is not None else 0
+        done = int(row["done_count"]) if row is not None and row["done_count"] is not None else 0
+        failed = int(row["failed_count"]) if row is not None and row["failed_count"] is not None else 0
         return {
             "eligible_total_count": pending_available + running + done + failed,
             "eligible_done_count": done,

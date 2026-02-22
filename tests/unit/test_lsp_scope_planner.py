@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import threading
+import os as _os
 
 from solidlsp.ls_config import Language
 
@@ -193,3 +194,30 @@ def test_scope_planner_ts_prefers_nearest_app_marker_over_root_workspace_lockfil
     assert result.lsp_scope_root == str(app_dir.resolve())
     assert result.strategy == "marker"
     assert result.marker_file == "package.json"
+
+
+def test_scope_planner_marker_index_prunes_ignored_dirs_during_walk(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    repo_root = tmp_path / "repo"
+    app_dir = repo_root / "apps" / "web"
+    src_dir = app_dir / "src"
+    src_dir.mkdir(parents=True)
+    (app_dir / "package.json").write_text("{}", encoding="utf-8")
+    ignored_dir = repo_root / "node_modules" / "foo" / "bar"
+    ignored_dir.mkdir(parents=True)
+    (ignored_dir.parent / "package.json").write_text("{}", encoding="utf-8")
+
+    visited_roots: list[str] = []
+    real_walk = _os.walk
+
+    def _recording_walk(*args, **kwargs):  # noqa: ANN001
+        for root, dirs, files in real_walk(*args, **kwargs):
+            visited_roots.append(str(root))
+            yield root, dirs, files
+
+    monkeypatch.setattr("sari.services.collection.lsp_scope_planner.os.walk", _recording_walk)
+
+    planner = LspScopePlanner()
+    index = planner._build_marker_index(repo_path=repo_root.resolve(), language=Language.TYPESCRIPT)  # type: ignore[attr-defined]
+
+    assert str(app_dir.resolve()) in {str(p) for p in index.keys()}
+    assert not any("node_modules/foo" in root for root in visited_roots)

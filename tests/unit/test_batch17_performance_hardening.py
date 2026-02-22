@@ -2143,6 +2143,71 @@ def test_solid_lsp_backend_scope_planner_active_mode_uses_planned_root() -> None
     assert hub.lsp.last_relative_path == "src/App.java"
 
 
+def test_solid_lsp_backend_scope_override_is_applied_before_planner() -> None:
+    """성공 scope override 캐시가 존재하면 planner보다 우선 적용되어야 한다."""
+
+    class _FakeLsp:
+        def __init__(self) -> None:
+            self.last_relative_path: str | None = None
+
+        def request_document_symbols(self, relative_path: str):  # noqa: ANN001
+            self.last_relative_path = relative_path
+
+            class _Req:
+                def iter_symbols(self_inner):  # noqa: ANN001
+                    del self_inner
+                    return iter([])
+
+            return _Req()
+
+    class _FakeHub:
+        def __init__(self) -> None:
+            self.last_repo_root: str | None = None
+            self.lsp = _FakeLsp()
+
+        def resolve_language(self, relative_path: str) -> Language:
+            del relative_path
+            return Language.JAVA
+
+        def get_or_start(self, language: Language, repo_root: str, request_kind: str = "indexing"):  # noqa: ANN001
+            del language, request_kind
+            self.last_repo_root = repo_root
+            return self.lsp
+
+        def prewarm_language_pool(self, language: Language, repo_root: str) -> None:
+            del language, repo_root
+
+        def get_metrics(self) -> dict[str, int]:
+            return {}
+
+    class _PlannerShouldNotWin:
+        def resolve(self, *, workspace_repo_root: str, relative_path: str, language: Language):  # noqa: ANN001
+            del workspace_repo_root, relative_path, language
+
+            class _Result:
+                lsp_scope_root = "/workspace/repo-a/WRONG"
+                strategy = "marker"
+                marker_file = "pom.xml"
+
+            return _Result()
+
+    hub = _FakeHub()
+    backend = SolidLspExtractionBackend(hub=hub)  # type: ignore[arg-type]
+    backend.configure_lsp_scope_planner(planner=_PlannerShouldNotWin(), enabled=True, shadow_mode=False)
+    backend.record_scope_override_success(
+        repo_root="/workspace/repo-a",
+        relative_path="module-x/src/App.java",
+        scope_root="/workspace/repo-a/module-x",
+        scope_level="module",
+    )
+
+    _ = backend.extract(repo_root="/workspace/repo-a", relative_path="module-x/src/App.java", content_hash="h1")
+
+    assert hub.last_repo_root == "/workspace/repo-a/module-x"
+    assert hub.lsp.last_relative_path == "src/App.java"
+    assert backend.get_runtime_metrics().get("scope_override_hit_count") == 1
+
+
 def test_solid_lsp_backend_scope_planner_counts_fallback_index_building() -> None:
     """planner가 FALLBACK_INDEX_BUILDING 전략을 반환하면 런타임 메트릭 카운터에 반영해야 한다."""
 

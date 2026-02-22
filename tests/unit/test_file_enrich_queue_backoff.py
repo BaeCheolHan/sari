@@ -457,11 +457,35 @@ def test_get_eligible_counts_excludes_pending_deferred_from_total(tmp_path: Path
         enqueue_source="scan",
         now_iso=base_now,
     )
+    skipped_done_job = repo.enqueue(
+        repo_root="/repo",
+        relative_path="skip_done.py",
+        content_hash="h-skip-done",
+        priority=10,
+        enqueue_source="scan",
+        now_iso=base_now,
+    )
+    perm_failed_job = repo.enqueue(
+        repo_root="/repo",
+        relative_path="perm_failed.py",
+        content_hash="h-perm-failed",
+        priority=10,
+        enqueue_source="scan",
+        now_iso=base_now,
+    )
     _ = repo.acquire_pending(limit=1, now_iso=base_now)  # ready_job -> RUNNING
     repo.mark_done(done_job)
+    repo.mark_done(skipped_done_job)
     repo.mark_failed_with_backoff(
         job_id=failed_job,
         error_message="fail",
+        now_iso=base_now,
+        dead_threshold=3,
+        backoff_base_sec=1,
+    )
+    repo.mark_failed_with_backoff(
+        job_id=perm_failed_job,
+        error_message="ERR_LSP_SERVER_MISSING: java",
         now_iso=base_now,
         dead_threshold=3,
         backoff_base_sec=1,
@@ -472,6 +496,62 @@ def test_get_eligible_counts_excludes_pending_deferred_from_total(tmp_path: Path
         defer_reason="broker_defer:budget",
         now_iso="2026-02-16T00:00:01+00:00",
     )
+
+    # strict eligible(v1) helper is queue-job based, but it must only count current file/hash rows
+    # and DONE rows that have tool_ready(last_reason=ok), excluding deferred/permanent failures.
+    with connect(db_path) as conn:
+        for rel, chash in [
+            ("ready.py", "h-ready"),
+            ("deferred.py", "h-deferred"),
+            ("done.py", "h-done"),
+            ("failed.py", "h-failed"),
+            ("skip_done.py", "h-skip-done"),
+            ("perm_failed.py", "h-perm-failed"),
+        ]:
+            conn.execute(
+                """
+                INSERT INTO collected_files_l1(
+                    repo_id, repo_root, relative_path, absolute_path, repo_label,
+                    mtime_ns, size_bytes, content_hash, is_deleted, last_seen_at, updated_at, enrich_state
+                ) VALUES (
+                    '', '/repo', :relative_path, :absolute_path, 'repo',
+                    1, 1, :content_hash, 0, :ts, :ts, 'TOOL_READY'
+                )
+                """,
+                {
+                    "relative_path": rel,
+                    "absolute_path": f"/repo/{rel}",
+                    "content_hash": chash,
+                    "ts": base_now,
+                },
+            )
+        conn.execute(
+            """
+            INSERT INTO tool_readiness_state(
+                repo_root, relative_path, content_hash,
+                list_files_ready, read_file_ready, search_symbol_ready, get_callers_ready,
+                consistency_ready, quality_ready, tool_ready, last_reason, updated_at
+            ) VALUES (
+                '/repo', 'done.py', 'h-done',
+                1,1,1,1,1,1,1,'ok', :ts
+            )
+            """,
+            {"ts": base_now},
+        )
+        conn.execute(
+            """
+            INSERT INTO tool_readiness_state(
+                repo_root, relative_path, content_hash,
+                list_files_ready, read_file_ready, search_symbol_ready, get_callers_ready,
+                consistency_ready, quality_ready, tool_ready, last_reason, updated_at
+            ) VALUES (
+                '/repo', 'skip_done.py', 'h-skip-done',
+                1,1,1,1,1,1,1,'skip_recent_success', :ts
+            )
+            """,
+            {"ts": base_now},
+        )
+        conn.commit()
 
     counts = repo.get_eligible_counts(now_iso=base_now)
     assert counts["eligible_deferred_count"] == 1
