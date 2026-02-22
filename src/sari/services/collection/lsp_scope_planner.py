@@ -98,13 +98,22 @@ class LspScopePlanner:
                 marker_file=marker_file,
             )
         else:
-            # Phase 1 baseline: top-level repo fallback == current repo root
             strategy = "top_level_repo" if self._top_level_fallback else "workspace_fallback"
+            fallback_scope_root = repo_root
+            if self._top_level_fallback and self._should_use_first_segment_fallback(repo_path):
+                first_segment = next(iter(Path(rel).parts), "")
+                if first_segment not in ("", ".", ".."):
+                    candidate = (repo_path / first_segment).resolve()
+                    try:
+                        candidate.relative_to(repo_path.resolve())
+                        fallback_scope_root = str(candidate)
+                    except ValueError:
+                        fallback_scope_root = repo_root
             result = LspScopeResolutionDTO(
                 workspace_repo_root=repo_root,
                 relative_path=rel,
                 language=language.value,
-                lsp_scope_root=repo_root,
+                lsp_scope_root=fallback_scope_root,
                 strategy=strategy,
                 marker_file=None,
             )
@@ -166,6 +175,22 @@ class LspScopePlanner:
         if str(parent) in ("", "."):
             return "."
         return str(parent).replace("\\", "/")
+
+    def _should_use_first_segment_fallback(self, repo_path: Path) -> bool:
+        """workspace aggregate 루트처럼 보일 때만 first-segment fallback을 사용한다."""
+        try:
+            child_dirs = 0
+            for child in repo_path.iterdir():
+                if not child.is_dir():
+                    continue
+                if child.name in self._ignore_dirs:
+                    continue
+                child_dirs += 1
+                if child_dirs >= 2:
+                    return True
+        except OSError:
+            return False
+        return False
 
     def _markers_for_language(self, language: Language) -> tuple[str, ...]:
         if language == Language.JAVA:

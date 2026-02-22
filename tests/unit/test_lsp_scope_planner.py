@@ -48,6 +48,25 @@ def test_scope_planner_java_falls_back_to_top_level_repo_without_marker(tmp_path
     assert result.marker_file is None
 
 
+def test_scope_planner_java_top_level_fallback_uses_first_workspace_segment(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    repo_dir = workspace_root / "repoA"
+    (workspace_root / "repoB").mkdir(parents=True)
+    src_dir = repo_dir / "nested" / "pkg"
+    src_dir.mkdir(parents=True)
+
+    planner = LspScopePlanner()
+    result = planner.resolve(
+        workspace_repo_root=str(workspace_root),
+        relative_path="repoA/nested/pkg/App.java",
+        language=Language.JAVA,
+    )
+
+    assert result.lsp_scope_root == str(repo_dir.resolve())
+    assert result.strategy == "top_level_repo"
+    assert result.marker_file is None
+
+
 def test_scope_planner_ignores_node_modules_when_resolving_ts_marker(tmp_path: Path) -> None:
     repo_root = tmp_path / "repo"
     app_dir = repo_root / "apps" / "web"
