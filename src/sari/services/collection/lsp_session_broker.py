@@ -72,12 +72,14 @@ class LspSessionBroker:
         max_standby_sessions_per_lang: int,
         max_standby_sessions_per_budget_group: int,
         backlog_min_share: float = 0.0,
+        optional_scaffolding_enabled: bool = False,
         now_monotonic: Callable[[], float] | None = None,
     ) -> None:
         self._profiles = {k.lower(): v for k, v in profiles.items()}
         self._max_standby_sessions_per_lang = int(max_standby_sessions_per_lang)
         self._max_standby_sessions_per_budget_group = int(max_standby_sessions_per_budget_group)
         self._backlog_min_share = min(1.0, max(0.0, float(backlog_min_share)))
+        self._optional_scaffolding_enabled = bool(optional_scaffolding_enabled)
         self._now_monotonic = now_monotonic or time.monotonic
         self._lock = threading.Lock()
         self._leases: dict[str, _ActiveLease] = {}
@@ -87,6 +89,11 @@ class LspSessionBroker:
         self._budget_group_members: dict[str, set[str]] = {}
         self._backlog_demand_pending: set[str] = set()
         self._hot_streak_since_backlog: dict[str, int] = {}
+        self._optional_cost_class_counts: dict[str, int] = {}
+        self._optional_cost_obs_total = 0
+        self._optional_drr_obs_total = 0
+        self._optional_drr_quantum_by_lane: dict[str, int] = {"hot": 0, "backlog": 0}
+        self._optional_drr_deficit_by_key: dict[str, int] = {}
         for lang, profile in self._profiles.items():
             if profile.shared_budget_group:
                 self._budget_group_members.setdefault(profile.shared_budget_group, set()).add(lang)
@@ -135,6 +142,18 @@ class LspSessionBroker:
                 lane=lane_key,
             )
         now = self._now_monotonic()
+        if self._optional_scaffolding_enabled:
+            predicted_cost_class, cost_estimate = self._predict_cost_scaffold(
+                lane=lane_key,
+                language=lang_key,
+                pending_jobs_in_scope=pending_jobs_in_scope,
+            )
+            self._record_optional_scaffolding_observation(
+                lane=lane_key,
+                fairness_key=self._fairness_key_for(lang_key, profile),
+                predicted_cost_class=predicted_cost_class,
+                cost_estimate=cost_estimate,
+            )
         with self._lock:
             fairness_key = self._fairness_key_for(lang_key, profile)
             hot_streak_limit = self._max_hot_streak_before_backlog()
@@ -285,4 +304,55 @@ class LspSessionBroker:
         if self._backlog_min_share > 0.0:
             with self._lock:
                 metrics["broker_backlog_demand_pending_keys"] = len(self._backlog_demand_pending)
+        if self._optional_scaffolding_enabled:
+            with self._lock:
+                metrics["broker_optional_cost_obs_total"] = int(self._optional_cost_obs_total)
+                metrics["broker_optional_drr_obs_total"] = int(self._optional_drr_obs_total)
+                for klass, count in self._optional_cost_class_counts.items():
+                    metrics[f"broker_optional_cost_class_{klass}"] = int(count)
+                for lane, quantum in self._optional_drr_quantum_by_lane.items():
+                    metrics[f"broker_optional_drr_quantum_{lane}"] = int(quantum)
+                metrics["broker_optional_drr_deficit_keys"] = len(self._optional_drr_deficit_by_key)
         return metrics
+
+    def _predict_cost_scaffold(
+        self,
+        *,
+        lane: str,
+        language: str,
+        pending_jobs_in_scope: int,
+    ) -> tuple[str, int]:
+        """Optional scaffolding only: cost class/cost_estimate를 계산하지만 선택 로직엔 사용하지 않는다."""
+        lane_key = lane.lower()
+        pending = max(0, int(pending_jobs_in_scope))
+        lang_key = language.lower()
+        if lane_key == "backlog" and pending >= 100:
+            return ("l", 100)
+        if lang_key == "java" and pending >= 10:
+            return ("l", max(10, pending))
+        if pending <= 3:
+            return ("s", 1)
+        return ("m", min(50, max(2, pending)))
+
+    def _record_optional_scaffolding_observation(
+        self,
+        *,
+        lane: str,
+        fairness_key: str,
+        predicted_cost_class: str,
+        cost_estimate: int,
+    ) -> None:
+        """Optional scaffolding only: DRR/cost 상태를 metrics용으로만 기록한다."""
+        del cost_estimate  # Phase 1 Optional: metrics-only scaffolding, scheduling behavior 미사용
+        lane_key = lane.lower()
+        with self._lock:
+            self._optional_cost_obs_total += 1
+            self._optional_cost_class_counts[predicted_cost_class] = int(
+                self._optional_cost_class_counts.get(predicted_cost_class, 0)
+            ) + 1
+            self._optional_drr_obs_total += 1
+            default_quantum = 2 if lane_key == "hot" else 1
+            self._optional_drr_quantum_by_lane[lane_key] = int(self._optional_drr_quantum_by_lane.get(lane_key, default_quantum) or default_quantum)
+            self._optional_drr_deficit_by_key[fairness_key] = int(
+                self._optional_drr_deficit_by_key.get(fairness_key, 0)
+            ) + default_quantum

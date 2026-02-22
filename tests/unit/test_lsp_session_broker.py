@@ -41,7 +41,12 @@ def _profiles() -> dict[str, LspBrokerLanguageProfile]:
     }
 
 
-def _new_broker(now_ref: dict[str, float] | None = None, *, backlog_min_share: float = 0.0) -> LspSessionBroker:
+def _new_broker(
+    now_ref: dict[str, float] | None = None,
+    *,
+    backlog_min_share: float = 0.0,
+    optional_scaffolding_enabled: bool = False,
+) -> LspSessionBroker:
     if now_ref is None:
         now_ref = {"t": 100.0}
     return LspSessionBroker(
@@ -49,6 +54,7 @@ def _new_broker(now_ref: dict[str, float] | None = None, *, backlog_min_share: f
         max_standby_sessions_per_lang=2,
         max_standby_sessions_per_budget_group=2,
         backlog_min_share=backlog_min_share,
+        optional_scaffolding_enabled=optional_scaffolding_enabled,
         now_monotonic=lambda: now_ref["t"],
     )
 
@@ -246,3 +252,79 @@ def test_broker_backlog_min_share_clears_guard_after_backlog_grant() -> None:
         pending_jobs_in_scope=10,
     )
     assert hot_ok.granted is True
+
+
+def test_broker_optional_scaffolding_off_keeps_behavior_identical() -> None:
+    now_ref_off = {"t": 100.0}
+    now_ref_on = {"t": 100.0}
+    broker_off = _new_broker(now_ref_off, backlog_min_share=0.2, optional_scaffolding_enabled=False)
+    broker_on = _new_broker(now_ref_on, backlog_min_share=0.2, optional_scaffolding_enabled=True)
+    broker_off.set_budget_group_active_cap("ts-vue", 1)
+    broker_on.set_budget_group_active_cap("ts-vue", 1)
+
+    scenarios = [
+        (Language.TYPESCRIPT, "/workspace/hot", "hot", 10.0, 10),
+        (Language.TYPESCRIPT, "/workspace/hot", "hot", 10.0, 10),
+        (Language.VUE, "/workspace/backlog", "backlog", 1.0, 100),
+        (Language.TYPESCRIPT, "/workspace/hot2", "hot", 9.0, 5),
+    ]
+
+    results_off: list[tuple[bool, str]] = []
+    results_on: list[tuple[bool, str]] = []
+    for language, scope, lane, hotness, pending in scenarios:
+        lease_off = broker_off.acquire_lease(
+            language=language,
+            lsp_scope_root=scope,
+            lane=lane,
+            hotness_score=hotness,
+            pending_jobs_in_scope=pending,
+        )
+        lease_on = broker_on.acquire_lease(
+            language=language,
+            lsp_scope_root=scope,
+            lane=lane,
+            hotness_score=hotness,
+            pending_jobs_in_scope=pending,
+        )
+        results_off.append((lease_off.granted, lease_off.reason))
+        results_on.append((lease_on.granted, lease_on.reason))
+        if lease_off.granted:
+            broker_off.release_lease(lease_off)
+        if lease_on.granted:
+            broker_on.release_lease(lease_on)
+        now_ref_off["t"] += 0.1
+        now_ref_on["t"] += 0.1
+
+    assert results_off == results_on
+
+
+def test_broker_optional_scaffolding_emits_metrics_only_when_enabled() -> None:
+    broker = _new_broker({"t": 100.0}, optional_scaffolding_enabled=True)
+    lease = broker.acquire_lease(
+        language=Language.JAVA,
+        lsp_scope_root="/workspace/repo",
+        lane="hot",
+        hotness_score=5.0,
+        pending_jobs_in_scope=3,
+    )
+    assert lease.granted is True
+    broker.release_lease(lease)
+
+    metrics = broker.get_metrics()
+    assert "broker_optional_cost_obs_total" in metrics
+    assert "broker_optional_drr_obs_total" in metrics
+    assert "broker_optional_cost_class_s" in metrics or "broker_optional_cost_class_m" in metrics or "broker_optional_cost_class_l" in metrics
+
+    broker_off = _new_broker({"t": 100.0}, optional_scaffolding_enabled=False)
+    lease_off = broker_off.acquire_lease(
+        language=Language.JAVA,
+        lsp_scope_root="/workspace/repo",
+        lane="hot",
+        hotness_score=5.0,
+        pending_jobs_in_scope=3,
+    )
+    assert lease_off.granted is True
+    broker_off.release_lease(lease_off)
+    metrics_off = broker_off.get_metrics()
+    assert "broker_optional_cost_obs_total" not in metrics_off
+    assert "broker_optional_drr_obs_total" not in metrics_off

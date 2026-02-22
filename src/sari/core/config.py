@@ -99,6 +99,7 @@ class AppConfig:
     lsp_scope_top_level_fallback: bool = True
     lsp_session_broker_enabled: bool = True
     lsp_session_broker_metrics_enabled: bool = True
+    lsp_broker_optional_scaffolding_enabled: bool = False
     lsp_hotness_event_window_sec: float = 10.0
     lsp_hotness_decay_window_sec: float = 30.0
     lsp_broker_backlog_min_share: float = 0.2
@@ -333,6 +334,10 @@ class AppConfig:
         lsp_session_broker_metrics_enabled_raw = os.getenv(
             "SARI_LSP_SESSION_BROKER_METRICS_ENABLED",
             str(file_config.get("lsp_session_broker_metrics_enabled", cls.lsp_session_broker_metrics_enabled)),
+        ).strip().lower()
+        lsp_broker_optional_scaffolding_enabled_raw = os.getenv(
+            "SARI_LSP_BROKER_OPTIONAL_SCAFFOLDING_ENABLED",
+            str(file_config.get("lsp_broker_optional_scaffolding_enabled", cls.lsp_broker_optional_scaffolding_enabled)),
         ).strip().lower()
         lsp_hotness_event_window_sec_raw = os.getenv(
             "SARI_LSP_HOTNESS_EVENT_WINDOW_SEC",
@@ -864,6 +869,7 @@ class AppConfig:
             lsp_scope_top_level_fallback=lsp_scope_top_level_fallback_raw in {"1", "true", "yes", "on"},
             lsp_session_broker_enabled=lsp_session_broker_enabled_raw in {"1", "true", "yes", "on"},
             lsp_session_broker_metrics_enabled=lsp_session_broker_metrics_enabled_raw in {"1", "true", "yes", "on"},
+            lsp_broker_optional_scaffolding_enabled=lsp_broker_optional_scaffolding_enabled_raw in {"1", "true", "yes", "on"},
             lsp_hotness_event_window_sec=lsp_hotness_event_window_sec,
             lsp_hotness_decay_window_sec=lsp_hotness_decay_window_sec,
             lsp_broker_backlog_min_share=lsp_broker_backlog_min_share,

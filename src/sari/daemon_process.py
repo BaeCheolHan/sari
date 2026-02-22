@@ -263,6 +263,7 @@ def main() -> None:
         lsp_scope_top_level_fallback=config.lsp_scope_top_level_fallback,
         lsp_session_broker_enabled=config.lsp_session_broker_enabled,
         lsp_session_broker_metrics_enabled=config.lsp_session_broker_metrics_enabled,
+        lsp_broker_optional_scaffolding_enabled=config.lsp_broker_optional_scaffolding_enabled,
         lsp_hotness_event_window_sec=config.lsp_hotness_event_window_sec,
         lsp_hotness_decay_window_sec=config.lsp_hotness_decay_window_sec,
         lsp_broker_backlog_min_share=config.lsp_broker_backlog_min_share,
