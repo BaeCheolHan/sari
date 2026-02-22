@@ -30,6 +30,7 @@ from sari.db.repositories.repo_registry_repository import RepoRegistryRepository
 from sari.lsp.hub import LspHub
 from sari.lsp.path_normalizer import normalize_location_to_repo_relative, normalize_repo_relative_path
 from sari.services.collection import CollectionErrorPolicy, CollectionRuntimePort, EnrichEngine, EventWatcher, FileScanner, PipelineMetricsService, PipelineWorker, RuntimeManager
+from sari.services.collection.lsp_scope_planner import LspScopePlanner
 from sari.services.collection.perf_trace import PerfTracer
 from sari.services.collection.repo_support import CollectionRepoSupport, WorkspaceFanoutResolver
 from solidlsp.ls_exceptions import SolidLSPException
@@ -154,6 +155,12 @@ class SolidLspExtractionBackend:
         self._scope_override_lock = threading.Lock()
         self._scope_override_ttl_sec = 24 * 60 * 60.0
         self._scope_override_cache: dict[tuple[str, str, str], _ScopeOverrideRecord] = {}
+        self._lsp_scope_planner: LspScopePlanner | None = None
+        self._lsp_scope_planner_enabled = False
+        self._lsp_scope_planner_shadow_mode = True
+        self._lsp_scope_planner_shadow_count = 0
+        self._lsp_scope_planner_applied_count = 0
+        self._lsp_scope_planner_fallback_index_building_count = 0
 
     def extract(self, repo_root: str, relative_path: str, content_hash: str) -> LspExtractionResultDTO:
         normalized_relative_path = normalize_repo_relative_path(relative_path)
@@ -297,6 +304,18 @@ class SolidLspExtractionBackend:
             self._scope_override_cache.clear()
         return count
 
+    def configure_lsp_scope_planner(
+        self,
+        *,
+        planner: LspScopePlanner | None,
+        enabled: bool,
+        shadow_mode: bool,
+    ) -> None:
+        """LSP scope planner를 설정한다. Phase 1 baseline은 shadow_mode 기본."""
+        self._lsp_scope_planner = planner
+        self._lsp_scope_planner_enabled = bool(enabled) and planner is not None
+        self._lsp_scope_planner_shadow_mode = bool(shadow_mode)
+
     def _normalized_scope_candidate_dir(self, *, repo_root: str, relative_path: str) -> str:
         normalized_relative = normalize_repo_relative_path(relative_path)
         parent = Path(normalized_relative).parent
@@ -316,16 +335,62 @@ class SolidLspExtractionBackend:
         except ValueError:
             return False
 
+    def _resolve_lsp_runtime_scope(self, *, repo_root: str, normalized_relative_path: str, language: Language) -> tuple[str, str]:
+        planner = self._lsp_scope_planner
+        if planner is None or not self._lsp_scope_planner_enabled:
+            return (repo_root, normalized_relative_path)
+        try:
+            with self._perf_tracer.span(
+                "scope_planner.resolve",
+                phase="l3_extract",
+                repo_root=repo_root,
+                language=language.value,
+                shadow_mode=self._lsp_scope_planner_shadow_mode,
+            ):
+                resolution = planner.resolve(
+                    workspace_repo_root=repo_root,
+                    relative_path=normalized_relative_path,
+                    language=language,
+                )
+        except (RuntimeError, OSError, ValueError, TypeError):
+            return (repo_root, normalized_relative_path)
+        if getattr(resolution, "strategy", "") == "FALLBACK_INDEX_BUILDING":
+            self._lsp_scope_planner_fallback_index_building_count += 1
+        if self._lsp_scope_planner_shadow_mode:
+            self._lsp_scope_planner_shadow_count += 1
+            return (repo_root, normalized_relative_path)
+        self._lsp_scope_planner_applied_count += 1
+        runtime_root_path = Path(resolution.lsp_scope_root).resolve()
+        runtime_root = str(runtime_root_path)
+        try:
+            scope_candidate_root = str(runtime_root_path.relative_to(Path(repo_root).resolve()).as_posix())
+        except ValueError:
+            scope_candidate_root = "."
+        path_converter = getattr(planner, "to_scope_relative_path", None)
+        if callable(path_converter):
+            runtime_relative_path = path_converter(
+                workspace_relative_path=normalized_relative_path,
+                scope_candidate_root=scope_candidate_root,
+            )
+        else:
+            runtime_relative_path = normalized_relative_path
+        return (runtime_root, runtime_relative_path)
+
     def _extract_once(self, repo_root: str, normalized_relative_path: str) -> LspExtractionResultDTO:
         try:
             language = self._hub.resolve_language(normalized_relative_path)
-            with self._perf_tracer.span("extract_once.ensure_prewarm", phase="l3_extract", repo_root=repo_root, language=language.value):
-                self._ensure_prewarm(language=language, repo_root=repo_root)
-            with self._perf_tracer.span("extract_once.get_or_start", phase="l3_extract", repo_root=repo_root, language=language.value, request_kind="indexing"):
-                lsp = self._hub.get_or_start(language=language, repo_root=repo_root, request_kind="indexing")
+            runtime_scope_root, runtime_relative_path = self._resolve_lsp_runtime_scope(
+                repo_root=repo_root,
+                normalized_relative_path=normalized_relative_path,
+                language=language,
+            )
+            with self._perf_tracer.span("extract_once.ensure_prewarm", phase="l3_extract", repo_root=runtime_scope_root, language=language.value):
+                self._ensure_prewarm(language=language, repo_root=runtime_scope_root)
+            with self._perf_tracer.span("extract_once.get_or_start", phase="l3_extract", repo_root=runtime_scope_root, language=language.value, request_kind="indexing"):
+                lsp = self._hub.get_or_start(language=language, repo_root=runtime_scope_root, request_kind="indexing")
             with self._acquire_l1_probe_slot():
                 with self._perf_tracer.span("extract_once.document_symbol_request", phase="l3_extract", repo_root=repo_root, language=language.value):
-                    document_symbols = lsp.request_document_symbols(normalized_relative_path).iter_symbols()
+                    document_symbols = lsp.request_document_symbols(runtime_relative_path).iter_symbols()
                     raw_symbols = list(document_symbols)
         except SolidLSPException as exc:
             message = str(exc)
@@ -782,6 +847,11 @@ class SolidLspExtractionBackend:
         with self._probe_lock:
             for trigger, count in self._probe_trigger_counts.items():
                 metrics[f"probe_trigger_{trigger}_count"] = int(count)
+        metrics["scope_planner_shadow_count"] = int(self._lsp_scope_planner_shadow_count)
+        metrics["scope_planner_applied_count"] = int(self._lsp_scope_planner_applied_count)
+        metrics["scope_planner_fallback_index_building_count"] = int(
+            self._lsp_scope_planner_fallback_index_building_count
+        )
         return metrics
 
     def get_interactive_pressure(self) -> dict[str, int]:
@@ -1408,11 +1478,22 @@ class FileCollectionService:
     def _prune_error_events_if_needed(self) -> None:
         self._error_policy.prune_error_events_if_needed()
 
-def build_default_file_collection_service(workspace_repo: WorkspaceRepository, file_repo: FileCollectionRepository, enrich_queue_repo: FileEnrichQueueRepository, body_repo: FileBodyRepository, lsp_repo: LspToolDataRepository, readiness_repo: ToolReadinessRepository, policy_repo: PipelinePolicyRepository | None=None, event_repo: PipelineJobEventRepository | None=None, error_event_repo: PipelineErrorEventRepository | None=None, candidate_index_sink: CandidateIndexSink | None=None, vector_index_sink: VectorIndexSink | None=None, retry_max_attempts: int=5, retry_backoff_base_sec: int=1, queue_poll_interval_ms: int=500, include_ext: tuple[str, ...] | None=None, exclude_globs: tuple[str, ...] | None=None, watcher_debounce_ms: int=300, run_mode: str='dev', parent_alive_probe: Callable[[], bool] | None=None, lsp_backend: LspExtractionBackend | None=None, persist_body_for_read: bool=True, l3_parallel_enabled: bool=True, l3_executor_max_workers: int=0, l3_recent_success_ttl_sec: int=120, l3_backpressure_on_interactive: bool=True, l3_backpressure_cooldown_ms: int=300, l3_supported_languages: tuple[str, ...] | None=None, lsp_probe_bootstrap_file_window: int=256, lsp_probe_bootstrap_top_k: int=3, lsp_probe_language_priority: tuple[str, ...]=("go:1.5", "java:1.4", "kotlin:1.3"), lsp_probe_l1_languages: tuple[str, ...]=("go", "java", "kotlin")) -> CollectionRuntimePort:
+def build_default_file_collection_service(workspace_repo: WorkspaceRepository, file_repo: FileCollectionRepository, enrich_queue_repo: FileEnrichQueueRepository, body_repo: FileBodyRepository, lsp_repo: LspToolDataRepository, readiness_repo: ToolReadinessRepository, policy_repo: PipelinePolicyRepository | None=None, event_repo: PipelineJobEventRepository | None=None, error_event_repo: PipelineErrorEventRepository | None=None, candidate_index_sink: CandidateIndexSink | None=None, vector_index_sink: VectorIndexSink | None=None, retry_max_attempts: int=5, retry_backoff_base_sec: int=1, queue_poll_interval_ms: int=500, include_ext: tuple[str, ...] | None=None, exclude_globs: tuple[str, ...] | None=None, watcher_debounce_ms: int=300, run_mode: str='dev', parent_alive_probe: Callable[[], bool] | None=None, lsp_backend: LspExtractionBackend | None=None, persist_body_for_read: bool=True, l3_parallel_enabled: bool=True, l3_executor_max_workers: int=0, l3_recent_success_ttl_sec: int=120, l3_backpressure_on_interactive: bool=True, l3_backpressure_cooldown_ms: int=300, l3_supported_languages: tuple[str, ...] | None=None, lsp_probe_bootstrap_file_window: int=256, lsp_probe_bootstrap_top_k: int=3, lsp_probe_language_priority: tuple[str, ...]=("go:1.5", "java:1.4", "kotlin:1.3"), lsp_probe_l1_languages: tuple[str, ...]=("go", "java", "kotlin"), lsp_scope_planner_enabled: bool=True, lsp_scope_planner_shadow_mode: bool=True, lsp_scope_java_markers: tuple[str, ...]=("pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"), lsp_scope_ts_markers: tuple[str, ...]=("tsconfig.json", "jsconfig.json", "package.json"), lsp_scope_vue_markers: tuple[str, ...]=("vue.config.js", "vite.config.ts", "package.json", "tsconfig.json"), lsp_scope_top_level_fallback: bool=True) -> CollectionRuntimePort:
     resolved_include_ext = include_ext if include_ext is not None else get_default_collection_extensions()
     resolved_exclude_globs = exclude_globs if exclude_globs is not None else DEFAULT_COLLECTION_EXCLUDE_GLOBS
     policy = CollectionPolicyDTO(include_ext=resolved_include_ext, exclude_globs=resolved_exclude_globs, max_file_size_bytes=512 * 1024, scan_interval_sec=180, max_enrich_batch=20, retry_max_attempts=retry_max_attempts, retry_backoff_base_sec=retry_backoff_base_sec, queue_poll_interval_ms=queue_poll_interval_ms)
     resolved_lsp_backend = lsp_backend if lsp_backend is not None else SolidLspExtractionBackend(LspHub())
+    if isinstance(resolved_lsp_backend, SolidLspExtractionBackend):
+        resolved_lsp_backend.configure_lsp_scope_planner(
+            planner=LspScopePlanner(
+                java_markers=lsp_scope_java_markers,
+                ts_markers=lsp_scope_ts_markers,
+                vue_markers=lsp_scope_vue_markers,
+                top_level_fallback=lsp_scope_top_level_fallback,
+            ),
+            enabled=lsp_scope_planner_enabled,
+            shadow_mode=lsp_scope_planner_shadow_mode,
+        )
     repo_registry_repo = RepoRegistryRepository(file_repo.db_path)
     service = FileCollectionService(workspace_repo=workspace_repo, file_repo=file_repo, enrich_queue_repo=enrich_queue_repo, body_repo=body_repo, lsp_repo=lsp_repo, readiness_repo=readiness_repo, policy=policy, lsp_backend=resolved_lsp_backend, policy_repo=policy_repo, event_repo=event_repo, error_event_repo=error_event_repo, candidate_index_sink=candidate_index_sink, vector_index_sink=vector_index_sink, run_mode=run_mode, parent_alive_probe=parent_alive_probe, persist_body_for_read=persist_body_for_read, repo_registry_repo=repo_registry_repo, l3_parallel_enabled=l3_parallel_enabled, l3_executor_max_workers=l3_executor_max_workers, l3_recent_success_ttl_sec=l3_recent_success_ttl_sec, l3_backpressure_on_interactive=l3_backpressure_on_interactive, l3_backpressure_cooldown_ms=l3_backpressure_cooldown_ms, l3_supported_languages=l3_supported_languages, lsp_probe_bootstrap_file_window=lsp_probe_bootstrap_file_window, lsp_probe_bootstrap_top_k=lsp_probe_bootstrap_top_k, lsp_probe_language_priority=lsp_probe_language_priority, lsp_probe_l1_languages=lsp_probe_l1_languages)
     service._watcher_debounce_ms = max(50, watcher_debounce_ms)

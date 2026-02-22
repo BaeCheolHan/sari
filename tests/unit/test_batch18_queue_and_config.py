@@ -103,6 +103,12 @@ def test_app_config_loads_json_and_env_override(tmp_path: Path, monkeypatch) -> 
     monkeypatch.setenv("SARI_L3_SUPPORTED_LANGUAGES", "go,kotlin")
     monkeypatch.setenv("SARI_LSP_MAX_CONCURRENT_STARTS", "2")
     monkeypatch.setenv("SARI_LSP_MAX_CONCURRENT_L1_PROBES", "4")
+    monkeypatch.setenv("SARI_LSP_SCOPE_PLANNER_ENABLED", "1")
+    monkeypatch.setenv("SARI_LSP_SCOPE_PLANNER_SHADOW_MODE", "1")
+    monkeypatch.setenv("SARI_LSP_SCOPE_JAVA_MARKERS", "pom.xml,build.gradle.kts")
+    monkeypatch.setenv("SARI_LSP_SCOPE_TS_MARKERS", "package.json,tsconfig.json")
+    monkeypatch.setenv("SARI_LSP_SCOPE_VUE_MARKERS", "package.json,vue.config.js")
+    monkeypatch.setenv("SARI_LSP_SCOPE_TOP_LEVEL_FALLBACK", "1")
     monkeypatch.delenv("SARI_COLLECTION_INCLUDE_EXT", raising=False)
     monkeypatch.delenv("SARI_COLLECTION_EXCLUDE_GLOBS", raising=False)
 
@@ -141,6 +147,12 @@ def test_app_config_loads_json_and_env_override(tmp_path: Path, monkeypatch) -> 
     assert config.l3_supported_languages == ("go", "kotlin")
     assert config.lsp_max_concurrent_starts == 2
     assert config.lsp_max_concurrent_l1_probes == 4
+    assert config.lsp_scope_planner_enabled is True
+    assert config.lsp_scope_planner_shadow_mode is True
+    assert config.lsp_scope_java_markers == ("pom.xml", "build.gradle.kts")
+    assert config.lsp_scope_ts_markers == ("package.json", "tsconfig.json")
+    assert config.lsp_scope_vue_markers == ("package.json", "vue.config.js")
+    assert config.lsp_scope_top_level_fallback is True
 
 
 def test_app_config_default_exclude_globs_include_build_artifact_paths(tmp_path: Path, monkeypatch) -> None:

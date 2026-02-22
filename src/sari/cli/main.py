@@ -134,6 +134,12 @@ def _build_services() -> CliServiceBundle:
         lsp_probe_bootstrap_top_k=config.lsp_probe_bootstrap_top_k,
         lsp_probe_language_priority=config.lsp_probe_language_priority,
         lsp_probe_l1_languages=config.lsp_probe_l1_languages,
+        lsp_scope_planner_enabled=config.lsp_scope_planner_enabled,
+        lsp_scope_planner_shadow_mode=config.lsp_scope_planner_shadow_mode,
+        lsp_scope_java_markers=config.lsp_scope_java_markers,
+        lsp_scope_ts_markers=config.lsp_scope_ts_markers,
+        lsp_scope_vue_markers=config.lsp_scope_vue_markers,
+        lsp_scope_top_level_fallback=config.lsp_scope_top_level_fallback,
     )
     perf_file_collection_service = build_default_file_collection_service(
         workspace_repo=workspace_repo,
@@ -158,6 +164,12 @@ def _build_services() -> CliServiceBundle:
         lsp_probe_bootstrap_top_k=config.lsp_probe_bootstrap_top_k,
         lsp_probe_language_priority=config.lsp_probe_language_priority,
         lsp_probe_l1_languages=config.lsp_probe_l1_languages,
+        lsp_scope_planner_enabled=config.lsp_scope_planner_enabled,
+        lsp_scope_planner_shadow_mode=config.lsp_scope_planner_shadow_mode,
+        lsp_scope_java_markers=config.lsp_scope_java_markers,
+        lsp_scope_ts_markers=config.lsp_scope_ts_markers,
+        lsp_scope_vue_markers=config.lsp_scope_vue_markers,
+        lsp_scope_top_level_fallback=config.lsp_scope_top_level_fallback,
     )
     benchmark_repo = PipelineBenchmarkRepository(config.db_path)
     perf_repo = PipelinePerfRepository(config.db_path)

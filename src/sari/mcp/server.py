@@ -197,6 +197,12 @@ class McpServer:
             lsp_probe_bootstrap_top_k=runtime_config.lsp_probe_bootstrap_top_k,
             lsp_probe_language_priority=runtime_config.lsp_probe_language_priority,
             lsp_probe_l1_languages=runtime_config.lsp_probe_l1_languages,
+            lsp_scope_planner_enabled=runtime_config.lsp_scope_planner_enabled,
+            lsp_scope_planner_shadow_mode=runtime_config.lsp_scope_planner_shadow_mode,
+            lsp_scope_java_markers=runtime_config.lsp_scope_java_markers,
+            lsp_scope_ts_markers=runtime_config.lsp_scope_ts_markers,
+            lsp_scope_vue_markers=runtime_config.lsp_scope_vue_markers,
+            lsp_scope_top_level_fallback=runtime_config.lsp_scope_top_level_fallback,
         )
         benchmark_collection_service = build_default_file_collection_service(
             workspace_repo=workspace_repo,
@@ -221,6 +227,12 @@ class McpServer:
             lsp_probe_bootstrap_top_k=runtime_config.lsp_probe_bootstrap_top_k,
             lsp_probe_language_priority=runtime_config.lsp_probe_language_priority,
             lsp_probe_l1_languages=runtime_config.lsp_probe_l1_languages,
+            lsp_scope_planner_enabled=runtime_config.lsp_scope_planner_enabled,
+            lsp_scope_planner_shadow_mode=runtime_config.lsp_scope_planner_shadow_mode,
+            lsp_scope_java_markers=runtime_config.lsp_scope_java_markers,
+            lsp_scope_ts_markers=runtime_config.lsp_scope_ts_markers,
+            lsp_scope_vue_markers=runtime_config.lsp_scope_vue_markers,
+            lsp_scope_top_level_fallback=runtime_config.lsp_scope_top_level_fallback,
         )
         benchmark_service = PipelineBenchmarkService(file_collection_service=benchmark_collection_service, queue_repo=enrich_queue_repo, lsp_repo=lsp_repo, policy_repo=policy_repo, benchmark_repo=benchmark_repo, artifact_root=db_path.parent / 'artifacts')
         perf_service = PipelinePerfService(

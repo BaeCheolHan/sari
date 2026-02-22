@@ -85,6 +85,18 @@ class AppConfig:
     lsp_probe_bootstrap_top_k: int = 3
     lsp_probe_language_priority: tuple[str, ...] = ("go:1.5", "java:1.4", "kotlin:1.3")
     lsp_probe_l1_languages: tuple[str, ...] = ("go", "java", "kotlin", "py", "rs", "ts", "js")
+    lsp_scope_planner_enabled: bool = True
+    lsp_scope_planner_shadow_mode: bool = True
+    lsp_scope_java_markers: tuple[str, ...] = (
+        "pom.xml",
+        "build.gradle",
+        "build.gradle.kts",
+        "settings.gradle",
+        "settings.gradle.kts",
+    )
+    lsp_scope_ts_markers: tuple[str, ...] = ("tsconfig.json", "jsconfig.json", "package.json")
+    lsp_scope_vue_markers: tuple[str, ...] = ("vue.config.js", "vite.config.ts", "package.json", "tsconfig.json")
+    lsp_scope_top_level_fallback: bool = True
     lsp_max_concurrent_starts: int = 4
     lsp_max_concurrent_l1_probes: int = 4
     orphan_ppid_check_interval_sec: int = 1
@@ -267,6 +279,30 @@ class AppConfig:
             "SARI_LSP_PROBE_L1_LANGUAGES",
             str(",".join(_read_tuple_setting(file_config, "lsp_probe_l1_languages", cls.lsp_probe_l1_languages))),
         ).strip()
+        lsp_scope_planner_enabled_raw = os.getenv(
+            "SARI_LSP_SCOPE_PLANNER_ENABLED",
+            str(file_config.get("lsp_scope_planner_enabled", cls.lsp_scope_planner_enabled)),
+        ).strip().lower()
+        lsp_scope_planner_shadow_mode_raw = os.getenv(
+            "SARI_LSP_SCOPE_PLANNER_SHADOW_MODE",
+            str(file_config.get("lsp_scope_planner_shadow_mode", cls.lsp_scope_planner_shadow_mode)),
+        ).strip().lower()
+        lsp_scope_java_markers_raw = os.getenv(
+            "SARI_LSP_SCOPE_JAVA_MARKERS",
+            str(",".join(_read_tuple_setting(file_config, "lsp_scope_java_markers", cls.lsp_scope_java_markers))),
+        ).strip()
+        lsp_scope_ts_markers_raw = os.getenv(
+            "SARI_LSP_SCOPE_TS_MARKERS",
+            str(",".join(_read_tuple_setting(file_config, "lsp_scope_ts_markers", cls.lsp_scope_ts_markers))),
+        ).strip()
+        lsp_scope_vue_markers_raw = os.getenv(
+            "SARI_LSP_SCOPE_VUE_MARKERS",
+            str(",".join(_read_tuple_setting(file_config, "lsp_scope_vue_markers", cls.lsp_scope_vue_markers))),
+        ).strip()
+        lsp_scope_top_level_fallback_raw = os.getenv(
+            "SARI_LSP_SCOPE_TOP_LEVEL_FALLBACK",
+            str(file_config.get("lsp_scope_top_level_fallback", cls.lsp_scope_top_level_fallback)),
+        ).strip().lower()
         lsp_max_concurrent_starts_raw = os.getenv(
             "SARI_LSP_MAX_CONCURRENT_STARTS",
             str(file_config.get("lsp_max_concurrent_starts", 4)),
@@ -466,6 +502,9 @@ class AppConfig:
             lsp_probe_bootstrap_top_k = 3
         lsp_probe_language_priority = _parse_csv_setting(lsp_probe_language_priority_raw, cls.lsp_probe_language_priority)
         lsp_probe_l1_languages = _parse_csv_setting(lsp_probe_l1_languages_raw, cls.lsp_probe_l1_languages)
+        lsp_scope_java_markers = _parse_csv_setting(lsp_scope_java_markers_raw, cls.lsp_scope_java_markers)
+        lsp_scope_ts_markers = _parse_csv_setting(lsp_scope_ts_markers_raw, cls.lsp_scope_ts_markers)
+        lsp_scope_vue_markers = _parse_csv_setting(lsp_scope_vue_markers_raw, cls.lsp_scope_vue_markers)
         l3_supported_languages = _parse_csv_setting(l3_supported_languages_raw, cls.l3_supported_languages)
         try:
             lsp_max_concurrent_starts = min(4, max(1, int(lsp_max_concurrent_starts_raw)))
@@ -637,6 +676,12 @@ class AppConfig:
             lsp_probe_bootstrap_top_k=lsp_probe_bootstrap_top_k,
             lsp_probe_language_priority=lsp_probe_language_priority,
             lsp_probe_l1_languages=lsp_probe_l1_languages,
+            lsp_scope_planner_enabled=lsp_scope_planner_enabled_raw in {"1", "true", "yes", "on"},
+            lsp_scope_planner_shadow_mode=lsp_scope_planner_shadow_mode_raw in {"1", "true", "yes", "on"},
+            lsp_scope_java_markers=lsp_scope_java_markers,
+            lsp_scope_ts_markers=lsp_scope_ts_markers,
+            lsp_scope_vue_markers=lsp_scope_vue_markers,
+            lsp_scope_top_level_fallback=lsp_scope_top_level_fallback_raw in {"1", "true", "yes", "on"},
             lsp_max_concurrent_starts=lsp_max_concurrent_starts,
             lsp_max_concurrent_l1_probes=lsp_max_concurrent_l1_probes,
             orphan_ppid_check_interval_sec=orphan_check_sec,
