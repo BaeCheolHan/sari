@@ -109,9 +109,12 @@ def test_app_config_loads_json_and_env_override(tmp_path: Path, monkeypatch) -> 
     monkeypatch.setenv("SARI_LSP_SCOPE_TS_MARKERS", "package.json,tsconfig.json")
     monkeypatch.setenv("SARI_LSP_SCOPE_VUE_MARKERS", "package.json,vue.config.js")
     monkeypatch.setenv("SARI_LSP_SCOPE_TOP_LEVEL_FALLBACK", "1")
+    monkeypatch.setenv("SARI_LSP_SCOPE_ACTIVE_LANGUAGES", "java")
     monkeypatch.setenv("SARI_LSP_SESSION_BROKER_ENABLED", "1")
     monkeypatch.setenv("SARI_LSP_SESSION_BROKER_METRICS_ENABLED", "1")
     monkeypatch.setenv("SARI_LSP_BROKER_OPTIONAL_SCAFFOLDING_ENABLED", "1")
+    monkeypatch.setenv("SARI_LSP_BROKER_BATCH_THROUGHPUT_MODE_ENABLED", "1")
+    monkeypatch.setenv("SARI_LSP_BROKER_BATCH_THROUGHPUT_PENDING_THRESHOLD", "6")
     monkeypatch.setenv("SARI_LSP_HOTNESS_EVENT_WINDOW_SEC", "12")
     monkeypatch.setenv("SARI_LSP_HOTNESS_DECAY_WINDOW_SEC", "45")
     monkeypatch.setenv("SARI_LSP_BROKER_BACKLOG_MIN_SHARE", "0.25")
@@ -177,9 +180,12 @@ def test_app_config_loads_json_and_env_override(tmp_path: Path, monkeypatch) -> 
     assert config.lsp_scope_ts_markers == ("package.json", "tsconfig.json")
     assert config.lsp_scope_vue_markers == ("package.json", "vue.config.js")
     assert config.lsp_scope_top_level_fallback is True
+    assert config.lsp_scope_active_languages == ("java",)
     assert config.lsp_session_broker_enabled is True
     assert config.lsp_session_broker_metrics_enabled is True
     assert config.lsp_broker_optional_scaffolding_enabled is True
+    assert config.lsp_broker_batch_throughput_mode_enabled is True
+    assert config.lsp_broker_batch_throughput_pending_threshold == 6
     assert config.lsp_hotness_event_window_sec == pytest.approx(12.0)
     assert config.lsp_hotness_decay_window_sec == pytest.approx(45.0)
     assert config.lsp_broker_backlog_min_share == pytest.approx(0.25)

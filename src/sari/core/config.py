@@ -97,9 +97,12 @@ class AppConfig:
     lsp_scope_ts_markers: tuple[str, ...] = ("tsconfig.json", "jsconfig.json", "package.json")
     lsp_scope_vue_markers: tuple[str, ...] = ("vue.config.js", "vite.config.ts", "package.json", "tsconfig.json")
     lsp_scope_top_level_fallback: bool = True
+    lsp_scope_active_languages: tuple[str, ...] = ()
     lsp_session_broker_enabled: bool = True
     lsp_session_broker_metrics_enabled: bool = True
     lsp_broker_optional_scaffolding_enabled: bool = False
+    lsp_broker_batch_throughput_mode_enabled: bool = False
+    lsp_broker_batch_throughput_pending_threshold: int = 4
     lsp_hotness_event_window_sec: float = 10.0
     lsp_hotness_decay_window_sec: float = 30.0
     lsp_broker_backlog_min_share: float = 0.2
@@ -327,6 +330,10 @@ class AppConfig:
             "SARI_LSP_SCOPE_TOP_LEVEL_FALLBACK",
             str(file_config.get("lsp_scope_top_level_fallback", cls.lsp_scope_top_level_fallback)),
         ).strip().lower()
+        lsp_scope_active_languages_raw = os.getenv(
+            "SARI_LSP_SCOPE_ACTIVE_LANGUAGES",
+            str(",".join(_read_tuple_setting(file_config, "lsp_scope_active_languages", cls.lsp_scope_active_languages))),
+        ).strip()
         lsp_session_broker_enabled_raw = os.getenv(
             "SARI_LSP_SESSION_BROKER_ENABLED",
             str(file_config.get("lsp_session_broker_enabled", cls.lsp_session_broker_enabled)),
@@ -339,6 +346,24 @@ class AppConfig:
             "SARI_LSP_BROKER_OPTIONAL_SCAFFOLDING_ENABLED",
             str(file_config.get("lsp_broker_optional_scaffolding_enabled", cls.lsp_broker_optional_scaffolding_enabled)),
         ).strip().lower()
+        lsp_broker_batch_throughput_mode_enabled_raw = os.getenv(
+            "SARI_LSP_BROKER_BATCH_THROUGHPUT_MODE_ENABLED",
+            str(
+                file_config.get(
+                    "lsp_broker_batch_throughput_mode_enabled",
+                    cls.lsp_broker_batch_throughput_mode_enabled,
+                )
+            ),
+        ).strip().lower()
+        lsp_broker_batch_throughput_pending_threshold_raw = os.getenv(
+            "SARI_LSP_BROKER_BATCH_THROUGHPUT_PENDING_THRESHOLD",
+            str(
+                file_config.get(
+                    "lsp_broker_batch_throughput_pending_threshold",
+                    cls.lsp_broker_batch_throughput_pending_threshold,
+                )
+            ),
+        ).strip()
         lsp_hotness_event_window_sec_raw = os.getenv(
             "SARI_LSP_HOTNESS_EVENT_WINDOW_SEC",
             str(file_config.get("lsp_hotness_event_window_sec", cls.lsp_hotness_event_window_sec)),
@@ -630,6 +655,7 @@ class AppConfig:
         lsp_scope_java_markers = _parse_csv_setting(lsp_scope_java_markers_raw, cls.lsp_scope_java_markers)
         lsp_scope_ts_markers = _parse_csv_setting(lsp_scope_ts_markers_raw, cls.lsp_scope_ts_markers)
         lsp_scope_vue_markers = _parse_csv_setting(lsp_scope_vue_markers_raw, cls.lsp_scope_vue_markers)
+        lsp_scope_active_languages = _parse_csv_setting(lsp_scope_active_languages_raw, cls.lsp_scope_active_languages)
         try:
             lsp_hotness_event_window_sec = max(1.0, float(lsp_hotness_event_window_sec_raw))
         except ValueError:
@@ -690,6 +716,10 @@ class AppConfig:
             lsp_broker_vue_sticky_ttl_sec = cls.lsp_broker_vue_sticky_ttl_sec
             lsp_broker_vue_switch_cooldown_sec = cls.lsp_broker_vue_switch_cooldown_sec
             lsp_broker_vue_min_lease_ms = cls.lsp_broker_vue_min_lease_ms
+        try:
+            lsp_broker_batch_throughput_pending_threshold = max(1, int(lsp_broker_batch_throughput_pending_threshold_raw))
+        except ValueError:
+            lsp_broker_batch_throughput_pending_threshold = cls.lsp_broker_batch_throughput_pending_threshold
         l3_supported_languages = _parse_csv_setting(l3_supported_languages_raw, cls.l3_supported_languages)
         try:
             lsp_max_concurrent_starts = min(4, max(1, int(lsp_max_concurrent_starts_raw)))
@@ -867,9 +897,12 @@ class AppConfig:
             lsp_scope_ts_markers=lsp_scope_ts_markers,
             lsp_scope_vue_markers=lsp_scope_vue_markers,
             lsp_scope_top_level_fallback=lsp_scope_top_level_fallback_raw in {"1", "true", "yes", "on"},
+            lsp_scope_active_languages=lsp_scope_active_languages,
             lsp_session_broker_enabled=lsp_session_broker_enabled_raw in {"1", "true", "yes", "on"},
             lsp_session_broker_metrics_enabled=lsp_session_broker_metrics_enabled_raw in {"1", "true", "yes", "on"},
             lsp_broker_optional_scaffolding_enabled=lsp_broker_optional_scaffolding_enabled_raw in {"1", "true", "yes", "on"},
+            lsp_broker_batch_throughput_mode_enabled=lsp_broker_batch_throughput_mode_enabled_raw in {"1", "true", "yes", "on"},
+            lsp_broker_batch_throughput_pending_threshold=lsp_broker_batch_throughput_pending_threshold,
             lsp_hotness_event_window_sec=lsp_hotness_event_window_sec,
             lsp_hotness_decay_window_sec=lsp_hotness_decay_window_sec,
             lsp_broker_backlog_min_share=lsp_broker_backlog_min_share,

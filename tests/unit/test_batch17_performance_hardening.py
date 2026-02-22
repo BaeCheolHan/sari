@@ -2817,3 +2817,138 @@ def test_solid_lsp_probe_worker_uses_scope_planner_runtime_root() -> None:
     assert hub.prewarm_roots == ["/workspace/repo-a/module-x"]
     assert hub.get_or_start_roots == ["/workspace/repo-a/module-x", "/workspace/repo-a/module-x"]
     assert hub.lsp.last_relative_path == "src/App.java"
+
+
+def test_solid_lsp_backend_scope_planner_can_limit_active_languages() -> None:
+    """PR3.3: scope planner 활성 언어 제한 시 비대상 언어는 repo_root 유지해야 한다."""
+
+    class _FakeLsp:
+        def request_document_symbols(self, relative_path: str):  # noqa: ANN001
+            del relative_path
+            class _Req:
+                def iter_symbols(self_inner):  # noqa: ANN001
+                    del self_inner
+                    return iter([])
+            return _Req()
+
+    class _FakeHub:
+        def __init__(self) -> None:
+            self.last_repo_root: str | None = None
+
+        def resolve_language(self, relative_path: str) -> Language:
+            if relative_path.endswith(".ts"):
+                return Language.TYPESCRIPT
+            return Language.JAVA
+
+        def get_or_start(self, language: Language, repo_root: str, request_kind: str = "indexing"):  # noqa: ANN001
+            del language, request_kind
+            self.last_repo_root = repo_root
+            return _FakeLsp()
+
+        def prewarm_language_pool(self, language: Language, repo_root: str) -> None:
+            del language, repo_root
+
+        def get_metrics(self) -> dict[str, int]:
+            return {}
+
+    class _FakePlanner:
+        def resolve(self, *, workspace_repo_root: str, relative_path: str, language: Language):  # noqa: ANN001
+            del relative_path, language
+
+            class _Result:
+                lsp_scope_root = workspace_repo_root + "/ts-app"
+                strategy = "marker"
+                marker_file = "tsconfig.json"
+
+            return _Result()
+
+    hub = _FakeHub()
+    backend = SolidLspExtractionBackend(hub=hub)  # type: ignore[arg-type]
+    backend.configure_lsp_scope_planner(planner=_FakePlanner(), enabled=True, shadow_mode=False)
+    backend.configure_scope_runtime_policy(active_languages=("java",))  # typescript는 제외
+
+    result = backend.extract(repo_root="/workspace/repo-a", relative_path="web/main.ts", content_hash="h1")
+    assert result.error_message is None
+    assert hub.last_repo_root == "/workspace/repo-a", "unlisted language should bypass planner application"
+
+
+def test_solid_lsp_backend_broker_throughput_mode_flag_passed_for_large_backlog_only() -> None:
+    """PR3.3: batch throughput mode는 backlog lane + 충분한 pending 힌트에서만 broker에 전달된다."""
+
+    class _FakeLsp:
+        def request_document_symbols(self, relative_path: str):  # noqa: ANN001
+            del relative_path
+            class _Req:
+                def iter_symbols(self_inner):  # noqa: ANN001
+                    del self_inner
+                    return iter([])
+            return _Req()
+
+    class _FakeHub:
+        def resolve_language(self, relative_path: str) -> Language:
+            del relative_path
+            return Language.JAVA
+
+        def get_or_start(self, language: Language, repo_root: str, request_kind: str = "indexing"):  # noqa: ANN001
+            del language, repo_root, request_kind
+            return _FakeLsp()
+
+        def prewarm_language_pool(self, language: Language, repo_root: str) -> None:
+            del language, repo_root
+
+        def get_metrics(self) -> dict[str, int]:
+            return {}
+
+    class _Lease:
+        def __init__(self, seen: list[bool], throughput_mode: bool) -> None:
+            self.granted = True
+            self.reason = "admitted"
+            self._seen = seen
+            self._mode = throughput_mode
+
+        def __enter__(self):  # noqa: ANN001
+            self._seen.append(self._mode)
+            return self
+
+        def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
+            return False
+
+    class _FakeBroker:
+        def __init__(self) -> None:
+            self.seen_modes: list[bool] = []
+
+        def is_profiled_language(self, language: Language) -> bool:
+            return language == Language.JAVA
+
+        def lease(self, *, language: Language, lsp_scope_root: str, lane: str, hotness_score: float, pending_jobs_in_scope: int, throughput_mode: bool = False):  # noqa: ANN001
+            del language, lsp_scope_root, lane, hotness_score, pending_jobs_in_scope
+            return _Lease(self.seen_modes, throughput_mode)
+
+    @dataclass
+    class _Job:
+        repo_root: str
+        relative_path: str
+
+    backend = SolidLspExtractionBackend(hub=_FakeHub())  # type: ignore[arg-type]
+    broker = _FakeBroker()
+    backend.configure_session_runtime(
+        session_broker=broker,  # type: ignore[arg-type]
+        watcher_hotness_tracker=WatcherHotnessTracker(now_monotonic=time.monotonic),
+        enabled=True,
+        batch_throughput_mode_enabled=True,
+        batch_throughput_pending_threshold=4,
+    )
+
+    # small backlog -> False
+    backend.prime_l3_group_pending_hints(group_jobs=[_Job("/workspace/repo", "A.java")])
+    _ = backend.extract(repo_root="/workspace/repo", relative_path="A.java", content_hash="h1")
+    # large backlog -> True
+    backend.prime_l3_group_pending_hints(group_jobs=[
+        _Job("/workspace/repo", "B.java"),
+        _Job("/workspace/repo", "C.java"),
+        _Job("/workspace/repo", "D.java"),
+        _Job("/workspace/repo", "E.java"),
+    ])
+    _ = backend.extract(repo_root="/workspace/repo", relative_path="B.java", content_hash="h2")
+
+    assert broker.seen_modes[:2] == [False, True]

@@ -117,10 +117,13 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
         self._session_broker: LspSessionBroker | None = None
         self._watcher_hotness_tracker: WatcherHotnessTracker | None = None
         self._session_broker_enabled = False
+        self._batch_broker_throughput_mode_enabled = False
+        self._batch_broker_pending_threshold = 4
         self._broker_guard_reject_count = 0
         self._broker_parallelism_guard_skip_count = 0
         self._l3_scope_pending_hint_lock = threading.Lock()
         self._l3_scope_pending_hints: dict[tuple[str, str], int] = {}
+        self._scope_active_languages: set[str] | None = None
 
     def extract(self, repo_root: str, relative_path: str, content_hash: str) -> LspExtractionResultDTO:
         normalized_relative_path = normalize_repo_relative_path(relative_path)
@@ -282,17 +285,29 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
         session_broker: LspSessionBroker | None,
         watcher_hotness_tracker: WatcherHotnessTracker | None,
         enabled: bool,
+        batch_throughput_mode_enabled: bool = False,
+        batch_throughput_pending_threshold: int = 4,
     ) -> None:
         """PR3 baseline: broker/hotness를 backend에 주입한다."""
         self._session_broker = session_broker
         self._watcher_hotness_tracker = watcher_hotness_tracker
         self._session_broker_enabled = bool(enabled) and session_broker is not None
+        self._batch_broker_throughput_mode_enabled = bool(batch_throughput_mode_enabled)
+        self._batch_broker_pending_threshold = max(1, int(batch_throughput_pending_threshold))
         set_guard = getattr(self._hub, "set_scale_out_guard", None)
         if callable(set_guard):
             if self._session_broker_enabled and session_broker is not None:
                 set_guard(lambda language, _repo_root: bool(session_broker.is_profiled_language(language)))
             else:
                 set_guard(None)
+
+    def configure_scope_runtime_policy(self, *, active_languages: tuple[str, ...] | None = None) -> None:
+        """PR3.3 baseline: planner 실제 적용 언어를 제한한다 (예: java-only)."""
+        if active_languages is None:
+            self._scope_active_languages = None
+            return
+        normalized = {str(x).strip().lower() for x in active_languages if str(x).strip()}
+        self._scope_active_languages = normalized if normalized else None
 
     def _normalized_scope_candidate_dir(self, *, repo_root: str, relative_path: str) -> str:
         normalized_relative = normalize_repo_relative_path(relative_path)
@@ -326,6 +341,8 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
             return (override_scope_root, runtime_relative_path)
         planner = self._lsp_scope_planner
         if planner is None or not self._lsp_scope_planner_enabled:
+            return (repo_root, normalized_relative_path)
+        if self._scope_active_languages is not None and language.value.lower() not in self._scope_active_languages:
             return (repo_root, normalized_relative_path)
         try:
             with self._perf_tracer.span(
@@ -424,7 +441,11 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
                     hotness = tracker.get_scope_hotness(language=language, lsp_scope_root=runtime_scope_root)
                 except Exception:
                     hotness = 0.0
-            throughput_mode = lane.lower() == "backlog" and int(pending_jobs_in_scope) >= 4
+            throughput_mode = (
+                self._batch_broker_throughput_mode_enabled
+                and lane.lower() == "backlog"
+                and int(pending_jobs_in_scope) >= self._batch_broker_pending_threshold
+            )
             with broker.lease(
                 language=language,
                 lsp_scope_root=runtime_scope_root,
