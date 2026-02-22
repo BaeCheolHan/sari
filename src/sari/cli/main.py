@@ -129,6 +129,7 @@ def _build_services() -> CliServiceBundle:
         l3_recent_success_ttl_sec=config.l3_recent_success_ttl_sec,
         l3_backpressure_on_interactive=config.l3_backpressure_on_interactive,
         l3_backpressure_cooldown_ms=config.l3_backpressure_cooldown_ms,
+        l3_supported_languages=config.l3_supported_languages,
         lsp_probe_bootstrap_file_window=config.lsp_probe_bootstrap_file_window,
         lsp_probe_bootstrap_top_k=config.lsp_probe_bootstrap_top_k,
         lsp_probe_language_priority=config.lsp_probe_language_priority,

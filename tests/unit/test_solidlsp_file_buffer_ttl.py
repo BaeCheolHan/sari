@@ -39,6 +39,20 @@ def test_open_file_does_not_close_immediately_when_ref_count_zero(tmp_path: Path
     assert len(server.open_file_buffers) == 1
 
 
+def test_open_file_reuses_idle_buffer_with_zero_ref_count(tmp_path: Path) -> None:
+    """ref_count=0으로 유휴 상태인 기존 버퍼를 다시 열 수 있어야 한다."""
+    file_path = tmp_path / "a.py"
+    file_path.write_text("print('a')\n", encoding="utf-8")
+    server = _DummyLanguageServer(repo_root=str(tmp_path), ttl_sec=60.0, max_open=16)
+
+    with server.open_file("a.py", open_in_ls=False):
+        pass
+    with server.open_file("a.py", open_in_ls=False):
+        pass
+
+    assert len(server.open_file_buffers) == 1
+
+
 def test_open_file_eviction_runs_after_ttl(tmp_path: Path) -> None:
     """TTL이 지난 유휴 버퍼는 다음 open_file 진입 시 정리되어야 한다."""
     first = tmp_path / "a.py"

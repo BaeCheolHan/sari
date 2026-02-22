@@ -7,8 +7,10 @@ from threading import Lock
 from typing import Callable
 
 from sari.core.models import PipelineMetricsDTO
+from sari.services.collection.perf_trace import trace_methods
 
 
+@trace_methods("metrics_service_fn")
 class PipelineMetricsService:
     """진행률/ETA/처리량 계산 책임을 담당한다."""
 
@@ -74,10 +76,12 @@ class PipelineMetricsService:
         l2_coverage_bps, l3_coverage_bps = self._compute_coverage_bps()
         state_counts = self._file_repo.get_enrich_state_counts()
         total_files = int(sum(state_counts.values()))
-        l2_ready_count = int(state_counts.get("BODY_READY", 0)) + int(state_counts.get("LSP_READY", 0)) + int(state_counts.get("TOOL_READY", 0))
+        l3_skipped_count = int(state_counts.get("L3_SKIPPED", 0))
+        l2_ready_count = int(state_counts.get("BODY_READY", 0)) + int(state_counts.get("LSP_READY", 0)) + int(state_counts.get("TOOL_READY", 0)) + l3_skipped_count
         l3_ready_count = int(state_counts.get("LSP_READY", 0)) + int(state_counts.get("TOOL_READY", 0))
+        l3_total = max(0, total_files - l3_skipped_count)
         remaining_jobs_l2 = max(0, total_files - l2_ready_count)
-        remaining_jobs_l3 = max(0, total_files - l3_ready_count)
+        remaining_jobs_l3 = max(0, l3_total - l3_ready_count)
         progress_percent_l2 = float(l2_coverage_bps) / 100.0
         progress_percent_l3 = float(l3_coverage_bps) / 100.0
         l3_backlog_count = int(self._l3_queue_size())

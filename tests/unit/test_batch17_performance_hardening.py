@@ -5,6 +5,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
+import threading
 import sqlite3
 import time
 
@@ -314,6 +315,96 @@ def test_solid_lsp_extraction_backend_force_returns_ready_after_recent_success()
 
     assert first == "scheduled"
     assert forced == "ready"
+
+
+def test_solid_lsp_extraction_backend_prewarm_allows_parallel_for_different_keys() -> None:
+    """서로 다른 (repo, language) key는 prewarm을 병렬 수행할 수 있어야 한다."""
+
+    class _FakeHub:
+        def __init__(self) -> None:
+            self.active = 0
+            self.max_active = 0
+            self.calls = 0
+            self.lock = threading.Lock()
+            self.gate = threading.Event()
+
+        def prewarm_language_pool(self, language: Language, repo_root: str) -> None:
+            _ = (language, repo_root)
+            with self.lock:
+                self.active += 1
+                self.calls += 1
+                if self.active > self.max_active:
+                    self.max_active = self.active
+            self.gate.wait(timeout=1.0)
+            with self.lock:
+                self.active -= 1
+
+    hub = _FakeHub()
+    backend = SolidLspExtractionBackend(hub=hub)  # type: ignore[arg-type]
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(backend._ensure_prewarm, Language.PYTHON, "/repo-a")
+        second = executor.submit(backend._ensure_prewarm, Language.GO, "/repo-b")
+        deadline = time.monotonic() + 1.0
+        while hub.max_active < 2 and time.monotonic() < deadline:
+            time.sleep(0.005)
+        hub.gate.set()
+        first.result()
+        second.result()
+
+    assert hub.calls == 2
+    assert hub.max_active >= 2
+
+
+def test_solid_lsp_extraction_backend_probe_inflight_persists_until_l1_finishes() -> None:
+    """L1 probe가 끝날 때까지 inflight 상태를 유지해야 한다."""
+
+    class _Symbols:
+        def __init__(self, started: threading.Event, gate: threading.Event) -> None:
+            self._started = started
+            self._gate = gate
+
+        def iter_symbols(self) -> list[dict[str, object]]:
+            self._started.set()
+            self._gate.wait(timeout=1.0)
+            return []
+
+    class _FakeLsp:
+        def __init__(self, started: threading.Event, gate: threading.Event) -> None:
+            self._started = started
+            self._gate = gate
+
+        def request_document_symbols(self, relative_path: str) -> _Symbols:
+            del relative_path
+            return _Symbols(self._started, self._gate)
+
+    class _FakeHub:
+        def __init__(self) -> None:
+            self.started = threading.Event()
+            self.gate = threading.Event()
+
+        def get_or_start(self, language: Language, repo_root: str, request_kind: str = "indexing") -> _FakeLsp:
+            del language, repo_root, request_kind
+            return _FakeLsp(self.started, self.gate)
+
+        def prewarm_language_pool(self, language: Language, repo_root: str) -> None:
+            del language, repo_root
+
+    hub = _FakeHub()
+    backend = SolidLspExtractionBackend(hub=hub, probe_workers=1, l1_workers=1)  # type: ignore[arg-type]
+    scheduled = backend.schedule_probe_for_file(repo_root="/repo", relative_path="a.go")
+    assert scheduled == "scheduled"
+
+    assert hub.started.wait(timeout=1.0)
+    assert backend.is_probe_inflight_for_file(repo_root="/repo", relative_path="a.go") is True
+
+    hub.gate.set()
+    deadline = time.monotonic() + 1.0
+    while backend.is_probe_inflight_for_file(repo_root="/repo", relative_path="a.go") and time.monotonic() < deadline:
+        time.sleep(0.005)
+    backend.shutdown_probe_executor()
+
+    assert backend.is_probe_inflight_for_file(repo_root="/repo", relative_path="a.go") is False
 
 
 def _policy() -> CollectionPolicyDTO:
@@ -704,6 +795,106 @@ def test_enrich_l3_skips_recent_successful_same_hash(tmp_path: Path) -> None:
     processed = service.process_enrich_jobs_l3(limit=10)
 
     assert processed >= 1
+    assert backend.calls == 0
+
+
+def test_enrich_l2_marks_l3_skipped_for_unsupported_extension(tmp_path: Path) -> None:
+    """확장자 미지원 파일은 L2에서 L3_SKIPPED로 종료해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_dir = tmp_path / "repo-l3-skip-ext"
+    repo_dir.mkdir()
+    (repo_dir / "notes.txt").write_text("hello\n", encoding="utf-8")
+
+    class _CountingLspBackend(LspExtractionBackend):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def extract(self, repo_root: str, relative_path: str, content_hash: str) -> LspExtractionResultDTO:
+            del repo_root, relative_path, content_hash
+            self.calls += 1
+            return LspExtractionResultDTO(symbols=[], relations=[], error_message=None)
+
+    backend = _CountingLspBackend()
+    service = FileCollectionService(
+        workspace_repo=WorkspaceRepository(db_path),
+        file_repo=FileCollectionRepository(db_path),
+        enrich_queue_repo=FileEnrichQueueRepository(db_path),
+        body_repo=FileBodyRepository(db_path),
+        lsp_repo=LspToolDataRepository(db_path),
+        readiness_repo=ToolReadinessRepository(db_path),
+        policy=CollectionPolicyDTO(
+            include_ext=(".txt",),
+            exclude_globs=("**/.git/**",),
+            max_file_size_bytes=512 * 1024,
+            scan_interval_sec=120,
+            max_enrich_batch=100,
+            retry_max_attempts=2,
+            retry_backoff_base_sec=1,
+            queue_poll_interval_ms=100,
+        ),
+        lsp_backend=backend,
+    )
+    repo_root = str(repo_dir.resolve())
+    service.scan_once(repo_root)
+    _ = service.process_enrich_jobs_l2(limit=50)
+    _ = service.process_enrich_jobs_l3(limit=50)
+
+    row = FileCollectionRepository(db_path).get_file(repo_root=repo_root, relative_path="notes.txt")
+    assert row is not None
+    assert row.enrich_state == "L3_SKIPPED"
+    readiness = ToolReadinessRepository(db_path).get_state(repo_root=repo_root, relative_path="notes.txt")
+    assert readiness is not None
+    assert readiness.list_files_ready is True
+    assert readiness.read_file_ready is True
+    assert readiness.search_symbol_ready is False
+    assert readiness.get_callers_ready is False
+    assert readiness.tool_ready is False
+    assert readiness.last_reason == "skip_unsupported_extension"
+    assert backend.calls == 0
+
+
+def test_enrich_l2_marks_l3_skipped_for_configured_unsupported_language(tmp_path: Path) -> None:
+    """설정에서 제외한 언어는 L3를 수행하지 않고 L3_SKIPPED로 종료해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_dir = tmp_path / "repo-l3-skip-lang"
+    repo_dir.mkdir()
+    (repo_dir / "a.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+
+    class _CountingLspBackend(LspExtractionBackend):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def extract(self, repo_root: str, relative_path: str, content_hash: str) -> LspExtractionResultDTO:
+            del repo_root, relative_path, content_hash
+            self.calls += 1
+            return LspExtractionResultDTO(symbols=[], relations=[], error_message=None)
+
+    backend = _CountingLspBackend()
+    service = FileCollectionService(
+        workspace_repo=WorkspaceRepository(db_path),
+        file_repo=FileCollectionRepository(db_path),
+        enrich_queue_repo=FileEnrichQueueRepository(db_path),
+        body_repo=FileBodyRepository(db_path),
+        lsp_repo=LspToolDataRepository(db_path),
+        readiness_repo=ToolReadinessRepository(db_path),
+        policy=_policy(),
+        lsp_backend=backend,
+        l3_supported_languages=("go", "java"),
+    )
+    repo_root = str(repo_dir.resolve())
+    service.scan_once(repo_root)
+    _ = service.process_enrich_jobs_l2(limit=50)
+    _ = service.process_enrich_jobs_l3(limit=50)
+
+    row = FileCollectionRepository(db_path).get_file(repo_root=repo_root, relative_path="a.py")
+    assert row is not None
+    assert row.enrich_state == "L3_SKIPPED"
+    readiness = ToolReadinessRepository(db_path).get_state(repo_root=repo_root, relative_path="a.py")
+    assert readiness is not None
+    assert readiness.last_reason == "skip_unsupported_language"
+    assert readiness.tool_ready is False
     assert backend.calls == 0
 
 

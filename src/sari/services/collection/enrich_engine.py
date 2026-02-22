@@ -17,7 +17,7 @@ from typing import Callable
 from solidlsp.ls_config import Language
 
 from sari.core.exceptions import CollectionError, ErrorContext
-from sari.core.language_registry import resolve_language_from_path
+from sari.core.language_registry import get_enabled_language_names, resolve_language_from_path
 from sari.core.models import (
     CollectedFileBodyDTO,
     EnrichStateUpdateDTO,
@@ -30,6 +30,7 @@ from sari.core.models import (
 )
 from sari.core.text_decode import decode_bytes_with_policy
 from sari.services.collection.error_policy import CollectionErrorPolicy
+from sari.services.collection.perf_trace import PerfTracer, trace_methods
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,7 @@ class _L3JobResultDTO:
     dev_error: CollectionError | None
 
 
+@trace_methods("enrich_engine_fn")
 class EnrichEngine:
     """파일 보강(L2/L3) 처리와 bootstrap 모드를 관리한다."""
 
@@ -76,6 +78,7 @@ class EnrichEngine:
         l3_recent_success_ttl_sec: int,
         l3_backpressure_on_interactive: bool,
         l3_backpressure_cooldown_ms: int,
+        l3_supported_languages: tuple[str, ...],
         lsp_probe_l1_languages: tuple[str, ...],
     ) -> None:
         """엔진 실행에 필요한 의존성을 주입받는다."""
@@ -109,7 +112,10 @@ class EnrichEngine:
         self._l3_executor_closed = False
         self._indexing_mode = "steady"
         self._bootstrap_started_at = time.monotonic()
+        self._l3_supported_languages = self._parse_l3_supported_languages(l3_supported_languages)
         self._lsp_probe_l1_languages = self._parse_lsp_probe_l1_languages(lsp_probe_l1_languages)
+        self._perf_tracer = PerfTracer(component="enrich_engine")
+        self._perf_trace_slow_job_ms = 2000.0
 
     def shutdown(self) -> None:
         """L3 전역 executor를 종료한다."""
@@ -129,6 +135,7 @@ class EnrichEngine:
 
     def process_enrich_jobs(self, limit: int) -> int:
         """L2/L3 통합 보강 작업을 수행한다."""
+        batch_started_at = time.perf_counter()
         self._assert_parent_alive("enrich_worker")
         jobs = self._enrich_queue_repo.acquire_pending(limit=limit, now_iso=now_iso8601_utc())
         jobs = self._rebalance_jobs_by_language(jobs=jobs)
@@ -142,13 +149,21 @@ class EnrichEngine:
         lsp_updates: list[LspExtractPersistDTO] = []
         readiness_updates: list[ToolReadinessStateDTO] = []
         last_flush_at = time.perf_counter()
+        flush_count = 0
+        get_file_elapsed_ms_total = 0.0
+        file_io_elapsed_ms_total = 0.0
+        decode_elapsed_ms_total = 0.0
+        extract_elapsed_ms_total = 0.0
+        flush_elapsed_ms_total = 0.0
         for job in jobs:
             processed += 1
             now_iso = now_iso8601_utc()
             started_at = time.perf_counter()
             finished_status = "FAILED"
             try:
+                get_file_started_at = time.perf_counter()
                 file_row = self._file_repo.get_file(job.repo_root, job.relative_path)
+                get_file_elapsed_ms_total += (time.perf_counter() - get_file_started_at) * 1000.0
                 if file_row is None or file_row.is_deleted:
                     done_ids.append(job.job_id)
                     finished_status = "DONE"
@@ -175,16 +190,20 @@ class EnrichEngine:
                     )
                     finished_status = "FAILED"
                     continue
+                file_io_started_at = time.perf_counter()
                 raw_bytes = file_path.read_bytes()
                 stat_now = file_path.stat()
                 file_hash_now = job.content_hash
                 if stat_now.st_mtime_ns != file_row.mtime_ns or stat_now.st_size != file_row.size_bytes:
                     file_hash_now = hashlib.sha256(raw_bytes).hexdigest()
+                file_io_elapsed_ms_total += (time.perf_counter() - file_io_started_at) * 1000.0
                 if file_hash_now != job.content_hash:
                     done_ids.append(job.job_id)
                     finished_status = "DONE"
                     continue
+                decode_started_at = time.perf_counter()
                 decoded = decode_bytes_with_policy(raw_bytes)
+                decode_elapsed_ms_total += (time.perf_counter() - decode_started_at) * 1000.0
                 content_text = decoded.text
                 deletion_hold_enabled = self._is_deletion_hold_enabled()
                 should_persist_body = self._persist_body_for_read and deletion_hold_enabled
@@ -256,7 +275,23 @@ class EnrichEngine:
                             updated_at=now_iso,
                         )
                     )
+                skip_reason = self._resolve_l3_skip_reason(job=job)
+                if skip_reason is not None:
+                    readiness_updates.append(self._build_l3_skipped_readiness(job=job, reason=skip_reason, now_iso=now_iso))
+                    state_updates.append(
+                        EnrichStateUpdateDTO(
+                            repo_root=job.repo_root,
+                            relative_path=job.relative_path,
+                            enrich_state="L3_SKIPPED",
+                            updated_at=now_iso,
+                        )
+                    )
+                    done_ids.append(job.job_id)
+                    finished_status = "DONE"
+                    continue
+                extract_started_at = time.perf_counter()
                 extraction = self._lsp_backend.extract(job.repo_root, job.relative_path, job.content_hash)
+                extract_elapsed_ms_total += (time.perf_counter() - extract_started_at) * 1000.0
                 if extraction.error_message is not None:
                     self._schedule_l1_probe_after_l3_fallback(job=job)
                     failure_now = now_iso8601_utc()
@@ -368,12 +403,22 @@ class EnrichEngine:
             finally:
                 elapsed_ms = (time.perf_counter() - started_at) * 1000.0
                 self._record_enrich_latency(elapsed_ms)
+                if elapsed_ms >= self._perf_trace_slow_job_ms:
+                    self._perf_tracer.emit(
+                        "l2l3_job_slow",
+                        repo_root=job.repo_root,
+                        relative_path=job.relative_path,
+                        status=finished_status,
+                        elapsed_ms=round(elapsed_ms, 3),
+                        attempt_count=job.attempt_count,
+                    )
                 if self._event_repo is not None:
                     self._event_repo.record_event(job_id=job.job_id, status=finished_status, latency_ms=int(elapsed_ms), created_at=now_iso8601_utc())
             should_flush_by_size = len(done_ids) + len(failed_updates) >= self._flush_batch_size
             should_flush_by_time = time.perf_counter() - last_flush_at >= self._flush_interval_sec
             should_flush_by_body = body_buffer_bytes >= self._flush_max_body_bytes
             if should_flush_by_size or should_flush_by_time or should_flush_by_body:
+                flush_started_at = time.perf_counter()
                 self._flush_enrich_buffers(
                     done_ids=done_ids,
                     failed_updates=failed_updates,
@@ -383,8 +428,11 @@ class EnrichEngine:
                     lsp_updates=lsp_updates,
                     readiness_updates=readiness_updates,
                 )
+                flush_elapsed_ms_total += (time.perf_counter() - flush_started_at) * 1000.0
+                flush_count += 1
                 body_buffer_bytes = 0
                 last_flush_at = time.perf_counter()
+        flush_started_at = time.perf_counter()
         self._flush_enrich_buffers(
             done_ids=done_ids,
             failed_updates=failed_updates,
@@ -394,10 +442,27 @@ class EnrichEngine:
             lsp_updates=lsp_updates,
             readiness_updates=readiness_updates,
         )
+        flush_elapsed_ms_total += (time.perf_counter() - flush_started_at) * 1000.0
+        flush_count += 1
+        if self._should_perf_trace_tick():
+            self._perf_tracer.emit(
+                "l2l3_batch_done",
+                requested_limit=limit,
+                acquired_jobs=len(jobs),
+                processed=processed,
+                flush_count=flush_count,
+                get_file_elapsed_ms_total=round(get_file_elapsed_ms_total, 3),
+                file_io_elapsed_ms_total=round(file_io_elapsed_ms_total, 3),
+                decode_elapsed_ms_total=round(decode_elapsed_ms_total, 3),
+                extract_elapsed_ms_total=round(extract_elapsed_ms_total, 3),
+                flush_elapsed_ms_total=round(flush_elapsed_ms_total, 3),
+                elapsed_ms=round((time.perf_counter() - batch_started_at) * 1000.0, 3),
+            )
         return processed
 
     def process_enrich_jobs_l2(self, limit: int) -> int:
         """L2 전용 보강 처리."""
+        batch_started_at = time.perf_counter()
         self._assert_parent_alive("enrich_worker_l2")
         jobs = self._enrich_queue_repo.acquire_pending_for_l2(limit=limit, now_iso=now_iso8601_utc())
         jobs = self._rebalance_jobs_by_language(jobs=jobs)
@@ -411,6 +476,7 @@ class EnrichEngine:
         lsp_updates: list[LspExtractPersistDTO] = []
         readiness_updates: list[ToolReadinessStateDTO] = []
         last_flush_at = time.perf_counter()
+        flush_count = 0
         for job in jobs:
             processed += 1
             now_iso = now_iso8601_utc()
@@ -503,8 +569,21 @@ class EnrichEngine:
                             updated_at=now_iso,
                         )
                     )
-                state_updates.append(EnrichStateUpdateDTO(repo_root=job.repo_root, relative_path=job.relative_path, enrich_state="BODY_READY", updated_at=now_iso))
-                self._l3_ready_queue.put(job)
+                skip_reason = self._resolve_l3_skip_reason(job=job)
+                if skip_reason is None:
+                    state_updates.append(EnrichStateUpdateDTO(repo_root=job.repo_root, relative_path=job.relative_path, enrich_state="BODY_READY", updated_at=now_iso))
+                    self._l3_ready_queue.put(job)
+                else:
+                    state_updates.append(
+                        EnrichStateUpdateDTO(
+                            repo_root=job.repo_root,
+                            relative_path=job.relative_path,
+                            enrich_state="L3_SKIPPED",
+                            updated_at=now_iso,
+                        )
+                    )
+                    readiness_updates.append(self._build_l3_skipped_readiness(job=job, reason=skip_reason, now_iso=now_iso))
+                    done_ids.append(job.job_id)
                 finished_status = "DONE"
             except (CollectionError, RuntimeError, OSError, ValueError, zlib.error) as exc:
                 failure_now = now_iso8601_utc()
@@ -545,16 +624,31 @@ class EnrichEngine:
             should_flush_by_body = body_buffer_bytes >= self._flush_max_body_bytes
             if should_flush_by_size or should_flush_by_time or should_flush_by_body:
                 self._flush_enrich_buffers(done_ids=done_ids, failed_updates=failed_updates, state_updates=state_updates, body_upserts=body_upserts, body_deletes=body_deletes, lsp_updates=lsp_updates, readiness_updates=readiness_updates)
+                flush_count += 1
                 body_buffer_bytes = 0
                 last_flush_at = time.perf_counter()
         self._flush_enrich_buffers(done_ids=done_ids, failed_updates=failed_updates, state_updates=state_updates, body_upserts=body_upserts, body_deletes=body_deletes, lsp_updates=lsp_updates, readiness_updates=readiness_updates)
+        flush_count += 1
+        self._perf_tracer.emit(
+            "l2_batch_done",
+            requested_limit=limit,
+            acquired_jobs=len(jobs),
+            processed=processed,
+            flush_count=flush_count,
+            elapsed_ms=round((time.perf_counter() - batch_started_at) * 1000.0, 3),
+        )
         return processed
 
     def process_enrich_jobs_l3(self, limit: int) -> int:
         """L3 전용 보강 처리."""
+        batch_started_at = time.perf_counter()
         self._assert_parent_alive("enrich_worker_l3")
+        acquire_started_at = time.perf_counter()
         jobs = self._acquire_l3_jobs(limit=limit)
+        acquire_elapsed_ms = (time.perf_counter() - acquire_started_at) * 1000.0
+        rebalance_started_at = time.perf_counter()
         jobs = self._rebalance_jobs_by_language(jobs=jobs)
+        rebalance_elapsed_ms = (time.perf_counter() - rebalance_started_at) * 1000.0
         processed = 0
         done_ids: list[str] = []
         failed_updates: list[FileEnrichFailureUpdateDTO] = []
@@ -564,8 +658,20 @@ class EnrichEngine:
         lsp_updates: list[LspExtractPersistDTO] = []
         readiness_updates: list[ToolReadinessStateDTO] = []
         last_flush_at = time.perf_counter()
+        flush_count = 0
+        group_count = 0
         grouped_jobs = self._group_jobs_by_repo_and_language(jobs=jobs)
+        self._perf_tracer.emit(
+            "l3_batch_start",
+            requested_limit=limit,
+            acquired_jobs=len(jobs),
+            group_count=len(grouped_jobs),
+            acquire_elapsed_ms=round(acquire_elapsed_ms, 3),
+            rebalance_elapsed_ms=round(rebalance_elapsed_ms, 3),
+        )
         for group in grouped_jobs:
+            group_count += 1
+            group_started_at = time.perf_counter()
             self._set_group_bulk_mode(group=group, enabled=True)
             group_parallelism = self._resolve_l3_parallelism(group)
             try:
@@ -611,8 +717,28 @@ class EnrichEngine:
             should_flush_by_time = time.perf_counter() - last_flush_at >= self._flush_interval_sec
             if should_flush_by_size or should_flush_by_time:
                 self._flush_enrich_buffers(done_ids=done_ids, failed_updates=failed_updates, state_updates=state_updates, body_upserts=body_upserts, body_deletes=body_deletes, lsp_updates=lsp_updates, readiness_updates=readiness_updates)
+                flush_count += 1
                 last_flush_at = time.perf_counter()
+            if self._perf_tracer.should_sample():
+                sample_language = self._resolve_lsp_language(group[0].relative_path) if len(group) > 0 else None
+                self._perf_tracer.emit(
+                    "l3_group_done",
+                    group_size=len(group),
+                    group_parallelism=group_parallelism,
+                    language=("other" if sample_language is None else sample_language.value),
+                    elapsed_ms=round((time.perf_counter() - group_started_at) * 1000.0, 3),
+                )
         self._flush_enrich_buffers(done_ids=done_ids, failed_updates=failed_updates, state_updates=state_updates, body_upserts=body_upserts, body_deletes=body_deletes, lsp_updates=lsp_updates, readiness_updates=readiness_updates)
+        flush_count += 1
+        self._perf_tracer.emit(
+            "l3_batch_done",
+            requested_limit=limit,
+            acquired_jobs=len(jobs),
+            processed=processed,
+            group_count=group_count,
+            flush_count=flush_count,
+            elapsed_ms=round((time.perf_counter() - batch_started_at) * 1000.0, 3),
+        )
         return processed
 
     def process_enrich_jobs_bootstrap(self, limit: int) -> int:
@@ -637,9 +763,13 @@ class EnrichEngine:
         total = int(sum(state_counts.values()))
         if total <= 0:
             return (0, 0)
-        l2_ready = int(state_counts.get("BODY_READY", 0)) + int(state_counts.get("LSP_READY", 0)) + int(state_counts.get("TOOL_READY", 0))
+        l3_skipped = int(state_counts.get("L3_SKIPPED", 0))
+        l2_ready = int(state_counts.get("BODY_READY", 0)) + int(state_counts.get("LSP_READY", 0)) + int(state_counts.get("TOOL_READY", 0)) + l3_skipped
         l3_ready = int(state_counts.get("LSP_READY", 0)) + int(state_counts.get("TOOL_READY", 0))
-        return (int(l2_ready * 10000 / total), int(l3_ready * 10000 / total))
+        l3_total = max(0, total - l3_skipped)
+        l2_bps = int(l2_ready * 10000 / total)
+        l3_bps = 10000 if l3_total <= 0 else int(l3_ready * 10000 / l3_total)
+        return (l2_bps, l3_bps)
 
     def refresh_indexing_mode(self) -> None:
         """bootstrap 전환 정책을 갱신한다."""
@@ -829,77 +959,89 @@ class EnrichEngine:
                 finished_status = "DONE"
             else:
                 now_iso = now_iso8601_utc()
-                extraction = self._lsp_backend.extract(job.repo_root, job.relative_path, job.content_hash)
-                if extraction.error_message is not None:
-                    self._schedule_l1_probe_after_l3_fallback(job=job)
-                    failure_now = now_iso8601_utc()
+                skip_reason = self._resolve_l3_skip_reason(job=job)
+                if skip_reason is not None:
                     state_update = EnrichStateUpdateDTO(
                         repo_root=job.repo_root,
                         relative_path=job.relative_path,
-                        enrich_state="FAILED",
-                        updated_at=failure_now,
-                    )
-                    failure_update = FileEnrichFailureUpdateDTO(
-                        job_id=job.job_id,
-                        error_message=extraction.error_message,
-                        now_iso=failure_now,
-                        dead_threshold=self._policy.retry_max_attempts,
-                        backoff_base_sec=self._policy.retry_backoff_base_sec,
-                    )
-                    self._error_policy.record_error_event(
-                        component="file_collection_service",
-                        phase="enrich_l3_extract",
-                        severity="error",
-                        error_code="ERR_LSP_EXTRACT_FAILED",
-                        error_message=extraction.error_message,
-                        error_type="LspExtractionError",
-                        repo_root=job.repo_root,
-                        relative_path=job.relative_path,
-                        job_id=job.job_id,
-                        attempt_count=job.attempt_count,
-                        context_data={"content_hash": job.content_hash},
-                    )
-                    if self._run_mode == "dev":
-                        dev_error = CollectionError(
-                            ErrorContext(code="ERR_LSP_EXTRACT_FAILED", message=f"LSP 추출 실패: {extraction.error_message}")
-                        )
-                else:
-                    lsp_update = LspExtractPersistDTO(
-                        repo_root=job.repo_root,
-                        relative_path=job.relative_path,
-                        content_hash=job.content_hash,
-                        symbols=extraction.symbols,
-                        relations=extraction.relations,
-                        created_at=now_iso,
-                    )
-                    readiness_update = ToolReadinessStateDTO(
-                        repo_root=job.repo_root,
-                        relative_path=job.relative_path,
-                        content_hash=job.content_hash,
-                        list_files_ready=True,
-                        read_file_ready=True,
-                        search_symbol_ready=True,
-                        get_callers_ready=True,
-                        consistency_ready=True,
-                        quality_ready=True,
-                        tool_ready=True,
-                        last_reason="ok",
+                        enrich_state="L3_SKIPPED",
                         updated_at=now_iso,
                     )
-                    if not self._is_deletion_hold_enabled():
-                        body_delete = FileBodyDeleteTargetDTO(
+                    readiness_update = self._build_l3_skipped_readiness(job=job, reason=skip_reason, now_iso=now_iso)
+                    done_id = job.job_id
+                    finished_status = "DONE"
+                else:
+                    extraction = self._lsp_backend.extract(job.repo_root, job.relative_path, job.content_hash)
+                    if extraction.error_message is not None:
+                        self._schedule_l1_probe_after_l3_fallback(job=job)
+                        failure_now = now_iso8601_utc()
+                        state_update = EnrichStateUpdateDTO(
+                            repo_root=job.repo_root,
+                            relative_path=job.relative_path,
+                            enrich_state="FAILED",
+                            updated_at=failure_now,
+                        )
+                        failure_update = FileEnrichFailureUpdateDTO(
+                            job_id=job.job_id,
+                            error_message=extraction.error_message,
+                            now_iso=failure_now,
+                            dead_threshold=self._policy.retry_max_attempts,
+                            backoff_base_sec=self._policy.retry_backoff_base_sec,
+                        )
+                        self._error_policy.record_error_event(
+                            component="file_collection_service",
+                            phase="enrich_l3_extract",
+                            severity="error",
+                            error_code="ERR_LSP_EXTRACT_FAILED",
+                            error_message=extraction.error_message,
+                            error_type="LspExtractionError",
+                            repo_root=job.repo_root,
+                            relative_path=job.relative_path,
+                            job_id=job.job_id,
+                            attempt_count=job.attempt_count,
+                            context_data={"content_hash": job.content_hash},
+                        )
+                        if self._run_mode == "dev":
+                            dev_error = CollectionError(
+                                ErrorContext(code="ERR_LSP_EXTRACT_FAILED", message=f"LSP 추출 실패: {extraction.error_message}")
+                            )
+                    else:
+                        lsp_update = LspExtractPersistDTO(
                             repo_root=job.repo_root,
                             relative_path=job.relative_path,
                             content_hash=job.content_hash,
+                            symbols=extraction.symbols,
+                            relations=extraction.relations,
+                            created_at=now_iso,
                         )
-                    state_update = EnrichStateUpdateDTO(
-                        repo_root=job.repo_root,
-                        relative_path=job.relative_path,
-                        enrich_state="TOOL_READY",
-                        updated_at=now_iso,
-                    )
-                    done_id = job.job_id
-                    finished_status = "DONE"
+                        readiness_update = ToolReadinessStateDTO(
+                            repo_root=job.repo_root,
+                            relative_path=job.relative_path,
+                            content_hash=job.content_hash,
+                            list_files_ready=True,
+                            read_file_ready=True,
+                            search_symbol_ready=True,
+                            get_callers_ready=True,
+                            consistency_ready=True,
+                            quality_ready=True,
+                            tool_ready=True,
+                            last_reason="ok",
+                            updated_at=now_iso,
+                        )
+                        if not self._is_deletion_hold_enabled():
+                            body_delete = FileBodyDeleteTargetDTO(
+                                repo_root=job.repo_root,
+                                relative_path=job.relative_path,
+                                content_hash=job.content_hash,
+                            )
+                        state_update = EnrichStateUpdateDTO(
+                            repo_root=job.repo_root,
+                            relative_path=job.relative_path,
+                            enrich_state="TOOL_READY",
+                            updated_at=now_iso,
+                        )
+                        done_id = job.job_id
+                        finished_status = "DONE"
         except (CollectionError, RuntimeError, OSError, ValueError, zlib.error) as exc:
             failure_now = now_iso8601_utc()
             state_update = EnrichStateUpdateDTO(
@@ -933,6 +1075,15 @@ class EnrichEngine:
                 dev_error = CollectionError(ErrorContext(code="ERR_ENRICH_L3_FAILED", message=f"L3 처리 실패: {exc}"))
         elapsed_ms = (time.perf_counter() - started_at) * 1000.0
         self._record_enrich_latency(elapsed_ms)
+        if elapsed_ms >= self._perf_trace_slow_job_ms:
+            self._perf_tracer.emit(
+                "l3_job_slow",
+                repo_root=job.repo_root,
+                relative_path=job.relative_path,
+                status=finished_status,
+                elapsed_ms=round(elapsed_ms, 3),
+                attempt_count=job.attempt_count,
+            )
         if self._event_repo is not None:
             self._event_repo.record_event(
                 job_id=job.job_id,
@@ -978,6 +1129,14 @@ class EnrichEngine:
         except (RuntimeError, OSError, ValueError, TypeError):
             return
 
+    def _should_perf_trace_tick(self) -> bool:
+        """테스트용 래퍼: 트레이스 샘플링 틱을 반환한다."""
+        return self._perf_tracer.should_sample()
+
+    def _perf_trace(self, event: str, **fields: object) -> None:
+        """테스트용 래퍼: 성능 트레이스 로그를 남긴다."""
+        self._perf_tracer.emit(event, **fields)
+
     def _parse_lsp_probe_l1_languages(self, items: tuple[str, ...]) -> set[Language]:
         """lsp_probe_l1_languages 설정을 Language 집합으로 변환한다."""
         parsed: set[Language] = set()
@@ -989,6 +1148,77 @@ class EnrichEngine:
             if language is not None:
                 parsed.add(language)
         return parsed
+
+    def _parse_l3_supported_languages(self, items: tuple[str, ...]) -> set[Language]:
+        """l3_supported_languages 설정을 Language 집합으로 변환한다."""
+        parsed: set[Language] = set()
+        aliases = {
+            "py": Language.PYTHON,
+            "js": Language.TYPESCRIPT,
+            "ts": Language.TYPESCRIPT,
+            "kt": Language.KOTLIN,
+            "rs": Language.RUST,
+            "cs": Language.CSHARP,
+            "rb": Language.RUBY,
+        }
+        for item in items:
+            raw = item.strip().lower()
+            if raw == "":
+                continue
+            if raw in aliases:
+                parsed.add(aliases[raw])
+                continue
+            try:
+                parsed.add(Language(raw))
+                continue
+            except ValueError:
+                pass
+            language = resolve_language_from_path(file_path=f"file.{raw}")
+            if language is not None:
+                parsed.add(language)
+        if len(parsed) > 0:
+            return parsed
+        # 잘못된 설정으로 전체가 비활성화되지 않도록 기본값으로 복구한다.
+        return {Language(name) for name in get_enabled_language_names()}
+
+    def _resolve_l3_skip_reason(self, job: FileEnrichJobDTO) -> str | None:
+        """job이 L3 추출을 건너뛰어야 하는 사유를 반환한다."""
+        language = resolve_language_from_path(file_path=job.relative_path)
+        if language is None:
+            return "skip_unsupported_extension"
+        if language not in self._l3_supported_languages:
+            return "skip_unsupported_language"
+        checker = getattr(self._lsp_backend, "is_l3_permanently_unavailable_for_file", None)
+        if callable(checker):
+            try:
+                if bool(checker(repo_root=job.repo_root, relative_path=job.relative_path)):
+                    return "skip_probe_unavailable"
+            except (RuntimeError, OSError, ValueError, TypeError):
+                return None
+        return None
+
+    def _build_l3_skipped_readiness(
+        self,
+        *,
+        job: FileEnrichJobDTO,
+        reason: str,
+        now_iso: str,
+    ) -> ToolReadinessStateDTO:
+        """L3 스킵 상태의 readiness 레코드를 생성한다."""
+        return ToolReadinessStateDTO(
+            repo_root=job.repo_root,
+            relative_path=job.relative_path,
+            content_hash=job.content_hash,
+            list_files_ready=True,
+            read_file_ready=True,
+            search_symbol_ready=False,
+            get_callers_ready=False,
+            consistency_ready=False,
+            quality_ready=False,
+            tool_ready=False,
+            last_reason=reason,
+            updated_at=now_iso,
+        )
 
     def _is_recent_tool_ready(self, job: FileEnrichJobDTO) -> bool:
         """최근 성공 상태면 L3 재추출을 건너뛸지 판단한다."""

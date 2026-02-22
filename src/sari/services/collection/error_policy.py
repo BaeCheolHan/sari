@@ -9,10 +9,12 @@ from typing import Callable
 
 from sari.core.exceptions import CollectionError
 from sari.core.models import now_iso8601_utc
+from sari.services.collection.perf_trace import trace_methods
 
 log = logging.getLogger(__name__)
 
 
+@trace_methods("error_policy_fn")
 class CollectionErrorPolicy:
     """오류 기록/중단 정책/보존 정리를 담당한다."""
 

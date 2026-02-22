@@ -445,7 +445,7 @@ class SolidLanguageServer(ABC):
         if uri in self.open_file_buffers:
             fb = self.open_file_buffers[uri]
             assert fb.uri == uri
-            assert fb.ref_count >= 1
+            assert fb.ref_count >= 0
             fb.ref_count += 1
             fb.touch()
             if open_in_ls:

@@ -5,7 +5,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from sari.core.language_registry import get_default_collection_extensions
+from sari.core.language_registry import get_default_collection_extensions, get_enabled_language_names
 
 DEFAULT_COLLECTION_EXCLUDE_GLOBS: tuple[str, ...] = (
     "**/.git/**",
@@ -69,13 +69,14 @@ class AppConfig:
     l3_recent_success_ttl_sec: int = 120
     l3_backpressure_on_interactive: bool = True
     l3_backpressure_cooldown_ms: int = 300
+    l3_supported_languages: tuple[str, ...] = get_enabled_language_names()
     lsp_file_buffer_idle_ttl_sec: float = 20.0
     lsp_file_buffer_max_open: int = 512
     lsp_java_min_major: int = 17
     lsp_probe_timeout_default_sec: float = 20.0
     lsp_probe_timeout_go_sec: float = 45.0
-    lsp_probe_workers: int = 4
-    lsp_probe_l1_workers: int = 2
+    lsp_probe_workers: int = 8
+    lsp_probe_l1_workers: int = 4
     lsp_probe_force_join_ms: int = 300
     lsp_probe_warming_retry_sec: int = 5
     lsp_probe_warming_threshold: int = 6
@@ -83,9 +84,9 @@ class AppConfig:
     lsp_probe_bootstrap_file_window: int = 256
     lsp_probe_bootstrap_top_k: int = 3
     lsp_probe_language_priority: tuple[str, ...] = ("go:1.5", "java:1.4", "kotlin:1.3")
-    lsp_probe_l1_languages: tuple[str, ...] = ("go", "java", "kotlin")
-    lsp_max_concurrent_starts: int = 2
-    lsp_max_concurrent_l1_probes: int = 2
+    lsp_probe_l1_languages: tuple[str, ...] = ("go", "java", "kotlin", "py", "rs", "ts", "js")
+    lsp_max_concurrent_starts: int = 4
+    lsp_max_concurrent_l1_probes: int = 4
     orphan_ppid_check_interval_sec: int = 1
     shutdown_join_timeout_sec: int = 2
     importance_kind_class: float = 600.0
@@ -198,6 +199,10 @@ class AppConfig:
             "SARI_L3_BACKPRESSURE_COOLDOWN_MS",
             str(file_config.get("l3_backpressure_cooldown_ms", 300)),
         ).strip()
+        l3_supported_languages_raw = os.getenv(
+            "SARI_L3_SUPPORTED_LANGUAGES",
+            str(",".join(_read_tuple_setting(file_config, "l3_supported_languages", cls.l3_supported_languages))),
+        ).strip()
         lsp_scale_out_hot_hits_raw = os.getenv(
             "SARI_LSP_SCALE_OUT_HOT_HITS",
             str(file_config.get("lsp_scale_out_hot_hits", 24)),
@@ -224,11 +229,11 @@ class AppConfig:
         ).strip()
         lsp_probe_workers_raw = os.getenv(
             "SARI_LSP_PROBE_WORKERS",
-            str(file_config.get("lsp_probe_workers", 4)),
+            str(file_config.get("lsp_probe_workers", 8)),
         ).strip()
         lsp_probe_l1_workers_raw = os.getenv(
             "SARI_LSP_PROBE_L1_WORKERS",
-            str(file_config.get("lsp_probe_l1_workers", 2)),
+            str(file_config.get("lsp_probe_l1_workers", 4)),
         ).strip()
         lsp_probe_force_join_ms_raw = os.getenv(
             "SARI_LSP_PROBE_FORCE_JOIN_MS",
@@ -264,11 +269,11 @@ class AppConfig:
         ).strip()
         lsp_max_concurrent_starts_raw = os.getenv(
             "SARI_LSP_MAX_CONCURRENT_STARTS",
-            str(file_config.get("lsp_max_concurrent_starts", 2)),
+            str(file_config.get("lsp_max_concurrent_starts", 4)),
         ).strip()
         lsp_max_concurrent_l1_probes_raw = os.getenv(
             "SARI_LSP_MAX_CONCURRENT_L1_PROBES",
-            str(file_config.get("lsp_max_concurrent_l1_probes", 2)),
+            str(file_config.get("lsp_max_concurrent_l1_probes", 4)),
         ).strip()
         orphan_check_raw = os.getenv("SARI_ORPHAN_PPID_CHECK_INTERVAL_SEC", str(file_config.get("orphan_ppid_check_interval_sec", 1))).strip()
         shutdown_join_raw = os.getenv("SARI_SHUTDOWN_JOIN_TIMEOUT_SEC", str(file_config.get("shutdown_join_timeout_sec", 2))).strip()
@@ -430,11 +435,11 @@ class AppConfig:
         try:
             lsp_probe_workers = max(1, int(lsp_probe_workers_raw))
         except ValueError:
-            lsp_probe_workers = 4
+            lsp_probe_workers = 8
         try:
             lsp_probe_l1_workers = max(1, int(lsp_probe_l1_workers_raw))
         except ValueError:
-            lsp_probe_l1_workers = 2
+            lsp_probe_l1_workers = 4
         try:
             lsp_probe_force_join_ms = max(0, int(lsp_probe_force_join_ms_raw))
         except ValueError:
@@ -461,14 +466,15 @@ class AppConfig:
             lsp_probe_bootstrap_top_k = 3
         lsp_probe_language_priority = _parse_csv_setting(lsp_probe_language_priority_raw, cls.lsp_probe_language_priority)
         lsp_probe_l1_languages = _parse_csv_setting(lsp_probe_l1_languages_raw, cls.lsp_probe_l1_languages)
+        l3_supported_languages = _parse_csv_setting(l3_supported_languages_raw, cls.l3_supported_languages)
         try:
-            lsp_max_concurrent_starts = min(2, max(1, int(lsp_max_concurrent_starts_raw)))
+            lsp_max_concurrent_starts = min(4, max(1, int(lsp_max_concurrent_starts_raw)))
         except ValueError:
-            lsp_max_concurrent_starts = 2
+            lsp_max_concurrent_starts = 4
         try:
-            lsp_max_concurrent_l1_probes = min(4, max(1, int(lsp_max_concurrent_l1_probes_raw)))
+            lsp_max_concurrent_l1_probes = min(8, max(1, int(lsp_max_concurrent_l1_probes_raw)))
         except ValueError:
-            lsp_max_concurrent_l1_probes = 2
+            lsp_max_concurrent_l1_probes = 4
         try:
             orphan_check_sec = max(1, int(orphan_check_raw))
         except ValueError:
@@ -615,6 +621,7 @@ class AppConfig:
             l3_recent_success_ttl_sec=l3_recent_success_ttl_sec,
             l3_backpressure_on_interactive=l3_backpressure_on_interactive_raw in {"1", "true", "yes", "on"},
             l3_backpressure_cooldown_ms=l3_backpressure_cooldown_ms,
+            l3_supported_languages=l3_supported_languages,
             lsp_file_buffer_idle_ttl_sec=lsp_file_buffer_idle_ttl_sec,
             lsp_file_buffer_max_open=lsp_file_buffer_max_open,
             lsp_java_min_major=lsp_java_min_major,

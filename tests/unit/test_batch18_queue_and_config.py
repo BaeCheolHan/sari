@@ -69,6 +69,7 @@ def test_app_config_loads_json_and_env_override(tmp_path: Path, monkeypatch) -> 
                 "lsp_probe_warming_threshold": 9,
                 "lsp_probe_permanent_backoff_sec": 2400,
                 "lsp_probe_l1_languages": ["go", "java"],
+                "l3_supported_languages": ["go", "java", "python"],
                 "lsp_max_concurrent_starts": 1,
                 "lsp_max_concurrent_l1_probes": 3,
             }
@@ -99,6 +100,7 @@ def test_app_config_loads_json_and_env_override(tmp_path: Path, monkeypatch) -> 
     monkeypatch.setenv("SARI_LSP_PROBE_WARMING_THRESHOLD", "10")
     monkeypatch.setenv("SARI_LSP_PROBE_PERMANENT_BACKOFF_SEC", "3600")
     monkeypatch.setenv("SARI_LSP_PROBE_L1_LANGUAGES", "go,kotlin")
+    monkeypatch.setenv("SARI_L3_SUPPORTED_LANGUAGES", "go,kotlin")
     monkeypatch.setenv("SARI_LSP_MAX_CONCURRENT_STARTS", "2")
     monkeypatch.setenv("SARI_LSP_MAX_CONCURRENT_L1_PROBES", "4")
     monkeypatch.delenv("SARI_COLLECTION_INCLUDE_EXT", raising=False)
@@ -136,6 +138,7 @@ def test_app_config_loads_json_and_env_override(tmp_path: Path, monkeypatch) -> 
     assert config.lsp_probe_warming_threshold == 10
     assert config.lsp_probe_permanent_backoff_sec == 3600
     assert config.lsp_probe_l1_languages == ("go", "kotlin")
+    assert config.l3_supported_languages == ("go", "kotlin")
     assert config.lsp_max_concurrent_starts == 2
     assert config.lsp_max_concurrent_l1_probes == 4
 
@@ -145,6 +148,11 @@ def test_app_config_default_exclude_globs_include_build_artifact_paths(tmp_path:
     home = tmp_path / "home"
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.delenv("SARI_COLLECTION_EXCLUDE_GLOBS", raising=False)
+    monkeypatch.delenv("SARI_LSP_PROBE_WORKERS", raising=False)
+    monkeypatch.delenv("SARI_LSP_PROBE_L1_WORKERS", raising=False)
+    monkeypatch.delenv("SARI_LSP_PROBE_L1_LANGUAGES", raising=False)
+    monkeypatch.delenv("SARI_LSP_MAX_CONCURRENT_STARTS", raising=False)
+    monkeypatch.delenv("SARI_LSP_MAX_CONCURRENT_L1_PROBES", raising=False)
     monkeypatch.delenv("SARI_RUN_MODE", raising=False)
 
     config = AppConfig.default()
@@ -155,4 +163,9 @@ def test_app_config_default_exclude_globs_include_build_artifact_paths(tmp_path:
     assert "**/.venv/**" in config.collection_exclude_globs
     assert "**/.idea/**" in config.collection_exclude_globs
     assert "**/.cache/**" in config.collection_exclude_globs
+    assert config.lsp_probe_workers == 8
+    assert config.lsp_probe_l1_workers == 4
+    assert config.lsp_probe_l1_languages == ("go", "java", "kotlin", "py", "rs", "ts", "js")
+    assert config.lsp_max_concurrent_starts == 4
+    assert config.lsp_max_concurrent_l1_probes == 4
     assert config.run_mode == "prod"

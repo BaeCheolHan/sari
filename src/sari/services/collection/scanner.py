@@ -16,6 +16,7 @@ from solidlsp.ls_config import Language
 
 from sari.core.exceptions import CollectionError, ErrorContext
 from sari.core.models import CandidateIndexChangeDTO, CollectionScanResultDTO, CollectedFileL1DTO, EnqueueRequestDTO, RepoIdentityDTO, now_iso8601_utc
+from sari.services.collection.perf_trace import PerfTracer, trace_methods
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,7 @@ class _ScanHashResultDTO:
     observed_at: str
 
 
+@trace_methods("l1_scanner_fn")
 class FileScanner:
     """L1 스캔 책임을 담당하는 전용 서비스."""
 
@@ -85,9 +87,11 @@ class FileScanner:
         self._bootstrap_file_window = max(1, int(bootstrap_file_window))
         self._bootstrap_top_k = max(1, int(bootstrap_top_k))
         self._language_priority_weights = language_priority_weights or {}
+        self._perf_tracer = PerfTracer(component="l1_scanner")
 
     def scan_once(self, repo_root: str) -> CollectionScanResultDTO:
         """단일 저장소 스캔을 실행한다."""
+        total_started_at = time.perf_counter()
         root = Path(repo_root).expanduser().resolve()
         if not root.exists() or not root.is_dir():
             raise CollectionError(ErrorContext(code="ERR_REPO_NOT_FOUND", message="repo 경로를 찾을 수 없습니다"))
@@ -107,6 +111,12 @@ class FileScanner:
         hash_jobs: list[_ScanHashJobDTO] = []
         language_counts: dict[Language, int] = defaultdict(int)
         seen_extensions: set[str] = set()
+        flush_calls = 0
+        flush_elapsed_ms_total = 0.0
+        prewarm_elapsed_ms = 0.0
+        delete_elapsed_ms = 0.0
+        walk_started_at = time.perf_counter()
+        self._perf_tracer.emit("scan_once_start", repo_root=str(root), scan_flush_batch_size=self._scan_flush_batch_size)
         self._schedule_bootstrap_probes(root=root, gitignore_spec=gitignore_spec)
         last_flush_at = time.perf_counter()
         for file_path in root.rglob("*"):
@@ -155,7 +165,10 @@ class FileScanner:
                 should_flush_by_size = len(l1_rows) >= self._scan_flush_batch_size
                 should_flush_by_time = time.perf_counter() - last_flush_at >= self._scan_flush_interval_sec
                 if should_flush_by_size or should_flush_by_time:
+                    flush_started_at = time.perf_counter()
                     self._flush_scan_buffers(l1_rows=l1_rows, enqueue_requests=enqueue_requests, candidate_changes=candidate_changes)
+                    flush_elapsed_ms_total += (time.perf_counter() - flush_started_at) * 1000.0
+                    flush_calls += 1
                     last_flush_at = time.perf_counter()
                 continue
             hash_jobs.append(
@@ -216,13 +229,40 @@ class FileScanner:
             should_flush_by_size = len(l1_rows) >= self._scan_flush_batch_size
             should_flush_by_time = time.perf_counter() - last_flush_at >= self._scan_flush_interval_sec
             if should_flush_by_size or should_flush_by_time:
+                flush_started_at = time.perf_counter()
                 self._flush_scan_buffers(l1_rows=l1_rows, enqueue_requests=enqueue_requests, candidate_changes=candidate_changes)
+                flush_elapsed_ms_total += (time.perf_counter() - flush_started_at) * 1000.0
+                flush_calls += 1
                 last_flush_at = time.perf_counter()
+        walk_elapsed_ms = (time.perf_counter() - walk_started_at) * 1000.0
+        flush_started_at = time.perf_counter()
         self._flush_scan_buffers(l1_rows=l1_rows, enqueue_requests=enqueue_requests, candidate_changes=candidate_changes)
+        flush_elapsed_ms_total += (time.perf_counter() - flush_started_at) * 1000.0
+        flush_calls += 1
+        prewarm_started_at = time.perf_counter()
         self._configure_lsp_prewarm_languages(repo_root=str(root), language_counts=language_counts)
+        prewarm_elapsed_ms = (time.perf_counter() - prewarm_started_at) * 1000.0
+        delete_started_at = time.perf_counter()
         deleted_count = self._file_repo.mark_missing_as_deleted(str(root), seen_paths, now_iso, scan_started_at=scan_started_at)
+        delete_elapsed_ms = (time.perf_counter() - delete_started_at) * 1000.0
         if self._candidate_index_sink is not None and deleted_count > 0:
             self._candidate_index_sink.mark_repo_dirty(str(root))
+        total_elapsed_ms = (time.perf_counter() - total_started_at) * 1000.0
+        self._perf_tracer.emit(
+            "scan_once_done",
+            repo_root=str(root),
+            scanned_count=scanned_count,
+            indexed_count=indexed_count,
+            deleted_count=deleted_count,
+            seen_paths_count=len(seen_paths),
+            hash_jobs_count=len(hash_jobs),
+            walk_elapsed_ms=round(walk_elapsed_ms, 3),
+            flush_calls=flush_calls,
+            flush_elapsed_ms_total=round(flush_elapsed_ms_total, 3),
+            prewarm_elapsed_ms=round(prewarm_elapsed_ms, 3),
+            delete_elapsed_ms=round(delete_elapsed_ms, 3),
+            total_elapsed_ms=round(total_elapsed_ms, 3),
+        )
         return CollectionScanResultDTO(scanned_count=scanned_count, indexed_count=indexed_count, deleted_count=deleted_count)
 
     def _schedule_bootstrap_probes(self, root: Path, gitignore_spec: PathSpec) -> None:

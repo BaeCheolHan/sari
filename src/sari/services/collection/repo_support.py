@@ -17,8 +17,10 @@ from sari.core.repo_resolver import resolve_repo_key
 from sari.db.repositories.pipeline_policy_repository import PipelinePolicyRepository
 from sari.db.repositories.repo_registry_repository import RepoRegistryRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
+from sari.services.collection.perf_trace import trace_methods
 
 
+@trace_methods("repo_support_fn")
 class CollectionRepoSupport:
     """repo 식별/수집 정책/LSP prewarm 보조 책임을 담당한다."""
 
@@ -145,6 +147,7 @@ class CollectionRepoSupport:
         return bool(self._policy_repo.get_policy().deletion_hold)
 
 
+@trace_methods("workspace_fanout_fn")
 class WorkspaceFanoutResolver:
     """workspace root 하위 top-level repo fan-out 대상을 판정한다."""
 
