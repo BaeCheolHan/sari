@@ -156,6 +156,7 @@ class EventWatcher:
         on_watcher_queue_overflow: Callable[[str | None, str], None],
         schedule_rescan: Callable[[str], None],
         on_watcher_file_race: Callable[[str, str, str], None] | None = None,
+        on_watcher_signal: Callable[[str, str, str, str], None] | None = None,
         workspace_sync_interval_sec: float = 1.0,
     ) -> None:
         """watcher 동작에 필요한 의존성만 주입받는다."""
@@ -177,6 +178,7 @@ class EventWatcher:
         self._on_watcher_queue_overflow = on_watcher_queue_overflow
         self._schedule_rescan = schedule_rescan
         self._on_watcher_file_race = on_watcher_file_race
+        self._on_watcher_signal = on_watcher_signal
         self._pending_rescan_roots: set[str] = set()
         self._overflow_last_by_repo: dict[str, float] = {}
         self._overflow_lock = Lock()
@@ -304,6 +306,12 @@ class EventWatcher:
             return
         relative_path = str(source_path.relative_to(matched_root).as_posix())
         key = (str(matched_root), relative_path)
+        if self._on_watcher_signal is not None:
+            try:
+                self._on_watcher_signal(event_type, str(matched_root), relative_path, str(dest_path))
+            except Exception:
+                # watcher signal feed는 best-effort (cheap signal only)
+                pass
         now_monotonic = self._now_monotonic()
         with self._debounce_lock:
             self._debounce_events[key] = (now_monotonic, event_type, dest_path)

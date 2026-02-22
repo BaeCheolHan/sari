@@ -31,9 +31,11 @@ from sari.db.repositories.repo_registry_repository import RepoRegistryRepository
 from sari.lsp.hub import LspHub
 from sari.lsp.path_normalizer import normalize_location_to_repo_relative, normalize_repo_relative_path
 from sari.services.collection import CollectionErrorPolicy, CollectionRuntimePort, EnrichEngine, EventWatcher, FileScanner, PipelineMetricsService, PipelineWorker, RuntimeManager
+from sari.services.collection.lsp_session_broker import LspBrokerLanguageProfile, LspSessionBroker
 from sari.services.collection.lsp_scope_planner import LspScopePlanner
 from sari.services.collection.perf_trace import PerfTracer
 from sari.services.collection.repo_support import CollectionRepoSupport, WorkspaceFanoutResolver
+from sari.services.collection.watcher_hotness_tracker import WatcherHotnessTracker
 from solidlsp.ls_exceptions import SolidLSPException
 log = logging.getLogger(__name__)
 
@@ -1063,6 +1065,44 @@ class FileCollectionService:
         self._throughput_samples_jobs_per_sec: list[float] = []
         self._throughput_ema_jobs_per_sec = 0.0
         self._throughput_alpha = 0.2
+        self._watcher_hotness_tracker = WatcherHotnessTracker(
+            now_monotonic=time.monotonic,
+            scope_cache_invalidator=self._invalidate_scope_caches_from_watcher_signal,
+        )
+        self._lsp_session_broker = LspSessionBroker(
+            profiles={
+                "java": LspBrokerLanguageProfile(
+                    language="java",
+                    hot_lanes=1,
+                    backlog_lanes=1,
+                    sticky_idle_ttl_sec=600.0,
+                    switch_cooldown_sec=5.0,
+                    min_lease_ms=1500,
+                ),
+                "typescript": LspBrokerLanguageProfile(
+                    language="typescript",
+                    hot_lanes=1,
+                    backlog_lanes=1,
+                    sticky_idle_ttl_sec=180.0,
+                    switch_cooldown_sec=2.0,
+                    min_lease_ms=500,
+                    shared_budget_group="ts-vue",
+                ),
+                "vue": LspBrokerLanguageProfile(
+                    language="vue",
+                    hot_lanes=1,
+                    backlog_lanes=1,
+                    sticky_idle_ttl_sec=240.0,
+                    switch_cooldown_sec=3.0,
+                    min_lease_ms=800,
+                    shared_budget_group="ts-vue",
+                ),
+            },
+            max_standby_sessions_per_lang=2,
+            max_standby_sessions_per_budget_group=2,
+            now_monotonic=time.monotonic,
+        )
+        self._lsp_session_broker.set_budget_group_active_cap("ts-vue", 2)
         self._metrics_lock = threading.Lock()
         self._worker_state = 'running'
         self._last_error_code: str | None = None
@@ -1173,6 +1213,7 @@ class FileCollectionService:
             on_watcher_queue_overflow=self._record_watcher_queue_overflow,
             schedule_rescan=self._schedule_rescan_from_watcher,
             on_watcher_file_race=self._record_watcher_file_race,
+            on_watcher_signal=self._on_watcher_signal,
         )
         self._metrics_service = PipelineMetricsService(
             refresh_indexing_mode=self._enrich_engine.refresh_indexing_mode,
@@ -1328,14 +1369,62 @@ class FileCollectionService:
 
     def _lsp_runtime_metrics_snapshot(self) -> dict[str, int]:
         """LSP 런타임 메트릭 스냅샷을 반환한다."""
+        merged: dict[str, int] = {}
         if hasattr(self._lsp_backend, "get_runtime_metrics"):
             try:
                 metrics = getattr(self._lsp_backend, "get_runtime_metrics")()
                 if isinstance(metrics, dict):
-                    return {str(key): int(value) for key, value in metrics.items()}
+                    merged.update({str(key): int(value) for key, value in metrics.items()})
             except (RuntimeError, OSError, ValueError, TypeError):
-                return {}
-        return {}
+                merged = {}
+        try:
+            merged.update(self._watcher_hotness_tracker.get_metrics())
+        except (RuntimeError, OSError, ValueError, TypeError):
+            pass
+        try:
+            merged.update(self._lsp_session_broker.get_metrics())
+        except (RuntimeError, OSError, ValueError, TypeError):
+            pass
+        return merged
+
+    def _on_watcher_signal(self, event_type: str, repo_root: str, relative_path: str, dest_path: str) -> None:
+        """watcher cheap signal을 hotness tracker로 전달한다 (Phase 1 Baseline)."""
+        del dest_path
+        language = resolve_language_from_path(file_path=relative_path)
+        scope_root = self._derive_hotness_scope_hint(repo_root=repo_root, relative_path=relative_path)
+        self._watcher_hotness_tracker.record_fs_event(
+            event_type=event_type,
+            repo_root=repo_root,
+            relative_path=relative_path,
+            language=language,
+            lsp_scope_root=scope_root,
+        )
+
+    def _invalidate_scope_caches_from_watcher_signal(self, repo_root: str, relative_path: str) -> None:
+        """삭제/이동 이벤트가 유발한 scope cache invalidation signal을 처리한다."""
+        invalidator = getattr(self._lsp_backend, "invalidate_scope_override_path", None)
+        if callable(invalidator):
+            try:
+                invalidator(repo_root=repo_root, relative_path=relative_path)
+            except (RuntimeError, OSError, ValueError, TypeError):
+                pass
+        planner = getattr(self._lsp_backend, "_lsp_scope_planner", None)
+        planner_invalidate = getattr(planner, "invalidate_path", None) if planner is not None else None
+        if callable(planner_invalidate):
+            try:
+                planner_invalidate(str((Path(repo_root) / relative_path).resolve()))
+            except (RuntimeError, OSError, ValueError, TypeError):
+                pass
+
+    def _derive_hotness_scope_hint(self, *, repo_root: str, relative_path: str) -> str | None:
+        """cheap signal용 scope 힌트(top-level fallback)."""
+        normalized = normalize_repo_relative_path(relative_path)
+        if normalized in {"", "."}:
+            return str(Path(repo_root).resolve())
+        first = normalized.split("/", 1)[0]
+        if first in {"", "."}:
+            return str(Path(repo_root).resolve())
+        return str((Path(repo_root).resolve() / first).resolve())
 
     def _record_watcher_queue_overflow(self, repo_root: str | None, src_path: str) -> None:
         """watcher 큐 overflow를 기록한다."""
