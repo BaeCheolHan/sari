@@ -686,6 +686,11 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
         metrics["scope_override_hit_count"] = int(self._scope_override_hit_count)
         metrics["broker_guard_reject_count"] = int(self._broker_guard_reject_count)
         metrics["broker_parallelism_guard_skip_count"] = int(self._broker_parallelism_guard_skip_count)
+        # PR4 baseline placeholders (metrics-only; behavior change 금지)
+        metrics.setdefault("session_cache_hit_by_tier_single", 0)
+        metrics.setdefault("session_eviction_churn_count", 0)
+        metrics.setdefault("lsp_memory_total_rss_mb", 0)
+        metrics.setdefault("lsp_memory_pressure_state", 0)
         return metrics
 
     def get_interactive_pressure(self) -> dict[str, int]:

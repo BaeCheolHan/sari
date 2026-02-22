@@ -491,6 +491,8 @@ class PipelinePerfService:
         file_repo = getattr(self._file_collection_service, "_file_repo", None)
         readiness_repo = getattr(self._file_collection_service, "_readiness_repo", None)
         lsp_repo = getattr(self._file_collection_service, "_lsp_repo", None)
+        runtime_metrics_getter = getattr(self._file_collection_service, "_lsp_runtime_metrics_snapshot", None)
+        broker_obj = getattr(self._file_collection_service, "_lsp_session_broker", None)
 
         get_state_counts = getattr(file_repo, "get_enrich_state_counts", None)
         if callable(get_state_counts):
@@ -544,8 +546,37 @@ class PipelinePerfService:
             snapshot["eligible_counts_mode"] = "deferred_split_only_phaseA"
         if len(self._last_drain_diagnostics) > 0:
             snapshot["drain"] = dict(self._last_drain_diagnostics)
+        if callable(runtime_metrics_getter):
+            try:
+                runtime_metrics = runtime_metrics_getter()
+            except (RuntimeError, OSError, ValueError, TypeError):
+                runtime_metrics = None
+            if isinstance(runtime_metrics, dict):
+                snapshot["lsp_runtime_metrics"] = {
+                    str(key): int(value) for key, value in runtime_metrics.items()
+                    if isinstance(value, (int, float))
+                }
+        broker_snapshot_getter = getattr(broker_obj, "get_snapshot", None) if broker_obj is not None else None
+        if callable(broker_snapshot_getter):
+            try:
+                broker_snapshot = broker_snapshot_getter()
+            except (RuntimeError, OSError, ValueError, TypeError):
+                broker_snapshot = None
+            if broker_snapshot is not None:
+                active_by_lang = getattr(broker_snapshot, "active_sessions_by_language", None)
+                active_by_group = getattr(broker_snapshot, "active_sessions_by_budget_group", None)
+                if isinstance(active_by_lang, dict) or isinstance(active_by_group, dict):
+                    snapshot["broker_snapshot"] = {
+                        "active_sessions_by_language": {
+                            str(k): int(v) for k, v in (active_by_lang or {}).items()
+                        },
+                        "active_sessions_by_budget_group": {
+                            str(k): int(v) for k, v in (active_by_group or {}).items()
+                        },
+                    }
         integrity_checks: dict[str, bool] = {
             "queue_running_zero": int(queue_counts.get("RUNNING", 0)) == 0,
+            "measurement_backend_real_lsp": self._resolve_workspace_backend_kind() == "SolidLspExtractionBackend",
         }
         if readiness_counts is not None and symbol_file_count is not None:
             integrity_checks["tool_ready_vs_symbol_files_match"] = int(readiness_counts.get("tool_ready_true", 0)) == int(symbol_file_count)

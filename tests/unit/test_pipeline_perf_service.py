@@ -169,6 +169,32 @@ class _FakeCollectionServiceWithRepos(_FakeCollectionService):
         self._lsp_repo = _FakeLspRepoWithCounts()
 
 
+class _FakeBrokerSnapshot:
+    def __init__(self) -> None:
+        self.active_sessions_by_language = {"java": 1, "typescript": 2}
+        self.active_sessions_by_budget_group = {"ts-vue": 2}
+
+
+class _FakeBrokerForPerfSnapshot:
+    def get_snapshot(self) -> _FakeBrokerSnapshot:
+        return _FakeBrokerSnapshot()
+
+
+class _FakeCollectionServiceWithPerfRuntimeSnapshot(_FakeCollectionServiceWithRepos):
+    def __init__(self) -> None:
+        super().__init__()
+        self._lsp_session_broker = _FakeBrokerForPerfSnapshot()
+
+    def _lsp_runtime_metrics_snapshot(self) -> dict[str, int]:
+        return {
+            "broker_active_sessions_java": 1,
+            "broker_active_budget_group_ts-vue": 2,
+            "broker_guard_reject_count": 3,
+            "session_cache_hit_by_tier_single": 0,
+            "session_eviction_churn_count": 0,
+        }
+
+
 class _FakeQueueRepositoryWithPendingDetails(_FakeQueueRepository):
     def __init__(self) -> None:
         super().__init__()
@@ -419,3 +445,31 @@ def test_pipeline_perf_integrity_snapshot_includes_pending_split_age_and_eligibl
     assert len(queue_repo.pending_split_calls) == 1
     assert len(queue_repo.pending_age_calls) == 1
     assert queue_repo.pending_split_calls[0] == queue_repo.pending_age_calls[0]
+
+
+def test_pipeline_perf_integrity_snapshot_includes_broker_snapshot_and_runtime_metrics(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    queue_repo = _FakeQueueRepositoryWithPendingDetails()
+    service = PipelinePerfService(
+        file_collection_service=_FakeCollectionServiceWithPerfRuntimeSnapshot(),
+        queue_repo=queue_repo,
+        benchmark_service=_FakeBenchmarkService(),
+        perf_repo=PipelinePerfRepository(db_path),
+        artifact_root=tmp_path / "artifacts",
+    )
+
+    snap = service._collect_workspace_integrity_snapshot()
+
+    runtime_metrics = snap.get("lsp_runtime_metrics")
+    assert isinstance(runtime_metrics, dict)
+    assert runtime_metrics["broker_guard_reject_count"] == 3
+    assert runtime_metrics["broker_active_budget_group_ts-vue"] == 2
+    # PR4 baseline: warm session/eviction 지표 자리는 존재 (값은 0 가능)
+    assert "session_cache_hit_by_tier_single" in runtime_metrics
+    assert "session_eviction_churn_count" in runtime_metrics
+
+    broker_snapshot = snap.get("broker_snapshot")
+    assert isinstance(broker_snapshot, dict)
+    assert broker_snapshot["active_sessions_by_language"]["java"] == 1
+    assert broker_snapshot["active_sessions_by_budget_group"]["ts-vue"] == 2

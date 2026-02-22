@@ -89,7 +89,13 @@ class LspSessionBroker:
         self._budget_group_members: dict[str, set[str]] = {}
         self._backlog_demand_pending: set[str] = set()
         self._hot_streak_since_backlog: dict[str, int] = {}
+        self._lane_switch_count_by_lang_lane: dict[tuple[str, str], int] = {}
+        self._defer_count_by_lang: dict[str, int] = {}
+        self._defer_count_by_lang_reason: dict[tuple[str, str], int] = {}
+        self._same_scope_reuse_count_by_lang: dict[str, int] = {}
         self._optional_cost_class_counts: dict[str, int] = {}
+        self._optional_cost_estimate_total_by_class: dict[str, int] = {}
+        self._optional_cost_latency_ms_total_by_class: dict[str, int] = {}
         self._optional_cost_obs_total = 0
         self._optional_drr_obs_total = 0
         self._optional_drr_quantum_by_lane: dict[str, int] = {"hot": 0, "backlog": 0}
@@ -160,11 +166,13 @@ class LspSessionBroker:
             if lane_key == "hot" and hot_streak_limit is not None and fairness_key in self._backlog_demand_pending:
                 hot_streak = int(self._hot_streak_since_backlog.get(fairness_key, 0))
                 if hot_streak >= hot_streak_limit:
+                    self._record_defer_locked(lang_key, "starvation_guard")
                     return LspSessionLeaseResult("", False, "starvation_guard", lang_key, lsp_scope_root, lane_key)
 
             # same-scope reuse
             for active in self._leases.values():
                 if active.language == lang_key and active.lsp_scope_root == lsp_scope_root:
+                    self._same_scope_reuse_count_by_lang[lang_key] = int(self._same_scope_reuse_count_by_lang.get(lang_key, 0)) + 1
                     lease_id = uuid.uuid4().hex
                     self._leases[lease_id] = _ActiveLease(
                         lease_id=lease_id,
@@ -188,6 +196,7 @@ class LspSessionBroker:
                 if (now - lane_state.last_switch_at_monotonic) < max(0.0, profile.switch_cooldown_sec):
                     if lane_key == "backlog" and pending_jobs_in_scope > 0:
                         self._backlog_demand_pending.add(fairness_key)
+                    self._record_defer_locked(lang_key, "cooldown")
                     return LspSessionLeaseResult("", False, "cooldown", lang_key, lsp_scope_root, lane_key)
 
             # language lane cap
@@ -210,9 +219,11 @@ class LspSessionBroker:
                     if (now - lane_active.started_at_monotonic) < min_lease_sec:
                         if lane_key == "backlog" and pending_jobs_in_scope > 0:
                             self._backlog_demand_pending.add(fairness_key)
+                        self._record_defer_locked(lang_key, "min_lease")
                         return LspSessionLeaseResult("", False, "min_lease", lang_key, lsp_scope_root, lane_key)
                 if lane_key == "backlog" and pending_jobs_in_scope > 0:
                     self._backlog_demand_pending.add(fairness_key)
+                self._record_defer_locked(lang_key, "budget_blocked")
                 return LspSessionLeaseResult("", False, "budget_blocked", lang_key, lsp_scope_root, lane_key)
 
             # shared budget group cap (Phase 1: budget only, runtime sharing 없음)
@@ -224,6 +235,7 @@ class LspSessionBroker:
                 if active_group >= group_cap:
                     if lane_key == "backlog" and pending_jobs_in_scope > 0:
                         self._backlog_demand_pending.add(fairness_key)
+                    self._record_defer_locked(lang_key, "budget_group_blocked")
                     return LspSessionLeaseResult("", False, "budget_group_blocked", lang_key, lsp_scope_root, lane_key)
 
             lease_id = uuid.uuid4().hex
@@ -235,6 +247,9 @@ class LspSessionBroker:
                 started_at_monotonic=now,
             )
             if lane_state.assigned_scope != lsp_scope_root:
+                if lane_state.assigned_scope is not None:
+                    key = (lang_key, lane_key)
+                    self._lane_switch_count_by_lang_lane[key] = int(self._lane_switch_count_by_lang_lane.get(key, 0)) + 1
                 lane_state.assigned_scope = lsp_scope_root
                 lane_state.last_switch_at_monotonic = now
             if lane_key == "backlog":
@@ -301,19 +316,41 @@ class LspSessionBroker:
             metrics[f"broker_active_sessions_{lang}"] = int(count)
         for group, count in snap.active_sessions_by_budget_group.items():
             metrics[f"broker_active_budget_group_{group}"] = int(count)
-        if self._backlog_min_share > 0.0:
-            with self._lock:
+        with self._lock:
+            if self._backlog_min_share > 0.0:
                 metrics["broker_backlog_demand_pending_keys"] = len(self._backlog_demand_pending)
+            for (lang, lane), count in self._lane_switch_count_by_lang_lane.items():
+                metrics[f"broker_lane_switch_count_{lang}_{lane}"] = int(count)
+            for lang, count in self._defer_count_by_lang.items():
+                metrics[f"broker_defer_count_{lang}"] = int(count)
+            for (lang, reason), count in self._defer_count_by_lang_reason.items():
+                metrics[f"broker_defer_reason_count_{lang}_{reason}"] = int(count)
+            for lang, count in self._same_scope_reuse_count_by_lang.items():
+                metrics[f"broker_same_scope_reuse_count_{lang}"] = int(count)
+            # PR4 baseline placeholders (metrics-only, behavior unchanged)
+            metrics.setdefault("broker_optional_slow_lane_quarantine_count", 0)
+            metrics.setdefault("broker_optional_hedge_started_count", 0)
+            metrics.setdefault("broker_optional_hedge_winner_primary_count", 0)
+            metrics.setdefault("broker_optional_hedge_winner_fallback_count", 0)
         if self._optional_scaffolding_enabled:
             with self._lock:
                 metrics["broker_optional_cost_obs_total"] = int(self._optional_cost_obs_total)
                 metrics["broker_optional_drr_obs_total"] = int(self._optional_drr_obs_total)
                 for klass, count in self._optional_cost_class_counts.items():
                     metrics[f"broker_optional_cost_class_{klass}"] = int(count)
+                for klass, total in self._optional_cost_estimate_total_by_class.items():
+                    metrics[f"broker_optional_cost_estimate_total_{klass}"] = int(total)
+                for klass, total in self._optional_cost_latency_ms_total_by_class.items():
+                    metrics[f"broker_optional_cost_latency_ms_total_{klass}"] = int(total)
                 for lane, quantum in self._optional_drr_quantum_by_lane.items():
                     metrics[f"broker_optional_drr_quantum_{lane}"] = int(quantum)
                 metrics["broker_optional_drr_deficit_keys"] = len(self._optional_drr_deficit_by_key)
         return metrics
+
+    def _record_defer_locked(self, language_key: str, reason: str) -> None:
+        self._defer_count_by_lang[language_key] = int(self._defer_count_by_lang.get(language_key, 0)) + 1
+        key = (language_key, reason)
+        self._defer_count_by_lang_reason[key] = int(self._defer_count_by_lang_reason.get(key, 0)) + 1
 
     def is_profiled_language(self, language: Language) -> bool:
         """Phase 1 baseline: 해당 언어가 broker 관리 대상인지 반환한다."""
@@ -356,13 +393,18 @@ class LspSessionBroker:
         cost_estimate: int,
     ) -> None:
         """Optional scaffolding only: DRR/cost 상태를 metrics용으로만 기록한다."""
-        del cost_estimate  # Phase 1 Optional: metrics-only scaffolding, scheduling behavior 미사용
         lane_key = lane.lower()
         with self._lock:
             self._optional_cost_obs_total += 1
             self._optional_cost_class_counts[predicted_cost_class] = int(
                 self._optional_cost_class_counts.get(predicted_cost_class, 0)
             ) + 1
+            estimate_int = int(max(0, int(cost_estimate)))
+            self._optional_cost_estimate_total_by_class[predicted_cost_class] = int(
+                self._optional_cost_estimate_total_by_class.get(predicted_cost_class, 0)
+            ) + estimate_int
+            # Phase 1 Optional: 실제 처리 지연 연결 전까지는 latency bucket 자리를 0으로 유지한다.
+            self._optional_cost_latency_ms_total_by_class.setdefault(predicted_cost_class, 0)
             self._optional_drr_obs_total += 1
             default_quantum = 2 if lane_key == "hot" else 1
             self._optional_drr_quantum_by_lane[lane_key] = int(self._optional_drr_quantum_by_lane.get(lane_key, default_quantum) or default_quantum)
