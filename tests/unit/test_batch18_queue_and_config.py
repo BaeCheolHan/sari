@@ -113,6 +113,7 @@ def test_app_config_loads_json_and_env_override(tmp_path: Path, monkeypatch) -> 
     monkeypatch.setenv("SARI_LSP_SESSION_BROKER_METRICS_ENABLED", "1")
     monkeypatch.setenv("SARI_LSP_HOTNESS_EVENT_WINDOW_SEC", "12")
     monkeypatch.setenv("SARI_LSP_HOTNESS_DECAY_WINDOW_SEC", "45")
+    monkeypatch.setenv("SARI_LSP_BROKER_BACKLOG_MIN_SHARE", "0.25")
     monkeypatch.setenv("SARI_LSP_BROKER_MAX_STANDBY_SESSIONS_PER_LANG", "3")
     monkeypatch.setenv("SARI_LSP_BROKER_MAX_STANDBY_SESSIONS_PER_BUDGET_GROUP", "4")
     monkeypatch.setenv("SARI_LSP_BROKER_TS_VUE_ACTIVE_CAP", "3")
@@ -179,6 +180,7 @@ def test_app_config_loads_json_and_env_override(tmp_path: Path, monkeypatch) -> 
     assert config.lsp_session_broker_metrics_enabled is True
     assert config.lsp_hotness_event_window_sec == pytest.approx(12.0)
     assert config.lsp_hotness_decay_window_sec == pytest.approx(45.0)
+    assert config.lsp_broker_backlog_min_share == pytest.approx(0.25)
     assert config.lsp_broker_max_standby_sessions_per_lang == 3
     assert config.lsp_broker_max_standby_sessions_per_budget_group == 4
     assert config.lsp_broker_ts_vue_active_cap == 3

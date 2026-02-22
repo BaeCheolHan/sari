@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+import math
 import threading
 import time
 import uuid
@@ -70,11 +71,13 @@ class LspSessionBroker:
         profiles: dict[str, LspBrokerLanguageProfile],
         max_standby_sessions_per_lang: int,
         max_standby_sessions_per_budget_group: int,
+        backlog_min_share: float = 0.0,
         now_monotonic: Callable[[], float] | None = None,
     ) -> None:
         self._profiles = {k.lower(): v for k, v in profiles.items()}
         self._max_standby_sessions_per_lang = int(max_standby_sessions_per_lang)
         self._max_standby_sessions_per_budget_group = int(max_standby_sessions_per_budget_group)
+        self._backlog_min_share = min(1.0, max(0.0, float(backlog_min_share)))
         self._now_monotonic = now_monotonic or time.monotonic
         self._lock = threading.Lock()
         self._leases: dict[str, _ActiveLease] = {}
@@ -82,9 +85,24 @@ class LspSessionBroker:
         self._language_lane_active_caps: dict[tuple[str, str], int] = {}
         self._budget_group_active_caps: dict[str, int] = {}
         self._budget_group_members: dict[str, set[str]] = {}
+        self._backlog_demand_pending: set[str] = set()
+        self._hot_streak_since_backlog: dict[str, int] = {}
         for lang, profile in self._profiles.items():
             if profile.shared_budget_group:
                 self._budget_group_members.setdefault(profile.shared_budget_group, set()).add(lang)
+
+    def _fairness_key_for(self, lang_key: str, profile: LspBrokerLanguageProfile) -> str:
+        if profile.shared_budget_group:
+            return f"group:{profile.shared_budget_group}"
+        return f"lang:{lang_key}"
+
+    def _max_hot_streak_before_backlog(self) -> int | None:
+        share = self._backlog_min_share
+        if share <= 0.0 or share >= 1.0:
+            if share >= 1.0:
+                return 0
+            return None
+        return max(0, math.floor((1.0 - share) / share))
 
     def set_language_active_cap(self, language: str, *, lane: str, cap: int) -> None:
         with self._lock:
@@ -103,7 +121,7 @@ class LspSessionBroker:
         hotness_score: float,
         pending_jobs_in_scope: int,
     ) -> LspSessionLeaseResult:
-        del hotness_score, pending_jobs_in_scope
+        del hotness_score
         lang_key = language.value.lower()
         lane_key = lane.lower()
         profile = self._profiles.get(lang_key)
@@ -118,6 +136,13 @@ class LspSessionBroker:
             )
         now = self._now_monotonic()
         with self._lock:
+            fairness_key = self._fairness_key_for(lang_key, profile)
+            hot_streak_limit = self._max_hot_streak_before_backlog()
+            if lane_key == "hot" and hot_streak_limit is not None and fairness_key in self._backlog_demand_pending:
+                hot_streak = int(self._hot_streak_since_backlog.get(fairness_key, 0))
+                if hot_streak >= hot_streak_limit:
+                    return LspSessionLeaseResult("", False, "starvation_guard", lang_key, lsp_scope_root, lane_key)
+
             # same-scope reuse
             for active in self._leases.values():
                 if active.language == lang_key and active.lsp_scope_root == lsp_scope_root:
@@ -142,6 +167,8 @@ class LspSessionBroker:
             lane_state = self._lane_state.setdefault(lane_state_key, _LaneState())
             if lane_state.assigned_scope is not None and lane_state.assigned_scope != lsp_scope_root:
                 if (now - lane_state.last_switch_at_monotonic) < max(0.0, profile.switch_cooldown_sec):
+                    if lane_key == "backlog" and pending_jobs_in_scope > 0:
+                        self._backlog_demand_pending.add(fairness_key)
                     return LspSessionLeaseResult("", False, "cooldown", lang_key, lsp_scope_root, lane_key)
 
             # language lane cap
@@ -162,7 +189,11 @@ class LspSessionBroker:
                 if lane_active is not None and lane_active.lsp_scope_root != lsp_scope_root:
                     min_lease_sec = max(0.0, float(profile.min_lease_ms) / 1000.0)
                     if (now - lane_active.started_at_monotonic) < min_lease_sec:
+                        if lane_key == "backlog" and pending_jobs_in_scope > 0:
+                            self._backlog_demand_pending.add(fairness_key)
                         return LspSessionLeaseResult("", False, "min_lease", lang_key, lsp_scope_root, lane_key)
+                if lane_key == "backlog" and pending_jobs_in_scope > 0:
+                    self._backlog_demand_pending.add(fairness_key)
                 return LspSessionLeaseResult("", False, "budget_blocked", lang_key, lsp_scope_root, lane_key)
 
             # shared budget group cap (Phase 1: budget only, runtime sharing 없음)
@@ -172,6 +203,8 @@ class LspSessionBroker:
                 members = self._budget_group_members.get(budget_group, set())
                 active_group = sum(1 for item in self._leases.values() if item.language in members)
                 if active_group >= group_cap:
+                    if lane_key == "backlog" and pending_jobs_in_scope > 0:
+                        self._backlog_demand_pending.add(fairness_key)
                     return LspSessionLeaseResult("", False, "budget_group_blocked", lang_key, lsp_scope_root, lane_key)
 
             lease_id = uuid.uuid4().hex
@@ -185,6 +218,11 @@ class LspSessionBroker:
             if lane_state.assigned_scope != lsp_scope_root:
                 lane_state.assigned_scope = lsp_scope_root
                 lane_state.last_switch_at_monotonic = now
+            if lane_key == "backlog":
+                self._backlog_demand_pending.discard(fairness_key)
+                self._hot_streak_since_backlog[fairness_key] = 0
+            elif lane_key == "hot":
+                self._hot_streak_since_backlog[fairness_key] = int(self._hot_streak_since_backlog.get(fairness_key, 0)) + 1
             return LspSessionLeaseResult(
                 lease_id=lease_id,
                 granted=True,
@@ -244,5 +282,7 @@ class LspSessionBroker:
             metrics[f"broker_active_sessions_{lang}"] = int(count)
         for group, count in snap.active_sessions_by_budget_group.items():
             metrics[f"broker_active_budget_group_{group}"] = int(count)
+        if self._backlog_min_share > 0.0:
+            with self._lock:
+                metrics["broker_backlog_demand_pending_keys"] = len(self._backlog_demand_pending)
         return metrics
-

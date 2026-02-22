@@ -101,6 +101,7 @@ class AppConfig:
     lsp_session_broker_metrics_enabled: bool = True
     lsp_hotness_event_window_sec: float = 10.0
     lsp_hotness_decay_window_sec: float = 30.0
+    lsp_broker_backlog_min_share: float = 0.2
     lsp_broker_max_standby_sessions_per_lang: int = 2
     lsp_broker_max_standby_sessions_per_budget_group: int = 2
     lsp_broker_ts_vue_active_cap: int = 2
@@ -340,6 +341,10 @@ class AppConfig:
         lsp_hotness_decay_window_sec_raw = os.getenv(
             "SARI_LSP_HOTNESS_DECAY_WINDOW_SEC",
             str(file_config.get("lsp_hotness_decay_window_sec", cls.lsp_hotness_decay_window_sec)),
+        ).strip()
+        lsp_broker_backlog_min_share_raw = os.getenv(
+            "SARI_LSP_BROKER_BACKLOG_MIN_SHARE",
+            str(file_config.get("lsp_broker_backlog_min_share", cls.lsp_broker_backlog_min_share)),
         ).strip()
         lsp_broker_max_standby_sessions_per_lang_raw = os.getenv(
             "SARI_LSP_BROKER_MAX_STANDBY_SESSIONS_PER_LANG",
@@ -629,6 +634,10 @@ class AppConfig:
         except ValueError:
             lsp_hotness_decay_window_sec = max(lsp_hotness_event_window_sec, cls.lsp_hotness_decay_window_sec)
         try:
+            lsp_broker_backlog_min_share = min(1.0, max(0.0, float(lsp_broker_backlog_min_share_raw)))
+        except ValueError:
+            lsp_broker_backlog_min_share = cls.lsp_broker_backlog_min_share
+        try:
             lsp_broker_max_standby_sessions_per_lang = max(0, int(lsp_broker_max_standby_sessions_per_lang_raw))
         except ValueError:
             lsp_broker_max_standby_sessions_per_lang = cls.lsp_broker_max_standby_sessions_per_lang
@@ -857,6 +866,7 @@ class AppConfig:
             lsp_session_broker_metrics_enabled=lsp_session_broker_metrics_enabled_raw in {"1", "true", "yes", "on"},
             lsp_hotness_event_window_sec=lsp_hotness_event_window_sec,
             lsp_hotness_decay_window_sec=lsp_hotness_decay_window_sec,
+            lsp_broker_backlog_min_share=lsp_broker_backlog_min_share,
             lsp_broker_max_standby_sessions_per_lang=lsp_broker_max_standby_sessions_per_lang,
             lsp_broker_max_standby_sessions_per_budget_group=lsp_broker_max_standby_sessions_per_budget_group,
             lsp_broker_ts_vue_active_cap=lsp_broker_ts_vue_active_cap,
