@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from sari.core.models import ToolReadinessStateDTO
-from sari.db.row_mapper import row_bool, row_str
+from sari.db.row_mapper import row_bool, row_int, row_str
 from sari.db.schema import connect
 
 
@@ -111,3 +111,22 @@ class ToolReadinessRepository:
             last_reason=row_str(row, "last_reason"),
             updated_at=row_str(row, "updated_at"),
         )
+
+    def count_by_tool_ready(self) -> dict[str, int]:
+        """tool_ready true/false 분포를 반환한다."""
+        with connect(self._db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT tool_ready, COUNT(*) AS cnt
+                FROM tool_readiness_state
+                GROUP BY tool_ready
+                """
+            ).fetchall()
+        true_count = 0
+        false_count = 0
+        for row in rows:
+            if row_bool(row, "tool_ready"):
+                true_count += row_int(row, "cnt")
+            else:
+                false_count += row_int(row, "cnt")
+        return {"tool_ready_true": true_count, "tool_ready_false": false_count}

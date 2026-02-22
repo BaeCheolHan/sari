@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import fnmatch
 from pathlib import Path
 from typing import Callable
@@ -17,10 +18,8 @@ from sari.core.repo_resolver import resolve_repo_key
 from sari.db.repositories.pipeline_policy_repository import PipelinePolicyRepository
 from sari.db.repositories.repo_registry_repository import RepoRegistryRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
-from sari.services.collection.perf_trace import trace_methods
 
 
-@trace_methods("repo_support_fn")
 class CollectionRepoSupport:
     """repo 식별/수집 정책/LSP prewarm 보조 책임을 담당한다."""
 
@@ -43,6 +42,7 @@ class CollectionRepoSupport:
         self._repo_registry_repo = repo_registry_repo
         self._lsp_prewarm_min_language_files = lsp_prewarm_min_language_files
         self._lsp_prewarm_top_language_count = lsp_prewarm_top_language_count
+        self._extra_exclude_globs_stack: list[tuple[str, ...]] = []
 
     def resolve_lsp_language(self, relative_path: str) -> Language | None:
         """파일 상대 경로로 LSP 언어를 해석한다."""
@@ -138,7 +138,26 @@ class CollectionRepoSupport:
         for pattern in self._policy.exclude_globs:
             if fnmatch.fnmatch(relative_posix, pattern):
                 return False
+        if len(self._extra_exclude_globs_stack) > 0:
+            for extra_globs in self._extra_exclude_globs_stack:
+                for pattern in extra_globs:
+                    if fnmatch.fnmatch(relative_posix, pattern):
+                        return False
         return True
+
+    @contextmanager
+    def temporary_extra_exclude_globs(self, globs: tuple[str, ...]):
+        """일시적으로 추가 exclude globs를 적용한다 (perf 측정 전용)."""
+        normalized = tuple(item.strip() for item in globs if item.strip() != "")
+        if len(normalized) == 0:
+            yield
+            return
+        self._extra_exclude_globs_stack.append(normalized)
+        try:
+            yield
+        finally:
+            if len(self._extra_exclude_globs_stack) > 0:
+                self._extra_exclude_globs_stack.pop()
 
     def is_deletion_hold_enabled(self) -> bool:
         """삭제 보류 정책 활성화 여부를 반환한다."""
@@ -147,7 +166,6 @@ class CollectionRepoSupport:
         return bool(self._policy_repo.get_policy().deletion_hold)
 
 
-@trace_methods("workspace_fanout_fn")
 class WorkspaceFanoutResolver:
     """workspace root 하위 top-level repo fan-out 대상을 판정한다."""
 

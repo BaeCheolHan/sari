@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -59,6 +60,7 @@ class _FakeCollectionService:
         self.reset_runtime_state_calls = 0
         self.reset_probe_state_calls = 0
         self.reset_lsp_runtime_calls = 0
+        self.exclude_context_calls: list[tuple[str, ...]] = []
 
     def scan_once(self, repo_root: str):  # noqa: ANN201
         """스캔 더미 결과를 반환한다."""
@@ -88,6 +90,102 @@ class _FakeCollectionService:
     def reset_lsp_runtime(self) -> None:
         """cold LSP 리셋 호출을 기록한다."""
         self.reset_lsp_runtime_calls += 1
+
+    @contextmanager
+    def temporary_scan_exclude_globs(self, globs: tuple[str, ...]):
+        self.exclude_context_calls.append(tuple(globs))
+        yield
+
+
+class _FakeCollectionServiceWithoutReset:
+    """reset capability가 없는 더미 수집 서비스다."""
+
+    def scan_once(self, repo_root: str):  # noqa: ANN201
+        del repo_root
+        return type(
+            "ScanResult",
+            (),
+            {"scanned_count": 10, "indexed_count": 10, "deleted_count": 0},
+        )()
+
+    def process_enrich_jobs(self, limit: int) -> int:
+        del limit
+        return 0
+
+
+class _FakeCollectionServiceWithoutLspReset(_FakeCollectionServiceWithoutReset):
+    """probe reset은 있지만 LSP reset capability는 없는 더미 수집 서비스다."""
+
+    def reset_probe_state(self) -> None:
+        return
+
+
+class _RecoveringQueueRepository:
+    """stale RUNNING 회수 경로를 검증하는 더미 저장소다."""
+
+    def __init__(self) -> None:
+        self._counts = {"PENDING": 0, "RUNNING": 1, "FAILED": 0, "DONE": 0, "DEAD": 0}
+        self.recover_calls = 0
+
+    def get_status_counts(self) -> dict[str, int]:
+        return dict(self._counts)
+
+    def recover_stale_running_to_failed(self, now_iso: str, stale_before_iso: str) -> int:
+        del now_iso, stale_before_iso
+        self.recover_calls += 1
+        if self._counts["RUNNING"] > 0:
+            self._counts["RUNNING"] = 0
+            self._counts["FAILED"] = 1
+            return 1
+        return 0
+
+
+class _IdleCollectionService:
+    def process_enrich_jobs(self, limit: int) -> int:
+        del limit
+        return 0
+
+
+class _FakeFileRepoWithStateCounts:
+    def get_enrich_state_counts(self) -> dict[str, int]:
+        return {"TOOL_READY": 3, "L3_SKIPPED": 1}
+
+
+class _FakeReadinessRepoWithCounts:
+    def count_by_tool_ready(self) -> dict[str, int]:
+        return {"tool_ready_true": 3, "tool_ready_false": 1}
+
+
+class _FakeLspRepoWithCounts:
+    def count_distinct_symbol_files(self) -> int:
+        return 3
+
+
+class _FakeCollectionServiceWithRepos(_FakeCollectionService):
+    def __init__(self) -> None:
+        super().__init__()
+        self._file_repo = _FakeFileRepoWithStateCounts()
+        self._readiness_repo = _FakeReadinessRepoWithCounts()
+        self._lsp_repo = _FakeLspRepoWithCounts()
+
+
+class _FakeQueueRepositoryWithPendingDetails(_FakeQueueRepository):
+    def __init__(self) -> None:
+        super().__init__()
+        self.pending_split_calls: list[str] = []
+        self.pending_age_calls: list[str] = []
+
+    def get_pending_split_counts(self, now_iso: str) -> dict[str, int]:
+        self.pending_split_calls.append(now_iso)
+        return {"PENDING_AVAILABLE": 4, "PENDING_DEFERRED": 7}
+
+    def get_pending_age_stats(self, now_iso: str) -> dict[str, float | None]:
+        self.pending_age_calls.append(now_iso)
+        return {
+            "oldest_pending_available_age_sec": 12.0,
+            "oldest_pending_deferred_age_sec": 120.0,
+            "p95_pending_available_age_sec": 9.5,
+        }
 
 
 def test_pipeline_perf_service_run_returns_gate_summary(tmp_path: Path) -> None:
@@ -188,3 +286,125 @@ def test_pipeline_perf_service_applies_cold_reset_options(tmp_path: Path) -> Non
     assert workspace["run_context"]["fresh_db"] is True
     assert workspace["run_context"]["pre_state_reset"] is True
     assert workspace["run_context"]["cold_lsp_reset"] is True
+
+
+def test_pipeline_perf_service_rejects_missing_probe_reset_capability(tmp_path: Path) -> None:
+    """probe reset 요청 시 capability가 없으면 명시 실패해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_dir = tmp_path / "repo-a"
+    repo_dir.mkdir()
+    service = PipelinePerfService(
+        file_collection_service=_FakeCollectionServiceWithoutReset(),
+        queue_repo=_FakeQueueRepository(),
+        benchmark_service=_FakeBenchmarkService(),
+        perf_repo=PipelinePerfRepository(db_path),
+        artifact_root=tmp_path / "artifacts",
+    )
+    with pytest.raises(PerfError, match="reset_probe_state"):
+        service.run(
+            repo_root=str(repo_dir),
+            target_files=2000,
+            profile="realistic_v1",
+            reset_probe_state=True,
+        )
+
+
+def test_pipeline_perf_service_rejects_missing_lsp_reset_capability(tmp_path: Path) -> None:
+    """cold_lsp_reset 요청 시 capability가 없으면 명시 실패해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_dir = tmp_path / "repo-a"
+    repo_dir.mkdir()
+    service = PipelinePerfService(
+        file_collection_service=_FakeCollectionServiceWithoutLspReset(),
+        queue_repo=_FakeQueueRepository(),
+        benchmark_service=_FakeBenchmarkService(),
+        perf_repo=PipelinePerfRepository(db_path),
+        artifact_root=tmp_path / "artifacts",
+    )
+    with pytest.raises(PerfError, match="reset_lsp_runtime"):
+        service.run(
+            repo_root=str(repo_dir),
+            target_files=2000,
+            profile="realistic_v1",
+            cold_lsp_reset=True,
+        )
+
+
+def test_pipeline_perf_service_records_workspace_exclude_globs_in_run_context(tmp_path: Path) -> None:
+    """workspace_exclude_globs는 run_context에 기록되고 scan context manager로 전달되어야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_dir = tmp_path / "repo-a"
+    repo_dir.mkdir()
+    collection_service = _FakeCollectionService()
+    service = PipelinePerfService(
+        file_collection_service=collection_service,
+        queue_repo=_FakeQueueRepository(),
+        benchmark_service=_FakeBenchmarkService(),
+        perf_repo=PipelinePerfRepository(db_path),
+        artifact_root=tmp_path / "artifacts",
+    )
+    summary = service.run(
+        repo_root=str(repo_dir),
+        target_files=2000,
+        profile="realistic_v1",
+        workspace_exclude_globs=("serena/test/resources/repos/**", "**/benchmark_dataset/**"),
+    )
+    workspace = next(item for item in summary["datasets"] if item["dataset_type"] == "workspace_real")
+    assert workspace["run_context"]["config_snapshot"]["workspace_exclude_globs"] == [
+        "serena/test/resources/repos/**",
+        "**/benchmark_dataset/**",
+    ]
+    assert collection_service.exclude_context_calls == [("serena/test/resources/repos/**", "**/benchmark_dataset/**")]
+
+
+def test_pipeline_perf_service_drain_recovers_stale_running_for_perf_only(tmp_path: Path) -> None:
+    """perf drain 루프는 stale RUNNING을 회수해 timeout 없이 종료해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_dir = tmp_path / "repo-a"
+    repo_dir.mkdir()
+    queue_repo = _RecoveringQueueRepository()
+    service = PipelinePerfService(
+        file_collection_service=_IdleCollectionService(),
+        queue_repo=queue_repo,
+        benchmark_service=_FakeBenchmarkService(),
+        perf_repo=PipelinePerfRepository(db_path),
+        artifact_root=tmp_path / "artifacts",
+    )
+
+    service._drain_enrich_queue(max_wait_sec=0.2)
+
+    assert queue_repo.recover_calls >= 1
+    assert service._last_drain_diagnostics["stale_running_recovered_count"] >= 1
+
+
+def test_pipeline_perf_integrity_snapshot_includes_pending_split_and_age_stats(tmp_path: Path) -> None:
+    """workspace integrity 스냅샷에 pending split/age와 phaseA eligible 모드가 포함되어야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    queue_repo = _FakeQueueRepositoryWithPendingDetails()
+    service = PipelinePerfService(
+        file_collection_service=_FakeCollectionServiceWithRepos(),
+        queue_repo=queue_repo,
+        benchmark_service=_FakeBenchmarkService(),
+        perf_repo=PipelinePerfRepository(db_path),
+        artifact_root=tmp_path / "artifacts",
+    )
+
+    snap = service._collect_workspace_integrity_snapshot()
+
+    queue_detailed = snap["queue_counts_detailed"]
+    assert isinstance(queue_detailed, dict)
+    assert queue_detailed["PENDING_AVAILABLE"] == 4
+    assert queue_detailed["PENDING_DEFERRED"] == 7
+    pending_age = snap["pending_age_stats"]
+    assert isinstance(pending_age, dict)
+    assert pending_age["oldest_pending_available_age_sec"] == pytest.approx(12.0)
+    assert pending_age["oldest_pending_deferred_age_sec"] == pytest.approx(120.0)
+    assert snap["eligible_counts_mode"] == "deferred_split_only_phaseA"
+    assert len(queue_repo.pending_split_calls) == 1
+    assert len(queue_repo.pending_age_calls) == 1
+    assert queue_repo.pending_split_calls[0] == queue_repo.pending_age_calls[0]

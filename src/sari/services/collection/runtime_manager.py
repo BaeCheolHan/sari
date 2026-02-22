@@ -14,12 +14,10 @@ from watchdog.observers import Observer
 
 from sari.core.exceptions import CollectionError, ErrorContext
 from sari.core.models import now_iso8601_utc
-from sari.services.collection.perf_trace import trace_methods
 
 log = logging.getLogger(__name__)
 
 
-@trace_methods("runtime_manager_fn")
 class RuntimeManager:
     """scheduler/enrich/watcher 루프 생명주기를 관리한다."""
 

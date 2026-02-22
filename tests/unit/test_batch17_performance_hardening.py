@@ -8,6 +8,7 @@ from pathlib import Path
 import threading
 import sqlite3
 import time
+import math
 
 import hashlib
 
@@ -24,6 +25,7 @@ from solidlsp.ls_config import Language
 from sari.search.candidate_search import CandidateBackendError, CandidateSearchConfig, CandidateSearchResultDTO, TantivyCandidateBackend
 from sari.search.orchestrator import SearchOrchestrator
 from sari.services.file_collection_service import FileCollectionService, LspExtractionBackend, LspExtractionResultDTO, SolidLspExtractionBackend
+import sari.services.file_collection_service as file_collection_service_module
 import sari.db.repositories.file_collection_repository as file_collection_repository_module
 
 
@@ -315,6 +317,85 @@ def test_solid_lsp_extraction_backend_force_returns_ready_after_recent_success()
 
     assert first == "scheduled"
     assert forced == "ready"
+
+
+def test_solid_lsp_extraction_backend_warming_reschedules_after_next_retry() -> None:
+    """WARMING 상태라도 next_retry가 지나면 재스케줄되어야 한다."""
+
+    class _FakeHub:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def get_or_start(self, language: Language, repo_root: str, request_kind: str = "indexing"):  # noqa: ANN001
+            del language, repo_root, request_kind
+            self.calls += 1
+
+            class _FakeLsp:
+                def request_document_symbols(self, relative_path: str):  # noqa: ANN001
+                    del relative_path
+
+                    class _Symbols:
+                        def iter_symbols(self) -> list[dict[str, object]]:
+                            return []
+
+                    return _Symbols()
+
+            return _FakeLsp()
+
+        def prewarm_language_pool(self, language: Language, repo_root: str) -> None:
+            del language, repo_root
+
+    backend = SolidLspExtractionBackend(hub=_FakeHub(), probe_workers=1, l1_workers=1)  # type: ignore[arg-type]
+    key = (str(Path("/repo").resolve()), Language.PYTHON)
+    now = time.monotonic()
+    with backend._probe_lock:
+        backend._probe_state[key] = file_collection_service_module._ProbeStateRecord(  # type: ignore[attr-defined]
+            status="WARMING",
+            warming_count=1,
+            next_retry_monotonic=now - 0.01,
+            last_seen_monotonic=now,
+        )
+    result = backend.schedule_probe_for_file(repo_root="/repo", relative_path="a.py")
+    backend.shutdown_probe_executor()
+    assert result == "scheduled"
+
+
+def test_solid_lsp_extraction_backend_records_last_trigger_on_schedule() -> None:
+    """probe 스케줄 시 trigger가 상태에 보존되어야 한다."""
+
+    class _FakeHub:
+        def get_or_start(self, language: Language, repo_root: str, request_kind: str = "indexing"):  # noqa: ANN001
+            del language, repo_root, request_kind
+            time.sleep(0.02)
+
+            class _FakeLsp:
+                def request_document_symbols(self, relative_path: str):  # noqa: ANN001
+                    del relative_path
+
+                    class _Symbols:
+                        def iter_symbols(self) -> list[dict[str, object]]:
+                            return []
+
+                    return _Symbols()
+
+            return _FakeLsp()
+
+        def prewarm_language_pool(self, language: Language, repo_root: str) -> None:
+            del language, repo_root
+
+    backend = SolidLspExtractionBackend(hub=_FakeHub(), probe_workers=1, l1_workers=1)  # type: ignore[arg-type]
+    scheduled = backend.schedule_probe_for_file(repo_root="/repo", relative_path="a.py", trigger="bootstrap")
+    deadline = time.monotonic() + 1.0
+    while backend.is_probe_inflight_for_file(repo_root="/repo", relative_path="a.py") and time.monotonic() < deadline:
+        time.sleep(0.005)
+    key = (str(Path("/repo").resolve()), Language.PYTHON)
+    with backend._probe_lock:
+        state = backend._probe_state.get(key)
+        last_trigger = None if state is None else getattr(state, "last_trigger", None)
+    backend.shutdown_probe_executor()
+
+    assert scheduled == "scheduled"
+    assert last_trigger == "bootstrap"
 
 
 def test_solid_lsp_extraction_backend_prewarm_allows_parallel_for_different_keys() -> None:
@@ -992,6 +1073,126 @@ def test_enrich_l3_failure_does_not_schedule_when_probe_inflight(tmp_path: Path)
 
     fallback_scheduled = [item for item in backend.scheduled if item[3] == "l3_fallback"]
     assert fallback_scheduled == []
+
+
+def test_enrich_l3_parallel_timeout_marks_remaining_jobs_failed(tmp_path: Path) -> None:
+    """병렬 L3 그룹 future hang가 발생해도 timeout job은 RUNNING 잔류 없이 FAILED로 전이되어야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_dir = tmp_path / "repo-l3-timeout"
+    repo_dir.mkdir()
+    (repo_dir / "a.py").write_text("def a():\n    return 1\n", encoding="utf-8")
+    (repo_dir / "b.py").write_text("def b():\n    return 2\n", encoding="utf-8")
+
+    release = threading.Event()
+
+    class _SlowBackend(LspExtractionBackend):
+        def extract(self, repo_root: str, relative_path: str, content_hash: str) -> LspExtractionResultDTO:
+            del repo_root, content_hash
+            if relative_path == "b.py":
+                release.wait(timeout=1.0)
+            return LspExtractionResultDTO(symbols=[], relations=[], error_message=None)
+
+        def get_parallelism(self, repo_root: str, language: Language) -> int:
+            del repo_root, language
+            return 2
+
+    service = FileCollectionService(
+        workspace_repo=WorkspaceRepository(db_path),
+        file_repo=FileCollectionRepository(db_path),
+        enrich_queue_repo=FileEnrichQueueRepository(db_path),
+        body_repo=FileBodyRepository(db_path),
+        lsp_repo=LspToolDataRepository(db_path),
+        readiness_repo=ToolReadinessRepository(db_path),
+        policy=_policy(),
+        lsp_backend=_SlowBackend(),
+        l3_parallel_enabled=True,
+        l3_executor_max_workers=2,
+        run_mode="prod",
+    )
+    repo_root = str(repo_dir.resolve())
+    service.scan_once(repo_root)
+    _ = service.process_enrich_jobs_l2(limit=50)
+    service._enrich_engine._l3_group_wait_timeout_sec = 0.05  # type: ignore[attr-defined]
+
+    processed = service.process_enrich_jobs_l3(limit=50)
+    release.set()
+
+    assert processed >= 2
+    queue_counts = FileEnrichQueueRepository(db_path).get_status_counts()
+    assert queue_counts["RUNNING"] == 0
+    assert queue_counts["FAILED"] >= 1
+    row_a = FileCollectionRepository(db_path).get_file(repo_root=repo_root, relative_path="a.py")
+    row_b = FileCollectionRepository(db_path).get_file(repo_root=repo_root, relative_path="b.py")
+    assert row_a is not None and row_b is not None
+    assert "FAILED" in {row_a.enrich_state, row_b.enrich_state}
+
+
+def test_solid_lsp_unavailable_backoff_escalates_for_missing_server() -> None:
+    """미설치/스폰 실패 계열은 3m -> 10m -> 30m cap 백오프를 적용해야 한다."""
+
+    class _FakeHub:
+        pass
+
+    backend = SolidLspExtractionBackend(hub=_FakeHub())  # type: ignore[arg-type]
+    now = time.monotonic()
+    code = "ERR_LSP_SERVER_MISSING"
+    for _ in range(2):
+        backend._record_probe_state_from_extract_error(  # type: ignore[attr-defined]
+            repo_root="/repo",
+            relative_path="a.py",
+            error_code=code,
+            error_message="ERR_LSP_SERVER_MISSING: command not found",
+        )
+    state = backend._probe_state[("/repo", Language.PYTHON)]  # type: ignore[attr-defined]
+    first_delta = state.next_retry_monotonic - now
+    assert state.status == "UNAVAILABLE_COOLDOWN"
+    assert 150.0 <= first_delta <= 210.0
+
+    for _ in range(2):
+        backend._record_probe_state_from_extract_error(  # type: ignore[attr-defined]
+            repo_root="/repo",
+            relative_path="a.py",
+            error_code=code,
+            error_message="ERR_LSP_SERVER_MISSING: command not found",
+        )
+    state = backend._probe_state[("/repo", Language.PYTHON)]  # type: ignore[attr-defined]
+    second_delta = state.next_retry_monotonic - time.monotonic()
+    assert 540.0 <= second_delta <= 660.0
+
+    for _ in range(3):
+        backend._record_probe_state_from_extract_error(  # type: ignore[attr-defined]
+            repo_root="/repo",
+            relative_path="a.py",
+            error_code=code,
+            error_message="ERR_LSP_SERVER_MISSING: command not found",
+        )
+    state = backend._probe_state[("/repo", Language.PYTHON)]  # type: ignore[attr-defined]
+    third_delta = state.next_retry_monotonic - time.monotonic()
+    assert 1700.0 <= third_delta <= 1900.0
+
+
+def test_solid_lsp_workspace_mismatch_skips_until_manual_reset() -> None:
+    """workspace mismatch는 즉시 skip 상태가 되고 수동 reset으로만 해제되어야 한다."""
+
+    class _FakeHub:
+        pass
+
+    backend = SolidLspExtractionBackend(hub=_FakeHub())  # type: ignore[arg-type]
+    backend._record_probe_state_from_extract_error(  # type: ignore[attr-defined]
+        repo_root="/repo",
+        relative_path="a.elm",
+        error_code="ERR_LSP_WORKSPACE_MISMATCH",
+        error_message="ERR_LSP_WORKSPACE_MISMATCH: No Elm workspace contains /repo/a.elm",
+    )
+    assert backend.is_l3_permanently_unavailable_for_file("/repo", "a.elm") is True
+    state = backend._probe_state[("/repo", Language.ELM)]  # type: ignore[attr-defined]
+    assert state.status == "WORKSPACE_MISMATCH"
+    assert math.isinf(state.next_retry_monotonic)
+
+    cleared = backend.clear_unavailable_state(repo_root="/repo", language="elm")
+    assert cleared == 1
+    assert backend.is_l3_permanently_unavailable_for_file("/repo", "a.elm") is False
 
 
 def test_file_collection_scan_once_marks_candidate_index_dirty(tmp_path: Path) -> None:

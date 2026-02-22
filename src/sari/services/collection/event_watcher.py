@@ -15,12 +15,10 @@ from watchdog.observers import Observer
 
 from sari.core.exceptions import CollectionError
 from sari.core.models import now_iso8601_utc
-from .perf_trace import trace_function, trace_methods
 
 log = logging.getLogger(__name__)
 
 
-@trace_methods("watch_registry_fn")
 @dataclass
 class WorkspaceWatchRegistry:
     """workspace path별 observer watch 핸들을 보관한다."""
@@ -41,7 +39,6 @@ class WorkspaceWatchRegistry:
             return set(self._watches.keys())
 
 
-@trace_methods("watch_debounce_pruner_fn")
 @dataclass
 class DebounceBufferPruner:
     """workspace 상태 변경 시 debounce 버퍼를 정리한다."""
@@ -56,7 +53,6 @@ class DebounceBufferPruner:
                 self.debounce_events.pop(key, None)
 
 
-@trace_methods("watch_sync_fn")
 class WorkspaceWatchSynchronizer:
     """활성 workspace 집합과 observer watch 상태를 동기화한다."""
 
@@ -105,7 +101,6 @@ class WorkspaceWatchSynchronizer:
         return active_paths
 
 
-@trace_methods("watch_handler_fn")
 class _WatcherHandler(FileSystemEventHandler):
     """watchdog 이벤트를 내부 큐로 전달한다."""
 
@@ -137,7 +132,6 @@ class _WatcherHandler(FileSystemEventHandler):
         self._enqueue_event_fn(event_type, str(event.src_path), str(getattr(event, "dest_path", "")))
 
 
-@trace_methods("event_watcher_fn")
 class EventWatcher:
     """watcher 루프/디바운스 처리 책임을 담당한다."""
 
@@ -365,7 +359,6 @@ class EventWatcher:
         self._on_watcher_file_race(repo_root, relative_path, reason)
 
 
-@trace_function("event_watcher_fn")
 def _path_is_relative_to(path: Path, base: Path) -> bool:
     """path가 base 하위인지 판정한다."""
     try:

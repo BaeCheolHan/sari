@@ -15,6 +15,7 @@ from typing import Callable
 from sari.core.language_registry import resolve_language_from_path
 from sari.core.exceptions import DaemonError, ErrorContext
 from sari.lsp.runtime_broker import LspRuntimeBroker
+from sari.services.collection.perf_trace import PerfTracer
 from solidlsp.ls import SolidLanguageServer
 from solidlsp.ls_config import Language, LanguageServerConfig
 from solidlsp.settings import SolidLSPSettings
@@ -115,6 +116,7 @@ class LspHub:
             daemon=True,
         )
         self._cleanup_thread.start()
+        self._perf_tracer = PerfTracer(component="lsp_hub")
 
     def resolve_language(self, file_path: str) -> Language:
         """파일 확장자로 언어를 결정한다."""
@@ -129,70 +131,84 @@ class LspHub:
         base_key = (language, normalized_root)
         normalized_kind = self._normalize_request_kind(request_kind)
         wait_timeout_sec = self._interactive_timeout_sec if normalized_kind == "interactive" else self._request_timeout_sec
-        if normalized_kind == "interactive":
-            with self._lock:
-                self._interactive_pending_count += 1
-        try:
-            with self._lock:
-                now = self._clock()
-                self._evict_idle_locked(now)
-                existing_keys = self._runtime_keys_for_locked(language=language, repo_root=normalized_root)
-                running_keys: list[LspRuntimeKey] = []
-                for key in existing_keys:
-                    entry = self._instances.get(key)
-                    if entry is None:
-                        continue
-                    if entry.server.server.is_running():
-                        if not self._is_slot_allowed_for_kind(
-                            base_key=base_key,
-                            slot=key.slot,
-                            request_kind=normalized_kind,
-                        ):
-                            continue
-                        running_keys.append(key)
-                        continue
-                    self._cleanup_not_running_entry_locked(key=key, entry=entry)
-
-                should_scale_out = self._should_scale_out_locked(base_key=base_key, now=now, running_count=len(running_keys))
-                if should_scale_out:
-                    try:
-                        slot = self._next_slot_locked(
-                            language=language,
-                            repo_root=normalized_root,
-                            request_kind=normalized_kind,
-                        )
-                    except DaemonError as exc:
-                        if exc.context.code != "ERR_LSP_SLOT_EXHAUSTED" or len(running_keys) == 0:
-                            if normalized_kind == "interactive":
-                                self._interactive_rejected_count += 1
-                            raise
-                        selected_key = self._select_round_robin_key_locked(base_key=base_key, keys=running_keys)
-                        selected_entry = self._instances[selected_key]
-                        selected_entry.last_used_at = now
-                        self._last_acquire_at[base_key] = now
-                        return selected_entry.server
-                    self._last_acquire_at[base_key] = now
-                elif len(running_keys) > 0:
-                    selected_key = self._select_round_robin_key_locked(base_key=base_key, keys=running_keys)
-                    selected_entry = self._instances[selected_key]
-                    selected_entry.last_used_at = now
-                    self._last_acquire_at[base_key] = now
-                    return selected_entry.server
-                else:
-                    self._last_acquire_at[base_key] = now
-                    slot = self._first_allowed_slot(base_key=base_key, request_kind=normalized_kind)
-
-            return self._start_or_wait_for_slot(
-                language=language,
-                repo_root=normalized_root,
-                slot=slot,
-                wait_timeout_sec=wait_timeout_sec,
-                request_kind=normalized_kind,
-            )
-        finally:
+        with self._perf_tracer.span(
+            "get_or_start.total",
+            phase="lsp_hub",
+            language=language.value,
+            repo_root=normalized_root,
+            request_kind=normalized_kind,
+        ):
             if normalized_kind == "interactive":
                 with self._lock:
-                    self._interactive_pending_count = max(0, self._interactive_pending_count - 1)
+                    self._interactive_pending_count += 1
+            try:
+                with self._perf_tracer.span(
+                    "get_or_start.lock_select",
+                    phase="lsp_hub",
+                    language=language.value,
+                    repo_root=normalized_root,
+                    request_kind=normalized_kind,
+                ):
+                    with self._lock:
+                        now = self._clock()
+                        self._evict_idle_locked(now)
+                        existing_keys = self._runtime_keys_for_locked(language=language, repo_root=normalized_root)
+                        running_keys: list[LspRuntimeKey] = []
+                        for key in existing_keys:
+                            entry = self._instances.get(key)
+                            if entry is None:
+                                continue
+                            if entry.server.server.is_running():
+                                if not self._is_slot_allowed_for_kind(
+                                    base_key=base_key,
+                                    slot=key.slot,
+                                    request_kind=normalized_kind,
+                                ):
+                                    continue
+                                running_keys.append(key)
+                                continue
+                            self._cleanup_not_running_entry_locked(key=key, entry=entry)
+
+                        should_scale_out = self._should_scale_out_locked(base_key=base_key, now=now, running_count=len(running_keys))
+                        if should_scale_out:
+                            try:
+                                slot = self._next_slot_locked(
+                                    language=language,
+                                    repo_root=normalized_root,
+                                    request_kind=normalized_kind,
+                                )
+                            except DaemonError as exc:
+                                if exc.context.code != "ERR_LSP_SLOT_EXHAUSTED" or len(running_keys) == 0:
+                                    if normalized_kind == "interactive":
+                                        self._interactive_rejected_count += 1
+                                    raise
+                                selected_key = self._select_round_robin_key_locked(base_key=base_key, keys=running_keys)
+                                selected_entry = self._instances[selected_key]
+                                selected_entry.last_used_at = now
+                                self._last_acquire_at[base_key] = now
+                                return selected_entry.server
+                            self._last_acquire_at[base_key] = now
+                        elif len(running_keys) > 0:
+                            selected_key = self._select_round_robin_key_locked(base_key=base_key, keys=running_keys)
+                            selected_entry = self._instances[selected_key]
+                            selected_entry.last_used_at = now
+                            self._last_acquire_at[base_key] = now
+                            return selected_entry.server
+                        else:
+                            self._last_acquire_at[base_key] = now
+                            slot = self._first_allowed_slot(base_key=base_key, request_kind=normalized_kind)
+
+                return self._start_or_wait_for_slot(
+                    language=language,
+                    repo_root=normalized_root,
+                    slot=slot,
+                    wait_timeout_sec=wait_timeout_sec,
+                    request_kind=normalized_kind,
+                )
+            finally:
+                if normalized_kind == "interactive":
+                    with self._lock:
+                        self._interactive_pending_count = max(0, self._interactive_pending_count - 1)
 
     def ensure_healthy(self, language: Language, repo_root: str) -> None:
         """등록된 LSP 인스턴스의 실행 상태를 확인한다."""
@@ -536,30 +552,54 @@ class LspHub:
         """동일 슬롯의 중복 기동을 방지하며 LSP 서버를 시작하거나 기존 기동을 기다린다."""
         key = LspRuntimeKey(language=language, repo_root=repo_root, slot=slot)
         while True:
-            with self._lock:
-                existing = self._instances.get(key)
-                if existing is not None and existing.server.server.is_running():
-                    existing.last_used_at = self._clock()
-                    return existing.server
-                if existing is not None:
-                    self._cleanup_not_running_entry_locked(key=key, entry=existing)
-                start_event = self._starting_events.get(key)
-                if start_event is None:
-                    self._evict_lru_if_needed_locked()
-                    start_event = threading.Event()
-                    self._starting_events[key] = start_event
-                    owner = True
-                else:
-                    owner = False
+            with self._perf_tracer.span(
+                "start_or_wait.lock_check",
+                phase="lsp_hub",
+                language=language.value,
+                repo_root=repo_root,
+                request_kind=request_kind,
+                slot=slot,
+            ):
+                with self._lock:
+                    existing = self._instances.get(key)
+                    if existing is not None and existing.server.server.is_running():
+                        existing.last_used_at = self._clock()
+                        return existing.server
+                    if existing is not None:
+                        self._cleanup_not_running_entry_locked(key=key, entry=existing)
+                    start_event = self._starting_events.get(key)
+                    if start_event is None:
+                        self._evict_lru_if_needed_locked()
+                        start_event = threading.Event()
+                        self._starting_events[key] = start_event
+                        owner = True
+                    else:
+                        owner = False
             if owner:
                 try:
                     started_at = self._clock()
-                    self._start_semaphore.acquire()
+                    with self._perf_tracer.span(
+                        "start_or_wait.start_semaphore_wait",
+                        phase="lsp_hub",
+                        language=language.value,
+                        repo_root=repo_root,
+                        request_kind=request_kind,
+                        slot=slot,
+                    ):
+                        self._start_semaphore.acquire()
                     waited_ms = max(0.0, float(self._clock() - started_at) * 1000.0)
                     with self._lock:
                         self._start_semaphore_wait_ms_total += waited_ms
                     try:
-                        started = self._create_and_start_server(language=language, repo_root=repo_root)
+                        with self._perf_tracer.span(
+                            "start_or_wait.create_and_start_server",
+                            phase="lsp_hub",
+                            language=language.value,
+                            repo_root=repo_root,
+                            request_kind=request_kind,
+                            slot=slot,
+                        ):
+                            started = self._create_and_start_server(language=language, repo_root=repo_root)
                     finally:
                         self._start_semaphore.release()
                 except (DaemonError, RuntimeError, OSError, ValueError, TypeError, AssertionError) as exc:
@@ -569,14 +609,25 @@ class LspHub:
                             event.set()
                     if isinstance(exc, DaemonError):
                         raise
-                    raise DaemonError(ErrorContext(code="ERR_LSP_UNAVAILABLE", message="LSP 서버를 시작하지 못했습니다")) from exc
+                    err_code, err_message = _classify_lsp_start_exception(exc=exc, language=language, repo_root=repo_root)
+                    raise DaemonError(ErrorContext(code=err_code, message=err_message)) from exc
                 with self._lock:
                     self._instances[key] = LspRuntimeEntry(server=started, last_used_at=self._clock())
                     event = self._starting_events.pop(key, None)
                     if event is not None:
                         event.set()
                 return started
-            if not start_event.wait(timeout=wait_timeout_sec):
+            with self._perf_tracer.span(
+                "start_or_wait.wait_for_owner_start",
+                phase="lsp_hub",
+                language=language.value,
+                repo_root=repo_root,
+                request_kind=request_kind,
+                slot=slot,
+                wait_timeout_sec=wait_timeout_sec,
+            ):
+                wait_completed = start_event.wait(timeout=wait_timeout_sec)
+            if not wait_completed:
                 if request_kind == "interactive":
                     with self._lock:
                         self._interactive_timeout_count += 1
@@ -629,7 +680,13 @@ class LspHub:
         # NuGet/HTTPS 다운로드가 필요한 LSP가 인증서 검증 실패로 중단되지 않도록 기본 CA 번들을 주입한다.
         if certifi is not None:
             os.environ.setdefault("SSL_CERT_FILE", certifi.where())
-        runtime_context = self._runtime_broker.resolve(language)
+        with self._perf_tracer.span(
+            "create_and_start.resolve_runtime_context",
+            phase="lsp_hub",
+            language=language.value,
+            repo_root=repo_root,
+        ):
+            runtime_context = self._runtime_broker.resolve(language)
         try:
             with self._temporary_process_env(runtime_context.env_overrides):
                 config = LanguageServerConfig(code_language=language)
@@ -638,17 +695,30 @@ class LspHub:
                     "open_file_buffer_idle_ttl_sec": self._file_buffer_idle_ttl_sec,
                     "open_file_buffer_max_open": self._file_buffer_max_open,
                 }
-                ls = SolidLanguageServer.create(
-                    config=config,
-                    repository_root_path=repo_root,
-                    timeout=self._request_timeout_sec,
-                    solidlsp_settings=settings,
-                )
-                ls.start()
+                with self._perf_tracer.span(
+                    "create_and_start.server_create",
+                    phase="lsp_hub",
+                    language=language.value,
+                    repo_root=repo_root,
+                ):
+                    ls = SolidLanguageServer.create(
+                        config=config,
+                        repository_root_path=repo_root,
+                        timeout=self._request_timeout_sec,
+                        solidlsp_settings=settings,
+                    )
+                with self._perf_tracer.span(
+                    "create_and_start.server_start",
+                    phase="lsp_hub",
+                    language=language.value,
+                    repo_root=repo_root,
+                ):
+                    ls.start()
                 if not hasattr(ls, "started"):
                     setattr(ls, "started", True)
         except (ImportError, RuntimeError, OSError, ValueError, TypeError, AssertionError) as exc:
-            raise DaemonError(ErrorContext(code="ERR_LSP_UNAVAILABLE", message="LSP 서버를 시작하지 못했습니다")) from exc
+            err_code, err_message = _classify_lsp_start_exception(exc=exc, language=language, repo_root=repo_root)
+            raise DaemonError(ErrorContext(code=err_code, message=err_message)) from exc
         return ls
 
     @contextmanager
@@ -752,3 +822,29 @@ class LspHub:
             return
         except OSError:
             return
+
+
+def _classify_lsp_start_exception(*, exc: BaseException, language: Language, repo_root: str) -> tuple[str, str]:
+    """LSP 시작 실패 원인을 분류해 구체적인 오류 코드/메시지로 변환한다."""
+    message = str(exc)
+    exc_type = type(exc).__name__
+    lowered = message.lower()
+    if isinstance(exc, FileNotFoundError) or "command not found" in lowered or "no such file or directory" in lowered:
+        return (
+            "ERR_LSP_SERVER_MISSING",
+            f"LSP 서버 실행 파일을 찾을 수 없습니다: {language.value}@{repo_root} ({exc_type}: {message})",
+        )
+    if isinstance(exc, PermissionError) or "permission denied" in lowered:
+        return (
+            "ERR_LSP_SERVER_SPAWN_FAILED",
+            f"LSP 서버 실행 권한/스폰 실패: {language.value}@{repo_root} ({exc_type}: {message})",
+        )
+    if "version" in lowered and ("java" in lowered or "runtime" in lowered):
+        return (
+            "ERR_RUNTIME_MISMATCH",
+            f"LSP 런타임 불일치: {language.value}@{repo_root} ({exc_type}: {message})",
+        )
+    return (
+        "ERR_LSP_UNAVAILABLE",
+        f"LSP 서버를 시작하지 못했습니다: {language.value}@{repo_root} ({exc_type}: {message})",
+    )

@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
+import pytest
+
 from sari.db.repositories.file_enrich_queue_repository import FileEnrichQueueRepository
 from sari.db.schema import connect, init_schema
 
@@ -167,3 +169,134 @@ def test_recover_stale_running_to_failed_updates_only_aged_jobs(tmp_path: Path) 
     new_row = _read_queue_row(db_path, new_job)
     assert old_row["status"] == "FAILED"
     assert new_row["status"] == "RUNNING"
+
+
+def test_acquire_pending_skips_jobs_with_future_next_retry_at(tmp_path: Path) -> None:
+    """claim SQL은 미래 next_retry_at 작업을 RUNNING으로 올리면 안 된다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = FileEnrichQueueRepository(db_path)
+
+    now_iso = "2026-02-16T00:00:00+00:00"
+    ready_job = repo.enqueue(
+        repo_root="/repo",
+        relative_path="ready.py",
+        content_hash="h-ready",
+        priority=30,
+        enqueue_source="scan",
+        now_iso=now_iso,
+    )
+    future_job = repo.enqueue(
+        repo_root="/repo",
+        relative_path="future.py",
+        content_hash="h-future",
+        priority=30,
+        enqueue_source="scan",
+        now_iso=now_iso,
+    )
+    with connect(db_path) as conn:
+        conn.execute(
+            "UPDATE file_enrich_queue SET next_retry_at = :ts WHERE job_id = :job_id",
+            {"job_id": future_job, "ts": "2026-02-16T00:10:00+00:00"},
+        )
+        conn.commit()
+
+    acquired = repo.acquire_pending(limit=10, now_iso=now_iso)
+    acquired_ids = {item.job_id for item in acquired}
+    assert ready_job in acquired_ids
+    assert future_job not in acquired_ids
+    assert _read_queue_row(db_path, future_job)["status"] == "PENDING"
+
+
+def test_pending_split_counts_and_age_stats(tmp_path: Path) -> None:
+    """pending available/deferred 분리 집계와 age 지표를 계산해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = FileEnrichQueueRepository(db_path)
+
+    base_now = "2026-02-16T00:00:00+00:00"
+    _ = repo.enqueue(
+        repo_root="/repo",
+        relative_path="a.py",
+        content_hash="h1",
+        priority=10,
+        enqueue_source="scan",
+        now_iso=base_now,
+    )
+    _ = repo.enqueue(
+        repo_root="/repo",
+        relative_path="b.py",
+        content_hash="h2",
+        priority=10,
+        enqueue_source="scan",
+        now_iso=base_now,
+    )
+    _ = repo.enqueue(
+        repo_root="/repo",
+        relative_path="c.py",
+        content_hash="h3",
+        priority=10,
+        enqueue_source="scan",
+        now_iso=base_now,
+    )
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE file_enrich_queue
+            SET next_retry_at = '2026-02-16T00:00:00+00:00', created_at = '2026-02-15T23:59:30+00:00'
+            WHERE relative_path = 'a.py'
+            """
+        )
+        conn.execute(
+            """
+            UPDATE file_enrich_queue
+            SET next_retry_at = '2026-02-16T00:00:00+00:00', created_at = '2026-02-15T23:59:50+00:00'
+            WHERE relative_path = 'b.py'
+            """
+        )
+        conn.execute(
+            """
+            UPDATE file_enrich_queue
+            SET next_retry_at = '2026-02-16T00:10:00+00:00', created_at = '2026-02-15T23:50:00+00:00'
+            WHERE relative_path = 'c.py'
+            """
+        )
+        conn.commit()
+
+    split = repo.get_pending_split_counts(now_iso="2026-02-16T00:00:00+00:00")
+    assert split["PENDING_AVAILABLE"] == 2
+    assert split["PENDING_DEFERRED"] == 1
+
+    age = repo.get_pending_age_stats(now_iso="2026-02-16T00:00:00+00:00")
+    assert age["oldest_pending_available_age_sec"] == pytest.approx(30.0)
+    assert age["oldest_pending_deferred_age_sec"] == pytest.approx(600.0)
+    assert age["p95_pending_available_age_sec"] is not None
+
+
+def test_pending_age_stats_handles_mixed_naive_and_aware_timestamps(tmp_path: Path) -> None:
+    """naive/aware ISO 문자열이 섞여도 age 계산 helper는 예외 없이 동작해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = FileEnrichQueueRepository(db_path)
+
+    _ = repo.enqueue(
+        repo_root="/repo",
+        relative_path="mixed.py",
+        content_hash="h-mixed",
+        priority=10,
+        enqueue_source="scan",
+        now_iso="2026-02-16T00:00:00+00:00",
+    )
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE file_enrich_queue
+            SET created_at = '2026-02-15T23:59:30',
+                next_retry_at = '2026-02-16T00:00:00+00:00'
+            WHERE relative_path = 'mixed.py'
+            """
+        )
+        conn.commit()
+
+    age = repo.get_pending_age_stats(now_iso="2026-02-16T00:00:00+00:00")
+    assert age["oldest_pending_available_age_sec"] == pytest.approx(30.0)

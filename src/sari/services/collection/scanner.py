@@ -16,7 +16,6 @@ from solidlsp.ls_config import Language
 
 from sari.core.exceptions import CollectionError, ErrorContext
 from sari.core.models import CandidateIndexChangeDTO, CollectionScanResultDTO, CollectedFileL1DTO, EnqueueRequestDTO, RepoIdentityDTO, now_iso8601_utc
-from sari.services.collection.perf_trace import PerfTracer, trace_methods
 
 
 @dataclass(frozen=True)
@@ -44,7 +43,6 @@ class _ScanHashResultDTO:
     observed_at: str
 
 
-@trace_methods("l1_scanner_fn")
 class FileScanner:
     """L1 스캔 책임을 담당하는 전용 서비스."""
 
@@ -87,8 +85,6 @@ class FileScanner:
         self._bootstrap_file_window = max(1, int(bootstrap_file_window))
         self._bootstrap_top_k = max(1, int(bootstrap_top_k))
         self._language_priority_weights = language_priority_weights or {}
-        self._perf_tracer = PerfTracer(component="l1_scanner")
-
     def scan_once(self, repo_root: str) -> CollectionScanResultDTO:
         """단일 저장소 스캔을 실행한다."""
         total_started_at = time.perf_counter()
@@ -116,7 +112,6 @@ class FileScanner:
         prewarm_elapsed_ms = 0.0
         delete_elapsed_ms = 0.0
         walk_started_at = time.perf_counter()
-        self._perf_tracer.emit("scan_once_start", repo_root=str(root), scan_flush_batch_size=self._scan_flush_batch_size)
         self._schedule_bootstrap_probes(root=root, gitignore_spec=gitignore_spec)
         last_flush_at = time.perf_counter()
         for file_path in root.rglob("*"):
@@ -248,21 +243,6 @@ class FileScanner:
         if self._candidate_index_sink is not None and deleted_count > 0:
             self._candidate_index_sink.mark_repo_dirty(str(root))
         total_elapsed_ms = (time.perf_counter() - total_started_at) * 1000.0
-        self._perf_tracer.emit(
-            "scan_once_done",
-            repo_root=str(root),
-            scanned_count=scanned_count,
-            indexed_count=indexed_count,
-            deleted_count=deleted_count,
-            seen_paths_count=len(seen_paths),
-            hash_jobs_count=len(hash_jobs),
-            walk_elapsed_ms=round(walk_elapsed_ms, 3),
-            flush_calls=flush_calls,
-            flush_elapsed_ms_total=round(flush_elapsed_ms_total, 3),
-            prewarm_elapsed_ms=round(prewarm_elapsed_ms, 3),
-            delete_elapsed_ms=round(delete_elapsed_ms, 3),
-            total_elapsed_ms=round(total_elapsed_ms, 3),
-        )
         return CollectionScanResultDTO(scanned_count=scanned_count, indexed_count=indexed_count, deleted_count=deleted_count)
 
     def _schedule_bootstrap_probes(self, root: Path, gitignore_spec: PathSpec) -> None:

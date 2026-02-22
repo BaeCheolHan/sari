@@ -111,7 +111,7 @@ def _build_services() -> CliServiceBundle:
     body_repo = FileBodyRepository(config.db_path)
     lsp_repo = LspToolDataRepository(config.db_path)
     readiness_repo = ToolReadinessRepository(config.db_path)
-    file_collection_service = build_default_file_collection_service(
+    benchmark_file_collection_service = build_default_file_collection_service(
         workspace_repo=workspace_repo,
         file_repo=file_repo,
         enrich_queue_repo=queue_repo,
@@ -123,6 +123,30 @@ def _build_services() -> CliServiceBundle:
         error_event_repo=error_event_repo,
         run_mode=config.run_mode,
         lsp_backend=BenchmarkLspExtractionBackend(),
+        persist_body_for_read=False,
+        l3_parallel_enabled=config.l3_parallel_enabled,
+        l3_executor_max_workers=config.l3_executor_max_workers,
+        l3_recent_success_ttl_sec=config.l3_recent_success_ttl_sec,
+        l3_backpressure_on_interactive=config.l3_backpressure_on_interactive,
+        l3_backpressure_cooldown_ms=config.l3_backpressure_cooldown_ms,
+        l3_supported_languages=config.l3_supported_languages,
+        lsp_probe_bootstrap_file_window=config.lsp_probe_bootstrap_file_window,
+        lsp_probe_bootstrap_top_k=config.lsp_probe_bootstrap_top_k,
+        lsp_probe_language_priority=config.lsp_probe_language_priority,
+        lsp_probe_l1_languages=config.lsp_probe_l1_languages,
+    )
+    perf_file_collection_service = build_default_file_collection_service(
+        workspace_repo=workspace_repo,
+        file_repo=file_repo,
+        enrich_queue_repo=queue_repo,
+        body_repo=body_repo,
+        lsp_repo=lsp_repo,
+        readiness_repo=readiness_repo,
+        policy_repo=policy_repo,
+        event_repo=event_repo,
+        error_event_repo=error_event_repo,
+        run_mode=config.run_mode,
+        lsp_backend=None,
         persist_body_for_read=False,
         l3_parallel_enabled=config.l3_parallel_enabled,
         l3_executor_max_workers=config.l3_executor_max_workers,
@@ -180,7 +204,7 @@ def _build_services() -> CliServiceBundle:
         go_warmup_timeout_sec=config.lsp_probe_timeout_go_sec,
     )
     pipeline_benchmark_service = PipelineBenchmarkService(
-        file_collection_service=file_collection_service,
+        file_collection_service=benchmark_file_collection_service,
         queue_repo=queue_repo,
         lsp_repo=lsp_repo,
         policy_repo=policy_repo,
@@ -210,7 +234,7 @@ def _build_services() -> CliServiceBundle:
         ),
         pipeline_benchmark_service=pipeline_benchmark_service,
         pipeline_perf_service=PipelinePerfService(
-            file_collection_service=file_collection_service,
+            file_collection_service=perf_file_collection_service,
             queue_repo=queue_repo,
             benchmark_service=pipeline_benchmark_service,
             perf_repo=perf_repo,
@@ -495,6 +519,39 @@ def install_command(host: str, print_only: bool) -> None:
         _print_json(payload, exit_code=1)
         return
     _print_json(payload)
+
+
+@cli.group("lsp")
+def lsp_group() -> None:
+    """LSP 런타임/캐시 관리 명령 그룹이다."""
+
+
+@lsp_group.command("reset-unavailable")
+@click.option("--repo", type=str, default=None, help="특정 repo_root 범위만 초기화한다.")
+@click.option("--lang", type=str, default=None, help="특정 언어만 초기화한다 (예: python, go, java).")
+@click.option("--all", "reset_all", is_flag=True, default=False, help="전체 unavailable 캐시를 초기화한다.")
+def lsp_reset_unavailable_command(repo: str | None, lang: str | None, reset_all: bool) -> None:
+    """LSP unavailable cache를 수동으로 초기화한다."""
+    if not reset_all and (repo is None or repo.strip() == ""):
+        _print_json({"error": {"code": "ERR_REPO_REQUIRED", "message": "--repo 또는 --all 이 필요합니다"}}, exit_code=1)
+        return
+    services = _build_services()
+    file_collection_service = services.pipeline_perf_service._file_collection_service  # type: ignore[attr-defined]
+    resetter = getattr(file_collection_service, "reset_lsp_unavailable_cache", None)
+    if not callable(resetter):
+        _print_json({"error": {"code": "ERR_UNSUPPORTED", "message": "reset_lsp_unavailable_cache capability is required"}}, exit_code=1)
+        return
+    cleared = int(resetter(repo_root=None if reset_all else repo, language=lang))
+    _print_json(
+        {
+            "lsp_unavailable_reset": {
+                "scope": "all" if reset_all else ("repo_language" if lang else "repo"),
+                "repo_root": None if reset_all else str(Path(repo).expanduser().resolve()) if isinstance(repo, str) and repo.strip() != "" else None,
+                "language": lang,
+                "cleared_count": cleared,
+            }
+        }
+    )
 
 
 @cli.group("engine")
@@ -805,9 +862,10 @@ def pipeline_perf_group() -> None:
 @click.option("--target-files", type=int, default=2_000, show_default=True)
 @click.option("--profile", type=str, default="realistic_v1", show_default=True)
 @click.option("--dataset-mode", type=click.Choice(["isolated", "legacy"], case_sensitive=False), default="isolated", show_default=True)
-@click.option("--fresh-db", is_flag=True, default=False, help="측정 시작 전 런타임 상태를 초기화한다.")
+@click.option("--fresh-db", is_flag=True, default=False, help="측정 시작 전 런타임 상태를 논리 초기화한다(DB 파일 재생성 아님).")
 @click.option("--reset-probe-state", is_flag=True, default=False, help="측정 시작 전 probe 상태를 초기화한다.")
 @click.option("--cold-lsp-reset", is_flag=True, default=False, help="측정 시작 전 LSP 런타임을 종료해 cold-start로 측정한다.")
+@click.option("--workspace-exclude-glob", type=str, multiple=True, default=())
 def pipeline_perf_run_command(
     repo: str,
     target_files: int,
@@ -816,6 +874,7 @@ def pipeline_perf_run_command(
     fresh_db: bool,
     reset_probe_state: bool,
     cold_lsp_reset: bool,
+    workspace_exclude_glob: tuple[str, ...],
 ) -> None:
     """혼합지표 성능 실측을 실행하고 요약 결과를 출력한다."""
     services = _build_services()
@@ -828,6 +887,7 @@ def pipeline_perf_run_command(
             fresh_db=fresh_db,
             reset_probe_state=reset_probe_state,
             cold_lsp_reset=cold_lsp_reset,
+            workspace_exclude_globs=tuple(workspace_exclude_glob),
         )
     except PerfError as exc:
         _print_json({"error": asdict(exc.context)}, exit_code=1)

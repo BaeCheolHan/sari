@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from sari.core.models import DeadJobItemDTO, EnqueueRequestDTO, FileEnrichFailureUpdateDTO, FileEnrichJobDTO
@@ -398,6 +398,67 @@ class FileEnrichQueueRepository:
             counts[status] = row_int(row, "cnt")
         return counts
 
+    def get_pending_split_counts(self, now_iso: str) -> dict[str, int]:
+        """현재 시각 기준 PENDING을 실행 가능/지연 상태로 분리 집계한다."""
+        with connect(self._db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    SUM(CASE WHEN status = 'PENDING' AND next_retry_at <= :now_iso THEN 1 ELSE 0 END) AS pending_available,
+                    SUM(CASE WHEN status = 'PENDING' AND next_retry_at > :now_iso THEN 1 ELSE 0 END) AS pending_deferred
+                FROM file_enrich_queue
+                """,
+                {"now_iso": now_iso},
+            ).fetchone()
+        if row is None:
+            return {"PENDING_AVAILABLE": 0, "PENDING_DEFERRED": 0}
+        pending_available = int(row["pending_available"] or 0)
+        pending_deferred = int(row["pending_deferred"] or 0)
+        return {"PENDING_AVAILABLE": pending_available, "PENDING_DEFERRED": pending_deferred}
+
+    def get_pending_age_stats(self, now_iso: str) -> dict[str, float | None]:
+        """현재 시각 기준 PENDING available/deferred 작업의 age 통계를 계산한다."""
+        now_dt = self._parse_iso_utc(now_iso)
+        if now_dt is None:
+            return {
+                "oldest_pending_available_age_sec": None,
+                "oldest_pending_deferred_age_sec": None,
+                "p95_pending_available_age_sec": None,
+            }
+        with connect(self._db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT created_at, next_retry_at
+                FROM file_enrich_queue
+                WHERE status = 'PENDING'
+                """
+            ).fetchall()
+        available_ages: list[float] = []
+        deferred_ages: list[float] = []
+        for row in rows:
+            created_at = row_optional_str(row, "created_at")
+            next_retry_at = row_optional_str(row, "next_retry_at")
+            if created_at is None or next_retry_at is None:
+                continue
+            created_dt = self._parse_iso_utc(created_at)
+            retry_dt = self._parse_iso_utc(next_retry_at)
+            if created_dt is None or retry_dt is None:
+                continue
+            try:
+                age_sec = max(0.0, float((now_dt - created_dt).total_seconds()))
+            except TypeError:
+                continue
+            if retry_dt <= now_dt:
+                available_ages.append(age_sec)
+            else:
+                deferred_ages.append(age_sec)
+
+        return {
+            "oldest_pending_available_age_sec": max(available_ages) if available_ages else None,
+            "oldest_pending_deferred_age_sec": max(deferred_ages) if deferred_ages else None,
+            "p95_pending_available_age_sec": self._percentile(available_ages, 95.0),
+        }
+
     def reset_running_to_failed(self, now_iso: str) -> int:
         """비정상 종료 대비 RUNNING 상태를 FAILED로 복구한다."""
         with connect(self._db_path) as conn:
@@ -546,3 +607,29 @@ class FileEnrichQueueRepository:
             now_dt = datetime.utcnow()
         delay_sec = backoff_base_sec * (2 ** max(0, attempt_count - 1))
         return (now_dt + timedelta(seconds=delay_sec)).isoformat()
+
+    def _parse_iso(self, value: str) -> datetime | None:
+        """ISO8601 문자열을 파싱한다."""
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
+
+    def _parse_iso_utc(self, value: str) -> datetime | None:
+        """ISO8601 문자열을 UTC aware datetime으로 정규화한다."""
+        parsed = self._parse_iso(value)
+        if parsed is None:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)
+
+    def _percentile(self, values: list[float], percentile: float) -> float | None:
+        """단순 nearest-rank 방식 백분위를 계산한다."""
+        if len(values) == 0:
+            return None
+        ordered = sorted(values)
+        if len(ordered) == 1:
+            return ordered[0]
+        rank = max(1, min(len(ordered), int((percentile / 100.0) * len(ordered) + 0.999999)))
+        return ordered[rank - 1]

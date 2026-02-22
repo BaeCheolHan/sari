@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import logging
 
-from sari.services.collection.perf_trace import PerfTracer, trace_methods
+from sari.services.collection.perf_trace import (
+    PerfTracer,
+    get_perf_trace_summary,
+    perf_trace_session,
+    reset_perf_trace_summary,
+    trace_methods,
+)
 
 
 def test_perf_tracer_disabled_by_default(monkeypatch) -> None:
@@ -47,3 +53,26 @@ def test_trace_methods_decorator_emits_start_and_end(monkeypatch, caplog) -> Non
     assert result == 2
     assert any('"event": "fn_start"' in message for message in caplog.messages)
     assert any('"event": "fn_end"' in message for message in caplog.messages)
+
+
+def test_perf_tracer_span_records_summary(monkeypatch, caplog) -> None:
+    monkeypatch.setenv("SARI_PERF_TRACE", "1")
+    session_id = "test-span-summary"
+    reset_perf_trace_summary(session_id)
+    tracer = PerfTracer(component="perf_test")
+
+    with caplog.at_level(logging.INFO):
+        with perf_trace_session(session_id):
+            with tracer.span("demo_span", phase="unit", language="python"):
+                pass
+
+    summary = get_perf_trace_summary(session_id)
+    assert summary["session_id"] == session_id
+    groups = summary["span_groups"]
+    assert isinstance(groups, list)
+    assert len(groups) >= 1
+    first = groups[0]
+    assert first["component"] == "perf_test"
+    assert first["event"] == "demo_span"
+    assert first["phase"] == "unit"
+    assert any('"event": "span"' in message for message in caplog.messages)

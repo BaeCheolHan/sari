@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from click.testing import CliRunner
 from pytest import MonkeyPatch
 
-from sari.cli.main import cli
+from sari.cli.main import _build_services, cli
+from sari.services.file_collection_service import SolidLspExtractionBackend
+from sari.services.pipeline_benchmark_service import BenchmarkLspExtractionBackend
 
 
 def _prepare_home(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
@@ -69,3 +72,71 @@ def test_cli_pipeline_perf_run_and_report(tmp_path: Path, monkeypatch: MonkeyPat
     assert report_result.exit_code == 0
     report_payload = json.loads(report_result.output)
     assert report_payload["perf"]["status"] == "COMPLETED"
+
+
+def test_build_services_separates_benchmark_and_perf_backends(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """perf 측정 서비스는 real LSP backend를 사용해야 한다."""
+    _prepare_home(tmp_path=tmp_path, monkeypatch=monkeypatch)
+    services = _build_services()
+    benchmark_backend = services.pipeline_benchmark_service._file_collection_service._lsp_backend  # type: ignore[attr-defined]
+    perf_backend = services.pipeline_perf_service._file_collection_service._lsp_backend  # type: ignore[attr-defined]
+
+    assert isinstance(benchmark_backend, BenchmarkLspExtractionBackend)
+    assert isinstance(perf_backend, SolidLspExtractionBackend)
+
+
+def test_cli_pipeline_perf_run_passes_workspace_exclude_globs(monkeypatch: MonkeyPatch) -> None:
+    """workspace-exclude-glob 옵션이 perf service.run()으로 전달되어야 한다."""
+    runner = CliRunner()
+    captured: dict[str, object] = {}
+
+    class _FakePerfService:
+        def run(self, **kwargs):  # noqa: ANN003, ANN201
+            captured.update(kwargs)
+            return {
+                "status": "COMPLETED",
+                "threshold_profile": kwargs["profile"],
+                "dataset_mode": kwargs["dataset_mode"],
+                "datasets": [
+                    {"dataset_type": "workspace_real", "run_context": {"config_snapshot": {"workspace_exclude_globs": list(kwargs.get("workspace_exclude_globs", ()))}}}
+                ],
+            }
+
+    monkeypatch.setattr(
+        "sari.cli.main._build_services",
+        lambda: SimpleNamespace(pipeline_perf_service=_FakePerfService()),
+    )
+    result = runner.invoke(
+        cli,
+        [
+            "pipeline", "perf", "run",
+            "--repo", "/tmp/repo",
+            "--workspace-exclude-glob", "serena/test/resources/repos/**",
+            "--workspace-exclude-glob", "**/benchmark_dataset/**",
+        ],
+    )
+    assert result.exit_code == 0
+    assert captured["workspace_exclude_globs"] == ("serena/test/resources/repos/**", "**/benchmark_dataset/**")
+
+
+def test_cli_lsp_reset_unavailable_calls_perf_file_collection_service(monkeypatch: MonkeyPatch) -> None:
+    """lsp reset-unavailable 명령이 perf file_collection_service의 reset API를 호출해야 한다."""
+    runner = CliRunner()
+    called: dict[str, object] = {}
+
+    class _FakeCollectionService:
+        def reset_lsp_unavailable_cache(self, repo_root=None, language=None):  # noqa: ANN001, ANN201
+            called["repo_root"] = repo_root
+            called["language"] = language
+            return 7
+
+    bundle = SimpleNamespace(
+        pipeline_perf_service=SimpleNamespace(_file_collection_service=_FakeCollectionService()),
+    )
+    monkeypatch.setattr("sari.cli.main._build_services", lambda: bundle)
+
+    result = runner.invoke(cli, ["lsp", "reset-unavailable", "--repo", "/tmp/repo", "--lang", "java"])
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["lsp_unavailable_reset"]["cleared_count"] == 7
+    assert called["language"] == "java"

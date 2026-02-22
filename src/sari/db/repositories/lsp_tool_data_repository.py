@@ -254,6 +254,22 @@ class LspToolDataRepository:
             return 0
         return row_int(row, "symbol_count")
 
+    def count_distinct_symbol_files(self) -> int:
+        """심볼이 저장된 distinct 파일 수를 반환한다."""
+        with connect(self._db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS file_count
+                FROM (
+                    SELECT DISTINCT repo_root, relative_path
+                    FROM lsp_symbols
+                )
+                """
+            ).fetchone()
+        if row is None:
+            return 0
+        return row_int(row, "file_count")
+
     def count_relations(self, repo_root: str, relative_path: str, content_hash: str) -> int:
         """파일의 호출 관계 레코드 수를 반환한다."""
         with connect(self._db_path) as conn:

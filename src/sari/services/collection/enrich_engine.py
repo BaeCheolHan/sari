@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from dataclasses import dataclass
 import hashlib
 from datetime import datetime, timezone
@@ -30,7 +30,7 @@ from sari.core.models import (
 )
 from sari.core.text_decode import decode_bytes_with_policy
 from sari.services.collection.error_policy import CollectionErrorPolicy
-from sari.services.collection.perf_trace import PerfTracer, trace_methods
+from sari.services.collection.perf_trace import PerfTracer
 
 
 @dataclass(frozen=True)
@@ -47,7 +47,6 @@ class _L3JobResultDTO:
     dev_error: CollectionError | None
 
 
-@trace_methods("enrich_engine_fn")
 class EnrichEngine:
     """파일 보강(L2/L3) 처리와 bootstrap 모드를 관리한다."""
 
@@ -103,6 +102,7 @@ class EnrichEngine:
         self._flush_max_body_bytes = flush_max_body_bytes
         self._l3_parallel_enabled = bool(l3_parallel_enabled)
         self._l3_executor_max_workers = max(1, int(l3_executor_max_workers)) if int(l3_executor_max_workers) > 0 else 32
+        self._l3_group_wait_timeout_sec = 90.0
         self._l3_recent_success_ttl_sec = max(0, int(l3_recent_success_ttl_sec))
         self._l3_backpressure_on_interactive = bool(l3_backpressure_on_interactive)
         self._l3_backpressure_cooldown_sec = max(0.01, float(max(10, int(l3_backpressure_cooldown_ms))) / 1000.0)
@@ -115,7 +115,6 @@ class EnrichEngine:
         self._l3_supported_languages = self._parse_l3_supported_languages(l3_supported_languages)
         self._lsp_probe_l1_languages = self._parse_lsp_probe_l1_languages(lsp_probe_l1_languages)
         self._perf_tracer = PerfTracer(component="enrich_engine")
-        self._perf_trace_slow_job_ms = 2000.0
 
     def shutdown(self) -> None:
         """L3 전역 executor를 종료한다."""
@@ -403,15 +402,6 @@ class EnrichEngine:
             finally:
                 elapsed_ms = (time.perf_counter() - started_at) * 1000.0
                 self._record_enrich_latency(elapsed_ms)
-                if elapsed_ms >= self._perf_trace_slow_job_ms:
-                    self._perf_tracer.emit(
-                        "l2l3_job_slow",
-                        repo_root=job.repo_root,
-                        relative_path=job.relative_path,
-                        status=finished_status,
-                        elapsed_ms=round(elapsed_ms, 3),
-                        attempt_count=job.attempt_count,
-                    )
                 if self._event_repo is not None:
                     self._event_repo.record_event(job_id=job.job_id, status=finished_status, latency_ms=int(elapsed_ms), created_at=now_iso8601_utc())
             should_flush_by_size = len(done_ids) + len(failed_updates) >= self._flush_batch_size
@@ -444,20 +434,6 @@ class EnrichEngine:
         )
         flush_elapsed_ms_total += (time.perf_counter() - flush_started_at) * 1000.0
         flush_count += 1
-        if self._should_perf_trace_tick():
-            self._perf_tracer.emit(
-                "l2l3_batch_done",
-                requested_limit=limit,
-                acquired_jobs=len(jobs),
-                processed=processed,
-                flush_count=flush_count,
-                get_file_elapsed_ms_total=round(get_file_elapsed_ms_total, 3),
-                file_io_elapsed_ms_total=round(file_io_elapsed_ms_total, 3),
-                decode_elapsed_ms_total=round(decode_elapsed_ms_total, 3),
-                extract_elapsed_ms_total=round(extract_elapsed_ms_total, 3),
-                flush_elapsed_ms_total=round(flush_elapsed_ms_total, 3),
-                elapsed_ms=round((time.perf_counter() - batch_started_at) * 1000.0, 3),
-            )
         return processed
 
     def process_enrich_jobs_l2(self, limit: int) -> int:
@@ -629,14 +605,6 @@ class EnrichEngine:
                 last_flush_at = time.perf_counter()
         self._flush_enrich_buffers(done_ids=done_ids, failed_updates=failed_updates, state_updates=state_updates, body_upserts=body_upserts, body_deletes=body_deletes, lsp_updates=lsp_updates, readiness_updates=readiness_updates)
         flush_count += 1
-        self._perf_tracer.emit(
-            "l2_batch_done",
-            requested_limit=limit,
-            acquired_jobs=len(jobs),
-            processed=processed,
-            flush_count=flush_count,
-            elapsed_ms=round((time.perf_counter() - batch_started_at) * 1000.0, 3),
-        )
         return processed
 
     def process_enrich_jobs_l3(self, limit: int) -> int:
@@ -661,85 +629,161 @@ class EnrichEngine:
         flush_count = 0
         group_count = 0
         grouped_jobs = self._group_jobs_by_repo_and_language(jobs=jobs)
-        self._perf_tracer.emit(
-            "l3_batch_start",
-            requested_limit=limit,
-            acquired_jobs=len(jobs),
-            group_count=len(grouped_jobs),
-            acquire_elapsed_ms=round(acquire_elapsed_ms, 3),
-            rebalance_elapsed_ms=round(rebalance_elapsed_ms, 3),
-        )
         for group in grouped_jobs:
             group_count += 1
             group_started_at = time.perf_counter()
+            group_language = self._resolve_lsp_language(group[0].relative_path).value if len(group) > 0 and self._resolve_lsp_language(group[0].relative_path) is not None else "unknown"
             self._set_group_bulk_mode(group=group, enabled=True)
             group_parallelism = self._resolve_l3_parallelism(group)
             try:
-                if group_parallelism <= 1:
-                    for job in group:
-                        result = self._process_single_l3_job(job)
-                        processed += 1
-                        self._merge_l3_result(
-                            result=result,
-                            done_ids=done_ids,
-                            failed_updates=failed_updates,
-                            state_updates=state_updates,
-                            body_deletes=body_deletes,
-                            lsp_updates=lsp_updates,
-                            readiness_updates=readiness_updates,
-                        )
-                        if result.dev_error is not None:
-                            self._flush_enrich_buffers(done_ids=done_ids, failed_updates=failed_updates, state_updates=state_updates, body_upserts=body_upserts, body_deletes=body_deletes, lsp_updates=lsp_updates, readiness_updates=readiness_updates)
-                            raise result.dev_error
-                else:
-                    futures: list[Future[_L3JobResultDTO]] = [self._l3_executor.submit(self._process_single_l3_job, job) for job in group[:group_parallelism]]
-                    if len(group) > group_parallelism:
-                        for job in group[group_parallelism:]:
-                            futures.append(self._l3_executor.submit(self._process_single_l3_job, job))
-                    for future in as_completed(futures):
-                        result = future.result()
-                        processed += 1
-                        self._merge_l3_result(
-                            result=result,
-                            done_ids=done_ids,
-                            failed_updates=failed_updates,
-                            state_updates=state_updates,
-                            body_deletes=body_deletes,
-                            lsp_updates=lsp_updates,
-                            readiness_updates=readiness_updates,
-                        )
-                        if result.dev_error is not None:
-                            self._flush_enrich_buffers(done_ids=done_ids, failed_updates=failed_updates, state_updates=state_updates, body_upserts=body_upserts, body_deletes=body_deletes, lsp_updates=lsp_updates, readiness_updates=readiness_updates)
-                            raise result.dev_error
+                with self._perf_tracer.span(
+                    "process_enrich_jobs_l3.group",
+                    phase="l3_group",
+                    repo_root=(group[0].repo_root if len(group) > 0 else ""),
+                    language=group_language,
+                    group_size=len(group),
+                    parallelism=group_parallelism,
+                ):
+                    if group_parallelism <= 1:
+                        for job in group:
+                            result = self._process_single_l3_job(job)
+                            processed += 1
+                            self._merge_l3_result(
+                                result=result,
+                                done_ids=done_ids,
+                                failed_updates=failed_updates,
+                                state_updates=state_updates,
+                                body_deletes=body_deletes,
+                                lsp_updates=lsp_updates,
+                                readiness_updates=readiness_updates,
+                            )
+                            if result.dev_error is not None:
+                                self._flush_enrich_buffers(done_ids=done_ids, failed_updates=failed_updates, state_updates=state_updates, body_upserts=body_upserts, body_deletes=body_deletes, lsp_updates=lsp_updates, readiness_updates=readiness_updates)
+                                raise result.dev_error
+                    else:
+                        futures: list[Future[_L3JobResultDTO]] = [self._l3_executor.submit(self._process_single_l3_job, job) for job in group[:group_parallelism]]
+                        if len(group) > group_parallelism:
+                            for job in group[group_parallelism:]:
+                                futures.append(self._l3_executor.submit(self._process_single_l3_job, job))
+                        future_to_job = {future: job for future, job in zip(futures, group)}
+                        completed_futures: set[Future[_L3JobResultDTO]] = set()
+                        try:
+                            with self._perf_tracer.span(
+                                "process_enrich_jobs_l3.group_future_wait",
+                                phase="l3_group_wait",
+                                repo_root=(group[0].repo_root if len(group) > 0 else ""),
+                                language=group_language,
+                                group_size=len(group),
+                                parallelism=group_parallelism,
+                            ):
+                                for future in as_completed(futures, timeout=self._l3_group_wait_timeout_sec):
+                                    completed_futures.add(future)
+                                    result = future.result()
+                                    processed += 1
+                                    self._merge_l3_result(
+                                        result=result,
+                                        done_ids=done_ids,
+                                        failed_updates=failed_updates,
+                                        state_updates=state_updates,
+                                        body_deletes=body_deletes,
+                                        lsp_updates=lsp_updates,
+                                        readiness_updates=readiness_updates,
+                                    )
+                                    if result.dev_error is not None:
+                                        self._flush_enrich_buffers(done_ids=done_ids, failed_updates=failed_updates, state_updates=state_updates, body_upserts=body_upserts, body_deletes=body_deletes, lsp_updates=lsp_updates, readiness_updates=readiness_updates)
+                                        raise result.dev_error
+                        except FuturesTimeoutError:
+                            timeout_now = now_iso8601_utc()
+                            remaining_futures = [future for future in futures if future not in completed_futures]
+                            for future in remaining_futures:
+                                job = future_to_job.get(future)
+                                if job is None:
+                                    continue
+                                future.cancel()
+                                timeout_result = self._build_l3_timeout_failure_result(
+                                    job=job,
+                                    timeout_sec=self._l3_group_wait_timeout_sec,
+                                    now_iso=timeout_now,
+                                    group_size=len(group),
+                                )
+                                processed += 1
+                                self._merge_l3_result(
+                                    result=timeout_result,
+                                    done_ids=done_ids,
+                                    failed_updates=failed_updates,
+                                    state_updates=state_updates,
+                                    body_deletes=body_deletes,
+                                    lsp_updates=lsp_updates,
+                                    readiness_updates=readiness_updates,
+                                )
             finally:
                 self._set_group_bulk_mode(group=group, enabled=False)
             should_flush_by_size = len(done_ids) + len(failed_updates) >= self._flush_batch_size
             should_flush_by_time = time.perf_counter() - last_flush_at >= self._flush_interval_sec
             if should_flush_by_size or should_flush_by_time:
-                self._flush_enrich_buffers(done_ids=done_ids, failed_updates=failed_updates, state_updates=state_updates, body_upserts=body_upserts, body_deletes=body_deletes, lsp_updates=lsp_updates, readiness_updates=readiness_updates)
+                with self._perf_tracer.span("process_enrich_jobs_l3.flush_buffers", phase="l3_flush"):
+                    self._flush_enrich_buffers(done_ids=done_ids, failed_updates=failed_updates, state_updates=state_updates, body_upserts=body_upserts, body_deletes=body_deletes, lsp_updates=lsp_updates, readiness_updates=readiness_updates)
                 flush_count += 1
                 last_flush_at = time.perf_counter()
-            if self._perf_tracer.should_sample():
-                sample_language = self._resolve_lsp_language(group[0].relative_path) if len(group) > 0 else None
-                self._perf_tracer.emit(
-                    "l3_group_done",
-                    group_size=len(group),
-                    group_parallelism=group_parallelism,
-                    language=("other" if sample_language is None else sample_language.value),
-                    elapsed_ms=round((time.perf_counter() - group_started_at) * 1000.0, 3),
-                )
-        self._flush_enrich_buffers(done_ids=done_ids, failed_updates=failed_updates, state_updates=state_updates, body_upserts=body_upserts, body_deletes=body_deletes, lsp_updates=lsp_updates, readiness_updates=readiness_updates)
+        with self._perf_tracer.span("process_enrich_jobs_l3.flush_buffers_final", phase="l3_flush"):
+            self._flush_enrich_buffers(done_ids=done_ids, failed_updates=failed_updates, state_updates=state_updates, body_upserts=body_upserts, body_deletes=body_deletes, lsp_updates=lsp_updates, readiness_updates=readiness_updates)
         flush_count += 1
-        self._perf_tracer.emit(
-            "l3_batch_done",
-            requested_limit=limit,
-            acquired_jobs=len(jobs),
-            processed=processed,
-            group_count=group_count,
-            flush_count=flush_count,
-            elapsed_ms=round((time.perf_counter() - batch_started_at) * 1000.0, 3),
-        )
         return processed
+
+    def _build_l3_timeout_failure_result(
+        self,
+        *,
+        job: FileEnrichJobDTO,
+        timeout_sec: float,
+        now_iso: str,
+        group_size: int,
+    ) -> _L3JobResultDTO:
+        """병렬 L3 그룹 timeout으로 완료되지 않은 job을 FAILED로 전이시키는 합성 결과를 생성한다."""
+        language = resolve_language_from_path(file_path=job.relative_path)
+        language_name = "unknown" if language is None else language.value
+        error_message = (
+            "L3 병렬 작업 타임아웃: "
+            f"repo={job.repo_root}, path={job.relative_path}, language={language_name}, "
+            f"group_size={group_size}, timeout_sec={timeout_sec:.1f}"
+        )
+        failure_update = FileEnrichFailureUpdateDTO(
+            job_id=job.job_id,
+            error_message=error_message,
+            now_iso=now_iso,
+            dead_threshold=self._policy.retry_max_attempts,
+            backoff_base_sec=self._policy.retry_backoff_base_sec,
+        )
+        state_update = EnrichStateUpdateDTO(
+            repo_root=job.repo_root,
+            relative_path=job.relative_path,
+            enrich_state="FAILED",
+            updated_at=now_iso,
+        )
+        self._error_policy.record_error_event(
+            component="file_collection_service",
+            phase="enrich_l3_group",
+            severity="error",
+            error_code="ERR_ENRICH_L3_GROUP_TIMEOUT",
+            error_message=error_message,
+            error_type="L3GroupTimeout",
+            repo_root=job.repo_root,
+            relative_path=job.relative_path,
+            job_id=job.job_id,
+            attempt_count=job.attempt_count,
+            context_data={"content_hash": job.content_hash},
+        )
+        return _L3JobResultDTO(
+            job_id=job.job_id,
+            finished_status="FAILED",
+            elapsed_ms=0.0,
+            done_id=None,
+            failure_update=failure_update,
+            state_update=state_update,
+            body_delete=None,
+            lsp_update=None,
+            readiness_update=None,
+            dev_error=None,
+        )
 
     def process_enrich_jobs_bootstrap(self, limit: int) -> int:
         """bootstrap 모드 정책에 따라 L2/L3 비율을 조정한다."""
@@ -920,7 +964,8 @@ class EnrichEngine:
         readiness_update: ToolReadinessStateDTO | None = None
         dev_error: CollectionError | None = None
         try:
-            file_row = self._file_repo.get_file(job.repo_root, job.relative_path)
+            with self._perf_tracer.span("l3_job.get_file_row", phase="l3_job", repo_root=job.repo_root):
+                file_row = self._file_repo.get_file(job.repo_root, job.relative_path)
             if file_row is None or file_row.is_deleted:
                 done_id = job.job_id
                 finished_status = "DONE"
@@ -959,7 +1004,8 @@ class EnrichEngine:
                 finished_status = "DONE"
             else:
                 now_iso = now_iso8601_utc()
-                skip_reason = self._resolve_l3_skip_reason(job=job)
+                with self._perf_tracer.span("l3_job.resolve_skip_reason", phase="l3_job", repo_root=job.repo_root):
+                    skip_reason = self._resolve_l3_skip_reason(job=job)
                 if skip_reason is not None:
                     state_update = EnrichStateUpdateDTO(
                         repo_root=job.repo_root,
@@ -971,7 +1017,13 @@ class EnrichEngine:
                     done_id = job.job_id
                     finished_status = "DONE"
                 else:
-                    extraction = self._lsp_backend.extract(job.repo_root, job.relative_path, job.content_hash)
+                    with self._perf_tracer.span(
+                        "l3_job.lsp_extract",
+                        phase="l3_job",
+                        repo_root=job.repo_root,
+                        language=(self._resolve_lsp_language(job.relative_path).value if self._resolve_lsp_language(job.relative_path) is not None else "unknown"),
+                    ):
+                        extraction = self._lsp_backend.extract(job.repo_root, job.relative_path, job.content_hash)
                     if extraction.error_message is not None:
                         self._schedule_l1_probe_after_l3_fallback(job=job)
                         failure_now = now_iso8601_utc()
@@ -1075,22 +1127,14 @@ class EnrichEngine:
                 dev_error = CollectionError(ErrorContext(code="ERR_ENRICH_L3_FAILED", message=f"L3 처리 실패: {exc}"))
         elapsed_ms = (time.perf_counter() - started_at) * 1000.0
         self._record_enrich_latency(elapsed_ms)
-        if elapsed_ms >= self._perf_trace_slow_job_ms:
-            self._perf_tracer.emit(
-                "l3_job_slow",
-                repo_root=job.repo_root,
-                relative_path=job.relative_path,
-                status=finished_status,
-                elapsed_ms=round(elapsed_ms, 3),
-                attempt_count=job.attempt_count,
-            )
         if self._event_repo is not None:
-            self._event_repo.record_event(
-                job_id=job.job_id,
-                status=finished_status,
-                latency_ms=int(elapsed_ms),
-                created_at=now_iso8601_utc(),
-            )
+            with self._perf_tracer.span("l3_job.record_event", phase="l3_job_event"):
+                self._event_repo.record_event(
+                    job_id=job.job_id,
+                    status=finished_status,
+                    latency_ms=int(elapsed_ms),
+                    created_at=now_iso8601_utc(),
+                )
         return _L3JobResultDTO(
             job_id=job.job_id,
             finished_status=finished_status,
