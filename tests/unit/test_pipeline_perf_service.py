@@ -241,7 +241,8 @@ def test_pipeline_perf_service_run_returns_gate_summary(tmp_path: Path) -> None:
     assert summary["status"] == "COMPLETED"
     assert summary["threshold_profile"] == "realistic_v1"
     assert summary["dataset_mode"] == "isolated"
-    assert summary["gate_passed"] is True
+    # PR-A residual close: workspace_real gate는 threshold뿐 아니라 integrity(real LSP backend 등)도 반영한다.
+    assert summary["gate_passed"] is False
     datasets = summary["datasets"]
     assert isinstance(datasets, list)
     assert len(datasets) == 2
@@ -255,6 +256,7 @@ def test_pipeline_perf_service_run_returns_gate_summary(tmp_path: Path) -> None:
     assert isinstance(workspace["end_counts"], dict)
     assert workspace["run_context"]["fresh_db"] is False
     assert workspace["run_context"]["pre_state_reset"] is False
+    assert workspace["integrity"]["integrity_checks"]["measurement_backend_real_lsp"] is False
 
 
 def test_pipeline_perf_service_rejects_invalid_repo(tmp_path: Path) -> None:
@@ -473,3 +475,89 @@ def test_pipeline_perf_integrity_snapshot_includes_broker_snapshot_and_runtime_m
     assert isinstance(broker_snapshot, dict)
     assert broker_snapshot["active_sessions_by_language"]["java"] == 1
     assert broker_snapshot["active_sessions_by_budget_group"]["ts-vue"] == 2
+
+
+def test_pipeline_perf_integrity_snapshot_adds_strict_eligible_match_check(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    queue_repo = _FakeQueueRepositoryWithPendingDetails()
+    service = PipelinePerfService(
+        file_collection_service=_FakeCollectionServiceWithRepos(),
+        queue_repo=queue_repo,
+        benchmark_service=_FakeBenchmarkService(),
+        perf_repo=PipelinePerfRepository(db_path),
+        artifact_root=tmp_path / "artifacts",
+    )
+
+    snap = service._collect_workspace_integrity_snapshot()
+    checks = snap["integrity_checks"]
+    assert checks["queue_running_zero"] is True
+    assert checks["tool_ready_vs_symbol_files_match"] is True
+    assert checks["eligible_done_vs_tool_ready_and_symbol_files_match"] is True
+
+
+def test_build_dataset_result_for_workspace_real_fails_gate_when_integrity_check_fails(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    service = PipelinePerfService(
+        file_collection_service=_FakeCollectionService(),
+        queue_repo=_FakeQueueRepository(),
+        benchmark_service=_FakeBenchmarkService(),
+        perf_repo=PipelinePerfRepository(db_path),
+        artifact_root=tmp_path / "artifacts",
+    )
+    result = service._build_dataset_result(
+        dataset_type="workspace_real",
+        repo_scope="/tmp/repo",
+        done_count=4000,
+        dead_count=0,
+        l3_elapsed_sec=5.0,
+        wall_time_sec=8.0,
+        count_mode="delta",
+        start_counts={},
+        end_counts={},
+        measurement_scope="workspace_real_isolated",
+        run_context={},
+        integrity_snapshot={
+            "integrity_checks": {
+                "measurement_backend_real_lsp": False,
+                "queue_running_zero": True,
+                "tool_ready_vs_symbol_files_match": True,
+            }
+        },
+    )
+    assert result["gate_passed"] is False
+
+
+def test_build_dataset_result_for_workspace_real_passes_only_when_threshold_and_integrity_checks_pass(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    service = PipelinePerfService(
+        file_collection_service=_FakeCollectionService(),
+        queue_repo=_FakeQueueRepository(),
+        benchmark_service=_FakeBenchmarkService(),
+        perf_repo=PipelinePerfRepository(db_path),
+        artifact_root=tmp_path / "artifacts",
+    )
+    result = service._build_dataset_result(
+        dataset_type="workspace_real",
+        repo_scope="/tmp/repo",
+        done_count=4000,
+        dead_count=0,
+        l3_elapsed_sec=5.0,
+        wall_time_sec=8.0,
+        count_mode="delta",
+        start_counts={},
+        end_counts={},
+        measurement_scope="workspace_real_isolated",
+        run_context={},
+        integrity_snapshot={
+            "integrity_checks": {
+                "measurement_backend_real_lsp": True,
+                "queue_running_zero": True,
+                "tool_ready_vs_symbol_files_match": True,
+                "eligible_done_vs_tool_ready_and_symbol_files_match": True,
+            }
+        },
+    )
+    assert result["gate_passed"] is True

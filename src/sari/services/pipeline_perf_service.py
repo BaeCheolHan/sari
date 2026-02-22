@@ -450,7 +450,18 @@ class PipelinePerfService:
         denominator = done_count + dead_count
         error_rate = 0.0 if denominator == 0 else (float(dead_count) / float(denominator)) * 100.0
         l3_jobs_per_sec = 0.0 if l3_elapsed_sec <= 0 else float(done_count) / l3_elapsed_sec
-        gate_passed = bool(l3_jobs_per_sec >= 220.0 and wall_time_sec <= 13.0 and error_rate <= 0.5)
+        threshold_gate_passed = bool(l3_jobs_per_sec >= 220.0 and wall_time_sec <= 13.0 and error_rate <= 0.5)
+        gate_passed = threshold_gate_passed
+        if dataset_type == "workspace_real" and integrity_snapshot is not None:
+            integrity_checks_raw = integrity_snapshot.get("integrity_checks")
+            if isinstance(integrity_checks_raw, dict):
+                integrity_checks = {
+                    str(key): bool(value)
+                    for key, value in integrity_checks_raw.items()
+                    if isinstance(value, bool)
+                }
+                if len(integrity_checks) > 0 and not all(integrity_checks.values()):
+                    gate_passed = False
         result = {
             "dataset_type": dataset_type,
             "repo_scope": repo_scope,
@@ -580,6 +591,21 @@ class PipelinePerfService:
         }
         if readiness_counts is not None and symbol_file_count is not None:
             integrity_checks["tool_ready_vs_symbol_files_match"] = int(readiness_counts.get("tool_ready_true", 0)) == int(symbol_file_count)
+        eligible_counts = snapshot.get("eligible_counts")
+        if (
+            isinstance(eligible_counts, dict)
+            and readiness_counts is not None
+            and symbol_file_count is not None
+            and snapshot.get("eligible_counts_mode") == "strict_queue_phaseB_v1"
+        ):
+            try:
+                eligible_done = int(eligible_counts.get("eligible_done_count", -1))
+                tool_ready_true = int(readiness_counts.get("tool_ready_true", -2))
+                integrity_checks["eligible_done_vs_tool_ready_and_symbol_files_match"] = (
+                    eligible_done == tool_ready_true == int(symbol_file_count)
+                )
+            except (TypeError, ValueError):
+                pass
         snapshot["integrity_checks"] = integrity_checks
         return snapshot
 
