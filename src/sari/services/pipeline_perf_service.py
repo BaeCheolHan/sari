@@ -535,6 +535,13 @@ class PipelinePerfService:
                 symbol_file_count = symbol_file_count
         else:
             symbol_file_count = None
+        if readiness_counts is not None and symbol_file_count is not None:
+            try:
+                tool_ready_true = int(readiness_counts.get("tool_ready_true", 0))
+                symbol_files_int = int(symbol_file_count)
+                snapshot["tool_readiness_symbol_gap_count"] = max(0, tool_ready_true - symbol_files_int)
+            except (TypeError, ValueError):
+                pass
 
         snapshot_now_iso = now_iso8601_utc()
         queue_counts = self._queue_counts_snapshot()
@@ -590,7 +597,13 @@ class PipelinePerfService:
             "measurement_backend_real_lsp": self._resolve_workspace_backend_kind() == "SolidLspExtractionBackend",
         }
         if readiness_counts is not None and symbol_file_count is not None:
-            integrity_checks["tool_ready_vs_symbol_files_match"] = int(readiness_counts.get("tool_ready_true", 0)) == int(symbol_file_count)
+            try:
+                tool_ready_true = int(readiness_counts.get("tool_ready_true", 0))
+                symbol_files_int = int(symbol_file_count)
+                # tool_ready=true 이지만 심볼 0건인 파일은 정상 허용한다.
+                integrity_checks["tool_ready_vs_symbol_files_match"] = symbol_files_int <= tool_ready_true
+            except (TypeError, ValueError):
+                pass
         eligible_counts = snapshot.get("eligible_counts")
         if (
             isinstance(eligible_counts, dict)
@@ -601,8 +614,9 @@ class PipelinePerfService:
             try:
                 eligible_done = int(eligible_counts.get("eligible_done_count", -1))
                 tool_ready_true = int(readiness_counts.get("tool_ready_true", -2))
+                symbol_files_int = int(symbol_file_count)
                 integrity_checks["eligible_done_vs_tool_ready_and_symbol_files_match"] = (
-                    eligible_done == tool_ready_true == int(symbol_file_count)
+                    eligible_done == tool_ready_true and symbol_files_int <= tool_ready_true
                 )
             except (TypeError, ValueError):
                 pass

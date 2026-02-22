@@ -223,6 +223,35 @@ class _FakeQueueRepositoryWithPendingDetails(_FakeQueueRepository):
         }
 
 
+class _FakeReadinessRepoWithGap:
+    def count_by_tool_ready(self) -> dict[str, int]:
+        return {"tool_ready_true": 10, "tool_ready_false": 0}
+
+
+class _FakeLspRepoWithGap:
+    def count_distinct_symbol_files(self) -> int:
+        return 7
+
+
+class _FakeCollectionServiceWithReposGap(_FakeCollectionService):
+    def __init__(self) -> None:
+        super().__init__()
+        self._file_repo = _FakeFileRepoWithStateCounts()
+        self._readiness_repo = _FakeReadinessRepoWithGap()
+        self._lsp_repo = _FakeLspRepoWithGap()
+
+
+class _FakeQueueRepositoryWithPendingDetailsAndGap(_FakeQueueRepositoryWithPendingDetails):
+    def get_eligible_counts(self, now_iso: str) -> dict[str, int]:
+        del now_iso
+        return {
+            "eligible_total_count": 12,
+            "eligible_done_count": 10,
+            "eligible_failed_count": 2,
+            "eligible_deferred_count": 7,
+        }
+
+
 def test_pipeline_perf_service_run_returns_gate_summary(tmp_path: Path) -> None:
     """실행 결과에 혼합지표와 게이트 판정이 포함되어야 한다."""
     db_path = tmp_path / "state.db"
@@ -561,3 +590,22 @@ def test_build_dataset_result_for_workspace_real_passes_only_when_threshold_and_
         },
     )
     assert result["gate_passed"] is True
+
+
+def test_pipeline_perf_integrity_snapshot_allows_zero_symbol_tool_ready_gap_when_eligible_done_matches(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    service = PipelinePerfService(
+        file_collection_service=_FakeCollectionServiceWithReposGap(),
+        queue_repo=_FakeQueueRepositoryWithPendingDetailsAndGap(),
+        benchmark_service=_FakeBenchmarkService(),
+        perf_repo=PipelinePerfRepository(db_path),
+        artifact_root=tmp_path / "artifacts",
+    )
+
+    snap = service._collect_workspace_integrity_snapshot()
+    checks = snap["integrity_checks"]
+    # tool_ready=true 이지만 심볼 0건 파일(예: java/js)이 있을 수 있으므로 strict equality는 강제하지 않는다.
+    assert checks["tool_ready_vs_symbol_files_match"] is True
+    assert checks["eligible_done_vs_tool_ready_and_symbol_files_match"] is True
+    assert snap["tool_readiness_symbol_gap_count"] == 3
