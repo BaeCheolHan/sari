@@ -590,6 +590,8 @@ def test_build_dataset_result_for_workspace_real_passes_only_when_threshold_and_
         },
     )
     assert result["gate_passed"] is True
+    assert result["threshold_gate_passed"] is True
+    assert result["integrity_gate_passed"] is True
 
 
 def test_pipeline_perf_integrity_snapshot_allows_zero_symbol_tool_ready_gap_when_eligible_done_matches(tmp_path: Path) -> None:
@@ -609,3 +611,43 @@ def test_pipeline_perf_integrity_snapshot_allows_zero_symbol_tool_ready_gap_when
     assert checks["tool_ready_vs_symbol_files_match"] is True
     assert checks["eligible_done_vs_tool_ready_and_symbol_files_match"] is True
     assert snap["tool_readiness_symbol_gap_count"] == 3
+
+
+def test_build_dataset_result_supports_real_lsp_phase1_profile_for_workspace_real(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    service = PipelinePerfService(
+        file_collection_service=_FakeCollectionService(),
+        queue_repo=_FakeQueueRepository(),
+        benchmark_service=_FakeBenchmarkService(),
+        perf_repo=PipelinePerfRepository(db_path),
+        artifact_root=tmp_path / "artifacts",
+    )
+    result = service._build_dataset_result(
+        dataset_type="workspace_real",
+        repo_scope="/tmp/repo",
+        done_count=1800,
+        dead_count=0,
+        l3_elapsed_sec=30.0,   # 60 jobs/s
+        wall_time_sec=36.0,
+        count_mode="delta",
+        start_counts={},
+        end_counts={},
+        measurement_scope="workspace_real_isolated",
+        run_context={
+            "config_snapshot": {"profile": "real_lsp_phase1_v1"},
+            "backend_kind": "SolidLspExtractionBackend",
+        },
+        integrity_snapshot={
+            "integrity_checks": {
+                "measurement_backend_real_lsp": True,
+                "queue_running_zero": True,
+                "tool_ready_vs_symbol_files_match": True,
+                "eligible_done_vs_tool_ready_and_symbol_files_match": True,
+            }
+        },
+    )
+    assert result["threshold_profile_applied"] == "real_lsp_phase1_v1"
+    assert result["threshold_gate_passed"] is True
+    assert result["integrity_gate_passed"] is True
+    assert result["gate_passed"] is True

@@ -450,8 +450,14 @@ class PipelinePerfService:
         denominator = done_count + dead_count
         error_rate = 0.0 if denominator == 0 else (float(dead_count) / float(denominator)) * 100.0
         l3_jobs_per_sec = 0.0 if l3_elapsed_sec <= 0 else float(done_count) / l3_elapsed_sec
-        threshold_gate_passed = bool(l3_jobs_per_sec >= 220.0 and wall_time_sec <= 13.0 and error_rate <= 0.5)
+        threshold_profile = self._resolve_threshold_profile(run_context=run_context, dataset_type=dataset_type)
+        threshold_gate_passed = bool(
+            l3_jobs_per_sec >= float(threshold_profile["min_l3_jobs_per_sec"])
+            and wall_time_sec <= float(threshold_profile["max_wall_time_sec"])
+            and error_rate <= float(threshold_profile["max_error_rate_pct"])
+        )
         gate_passed = threshold_gate_passed
+        integrity_gate_passed: bool | None = None
         if dataset_type == "workspace_real" and integrity_snapshot is not None:
             integrity_checks_raw = integrity_snapshot.get("integrity_checks")
             if isinstance(integrity_checks_raw, dict):
@@ -460,8 +466,10 @@ class PipelinePerfService:
                     for key, value in integrity_checks_raw.items()
                     if isinstance(value, bool)
                 }
-                if len(integrity_checks) > 0 and not all(integrity_checks.values()):
-                    gate_passed = False
+                if len(integrity_checks) > 0:
+                    integrity_gate_passed = all(integrity_checks.values())
+                    if not integrity_gate_passed:
+                        gate_passed = False
         result = {
             "dataset_type": dataset_type,
             "repo_scope": repo_scope,
@@ -475,11 +483,46 @@ class PipelinePerfService:
             "l3_jobs_per_sec": round(l3_jobs_per_sec, 4),
             "wall_time_sec": round(wall_time_sec, 4),
             "error_rate": round(error_rate, 4),
+            "threshold_profile_applied": str(threshold_profile["profile_name"]),
+            "threshold_gate_passed": threshold_gate_passed,
+            "integrity_gate_passed": integrity_gate_passed,
             "gate_passed": gate_passed,
         }
         if integrity_snapshot is not None:
             result["integrity"] = integrity_snapshot
         return result
+
+    def _resolve_threshold_profile(self, *, run_context: dict[str, object], dataset_type: str) -> dict[str, object]:
+        """dataset/profile 조합에 맞는 threshold 기준을 반환한다."""
+        profile_name = "realistic_v1"
+        config_snapshot = run_context.get("config_snapshot")
+        if isinstance(config_snapshot, dict):
+            raw_profile = config_snapshot.get("profile")
+            if isinstance(raw_profile, str) and raw_profile.strip():
+                profile_name = raw_profile.strip()
+
+        # 기본 profile (기존 동작 유지)
+        default_threshold = {
+            "profile_name": profile_name,
+            "min_l3_jobs_per_sec": 220.0,
+            "max_wall_time_sec": 13.0,
+            "max_error_rate_pct": 0.5,
+        }
+        if profile_name != "real_lsp_phase1_v1":
+            return default_threshold
+
+        # 실LSP Phase1 baseline profile: sample_2k는 기존 기준 유지, workspace_real만 완화
+        if dataset_type != "workspace_real":
+            return {
+                **default_threshold,
+                "profile_name": "real_lsp_phase1_v1",
+            }
+        return {
+            "profile_name": "real_lsp_phase1_v1",
+            "min_l3_jobs_per_sec": 40.0,
+            "max_wall_time_sec": 60.0,
+            "max_error_rate_pct": 0.5,
+        }
 
     def _resolve_workspace_backend_kind(self) -> str:
         """workspace_real 측정에 사용되는 backend 종류를 식별한다."""
