@@ -66,6 +66,59 @@ def test_defer_pending_job_keeps_status_pending_and_preserves_attempt_count(tmp_
     assert row["defer_reason"] == "broker_defer:budget"
 
 
+def test_defer_running_job_to_pending_preserves_counters(tmp_path: Path) -> None:
+    """RUNNING 작업을 broker defer로 PENDING 복귀시켜도 attempt/error 카운터를 오염시키면 안 된다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = FileEnrichQueueRepository(db_path)
+
+    now_iso = "2026-02-16T00:00:00+00:00"
+    job_id = repo.enqueue(
+        repo_root="/repo",
+        relative_path="running.py",
+        content_hash="h-running",
+        priority=30,
+        enqueue_source="scan",
+        now_iso=now_iso,
+    )
+    _ = repo.acquire_pending(limit=1, now_iso=now_iso)  # status -> RUNNING
+
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE file_enrich_queue
+            SET attempt_count = 2, last_error = 'old error'
+            WHERE job_id = :job_id
+            """,
+            {"job_id": job_id},
+        )
+        conn.commit()
+
+    changed = repo.defer_jobs_to_pending(
+        job_ids=[job_id],
+        next_retry_at="2026-02-16T00:01:00+00:00",
+        defer_reason="broker_defer:budget",
+        now_iso="2026-02-16T00:00:01+00:00",
+    )
+
+    assert changed == 1
+    with connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT status, attempt_count, defer_reason, next_retry_at, last_error
+            FROM file_enrich_queue
+            WHERE job_id = :job_id
+            """,
+            {"job_id": job_id},
+        ).fetchone()
+    assert row is not None
+    assert str(row["status"]) == "PENDING"
+    assert int(row["attempt_count"]) == 2
+    assert str(row["defer_reason"]) == "broker_defer:budget"
+    assert str(row["next_retry_at"]) == "2026-02-16T00:01:00+00:00"
+    assert str(row["last_error"]) == "old error"
+
+
 def test_enqueue_many_same_hash_preserves_defer_fields(tmp_path: Path) -> None:
     """동일 해시 merge는 defer 필드를 덮어쓰면 안 된다."""
     db_path = tmp_path / "state.db"

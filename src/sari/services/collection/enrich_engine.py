@@ -5,7 +5,7 @@ from __future__ import annotations
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from dataclasses import dataclass
 import hashlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import queue
 import time
 import traceback
@@ -629,6 +629,7 @@ class EnrichEngine:
         flush_count = 0
         group_count = 0
         grouped_jobs = self._group_jobs_by_repo_and_language(jobs=jobs)
+        grouped_jobs = self._order_l3_groups_for_scheduling(groups=grouped_jobs)
         for group in grouped_jobs:
             group_count += 1
             group_started_at = time.perf_counter()
@@ -893,6 +894,31 @@ class EnrichEngine:
             grouped[key].append(job)
         return [grouped[key] for key in ordered_keys]
 
+    def _order_l3_groups_for_scheduling(self, groups: list[list[FileEnrichJobDTO]]) -> list[list[FileEnrichJobDTO]]:
+        """PR3 baseline: backend가 제공하는 lane-aware 정렬 힌트로 L3 그룹 순서를 조정한다."""
+        if len(groups) <= 1:
+            return groups
+        sorter = getattr(self._lsp_backend, "get_l3_group_sort_key", None)
+        if not callable(sorter):
+            return groups
+        keyed: list[tuple[tuple[object, ...], int, list[FileEnrichJobDTO]]] = []
+        for idx, group in enumerate(groups):
+            if len(group) == 0:
+                keyed.append(((99, 99, 0.0, f"empty:{idx}"), idx, group))
+                continue
+            job0 = group[0]
+            try:
+                key = sorter(
+                    repo_root=job0.repo_root,
+                    sample_relative_path=job0.relative_path,
+                    group_size=len(group),
+                )
+            except (RuntimeError, OSError, ValueError, TypeError):
+                key = (9, 9, 0.0, f"{job0.repo_root}:{job0.relative_path}")
+            keyed.append((tuple(key), idx, group))
+        keyed.sort(key=lambda item: (item[0], item[1]))
+        return [group for _key, _idx, group in keyed]
+
     def _resolve_l3_parallelism(self, jobs: list[FileEnrichJobDTO]) -> int:
         if len(jobs) <= 1:
             return 1
@@ -1025,46 +1051,56 @@ class EnrichEngine:
                     ):
                         extraction = self._lsp_backend.extract(job.repo_root, job.relative_path, job.content_hash)
                     if extraction.error_message is not None:
-                        failure_kind = _classify_l3_extract_failure_kind(extraction.error_message)
-                        escalated = self._try_escalate_scope_after_l3_extract_error(
+                        deferred = self._try_defer_after_broker_lease_denial(
                             job=job,
                             error_message=extraction.error_message,
                         )
-                        if escalated:
+                        if deferred:
                             finished_status = "PENDING"
+                            extraction = None  # type: ignore[assignment]
+                            # defer는 실패/에러 카운트 오염 없이 queue 상태만 되돌린다.
+                            pass
                         else:
-                            self._schedule_l1_probe_after_l3_fallback(job=job)
-                            failure_now = now_iso8601_utc()
-                            state_update = EnrichStateUpdateDTO(
-                                repo_root=job.repo_root,
-                                relative_path=job.relative_path,
-                                enrich_state="FAILED",
-                                updated_at=failure_now,
-                            )
-                            failure_update = FileEnrichFailureUpdateDTO(
-                                job_id=job.job_id,
+                            failure_kind = _classify_l3_extract_failure_kind(extraction.error_message)
+                            escalated = self._try_escalate_scope_after_l3_extract_error(
+                                job=job,
                                 error_message=extraction.error_message,
-                                now_iso=failure_now,
-                                dead_threshold=self._policy.retry_max_attempts,
-                                backoff_base_sec=self._policy.retry_backoff_base_sec,
                             )
-                            self._error_policy.record_error_event(
-                                component="file_collection_service",
-                                phase="enrich_l3_extract",
-                                severity="error",
-                                error_code="ERR_LSP_EXTRACT_FAILED",
-                                error_message=extraction.error_message,
-                                error_type="LspExtractionError",
-                                repo_root=job.repo_root,
-                                relative_path=job.relative_path,
-                                job_id=job.job_id,
-                                attempt_count=job.attempt_count,
-                                context_data={"content_hash": job.content_hash, "failure_kind": failure_kind},
-                            )
-                            if self._run_mode == "dev":
-                                dev_error = CollectionError(
-                                    ErrorContext(code="ERR_LSP_EXTRACT_FAILED", message=f"LSP 추출 실패: {extraction.error_message}")
+                            if escalated:
+                                finished_status = "PENDING"
+                            else:
+                                self._schedule_l1_probe_after_l3_fallback(job=job)
+                                failure_now = now_iso8601_utc()
+                                state_update = EnrichStateUpdateDTO(
+                                    repo_root=job.repo_root,
+                                    relative_path=job.relative_path,
+                                    enrich_state="FAILED",
+                                    updated_at=failure_now,
                                 )
+                                failure_update = FileEnrichFailureUpdateDTO(
+                                    job_id=job.job_id,
+                                    error_message=extraction.error_message,
+                                    now_iso=failure_now,
+                                    dead_threshold=self._policy.retry_max_attempts,
+                                    backoff_base_sec=self._policy.retry_backoff_base_sec,
+                                )
+                                self._error_policy.record_error_event(
+                                    component="file_collection_service",
+                                    phase="enrich_l3_extract",
+                                    severity="error",
+                                    error_code="ERR_LSP_EXTRACT_FAILED",
+                                    error_message=extraction.error_message,
+                                    error_type="LspExtractionError",
+                                    repo_root=job.repo_root,
+                                    relative_path=job.relative_path,
+                                    job_id=job.job_id,
+                                    attempt_count=job.attempt_count,
+                                    context_data={"content_hash": job.content_hash, "failure_kind": failure_kind},
+                                )
+                                if self._run_mode == "dev":
+                                    dev_error = CollectionError(
+                                        ErrorContext(code="ERR_LSP_EXTRACT_FAILED", message=f"LSP 추출 실패: {extraction.error_message}")
+                                    )
                     else:
                         lsp_update = LspExtractPersistDTO(
                             repo_root=job.repo_root,
@@ -1231,6 +1267,51 @@ class EnrichEngine:
                 "next_scope_root": next_scope_root,
                 "scope_attempts_before": current_attempts,
                 "scope_attempts_after": current_attempts + 1,
+            },
+        )
+        return True
+
+    def _try_defer_after_broker_lease_denial(self, *, job: FileEnrichJobDTO, error_message: str) -> bool:
+        """broker lease 거부 오류는 실패가 아니라 queue defer로 되돌린다."""
+        if not error_message.strip().startswith("ERR_LSP_BROKER_LEASE_REQUIRED"):
+            return False
+        defer_writer = getattr(self._enrich_queue_repo, "defer_jobs_to_pending", None)
+        if not callable(defer_writer):
+            return False
+        now_dt = datetime.now(timezone.utc)
+        lease_reason = _extract_broker_lease_reason_from_l3_error(error_message)
+        defer_reason = _map_broker_lease_reason_to_defer_reason(lease_reason)
+        defer_delay_sec = _broker_defer_delay_seconds_for_reason(lease_reason)
+        next_retry_at = (now_dt + timedelta(seconds=defer_delay_sec)).isoformat()
+        now_iso = now_dt.isoformat()
+        try:
+            updated = int(
+                defer_writer(
+                    job_ids=[job.job_id],
+                    next_retry_at=next_retry_at,
+                    defer_reason=defer_reason,
+                    now_iso=now_iso,
+                )
+            )
+        except (RuntimeError, OSError, ValueError, TypeError):
+            return False
+        if updated <= 0:
+            return False
+        self._error_policy.record_error_event(
+            component="file_collection_service",
+            phase="enrich_l3_broker_defer",
+            severity="warning",
+            error_code="ERR_L3_DEFERRED_BY_BROKER",
+            error_message=error_message,
+            error_type="LspBrokerLeaseDenied",
+            repo_root=job.repo_root,
+            relative_path=job.relative_path,
+            job_id=job.job_id,
+            attempt_count=job.attempt_count,
+            context_data={
+                "defer_reason": defer_reason,
+                "lease_reason": lease_reason,
+                "next_retry_at": next_retry_at,
             },
         )
         return True
@@ -1513,3 +1594,36 @@ def _classify_l3_extract_failure_kind(message: str) -> str:
     }:
         return "TRANSIENT_FAIL"
     return "TRANSIENT_FAIL"
+
+
+def _extract_broker_lease_reason_from_l3_error(message: str) -> str:
+    """ERR_LSP_BROKER_LEASE_REQUIRED 메시지에서 lease reason을 추출한다."""
+    lowered = message.strip()
+    marker = "reason="
+    idx = lowered.find(marker)
+    if idx < 0:
+        return "budget_blocked"
+    value = lowered[idx + len(marker) :].strip()
+    if "," in value:
+        value = value.split(",", 1)[0].strip()
+    return value or "budget_blocked"
+
+
+def _map_broker_lease_reason_to_defer_reason(lease_reason: str) -> str:
+    """broker lease 거부 이유를 Phase1 defer_reason prefix로 정규화한다."""
+    reason = lease_reason.strip().lower()
+    if reason in {"cooldown", "min_lease"}:
+        return "broker_defer:cooldown"
+    if reason == "starvation_guard":
+        return "broker_defer:starvation_guard"
+    return "broker_defer:budget"
+
+
+def _broker_defer_delay_seconds_for_reason(lease_reason: str) -> float:
+    """broker defer reason별 기본 재평가 지연값 (Phase1 baseline)."""
+    reason = lease_reason.strip().lower()
+    if reason in {"cooldown", "min_lease"}:
+        return 1.0
+    if reason == "starvation_guard":
+        return 0.2
+    return 0.5

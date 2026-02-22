@@ -197,6 +197,13 @@ class FileCollectionService:
         )
         if self._lsp_session_broker_enabled:
             self._lsp_session_broker.set_budget_group_active_cap("ts-vue", max(0, int(lsp_broker_ts_vue_active_cap)))
+        configure_session_runtime = getattr(self._lsp_backend, "configure_session_runtime", None)
+        if callable(configure_session_runtime):
+            configure_session_runtime(
+                session_broker=self._lsp_session_broker,
+                watcher_hotness_tracker=self._watcher_hotness_tracker,
+                enabled=self._lsp_session_broker_enabled,
+            )
         self._metrics_lock = threading.Lock()
         self._worker_state = 'running'
         self._last_error_code: str | None = None

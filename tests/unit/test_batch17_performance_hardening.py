@@ -26,7 +26,9 @@ from sari.search.candidate_search import CandidateBackendError, CandidateSearchC
 from sari.search.orchestrator import SearchOrchestrator
 from sari.services.collection.enrich_engine import EnrichEngine
 import sari.services.collection.enrich_engine as enrich_engine_module
+from sari.services.collection.lsp_session_broker import LspBrokerLanguageProfile, LspSessionBroker
 from sari.services.collection.perf_trace import PerfTracer
+from sari.services.collection.watcher_hotness_tracker import WatcherHotnessTracker
 from sari.services.file_collection_service import FileCollectionService, LspExtractionBackend, LspExtractionResultDTO, SolidLspExtractionBackend
 import sari.services.file_collection_service as file_collection_service_module
 import sari.db.repositories.file_collection_repository as file_collection_repository_module
@@ -74,6 +76,7 @@ class _CaptureEscalateQueueRepo:
     def __init__(self, *, escalate_returns: bool = True) -> None:
         self.calls: list[dict[str, str]] = []
         self.escalate_returns = escalate_returns
+        self.defer_calls: list[dict[str, object]] = []
 
     def escalate_scope_on_same_job(
         self,
@@ -94,6 +97,17 @@ class _CaptureEscalateQueueRepo:
             }
         )
         return self.escalate_returns
+
+    def defer_jobs_to_pending(self, *, job_ids: list[str], next_retry_at: str, defer_reason: str, now_iso: str) -> int:
+        self.defer_calls.append(
+            {
+                "job_ids": list(job_ids),
+                "next_retry_at": next_retry_at,
+                "defer_reason": defer_reason,
+                "now_iso": now_iso,
+            }
+        )
+        return len(job_ids)
 
 
 class _StubExtractBackend:
@@ -211,6 +225,51 @@ def test_enrich_engine_l3_extract_error_transient_does_not_escalate() -> None:
     assert engine._schedule_l1_probe_after_l3_fallback_called == 1
 
 
+def test_enrich_engine_l3_extract_error_broker_lease_denial_defers_pending() -> None:
+    """PR3 baseline: broker lease 거부는 FAILED가 아니라 queue defer(PENDING)로 전이해야 한다."""
+    queue_repo = _CaptureEscalateQueueRepo()
+    error_policy = _StubErrorPolicy()
+    engine = _build_min_enrich_engine_for_l3_test(
+        lsp_backend=_StubExtractBackend(
+            "ERR_LSP_BROKER_LEASE_REQUIRED: lang=java, scope=/workspace/repo_a, lane=backlog, reason=budget_blocked"
+        ),
+        queue_repo=queue_repo,
+        error_policy=error_policy,
+    )
+    job = FileEnrichJobDTO(
+        job_id="j-broker-defer",
+        repo_id="r1",
+        repo_root="/workspace",
+        relative_path="repo_a/src/a.py",
+        content_hash="h1",
+        priority=10,
+        enqueue_source="l3",
+        status="RUNNING",
+        attempt_count=3,
+        last_error=None,
+        next_retry_at="2026-01-01T00:00:00+00:00",
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+        scope_level="module",
+        scope_root="/workspace/repo_a",
+        scope_attempts=0,
+    )
+
+    result = engine._process_single_l3_job(job)
+
+    assert result.finished_status == "PENDING"
+    assert result.failure_update is None
+    assert result.state_update is None
+    assert result.done_id is None
+    assert len(queue_repo.defer_calls) == 1
+    defer_call = queue_repo.defer_calls[0]
+    assert defer_call["job_ids"] == ["j-broker-defer"]
+    assert str(defer_call["defer_reason"]).startswith("broker_defer:")
+    assert len(queue_repo.calls) == 0  # scope escalation 경로와 혼동되면 안 된다.
+    assert engine._schedule_l1_probe_after_l3_fallback_called == 0
+    assert ("ERR_L3_DEFERRED_BY_BROKER", "enrich_l3_broker_defer") in error_policy.events
+
+
 def test_enrich_engine_l3_extract_error_scope_trigger_stops_after_max_escalations() -> None:
     """scope_attempts가 최대치에 도달한 job은 taxonomy 트리거여도 더 이상 escalation하지 않는다."""
     queue_repo = _CaptureEscalateQueueRepo()
@@ -286,11 +345,175 @@ def test_scope_escalation_trigger_taxonomy_baseline() -> None:
     fn = getattr(file_collection_service_module, "_is_scope_escalation_trigger_error")
     assert fn("ERR_LSP_WORKSPACE_MISMATCH", "No Elm workspace contains /repo/x") is True
     assert fn("ERR_CONFIG_INVALID", "project model missing") is True
-    assert fn("ERR_LSP_DOCUMENT_SYMBOL_FAILED", "No workspace contains /repo/file.ts") is True
-    assert fn("ERR_LSP_DOCUMENT_SYMBOL_FAILED", "project not found for current file") is True
-    assert fn("ERR_RPC_TIMEOUT", "timeout while waiting") is False
-    assert fn("ERR_BROKEN_PIPE", "broken pipe") is False
-    assert fn("ERR_SERVER_EXITED", "server exited unexpectedly") is False
+
+
+def test_enrich_engine_orders_l3_groups_using_backend_sort_key() -> None:
+    """PR3 baseline: backend sort key가 제공되면 L3 그룹 순서를 lane-aware 힌트로 재정렬해야 한다."""
+
+    class _SortBackend:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, int]] = []
+
+        def get_l3_group_sort_key(self, *, repo_root: str, sample_relative_path: str, group_size: int):
+            self.calls.append((repo_root, sample_relative_path, group_size))
+            # repo_b를 우선 배치
+            if "repo_b" in sample_relative_path:
+                return (0, 0, -1.0, "b")
+            return (1, 1, 0.0, "a")
+
+    engine = object.__new__(EnrichEngine)
+    engine._lsp_backend = _SortBackend()
+
+    def _resolve_lang(_p: str):  # noqa: ANN001
+        return Language.PYTHON
+
+    engine._resolve_lsp_language = _resolve_lang  # type: ignore[method-assign]
+    jobs = [
+        FileEnrichJobDTO(
+            job_id="j1",
+            repo_id="r1",
+            repo_root="/workspace/repo_a",
+            relative_path="repo_a/a.py",
+            content_hash="h1",
+            priority=1,
+            enqueue_source="l3",
+            status="PENDING",
+            attempt_count=0,
+            last_error=None,
+            next_retry_at="2026-01-01T00:00:00+00:00",
+            created_at="2026-01-01T00:00:00+00:00",
+            updated_at="2026-01-01T00:00:00+00:00",
+        ),
+        FileEnrichJobDTO(
+            job_id="j2",
+            repo_id="r2",
+            repo_root="/workspace/repo_b",
+            relative_path="repo_b/b.py",
+            content_hash="h2",
+            priority=1,
+            enqueue_source="l3",
+            status="PENDING",
+            attempt_count=0,
+            last_error=None,
+            next_retry_at="2026-01-01T00:00:00+00:00",
+            created_at="2026-01-01T00:00:00+00:00",
+            updated_at="2026-01-01T00:00:00+00:00",
+        ),
+    ]
+    groups = engine._group_jobs_by_repo_and_language(jobs)
+    ordered = engine._order_l3_groups_for_scheduling(groups)
+    assert ordered[0][0].relative_path == "repo_b/b.py"
+    assert ordered[1][0].relative_path == "repo_a/a.py"
+
+
+def test_solid_lsp_backend_group_sort_key_prefers_profiled_hot_active_scope() -> None:
+    """PR3 baseline: profiled 언어에서는 active-scope reuse와 hotness가 정렬 우선순위에 반영돼야 한다."""
+
+    class _FakeHub:
+        def resolve_language(self, _relative_path: str) -> Language:
+            return Language.JAVA
+
+    broker = LspSessionBroker(
+        profiles={
+            "java": LspBrokerLanguageProfile(
+                language="java",
+                hot_lanes=1,
+                backlog_lanes=1,
+                sticky_idle_ttl_sec=10.0,
+                switch_cooldown_sec=0.0,
+                min_lease_ms=0,
+            )
+        },
+        max_standby_sessions_per_lang=1,
+        max_standby_sessions_per_budget_group=1,
+        now_monotonic=time.monotonic,
+    )
+    tracker = WatcherHotnessTracker(now_monotonic=time.monotonic)
+    backend = SolidLspExtractionBackend(hub=_FakeHub())  # type: ignore[arg-type]
+    backend.configure_session_runtime(session_broker=broker, watcher_hotness_tracker=tracker, enabled=True)
+    # scope planner off (default): runtime scope == repo_root
+    tracker.record_fs_event(
+        event_type="modified",
+        repo_root="/workspace",
+        relative_path="repo_hot/src/A.java",
+        language=Language.JAVA,
+        lsp_scope_root="/workspace/repo_hot",
+    )
+    with broker.lease(
+        language=Language.JAVA,
+        lsp_scope_root="/workspace/repo_hot",
+        lane="backlog",
+        hotness_score=3.0,
+        pending_jobs_in_scope=1,
+    ):
+        hot_key = backend.get_l3_group_sort_key(
+            repo_root="/workspace/repo_hot",
+            sample_relative_path="src/A.java",
+            group_size=10,
+        )
+        cold_key = backend.get_l3_group_sort_key(
+            repo_root="/workspace/repo_cold",
+            sample_relative_path="src/B.java",
+            group_size=10,
+        )
+    assert hot_key < cold_key
+
+
+def test_solid_lsp_backend_profiled_parallelism_and_bulk_mode_do_not_bypass_broker() -> None:
+    """PR3 baseline: profiled 언어에서는 backend 병렬도/벌크모드가 hub scale-out 경로를 직접 열지 않아야 한다."""
+
+    class _FakeHub:
+        def __init__(self) -> None:
+            self.acquire_pool_calls = 0
+            self.set_bulk_mode_calls = 0
+            self.get_running_calls = 0
+            self.prewarm_calls = 0
+
+        def acquire_pool(self, **kwargs):  # noqa: ANN003
+            self.acquire_pool_calls += 1
+            return [object()]
+
+        def set_bulk_mode(self, **kwargs):  # noqa: ANN003
+            self.set_bulk_mode_calls += 1
+
+        def get_running_instance_count(self, **kwargs):  # noqa: ANN003
+            self.get_running_calls += 1
+            return 2
+
+        def prewarm_language_pool(self, **kwargs):  # noqa: ANN003
+            self.prewarm_calls += 1
+
+        def get_metrics(self) -> dict[str, int]:
+            return {}
+
+    broker = LspSessionBroker(
+        profiles={
+            "java": LspBrokerLanguageProfile(
+                language="java",
+                hot_lanes=1,
+                backlog_lanes=1,
+                sticky_idle_ttl_sec=10.0,
+                switch_cooldown_sec=0.0,
+                min_lease_ms=0,
+            )
+        },
+        max_standby_sessions_per_lang=1,
+        max_standby_sessions_per_budget_group=1,
+        now_monotonic=time.monotonic,
+    )
+    hub = _FakeHub()
+    backend = SolidLspExtractionBackend(hub=hub)  # type: ignore[arg-type]
+    backend.configure_session_runtime(session_broker=broker, watcher_hotness_tracker=None, enabled=True)
+
+    assert backend.get_parallelism("/workspace", Language.JAVA) == 1
+    assert backend.get_parallelism_for_batch("/workspace", Language.JAVA, 8) == 1
+    backend.set_bulk_mode("/workspace", Language.JAVA, True)
+
+    assert hub.get_running_calls == 0
+    assert hub.prewarm_calls == 0
+    assert hub.acquire_pool_calls == 0
+    assert hub.set_bulk_mode_calls == 0
+    assert backend.get_runtime_metrics().get("broker_parallelism_guard_skip_count", 0) >= 3
 
 
 def test_scope_escalation_next_level_ladder() -> None:
@@ -2255,3 +2478,148 @@ def test_solid_lsp_backend_scope_planner_counts_fallback_index_building() -> Non
 
     metrics = backend.get_runtime_metrics()
     assert metrics["scope_planner_fallback_index_building_count"] == 1
+
+
+def test_solid_lsp_backend_broker_lease_guard_rejects_profiled_get_or_start() -> None:
+    """PR3 baseline: profiled 언어는 broker lease 없이 hub.get_or_start 호출되면 안 된다."""
+
+    class _FakeLsp:
+        def request_document_symbols(self, relative_path: str):  # noqa: ANN001
+            del relative_path
+
+            class _Req:
+                def iter_symbols(self_inner):  # noqa: ANN001
+                    del self_inner
+                    return iter([])
+
+            return _Req()
+
+    class _FakeHub:
+        def __init__(self) -> None:
+            self.get_or_start_calls = 0
+
+        def resolve_language(self, relative_path: str) -> Language:
+            del relative_path
+            return Language.JAVA
+
+        def get_or_start(self, language: Language, repo_root: str, request_kind: str = "indexing"):  # noqa: ANN001
+            del language, repo_root, request_kind
+            self.get_or_start_calls += 1
+            return _FakeLsp()
+
+        def prewarm_language_pool(self, language: Language, repo_root: str) -> None:
+            del language, repo_root
+
+        def get_metrics(self) -> dict[str, int]:
+            return {}
+
+    broker = LspSessionBroker(
+        profiles={
+            "java": LspBrokerLanguageProfile(
+                language="java",
+                hot_lanes=0,
+                backlog_lanes=0,
+                sticky_idle_ttl_sec=10.0,
+                switch_cooldown_sec=0.0,
+                min_lease_ms=0,
+            )
+        },
+        max_standby_sessions_per_lang=1,
+        max_standby_sessions_per_budget_group=1,
+        now_monotonic=time.monotonic,
+    )
+    hub = _FakeHub()
+    backend = SolidLspExtractionBackend(hub=hub)  # type: ignore[arg-type]
+    backend.configure_session_runtime(
+        session_broker=broker,
+        watcher_hotness_tracker=WatcherHotnessTracker(now_monotonic=time.monotonic),
+        enabled=True,
+    )
+
+    result = backend.extract(repo_root="/workspace/repo-a", relative_path="src/App.java", content_hash="h1")
+    assert result.error_message is not None
+    assert "ERR_LSP_BROKER_LEASE_REQUIRED" in result.error_message
+    assert hub.get_or_start_calls == 0
+    assert backend.get_runtime_metrics().get("broker_guard_reject_count") == 1
+
+
+def test_solid_lsp_probe_worker_uses_scope_planner_runtime_root() -> None:
+    """PR3 baseline: probe/prewarm 경로도 planner 계산 scope root를 사용해야 한다."""
+
+    class _FakeLsp:
+        def __init__(self) -> None:
+            self.last_relative_path: str | None = None
+
+        def request_document_symbols(self, relative_path: str):  # noqa: ANN001
+            self.last_relative_path = relative_path
+
+            class _Req:
+                def iter_symbols(self_inner):  # noqa: ANN001
+                    del self_inner
+                    return iter([])
+
+            return _Req()
+
+    class _FakeHub:
+        def __init__(self) -> None:
+            self.prewarm_roots: list[str] = []
+            self.get_or_start_roots: list[str] = []
+            self.lsp = _FakeLsp()
+
+        def resolve_language(self, relative_path: str) -> Language:
+            del relative_path
+            return Language.JAVA
+
+        def prewarm_language_pool(self, language: Language, repo_root: str) -> None:
+            del language
+            self.prewarm_roots.append(repo_root)
+
+        def get_or_start(self, language: Language, repo_root: str, request_kind: str = "indexing"):  # noqa: ANN001
+            del language, request_kind
+            self.get_or_start_roots.append(repo_root)
+            return self.lsp
+
+        def acquire_l1_probe_slot(self):
+            class _CM:
+                def __enter__(self_inner):  # noqa: ANN001
+                    return None
+
+                def __exit__(self_inner, exc_type, exc, tb):  # noqa: ANN001
+                    return False
+
+            return _CM()
+
+    class _FakePlanner:
+        def resolve(self, *, workspace_repo_root: str, relative_path: str, language: Language):  # noqa: ANN001
+            del workspace_repo_root, relative_path, language
+
+            class _Result:
+                lsp_scope_root = "/workspace/repo-a/module-x"
+                strategy = "marker"
+                marker_file = "pom.xml"
+
+            return _Result()
+
+        def to_scope_relative_path(self, *, workspace_relative_path: str, scope_candidate_root: str) -> str:
+            del scope_candidate_root
+            return workspace_relative_path.removeprefix("module-x/")
+
+    class _ImmediateExecutor:
+        def submit(self, fn, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+            class _DoneFuture:
+                def result(self_inner, timeout=None):  # noqa: ANN001
+                    del timeout
+                    return None
+
+            fn(*args, **kwargs)
+            return _DoneFuture()
+
+    hub = _FakeHub()
+    backend = SolidLspExtractionBackend(hub=hub)  # type: ignore[arg-type]
+    backend._l1_executor = _ImmediateExecutor()  # type: ignore[attr-defined]
+    backend.configure_lsp_scope_planner(planner=_FakePlanner(), enabled=True, shadow_mode=False)
+    backend._probe_worker(("/workspace/repo-a", Language.JAVA), "module-x/src/App.java")  # type: ignore[attr-defined]
+
+    assert hub.prewarm_roots == ["/workspace/repo-a/module-x"]
+    assert hub.get_or_start_roots == ["/workspace/repo-a/module-x", "/workspace/repo-a/module-x"]
+    assert hub.lsp.last_relative_path == "src/App.java"

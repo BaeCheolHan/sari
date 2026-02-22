@@ -114,6 +114,11 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
         self._lsp_scope_planner_applied_count = 0
         self._lsp_scope_planner_fallback_index_building_count = 0
         self._scope_override_hit_count = 0
+        self._session_broker: LspSessionBroker | None = None
+        self._watcher_hotness_tracker: WatcherHotnessTracker | None = None
+        self._session_broker_enabled = False
+        self._broker_guard_reject_count = 0
+        self._broker_parallelism_guard_skip_count = 0
 
     def extract(self, repo_root: str, relative_path: str, content_hash: str) -> LspExtractionResultDTO:
         normalized_relative_path = normalize_repo_relative_path(relative_path)
@@ -269,6 +274,18 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
         self._lsp_scope_planner_enabled = bool(enabled) and planner is not None
         self._lsp_scope_planner_shadow_mode = bool(shadow_mode)
 
+    def configure_session_runtime(
+        self,
+        *,
+        session_broker: LspSessionBroker | None,
+        watcher_hotness_tracker: WatcherHotnessTracker | None,
+        enabled: bool,
+    ) -> None:
+        """PR3 baseline: broker/hotness를 backend에 주입한다."""
+        self._session_broker = session_broker
+        self._watcher_hotness_tracker = watcher_hotness_tracker
+        self._session_broker_enabled = bool(enabled) and session_broker is not None
+
     def _normalized_scope_candidate_dir(self, *, repo_root: str, relative_path: str) -> str:
         normalized_relative = normalize_repo_relative_path(relative_path)
         parent = Path(normalized_relative).parent
@@ -366,6 +383,121 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
         except (ValueError, OSError):
             return normalized_relative_path
 
+    def _resolve_probe_runtime_scope(
+        self,
+        *,
+        repo_root: str,
+        sample_relative_path: str,
+        language: Language,
+    ) -> tuple[str, str]:
+        return self._resolve_lsp_runtime_scope(
+            repo_root=repo_root,
+            normalized_relative_path=normalize_repo_relative_path(sample_relative_path),
+            language=language,
+        )
+
+    def _get_or_start_with_broker_guard(
+        self,
+        *,
+        language: Language,
+        runtime_scope_root: str,
+        lane: str,
+        pending_jobs_in_scope: int,
+        request_kind: str,
+        trace_name: str = "extract_once.get_or_start",
+        trace_phase: str = "l3_extract",
+    ):
+        broker = self._session_broker
+        if self._session_broker_enabled and broker is not None:
+            hotness = 0.0
+            tracker = self._watcher_hotness_tracker
+            if tracker is not None:
+                try:
+                    hotness = tracker.get_scope_hotness(language=language, lsp_scope_root=runtime_scope_root)
+                except Exception:
+                    hotness = 0.0
+            with broker.lease(
+                language=language,
+                lsp_scope_root=runtime_scope_root,
+                lane=lane,
+                hotness_score=hotness,
+                pending_jobs_in_scope=max(0, int(pending_jobs_in_scope)),
+            ) as lease:
+                if not lease.granted:
+                    self._broker_guard_reject_count += 1
+                    raise RuntimeError(
+                        "ERR_LSP_BROKER_LEASE_REQUIRED: "
+                        f"lang={language.value}, scope={runtime_scope_root}, lane={lane}, reason={lease.reason}"
+                    )
+                with self._perf_tracer.span(
+                    trace_name,
+                    phase=trace_phase,
+                    repo_root=runtime_scope_root,
+                    language=language.value,
+                    request_kind=request_kind,
+                    lane=lane,
+                ):
+                    return self._hub.get_or_start(language=language, repo_root=runtime_scope_root, request_kind=request_kind)
+        with self._perf_tracer.span(
+            trace_name,
+            phase=trace_phase,
+            repo_root=runtime_scope_root,
+            language=language.value,
+            request_kind=request_kind,
+            lane=lane,
+        ):
+            return self._hub.get_or_start(language=language, repo_root=runtime_scope_root, request_kind=request_kind)
+
+    def _is_profiled_broker_language(self, language: Language) -> bool:
+        broker = self._session_broker
+        if not self._session_broker_enabled or broker is None:
+            return False
+        is_profiled = getattr(broker, "is_profiled_language", None)
+        if not callable(is_profiled):
+            return False
+        try:
+            return bool(is_profiled(language))
+        except Exception:
+            return False
+
+    def get_l3_group_sort_key(self, *, repo_root: str, sample_relative_path: str, group_size: int) -> tuple[int, int, float, str]:
+        """PR3 baseline: L3 group 정렬 힌트 (lane-aware ordering) 를 제공한다.
+
+        반환값은 낮을수록 우선순위가 높다.
+        tuple = (tier_rank, active_reuse_rank, negative_hotness_milli, stable_tiebreak)
+        """
+        del group_size  # Phase 1 baseline: batch affinity는 관측/후속 단계에서 반영
+        normalized_relative = normalize_repo_relative_path(sample_relative_path)
+        try:
+            language = self._hub.resolve_language(normalized_relative)
+        except Exception:
+            return (3, 1, 0.0, f"{repo_root}:{normalized_relative}")
+        runtime_scope_root, _runtime_relative = self._resolve_lsp_runtime_scope(
+            repo_root=repo_root,
+            normalized_relative_path=normalized_relative,
+            language=language,
+        )
+        broker = self._session_broker
+        if not self._session_broker_enabled or broker is None or not getattr(broker, "is_profiled_language", lambda _l: False)(language):
+            return (2, 1, 0.0, f"{repo_root}:{normalized_relative}")
+        hotness = 0.0
+        tracker = self._watcher_hotness_tracker
+        if tracker is not None:
+            try:
+                hotness = float(tracker.get_scope_hotness(language=language, lsp_scope_root=runtime_scope_root))
+            except Exception:
+                hotness = 0.0
+        has_active = False
+        has_active_scope = getattr(broker, "has_active_scope", None)
+        if callable(has_active_scope):
+            try:
+                has_active = bool(has_active_scope(language=language, lsp_scope_root=runtime_scope_root))
+            except Exception:
+                has_active = False
+        tier_rank = 0 if hotness > 0.0 else 1
+        active_reuse_rank = 0 if has_active else 1
+        return (tier_rank, active_reuse_rank, -hotness, f"{runtime_scope_root}:{language.value}")
+
     def _extract_once(self, repo_root: str, normalized_relative_path: str) -> LspExtractionResultDTO:
         try:
             language = self._hub.resolve_language(normalized_relative_path)
@@ -376,8 +508,15 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
             )
             with self._perf_tracer.span("extract_once.ensure_prewarm", phase="l3_extract", repo_root=runtime_scope_root, language=language.value):
                 self._ensure_prewarm(language=language, repo_root=runtime_scope_root)
-            with self._perf_tracer.span("extract_once.get_or_start", phase="l3_extract", repo_root=runtime_scope_root, language=language.value, request_kind="indexing"):
-                lsp = self._hub.get_or_start(language=language, repo_root=runtime_scope_root, request_kind="indexing")
+            lsp = self._get_or_start_with_broker_guard(
+                language=language,
+                runtime_scope_root=runtime_scope_root,
+                lane="backlog",
+                pending_jobs_in_scope=0,
+                request_kind="indexing",
+                trace_name="extract_once.get_or_start",
+                trace_phase="l3_extract",
+            )
             with self._acquire_l1_probe_slot():
                 with self._perf_tracer.span("extract_once.document_symbol_request", phase="l3_extract", repo_root=repo_root, language=language.value):
                     document_symbols = lsp.request_document_symbols(runtime_relative_path).iter_symbols()
@@ -459,6 +598,9 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
 
     def get_parallelism(self, repo_root: str, language: Language) -> int:
         """현재 언어/레포 풀의 병렬 처리 가능 슬롯 수를 반환한다."""
+        if self._is_profiled_broker_language(language):
+            self._broker_parallelism_guard_skip_count += 1
+            return 1
         running = self._hub.get_running_instance_count(language=language, repo_root=repo_root)
         if running > 0:
             return running
@@ -467,12 +609,18 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
 
     def get_parallelism_for_batch(self, repo_root: str, language: Language, batch_size: int) -> int:
         """배치 크기를 반영해 풀 인스턴스를 확보하고 병렬도를 반환한다."""
+        if self._is_profiled_broker_language(language):
+            self._broker_parallelism_guard_skip_count += 1
+            return 1
         desired = max(1, int(batch_size))
         servers = self._hub.acquire_pool(language=language, repo_root=repo_root, desired=desired, request_kind="indexing")
         return max(1, len(servers))
 
     def set_bulk_mode(self, repo_root: str, language: Language, enabled: bool) -> None:
         """bulk 인덱싱 모드를 LSP 허브에 전달한다."""
+        if self._is_profiled_broker_language(language):
+            self._broker_parallelism_guard_skip_count += 1
+            return
         self._hub.set_bulk_mode(language=language, repo_root=repo_root, enabled=enabled)
 
     def _resolve_symbol_depth(self, symbol: dict[str, object]) -> int:
@@ -536,6 +684,8 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
             self._lsp_scope_planner_fallback_index_building_count
         )
         metrics["scope_override_hit_count"] = int(self._scope_override_hit_count)
+        metrics["broker_guard_reject_count"] = int(self._broker_guard_reject_count)
+        metrics["broker_parallelism_guard_skip_count"] = int(self._broker_parallelism_guard_skip_count)
         return metrics
 
     def get_interactive_pressure(self) -> dict[str, int]:
@@ -618,8 +768,3 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
                 return self._probe_timeout_backoff_mid_sec
             return self._probe_timeout_backoff_cap_sec
         return _next_transient_backoff_sec(fail_count)
-
-
-
-
-

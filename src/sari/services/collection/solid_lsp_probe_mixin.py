@@ -231,8 +231,29 @@ class SolidLspProbeMixin:
             state.status = "IDLE"
         try:
             repo_root, language = key
-            self._ensure_prewarm(language=language, repo_root=repo_root)
-            lsp = self._hub.get_or_start(language=language, repo_root=repo_root, request_kind="indexing")
+            resolver = getattr(self, "_resolve_probe_runtime_scope", None)
+            if callable(resolver):
+                runtime_scope_root, runtime_relative_path = resolver(
+                    repo_root=repo_root,
+                    sample_relative_path=sample_relative_path,
+                    language=language,
+                )
+            else:
+                runtime_scope_root, runtime_relative_path = (repo_root, sample_relative_path)
+            self._ensure_prewarm(language=language, repo_root=runtime_scope_root)
+            guarded_get_or_start = getattr(self, "_get_or_start_with_broker_guard", None)
+            if callable(guarded_get_or_start):
+                lsp = guarded_get_or_start(
+                    language=language,
+                    runtime_scope_root=runtime_scope_root,
+                    lane="backlog",
+                    pending_jobs_in_scope=0,
+                    request_kind="indexing",
+                    trace_name="probe.get_or_start",
+                    trace_phase="probe",
+                )
+            else:
+                lsp = self._hub.get_or_start(language=language, repo_root=runtime_scope_root, request_kind="indexing")
             with self._probe_lock:
                 state = self._probe_state[key]
                 state.status = "READY_L0"
@@ -245,7 +266,7 @@ class SolidLspProbeMixin:
                 state.warming_count = 0
                 state.next_retry_monotonic = 0.0
             if language in {Language.GO, Language.JAVA, Language.KOTLIN}:
-                l1_future = self._l1_executor.submit(self._run_l1_probe_tracked, key, sample_relative_path)
+                l1_future = self._l1_executor.submit(self._run_l1_probe_tracked, key, runtime_relative_path)
                 with self._probe_lock:
                     self._probe_inflight[key] = l1_future
                     self._probe_inflight_phase[key] = "l1"
@@ -291,9 +312,30 @@ class SolidLspProbeMixin:
         now = time.monotonic()
         try:
             repo_root, language = key
-            lsp = self._hub.get_or_start(language=language, repo_root=repo_root, request_kind="indexing")
+            resolver = getattr(self, "_resolve_probe_runtime_scope", None)
+            if callable(resolver):
+                runtime_scope_root, runtime_relative_path = resolver(
+                    repo_root=repo_root,
+                    sample_relative_path=sample_relative_path,
+                    language=language,
+                )
+            else:
+                runtime_scope_root, runtime_relative_path = (repo_root, sample_relative_path)
+            guarded_get_or_start = getattr(self, "_get_or_start_with_broker_guard", None)
+            if callable(guarded_get_or_start):
+                lsp = guarded_get_or_start(
+                    language=language,
+                    runtime_scope_root=runtime_scope_root,
+                    lane="backlog",
+                    pending_jobs_in_scope=0,
+                    request_kind="indexing",
+                    trace_name="probe_l1.get_or_start",
+                    trace_phase="probe",
+                )
+            else:
+                lsp = self._hub.get_or_start(language=language, repo_root=runtime_scope_root, request_kind="indexing")
             with self._acquire_l1_probe_slot():
-                _ = list(lsp.request_document_symbols(sample_relative_path).iter_symbols())
+                _ = list(lsp.request_document_symbols(runtime_relative_path).iter_symbols())
             with self._probe_lock:
                 state = self._probe_state.get(key)
                 if state is None:
@@ -388,4 +430,3 @@ def _next_transient_backoff_sec(fail_count: int) -> float:
     if fail_count == 3:
         return 30.0
     return 60.0
-

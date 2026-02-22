@@ -315,6 +315,19 @@ class LspSessionBroker:
                 metrics["broker_optional_drr_deficit_keys"] = len(self._optional_drr_deficit_by_key)
         return metrics
 
+    def is_profiled_language(self, language: Language) -> bool:
+        """Phase 1 baseline: 해당 언어가 broker 관리 대상인지 반환한다."""
+        return language.value.lower() in self._profiles
+
+    def has_active_scope(self, *, language: Language, lsp_scope_root: str) -> bool:
+        """Phase 1 baseline: 동일 언어/스코프 active lease 존재 여부를 반환한다."""
+        lang_key = language.value.lower()
+        with self._lock:
+            return any(
+                lease.language == lang_key and lease.lsp_scope_root == lsp_scope_root
+                for lease in self._leases.values()
+            )
+
     def _predict_cost_scaffold(
         self,
         *,

@@ -360,6 +360,40 @@ class FileEnrichQueueRepository:
             conn.commit()
         return changed
 
+    def defer_jobs_to_pending(self, job_ids: list[str], next_retry_at: str, defer_reason: str, now_iso: str) -> int:
+        """RUNNING/PENDING 작업을 broker defer 의미로 PENDING 상태로 되돌린다.
+
+        Phase 1 규칙:
+        - status는 PENDING으로 설정
+        - next_retry_at/defer_reason만 갱신 (updated_at 포함)
+        - attempt_count/error_count는 절대 건드리지 않음
+        """
+        if len(job_ids) == 0:
+            return 0
+        changed = 0
+        with connect(self._db_path) as conn:
+            for job_id in job_ids:
+                row = conn.execute(
+                    """
+                    UPDATE file_enrich_queue
+                    SET status = 'PENDING',
+                        next_retry_at = :next_retry_at,
+                        defer_reason = :defer_reason,
+                        updated_at = :updated_at
+                    WHERE job_id = :job_id
+                      AND status IN ('PENDING', 'RUNNING')
+                    """,
+                    {
+                        "job_id": job_id,
+                        "next_retry_at": next_retry_at,
+                        "defer_reason": defer_reason,
+                        "updated_at": now_iso,
+                    },
+                )
+                changed += int(row.rowcount if row.rowcount is not None else 0)
+            conn.commit()
+        return changed
+
     def escalate_scope_on_same_job(
         self,
         job_id: str,
