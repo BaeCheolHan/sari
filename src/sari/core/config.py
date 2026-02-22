@@ -97,6 +97,28 @@ class AppConfig:
     lsp_scope_ts_markers: tuple[str, ...] = ("tsconfig.json", "jsconfig.json", "package.json")
     lsp_scope_vue_markers: tuple[str, ...] = ("vue.config.js", "vite.config.ts", "package.json", "tsconfig.json")
     lsp_scope_top_level_fallback: bool = True
+    lsp_session_broker_enabled: bool = True
+    lsp_session_broker_metrics_enabled: bool = True
+    lsp_hotness_event_window_sec: float = 10.0
+    lsp_hotness_decay_window_sec: float = 30.0
+    lsp_broker_max_standby_sessions_per_lang: int = 2
+    lsp_broker_max_standby_sessions_per_budget_group: int = 2
+    lsp_broker_ts_vue_active_cap: int = 2
+    lsp_broker_java_hot_lanes: int = 1
+    lsp_broker_java_backlog_lanes: int = 1
+    lsp_broker_java_sticky_ttl_sec: float = 600.0
+    lsp_broker_java_switch_cooldown_sec: float = 5.0
+    lsp_broker_java_min_lease_ms: int = 1500
+    lsp_broker_ts_hot_lanes: int = 1
+    lsp_broker_ts_backlog_lanes: int = 1
+    lsp_broker_ts_sticky_ttl_sec: float = 180.0
+    lsp_broker_ts_switch_cooldown_sec: float = 2.0
+    lsp_broker_ts_min_lease_ms: int = 500
+    lsp_broker_vue_hot_lanes: int = 1
+    lsp_broker_vue_backlog_lanes: int = 1
+    lsp_broker_vue_sticky_ttl_sec: float = 240.0
+    lsp_broker_vue_switch_cooldown_sec: float = 3.0
+    lsp_broker_vue_min_lease_ms: int = 800
     lsp_max_concurrent_starts: int = 4
     lsp_max_concurrent_l1_probes: int = 4
     orphan_ppid_check_interval_sec: int = 1
@@ -303,6 +325,99 @@ class AppConfig:
             "SARI_LSP_SCOPE_TOP_LEVEL_FALLBACK",
             str(file_config.get("lsp_scope_top_level_fallback", cls.lsp_scope_top_level_fallback)),
         ).strip().lower()
+        lsp_session_broker_enabled_raw = os.getenv(
+            "SARI_LSP_SESSION_BROKER_ENABLED",
+            str(file_config.get("lsp_session_broker_enabled", cls.lsp_session_broker_enabled)),
+        ).strip().lower()
+        lsp_session_broker_metrics_enabled_raw = os.getenv(
+            "SARI_LSP_SESSION_BROKER_METRICS_ENABLED",
+            str(file_config.get("lsp_session_broker_metrics_enabled", cls.lsp_session_broker_metrics_enabled)),
+        ).strip().lower()
+        lsp_hotness_event_window_sec_raw = os.getenv(
+            "SARI_LSP_HOTNESS_EVENT_WINDOW_SEC",
+            str(file_config.get("lsp_hotness_event_window_sec", cls.lsp_hotness_event_window_sec)),
+        ).strip()
+        lsp_hotness_decay_window_sec_raw = os.getenv(
+            "SARI_LSP_HOTNESS_DECAY_WINDOW_SEC",
+            str(file_config.get("lsp_hotness_decay_window_sec", cls.lsp_hotness_decay_window_sec)),
+        ).strip()
+        lsp_broker_max_standby_sessions_per_lang_raw = os.getenv(
+            "SARI_LSP_BROKER_MAX_STANDBY_SESSIONS_PER_LANG",
+            str(file_config.get("lsp_broker_max_standby_sessions_per_lang", cls.lsp_broker_max_standby_sessions_per_lang)),
+        ).strip()
+        lsp_broker_max_standby_sessions_per_budget_group_raw = os.getenv(
+            "SARI_LSP_BROKER_MAX_STANDBY_SESSIONS_PER_BUDGET_GROUP",
+            str(
+                file_config.get(
+                    "lsp_broker_max_standby_sessions_per_budget_group",
+                    cls.lsp_broker_max_standby_sessions_per_budget_group,
+                )
+            ),
+        ).strip()
+        lsp_broker_ts_vue_active_cap_raw = os.getenv(
+            "SARI_LSP_BROKER_TS_VUE_ACTIVE_CAP",
+            str(file_config.get("lsp_broker_ts_vue_active_cap", cls.lsp_broker_ts_vue_active_cap)),
+        ).strip()
+        lsp_broker_java_hot_lanes_raw = os.getenv(
+            "SARI_LSP_BROKER_JAVA_HOT_LANES",
+            str(file_config.get("lsp_broker_java_hot_lanes", cls.lsp_broker_java_hot_lanes)),
+        ).strip()
+        lsp_broker_java_backlog_lanes_raw = os.getenv(
+            "SARI_LSP_BROKER_JAVA_BACKLOG_LANES",
+            str(file_config.get("lsp_broker_java_backlog_lanes", cls.lsp_broker_java_backlog_lanes)),
+        ).strip()
+        lsp_broker_java_sticky_ttl_sec_raw = os.getenv(
+            "SARI_LSP_BROKER_JAVA_STICKY_TTL_SEC",
+            str(file_config.get("lsp_broker_java_sticky_ttl_sec", cls.lsp_broker_java_sticky_ttl_sec)),
+        ).strip()
+        lsp_broker_java_switch_cooldown_sec_raw = os.getenv(
+            "SARI_LSP_BROKER_JAVA_SWITCH_COOLDOWN_SEC",
+            str(file_config.get("lsp_broker_java_switch_cooldown_sec", cls.lsp_broker_java_switch_cooldown_sec)),
+        ).strip()
+        lsp_broker_java_min_lease_ms_raw = os.getenv(
+            "SARI_LSP_BROKER_JAVA_MIN_LEASE_MS",
+            str(file_config.get("lsp_broker_java_min_lease_ms", cls.lsp_broker_java_min_lease_ms)),
+        ).strip()
+        lsp_broker_ts_hot_lanes_raw = os.getenv(
+            "SARI_LSP_BROKER_TS_HOT_LANES",
+            str(file_config.get("lsp_broker_ts_hot_lanes", cls.lsp_broker_ts_hot_lanes)),
+        ).strip()
+        lsp_broker_ts_backlog_lanes_raw = os.getenv(
+            "SARI_LSP_BROKER_TS_BACKLOG_LANES",
+            str(file_config.get("lsp_broker_ts_backlog_lanes", cls.lsp_broker_ts_backlog_lanes)),
+        ).strip()
+        lsp_broker_ts_sticky_ttl_sec_raw = os.getenv(
+            "SARI_LSP_BROKER_TS_STICKY_TTL_SEC",
+            str(file_config.get("lsp_broker_ts_sticky_ttl_sec", cls.lsp_broker_ts_sticky_ttl_sec)),
+        ).strip()
+        lsp_broker_ts_switch_cooldown_sec_raw = os.getenv(
+            "SARI_LSP_BROKER_TS_SWITCH_COOLDOWN_SEC",
+            str(file_config.get("lsp_broker_ts_switch_cooldown_sec", cls.lsp_broker_ts_switch_cooldown_sec)),
+        ).strip()
+        lsp_broker_ts_min_lease_ms_raw = os.getenv(
+            "SARI_LSP_BROKER_TS_MIN_LEASE_MS",
+            str(file_config.get("lsp_broker_ts_min_lease_ms", cls.lsp_broker_ts_min_lease_ms)),
+        ).strip()
+        lsp_broker_vue_hot_lanes_raw = os.getenv(
+            "SARI_LSP_BROKER_VUE_HOT_LANES",
+            str(file_config.get("lsp_broker_vue_hot_lanes", cls.lsp_broker_vue_hot_lanes)),
+        ).strip()
+        lsp_broker_vue_backlog_lanes_raw = os.getenv(
+            "SARI_LSP_BROKER_VUE_BACKLOG_LANES",
+            str(file_config.get("lsp_broker_vue_backlog_lanes", cls.lsp_broker_vue_backlog_lanes)),
+        ).strip()
+        lsp_broker_vue_sticky_ttl_sec_raw = os.getenv(
+            "SARI_LSP_BROKER_VUE_STICKY_TTL_SEC",
+            str(file_config.get("lsp_broker_vue_sticky_ttl_sec", cls.lsp_broker_vue_sticky_ttl_sec)),
+        ).strip()
+        lsp_broker_vue_switch_cooldown_sec_raw = os.getenv(
+            "SARI_LSP_BROKER_VUE_SWITCH_COOLDOWN_SEC",
+            str(file_config.get("lsp_broker_vue_switch_cooldown_sec", cls.lsp_broker_vue_switch_cooldown_sec)),
+        ).strip()
+        lsp_broker_vue_min_lease_ms_raw = os.getenv(
+            "SARI_LSP_BROKER_VUE_MIN_LEASE_MS",
+            str(file_config.get("lsp_broker_vue_min_lease_ms", cls.lsp_broker_vue_min_lease_ms)),
+        ).strip()
         lsp_max_concurrent_starts_raw = os.getenv(
             "SARI_LSP_MAX_CONCURRENT_STARTS",
             str(file_config.get("lsp_max_concurrent_starts", 4)),
@@ -505,6 +620,62 @@ class AppConfig:
         lsp_scope_java_markers = _parse_csv_setting(lsp_scope_java_markers_raw, cls.lsp_scope_java_markers)
         lsp_scope_ts_markers = _parse_csv_setting(lsp_scope_ts_markers_raw, cls.lsp_scope_ts_markers)
         lsp_scope_vue_markers = _parse_csv_setting(lsp_scope_vue_markers_raw, cls.lsp_scope_vue_markers)
+        try:
+            lsp_hotness_event_window_sec = max(1.0, float(lsp_hotness_event_window_sec_raw))
+        except ValueError:
+            lsp_hotness_event_window_sec = cls.lsp_hotness_event_window_sec
+        try:
+            lsp_hotness_decay_window_sec = max(lsp_hotness_event_window_sec, float(lsp_hotness_decay_window_sec_raw))
+        except ValueError:
+            lsp_hotness_decay_window_sec = max(lsp_hotness_event_window_sec, cls.lsp_hotness_decay_window_sec)
+        try:
+            lsp_broker_max_standby_sessions_per_lang = max(0, int(lsp_broker_max_standby_sessions_per_lang_raw))
+        except ValueError:
+            lsp_broker_max_standby_sessions_per_lang = cls.lsp_broker_max_standby_sessions_per_lang
+        try:
+            lsp_broker_max_standby_sessions_per_budget_group = max(0, int(lsp_broker_max_standby_sessions_per_budget_group_raw))
+        except ValueError:
+            lsp_broker_max_standby_sessions_per_budget_group = cls.lsp_broker_max_standby_sessions_per_budget_group
+        try:
+            lsp_broker_ts_vue_active_cap = max(0, int(lsp_broker_ts_vue_active_cap_raw))
+        except ValueError:
+            lsp_broker_ts_vue_active_cap = cls.lsp_broker_ts_vue_active_cap
+        try:
+            lsp_broker_java_hot_lanes = max(0, int(lsp_broker_java_hot_lanes_raw))
+            lsp_broker_java_backlog_lanes = max(0, int(lsp_broker_java_backlog_lanes_raw))
+            lsp_broker_java_sticky_ttl_sec = max(0.0, float(lsp_broker_java_sticky_ttl_sec_raw))
+            lsp_broker_java_switch_cooldown_sec = max(0.0, float(lsp_broker_java_switch_cooldown_sec_raw))
+            lsp_broker_java_min_lease_ms = max(0, int(lsp_broker_java_min_lease_ms_raw))
+        except ValueError:
+            lsp_broker_java_hot_lanes = cls.lsp_broker_java_hot_lanes
+            lsp_broker_java_backlog_lanes = cls.lsp_broker_java_backlog_lanes
+            lsp_broker_java_sticky_ttl_sec = cls.lsp_broker_java_sticky_ttl_sec
+            lsp_broker_java_switch_cooldown_sec = cls.lsp_broker_java_switch_cooldown_sec
+            lsp_broker_java_min_lease_ms = cls.lsp_broker_java_min_lease_ms
+        try:
+            lsp_broker_ts_hot_lanes = max(0, int(lsp_broker_ts_hot_lanes_raw))
+            lsp_broker_ts_backlog_lanes = max(0, int(lsp_broker_ts_backlog_lanes_raw))
+            lsp_broker_ts_sticky_ttl_sec = max(0.0, float(lsp_broker_ts_sticky_ttl_sec_raw))
+            lsp_broker_ts_switch_cooldown_sec = max(0.0, float(lsp_broker_ts_switch_cooldown_sec_raw))
+            lsp_broker_ts_min_lease_ms = max(0, int(lsp_broker_ts_min_lease_ms_raw))
+        except ValueError:
+            lsp_broker_ts_hot_lanes = cls.lsp_broker_ts_hot_lanes
+            lsp_broker_ts_backlog_lanes = cls.lsp_broker_ts_backlog_lanes
+            lsp_broker_ts_sticky_ttl_sec = cls.lsp_broker_ts_sticky_ttl_sec
+            lsp_broker_ts_switch_cooldown_sec = cls.lsp_broker_ts_switch_cooldown_sec
+            lsp_broker_ts_min_lease_ms = cls.lsp_broker_ts_min_lease_ms
+        try:
+            lsp_broker_vue_hot_lanes = max(0, int(lsp_broker_vue_hot_lanes_raw))
+            lsp_broker_vue_backlog_lanes = max(0, int(lsp_broker_vue_backlog_lanes_raw))
+            lsp_broker_vue_sticky_ttl_sec = max(0.0, float(lsp_broker_vue_sticky_ttl_sec_raw))
+            lsp_broker_vue_switch_cooldown_sec = max(0.0, float(lsp_broker_vue_switch_cooldown_sec_raw))
+            lsp_broker_vue_min_lease_ms = max(0, int(lsp_broker_vue_min_lease_ms_raw))
+        except ValueError:
+            lsp_broker_vue_hot_lanes = cls.lsp_broker_vue_hot_lanes
+            lsp_broker_vue_backlog_lanes = cls.lsp_broker_vue_backlog_lanes
+            lsp_broker_vue_sticky_ttl_sec = cls.lsp_broker_vue_sticky_ttl_sec
+            lsp_broker_vue_switch_cooldown_sec = cls.lsp_broker_vue_switch_cooldown_sec
+            lsp_broker_vue_min_lease_ms = cls.lsp_broker_vue_min_lease_ms
         l3_supported_languages = _parse_csv_setting(l3_supported_languages_raw, cls.l3_supported_languages)
         try:
             lsp_max_concurrent_starts = min(4, max(1, int(lsp_max_concurrent_starts_raw)))
@@ -682,6 +853,28 @@ class AppConfig:
             lsp_scope_ts_markers=lsp_scope_ts_markers,
             lsp_scope_vue_markers=lsp_scope_vue_markers,
             lsp_scope_top_level_fallback=lsp_scope_top_level_fallback_raw in {"1", "true", "yes", "on"},
+            lsp_session_broker_enabled=lsp_session_broker_enabled_raw in {"1", "true", "yes", "on"},
+            lsp_session_broker_metrics_enabled=lsp_session_broker_metrics_enabled_raw in {"1", "true", "yes", "on"},
+            lsp_hotness_event_window_sec=lsp_hotness_event_window_sec,
+            lsp_hotness_decay_window_sec=lsp_hotness_decay_window_sec,
+            lsp_broker_max_standby_sessions_per_lang=lsp_broker_max_standby_sessions_per_lang,
+            lsp_broker_max_standby_sessions_per_budget_group=lsp_broker_max_standby_sessions_per_budget_group,
+            lsp_broker_ts_vue_active_cap=lsp_broker_ts_vue_active_cap,
+            lsp_broker_java_hot_lanes=lsp_broker_java_hot_lanes,
+            lsp_broker_java_backlog_lanes=lsp_broker_java_backlog_lanes,
+            lsp_broker_java_sticky_ttl_sec=lsp_broker_java_sticky_ttl_sec,
+            lsp_broker_java_switch_cooldown_sec=lsp_broker_java_switch_cooldown_sec,
+            lsp_broker_java_min_lease_ms=lsp_broker_java_min_lease_ms,
+            lsp_broker_ts_hot_lanes=lsp_broker_ts_hot_lanes,
+            lsp_broker_ts_backlog_lanes=lsp_broker_ts_backlog_lanes,
+            lsp_broker_ts_sticky_ttl_sec=lsp_broker_ts_sticky_ttl_sec,
+            lsp_broker_ts_switch_cooldown_sec=lsp_broker_ts_switch_cooldown_sec,
+            lsp_broker_ts_min_lease_ms=lsp_broker_ts_min_lease_ms,
+            lsp_broker_vue_hot_lanes=lsp_broker_vue_hot_lanes,
+            lsp_broker_vue_backlog_lanes=lsp_broker_vue_backlog_lanes,
+            lsp_broker_vue_sticky_ttl_sec=lsp_broker_vue_sticky_ttl_sec,
+            lsp_broker_vue_switch_cooldown_sec=lsp_broker_vue_switch_cooldown_sec,
+            lsp_broker_vue_min_lease_ms=lsp_broker_vue_min_lease_ms,
             lsp_max_concurrent_starts=lsp_max_concurrent_starts,
             lsp_max_concurrent_l1_probes=lsp_max_concurrent_l1_probes,
             orphan_ppid_check_interval_sec=orphan_check_sec,

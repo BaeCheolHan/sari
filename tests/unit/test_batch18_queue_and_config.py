@@ -109,6 +109,28 @@ def test_app_config_loads_json_and_env_override(tmp_path: Path, monkeypatch) -> 
     monkeypatch.setenv("SARI_LSP_SCOPE_TS_MARKERS", "package.json,tsconfig.json")
     monkeypatch.setenv("SARI_LSP_SCOPE_VUE_MARKERS", "package.json,vue.config.js")
     monkeypatch.setenv("SARI_LSP_SCOPE_TOP_LEVEL_FALLBACK", "1")
+    monkeypatch.setenv("SARI_LSP_SESSION_BROKER_ENABLED", "1")
+    monkeypatch.setenv("SARI_LSP_SESSION_BROKER_METRICS_ENABLED", "1")
+    monkeypatch.setenv("SARI_LSP_HOTNESS_EVENT_WINDOW_SEC", "12")
+    monkeypatch.setenv("SARI_LSP_HOTNESS_DECAY_WINDOW_SEC", "45")
+    monkeypatch.setenv("SARI_LSP_BROKER_MAX_STANDBY_SESSIONS_PER_LANG", "3")
+    monkeypatch.setenv("SARI_LSP_BROKER_MAX_STANDBY_SESSIONS_PER_BUDGET_GROUP", "4")
+    monkeypatch.setenv("SARI_LSP_BROKER_TS_VUE_ACTIVE_CAP", "3")
+    monkeypatch.setenv("SARI_LSP_BROKER_JAVA_HOT_LANES", "2")
+    monkeypatch.setenv("SARI_LSP_BROKER_JAVA_BACKLOG_LANES", "1")
+    monkeypatch.setenv("SARI_LSP_BROKER_JAVA_STICKY_TTL_SEC", "700")
+    monkeypatch.setenv("SARI_LSP_BROKER_JAVA_SWITCH_COOLDOWN_SEC", "6")
+    monkeypatch.setenv("SARI_LSP_BROKER_JAVA_MIN_LEASE_MS", "1800")
+    monkeypatch.setenv("SARI_LSP_BROKER_TS_HOT_LANES", "1")
+    monkeypatch.setenv("SARI_LSP_BROKER_TS_BACKLOG_LANES", "2")
+    monkeypatch.setenv("SARI_LSP_BROKER_TS_STICKY_TTL_SEC", "200")
+    monkeypatch.setenv("SARI_LSP_BROKER_TS_SWITCH_COOLDOWN_SEC", "3")
+    monkeypatch.setenv("SARI_LSP_BROKER_TS_MIN_LEASE_MS", "650")
+    monkeypatch.setenv("SARI_LSP_BROKER_VUE_HOT_LANES", "1")
+    monkeypatch.setenv("SARI_LSP_BROKER_VUE_BACKLOG_LANES", "1")
+    monkeypatch.setenv("SARI_LSP_BROKER_VUE_STICKY_TTL_SEC", "260")
+    monkeypatch.setenv("SARI_LSP_BROKER_VUE_SWITCH_COOLDOWN_SEC", "4")
+    monkeypatch.setenv("SARI_LSP_BROKER_VUE_MIN_LEASE_MS", "900")
     monkeypatch.delenv("SARI_COLLECTION_INCLUDE_EXT", raising=False)
     monkeypatch.delenv("SARI_COLLECTION_EXCLUDE_GLOBS", raising=False)
 
@@ -153,6 +175,28 @@ def test_app_config_loads_json_and_env_override(tmp_path: Path, monkeypatch) -> 
     assert config.lsp_scope_ts_markers == ("package.json", "tsconfig.json")
     assert config.lsp_scope_vue_markers == ("package.json", "vue.config.js")
     assert config.lsp_scope_top_level_fallback is True
+    assert config.lsp_session_broker_enabled is True
+    assert config.lsp_session_broker_metrics_enabled is True
+    assert config.lsp_hotness_event_window_sec == pytest.approx(12.0)
+    assert config.lsp_hotness_decay_window_sec == pytest.approx(45.0)
+    assert config.lsp_broker_max_standby_sessions_per_lang == 3
+    assert config.lsp_broker_max_standby_sessions_per_budget_group == 4
+    assert config.lsp_broker_ts_vue_active_cap == 3
+    assert config.lsp_broker_java_hot_lanes == 2
+    assert config.lsp_broker_java_backlog_lanes == 1
+    assert config.lsp_broker_java_sticky_ttl_sec == pytest.approx(700.0)
+    assert config.lsp_broker_java_switch_cooldown_sec == pytest.approx(6.0)
+    assert config.lsp_broker_java_min_lease_ms == 1800
+    assert config.lsp_broker_ts_hot_lanes == 1
+    assert config.lsp_broker_ts_backlog_lanes == 2
+    assert config.lsp_broker_ts_sticky_ttl_sec == pytest.approx(200.0)
+    assert config.lsp_broker_ts_switch_cooldown_sec == pytest.approx(3.0)
+    assert config.lsp_broker_ts_min_lease_ms == 650
+    assert config.lsp_broker_vue_hot_lanes == 1
+    assert config.lsp_broker_vue_backlog_lanes == 1
+    assert config.lsp_broker_vue_sticky_ttl_sec == pytest.approx(260.0)
+    assert config.lsp_broker_vue_switch_cooldown_sec == pytest.approx(4.0)
+    assert config.lsp_broker_vue_min_lease_ms == 900
 
 
 def test_app_config_default_exclude_globs_include_build_artifact_paths(tmp_path: Path, monkeypatch) -> None:

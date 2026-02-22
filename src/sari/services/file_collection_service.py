@@ -1009,7 +1009,7 @@ class FileCollectionService:
         "composer.json",
     )
 
-    def __init__(self, workspace_repo: WorkspaceRepository, file_repo: FileCollectionRepository, enrich_queue_repo: FileEnrichQueueRepository, body_repo: FileBodyRepository, lsp_repo: LspToolDataRepository, readiness_repo: ToolReadinessRepository, policy: CollectionPolicyDTO, lsp_backend: LspExtractionBackend, policy_repo: PipelinePolicyRepository | None=None, event_repo: PipelineJobEventRepository | None=None, error_event_repo: PipelineErrorEventRepository | None=None, candidate_index_sink: CandidateIndexSink | None=None, vector_index_sink: VectorIndexSink | None=None, run_mode: str='dev', parent_alive_probe: Callable[[], bool] | None=None, persist_body_for_read: bool=True, repo_registry_repo: RepoRegistryRepository | None=None, l3_parallel_enabled: bool=True, l3_executor_max_workers: int=0, l3_recent_success_ttl_sec: int=120, l3_backpressure_on_interactive: bool=True, l3_backpressure_cooldown_ms: int=300, l3_supported_languages: tuple[str, ...] | None=None, lsp_probe_bootstrap_file_window: int=256, lsp_probe_bootstrap_top_k: int=3, lsp_probe_language_priority: tuple[str, ...]=("go:1.5", "java:1.4", "kotlin:1.3"), lsp_probe_l1_languages: tuple[str, ...]=("go", "java", "kotlin")) -> None:
+    def __init__(self, workspace_repo: WorkspaceRepository, file_repo: FileCollectionRepository, enrich_queue_repo: FileEnrichQueueRepository, body_repo: FileBodyRepository, lsp_repo: LspToolDataRepository, readiness_repo: ToolReadinessRepository, policy: CollectionPolicyDTO, lsp_backend: LspExtractionBackend, policy_repo: PipelinePolicyRepository | None=None, event_repo: PipelineJobEventRepository | None=None, error_event_repo: PipelineErrorEventRepository | None=None, candidate_index_sink: CandidateIndexSink | None=None, vector_index_sink: VectorIndexSink | None=None, run_mode: str='dev', parent_alive_probe: Callable[[], bool] | None=None, persist_body_for_read: bool=True, repo_registry_repo: RepoRegistryRepository | None=None, l3_parallel_enabled: bool=True, l3_executor_max_workers: int=0, l3_recent_success_ttl_sec: int=120, l3_backpressure_on_interactive: bool=True, l3_backpressure_cooldown_ms: int=300, l3_supported_languages: tuple[str, ...] | None=None, lsp_probe_bootstrap_file_window: int=256, lsp_probe_bootstrap_top_k: int=3, lsp_probe_language_priority: tuple[str, ...]=("go:1.5", "java:1.4", "kotlin:1.3"), lsp_probe_l1_languages: tuple[str, ...]=("go", "java", "kotlin"), lsp_session_broker_enabled: bool=True, lsp_session_broker_metrics_enabled: bool=True, lsp_hotness_event_window_sec: float=10.0, lsp_hotness_decay_window_sec: float=30.0, lsp_broker_max_standby_sessions_per_lang: int=2, lsp_broker_max_standby_sessions_per_budget_group: int=2, lsp_broker_ts_vue_active_cap: int=2, lsp_broker_java_hot_lanes: int=1, lsp_broker_java_backlog_lanes: int=1, lsp_broker_java_sticky_ttl_sec: float=600.0, lsp_broker_java_switch_cooldown_sec: float=5.0, lsp_broker_java_min_lease_ms: int=1500, lsp_broker_ts_hot_lanes: int=1, lsp_broker_ts_backlog_lanes: int=1, lsp_broker_ts_sticky_ttl_sec: float=180.0, lsp_broker_ts_switch_cooldown_sec: float=2.0, lsp_broker_ts_min_lease_ms: int=500, lsp_broker_vue_hot_lanes: int=1, lsp_broker_vue_backlog_lanes: int=1, lsp_broker_vue_sticky_ttl_sec: float=240.0, lsp_broker_vue_switch_cooldown_sec: float=3.0, lsp_broker_vue_min_lease_ms: int=800) -> None:
         self._workspace_repo = workspace_repo
         self._file_repo = file_repo
         self._enrich_queue_repo = enrich_queue_repo
@@ -1065,44 +1065,52 @@ class FileCollectionService:
         self._throughput_samples_jobs_per_sec: list[float] = []
         self._throughput_ema_jobs_per_sec = 0.0
         self._throughput_alpha = 0.2
+        self._lsp_session_broker_enabled = bool(lsp_session_broker_enabled)
+        self._lsp_session_broker_metrics_enabled = bool(lsp_session_broker_metrics_enabled)
         self._watcher_hotness_tracker = WatcherHotnessTracker(
+            event_window_sec=lsp_hotness_event_window_sec,
+            decay_window_sec=lsp_hotness_decay_window_sec,
             now_monotonic=time.monotonic,
             scope_cache_invalidator=self._invalidate_scope_caches_from_watcher_signal,
         )
-        self._lsp_session_broker = LspSessionBroker(
-            profiles={
+        broker_profiles: dict[str, LspBrokerLanguageProfile] = {}
+        if self._lsp_session_broker_enabled:
+            broker_profiles = {
                 "java": LspBrokerLanguageProfile(
                     language="java",
-                    hot_lanes=1,
-                    backlog_lanes=1,
-                    sticky_idle_ttl_sec=600.0,
-                    switch_cooldown_sec=5.0,
-                    min_lease_ms=1500,
+                    hot_lanes=max(0, int(lsp_broker_java_hot_lanes)),
+                    backlog_lanes=max(0, int(lsp_broker_java_backlog_lanes)),
+                    sticky_idle_ttl_sec=max(0.0, float(lsp_broker_java_sticky_ttl_sec)),
+                    switch_cooldown_sec=max(0.0, float(lsp_broker_java_switch_cooldown_sec)),
+                    min_lease_ms=max(0, int(lsp_broker_java_min_lease_ms)),
                 ),
                 "typescript": LspBrokerLanguageProfile(
                     language="typescript",
-                    hot_lanes=1,
-                    backlog_lanes=1,
-                    sticky_idle_ttl_sec=180.0,
-                    switch_cooldown_sec=2.0,
-                    min_lease_ms=500,
+                    hot_lanes=max(0, int(lsp_broker_ts_hot_lanes)),
+                    backlog_lanes=max(0, int(lsp_broker_ts_backlog_lanes)),
+                    sticky_idle_ttl_sec=max(0.0, float(lsp_broker_ts_sticky_ttl_sec)),
+                    switch_cooldown_sec=max(0.0, float(lsp_broker_ts_switch_cooldown_sec)),
+                    min_lease_ms=max(0, int(lsp_broker_ts_min_lease_ms)),
                     shared_budget_group="ts-vue",
                 ),
                 "vue": LspBrokerLanguageProfile(
                     language="vue",
-                    hot_lanes=1,
-                    backlog_lanes=1,
-                    sticky_idle_ttl_sec=240.0,
-                    switch_cooldown_sec=3.0,
-                    min_lease_ms=800,
+                    hot_lanes=max(0, int(lsp_broker_vue_hot_lanes)),
+                    backlog_lanes=max(0, int(lsp_broker_vue_backlog_lanes)),
+                    sticky_idle_ttl_sec=max(0.0, float(lsp_broker_vue_sticky_ttl_sec)),
+                    switch_cooldown_sec=max(0.0, float(lsp_broker_vue_switch_cooldown_sec)),
+                    min_lease_ms=max(0, int(lsp_broker_vue_min_lease_ms)),
                     shared_budget_group="ts-vue",
                 ),
-            },
-            max_standby_sessions_per_lang=2,
-            max_standby_sessions_per_budget_group=2,
+            }
+        self._lsp_session_broker = LspSessionBroker(
+            profiles=broker_profiles,
+            max_standby_sessions_per_lang=max(0, int(lsp_broker_max_standby_sessions_per_lang)),
+            max_standby_sessions_per_budget_group=max(0, int(lsp_broker_max_standby_sessions_per_budget_group)),
             now_monotonic=time.monotonic,
         )
-        self._lsp_session_broker.set_budget_group_active_cap("ts-vue", 2)
+        if self._lsp_session_broker_enabled:
+            self._lsp_session_broker.set_budget_group_active_cap("ts-vue", max(0, int(lsp_broker_ts_vue_active_cap)))
         self._metrics_lock = threading.Lock()
         self._worker_state = 'running'
         self._last_error_code: str | None = None
@@ -1381,15 +1389,18 @@ class FileCollectionService:
             merged.update(self._watcher_hotness_tracker.get_metrics())
         except (RuntimeError, OSError, ValueError, TypeError):
             pass
-        try:
-            merged.update(self._lsp_session_broker.get_metrics())
-        except (RuntimeError, OSError, ValueError, TypeError):
-            pass
+        if self._lsp_session_broker_metrics_enabled:
+            try:
+                merged.update(self._lsp_session_broker.get_metrics())
+            except (RuntimeError, OSError, ValueError, TypeError):
+                pass
         return merged
 
     def _on_watcher_signal(self, event_type: str, repo_root: str, relative_path: str, dest_path: str) -> None:
         """watcher cheap signal을 hotness tracker로 전달한다 (Phase 1 Baseline)."""
         del dest_path
+        if not self._lsp_session_broker_enabled:
+            return
         language = resolve_language_from_path(file_path=relative_path)
         scope_root = self._derive_hotness_scope_hint(repo_root=repo_root, relative_path=relative_path)
         self._watcher_hotness_tracker.record_fs_event(
@@ -1607,7 +1618,7 @@ class FileCollectionService:
     def _prune_error_events_if_needed(self) -> None:
         self._error_policy.prune_error_events_if_needed()
 
-def build_default_file_collection_service(workspace_repo: WorkspaceRepository, file_repo: FileCollectionRepository, enrich_queue_repo: FileEnrichQueueRepository, body_repo: FileBodyRepository, lsp_repo: LspToolDataRepository, readiness_repo: ToolReadinessRepository, policy_repo: PipelinePolicyRepository | None=None, event_repo: PipelineJobEventRepository | None=None, error_event_repo: PipelineErrorEventRepository | None=None, candidate_index_sink: CandidateIndexSink | None=None, vector_index_sink: VectorIndexSink | None=None, retry_max_attempts: int=5, retry_backoff_base_sec: int=1, queue_poll_interval_ms: int=500, include_ext: tuple[str, ...] | None=None, exclude_globs: tuple[str, ...] | None=None, watcher_debounce_ms: int=300, run_mode: str='dev', parent_alive_probe: Callable[[], bool] | None=None, lsp_backend: LspExtractionBackend | None=None, persist_body_for_read: bool=True, l3_parallel_enabled: bool=True, l3_executor_max_workers: int=0, l3_recent_success_ttl_sec: int=120, l3_backpressure_on_interactive: bool=True, l3_backpressure_cooldown_ms: int=300, l3_supported_languages: tuple[str, ...] | None=None, lsp_probe_bootstrap_file_window: int=256, lsp_probe_bootstrap_top_k: int=3, lsp_probe_language_priority: tuple[str, ...]=("go:1.5", "java:1.4", "kotlin:1.3"), lsp_probe_l1_languages: tuple[str, ...]=("go", "java", "kotlin"), lsp_scope_planner_enabled: bool=True, lsp_scope_planner_shadow_mode: bool=True, lsp_scope_java_markers: tuple[str, ...]=("pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"), lsp_scope_ts_markers: tuple[str, ...]=("tsconfig.json", "jsconfig.json", "package.json"), lsp_scope_vue_markers: tuple[str, ...]=("vue.config.js", "vite.config.ts", "package.json", "tsconfig.json"), lsp_scope_top_level_fallback: bool=True) -> CollectionRuntimePort:
+def build_default_file_collection_service(workspace_repo: WorkspaceRepository, file_repo: FileCollectionRepository, enrich_queue_repo: FileEnrichQueueRepository, body_repo: FileBodyRepository, lsp_repo: LspToolDataRepository, readiness_repo: ToolReadinessRepository, policy_repo: PipelinePolicyRepository | None=None, event_repo: PipelineJobEventRepository | None=None, error_event_repo: PipelineErrorEventRepository | None=None, candidate_index_sink: CandidateIndexSink | None=None, vector_index_sink: VectorIndexSink | None=None, retry_max_attempts: int=5, retry_backoff_base_sec: int=1, queue_poll_interval_ms: int=500, include_ext: tuple[str, ...] | None=None, exclude_globs: tuple[str, ...] | None=None, watcher_debounce_ms: int=300, run_mode: str='dev', parent_alive_probe: Callable[[], bool] | None=None, lsp_backend: LspExtractionBackend | None=None, persist_body_for_read: bool=True, l3_parallel_enabled: bool=True, l3_executor_max_workers: int=0, l3_recent_success_ttl_sec: int=120, l3_backpressure_on_interactive: bool=True, l3_backpressure_cooldown_ms: int=300, l3_supported_languages: tuple[str, ...] | None=None, lsp_probe_bootstrap_file_window: int=256, lsp_probe_bootstrap_top_k: int=3, lsp_probe_language_priority: tuple[str, ...]=("go:1.5", "java:1.4", "kotlin:1.3"), lsp_probe_l1_languages: tuple[str, ...]=("go", "java", "kotlin"), lsp_scope_planner_enabled: bool=True, lsp_scope_planner_shadow_mode: bool=True, lsp_scope_java_markers: tuple[str, ...]=("pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"), lsp_scope_ts_markers: tuple[str, ...]=("tsconfig.json", "jsconfig.json", "package.json"), lsp_scope_vue_markers: tuple[str, ...]=("vue.config.js", "vite.config.ts", "package.json", "tsconfig.json"), lsp_scope_top_level_fallback: bool=True, lsp_session_broker_enabled: bool=True, lsp_session_broker_metrics_enabled: bool=True, lsp_hotness_event_window_sec: float=10.0, lsp_hotness_decay_window_sec: float=30.0, lsp_broker_max_standby_sessions_per_lang: int=2, lsp_broker_max_standby_sessions_per_budget_group: int=2, lsp_broker_ts_vue_active_cap: int=2, lsp_broker_java_hot_lanes: int=1, lsp_broker_java_backlog_lanes: int=1, lsp_broker_java_sticky_ttl_sec: float=600.0, lsp_broker_java_switch_cooldown_sec: float=5.0, lsp_broker_java_min_lease_ms: int=1500, lsp_broker_ts_hot_lanes: int=1, lsp_broker_ts_backlog_lanes: int=1, lsp_broker_ts_sticky_ttl_sec: float=180.0, lsp_broker_ts_switch_cooldown_sec: float=2.0, lsp_broker_ts_min_lease_ms: int=500, lsp_broker_vue_hot_lanes: int=1, lsp_broker_vue_backlog_lanes: int=1, lsp_broker_vue_sticky_ttl_sec: float=240.0, lsp_broker_vue_switch_cooldown_sec: float=3.0, lsp_broker_vue_min_lease_ms: int=800) -> CollectionRuntimePort:
     resolved_include_ext = include_ext if include_ext is not None else get_default_collection_extensions()
     resolved_exclude_globs = exclude_globs if exclude_globs is not None else DEFAULT_COLLECTION_EXCLUDE_GLOBS
     policy = CollectionPolicyDTO(include_ext=resolved_include_ext, exclude_globs=resolved_exclude_globs, max_file_size_bytes=512 * 1024, scan_interval_sec=180, max_enrich_batch=20, retry_max_attempts=retry_max_attempts, retry_backoff_base_sec=retry_backoff_base_sec, queue_poll_interval_ms=queue_poll_interval_ms)
@@ -1624,7 +1635,7 @@ def build_default_file_collection_service(workspace_repo: WorkspaceRepository, f
             shadow_mode=lsp_scope_planner_shadow_mode,
         )
     repo_registry_repo = RepoRegistryRepository(file_repo.db_path)
-    service = FileCollectionService(workspace_repo=workspace_repo, file_repo=file_repo, enrich_queue_repo=enrich_queue_repo, body_repo=body_repo, lsp_repo=lsp_repo, readiness_repo=readiness_repo, policy=policy, lsp_backend=resolved_lsp_backend, policy_repo=policy_repo, event_repo=event_repo, error_event_repo=error_event_repo, candidate_index_sink=candidate_index_sink, vector_index_sink=vector_index_sink, run_mode=run_mode, parent_alive_probe=parent_alive_probe, persist_body_for_read=persist_body_for_read, repo_registry_repo=repo_registry_repo, l3_parallel_enabled=l3_parallel_enabled, l3_executor_max_workers=l3_executor_max_workers, l3_recent_success_ttl_sec=l3_recent_success_ttl_sec, l3_backpressure_on_interactive=l3_backpressure_on_interactive, l3_backpressure_cooldown_ms=l3_backpressure_cooldown_ms, l3_supported_languages=l3_supported_languages, lsp_probe_bootstrap_file_window=lsp_probe_bootstrap_file_window, lsp_probe_bootstrap_top_k=lsp_probe_bootstrap_top_k, lsp_probe_language_priority=lsp_probe_language_priority, lsp_probe_l1_languages=lsp_probe_l1_languages)
+    service = FileCollectionService(workspace_repo=workspace_repo, file_repo=file_repo, enrich_queue_repo=enrich_queue_repo, body_repo=body_repo, lsp_repo=lsp_repo, readiness_repo=readiness_repo, policy=policy, lsp_backend=resolved_lsp_backend, policy_repo=policy_repo, event_repo=event_repo, error_event_repo=error_event_repo, candidate_index_sink=candidate_index_sink, vector_index_sink=vector_index_sink, run_mode=run_mode, parent_alive_probe=parent_alive_probe, persist_body_for_read=persist_body_for_read, repo_registry_repo=repo_registry_repo, l3_parallel_enabled=l3_parallel_enabled, l3_executor_max_workers=l3_executor_max_workers, l3_recent_success_ttl_sec=l3_recent_success_ttl_sec, l3_backpressure_on_interactive=l3_backpressure_on_interactive, l3_backpressure_cooldown_ms=l3_backpressure_cooldown_ms, l3_supported_languages=l3_supported_languages, lsp_probe_bootstrap_file_window=lsp_probe_bootstrap_file_window, lsp_probe_bootstrap_top_k=lsp_probe_bootstrap_top_k, lsp_probe_language_priority=lsp_probe_language_priority, lsp_probe_l1_languages=lsp_probe_l1_languages, lsp_session_broker_enabled=lsp_session_broker_enabled, lsp_session_broker_metrics_enabled=lsp_session_broker_metrics_enabled, lsp_hotness_event_window_sec=lsp_hotness_event_window_sec, lsp_hotness_decay_window_sec=lsp_hotness_decay_window_sec, lsp_broker_max_standby_sessions_per_lang=lsp_broker_max_standby_sessions_per_lang, lsp_broker_max_standby_sessions_per_budget_group=lsp_broker_max_standby_sessions_per_budget_group, lsp_broker_ts_vue_active_cap=lsp_broker_ts_vue_active_cap, lsp_broker_java_hot_lanes=lsp_broker_java_hot_lanes, lsp_broker_java_backlog_lanes=lsp_broker_java_backlog_lanes, lsp_broker_java_sticky_ttl_sec=lsp_broker_java_sticky_ttl_sec, lsp_broker_java_switch_cooldown_sec=lsp_broker_java_switch_cooldown_sec, lsp_broker_java_min_lease_ms=lsp_broker_java_min_lease_ms, lsp_broker_ts_hot_lanes=lsp_broker_ts_hot_lanes, lsp_broker_ts_backlog_lanes=lsp_broker_ts_backlog_lanes, lsp_broker_ts_sticky_ttl_sec=lsp_broker_ts_sticky_ttl_sec, lsp_broker_ts_switch_cooldown_sec=lsp_broker_ts_switch_cooldown_sec, lsp_broker_ts_min_lease_ms=lsp_broker_ts_min_lease_ms, lsp_broker_vue_hot_lanes=lsp_broker_vue_hot_lanes, lsp_broker_vue_backlog_lanes=lsp_broker_vue_backlog_lanes, lsp_broker_vue_sticky_ttl_sec=lsp_broker_vue_sticky_ttl_sec, lsp_broker_vue_switch_cooldown_sec=lsp_broker_vue_switch_cooldown_sec, lsp_broker_vue_min_lease_ms=lsp_broker_vue_min_lease_ms)
     service._watcher_debounce_ms = max(50, watcher_debounce_ms)
     return service
 
