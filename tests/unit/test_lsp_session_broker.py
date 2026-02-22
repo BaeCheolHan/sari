@@ -462,3 +462,82 @@ def test_broker_standby_retention_plan_respects_shared_budget_group_cap() -> Non
     assert vue_ttl == pytest.approx(240.0)
     assert ts_keep == set()
     assert vue_keep == {"/workspace/app-vue"}
+
+
+def test_broker_backlog_throughput_mode_bypasses_cooldown_for_same_lane_scope_switch() -> None:
+    now_ref = {"t": 100.0}
+    broker = _new_broker(now_ref)
+    broker.set_language_active_cap("java", lane="backlog", cap=2)
+
+    lease1 = broker.acquire_lease(
+        language=Language.JAVA,
+        lsp_scope_root="/workspace/repoA",
+        lane="backlog",
+        hotness_score=1.0,
+        pending_jobs_in_scope=50,
+    )
+    assert lease1.granted is True
+    broker.release_lease(lease1)
+
+    lease2 = broker.acquire_lease(
+        language=Language.JAVA,
+        lsp_scope_root="/workspace/repoB",
+        lane="backlog",
+        hotness_score=1.0,
+        pending_jobs_in_scope=50,
+    )
+    assert lease2.granted is False
+    assert lease2.reason == "cooldown"
+
+    lease3 = broker.acquire_lease(
+        language=Language.JAVA,
+        lsp_scope_root="/workspace/repoB",
+        lane="backlog",
+        hotness_score=1.0,
+        pending_jobs_in_scope=50,
+        throughput_mode=True,
+    )
+    assert lease3.granted is True
+    broker.release_lease(lease3)
+
+
+def test_broker_backlog_throughput_mode_bypasses_min_lease_preemption_block() -> None:
+    now_ref = {"t": 100.0}
+    broker = _new_broker(now_ref)
+    broker.set_language_active_cap("java", lane="backlog", cap=1)
+
+    hold = broker.acquire_lease(
+        language=Language.JAVA,
+        lsp_scope_root="/workspace/repoA",
+        lane="backlog",
+        hotness_score=1.0,
+        pending_jobs_in_scope=100,
+    )
+    assert hold.granted is True
+
+    blocked = broker.acquire_lease(
+        language=Language.JAVA,
+        lsp_scope_root="/workspace/repoB",
+        lane="backlog",
+        hotness_score=1.0,
+        pending_jobs_in_scope=100,
+    )
+    assert blocked.granted is False
+    assert blocked.reason in {"cooldown", "min_lease", "budget_blocked"}
+
+    allowed = broker.acquire_lease(
+        language=Language.JAVA,
+        lsp_scope_root="/workspace/repoB",
+        lane="backlog",
+        hotness_score=1.0,
+        pending_jobs_in_scope=100,
+        throughput_mode=True,
+    )
+    assert allowed.granted is False or allowed.granted is True
+    # throughput mode에서는 min_lease로 막히지 않아야 한다. (cap/budget block은 허용)
+    if not allowed.granted:
+        assert allowed.reason != "min_lease"
+
+    broker.release_lease(hold)
+    if allowed.granted:
+        broker.release_lease(allowed)

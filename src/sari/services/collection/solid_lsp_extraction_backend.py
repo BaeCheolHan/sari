@@ -424,12 +424,14 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
                     hotness = tracker.get_scope_hotness(language=language, lsp_scope_root=runtime_scope_root)
                 except Exception:
                     hotness = 0.0
+            throughput_mode = lane.lower() == "backlog" and int(pending_jobs_in_scope) >= 4
             with broker.lease(
                 language=language,
                 lsp_scope_root=runtime_scope_root,
                 lane=lane,
                 hotness_score=hotness,
                 pending_jobs_in_scope=max(0, int(pending_jobs_in_scope)),
+                throughput_mode=throughput_mode,
             ) as lease:
                 if not lease.granted:
                     self._broker_guard_reject_count += 1

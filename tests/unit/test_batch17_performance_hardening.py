@@ -2697,8 +2697,17 @@ def test_solid_lsp_backend_uses_group_pending_hints_for_broker_backlog_lane() ->
         def is_profiled_language(self, language: Language) -> bool:
             return language == Language.JAVA
 
-        def lease(self, *, language: Language, lsp_scope_root: str, lane: str, hotness_score: float, pending_jobs_in_scope: int):  # noqa: ANN001
-            del language, lsp_scope_root, lane, hotness_score
+        def lease(
+            self,
+            *,
+            language: Language,
+            lsp_scope_root: str,
+            lane: str,
+            hotness_score: float,
+            pending_jobs_in_scope: int,
+            throughput_mode: bool = False,
+        ):  # noqa: ANN001
+            del language, lsp_scope_root, lane, hotness_score, throughput_mode
             return _Lease(pending_jobs_in_scope, self.seen_pending)
 
     @dataclass

@@ -134,6 +134,7 @@ class LspSessionBroker:
         lane: str,
         hotness_score: float,
         pending_jobs_in_scope: int,
+        throughput_mode: bool = False,
     ) -> LspSessionLeaseResult:
         lang_key = language.value.lower()
         lane_key = lane.lower()
@@ -167,7 +168,12 @@ class LspSessionBroker:
             )
             fairness_key = self._fairness_key_for(lang_key, profile)
             hot_streak_limit = self._max_hot_streak_before_backlog()
-            if lane_key == "hot" and hot_streak_limit is not None and fairness_key in self._backlog_demand_pending:
+            if (
+                lane_key == "hot"
+                and hot_streak_limit is not None
+                and fairness_key in self._backlog_demand_pending
+                and not throughput_mode
+            ):
                 hot_streak = int(self._hot_streak_since_backlog.get(fairness_key, 0))
                 if hot_streak >= hot_streak_limit:
                     self._record_defer_locked(lang_key, "starvation_guard")
@@ -200,8 +206,9 @@ class LspSessionBroker:
                 if (now - lane_state.last_switch_at_monotonic) < max(0.0, profile.switch_cooldown_sec):
                     if lane_key == "backlog" and pending_jobs_in_scope > 0:
                         self._backlog_demand_pending.add(fairness_key)
-                    self._record_defer_locked(lang_key, "cooldown")
-                    return LspSessionLeaseResult("", False, "cooldown", lang_key, lsp_scope_root, lane_key)
+                    if not (throughput_mode and lane_key == "backlog"):
+                        self._record_defer_locked(lang_key, "cooldown")
+                        return LspSessionLeaseResult("", False, "cooldown", lang_key, lsp_scope_root, lane_key)
 
             # language lane cap
             cap = self._language_lane_active_caps.get(
@@ -220,7 +227,9 @@ class LspSessionBroker:
                 )
                 if lane_active is not None and lane_active.lsp_scope_root != lsp_scope_root:
                     min_lease_sec = max(0.0, float(profile.min_lease_ms) / 1000.0)
-                    if (now - lane_active.started_at_monotonic) < min_lease_sec:
+                    if (now - lane_active.started_at_monotonic) < min_lease_sec and not (
+                        throughput_mode and lane_key == "backlog"
+                    ):
                         if lane_key == "backlog" and pending_jobs_in_scope > 0:
                             self._backlog_demand_pending.add(fairness_key)
                         self._record_defer_locked(lang_key, "min_lease")
@@ -286,6 +295,7 @@ class LspSessionBroker:
         lane: str,
         hotness_score: float,
         pending_jobs_in_scope: int,
+        throughput_mode: bool = False,
     ) -> Iterator[LspSessionLeaseResult]:
         lease = self.acquire_lease(
             language=language,
@@ -293,6 +303,7 @@ class LspSessionBroker:
             lane=lane,
             hotness_score=hotness_score,
             pending_jobs_in_scope=pending_jobs_in_scope,
+            throughput_mode=throughput_mode,
         )
         try:
             yield lease
