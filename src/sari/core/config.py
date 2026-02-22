@@ -103,6 +103,7 @@ class AppConfig:
     lsp_broker_optional_scaffolding_enabled: bool = False
     lsp_broker_batch_throughput_mode_enabled: bool = False
     lsp_broker_batch_throughput_pending_threshold: int = 4
+    lsp_broker_batch_disable_java_probe: bool = False
     lsp_hotness_event_window_sec: float = 10.0
     lsp_hotness_decay_window_sec: float = 30.0
     lsp_broker_backlog_min_share: float = 0.2
@@ -364,6 +365,15 @@ class AppConfig:
                 )
             ),
         ).strip()
+        lsp_broker_batch_disable_java_probe_raw = os.getenv(
+            "SARI_LSP_BROKER_BATCH_DISABLE_JAVA_PROBE",
+            str(
+                file_config.get(
+                    "lsp_broker_batch_disable_java_probe",
+                    cls.lsp_broker_batch_disable_java_probe,
+                )
+            ),
+        ).strip().lower()
         lsp_hotness_event_window_sec_raw = os.getenv(
             "SARI_LSP_HOTNESS_EVENT_WINDOW_SEC",
             str(file_config.get("lsp_hotness_event_window_sec", cls.lsp_hotness_event_window_sec)),
@@ -903,6 +913,7 @@ class AppConfig:
             lsp_broker_optional_scaffolding_enabled=lsp_broker_optional_scaffolding_enabled_raw in {"1", "true", "yes", "on"},
             lsp_broker_batch_throughput_mode_enabled=lsp_broker_batch_throughput_mode_enabled_raw in {"1", "true", "yes", "on"},
             lsp_broker_batch_throughput_pending_threshold=lsp_broker_batch_throughput_pending_threshold,
+            lsp_broker_batch_disable_java_probe=lsp_broker_batch_disable_java_probe_raw in {"1", "true", "yes", "on"},
             lsp_hotness_event_window_sec=lsp_hotness_event_window_sec,
             lsp_hotness_decay_window_sec=lsp_hotness_decay_window_sec,
             lsp_broker_backlog_min_share=lsp_broker_backlog_min_share,

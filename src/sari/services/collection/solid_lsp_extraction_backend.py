@@ -114,11 +114,14 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
         self._lsp_scope_planner_applied_count = 0
         self._lsp_scope_planner_fallback_index_building_count = 0
         self._scope_override_hit_count = 0
+        self._probe_l1_skipped_batch_count = 0
+        self._probe_schedule_skipped_batch_count = 0
         self._session_broker: LspSessionBroker | None = None
         self._watcher_hotness_tracker: WatcherHotnessTracker | None = None
         self._session_broker_enabled = False
         self._batch_broker_throughput_mode_enabled = False
         self._batch_broker_pending_threshold = 4
+        self._batch_disable_java_probe = False
         self._broker_guard_reject_count = 0
         self._broker_parallelism_guard_skip_count = 0
         self._l3_scope_pending_hint_lock = threading.Lock()
@@ -287,6 +290,7 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
         enabled: bool,
         batch_throughput_mode_enabled: bool = False,
         batch_throughput_pending_threshold: int = 4,
+        batch_disable_java_probe: bool = False,
     ) -> None:
         """PR3 baseline: broker/hotness를 backend에 주입한다."""
         self._session_broker = session_broker
@@ -294,6 +298,7 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
         self._session_broker_enabled = bool(enabled) and session_broker is not None
         self._batch_broker_throughput_mode_enabled = bool(batch_throughput_mode_enabled)
         self._batch_broker_pending_threshold = max(1, int(batch_throughput_pending_threshold))
+        self._batch_disable_java_probe = bool(batch_disable_java_probe)
         set_guard = getattr(self._hub, "set_scale_out_guard", None)
         if callable(set_guard):
             if self._session_broker_enabled and session_broker is not None:
@@ -808,6 +813,8 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
         metrics["scope_override_hit_count"] = int(self._scope_override_hit_count)
         metrics["broker_guard_reject_count"] = int(self._broker_guard_reject_count)
         metrics["broker_parallelism_guard_skip_count"] = int(self._broker_parallelism_guard_skip_count)
+        metrics["probe_l1_skipped_batch_count"] = int(self._probe_l1_skipped_batch_count)
+        metrics["probe_schedule_skipped_batch_count"] = int(self._probe_schedule_skipped_batch_count)
         # PR4 baseline placeholders (metrics-only; behavior change 금지)
         metrics.setdefault("session_cache_hit_by_tier_single", 0)
         metrics.setdefault("session_eviction_churn_count", 0)

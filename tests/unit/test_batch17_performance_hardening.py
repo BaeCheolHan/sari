@@ -936,6 +936,30 @@ def test_solid_lsp_extraction_backend_records_last_trigger_on_schedule() -> None
     assert last_trigger == "bootstrap"
 
 
+def test_solid_lsp_extraction_backend_skips_java_background_probe_in_batch_throughput_mode() -> None:
+    """PR3.4: batch throughput mode에서는 Java background/bootstrap probe 스케줄을 생략한다."""
+
+    class _FakeHub:
+        pass
+
+    backend = SolidLspExtractionBackend(hub=_FakeHub())  # type: ignore[arg-type]
+    backend.configure_session_runtime(
+        session_broker=None,
+        watcher_hotness_tracker=None,
+        enabled=False,
+        batch_throughput_mode_enabled=True,
+    )
+
+    scheduled = backend.schedule_probe_for_file(
+        repo_root="/repo",
+        relative_path="src/main/java/App.java",
+        trigger="background",
+    )
+
+    assert scheduled == "batch_probe_skipped"
+    assert backend.is_probe_inflight_for_file(repo_root="/repo", relative_path="src/main/java/App.java") is False
+
+
 def test_solid_lsp_extraction_backend_prewarm_allows_parallel_for_different_keys() -> None:
     """서로 다른 (repo, language) key는 prewarm을 병렬 수행할 수 있어야 한다."""
 
@@ -2817,6 +2841,94 @@ def test_solid_lsp_probe_worker_uses_scope_planner_runtime_root() -> None:
     assert hub.prewarm_roots == ["/workspace/repo-a/module-x"]
     assert hub.get_or_start_roots == ["/workspace/repo-a/module-x", "/workspace/repo-a/module-x"]
     assert hub.lsp.last_relative_path == "src/App.java"
+
+
+def test_solid_lsp_probe_worker_skips_java_l1_probe_in_batch_throughput_mode() -> None:
+    """PR3.4: batch throughput mode에서는 Java L1 probe(documentSymbol)를 생략한다."""
+
+    class _FakeLsp:
+        def __init__(self) -> None:
+            self.last_relative_path: str | None = None
+
+        def request_document_symbols(self, relative_path: str):  # noqa: ANN001
+            self.last_relative_path = relative_path
+
+            class _Req:
+                def iter_symbols(self_inner):  # noqa: ANN001
+                    del self_inner
+                    return iter([])
+
+            return _Req()
+
+    class _FakeHub:
+        def __init__(self) -> None:
+            self.prewarm_roots: list[str] = []
+            self.get_or_start_roots: list[str] = []
+            self.lsp = _FakeLsp()
+
+        def resolve_language(self, relative_path: str) -> Language:
+            del relative_path
+            return Language.JAVA
+
+        def prewarm_language_pool(self, language: Language, repo_root: str) -> None:
+            del language
+            self.prewarm_roots.append(repo_root)
+
+        def get_or_start(self, language: Language, repo_root: str, request_kind: str = "indexing"):  # noqa: ANN001
+            del language, request_kind
+            self.get_or_start_roots.append(repo_root)
+            return self.lsp
+
+        def acquire_l1_probe_slot(self):
+            class _CM:
+                def __enter__(self_inner):  # noqa: ANN001
+                    return None
+
+                def __exit__(self_inner, exc_type, exc, tb):  # noqa: ANN001
+                    return False
+
+            return _CM()
+
+    class _FakePlanner:
+        def resolve(self, *, workspace_repo_root: str, relative_path: str, language: Language):  # noqa: ANN001
+            del workspace_repo_root, relative_path, language
+
+            class _Result:
+                lsp_scope_root = "/workspace/repo-a/module-x"
+                strategy = "marker"
+                marker_file = "pom.xml"
+
+            return _Result()
+
+        def to_scope_relative_path(self, *, workspace_relative_path: str, scope_candidate_root: str) -> str:
+            del scope_candidate_root
+            return workspace_relative_path.removeprefix("module-x/")
+
+    class _ImmediateExecutor:
+        def submit(self, fn, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+            class _DoneFuture:
+                def result(self_inner, timeout=None):  # noqa: ANN001
+                    del timeout
+                    return None
+
+            fn(*args, **kwargs)
+            return _DoneFuture()
+
+    hub = _FakeHub()
+    backend = SolidLspExtractionBackend(hub=hub)  # type: ignore[arg-type]
+    backend._l1_executor = _ImmediateExecutor()  # type: ignore[attr-defined]
+    backend.configure_lsp_scope_planner(planner=_FakePlanner(), enabled=True, shadow_mode=False)
+    backend.configure_session_runtime(
+        session_broker=None,
+        watcher_hotness_tracker=None,
+        enabled=False,
+        batch_throughput_mode_enabled=True,
+    )
+    backend._probe_worker(("/workspace/repo-a", Language.JAVA), "module-x/src/App.java")  # type: ignore[attr-defined]
+
+    assert hub.prewarm_roots == ["/workspace/repo-a/module-x"]
+    assert hub.get_or_start_roots == ["/workspace/repo-a/module-x"]
+    assert hub.lsp.last_relative_path is None
 
 
 def test_solid_lsp_backend_scope_planner_can_limit_active_languages() -> None:
