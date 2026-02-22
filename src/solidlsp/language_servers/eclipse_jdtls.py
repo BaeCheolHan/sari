@@ -18,6 +18,18 @@ from solidlsp.ls_utils import FileUtils, PlatformUtils
 from solidlsp.lsp_protocol_handler.lsp_types import DocumentSymbol, InitializeParams, SymbolInformation
 from solidlsp.settings import SolidLSPSettings
 log = logging.getLogger(__name__)
+
+
+def _project_ready_timeout_seconds() -> int:
+    raw = os.getenv("SARI_JDTLS_PROJECT_READY_TIMEOUT_SEC", "").strip()
+    if raw == "":
+        return 20
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 20
+
+
 @dataclasses.dataclass
 class RuntimeDependencyPaths:
     gradle_path: str
@@ -693,7 +705,7 @@ class EclipseJDTLS(SolidLanguageServer):
         log.info("Service is ready")
         if not self._project_ready_event.is_set():
             log.info("Waiting for project to be ready ...")
-            project_ready_timeout = 20  # Hotfix: Using timeout until we figure out why sometimes we don't get the project ready event
+            project_ready_timeout = _project_ready_timeout_seconds()  # Configurable timeout for indexing/perf tuning
             if self._project_ready_event.wait(timeout=project_ready_timeout):
                 log.info("Project is ready")
             else:
