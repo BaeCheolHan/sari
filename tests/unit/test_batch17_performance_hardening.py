@@ -24,6 +24,9 @@ from sari.db.schema import connect, init_schema
 from solidlsp.ls_config import Language
 from sari.search.candidate_search import CandidateBackendError, CandidateSearchConfig, CandidateSearchResultDTO, TantivyCandidateBackend
 from sari.search.orchestrator import SearchOrchestrator
+from sari.services.collection.enrich_engine import EnrichEngine
+import sari.services.collection.enrich_engine as enrich_engine_module
+from sari.services.collection.perf_trace import PerfTracer
 from sari.services.file_collection_service import FileCollectionService, LspExtractionBackend, LspExtractionResultDTO, SolidLspExtractionBackend
 import sari.services.file_collection_service as file_collection_service_module
 import sari.db.repositories.file_collection_repository as file_collection_repository_module
@@ -36,6 +39,278 @@ class _NoopLspBackend(LspExtractionBackend):
         """항상 빈 LSP 결과를 반환한다."""
         del repo_root, relative_path, content_hash
         return LspExtractionResultDTO(symbols=[], relations=[], error_message=None)
+
+
+class _StubFileRow:
+    def __init__(self, *, content_hash: str) -> None:
+        self.is_deleted = False
+        self.content_hash = content_hash
+
+
+class _StubFileRepo:
+    def __init__(self, *, content_hash: str) -> None:
+        self._row = _StubFileRow(content_hash=content_hash)
+
+    def get_file(self, repo_root: str, relative_path: str):  # noqa: ANN001
+        _ = (repo_root, relative_path)
+        return self._row
+
+
+class _StubReadinessRepo:
+    def get_state(self, repo_root: str, relative_path: str):  # noqa: ANN001
+        _ = (repo_root, relative_path)
+        return None
+
+
+class _StubErrorPolicy:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, str]] = []
+
+    def record_error_event(self, **kwargs) -> None:  # noqa: ANN003
+        self.events.append((str(kwargs.get("error_code")), str(kwargs.get("phase"))))
+
+
+class _CaptureEscalateQueueRepo:
+    def __init__(self, *, escalate_returns: bool = True) -> None:
+        self.calls: list[dict[str, str]] = []
+        self.escalate_returns = escalate_returns
+
+    def escalate_scope_on_same_job(
+        self,
+        *,
+        job_id: str,
+        next_scope_level: str,
+        next_scope_root: str,
+        next_retry_at: str,
+        now_iso: str,
+    ) -> bool:
+        self.calls.append(
+            {
+                "job_id": job_id,
+                "next_scope_level": next_scope_level,
+                "next_scope_root": next_scope_root,
+                "next_retry_at": next_retry_at,
+                "now_iso": now_iso,
+            }
+        )
+        return self.escalate_returns
+
+
+class _StubExtractBackend:
+    def __init__(self, error_message: str | None) -> None:
+        self.error_message = error_message
+
+    def extract(self, repo_root: str, relative_path: str, content_hash: str) -> LspExtractionResultDTO:
+        _ = (repo_root, relative_path, content_hash)
+        return LspExtractionResultDTO(symbols=[], relations=[], error_message=self.error_message)
+
+
+def _build_min_enrich_engine_for_l3_test(*, lsp_backend: object, queue_repo: object, error_policy: _StubErrorPolicy) -> EnrichEngine:
+    engine = object.__new__(EnrichEngine)
+    engine._perf_tracer = PerfTracer(component="test_enrich_engine")
+    engine._file_repo = _StubFileRepo(content_hash="h1")
+    engine._enrich_queue_repo = queue_repo
+    engine._readiness_repo = _StubReadinessRepo()
+    engine._lsp_backend = lsp_backend
+    engine._policy = type("P", (), {"retry_max_attempts": 5, "retry_backoff_base_sec": 1})()
+    engine._run_mode = "prod"
+    engine._policy_repo = None
+    engine._event_repo = None
+    engine._error_policy = error_policy
+    engine._record_enrich_latency = lambda ms: None
+    engine._l3_recent_success_ttl_sec = 0
+    engine._lsp_probe_l1_languages = set()
+    engine._l3_supported_languages = {Language.PYTHON}
+    engine._schedule_l1_probe_after_l3_fallback_called = 0
+
+    def _fallback_probe(*, job):  # noqa: ANN002, ANN003
+        _ = job
+        engine._schedule_l1_probe_after_l3_fallback_called += 1
+
+    engine._schedule_l1_probe_after_l3_fallback = _fallback_probe
+    return engine
+
+
+def test_enrich_engine_l3_extract_error_scope_trigger_escalates_same_row() -> None:
+    """L3 extract 오류가 baseline taxonomy 트리거면 FAILED 대신 same-row escalation로 되돌린다."""
+    queue_repo = _CaptureEscalateQueueRepo()
+    error_policy = _StubErrorPolicy()
+    engine = _build_min_enrich_engine_for_l3_test(
+        lsp_backend=_StubExtractBackend("ERR_LSP_DOCUMENT_SYMBOL_FAILED: reason=No workspace contains /repo/a.py"),
+        queue_repo=queue_repo,
+        error_policy=error_policy,
+    )
+    job = FileEnrichJobDTO(
+        job_id="j1",
+        repo_id="r1",
+        repo_root="/workspace",
+        relative_path="repo_a/src/a.py",
+        content_hash="h1",
+        priority=10,
+        enqueue_source="l3",
+        status="RUNNING",
+        attempt_count=0,
+        last_error=None,
+        next_retry_at="2026-01-01T00:00:00+00:00",
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+        scope_level=None,
+        scope_root=None,
+        scope_attempts=0,
+    )
+
+    result = engine._process_single_l3_job(job)
+
+    assert result.finished_status == "PENDING"
+    assert result.failure_update is None
+    assert result.state_update is None
+    assert result.done_id is None
+    assert len(queue_repo.calls) == 1
+    assert queue_repo.calls[0]["job_id"] == "j1"
+    assert queue_repo.calls[0]["next_scope_level"] == "repo"
+    assert queue_repo.calls[0]["next_scope_root"] == "/workspace/repo_a"
+    assert engine._schedule_l1_probe_after_l3_fallback_called == 0
+    assert ("ERR_L3_SCOPE_ESCALATED", "enrich_l3_extract_scope_escalation") in error_policy.events
+
+
+def test_enrich_engine_l3_extract_error_transient_does_not_escalate() -> None:
+    """timeout류 L3 extract 오류는 baseline에서 scope escalation 트리거가 아니다."""
+    queue_repo = _CaptureEscalateQueueRepo()
+    error_policy = _StubErrorPolicy()
+    engine = _build_min_enrich_engine_for_l3_test(
+        lsp_backend=_StubExtractBackend("ERR_RPC_TIMEOUT: request timeout"),
+        queue_repo=queue_repo,
+        error_policy=error_policy,
+    )
+    job = FileEnrichJobDTO(
+        job_id="j2",
+        repo_id="r1",
+        repo_root="/workspace",
+        relative_path="repo_a/src/a.py",
+        content_hash="h1",
+        priority=10,
+        enqueue_source="l3",
+        status="RUNNING",
+        attempt_count=0,
+        last_error=None,
+        next_retry_at="2026-01-01T00:00:00+00:00",
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+        scope_level="module",
+        scope_root="/workspace/repo_a/src",
+        scope_attempts=0,
+    )
+
+    result = engine._process_single_l3_job(job)
+
+    assert result.finished_status == "FAILED"
+    assert result.failure_update is not None
+    assert result.state_update is not None
+    assert result.state_update.enrich_state == "FAILED"
+    assert len(queue_repo.calls) == 0
+    assert engine._schedule_l1_probe_after_l3_fallback_called == 1
+
+
+def test_enrich_engine_l3_extract_error_scope_trigger_stops_after_max_escalations() -> None:
+    """scope_attempts가 최대치에 도달한 job은 taxonomy 트리거여도 더 이상 escalation하지 않는다."""
+    queue_repo = _CaptureEscalateQueueRepo()
+    error_policy = _StubErrorPolicy()
+    engine = _build_min_enrich_engine_for_l3_test(
+        lsp_backend=_StubExtractBackend("ERR_LSP_WORKSPACE_MISMATCH: No workspace contains /repo/a.py"),
+        queue_repo=queue_repo,
+        error_policy=error_policy,
+    )
+    job = FileEnrichJobDTO(
+        job_id="j3",
+        repo_id="r1",
+        repo_root="/workspace",
+        relative_path="repo_a/src/a.py",
+        content_hash="h1",
+        priority=10,
+        enqueue_source="l3",
+        status="RUNNING",
+        attempt_count=0,
+        last_error=None,
+        next_retry_at="2026-01-01T00:00:00+00:00",
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+        scope_level="workspace",
+        scope_root="/workspace",
+        scope_attempts=2,
+    )
+
+    result = engine._process_single_l3_job(job)
+
+    assert result.finished_status == "FAILED"
+    assert result.failure_update is not None
+    assert len(queue_repo.calls) == 0
+
+
+def test_enrich_engine_records_scope_learning_after_l3_success() -> None:
+    """L3 성공 시 backend가 제공하면 scope learning hook을 호출해야 한다."""
+
+    class _CaptureScopeLearningBackend:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, str, str]] = []
+
+        def record_scope_override_success(self, *, repo_root: str, relative_path: str, scope_root: str, scope_level: str) -> None:
+            self.calls.append((repo_root, relative_path, scope_root, scope_level))
+
+    backend = _CaptureScopeLearningBackend()
+    error_policy = _StubErrorPolicy()
+    engine = _build_min_enrich_engine_for_l3_test(lsp_backend=backend, queue_repo=_CaptureEscalateQueueRepo(), error_policy=error_policy)
+    job = FileEnrichJobDTO(
+        job_id="j4",
+        repo_id="r1",
+        repo_root="/workspace",
+        relative_path="repo_a/src/a.py",
+        content_hash="h1",
+        priority=1,
+        enqueue_source="l3",
+        status="DONE",
+        attempt_count=0,
+        last_error=None,
+        next_retry_at="2026-01-01T00:00:00+00:00",
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+        scope_level="repo",
+        scope_root="/workspace/repo_a",
+        scope_attempts=1,
+    )
+    engine._record_scope_learning_after_l3_success(job=job)
+    assert backend.calls == [("/workspace", "repo_a/src/a.py", "/workspace/repo_a", "repo")]
+
+
+def test_scope_escalation_trigger_taxonomy_baseline() -> None:
+    """Phase1 baseline taxonomy에 해당하는 오류만 escalation trigger여야 한다."""
+    fn = getattr(file_collection_service_module, "_is_scope_escalation_trigger_error")
+    assert fn("ERR_LSP_WORKSPACE_MISMATCH", "No Elm workspace contains /repo/x") is True
+    assert fn("ERR_CONFIG_INVALID", "project model missing") is True
+    assert fn("ERR_LSP_DOCUMENT_SYMBOL_FAILED", "No workspace contains /repo/file.ts") is True
+    assert fn("ERR_LSP_DOCUMENT_SYMBOL_FAILED", "project not found for current file") is True
+    assert fn("ERR_RPC_TIMEOUT", "timeout while waiting") is False
+    assert fn("ERR_BROKEN_PIPE", "broken pipe") is False
+    assert fn("ERR_SERVER_EXITED", "server exited unexpectedly") is False
+
+
+def test_scope_escalation_next_level_ladder() -> None:
+    """scope escalation 단계는 module -> repo -> workspace -> stop 이어야 한다."""
+    fn = getattr(file_collection_service_module, "_next_scope_level_for_escalation")
+    assert fn("module") == "repo"
+    assert fn("repo") == "workspace"
+    assert fn("workspace") is None
+    assert fn(None) == "repo"
+
+
+def test_l3_extract_failure_kind_classification_phase1() -> None:
+    """PR-B baseline 3종 분류는 L3 extract 오류 메시지를 안정적으로 분류해야 한다."""
+    fn = getattr(enrich_engine_module, "_classify_l3_extract_failure_kind")
+    assert fn("ERR_LSP_SERVER_MISSING: command not found") == "PERMANENT_UNAVAILABLE"
+    assert fn("ERR_CONFIG_INVALID: project model missing") == "PERMANENT_UNAVAILABLE"
+    assert fn("ERR_LSP_WORKSPACE_MISMATCH: no workspace contains /x") == "PERMANENT_UNAVAILABLE"
+    assert fn("ERR_RPC_TIMEOUT: request timeout") == "TRANSIENT_FAIL"
+    assert fn("ERR_BROKEN_PIPE: broken pipe") == "TRANSIENT_FAIL"
+    assert fn("ERR_SERVER_EXITED: server exited") == "TRANSIENT_FAIL"
 
 
 class _CaptureHotLanguageBackend(_NoopLspBackend):
@@ -1694,3 +1969,64 @@ def test_tantivy_pending_apply_does_not_fail_on_other_registered_repo_changes(tm
     items = backend.search(workspaces=[workspace], query="alpha_symbol", limit=10)
 
     assert any(item.relative_path == "alpha.py" for item in items)
+
+
+def test_solid_lsp_scope_override_cache_record_get_and_invalidate() -> None:
+    """PR-B baseline scope learning 캐시는 TTL 조회/경로 무효화를 지원해야 한다."""
+
+    class _FakeHub:
+        def resolve_language(self, relative_path: str) -> Language:
+            del relative_path
+            return Language.TYPESCRIPT
+
+        def get_or_start(self, language: Language, repo_root: str, request_kind: str = "indexing"):  # noqa: ANN001
+            del language, repo_root, request_kind
+            raise AssertionError("not used")
+
+        def prewarm_language_pool(self, language: Language, repo_root: str) -> None:
+            del language, repo_root
+
+    backend = SolidLspExtractionBackend(hub=_FakeHub())  # type: ignore[arg-type]
+    repo_root = "/workspace"
+    rel = "repo_a/src/app/main.ts"
+    assert backend.get_scope_override(repo_root=repo_root, relative_path=rel) is None
+
+    backend.record_scope_override_success(
+        repo_root=repo_root,
+        relative_path=rel,
+        scope_root="/workspace/repo_a",
+        scope_level="repo",
+    )
+    learned = backend.get_scope_override(repo_root=repo_root, relative_path=rel)
+    assert learned == ("/workspace/repo_a", "repo")
+
+    removed = backend.invalidate_scope_override_path(repo_root=repo_root, relative_path="repo_a/src")
+    assert removed >= 1
+    assert backend.get_scope_override(repo_root=repo_root, relative_path=rel) is None
+
+
+def test_solid_lsp_scope_override_cache_ttl_expiry() -> None:
+    """scope learning 캐시는 TTL 만료 시 조회되지 않아야 한다."""
+
+    class _FakeHub:
+        def resolve_language(self, relative_path: str) -> Language:
+            del relative_path
+            return Language.PYTHON
+
+        def get_or_start(self, language: Language, repo_root: str, request_kind: str = "indexing"):  # noqa: ANN001
+            del language, repo_root, request_kind
+            raise AssertionError("not used")
+
+        def prewarm_language_pool(self, language: Language, repo_root: str) -> None:
+            del language, repo_root
+
+    backend = SolidLspExtractionBackend(hub=_FakeHub())  # type: ignore[arg-type]
+    backend._scope_override_ttl_sec = 0.001  # type: ignore[attr-defined]
+    backend.record_scope_override_success(
+        repo_root="/workspace",
+        relative_path="repo_a/a.py",
+        scope_root="/workspace/repo_a",
+        scope_level="repo",
+    )
+    time.sleep(0.01)
+    assert backend.get_scope_override(repo_root="/workspace", relative_path="repo_a/a.py") is None

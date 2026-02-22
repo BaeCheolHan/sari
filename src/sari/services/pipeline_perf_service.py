@@ -533,7 +533,15 @@ class PipelinePerfService:
                 snapshot["pending_age_stats"] = dict(get_pending_age_stats(now_iso=snapshot_now_iso))
             except (RuntimeError, OSError, ValueError, TypeError):
                 pass
-        snapshot["eligible_counts_mode"] = "deferred_split_only_phaseA"
+        get_eligible_counts = getattr(self._queue_repo, "get_eligible_counts", None)
+        if callable(get_eligible_counts):
+            try:
+                snapshot["eligible_counts"] = dict(get_eligible_counts(now_iso=snapshot_now_iso))
+                snapshot["eligible_counts_mode"] = "strict_queue_phaseB_v1"
+            except (RuntimeError, OSError, ValueError, TypeError):
+                snapshot["eligible_counts_mode"] = "deferred_split_only_phaseA"
+        else:
+            snapshot["eligible_counts_mode"] = "deferred_split_only_phaseA"
         if len(self._last_drain_diagnostics) > 0:
             snapshot["drain"] = dict(self._last_drain_diagnostics)
         integrity_checks: dict[str, bool] = {

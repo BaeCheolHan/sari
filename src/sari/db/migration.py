@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 import sqlite3
 
-HEAD_VERSION = "20260219_0007"
+HEAD_VERSION = "20260222_0008"
 BASELINE_VERSION = "20260216_0001"
 
 
@@ -106,6 +106,10 @@ def _fallback_upgrade_sqlite(db_path: Path) -> None:
         if current_version < "20260219_0007":
             _fallback_upgrade_0007(conn)
             _set_version(conn, "20260219_0007")
+            current_version = "20260219_0007"
+        if current_version < "20260222_0008":
+            _fallback_upgrade_0008(conn)
+            _set_version(conn, "20260222_0008")
         conn.commit()
 
 
@@ -397,3 +401,18 @@ def _fallback_upgrade_0007(conn: sqlite3.Connection) -> None:
         ON pipeline_perf_runs(started_at DESC)
         """
     )
+
+
+def _fallback_upgrade_0008(conn: sqlite3.Connection) -> None:
+    """0008 리비전 file_enrich_queue defer/scope 컬럼을 적용한다."""
+    if not _table_exists(conn, "file_enrich_queue"):
+        return
+    queue_cols = _table_columns(conn, "file_enrich_queue")
+    if "defer_reason" not in queue_cols:
+        conn.execute("ALTER TABLE file_enrich_queue ADD COLUMN defer_reason TEXT NULL")
+    if "scope_level" not in queue_cols:
+        conn.execute("ALTER TABLE file_enrich_queue ADD COLUMN scope_level TEXT NULL")
+    if "scope_root" not in queue_cols:
+        conn.execute("ALTER TABLE file_enrich_queue ADD COLUMN scope_root TEXT NULL")
+    if "scope_attempts" not in queue_cols:
+        conn.execute("ALTER TABLE file_enrich_queue ADD COLUMN scope_attempts INTEGER NOT NULL DEFAULT 0")

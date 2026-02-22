@@ -1025,38 +1025,46 @@ class EnrichEngine:
                     ):
                         extraction = self._lsp_backend.extract(job.repo_root, job.relative_path, job.content_hash)
                     if extraction.error_message is not None:
-                        self._schedule_l1_probe_after_l3_fallback(job=job)
-                        failure_now = now_iso8601_utc()
-                        state_update = EnrichStateUpdateDTO(
-                            repo_root=job.repo_root,
-                            relative_path=job.relative_path,
-                            enrich_state="FAILED",
-                            updated_at=failure_now,
-                        )
-                        failure_update = FileEnrichFailureUpdateDTO(
-                            job_id=job.job_id,
+                        failure_kind = _classify_l3_extract_failure_kind(extraction.error_message)
+                        escalated = self._try_escalate_scope_after_l3_extract_error(
+                            job=job,
                             error_message=extraction.error_message,
-                            now_iso=failure_now,
-                            dead_threshold=self._policy.retry_max_attempts,
-                            backoff_base_sec=self._policy.retry_backoff_base_sec,
                         )
-                        self._error_policy.record_error_event(
-                            component="file_collection_service",
-                            phase="enrich_l3_extract",
-                            severity="error",
-                            error_code="ERR_LSP_EXTRACT_FAILED",
-                            error_message=extraction.error_message,
-                            error_type="LspExtractionError",
-                            repo_root=job.repo_root,
-                            relative_path=job.relative_path,
-                            job_id=job.job_id,
-                            attempt_count=job.attempt_count,
-                            context_data={"content_hash": job.content_hash},
-                        )
-                        if self._run_mode == "dev":
-                            dev_error = CollectionError(
-                                ErrorContext(code="ERR_LSP_EXTRACT_FAILED", message=f"LSP 추출 실패: {extraction.error_message}")
+                        if escalated:
+                            finished_status = "PENDING"
+                        else:
+                            self._schedule_l1_probe_after_l3_fallback(job=job)
+                            failure_now = now_iso8601_utc()
+                            state_update = EnrichStateUpdateDTO(
+                                repo_root=job.repo_root,
+                                relative_path=job.relative_path,
+                                enrich_state="FAILED",
+                                updated_at=failure_now,
                             )
+                            failure_update = FileEnrichFailureUpdateDTO(
+                                job_id=job.job_id,
+                                error_message=extraction.error_message,
+                                now_iso=failure_now,
+                                dead_threshold=self._policy.retry_max_attempts,
+                                backoff_base_sec=self._policy.retry_backoff_base_sec,
+                            )
+                            self._error_policy.record_error_event(
+                                component="file_collection_service",
+                                phase="enrich_l3_extract",
+                                severity="error",
+                                error_code="ERR_LSP_EXTRACT_FAILED",
+                                error_message=extraction.error_message,
+                                error_type="LspExtractionError",
+                                repo_root=job.repo_root,
+                                relative_path=job.relative_path,
+                                job_id=job.job_id,
+                                attempt_count=job.attempt_count,
+                                context_data={"content_hash": job.content_hash, "failure_kind": failure_kind},
+                            )
+                            if self._run_mode == "dev":
+                                dev_error = CollectionError(
+                                    ErrorContext(code="ERR_LSP_EXTRACT_FAILED", message=f"LSP 추출 실패: {extraction.error_message}")
+                                )
                     else:
                         lsp_update = LspExtractPersistDTO(
                             repo_root=job.repo_root,
@@ -1092,6 +1100,7 @@ class EnrichEngine:
                             enrich_state="TOOL_READY",
                             updated_at=now_iso,
                         )
+                        self._record_scope_learning_after_l3_success(job=job)
                         done_id = job.job_id
                         finished_status = "DONE"
         except (CollectionError, RuntimeError, OSError, ValueError, zlib.error) as exc:
@@ -1169,6 +1178,86 @@ class EnrichEngine:
                 relative_path=job.relative_path,
                 force=False,
                 trigger="l3_fallback",
+            )
+        except (RuntimeError, OSError, ValueError, TypeError):
+            return
+
+    def _try_escalate_scope_after_l3_extract_error(self, *, job: FileEnrichJobDTO, error_message: str) -> bool:
+        """L3 extract 실패가 scope 문제라면 same-row scope escalation을 시도한다."""
+        queue_repo = self._enrich_queue_repo
+        escalator = getattr(queue_repo, "escalate_scope_on_same_job", None)
+        if not callable(escalator):
+            return False
+        error_code = _extract_error_code_from_lsp_error_message(error_message)
+        if not _is_scope_escalation_trigger_error_for_l3(code=error_code, message=error_message):
+            return False
+        current_attempts = max(0, int(getattr(job, "scope_attempts", 0)))
+        if current_attempts >= 2:
+            return False
+        next_scope_level = _next_scope_level_for_l3_escalation(getattr(job, "scope_level", None))
+        if next_scope_level is None:
+            return False
+        next_scope_root = self._resolve_next_scope_root_for_escalation(job=job, next_scope_level=next_scope_level)
+        now_iso = now_iso8601_utc()
+        try:
+            updated = bool(
+                escalator(
+                    job_id=job.job_id,
+                    next_scope_level=next_scope_level,
+                    next_scope_root=next_scope_root,
+                    next_retry_at=now_iso,
+                    now_iso=now_iso,
+                )
+            )
+        except (RuntimeError, OSError, ValueError, TypeError):
+            return False
+        if not updated:
+            return False
+        self._error_policy.record_error_event(
+            component="file_collection_service",
+            phase="enrich_l3_extract_scope_escalation",
+            severity="warning",
+            error_code="ERR_L3_SCOPE_ESCALATED",
+            error_message=error_message,
+            error_type="LspExtractionError",
+            repo_root=job.repo_root,
+            relative_path=job.relative_path,
+            job_id=job.job_id,
+            attempt_count=job.attempt_count,
+            context_data={
+                "l3_error_code": error_code,
+                "prev_scope_level": getattr(job, "scope_level", None) or "module",
+                "next_scope_level": next_scope_level,
+                "next_scope_root": next_scope_root,
+                "scope_attempts_before": current_attempts,
+                "scope_attempts_after": current_attempts + 1,
+            },
+        )
+        return True
+
+    def _resolve_next_scope_root_for_escalation(self, *, job: FileEnrichJobDTO, next_scope_level: str) -> str:
+        """PR-B baseline scope root fallback 계산 (실제 planner 연계는 PR1에서 강화)."""
+        if next_scope_level == "workspace":
+            return job.repo_root
+        if next_scope_level == "repo":
+            parts = Path(job.relative_path).parts
+            if len(parts) >= 2 and parts[0] not in ("", ".", ".."):
+                return str(Path(job.repo_root) / parts[0])
+        return job.repo_root
+
+    def _record_scope_learning_after_l3_success(self, *, job: FileEnrichJobDTO) -> None:
+        """성공한 scope 시도를 backend 학습 캐시에 기록한다 (Phase1 baseline)."""
+        recorder = getattr(self._lsp_backend, "record_scope_override_success", None)
+        if not callable(recorder):
+            return
+        scope_level = (getattr(job, "scope_level", None) or "module").strip().lower()
+        scope_root = getattr(job, "scope_root", None) or job.repo_root
+        try:
+            recorder(
+                repo_root=job.repo_root,
+                relative_path=job.relative_path,
+                scope_root=scope_root,
+                scope_level=scope_level,
             )
         except (RuntimeError, OSError, ValueError, TypeError):
             return
@@ -1357,3 +1446,70 @@ class EnrichEngine:
         if len(failed_updates) > 0:
             self._enrich_queue_repo.mark_failed_with_backoff_many(failed_updates)
             failed_updates.clear()
+
+
+def _extract_error_code_from_lsp_error_message(message: str) -> str:
+    """LSP 에러 메시지에서 에러 코드를 추출한다 (prefix 우선)."""
+    trimmed = message.strip()
+    if trimmed.startswith("ERR_"):
+        return trimmed.split(":", 1)[0].strip()
+    lowered = trimmed.lower()
+    if "workspace contains" in lowered and "no " in lowered and "contains" in lowered:
+        return "ERR_LSP_WORKSPACE_MISMATCH"
+    if "project model missing" in lowered:
+        return "ERR_CONFIG_INVALID"
+    if "project not found" in lowered or "no workspace contains" in lowered:
+        return "ERR_LSP_DOCUMENT_SYMBOL_FAILED"
+    return "ERR_LSP_EXTRACT_FAILED"
+
+
+def _is_scope_escalation_trigger_error_for_l3(*, code: str, message: str) -> bool:
+    """Phase1 baseline taxonomy에 해당하는 L3 extract 오류만 escalation trigger로 본다."""
+    normalized_code = code.strip().upper()
+    lowered = message.strip().lower()
+    if normalized_code == "ERR_LSP_WORKSPACE_MISMATCH":
+        return True
+    if normalized_code == "ERR_CONFIG_INVALID":
+        return True
+    if normalized_code == "ERR_LSP_DOCUMENT_SYMBOL_FAILED":
+        project_missing_patterns = (
+            "no workspace contains",
+            "project not found",
+            "project model missing",
+            "workspace contains",
+        )
+        return any(pattern in lowered for pattern in project_missing_patterns)
+    return False
+
+
+def _next_scope_level_for_l3_escalation(current_scope_level: str | None) -> str | None:
+    """module -> repo -> workspace 순으로 다음 escalation 단계를 반환한다."""
+    level = (current_scope_level or "module").strip().lower()
+    if level == "module":
+        return "repo"
+    if level == "repo":
+        return "workspace"
+    return None
+
+
+def _classify_l3_extract_failure_kind(message: str) -> str:
+    """L3 extract 오류를 Phase1 3종 분류로 정규화한다."""
+    code = _extract_error_code_from_lsp_error_message(message)
+    if code in {
+        "ERR_LSP_SERVER_MISSING",
+        "ERR_LSP_SERVER_SPAWN_FAILED",
+        "ERR_RUNTIME_MISMATCH",
+        "ERR_CONFIG_INVALID",
+        "ERR_LSP_WORKSPACE_MISMATCH",
+    }:
+        return "PERMANENT_UNAVAILABLE"
+    if code in {
+        "ERR_RPC_TIMEOUT",
+        "ERR_BROKEN_PIPE",
+        "ERR_SERVER_EXITED",
+        "ERR_LSP_START_TIMEOUT",
+        "ERR_LSP_DOCUMENT_SYMBOL_FAILED",
+        "ERR_LSP_EXTRACT_FAILED",
+    }:
+        return "TRANSIENT_FAIL"
+    return "TRANSIENT_FAIL"

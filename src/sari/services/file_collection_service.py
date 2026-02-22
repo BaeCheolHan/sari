@@ -65,6 +65,16 @@ class _ProbeStateRecord:
     last_error_message: str | None = None
 
 
+@dataclass
+class _ScopeOverrideRecord:
+    """성공한 scope escalation 결과를 학습 캐시에 저장한다."""
+
+    scope_root: str
+    scope_level: str
+    expires_at_monotonic: float
+    updated_at_monotonic: float
+
+
 class LspExtractionBackend(Protocol):
 
     def extract(self, repo_root: str, relative_path: str, content_hash: str) -> LspExtractionResultDTO:
@@ -141,6 +151,9 @@ class SolidLspExtractionBackend:
         self._probe_timeout_backoff_cap_sec = 120.0
         self._probe_timeout_window_sec = 30.0
         self._probe_trigger_counts: dict[str, int] = {}
+        self._scope_override_lock = threading.Lock()
+        self._scope_override_ttl_sec = 24 * 60 * 60.0
+        self._scope_override_cache: dict[tuple[str, str, str], _ScopeOverrideRecord] = {}
 
     def extract(self, repo_root: str, relative_path: str, content_hash: str) -> LspExtractionResultDTO:
         normalized_relative_path = normalize_repo_relative_path(relative_path)
@@ -212,6 +225,96 @@ class SolidLspExtractionBackend:
                     state.result = result
                     state.event.set()
                     del self._inflight_extracts[dedupe_key]
+
+    def record_scope_override_success(
+        self,
+        *,
+        repo_root: str,
+        relative_path: str,
+        scope_root: str,
+        scope_level: str,
+    ) -> None:
+        """성공한 scope를 학습 캐시에 기록한다 (Phase1 baseline)."""
+        language = resolve_language_from_path(file_path=relative_path)
+        if language is None:
+            return
+        candidate_dir = self._normalized_scope_candidate_dir(repo_root=repo_root, relative_path=relative_path)
+        key = (language.value, str(Path(repo_root).resolve()), candidate_dir)
+        now = time.monotonic()
+        record = _ScopeOverrideRecord(
+            scope_root=str(Path(scope_root).resolve()),
+            scope_level=scope_level,
+            expires_at_monotonic=now + self._scope_override_ttl_sec,
+            updated_at_monotonic=now,
+        )
+        with self._scope_override_lock:
+            self._scope_override_cache[key] = record
+
+    def get_scope_override(
+        self,
+        *,
+        repo_root: str,
+        relative_path: str,
+    ) -> tuple[str, str] | None:
+        """학습된 scope override를 조회한다. (scope_root, scope_level)"""
+        language = resolve_language_from_path(file_path=relative_path)
+        if language is None:
+            return None
+        candidate_dir = self._normalized_scope_candidate_dir(repo_root=repo_root, relative_path=relative_path)
+        key = (language.value, str(Path(repo_root).resolve()), candidate_dir)
+        now = time.monotonic()
+        with self._scope_override_lock:
+            record = self._scope_override_cache.get(key)
+            if record is None:
+                return None
+            if record.expires_at_monotonic <= now:
+                self._scope_override_cache.pop(key, None)
+                return None
+            return (record.scope_root, record.scope_level)
+
+    def invalidate_scope_override_path(self, *, repo_root: str, relative_path: str) -> int:
+        """경로 변경/삭제 이벤트를 위한 scope override 캐시 무효화 (cheap signal 이후 호출)."""
+        repo_key = str(Path(repo_root).resolve())
+        target = normalize_repo_relative_path(relative_path)
+        target_path = Path(target)
+        removed: list[tuple[str, str, str]] = []
+        with self._scope_override_lock:
+            for key in list(self._scope_override_cache.keys()):
+                _, cached_repo_root, candidate_dir = key
+                if cached_repo_root != repo_key:
+                    continue
+                candidate_path = Path(candidate_dir)
+                if self._paths_overlap(candidate_path, target_path):
+                    removed.append(key)
+            for key in removed:
+                self._scope_override_cache.pop(key, None)
+        return len(removed)
+
+    def clear_scope_overrides(self) -> int:
+        """테스트/운영 리셋용 scope override 캐시 전체 삭제."""
+        with self._scope_override_lock:
+            count = len(self._scope_override_cache)
+            self._scope_override_cache.clear()
+        return count
+
+    def _normalized_scope_candidate_dir(self, *, repo_root: str, relative_path: str) -> str:
+        normalized_relative = normalize_repo_relative_path(relative_path)
+        parent = Path(normalized_relative).parent
+        if str(parent) in ("", "."):
+            return "."
+        return str(parent).replace("\\", "/")
+
+    def _paths_overlap(self, candidate: Path, target: Path) -> bool:
+        try:
+            candidate.relative_to(target)
+            return True
+        except ValueError:
+            pass
+        try:
+            target.relative_to(candidate)
+            return True
+        except ValueError:
+            return False
 
     def _extract_once(self, repo_root: str, normalized_relative_path: str) -> LspExtractionResultDTO:
         try:
@@ -1362,6 +1465,36 @@ def _is_unavailable_probe_error(code: str) -> bool:
 def _is_workspace_mismatch_error(message: str) -> bool:
     lowered = message.lower()
     return "workspace contains" in lowered and "no " in lowered and "contains" in lowered
+
+
+def _is_scope_escalation_trigger_error(code: str, message: str) -> bool:
+    """Phase1 baseline scope escalation taxonomy를 판정한다."""
+    normalized_code = code.strip().upper()
+    normalized_message = message.strip()
+    lowered = normalized_message.lower()
+    if normalized_code == "ERR_LSP_WORKSPACE_MISMATCH":
+        return True
+    if normalized_code == "ERR_CONFIG_INVALID":
+        return True
+    if normalized_code == "ERR_LSP_DOCUMENT_SYMBOL_FAILED":
+        project_missing_patterns = (
+            "no workspace contains",
+            "project not found",
+            "project model missing",
+            "workspace contains",
+        )
+        return any(pattern in lowered for pattern in project_missing_patterns)
+    return False
+
+
+def _next_scope_level_for_escalation(current_scope_level: str | None) -> str | None:
+    """module -> repo -> workspace 순으로 다음 escalation 단계를 반환한다."""
+    level = (current_scope_level or "module").strip().lower()
+    if level == "module":
+        return "repo"
+    if level == "repo":
+        return "workspace"
+    return None
 
 
 def _next_transient_backoff_sec(fail_count: int) -> float:

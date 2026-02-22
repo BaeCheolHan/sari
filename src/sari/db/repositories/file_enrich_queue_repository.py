@@ -42,6 +42,7 @@ class FileEnrichQueueRepository:
             status="PENDING",
             attempt_count=0,
             last_error=None,
+            defer_reason=None,
             next_retry_at=now_iso,
             created_at=now_iso,
             updated_at=now_iso,
@@ -72,7 +73,11 @@ class FileEnrichQueueRepository:
                         status = 'PENDING',
                         next_retry_at = :next_retry_at,
                         updated_at = :updated_at,
-                        last_error = NULL
+                        last_error = NULL,
+                        defer_reason = NULL,
+                        scope_level = NULL,
+                        scope_root = NULL,
+                        scope_attempts = 0
                     WHERE job_id = :job_id
                     """,
                     {
@@ -90,11 +95,13 @@ class FileEnrichQueueRepository:
                 """
                 INSERT INTO file_enrich_queue(
                     job_id, repo_id, repo_root, relative_path, content_hash, content_raw, content_encoding,
-                    priority, enqueue_source, status, attempt_count, last_error, next_retry_at, created_at, updated_at
+                    priority, enqueue_source, status, attempt_count, last_error, defer_reason,
+                    scope_level, scope_root, scope_attempts, next_retry_at, created_at, updated_at
                 )
                 VALUES(
                     :job_id, :repo_id, :repo_root, :relative_path, :content_hash, '', 'utf-8',
-                    :priority, :enqueue_source, :status, :attempt_count, :last_error, :next_retry_at, :created_at, :updated_at
+                    :priority, :enqueue_source, :status, :attempt_count, :last_error, :defer_reason,
+                    :scope_level, :scope_root, :scope_attempts, :next_retry_at, :created_at, :updated_at
                 )
                 """,
                 job.to_sql_params(),
@@ -126,13 +133,14 @@ class FileEnrichQueueRepository:
                     status="PENDING",
                     attempt_count=0,
                     last_error=None,
+                    defer_reason=request.defer_reason,
                     next_retry_at=request.now_iso,
                     created_at=request.now_iso,
                     updated_at=request.now_iso,
                 )
                 existing = conn.execute(
                     """
-                    SELECT job_id, priority
+                    SELECT job_id, priority, content_hash
                     FROM file_enrich_queue
                     WHERE repo_id = :repo_id
                       AND repo_root = :repo_root
@@ -146,6 +154,8 @@ class FileEnrichQueueRepository:
                 if existing is not None:
                     existing_job_id = row_str(existing, "job_id")
                     merged_priority = max(row_int(existing, "priority"), request.priority)
+                    existing_content_hash = row_str(existing, "content_hash")
+                    is_supersede = existing_content_hash != request.content_hash
                     conn.execute(
                         """
                         UPDATE file_enrich_queue
@@ -153,9 +163,31 @@ class FileEnrichQueueRepository:
                             priority = :priority,
                             enqueue_source = :enqueue_source,
                             status = 'PENDING',
-                            next_retry_at = :next_retry_at,
                             updated_at = :updated_at,
-                            last_error = NULL
+                            next_retry_at = CASE
+                                WHEN :is_supersede = 1 THEN :next_retry_at
+                                ELSE next_retry_at
+                            END,
+                            defer_reason = CASE
+                                WHEN :is_supersede = 1 THEN NULL
+                                ELSE defer_reason
+                            END,
+                            last_error = CASE
+                                WHEN :is_supersede = 1 THEN NULL
+                                ELSE last_error
+                            END,
+                            scope_level = CASE
+                                WHEN :is_supersede = 1 THEN NULL
+                                ELSE scope_level
+                            END,
+                            scope_root = CASE
+                                WHEN :is_supersede = 1 THEN NULL
+                                ELSE scope_root
+                            END,
+                            scope_attempts = CASE
+                                WHEN :is_supersede = 1 THEN 0
+                                ELSE scope_attempts
+                            END
                         WHERE job_id = :job_id
                         """,
                         {
@@ -165,6 +197,7 @@ class FileEnrichQueueRepository:
                             "enqueue_source": request.enqueue_source,
                             "next_retry_at": request.now_iso,
                             "updated_at": request.now_iso,
+                            "is_supersede": 1 if is_supersede else 0,
                         },
                     )
                     enqueued_ids.append(existing_job_id)
@@ -173,11 +206,13 @@ class FileEnrichQueueRepository:
                     """
                     INSERT INTO file_enrich_queue(
                         job_id, repo_id, repo_root, relative_path, content_hash, content_raw, content_encoding,
-                        priority, enqueue_source, status, attempt_count, last_error, next_retry_at, created_at, updated_at
+                        priority, enqueue_source, status, attempt_count, last_error, defer_reason,
+                        scope_level, scope_root, scope_attempts, next_retry_at, created_at, updated_at
                     )
                     VALUES(
                         :job_id, :repo_id, :repo_root, :relative_path, :content_hash, '', 'utf-8',
-                        :priority, :enqueue_source, :status, :attempt_count, :last_error, :next_retry_at, :created_at, :updated_at
+                        :priority, :enqueue_source, :status, :attempt_count, :last_error, :defer_reason,
+                        :scope_level, :scope_root, :scope_attempts, :next_retry_at, :created_at, :updated_at
                     )
                     """,
                     job.to_sql_params(),
@@ -224,7 +259,8 @@ class FileEnrichQueueRepository:
                   AND status IN ('PENDING', 'FAILED')
                   AND next_retry_at <= :now_iso
                 RETURNING job_id, repo_id, repo_root, relative_path, content_hash, priority, enqueue_source,
-                          status, attempt_count, last_error, next_retry_at, created_at, updated_at
+                          status, attempt_count, last_error, defer_reason, scope_level, scope_root, scope_attempts,
+                          next_retry_at, created_at, updated_at
                 """,
                 {"limit": limit, "now_iso": now_iso},
             ).fetchall()
@@ -243,6 +279,10 @@ class FileEnrichQueueRepository:
                         status=row_str(row, "status"),
                         attempt_count=row_int(row, "attempt_count"),
                         last_error=row_optional_str(row, "last_error"),
+                        defer_reason=row_optional_str(row, "defer_reason"),
+                        scope_level=row_optional_str(row, "scope_level"),
+                        scope_root=row_optional_str(row, "scope_root"),
+                        scope_attempts=row_int(row, "scope_attempts"),
                         next_retry_at=row_str(row, "next_retry_at"),
                         created_at=row_str(row, "created_at"),
                         updated_at=row_str(row, "updated_at"),
@@ -291,6 +331,67 @@ class FileEnrichQueueRepository:
             for job_id in job_ids:
                 conn.execute("UPDATE file_enrich_queue SET status = 'DONE' WHERE job_id = :job_id", {"job_id": job_id})
             conn.commit()
+
+    def defer_pending_jobs(self, job_ids: list[str], next_retry_at: str, defer_reason: str, now_iso: str) -> int:
+        """broker defer를 PENDING + next_retry_at + defer_reason로 기록한다."""
+        if len(job_ids) == 0:
+            return 0
+        changed = 0
+        with connect(self._db_path) as conn:
+            for job_id in job_ids:
+                row = conn.execute(
+                    """
+                    UPDATE file_enrich_queue
+                    SET status = 'PENDING',
+                        next_retry_at = :next_retry_at,
+                        defer_reason = :defer_reason,
+                        updated_at = :updated_at
+                    WHERE job_id = :job_id
+                      AND status = 'PENDING'
+                    """,
+                    {
+                        "job_id": job_id,
+                        "next_retry_at": next_retry_at,
+                        "defer_reason": defer_reason,
+                        "updated_at": now_iso,
+                    },
+                )
+                changed += int(row.rowcount if row.rowcount is not None else 0)
+            conn.commit()
+        return changed
+
+    def escalate_scope_on_same_job(
+        self,
+        job_id: str,
+        next_scope_level: str,
+        next_scope_root: str,
+        next_retry_at: str,
+        now_iso: str,
+    ) -> bool:
+        """동일 queue row를 재사용해 scope escalation 상태를 갱신한다."""
+        with connect(self._db_path) as conn:
+            cur = conn.execute(
+                """
+                UPDATE file_enrich_queue
+                SET status = 'PENDING',
+                    scope_level = :scope_level,
+                    scope_root = :scope_root,
+                    scope_attempts = COALESCE(scope_attempts, 0) + 1,
+                    next_retry_at = :next_retry_at,
+                    defer_reason = NULL,
+                    updated_at = :updated_at
+                WHERE job_id = :job_id
+                """,
+                {
+                    "job_id": job_id,
+                    "scope_level": next_scope_level,
+                    "scope_root": next_scope_root,
+                    "next_retry_at": next_retry_at,
+                    "updated_at": now_iso,
+                },
+            )
+            conn.commit()
+            return int(cur.rowcount if cur.rowcount is not None else 0) > 0
 
     def mark_failed(self, job_id: str, error_message: str, next_retry_at: str, dead_threshold: int) -> None:
         """보강 작업 실패 상태를 갱신한다."""
@@ -457,6 +558,27 @@ class FileEnrichQueueRepository:
             "oldest_pending_available_age_sec": max(available_ages) if available_ages else None,
             "oldest_pending_deferred_age_sec": max(deferred_ages) if deferred_ages else None,
             "p95_pending_available_age_sec": self._percentile(available_ages, 95.0),
+        }
+
+    def get_eligible_counts(self, now_iso: str) -> dict[str, int]:
+        """strict eligible(v1) queue-job 기준 집계를 반환한다.
+
+        Phase B v1 정의:
+        - eligible_total = PENDING_AVAILABLE + RUNNING + DONE + FAILED
+        - eligible_deferred = PENDING_DEFERRED (eligible_total에서 제외)
+        """
+        status_counts = self.get_status_counts()
+        split = self.get_pending_split_counts(now_iso=now_iso)
+        pending_available = int(split.get("PENDING_AVAILABLE", 0))
+        pending_deferred = int(split.get("PENDING_DEFERRED", 0))
+        running = int(status_counts.get("RUNNING", 0))
+        done = int(status_counts.get("DONE", 0))
+        failed = int(status_counts.get("FAILED", 0))
+        return {
+            "eligible_total_count": pending_available + running + done + failed,
+            "eligible_done_count": done,
+            "eligible_failed_count": failed,
+            "eligible_deferred_count": pending_deferred,
         }
 
     def reset_running_to_failed(self, now_iso: str) -> int:

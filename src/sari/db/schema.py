@@ -125,6 +125,10 @@ CREATE TABLE IF NOT EXISTS file_enrich_queue (
     status TEXT NOT NULL,
     attempt_count INTEGER NOT NULL,
     last_error TEXT NULL,
+    defer_reason TEXT NULL,
+    scope_level TEXT NULL,
+    scope_root TEXT NULL,
+    scope_attempts INTEGER NOT NULL DEFAULT 0,
     next_retry_at TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL

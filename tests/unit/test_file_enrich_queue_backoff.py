@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from sari.core.models import EnqueueRequestDTO
 from sari.db.repositories.file_enrich_queue_repository import FileEnrichQueueRepository
 from sari.db.schema import connect, init_schema
 
@@ -17,6 +18,7 @@ def _read_queue_row(db_path: Path, job_id: str) -> dict[str, object]:
         row = conn.execute(
             """
             SELECT status, attempt_count, next_retry_at, last_error
+                 , content_hash, defer_reason
             FROM file_enrich_queue
             WHERE job_id = :job_id
             """,
@@ -29,7 +31,121 @@ def _read_queue_row(db_path: Path, job_id: str) -> dict[str, object]:
         "attempt_count": int(row["attempt_count"]),
         "next_retry_at": str(row["next_retry_at"]),
         "last_error": str(row["last_error"]) if row["last_error"] is not None else None,
+        "content_hash": str(row["content_hash"]),
+        "defer_reason": str(row["defer_reason"]) if row["defer_reason"] is not None else None,
     }
+
+
+def test_defer_pending_job_keeps_status_pending_and_preserves_attempt_count(tmp_path: Path) -> None:
+    """broker defer는 PENDING 상태를 유지하고 attempt_count를 오염시키면 안 된다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = FileEnrichQueueRepository(db_path)
+
+    now_iso = "2026-02-16T00:00:00+00:00"
+    job_id = repo.enqueue(
+        repo_root="/repo",
+        relative_path="defer.py",
+        content_hash="h-defer",
+        priority=30,
+        enqueue_source="scan",
+        now_iso=now_iso,
+    )
+
+    repo.defer_pending_jobs(
+        job_ids=[job_id],
+        next_retry_at="2026-02-16T00:05:00+00:00",
+        defer_reason="broker_defer:budget",
+        now_iso="2026-02-16T00:00:01+00:00",
+    )
+
+    row = _read_queue_row(db_path, job_id)
+    assert row["status"] == "PENDING"
+    assert row["attempt_count"] == 0
+    assert row["next_retry_at"] == "2026-02-16T00:05:00+00:00"
+    assert row["defer_reason"] == "broker_defer:budget"
+
+
+def test_enqueue_many_same_hash_preserves_defer_fields(tmp_path: Path) -> None:
+    """동일 해시 merge는 defer 필드를 덮어쓰면 안 된다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = FileEnrichQueueRepository(db_path)
+    now_iso = "2026-02-16T00:00:00+00:00"
+    job_id = repo.enqueue(
+        repo_root="/repo",
+        relative_path="same.py",
+        content_hash="h-same",
+        priority=10,
+        enqueue_source="scan",
+        now_iso=now_iso,
+    )
+    repo.defer_pending_jobs(
+        job_ids=[job_id],
+        next_retry_at="2026-02-16T00:10:00+00:00",
+        defer_reason="broker_defer:cooldown",
+        now_iso="2026-02-16T00:00:01+00:00",
+    )
+
+    _ = repo.enqueue_many(
+        [
+            # same hash enqueue should not clear defer fields
+            EnqueueRequestDTO(
+                repo_id="",
+                repo_root="/repo",
+                relative_path="same.py",
+                content_hash="h-same",
+                priority=20,
+                enqueue_source="scan",
+                now_iso="2026-02-16T00:00:02+00:00",
+            )
+        ]
+    )
+
+    row = _read_queue_row(db_path, job_id)
+    assert row["defer_reason"] == "broker_defer:cooldown"
+    assert row["next_retry_at"] == "2026-02-16T00:10:00+00:00"
+
+
+def test_enqueue_many_supersede_clears_defer_fields(tmp_path: Path) -> None:
+    """해시 변경 supersede merge는 defer 필드를 리셋해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = FileEnrichQueueRepository(db_path)
+    now_iso = "2026-02-16T00:00:00+00:00"
+    job_id = repo.enqueue(
+        repo_root="/repo",
+        relative_path="supersede.py",
+        content_hash="h-old",
+        priority=10,
+        enqueue_source="scan",
+        now_iso=now_iso,
+    )
+    repo.defer_pending_jobs(
+        job_ids=[job_id],
+        next_retry_at="2026-02-16T00:10:00+00:00",
+        defer_reason="broker_defer:budget",
+        now_iso="2026-02-16T00:00:01+00:00",
+    )
+
+    _ = repo.enqueue_many(
+        [
+            EnqueueRequestDTO(
+                repo_id="",
+                repo_root="/repo",
+                relative_path="supersede.py",
+                content_hash="h-new",
+                priority=20,
+                enqueue_source="scan",
+                now_iso="2026-02-16T00:00:02+00:00",
+            )
+        ]
+    )
+
+    row = _read_queue_row(db_path, job_id)
+    assert row["content_hash"] == "h-new"
+    assert row["defer_reason"] is None
+    assert row["next_retry_at"] == "2026-02-16T00:00:02+00:00"
 
 
 def test_mark_failed_with_backoff_updates_attempt_and_delay(tmp_path: Path) -> None:
@@ -300,3 +416,110 @@ def test_pending_age_stats_handles_mixed_naive_and_aware_timestamps(tmp_path: Pa
 
     age = repo.get_pending_age_stats(now_iso="2026-02-16T00:00:00+00:00")
     assert age["oldest_pending_available_age_sec"] == pytest.approx(30.0)
+
+
+def test_get_eligible_counts_excludes_pending_deferred_from_total(tmp_path: Path) -> None:
+    """strict eligible(v1) 집계는 PENDING_DEFERRED를 eligible_total에서 제외해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = FileEnrichQueueRepository(db_path)
+
+    base_now = "2026-02-16T00:00:00+00:00"
+    ready_job = repo.enqueue(
+        repo_root="/repo",
+        relative_path="ready.py",
+        content_hash="h-ready",
+        priority=100,
+        enqueue_source="scan",
+        now_iso=base_now,
+    )
+    deferred_job = repo.enqueue(
+        repo_root="/repo",
+        relative_path="deferred.py",
+        content_hash="h-deferred",
+        priority=10,
+        enqueue_source="scan",
+        now_iso=base_now,
+    )
+    done_job = repo.enqueue(
+        repo_root="/repo",
+        relative_path="done.py",
+        content_hash="h-done",
+        priority=10,
+        enqueue_source="scan",
+        now_iso=base_now,
+    )
+    failed_job = repo.enqueue(
+        repo_root="/repo",
+        relative_path="failed.py",
+        content_hash="h-failed",
+        priority=10,
+        enqueue_source="scan",
+        now_iso=base_now,
+    )
+    _ = repo.acquire_pending(limit=1, now_iso=base_now)  # ready_job -> RUNNING
+    repo.mark_done(done_job)
+    repo.mark_failed_with_backoff(
+        job_id=failed_job,
+        error_message="fail",
+        now_iso=base_now,
+        dead_threshold=3,
+        backoff_base_sec=1,
+    )
+    repo.defer_pending_jobs(
+        job_ids=[deferred_job],
+        next_retry_at="2026-02-16T00:10:00+00:00",
+        defer_reason="broker_defer:budget",
+        now_iso="2026-02-16T00:00:01+00:00",
+    )
+
+    counts = repo.get_eligible_counts(now_iso=base_now)
+    assert counts["eligible_deferred_count"] == 1
+    # RUNNING(1) + DONE(1) + FAILED(1) + PENDING_AVAILABLE(0)
+    assert counts["eligible_total_count"] == 3
+    assert counts["eligible_done_count"] == 1
+    assert counts["eligible_failed_count"] == 1
+
+
+def test_escalate_scope_on_same_job_updates_existing_queue_row_only(tmp_path: Path) -> None:
+    """scope escalation은 새 job 생성 없이 동일 queue row만 갱신해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = FileEnrichQueueRepository(db_path)
+    now_iso = "2026-02-16T00:00:00+00:00"
+    job_id = repo.enqueue(
+        repo_root="/repo",
+        relative_path="scope.py",
+        content_hash="h-scope",
+        priority=10,
+        enqueue_source="scan",
+        now_iso=now_iso,
+    )
+
+    changed = repo.escalate_scope_on_same_job(
+        job_id=job_id,
+        next_scope_level="repo",
+        next_scope_root="/repo/subproj",
+        next_retry_at="2026-02-16T00:00:01+00:00",
+        now_iso="2026-02-16T00:00:01+00:00",
+    )
+    assert changed is True
+
+    with connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT status, scope_level, scope_root, scope_attempts, next_retry_at, defer_reason
+            FROM file_enrich_queue
+            WHERE job_id = :job_id
+            """,
+            {"job_id": job_id},
+        ).fetchone()
+        count = conn.execute("SELECT COUNT(1) AS cnt FROM file_enrich_queue").fetchone()
+    assert row is not None
+    assert count is not None and int(count["cnt"]) == 1
+    assert str(row["status"]) == "PENDING"
+    assert str(row["scope_level"]) == "repo"
+    assert str(row["scope_root"]) == "/repo/subproj"
+    assert int(row["scope_attempts"]) == 1
+    assert str(row["next_retry_at"]) == "2026-02-16T00:00:01+00:00"
+    assert row["defer_reason"] is None

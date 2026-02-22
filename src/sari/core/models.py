@@ -322,6 +322,10 @@ class FileEnrichJobDTO:
     next_retry_at: str
     created_at: str
     updated_at: str
+    defer_reason: str | None = None
+    scope_level: str | None = None
+    scope_root: str | None = None
+    scope_attempts: int = 0
     def to_sql_params(self) -> dict[str, object]:
         return {
             "job_id": self.job_id,
@@ -334,6 +338,10 @@ class FileEnrichJobDTO:
             "status": self.status,
             "attempt_count": self.attempt_count,
             "last_error": self.last_error,
+            "defer_reason": self.defer_reason,
+            "scope_level": self.scope_level,
+            "scope_root": self.scope_root,
+            "scope_attempts": self.scope_attempts,
             "next_retry_at": self.next_retry_at,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -354,6 +362,7 @@ class EnqueueRequestDTO:
     priority: int
     enqueue_source: str
     now_iso: str
+    defer_reason: str | None = None
 @dataclass(frozen=True)
 class CollectedFileBodyDTO:
     repo_id: str

@@ -187,6 +187,15 @@ class _FakeQueueRepositoryWithPendingDetails(_FakeQueueRepository):
             "p95_pending_available_age_sec": 9.5,
         }
 
+    def get_eligible_counts(self, now_iso: str) -> dict[str, int]:
+        del now_iso
+        return {
+            "eligible_total_count": 8,
+            "eligible_done_count": 3,
+            "eligible_failed_count": 1,
+            "eligible_deferred_count": 7,
+        }
+
 
 def test_pipeline_perf_service_run_returns_gate_summary(tmp_path: Path) -> None:
     """실행 결과에 혼합지표와 게이트 판정이 포함되어야 한다."""
@@ -381,8 +390,8 @@ def test_pipeline_perf_service_drain_recovers_stale_running_for_perf_only(tmp_pa
     assert service._last_drain_diagnostics["stale_running_recovered_count"] >= 1
 
 
-def test_pipeline_perf_integrity_snapshot_includes_pending_split_and_age_stats(tmp_path: Path) -> None:
-    """workspace integrity 스냅샷에 pending split/age와 phaseA eligible 모드가 포함되어야 한다."""
+def test_pipeline_perf_integrity_snapshot_includes_pending_split_age_and_eligible_counts(tmp_path: Path) -> None:
+    """workspace integrity 스냅샷에 pending split/age와 strict eligible 집계가 포함되어야 한다."""
     db_path = tmp_path / "state.db"
     init_schema(db_path)
     queue_repo = _FakeQueueRepositoryWithPendingDetails()
@@ -404,7 +413,9 @@ def test_pipeline_perf_integrity_snapshot_includes_pending_split_and_age_stats(t
     assert isinstance(pending_age, dict)
     assert pending_age["oldest_pending_available_age_sec"] == pytest.approx(12.0)
     assert pending_age["oldest_pending_deferred_age_sec"] == pytest.approx(120.0)
-    assert snap["eligible_counts_mode"] == "deferred_split_only_phaseA"
+    assert snap["eligible_counts_mode"] == "strict_queue_phaseB_v1"
+    assert snap["eligible_counts"]["eligible_total_count"] == 8
+    assert snap["eligible_counts"]["eligible_deferred_count"] == 7
     assert len(queue_repo.pending_split_calls) == 1
     assert len(queue_repo.pending_age_calls) == 1
     assert queue_repo.pending_split_calls[0] == queue_repo.pending_age_calls[0]
