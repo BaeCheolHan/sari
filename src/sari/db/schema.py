@@ -126,6 +126,10 @@ CREATE TABLE IF NOT EXISTS file_enrich_queue (
     attempt_count INTEGER NOT NULL,
     last_error TEXT NULL,
     defer_reason TEXT NULL,
+    deferred_state TEXT NULL,
+    deferred_count INTEGER NOT NULL DEFAULT 0,
+    first_deferred_at TEXT NULL,
+    last_deferred_at TEXT NULL,
     scope_level TEXT NULL,
     scope_root TEXT NULL,
     scope_attempts INTEGER NOT NULL DEFAULT 0,
@@ -214,6 +218,52 @@ CREATE TABLE IF NOT EXISTS lsp_call_relations (
     PRIMARY KEY(repo_root, relative_path, content_hash, from_symbol, to_symbol, line)
 );
 
+CREATE TABLE IF NOT EXISTS tool_data_l3_symbols (
+    workspace_id TEXT NOT NULL,
+    repo_root TEXT NOT NULL CHECK (repo_root <> ''),
+    relative_path TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    symbols_json TEXT NOT NULL,
+    degraded INTEGER NOT NULL DEFAULT 0 CHECK (degraded IN (0, 1)),
+    l3_skipped_large_file INTEGER NOT NULL DEFAULT 0 CHECK (l3_skipped_large_file IN (0, 1)),
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (workspace_id, repo_root, relative_path, content_hash)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tool_data_l3_lookup
+ON tool_data_l3_symbols(workspace_id, repo_root, relative_path, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS tool_data_l4_normalized_symbols (
+    workspace_id TEXT NOT NULL,
+    repo_root TEXT NOT NULL CHECK (repo_root <> ''),
+    relative_path TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    normalized_json TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    ambiguity REAL NOT NULL,
+    coverage REAL NOT NULL,
+    needs_l5 INTEGER NOT NULL DEFAULT 0 CHECK (needs_l5 IN (0, 1)),
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (workspace_id, repo_root, relative_path, content_hash)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tool_data_l4_lookup
+ON tool_data_l4_normalized_symbols(workspace_id, repo_root, relative_path, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS tool_data_l5_semantics (
+    workspace_id TEXT NOT NULL,
+    repo_root TEXT NOT NULL CHECK (repo_root <> ''),
+    relative_path TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    reason_code TEXT NOT NULL,
+    semantics_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (workspace_id, repo_root, relative_path, content_hash, reason_code)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tool_data_l5_lookup
+ON tool_data_l5_semantics(workspace_id, repo_root, relative_path, updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS symbol_importance_cache (
     repo_root TEXT NOT NULL CHECK (repo_root <> ''),
     symbol_name TEXT NOT NULL,
@@ -264,6 +314,15 @@ CREATE TABLE IF NOT EXISTS pipeline_control_state (
     auto_hold_enabled INTEGER NOT NULL CHECK (auto_hold_enabled IN (0, 1)),
     auto_hold_active INTEGER NOT NULL CHECK (auto_hold_active IN (0, 1)),
     last_action TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS pipeline_stage_baseline (
+    singleton_key TEXT PRIMARY KEY,
+    l4_admission_rate_baseline_p50 REAL NULL,
+    l4_admission_rate_baseline_samples INTEGER NOT NULL DEFAULT 0,
+    p95_pending_available_age_baseline_sec REAL NULL,
+    p95_pending_available_age_baseline_samples INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL
 );
 

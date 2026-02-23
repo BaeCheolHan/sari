@@ -9,6 +9,7 @@ import pytest
 
 from sari.core.exceptions import PerfError
 from sari.db.repositories.pipeline_perf_repository import PipelinePerfRepository
+from sari.db.repositories.pipeline_stage_baseline_repository import PipelineStageBaselineRepository
 from sari.db.schema import init_schema
 from sari.services.pipeline_perf_service import PipelinePerfService
 
@@ -146,6 +147,29 @@ class _IdleCollectionService:
         return 0
 
 
+class _FakeCollectionServiceWithSeparateL3(_IdleCollectionService):
+    def __init__(self) -> None:
+        self.l2_calls = 0
+        self.l3_calls = 0
+        self.unified_calls = 0
+
+    def process_enrich_jobs(self, limit: int) -> int:
+        del limit
+        self.unified_calls += 1
+        return 0
+
+    def process_enrich_jobs_l2(self, limit: int) -> int:
+        del limit
+        self.l2_calls += 1
+        return 1 if self.l2_calls == 1 else 0
+
+    def process_enrich_jobs_l3(self, limit: int) -> int:
+        del limit
+        self.l3_calls += 1
+        return 1 if self.l3_calls == 1 else 0
+
+
+
 class _FakeFileRepoWithStateCounts:
     def get_enrich_state_counts(self) -> dict[str, int]:
         return {"TOOL_READY": 3, "L3_SKIPPED": 1}
@@ -195,6 +219,107 @@ class _FakeCollectionServiceWithPerfRuntimeSnapshot(_FakeCollectionServiceWithRe
         }
 
 
+class _FakeReadinessRepoForStageGate:
+    def count_by_tool_ready(self) -> dict[str, int]:
+        return {"tool_ready_true": 95, "tool_ready_false": 5}
+
+
+class _FakeCollectionServiceForStageGate(_FakeCollectionServiceWithPerfRuntimeSnapshot):
+    def __init__(self) -> None:
+        super().__init__()
+        self._readiness_repo = _FakeReadinessRepoForStageGate()
+
+    def _lsp_runtime_metrics_snapshot(self) -> dict[str, int]:
+        return {
+            "broker_active_sessions_java": 1,
+            "broker_active_budget_group_ts-vue": 2,
+            "broker_guard_reject_count": 3,
+            "session_cache_hit_by_tier_single": 0,
+            "session_eviction_churn_count": 0,
+            "l5_total_decisions": 100,
+            "l5_total_admitted": 4,
+            "l5_batch_decisions": 100,
+            "l5_batch_admitted": 1,
+            "search_quality_regression_pct": 0,
+        }
+
+
+class _FakeCollectionServiceForStageGateHigherL5(_FakeCollectionServiceForStageGate):
+    def _lsp_runtime_metrics_snapshot(self) -> dict[str, int]:
+        return {
+            "broker_active_sessions_java": 1,
+            "broker_active_budget_group_ts-vue": 2,
+            "broker_guard_reject_count": 3,
+            "session_cache_hit_by_tier_single": 0,
+            "session_eviction_churn_count": 0,
+            "l5_total_decisions": 100,
+            "l5_total_admitted": 8,
+            "l5_batch_decisions": 100,
+            "l5_batch_admitted": 1,
+            "search_quality_regression_pct": 0,
+        }
+
+
+class _FakeCollectionServiceWithL5ModeSwitch(_FakeCollectionServiceWithRepos):
+    def __init__(self) -> None:
+        super().__init__()
+        self._shadow_enabled = False
+        self._enforced = False
+        self.mode_calls: list[tuple[bool, bool]] = []
+
+    def set_l5_admission_mode(self, *, shadow_enabled: bool, enforced: bool) -> None:
+        self._shadow_enabled = bool(shadow_enabled)
+        self._enforced = bool(enforced)
+        self.mode_calls.append((self._shadow_enabled, self._enforced))
+
+    def _lsp_runtime_metrics_snapshot(self) -> dict[str, int]:
+        if self._shadow_enabled:
+            return {
+                "l5_total_decisions": 100,
+                "l5_total_admitted": 5,
+                "l5_batch_decisions": 80,
+                "l5_batch_admitted": 1,
+                "search_quality_regression_pct": 0,
+            }
+        return {
+            "l5_total_decisions": 0,
+            "l5_total_admitted": 0,
+            "l5_batch_decisions": 0,
+            "l5_batch_admitted": 0,
+        }
+
+
+class _FakeQueueRepositoryForStageGate(_FakeQueueRepository):
+    def __init__(self) -> None:
+        super().__init__()
+        self.pending_split_calls: list[str] = []
+        self.pending_age_calls: list[str] = []
+
+    def get_pending_split_counts(self, now_iso: str) -> dict[str, int]:
+        self.pending_split_calls.append(now_iso)
+        return {"PENDING_AVAILABLE": 18, "PENDING_DEFERRED": 2}
+
+    def get_pending_age_stats(self, now_iso: str) -> dict[str, float | None]:
+        self.pending_age_calls.append(now_iso)
+        return {
+            "oldest_pending_available_age_sec": 20.0,
+            "oldest_pending_deferred_age_sec": 60.0,
+            "p95_pending_available_age_sec": 8.0,
+        }
+
+    def get_deferred_drop_stats(self, top_k: int = 10) -> dict[str, object]:
+        del top_k
+        return {
+            "dropped_total": 2,
+            "dropped_ttl_expired_count": 1,
+            "dropped_cap_total_count": 1,
+            "dropped_cap_workspace_count": 0,
+            "by_reason": {"l5_drop:ttl_expired": 1, "l5_drop:deferred_cap_total": 1},
+            "by_workspace_topk": [{"repo_root": "/repo", "count": 2}],
+            "by_language_topk": [{"language": "py", "count": 2}],
+        }
+
+
 class _FakeQueueRepositoryWithPendingDetails(_FakeQueueRepository):
     def __init__(self) -> None:
         super().__init__()
@@ -211,6 +336,25 @@ class _FakeQueueRepositoryWithPendingDetails(_FakeQueueRepository):
             "oldest_pending_available_age_sec": 12.0,
             "oldest_pending_deferred_age_sec": 120.0,
             "p95_pending_available_age_sec": 9.5,
+        }
+
+    def get_eligible_counts(self, now_iso: str) -> dict[str, int]:
+        del now_iso
+        return {
+            "eligible_total_count": 8,
+            "eligible_done_count": 3,
+            "eligible_failed_count": 1,
+            "eligible_deferred_count": 7,
+        }
+
+
+class _FakeQueueRepositoryForStageGateHigherPendingAge(_FakeQueueRepositoryForStageGate):
+    def get_pending_age_stats(self, now_iso: str) -> dict[str, float | None]:
+        self.pending_age_calls.append(now_iso)
+        return {
+            "oldest_pending_available_age_sec": 30.0,
+            "oldest_pending_deferred_age_sec": 300.0,
+            "p95_pending_available_age_sec": 12.0,
         }
 
     def get_eligible_counts(self, now_iso: str) -> dict[str, int]:
@@ -447,6 +591,27 @@ def test_pipeline_perf_service_drain_recovers_stale_running_for_perf_only(tmp_pa
     assert service._last_drain_diagnostics["stale_running_recovered_count"] >= 1
 
 
+def test_pipeline_perf_service_drain_processes_separate_l3_queue(tmp_path: Path) -> None:
+    """drain 루프는 L2뿐 아니라 L3 큐도 함께 소진해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    queue_repo = _FakeQueueRepository()
+    collection = _FakeCollectionServiceWithSeparateL3()
+    service = PipelinePerfService(
+        file_collection_service=collection,
+        queue_repo=queue_repo,
+        benchmark_service=_FakeBenchmarkService(),
+        perf_repo=PipelinePerfRepository(db_path),
+        artifact_root=tmp_path / "artifacts",
+    )
+
+    service._drain_enrich_queue(max_wait_sec=1.0)
+
+    assert collection.l2_calls >= 1
+    assert collection.l3_calls >= 1
+    assert collection.unified_calls == 0
+
+
 def test_pipeline_perf_integrity_snapshot_includes_pending_split_age_and_eligible_counts(tmp_path: Path) -> None:
     """workspace integrity 스냅샷에 pending split/age와 strict eligible 집계가 포함되어야 한다."""
     db_path = tmp_path / "state.db"
@@ -611,6 +776,163 @@ def test_pipeline_perf_integrity_snapshot_allows_zero_symbol_tool_ready_gap_when
     assert checks["tool_ready_vs_symbol_files_match"] is True
     assert checks["eligible_done_vs_tool_ready_and_symbol_files_match"] is True
     assert snap["tool_readiness_symbol_gap_count"] == 3
+
+
+def test_pipeline_perf_integrity_snapshot_includes_stage_exit_criteria_report(tmp_path: Path) -> None:
+    """integrity snapshot은 Stage A/B/C exit criteria 자동평가를 포함해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    service = PipelinePerfService(
+        file_collection_service=_FakeCollectionServiceForStageGate(),
+        queue_repo=_FakeQueueRepositoryForStageGate(),
+        benchmark_service=_FakeBenchmarkService(),
+        perf_repo=PipelinePerfRepository(db_path),
+        artifact_root=tmp_path / "artifacts",
+    )
+
+    snap = service._collect_workspace_integrity_snapshot()
+
+    stage_exit = snap.get("stage_exit")
+    assert isinstance(stage_exit, dict)
+    stage_a = stage_exit.get("stage_a_to_b")
+    stage_b = stage_exit.get("stage_b_to_c")
+    assert isinstance(stage_a, dict)
+    assert isinstance(stage_b, dict)
+    assert stage_a["passed"] is True
+    assert stage_b["passed"] is True
+    assert stage_a["checks"]["l3_parse_success_rate_tier1"] is True
+    assert stage_a["checks"]["l3_degraded_rate_tier1"] is True
+    assert stage_b["checks"]["search_quality_regression"] is True
+    assert stage_b["checks"]["pending_age_p95"] is True
+    assert stage_b["checks"]["l5_budget_rate_total"] is True
+    assert snap["deferred_drop_stats"]["dropped_total"] == 2
+
+
+def test_stage_exit_search_quality_requires_explicit_runtime_metric(tmp_path: Path) -> None:
+    """search_quality_regression은 런타임 메트릭이 없으면 통과로 간주하면 안 된다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+
+    class _NoSearchMetricCollectionService(_FakeCollectionServiceForStageGate):
+        def _lsp_runtime_metrics_snapshot(self) -> dict[str, int]:
+            return {
+                "l5_total_decisions": 100,
+                "l5_total_admitted": 4,
+                "l5_batch_decisions": 100,
+                "l5_batch_admitted": 1,
+            }
+
+    service = PipelinePerfService(
+        file_collection_service=_NoSearchMetricCollectionService(),
+        queue_repo=_FakeQueueRepositoryForStageGate(),
+        benchmark_service=_FakeBenchmarkService(),
+        perf_repo=PipelinePerfRepository(db_path),
+        artifact_root=tmp_path / "artifacts",
+    )
+
+    snap = service._collect_workspace_integrity_snapshot()
+    stage_b = snap["stage_exit"]["stage_b_to_c"]
+
+    assert stage_b["checks"]["search_quality_regression"] is False
+    assert stage_b["values"]["search_quality_regression_pct"] is None
+    assert stage_b["values"]["search_quality_regression_metric_present"] is False
+
+
+def test_pipeline_perf_service_enables_l5_shadow_for_workspace_measurement(tmp_path: Path) -> None:
+    """workspace_real 측정 중에는 L5 shadow metrics 수집을 강제해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_dir = tmp_path / "repo-a"
+    repo_dir.mkdir()
+    collection_service = _FakeCollectionServiceWithL5ModeSwitch()
+    service = PipelinePerfService(
+        file_collection_service=collection_service,
+        queue_repo=_FakeQueueRepositoryForStageGate(),
+        benchmark_service=_FakeBenchmarkService(),
+        perf_repo=PipelinePerfRepository(db_path),
+        artifact_root=tmp_path / "artifacts",
+    )
+
+    summary = service.run(repo_root=str(repo_dir), target_files=2000, profile="real_lsp_phase1_v1")
+    workspace = next(item for item in summary["datasets"] if item["dataset_type"] == "workspace_real")
+    stage_a = workspace["integrity"]["stage_exit"]["stage_a_to_b"]
+
+    assert stage_a["values"]["l4_admission_rate_pct"] == pytest.approx(5.0)
+    assert stage_a["checks"]["l4_admission_rate"] is True
+    assert collection_service.mode_calls[0] == (True, False)
+    assert collection_service.mode_calls[-1] == (False, False)
+
+
+def test_stage_exit_uses_persisted_l4_admission_baseline_p50(tmp_path: Path) -> None:
+    """baseline_p50 저장 후에는 Stage A L4 admission threshold가 baseline*1.3을 사용해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    baseline_repo = PipelineStageBaselineRepository(db_path)
+
+    service_first = PipelinePerfService(
+        file_collection_service=_FakeCollectionServiceForStageGate(),
+        queue_repo=_FakeQueueRepositoryForStageGate(),
+        benchmark_service=_FakeBenchmarkService(),
+        perf_repo=PipelinePerfRepository(db_path),
+        artifact_root=tmp_path / "artifacts",
+        stage_baseline_repo=baseline_repo,
+    )
+    first_snap = service_first._collect_workspace_integrity_snapshot()
+    first_stage_a = first_snap["stage_exit"]["stage_a_to_b"]
+    assert first_stage_a["values"]["l4_admission_rate_baseline_p50"] == pytest.approx(4.0)
+    assert first_stage_a["thresholds"]["l4_admission_rate_max_pct"] == pytest.approx(5.2)
+    assert first_stage_a["checks"]["l4_admission_rate"] is True
+
+    service_second = PipelinePerfService(
+        file_collection_service=_FakeCollectionServiceForStageGateHigherL5(),
+        queue_repo=_FakeQueueRepositoryForStageGate(),
+        benchmark_service=_FakeBenchmarkService(),
+        perf_repo=PipelinePerfRepository(db_path),
+        artifact_root=tmp_path / "artifacts",
+        stage_baseline_repo=PipelineStageBaselineRepository(db_path),
+    )
+    second_snap = service_second._collect_workspace_integrity_snapshot()
+    second_stage_a = second_snap["stage_exit"]["stage_a_to_b"]
+    assert second_stage_a["values"]["l4_admission_rate_baseline_p50"] == pytest.approx(4.0)
+    assert second_stage_a["values"]["l4_admission_rate_pct"] == pytest.approx(8.0)
+    assert second_stage_a["thresholds"]["l4_admission_rate_max_pct"] == pytest.approx(5.2)
+    assert second_stage_a["checks"]["l4_admission_rate"] is False
+
+
+def test_stage_exit_uses_persisted_pending_age_baseline_for_regression_detection(tmp_path: Path) -> None:
+    """Stage B pending_age 판정은 baseline 대비 악화(1.2x 초과) 시 fail 해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    baseline_repo = PipelineStageBaselineRepository(db_path)
+
+    first = PipelinePerfService(
+        file_collection_service=_FakeCollectionServiceForStageGate(),
+        queue_repo=_FakeQueueRepositoryForStageGate(),
+        benchmark_service=_FakeBenchmarkService(),
+        perf_repo=PipelinePerfRepository(db_path),
+        artifact_root=tmp_path / "artifacts",
+        stage_baseline_repo=baseline_repo,
+    )
+    first_snap = first._collect_workspace_integrity_snapshot()
+    first_stage_b = first_snap["stage_exit"]["stage_b_to_c"]
+    assert first_stage_b["values"]["p95_pending_available_age_baseline_sec"] == pytest.approx(8.0)
+    assert first_stage_b["thresholds"]["p95_pending_available_age_sec_max"] == pytest.approx(9.6)
+    assert first_stage_b["checks"]["pending_age_p95"] is True
+
+    second = PipelinePerfService(
+        file_collection_service=_FakeCollectionServiceForStageGate(),
+        queue_repo=_FakeQueueRepositoryForStageGateHigherPendingAge(),
+        benchmark_service=_FakeBenchmarkService(),
+        perf_repo=PipelinePerfRepository(db_path),
+        artifact_root=tmp_path / "artifacts",
+        stage_baseline_repo=PipelineStageBaselineRepository(db_path),
+    )
+    second_snap = second._collect_workspace_integrity_snapshot()
+    second_stage_b = second_snap["stage_exit"]["stage_b_to_c"]
+    assert second_stage_b["values"]["p95_pending_available_age_sec"] == pytest.approx(12.0)
+    assert second_stage_b["values"]["p95_pending_available_age_baseline_sec"] == pytest.approx(8.0)
+    assert second_stage_b["thresholds"]["p95_pending_available_age_sec_max"] == pytest.approx(9.6)
+    assert second_stage_b["checks"]["pending_age_p95"] is False
 
 
 def test_build_dataset_result_supports_real_lsp_phase1_profile_for_workspace_real(tmp_path: Path) -> None:

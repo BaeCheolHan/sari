@@ -5,13 +5,14 @@ from __future__ import annotations
 import json
 import subprocess
 import time
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from sari.core.exceptions import ErrorContext, PerfError
 from sari.core.models import now_iso8601_utc
 from sari.db.repositories.pipeline_perf_repository import PipelinePerfRepository
+from sari.db.repositories.pipeline_stage_baseline_repository import PipelineStageBaselineRepository
 from sari.services.collection.perf_trace import PerfTracer, get_perf_trace_summary, perf_trace_session, reset_perf_trace_summary
 
 
@@ -25,12 +26,14 @@ class PipelinePerfService:
         benchmark_service: object,
         perf_repo: PipelinePerfRepository,
         artifact_root: Path,
+        stage_baseline_repo: PipelineStageBaselineRepository | None = None,
     ) -> None:
         """실측 서비스 의존성을 주입한다."""
         self._file_collection_service = file_collection_service
         self._queue_repo = queue_repo
         self._benchmark_service = benchmark_service
         self._perf_repo = perf_repo
+        self._stage_baseline_repo = stage_baseline_repo
         self._artifact_root = artifact_root
         self._last_drain_diagnostics: dict[str, object] = {}
         self._perf_tracer = PerfTracer(component="pipeline_perf_service")
@@ -236,29 +239,31 @@ class PipelinePerfService:
         workspace_exclude_globs: tuple[str, ...] = (),
     ) -> dict[str, object]:
         """실데이터 기준 실측 지표를 계산한다."""
-        start_counts = self._queue_counts_snapshot()
-        scan_started = time.perf_counter()
-        exclude_ctx_factory = getattr(self._file_collection_service, "temporary_scan_exclude_globs", None)
-        exclude_ctx = (
-            exclude_ctx_factory(workspace_exclude_globs)
-            if callable(exclude_ctx_factory)
-            else nullcontext()
-        )
-        with self._perf_tracer.span("measure_workspace.scan_once", phase="scan", repo_root=repo_root):
-            with exclude_ctx:
-                self._file_collection_service.scan_once(repo_root=repo_root)
-        scan_elapsed_sec = float(time.perf_counter() - scan_started)
-        enrich_started = time.perf_counter()
-        self._last_drain_diagnostics = {}
-        with self._perf_tracer.span("measure_workspace.drain_enrich_queue", phase="drain", repo_root=repo_root):
-            self._drain_enrich_queue(max_wait_sec=120.0)
-        enrich_elapsed_sec = float(time.perf_counter() - enrich_started)
-        end_counts = self._queue_counts_snapshot()
-        done_count = max(0, int(end_counts.get("DONE", 0)) - int(start_counts.get("DONE", 0)))
-        dead_count = max(0, int(end_counts.get("DEAD", 0)) - int(start_counts.get("DEAD", 0)))
-        wall_time_sec = scan_elapsed_sec + enrich_elapsed_sec
-        workspace_context = dict(run_context)
-        workspace_context["backend_kind"] = self._resolve_workspace_backend_kind()
+        with self._temporary_l5_shadow_mode_for_perf():
+            start_counts = self._queue_counts_snapshot()
+            scan_started = time.perf_counter()
+            exclude_ctx_factory = getattr(self._file_collection_service, "temporary_scan_exclude_globs", None)
+            exclude_ctx = (
+                exclude_ctx_factory(workspace_exclude_globs)
+                if callable(exclude_ctx_factory)
+                else nullcontext()
+            )
+            with self._perf_tracer.span("measure_workspace.scan_once", phase="scan", repo_root=repo_root):
+                with exclude_ctx:
+                    self._file_collection_service.scan_once(repo_root=repo_root)
+            scan_elapsed_sec = float(time.perf_counter() - scan_started)
+            enrich_started = time.perf_counter()
+            self._last_drain_diagnostics = {}
+            with self._perf_tracer.span("measure_workspace.drain_enrich_queue", phase="drain", repo_root=repo_root):
+                self._drain_enrich_queue(max_wait_sec=120.0)
+            enrich_elapsed_sec = float(time.perf_counter() - enrich_started)
+            end_counts = self._queue_counts_snapshot()
+            done_count = max(0, int(end_counts.get("DONE", 0)) - int(start_counts.get("DONE", 0)))
+            dead_count = max(0, int(end_counts.get("DEAD", 0)) - int(start_counts.get("DEAD", 0)))
+            wall_time_sec = scan_elapsed_sec + enrich_elapsed_sec
+            workspace_context = dict(run_context)
+            workspace_context["backend_kind"] = self._resolve_workspace_backend_kind()
+            integrity_snapshot = self._collect_workspace_integrity_snapshot()
         return self._build_dataset_result(
             dataset_type="workspace_real",
             repo_scope=repo_root,
@@ -271,8 +276,31 @@ class PipelinePerfService:
             end_counts=end_counts,
             measurement_scope=f"workspace_real_{dataset_mode}",
             run_context=workspace_context,
-            integrity_snapshot=self._collect_workspace_integrity_snapshot(),
+            integrity_snapshot=integrity_snapshot,
         )
+
+    @contextmanager
+    def _temporary_l5_shadow_mode_for_perf(self):
+        """perf 측정 중 L5 shadow metrics 수집을 강제하고 종료 시 원복한다."""
+        setter = getattr(self._file_collection_service, "set_l5_admission_mode", None)
+        if not callable(setter):
+            yield
+            return
+        enrich_engine = getattr(self._file_collection_service, "_enrich_engine", None)
+        prev_shadow = bool(getattr(enrich_engine, "_l5_admission_shadow_enabled", False))
+        prev_enforced = bool(getattr(enrich_engine, "_l5_admission_enforced", False))
+        try:
+            setter(shadow_enabled=True, enforced=prev_enforced)
+        except (RuntimeError, OSError, ValueError, TypeError):
+            yield
+            return
+        try:
+            yield
+        finally:
+            try:
+                setter(shadow_enabled=prev_shadow, enforced=prev_enforced)
+            except (RuntimeError, OSError, ValueError, TypeError):
+                ...
 
     def _apply_pre_run_reset(self, *, fresh_db: bool, reset_probe_state: bool, cold_lsp_reset: bool) -> None:
         """요청된 cold 측정 reset을 실행한다."""
@@ -341,15 +369,43 @@ class PipelinePerfService:
         last_recovery_check = 0.0
         drain_timeout_hit = False
         last_counts: dict[str, int] = self._queue_counts_snapshot()
+        l2_processor = getattr(self._file_collection_service, "process_enrich_jobs_l2", None)
+        unified_processor = getattr(self._file_collection_service, "process_enrich_jobs", None)
+        l3_processor = getattr(self._file_collection_service, "process_enrich_jobs_l3", None)
+        l3_queue_size_getter = getattr(self._file_collection_service, "l3_queue_size", None)
         while time.time() < deadline:
             with self._perf_tracer.span("drain.loop.process_enrich_jobs", phase="drain"):
-                processed = int(self._file_collection_service.process_enrich_jobs(limit=100))
+                if callable(l2_processor):
+                    processed_l2 = int(l2_processor(limit=100))
+                elif callable(unified_processor):
+                    processed_l2 = int(unified_processor(limit=100))
+                else:
+                    processed_l2 = 0
+            processed_l3 = 0
+            if callable(l3_processor):
+                with self._perf_tracer.span("drain.loop.process_enrich_jobs_l3", phase="drain"):
+                    processed_l3 = int(l3_processor(limit=100))
+            processed = processed_l2 + processed_l3
             with self._perf_tracer.span("drain.loop.queue_snapshot", phase="drain"):
                 counts = self._queue_repo.get_status_counts()
             last_counts = self._queue_counts_snapshot()
             pending = int(counts.get("PENDING", 0))
             running = int(counts.get("RUNNING", 0))
-            if processed == 0 and pending == 0 and running == 0:
+            l3_pending = 0
+            if callable(l3_queue_size_getter):
+                try:
+                    l3_pending = max(0, int(l3_queue_size_getter()))
+                except (RuntimeError, OSError, ValueError, TypeError):
+                    l3_pending = 0
+            elif hasattr(self._file_collection_service, "_l3_ready_queue"):
+                queue_obj = getattr(self._file_collection_service, "_l3_ready_queue")
+                qsize = getattr(queue_obj, "qsize", None)
+                if callable(qsize):
+                    try:
+                        l3_pending = max(0, int(qsize()))
+                    except (RuntimeError, OSError, ValueError, TypeError):
+                        l3_pending = 0
+            if processed == 0 and pending == 0 and running == 0 and l3_pending == 0:
                 self._last_drain_diagnostics = {
                     "stale_running_recovered_count": int(recovered_total),
                     "drain_timeout_hit": False,
@@ -369,11 +425,35 @@ class PipelinePerfService:
         grace_deadline = time.time() + 3.0
         while time.time() < grace_deadline:
             with self._perf_tracer.span("drain.grace.process_enrich_jobs", phase="drain"):
-                processed = int(self._file_collection_service.process_enrich_jobs(limit=100))
+                if callable(l2_processor):
+                    processed_l2 = int(l2_processor(limit=100))
+                elif callable(unified_processor):
+                    processed_l2 = int(unified_processor(limit=100))
+                else:
+                    processed_l2 = 0
+            processed_l3 = 0
+            if callable(l3_processor):
+                with self._perf_tracer.span("drain.grace.process_enrich_jobs_l3", phase="drain"):
+                    processed_l3 = int(l3_processor(limit=100))
+            processed = processed_l2 + processed_l3
             last_counts = self._queue_counts_snapshot()
             pending = int(last_counts.get("PENDING", 0))
             running = int(last_counts.get("RUNNING", 0))
-            if processed == 0 and pending == 0 and running == 0:
+            l3_pending = 0
+            if callable(l3_queue_size_getter):
+                try:
+                    l3_pending = max(0, int(l3_queue_size_getter()))
+                except (RuntimeError, OSError, ValueError, TypeError):
+                    l3_pending = 0
+            elif hasattr(self._file_collection_service, "_l3_ready_queue"):
+                queue_obj = getattr(self._file_collection_service, "_l3_ready_queue")
+                qsize = getattr(queue_obj, "qsize", None)
+                if callable(qsize):
+                    try:
+                        l3_pending = max(0, int(qsize()))
+                    except (RuntimeError, OSError, ValueError, TypeError):
+                        l3_pending = 0
+            if processed == 0 and pending == 0 and running == 0 and l3_pending == 0:
                 self._last_drain_diagnostics = {
                     "stale_running_recovered_count": int(recovered_total),
                     "drain_timeout_hit": bool(drain_timeout_hit),
@@ -553,7 +633,7 @@ class PipelinePerfService:
             try:
                 snapshot["file_enrich_state_counts"] = dict(get_state_counts())
             except (RuntimeError, OSError, ValueError, TypeError):
-                pass
+                ...
 
         count_by_tool_ready = getattr(readiness_repo, "count_by_tool_ready", None)
         if callable(count_by_tool_ready):
@@ -584,7 +664,7 @@ class PipelinePerfService:
                 symbol_files_int = int(symbol_file_count)
                 snapshot["tool_readiness_symbol_gap_count"] = max(0, tool_ready_true - symbol_files_int)
             except (TypeError, ValueError):
-                pass
+                ...
 
         snapshot_now_iso = now_iso8601_utc()
         queue_counts = self._queue_counts_snapshot()
@@ -595,7 +675,13 @@ class PipelinePerfService:
             try:
                 snapshot["pending_age_stats"] = dict(get_pending_age_stats(now_iso=snapshot_now_iso))
             except (RuntimeError, OSError, ValueError, TypeError):
-                pass
+                ...
+        get_deferred_drop_stats = getattr(self._queue_repo, "get_deferred_drop_stats", None)
+        if callable(get_deferred_drop_stats):
+            try:
+                snapshot["deferred_drop_stats"] = dict(get_deferred_drop_stats())
+            except (RuntimeError, OSError, ValueError, TypeError):
+                ...
         get_eligible_counts = getattr(self._queue_repo, "get_eligible_counts", None)
         if callable(get_eligible_counts):
             try:
@@ -614,7 +700,7 @@ class PipelinePerfService:
                 runtime_metrics = None
             if isinstance(runtime_metrics, dict):
                 snapshot["lsp_runtime_metrics"] = {
-                    str(key): int(value) for key, value in runtime_metrics.items()
+                    str(key): float(value) for key, value in runtime_metrics.items()
                     if isinstance(value, (int, float))
                 }
         broker_snapshot_getter = getattr(broker_obj, "get_snapshot", None) if broker_obj is not None else None
@@ -646,7 +732,7 @@ class PipelinePerfService:
                 # tool_ready=true 이지만 심볼 0건인 파일은 정상 허용한다.
                 integrity_checks["tool_ready_vs_symbol_files_match"] = symbol_files_int <= tool_ready_true
             except (TypeError, ValueError):
-                pass
+                ...
         eligible_counts = snapshot.get("eligible_counts")
         if (
             isinstance(eligible_counts, dict)
@@ -662,9 +748,151 @@ class PipelinePerfService:
                     eligible_done == tool_ready_true and symbol_files_int <= tool_ready_true
                 )
             except (TypeError, ValueError):
-                pass
+                ...
         snapshot["integrity_checks"] = integrity_checks
+        snapshot["stage_exit"] = self._build_stage_exit_report(snapshot=snapshot)
         return snapshot
+
+    def _build_stage_exit_report(self, *, snapshot: dict[str, object]) -> dict[str, object]:
+        """Stage A/B/C exit criteria를 자동 평가해 리포트에 포함한다."""
+        readiness_counts = snapshot.get("tool_readiness_counts")
+        queue_detailed = snapshot.get("queue_counts_detailed")
+        pending_age_stats = snapshot.get("pending_age_stats")
+        runtime_metrics = snapshot.get("lsp_runtime_metrics")
+
+        parse_success_rate_tier1: float | None = None
+        l3_degraded_rate_tier1: float | None = None
+        l4_admission_rate_pct: float | None = None
+        search_quality_regression_pct: float | None = None
+        search_quality_regression_metric_present = False
+        pending_age_p95_sec: float | None = None
+        l5_rate_total_pct: float | None = None
+
+        if isinstance(readiness_counts, dict):
+            try:
+                tool_ready_true = int(readiness_counts.get("tool_ready_true", 0))
+                tool_ready_false = int(readiness_counts.get("tool_ready_false", 0))
+                denominator = tool_ready_true + tool_ready_false
+                if denominator > 0:
+                    parse_success_rate_tier1 = (float(tool_ready_true) / float(denominator)) * 100.0
+            except (TypeError, ValueError):
+                parse_success_rate_tier1 = None
+
+        if isinstance(queue_detailed, dict):
+            try:
+                pending_available = int(queue_detailed.get("PENDING_AVAILABLE", 0))
+                pending_deferred = int(queue_detailed.get("PENDING_DEFERRED", 0))
+                pending_total = pending_available + pending_deferred
+                if pending_total > 0:
+                    l3_degraded_rate_tier1 = (float(pending_deferred) / float(pending_total)) * 100.0
+            except (TypeError, ValueError):
+                l3_degraded_rate_tier1 = None
+
+        if isinstance(runtime_metrics, dict):
+            try:
+                l5_total_decisions = int(runtime_metrics.get("l5_total_decisions", 0))
+                l5_total_admitted = int(runtime_metrics.get("l5_total_admitted", 0))
+                if l5_total_decisions > 0:
+                    l4_admission_rate_pct = (float(l5_total_admitted) / float(l5_total_decisions)) * 100.0
+                    l5_rate_total_pct = l4_admission_rate_pct
+            except (TypeError, ValueError):
+                l4_admission_rate_pct = None
+                l5_rate_total_pct = None
+            if "search_quality_regression_pct" in runtime_metrics:
+                search_quality_regression_metric_present = True
+                try:
+                    search_quality_regression_pct = float(runtime_metrics.get("search_quality_regression_pct"))
+                except (TypeError, ValueError):
+                    search_quality_regression_pct = None
+
+        if isinstance(pending_age_stats, dict):
+            try:
+                pending_age_p95_sec = float(pending_age_stats.get("p95_pending_available_age_sec"))  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                pending_age_p95_sec = None
+
+        l4_admission_rate_baseline_p50: float | None = None
+        pending_age_p95_baseline_sec: float | None = None
+        if self._stage_baseline_repo is not None:
+            l4_admission_rate_baseline_p50 = self._stage_baseline_repo.get_l4_admission_rate_baseline_p50()
+            if l4_admission_rate_baseline_p50 is None and l4_admission_rate_pct is not None:
+                initialized = self._stage_baseline_repo.initialize_l4_admission_rate_baseline(l4_admission_rate_pct)
+                if initialized:
+                    l4_admission_rate_baseline_p50 = l4_admission_rate_pct
+            pending_age_p95_baseline_sec = self._stage_baseline_repo.get_p95_pending_available_age_baseline_sec()
+            if pending_age_p95_baseline_sec is None and pending_age_p95_sec is not None:
+                initialized_pending_age = self._stage_baseline_repo.initialize_p95_pending_available_age_baseline(
+                    pending_age_p95_sec
+                )
+                if initialized_pending_age:
+                    pending_age_p95_baseline_sec = pending_age_p95_sec
+
+        # Stage A -> B
+        check_a_parse = parse_success_rate_tier1 is not None and parse_success_rate_tier1 >= 95.0
+        check_a_degraded = l3_degraded_rate_tier1 is not None and l3_degraded_rate_tier1 <= 10.0
+        # baseline_p50 ±30% 기준 (baseline이 없으면 기존 보수 기준 30%를 사용).
+        l4_admission_rate_max_pct = 30.0
+        if l4_admission_rate_baseline_p50 is not None:
+            l4_admission_rate_max_pct = float(l4_admission_rate_baseline_p50) * 1.3
+        check_a_l4_admission = (
+            l4_admission_rate_pct is not None and l4_admission_rate_pct <= l4_admission_rate_max_pct
+        )
+        stage_a_passed = bool(check_a_parse and check_a_degraded and check_a_l4_admission)
+
+        # Stage B -> C
+        check_b_quality_reg = (
+            search_quality_regression_metric_present
+            and search_quality_regression_pct is not None
+            and search_quality_regression_pct <= 1.0
+        )
+        pending_age_p95_max_sec = 10.0
+        if pending_age_p95_baseline_sec is not None:
+            pending_age_p95_max_sec = float(pending_age_p95_baseline_sec) * 1.2
+        check_b_pending_age = pending_age_p95_sec is not None and pending_age_p95_sec <= pending_age_p95_max_sec
+        check_b_l5_rate_total = l5_rate_total_pct is not None and l5_rate_total_pct <= 5.0
+        stage_b_passed = bool(check_b_quality_reg and check_b_pending_age and check_b_l5_rate_total)
+
+        return {
+            "stage_a_to_b": {
+                "passed": stage_a_passed,
+                "checks": {
+                    "l3_parse_success_rate_tier1": check_a_parse,
+                    "l3_degraded_rate_tier1": check_a_degraded,
+                    "l4_admission_rate": check_a_l4_admission,
+                },
+                "values": {
+                    "l3_parse_success_rate_tier1_pct": parse_success_rate_tier1,
+                    "l3_degraded_rate_tier1_pct": l3_degraded_rate_tier1,
+                    "l4_admission_rate_pct": l4_admission_rate_pct,
+                    "l4_admission_rate_baseline_p50": l4_admission_rate_baseline_p50,
+                },
+                "thresholds": {
+                    "l3_parse_success_rate_tier1_min_pct": 95.0,
+                    "l3_degraded_rate_tier1_max_pct": 10.0,
+                    "l4_admission_rate_max_pct": l4_admission_rate_max_pct,
+                },
+            },
+            "stage_b_to_c": {
+                "passed": stage_b_passed,
+                "checks": {
+                    "search_quality_regression": check_b_quality_reg,
+                    "pending_age_p95": check_b_pending_age,
+                    "l5_budget_rate_total": check_b_l5_rate_total,
+                },
+                "values": {
+                    "search_quality_regression_pct": search_quality_regression_pct,
+                    "search_quality_regression_metric_present": search_quality_regression_metric_present,
+                    "p95_pending_available_age_sec": pending_age_p95_sec,
+                    "p95_pending_available_age_baseline_sec": pending_age_p95_baseline_sec,
+                    "l5_rate_total_pct": l5_rate_total_pct,
+                },
+                "thresholds": {
+                    "search_quality_regression_max_pct": 1.0,
+                    "p95_pending_available_age_sec_max": pending_age_p95_max_sec,
+                    "l5_rate_total_max_pct": 5.0,
+                },
+            },
+        }
 
     def _write_artifact(self, run_id: str, summary: dict[str, object]) -> None:
         """실측 아티팩트를 파일로 저장한다."""

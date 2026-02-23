@@ -15,6 +15,7 @@ from sari.core.lsp_provision_policy import get_lsp_provision_policy
 from sari.core.models import LanguageProbeStatusDTO, now_iso8601_utc
 from sari.db.repositories.language_probe_repository import LanguageProbeRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
+from sari.lsp.document_symbols import request_document_symbols_with_optional_sync
 from sari.lsp.hub import LspHub
 from solidlsp.ls import SolidLanguageServer
 from solidlsp.ls_config import Language
@@ -275,7 +276,12 @@ class LanguageProbeService:
             lsp = self._lsp_hub.get_or_start(language=entry.language, repo_root=repo_root)
             if entry.language == Language.GO:
                 self._warm_up_go_lsp_once(repo_root=repo_root, lsp=lsp, sample_path=sample_path)
-            symbol_items = list(lsp.request_document_symbols(sample_path).iter_symbols())
+            symbols_result, _sync_hint_accepted = request_document_symbols_with_optional_sync(
+                lsp,
+                sample_path,
+                sync_with_ls=False,
+            )
+            symbol_items = list(symbols_result.iter_symbols())
             return LanguageProbeStatusDTO(
                 language=entry.language.value,
                 enabled=True,
@@ -401,7 +407,12 @@ class LanguageProbeService:
         try:
             if callable(set_timeout):
                 set_timeout(self._go_warmup_timeout_sec)
-            _ = list(lsp.request_document_symbols(sample_path).iter_symbols())
+            symbols_result, _sync_hint_accepted = request_document_symbols_with_optional_sync(
+                lsp,
+                sample_path,
+                sync_with_ls=False,
+            )
+            _ = list(symbols_result.iter_symbols())
         except (RuntimeError, OSError, ValueError, TypeError, AssertionError, AttributeError, DaemonError, SolidLSPException) as exc:
             log.debug("Go warm-up failed(repo=%s): %s", repo_root, exc)
         finally:

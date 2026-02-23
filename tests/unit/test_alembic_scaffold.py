@@ -115,6 +115,15 @@ def test_ensure_migrated_upgrades_baseline_columns(tmp_path: Path) -> None:
         registry_row = conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'repositories'"
         ).fetchone()
+        l3_tool_row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tool_data_l3_symbols'"
+        ).fetchone()
+        l4_tool_row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tool_data_l4_normalized_symbols'"
+        ).fetchone()
+        l5_tool_row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tool_data_l5_semantics'"
+        ).fetchone()
 
     assert version_row is not None
     assert str(version_row["version_num"]) == HEAD_VERSION
@@ -129,6 +138,9 @@ def test_ensure_migrated_upgrades_baseline_columns(tmp_path: Path) -> None:
     assert "repo_id" in queue_cols
     assert "repo_id" in symbol_cols
     assert registry_row is not None
+    assert l3_tool_row is not None
+    assert l4_tool_row is not None
+    assert l5_tool_row is not None
 
 
 def test_init_schema_handles_legacy_db_missing_repo_id_columns(tmp_path: Path) -> None:

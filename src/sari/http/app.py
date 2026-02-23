@@ -13,6 +13,7 @@ from sari import __version__
 from sari.core.exceptions import BenchmarkError, DaemonError, PerfError, QualityError, ValidationError
 from sari.core.language_registry import get_enabled_language_names
 from sari.core.models import ErrorResponseDTO, HealthResponseDTO, LanguageProbeStatusDTO
+from sari.db.repositories.tool_data_layer_repository import ToolDataLayerRepository
 from sari.db.repositories.runtime_repository import RuntimeRepository
 from sari.db.repositories.language_probe_repository import LanguageProbeRepository
 from sari.http.admin_endpoints import (
@@ -133,15 +134,20 @@ async def status_endpoint(request) -> JSONResponse:
     language_support = _build_language_support_payload(context.language_probe_repo)
     lsp_metrics = context.lsp_metrics_provider() if context.lsp_metrics_provider is not None else {}
     reconcile_state = context.admin_service.get_runtime_reconcile_state()
+    auto_control = None
+    stage_rollout = None
+    if context.pipeline_control_service is not None:
+        auto_control = context.pipeline_control_service.get_auto_control_state().to_dict()
+        stage_rollout = context.pipeline_control_service.get_stage_rollout_state()
     if runtime is None:
         metrics = None
         if context.file_collection_service is not None:
             metrics = context.file_collection_service.get_pipeline_metrics().to_dict()
-        return JSONResponse({'daemon': None, 'workspace_count': len(workspaces), 'phase': 'phase2', 'run_mode': context.admin_service.run_mode(), 'pipeline_metrics': metrics, 'language_support': language_support, 'daemon_lifecycle': None, 'lsp_metrics': lsp_metrics, 'reconcile_state': reconcile_state})
+        return JSONResponse({'daemon': None, 'workspace_count': len(workspaces), 'phase': 'phase2', 'run_mode': context.admin_service.run_mode(), 'pipeline_metrics': metrics, 'language_support': language_support, 'daemon_lifecycle': None, 'lsp_metrics': lsp_metrics, 'reconcile_state': reconcile_state, 'auto_control': auto_control, 'stage_rollout': stage_rollout})
     metrics = None
     if context.file_collection_service is not None:
         metrics = context.file_collection_service.get_pipeline_metrics().to_dict()
-    return JSONResponse({'daemon': {'pid': runtime.pid, 'host': runtime.host, 'port': runtime.port, 'state': runtime.state, 'started_at': runtime.started_at, 'session_count': runtime.session_count, 'last_heartbeat_at': runtime.last_heartbeat_at, 'last_exit_reason': runtime.last_exit_reason}, 'workspace_count': len(workspaces), 'phase': 'phase2', 'run_mode': context.admin_service.run_mode(), 'pipeline_metrics': metrics, 'language_support': language_support, 'daemon_lifecycle': {'last_heartbeat_at': runtime.last_heartbeat_at, 'heartbeat_age_sec': _heartbeat_age_sec(runtime.last_heartbeat_at), 'last_exit_reason': runtime.last_exit_reason}, 'lsp_metrics': lsp_metrics, 'reconcile_state': reconcile_state})
+    return JSONResponse({'daemon': {'pid': runtime.pid, 'host': runtime.host, 'port': runtime.port, 'state': runtime.state, 'started_at': runtime.started_at, 'session_count': runtime.session_count, 'last_heartbeat_at': runtime.last_heartbeat_at, 'last_exit_reason': runtime.last_exit_reason}, 'workspace_count': len(workspaces), 'phase': 'phase2', 'run_mode': context.admin_service.run_mode(), 'pipeline_metrics': metrics, 'language_support': language_support, 'daemon_lifecycle': {'last_heartbeat_at': runtime.last_heartbeat_at, 'heartbeat_age_sec': _heartbeat_age_sec(runtime.last_heartbeat_at), 'last_exit_reason': runtime.last_exit_reason}, 'lsp_metrics': lsp_metrics, 'reconcile_state': reconcile_state, 'auto_control': auto_control, 'stage_rollout': stage_rollout})
 
 
 async def mcp_jsonrpc_endpoint(request) -> JSONResponse:
@@ -272,21 +278,72 @@ async def search_endpoint(request) -> JSONResponse:
     if limit <= 0:
         error = ErrorResponseDTO(code='ERR_INVALID_LIMIT', message='limit는 1 이상이어야 합니다')
         return JSONResponse({'error': {'code': error.code, 'message': error.message}}, status_code=400)
+    resolve_symbols_default = False
+    provider = getattr(context, "search_resolve_symbols_default_provider", None)
+    if callable(provider):
+        try:
+            resolve_symbols_default = bool(provider())
+        except (RuntimeError, OSError, ValueError, TypeError):
+            resolve_symbols_default = False
     try:
-        result = context.search_orchestrator.search(query=query, limit=limit, repo_root=repo, repo_id=repo_id, resolve_symbols=False)
+        result = context.search_orchestrator.search(
+            query=query,
+            limit=limit,
+            repo_root=repo,
+            repo_id=repo_id,
+            resolve_symbols=resolve_symbols_default,
+        )
     except TypeError:
         result = context.search_orchestrator.search(query=query, limit=limit, repo_root=repo)
     progress_meta = _search_progress_meta(context)
     if result.meta.fatal_error:
         first_error = result.meta.errors[0]
-        meta_payload: dict[str, object] = {'candidate_count': result.meta.candidate_count, 'resolved_count': result.meta.resolved_count, 'candidate_source': result.meta.candidate_source, 'fatal_error': result.meta.fatal_error, 'degraded': result.meta.degraded, 'error_count': result.meta.error_count, 'ranking_policy': result.meta.ranking_policy, 'rrf_k': result.meta.rrf_k, 'lsp_query_mode': result.meta.lsp_query_mode, 'lsp_sync_mode': result.meta.lsp_sync_mode, 'lsp_fallback_used': result.meta.lsp_fallback_used, 'lsp_fallback_reason': result.meta.lsp_fallback_reason, 'importance_policy': result.meta.importance_policy, 'importance_weights': result.meta.importance_weights, 'importance_normalize_mode': result.meta.importance_normalize_mode, 'importance_max_boost': result.meta.importance_max_boost, 'vector_enabled': result.meta.vector_enabled, 'vector_rerank_count': result.meta.vector_rerank_count, 'vector_applied_count': result.meta.vector_applied_count, 'vector_skipped_count': result.meta.vector_skipped_count, 'vector_threshold': result.meta.vector_threshold, 'ranking_version': result.meta.ranking_version, 'ranking_components_enabled': result.meta.ranking_components_enabled if result.meta.ranking_components_enabled is not None else {}, 'errors': [error.to_dict() for error in result.meta.errors]}
+        meta_payload: dict[str, object] = {'candidate_count': result.meta.candidate_count, 'resolved_count': result.meta.resolved_count, 'candidate_source': result.meta.candidate_source, 'fatal_error': result.meta.fatal_error, 'degraded': result.meta.degraded, 'error_count': result.meta.error_count, 'ranking_policy': result.meta.ranking_policy, 'rrf_k': result.meta.rrf_k, 'lsp_query_mode': result.meta.lsp_query_mode, 'lsp_sync_mode': result.meta.lsp_sync_mode, 'lsp_fallback_used': result.meta.lsp_fallback_used, 'lsp_fallback_reason': result.meta.lsp_fallback_reason, 'lsp_include_info_requested': result.meta.include_info_requested, 'lsp_symbol_info_budget_sec': result.meta.symbol_info_budget_sec, 'lsp_symbol_info_requested_count': result.meta.symbol_info_requested_count, 'lsp_symbol_info_budget_exceeded_count': result.meta.symbol_info_budget_exceeded_count, 'lsp_symbol_info_skipped_count': result.meta.symbol_info_skipped_count, 'importance_policy': result.meta.importance_policy, 'importance_weights': result.meta.importance_weights, 'importance_normalize_mode': result.meta.importance_normalize_mode, 'importance_max_boost': result.meta.importance_max_boost, 'vector_enabled': result.meta.vector_enabled, 'vector_rerank_count': result.meta.vector_rerank_count, 'vector_applied_count': result.meta.vector_applied_count, 'vector_skipped_count': result.meta.vector_skipped_count, 'vector_threshold': result.meta.vector_threshold, 'ranking_version': result.meta.ranking_version, 'ranking_components_enabled': result.meta.ranking_components_enabled if result.meta.ranking_components_enabled is not None else {}, 'errors': [error.to_dict() for error in result.meta.errors]}
         if progress_meta is not None:
             meta_payload['index_progress'] = progress_meta
         return JSONResponse({'error': {'code': first_error.code, 'message': first_error.message}, 'meta': meta_payload}, status_code=503)
-    meta_payload = {'candidate_count': result.meta.candidate_count, 'resolved_count': result.meta.resolved_count, 'candidate_source': result.meta.candidate_source, 'fatal_error': result.meta.fatal_error, 'degraded': result.meta.degraded, 'error_count': result.meta.error_count, 'ranking_policy': result.meta.ranking_policy, 'rrf_k': result.meta.rrf_k, 'lsp_query_mode': result.meta.lsp_query_mode, 'lsp_sync_mode': result.meta.lsp_sync_mode, 'lsp_fallback_used': result.meta.lsp_fallback_used, 'lsp_fallback_reason': result.meta.lsp_fallback_reason, 'importance_policy': result.meta.importance_policy, 'importance_weights': result.meta.importance_weights, 'importance_normalize_mode': result.meta.importance_normalize_mode, 'importance_max_boost': result.meta.importance_max_boost, 'vector_enabled': result.meta.vector_enabled, 'vector_rerank_count': result.meta.vector_rerank_count, 'vector_applied_count': result.meta.vector_applied_count, 'vector_skipped_count': result.meta.vector_skipped_count, 'vector_threshold': result.meta.vector_threshold, 'ranking_version': result.meta.ranking_version, 'ranking_components_enabled': result.meta.ranking_components_enabled if result.meta.ranking_components_enabled is not None else {}, 'errors': [error.to_dict() for error in result.meta.errors]}
+    meta_payload = {'candidate_count': result.meta.candidate_count, 'resolved_count': result.meta.resolved_count, 'candidate_source': result.meta.candidate_source, 'fatal_error': result.meta.fatal_error, 'degraded': result.meta.degraded, 'error_count': result.meta.error_count, 'ranking_policy': result.meta.ranking_policy, 'rrf_k': result.meta.rrf_k, 'lsp_query_mode': result.meta.lsp_query_mode, 'lsp_sync_mode': result.meta.lsp_sync_mode, 'lsp_fallback_used': result.meta.lsp_fallback_used, 'lsp_fallback_reason': result.meta.lsp_fallback_reason, 'lsp_include_info_requested': result.meta.include_info_requested, 'lsp_symbol_info_budget_sec': result.meta.symbol_info_budget_sec, 'lsp_symbol_info_requested_count': result.meta.symbol_info_requested_count, 'lsp_symbol_info_budget_exceeded_count': result.meta.symbol_info_budget_exceeded_count, 'lsp_symbol_info_skipped_count': result.meta.symbol_info_skipped_count, 'importance_policy': result.meta.importance_policy, 'importance_weights': result.meta.importance_weights, 'importance_normalize_mode': result.meta.importance_normalize_mode, 'importance_max_boost': result.meta.importance_max_boost, 'vector_enabled': result.meta.vector_enabled, 'vector_rerank_count': result.meta.vector_rerank_count, 'vector_applied_count': result.meta.vector_applied_count, 'vector_skipped_count': result.meta.vector_skipped_count, 'vector_threshold': result.meta.vector_threshold, 'ranking_version': result.meta.ranking_version, 'ranking_components_enabled': result.meta.ranking_components_enabled if result.meta.ranking_components_enabled is not None else {}, 'errors': [error.to_dict() for error in result.meta.errors]}
     if progress_meta is not None:
         meta_payload['index_progress'] = progress_meta
-    return JSONResponse({'items': [{'type': item.item_type, 'repo': item.repo, 'relative_path': item.relative_path, 'score': item.score, 'source': item.source, 'name': item.name, 'kind': item.kind} for item in result.items], 'meta': meta_payload})
+    return JSONResponse({'items': [_build_search_item_payload(context=context, repo_root=repo, item=item) for item in result.items], 'meta': meta_payload})
+
+
+def _build_search_item_payload(context: HttpContext, repo_root: str, item: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        'type': getattr(item, 'item_type'),
+        'repo': getattr(item, 'repo'),
+        'relative_path': getattr(item, 'relative_path'),
+        'score': getattr(item, 'score'),
+        'source': getattr(item, 'source'),
+        'name': getattr(item, 'name'),
+        'kind': getattr(item, 'kind'),
+        'symbol_info': getattr(item, 'symbol_info'),
+    }
+    db_path = context.db_path
+    if db_path is None:
+        return payload
+    content_hash = getattr(item, 'content_hash', None)
+    relative_path = getattr(item, 'relative_path', None)
+    if not isinstance(content_hash, str) or content_hash.strip() == '':
+        return payload
+    if not isinstance(relative_path, str) or relative_path.strip() == '':
+        return payload
+    workspace = context.workspace_repo.get_by_path(repo_root)
+    if workspace is None:
+        return payload
+    snapshot = ToolDataLayerRepository(db_path).load_effective_snapshot(
+        workspace_id=workspace.path,
+        repo_root=repo_root,
+        relative_path=relative_path,
+        content_hash=content_hash,
+    )
+    l4_snapshot = snapshot.get('l4')
+    if isinstance(l4_snapshot, dict):
+        payload['l4'] = l4_snapshot
+    l5_snapshot = snapshot.get('l5', [])
+    if isinstance(l5_snapshot, list) and len(l5_snapshot) > 0:
+        payload['l5'] = l5_snapshot
+    return payload
 def _search_progress_meta(context: HttpContext) -> dict[str, object] | None:
     if context.file_collection_service is None:
         return None
@@ -495,7 +552,12 @@ async def pipeline_auto_status_endpoint(request) -> JSONResponse:
     if context.pipeline_control_service is None:
         error = ErrorResponseDTO(code='ERR_PIPELINE_ALERT_UNAVAILABLE', message='pipeline control is unavailable')
         return JSONResponse({'error': {'code': error.code, 'message': error.message}}, status_code=503)
-    return JSONResponse({'auto_control': context.pipeline_control_service.get_auto_control_state().to_dict()})
+    return JSONResponse(
+        {
+            'auto_control': context.pipeline_control_service.get_auto_control_state().to_dict(),
+            'stage_rollout': context.pipeline_control_service.get_stage_rollout_state(),
+        }
+    )
 async def pipeline_auto_set_endpoint(request) -> JSONResponse:
     context: HttpContext = request.app.state.context
     if context.pipeline_control_service is None:

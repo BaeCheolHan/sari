@@ -23,6 +23,7 @@ from sari.db.repositories.daemon_registry_repository import DaemonRegistryReposi
 from sari.db.repositories.lsp_tool_data_repository import LspToolDataRepository
 from sari.db.repositories.pipeline_benchmark_repository import PipelineBenchmarkRepository
 from sari.db.repositories.pipeline_perf_repository import PipelinePerfRepository
+from sari.db.repositories.pipeline_stage_baseline_repository import PipelineStageBaselineRepository
 from sari.db.repositories.pipeline_quality_repository import PipelineQualityRepository
 from sari.db.repositories.pipeline_control_state_repository import PipelineControlStateRepository
 from sari.db.repositories.pipeline_job_event_repository import PipelineJobEventRepository
@@ -231,6 +232,7 @@ def _build_services() -> CliServiceBundle:
     )
     benchmark_repo = PipelineBenchmarkRepository(config.db_path)
     perf_repo = PipelinePerfRepository(config.db_path)
+    stage_baseline_repo = PipelineStageBaselineRepository(config.db_path)
     quality_repo = PipelineQualityRepository(config.db_path)
     language_probe_repo = LanguageProbeRepository(config.db_path)
     lsp_matrix_repo = PipelineLspMatrixRepository(config.db_path)
@@ -309,6 +311,7 @@ def _build_services() -> CliServiceBundle:
             benchmark_service=pipeline_benchmark_service,
             perf_repo=perf_repo,
             artifact_root=config.db_path.parent / "artifacts",
+            stage_baseline_repo=stage_baseline_repo,
         ),
         pipeline_quality_service=PipelineQualityService(
             file_repo=file_repo,

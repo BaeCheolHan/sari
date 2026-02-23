@@ -8,6 +8,7 @@ from collections.abc import Callable
 from sari.core.models import ErrorResponseDTO
 from sari.core.repo_context_resolver import resolve_repo_context
 from sari.db.repositories.repo_registry_repository import RepoRegistryRepository
+from sari.db.repositories.tool_data_layer_repository import ToolDataLayerRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.mcp.stabilization.reason_codes import ReasonCode
 from sari.mcp.stabilization.session_state import record_search_metrics
@@ -23,22 +24,33 @@ class SearchTool:
         self,
         orchestrator: SearchOrchestrator,
         workspace_repo: WorkspaceRepository | None = None,
+        tool_layer_repo: ToolDataLayerRepository | None = None,
         metrics_provider: Callable[[], object] | None = None,
         repo_registry_repo: RepoRegistryRepository | None = None,
         stabilization_enabled: bool = True,
+        include_info_default: bool = False,
+        symbol_info_budget_sec_default: float = 10.0,
+        resolve_symbols_default_provider: Callable[[], bool] | None = None,
     ) -> None:
         """검색 오케스트레이터를 주입한다."""
         self._orchestrator = orchestrator
         self._workspace_repo = workspace_repo
+        self._tool_layer_repo = tool_layer_repo
         self._metrics_provider = metrics_provider
         self._repo_registry_repo = repo_registry_repo
         self._stabilization_enabled = stabilization_enabled
+        self._include_info_default = bool(include_info_default)
+        self._symbol_info_budget_sec_default = max(0.0, float(symbol_info_budget_sec_default))
+        self._resolve_symbols_default_provider = resolve_symbols_default_provider
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """도구 입력을 검증하고 pack1 결과를 반환한다."""
         repo = arguments.get("repo")
         query = arguments.get("query")
         limit = arguments.get("limit", 20)
+        include_info_raw = arguments.get("include_info", None)
+        symbol_info_budget_raw = arguments.get("symbol_info_budget_sec", None)
+        resolve_symbols_raw = arguments.get("resolve_symbols", None)
 
         if not isinstance(repo, str) or repo.strip() == "":
             return pack1_error(
@@ -68,9 +80,45 @@ class SearchTool:
                 ErrorResponseDTO(code="ERR_INVALID_LIMIT", message="limit must be positive integer"),
                 recovery_hint="limit은 1 이상의 정수여야 합니다.",
             )
+        if include_info_raw is not None and not isinstance(include_info_raw, bool):
+            return pack1_error(
+                ErrorResponseDTO(code="ERR_INVALID_INCLUDE_INFO", message="include_info must be boolean"),
+                recovery_hint="include_info는 true/false 불리언이어야 합니다.",
+            )
+        if symbol_info_budget_raw is not None and not isinstance(symbol_info_budget_raw, (int, float)):
+            return pack1_error(
+                ErrorResponseDTO(code="ERR_INVALID_SYMBOL_INFO_BUDGET", message="symbol_info_budget_sec must be number"),
+                recovery_hint="symbol_info_budget_sec는 0 이상의 숫자여야 합니다.",
+            )
+        if resolve_symbols_raw is not None and not isinstance(resolve_symbols_raw, bool):
+            return pack1_error(
+                ErrorResponseDTO(code="ERR_INVALID_RESOLVE_SYMBOLS", message="resolve_symbols must be boolean"),
+                recovery_hint="resolve_symbols는 true/false 불리언이어야 합니다.",
+            )
+        include_info = self._include_info_default if include_info_raw is None else bool(include_info_raw)
+        default_resolve_symbols = False
+        if self._resolve_symbols_default_provider is not None:
+            try:
+                default_resolve_symbols = bool(self._resolve_symbols_default_provider())
+            except (RuntimeError, OSError, ValueError, TypeError):
+                default_resolve_symbols = False
+        resolve_symbols = default_resolve_symbols if resolve_symbols_raw is None else bool(resolve_symbols_raw)
+        symbol_info_budget_sec = (
+            self._symbol_info_budget_sec_default
+            if symbol_info_budget_raw is None
+            else max(0.0, float(symbol_info_budget_raw))
+        )
 
         try:
-            result = self._orchestrator.search(query=query, limit=limit, repo_root=repo, repo_id=repo_id)
+            result = self._orchestrator.search(
+                query=query,
+                limit=limit,
+                repo_root=repo,
+                repo_id=repo_id,
+                resolve_symbols=resolve_symbols,
+                include_info=include_info,
+                symbol_info_budget_sec=symbol_info_budget_sec,
+            )
         except TypeError:
             # 이전 시그니처 호환 경로
             result = self._orchestrator.search(query=query, limit=limit, repo_root=repo)
@@ -105,6 +153,11 @@ class SearchTool:
         meta_payload["lsp_sync_mode"] = result.meta.lsp_sync_mode
         meta_payload["lsp_fallback_used"] = result.meta.lsp_fallback_used
         meta_payload["lsp_fallback_reason"] = result.meta.lsp_fallback_reason
+        meta_payload["lsp_include_info_requested"] = result.meta.include_info_requested
+        meta_payload["lsp_symbol_info_budget_sec"] = result.meta.symbol_info_budget_sec
+        meta_payload["lsp_symbol_info_requested_count"] = result.meta.symbol_info_requested_count
+        meta_payload["lsp_symbol_info_budget_exceeded_count"] = result.meta.symbol_info_budget_exceeded_count
+        meta_payload["lsp_symbol_info_skipped_count"] = result.meta.symbol_info_skipped_count
         meta_payload["ranking_version"] = result.meta.ranking_version
         meta_payload["ranking_components_enabled"] = (
             result.meta.ranking_components_enabled if result.meta.ranking_components_enabled is not None else {}
@@ -113,21 +166,51 @@ class SearchTool:
             meta_payload["index_progress"] = progress_meta
         return pack1_success(
             {
-                "items": [
-                    {
-                        "type": item.item_type,
-                        "repo": item.repo,
-                        "relative_path": item.relative_path,
-                        "score": item.score,
-                        "source": item.source,
-                        "name": item.name,
-                        "kind": item.kind,
-                    }
-                    for item in result.items
-                ],
+                "items": [self._build_item_payload(item=item, repo_root=repo) for item in result.items],
                 "meta": meta_payload,
             }
         )
+
+    def _build_item_payload(self, *, item: object, repo_root: str) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "type": getattr(item, "item_type"),
+            "repo": getattr(item, "repo"),
+            "relative_path": getattr(item, "relative_path"),
+            "score": getattr(item, "score"),
+            "source": getattr(item, "source"),
+            "name": getattr(item, "name"),
+            "kind": getattr(item, "kind"),
+            "symbol_info": getattr(item, "symbol_info"),
+        }
+        tool_layer_repo = self._tool_layer_repo
+        workspace_repo = self._workspace_repo
+        content_hash = getattr(item, "content_hash", None)
+        if (
+            tool_layer_repo is None
+            or workspace_repo is None
+            or not isinstance(content_hash, str)
+            or content_hash.strip() == ""
+        ):
+            return payload
+        relative_path = getattr(item, "relative_path", None)
+        if not isinstance(relative_path, str) or relative_path.strip() == "":
+            return payload
+        workspace = workspace_repo.get_by_path(repo_root)
+        if workspace is None:
+            return payload
+        snapshot = tool_layer_repo.load_effective_snapshot(
+            workspace_id=workspace.path,
+            repo_root=repo_root,
+            relative_path=relative_path,
+            content_hash=content_hash,
+        )
+        l4_snapshot = snapshot.get("l4")
+        if isinstance(l4_snapshot, dict):
+            payload["l4"] = l4_snapshot
+        l5_snapshot = snapshot.get("l5", [])
+        if isinstance(l5_snapshot, list) and len(l5_snapshot) > 0:
+            payload["l5"] = l5_snapshot
+        return payload
 
     def _build_progress_meta(self) -> dict[str, object] | None:
         """파이프라인 진행률 메타를 반환한다."""

@@ -88,6 +88,8 @@ def test_app_config_loads_json_and_env_override(tmp_path: Path, monkeypatch) -> 
     monkeypatch.setenv("SARI_RANKING_W_VECTOR", "0.1")
     monkeypatch.setenv("SARI_RANKING_W_HIERARCHY", "0.1")
     monkeypatch.setenv("SARI_LSP_REQUEST_TIMEOUT_SEC", "12.5")
+    monkeypatch.setenv("SARI_LSP_SYMBOL_INFO_BUDGET_SEC", "6.5")
+    monkeypatch.setenv("SARI_LSP_INCLUDE_INFO_DEFAULT", "1")
     monkeypatch.setenv("SARI_L3_PARALLEL_ENABLED", "true")
     monkeypatch.setenv("SARI_LSP_FILE_BUFFER_IDLE_TTL_SEC", "25.0")
     monkeypatch.setenv("SARI_LSP_FILE_BUFFER_MAX_OPEN", "1024")
@@ -161,6 +163,8 @@ def test_app_config_loads_json_and_env_override(tmp_path: Path, monkeypatch) -> 
     assert config.ranking_w_vector == pytest.approx(0.0909090909)
     assert config.ranking_w_hierarchy == pytest.approx(0.0909090909)
     assert config.lsp_request_timeout_sec == pytest.approx(12.5)
+    assert config.lsp_symbol_info_budget_sec == pytest.approx(6.5)
+    assert config.lsp_include_info_default is True
     assert config.l3_parallel_enabled is True
     assert config.lsp_file_buffer_idle_ttl_sec == pytest.approx(25.0)
     assert config.lsp_file_buffer_max_open == 1024
@@ -239,3 +243,62 @@ def test_app_config_default_exclude_globs_include_build_artifact_paths(tmp_path:
     assert config.lsp_max_concurrent_starts == 4
     assert config.lsp_max_concurrent_l1_probes == 4
     assert config.run_mode == "prod"
+
+
+def test_app_config_defaults_for_interactive_timeout_and_instance_cap(tmp_path: Path, monkeypatch) -> None:
+    """LSP 병목 완화 기본값이 반영되어야 한다."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("SARI_LSP_INTERACTIVE_TIMEOUT_SEC", raising=False)
+    monkeypatch.delenv("SARI_LSP_MAX_INSTANCES_PER_REPO_LANGUAGE", raising=False)
+
+    config = AppConfig.default()
+
+    assert config.lsp_interactive_timeout_sec == pytest.approx(4.0)
+    assert config.lsp_max_instances_per_repo_language == 3
+
+
+def test_app_config_search_lsp_guard_and_recent_failure_cooldown_env(tmp_path: Path, monkeypatch) -> None:
+    """검색 LSP 압력 가드/실패 쿨다운 설정이 환경변수로 주입되어야 한다."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("SARI_SEARCH_LSP_PRESSURE_GUARD_ENABLED", "true")
+    monkeypatch.setenv("SARI_SEARCH_LSP_PRESSURE_PENDING_THRESHOLD", "2")
+    monkeypatch.setenv("SARI_SEARCH_LSP_PRESSURE_TIMEOUT_THRESHOLD", "3")
+    monkeypatch.setenv("SARI_SEARCH_LSP_PRESSURE_REJECTED_THRESHOLD", "4")
+    monkeypatch.setenv("SARI_SEARCH_LSP_RECENT_FAILURE_COOLDOWN_SEC", "9.5")
+
+    config = AppConfig.default()
+
+    assert config.search_lsp_pressure_guard_enabled is True
+    assert config.search_lsp_pressure_pending_threshold == 2
+    assert config.search_lsp_pressure_timeout_threshold == 3
+    assert config.search_lsp_pressure_rejected_threshold == 4
+    assert config.search_lsp_recent_failure_cooldown_sec == pytest.approx(9.5)
+
+
+def test_app_config_parses_l5_budget_and_l3_query_budget_env(tmp_path: Path, monkeypatch) -> None:
+    """L5 rate/burst 예산 및 L3 query budget 설정을 파싱해야 한다."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("SARI_L5_CALL_RATE_TOTAL_MAX", "0.2")
+    monkeypatch.setenv("SARI_L5_CALL_RATE_BATCH_MAX", "0.03")
+    monkeypatch.setenv("SARI_L5_CALLS_PER_MIN_PER_LANG_MAX", "45")
+    monkeypatch.setenv("SARI_L5_TOKENS_PER_10SEC_GLOBAL_MAX", "200")
+    monkeypatch.setenv("SARI_L5_TOKENS_PER_10SEC_PER_LANG_MAX", "40")
+    monkeypatch.setenv("SARI_L5_TOKENS_PER_10SEC_PER_WORKSPACE_MAX", "25")
+    monkeypatch.setenv("SARI_L3_QUERY_COMPILE_CACHE_ENABLED", "true")
+    monkeypatch.setenv("SARI_L3_QUERY_COMPILE_MS_BUDGET", "12.5")
+    monkeypatch.setenv("SARI_L3_QUERY_BUDGET_MS", "33.0")
+
+    config = AppConfig.default()
+
+    assert config.l5_call_rate_total_max == pytest.approx(0.2)
+    assert config.l5_call_rate_batch_max == pytest.approx(0.03)
+    assert config.l5_calls_per_min_per_lang_max == 45
+    assert config.l5_tokens_per_10sec_global_max == 200
+    assert config.l5_tokens_per_10sec_per_lang_max == 40
+    assert config.l5_tokens_per_10sec_per_workspace_max == 25
+    assert config.l3_query_compile_cache_enabled is True
+    assert config.l3_query_compile_ms_budget == pytest.approx(12.5)
+    assert config.l3_query_budget_ms == pytest.approx(33.0)

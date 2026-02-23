@@ -16,6 +16,7 @@ from solidlsp.ls_exceptions import SolidLSPException
 
 from sari.core.exceptions import DaemonError, ValidationError
 from sari.core.language_registry import resolve_language_from_path
+from sari.lsp.document_symbols import request_document_symbols_with_optional_sync
 from sari.lsp.hub import LspHub
 from sari.lsp.path_normalizer import normalize_location_to_repo_relative, normalize_repo_relative_path
 from sari.services.collection.lsp_scope_planner import LspScopePlanner
@@ -124,6 +125,9 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
         self._batch_disable_java_probe = False
         self._broker_guard_reject_count = 0
         self._broker_parallelism_guard_skip_count = 0
+        self._document_symbol_sync_skip_requested_count = 0
+        self._document_symbol_sync_skip_accepted_count = 0
+        self._document_symbol_sync_skip_legacy_fallback_count = 0
         self._l3_scope_pending_hint_lock = threading.Lock()
         self._l3_scope_pending_hints: dict[tuple[str, str], int] = {}
         self._scope_active_languages: set[str] | None = None
@@ -326,7 +330,7 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
             candidate.relative_to(target)
             return True
         except ValueError:
-            pass
+            ...
         try:
             target.relative_to(candidate)
             return True
@@ -444,7 +448,7 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
             if tracker is not None:
                 try:
                     hotness = tracker.get_scope_hotness(language=language, lsp_scope_root=runtime_scope_root)
-                except Exception:
+                except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
                     hotness = 0.0
             throughput_mode = (
                 self._batch_broker_throughput_mode_enabled
@@ -526,7 +530,7 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
                 )
             if callable(prune_fn):
                 prune_fn(language=language, keep_repo_roots=set(keep_scopes), retention_tier="standby")
-        except Exception:
+        except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
             return
 
     def _is_profiled_broker_language(self, language: Language) -> bool:
@@ -538,7 +542,7 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
             return False
         try:
             return bool(is_profiled(language))
-        except Exception:
+        except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
             return False
 
     def get_l3_group_sort_key(self, *, repo_root: str, sample_relative_path: str, group_size: int) -> tuple[int, int, float, str]:
@@ -551,7 +555,7 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
         normalized_relative = normalize_repo_relative_path(sample_relative_path)
         try:
             language = self._hub.resolve_language(normalized_relative)
-        except Exception:
+        except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
             return (3, 1, 0.0, f"{repo_root}:{normalized_relative}")
         runtime_scope_root, _runtime_relative = self._resolve_lsp_runtime_scope(
             repo_root=repo_root,
@@ -566,14 +570,14 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
         if tracker is not None:
             try:
                 hotness = float(tracker.get_scope_hotness(language=language, lsp_scope_root=runtime_scope_root))
-            except Exception:
+            except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
                 hotness = 0.0
         has_active = False
         has_active_scope = getattr(broker, "has_active_scope", None)
         if callable(has_active_scope):
             try:
                 has_active = bool(has_active_scope(language=language, lsp_scope_root=runtime_scope_root))
-            except Exception:
+            except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
                 has_active = False
         tier_rank = 0 if hotness > 0.0 else 1
         active_reuse_rank = 0 if has_active else 1
@@ -595,7 +599,7 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
             normalized_relative = normalize_repo_relative_path(relative_path)
             try:
                 language = self._hub.resolve_language(normalized_relative)
-            except Exception:
+            except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
                 continue
             if not self._is_profiled_broker_language(language):
                 continue
@@ -646,7 +650,17 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
             )
             with self._acquire_l1_probe_slot():
                 with self._perf_tracer.span("extract_once.document_symbol_request", phase="l3_extract", repo_root=repo_root, language=language.value):
-                    document_symbols = lsp.request_document_symbols(runtime_relative_path).iter_symbols()
+                    self._document_symbol_sync_skip_requested_count += 1
+                    document_symbols_result, sync_hint_accepted = request_document_symbols_with_optional_sync(
+                        lsp,
+                        runtime_relative_path,
+                        sync_with_ls=False,
+                    )
+                    if sync_hint_accepted:
+                        self._document_symbol_sync_skip_accepted_count += 1
+                    else:
+                        self._document_symbol_sync_skip_legacy_fallback_count += 1
+                    document_symbols = document_symbols_result.iter_symbols()
                     raw_symbols = list(document_symbols)
         except SolidLSPException as exc:
             message = str(exc)
@@ -813,6 +827,11 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
         metrics["scope_override_hit_count"] = int(self._scope_override_hit_count)
         metrics["broker_guard_reject_count"] = int(self._broker_guard_reject_count)
         metrics["broker_parallelism_guard_skip_count"] = int(self._broker_parallelism_guard_skip_count)
+        metrics["document_symbol_sync_skip_requested_count"] = int(self._document_symbol_sync_skip_requested_count)
+        metrics["document_symbol_sync_skip_accepted_count"] = int(self._document_symbol_sync_skip_accepted_count)
+        metrics["document_symbol_sync_skip_legacy_fallback_count"] = int(
+            self._document_symbol_sync_skip_legacy_fallback_count
+        )
         metrics["probe_l1_skipped_batch_count"] = int(self._probe_l1_skipped_batch_count)
         metrics["probe_schedule_skipped_batch_count"] = int(self._probe_schedule_skipped_batch_count)
         # PR4 baseline placeholders (metrics-only; behavior change 금지)

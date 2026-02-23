@@ -175,7 +175,13 @@ class CSharpLanguageServer(SolidLanguageServer):
         return super().is_ignored_dirname(dirname) or dirname in ["bin", "obj", "packages", ".vs"]
 
     @override
-    def request_document_symbols(self, relative_file_path: str, file_buffer: object | None = None) -> DocumentSymbols:
+    def request_document_symbols(
+        self,
+        relative_file_path: str,
+        file_buffer: object | None = None,
+        *,
+        sync_with_ls: bool = True,
+    ) -> DocumentSymbols:
         """
         Override to normalize Roslyn symbol names and cache originals.
 
@@ -188,7 +194,11 @@ class CSharpLanguageServer(SolidLanguageServer):
         2. Caches original names for rich information display
         3. Populates LSP spec's 'detail' field with type/signature info
         """
-        symbols = super().request_document_symbols(relative_file_path, file_buffer)
+        symbols = super().request_document_symbols(
+            relative_file_path,
+            file_buffer,
+            sync_with_ls=sync_with_ls,
+        )
 
         for symbol in symbols.iter_symbols():
             self._normalize_symbol_name(symbol, relative_file_path)

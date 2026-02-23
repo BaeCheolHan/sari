@@ -119,6 +119,29 @@ class _GoWarmupHub:
         return self._lsp
 
 
+class _CaptureProbeLsp:
+    """probe 요청 옵션을 캡처하는 테스트 더블이다."""
+
+    def __init__(self) -> None:
+        self.flags: list[bool] = []
+
+    def request_document_symbols(self, relative_path: str, *, sync_with_ls: bool = True) -> _FakeDocumentSymbols:
+        _ = relative_path
+        self.flags.append(bool(sync_with_ls))
+        return _FakeDocumentSymbols()
+
+
+class _CaptureProbeHub:
+    """항상 캡처 LSP를 반환하는 허브 더블이다."""
+
+    def __init__(self, lsp: _CaptureProbeLsp) -> None:
+        self._lsp = lsp
+
+    def get_or_start(self, language: Language, repo_root: str) -> _CaptureProbeLsp:
+        _ = (language, repo_root)
+        return self._lsp
+
+
 def _register_repo(db_path: Path, repo_root: Path) -> None:
     """테스트 저장소를 워크스페이스에 등록한다."""
     workspace_repo = WorkspaceRepository(db_path)
@@ -188,6 +211,28 @@ def test_language_probe_reports_success_when_document_symbol_works(tmp_path: Pat
     assert first["recovered_by_restart"] is False
     assert first["provisioning_mode"] == "hybrid"
     assert first["missing_dependency"] is None
+
+
+def test_language_probe_requests_document_symbols_without_sync_when_supported(tmp_path: Path) -> None:
+    """언어 probe는 지원 시 sync_with_ls=False로 문서 심볼을 요청해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_root = tmp_path / "repo-a"
+    repo_root.mkdir(parents=True, exist_ok=True)
+    (repo_root / "sample.py").write_text("def ok():\n    return 1\n", encoding="utf-8")
+    _register_repo(db_path=db_path, repo_root=repo_root)
+
+    capture_lsp = _CaptureProbeLsp()
+    service = LanguageProbeService(
+        workspace_repo=WorkspaceRepository(db_path),
+        lsp_hub=_CaptureProbeHub(capture_lsp),  # type: ignore[arg-type]
+        entries=(LanguageSupportEntry(language=Language.PYTHON, extensions=(".py",)),),
+        now_provider=lambda: "2026-02-17T00:00:00+00:00",
+    )
+    result = service.run(repo_root=str(repo_root.resolve()))
+
+    assert result["summary"]["available_languages"] == 1
+    assert capture_lsp.flags == [False]
 
 
 def test_language_probe_classifies_missing_server_as_explicit_error(tmp_path: Path) -> None:

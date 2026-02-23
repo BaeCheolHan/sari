@@ -539,9 +539,19 @@ class ALLanguageServer(SolidLanguageServer):
         except (RuntimeError, ValueError, OSError) as e:
             log.warning(f"Failed to set active workspace: {e}")
     @override
-    def request_document_symbols(self, relative_file_path: str, file_buffer: LSPFileBuffer | None = None) -> DocumentSymbols:
+    def request_document_symbols(
+        self,
+        relative_file_path: str,
+        file_buffer: LSPFileBuffer | None = None,
+        *,
+        sync_with_ls: bool = True,
+    ) -> DocumentSymbols:
         relative_file_path = self._normalize_path(relative_file_path)
-        document_symbols = super().request_document_symbols(relative_file_path, file_buffer=file_buffer)
+        document_symbols = super().request_document_symbols(
+            relative_file_path,
+            file_buffer=file_buffer,
+            sync_with_ls=sync_with_ls,
+        )
         def normalize_name(symbol: UnifiedSymbolInformation) -> None:
             original_name = symbol["name"]
             normalized_name = self._extract_al_display_name(original_name)

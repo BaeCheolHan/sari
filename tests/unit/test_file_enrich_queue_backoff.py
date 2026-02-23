@@ -19,6 +19,8 @@ def _read_queue_row(db_path: Path, job_id: str) -> dict[str, object]:
             """
             SELECT status, attempt_count, next_retry_at, last_error
                  , content_hash, defer_reason
+                 , deferred_state, deferred_count
+                 , first_deferred_at, last_deferred_at
             FROM file_enrich_queue
             WHERE job_id = :job_id
             """,
@@ -33,6 +35,10 @@ def _read_queue_row(db_path: Path, job_id: str) -> dict[str, object]:
         "last_error": str(row["last_error"]) if row["last_error"] is not None else None,
         "content_hash": str(row["content_hash"]),
         "defer_reason": str(row["defer_reason"]) if row["defer_reason"] is not None else None,
+        "deferred_state": str(row["deferred_state"]) if row["deferred_state"] is not None else None,
+        "deferred_count": int(row["deferred_count"]),
+        "first_deferred_at": str(row["first_deferred_at"]) if row["first_deferred_at"] is not None else None,
+        "last_deferred_at": str(row["last_deferred_at"]) if row["last_deferred_at"] is not None else None,
     }
 
 
@@ -117,6 +123,178 @@ def test_defer_running_job_to_pending_preserves_counters(tmp_path: Path) -> None
     assert str(row["defer_reason"]) == "broker_defer:budget"
     assert str(row["next_retry_at"]) == "2026-02-16T00:01:00+00:00"
     assert str(row["last_error"]) == "old error"
+
+
+def test_defer_jobs_to_pending_tracks_deferred_state_machine(tmp_path: Path) -> None:
+    """defer 반복 시 deferred_state/카운터가 NEW -> RETRY_WAIT -> BUMPED로 전이되어야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = FileEnrichQueueRepository(db_path)
+    now_iso = "2026-02-16T00:00:00+00:00"
+    job_id = repo.enqueue(
+        repo_root="/repo",
+        relative_path="state.py",
+        content_hash="h-state",
+        priority=10,
+        enqueue_source="l3",
+        now_iso=now_iso,
+    )
+    _ = repo.acquire_pending(limit=1, now_iso=now_iso)
+    repo.defer_jobs_to_pending(
+        job_ids=[job_id],
+        next_retry_at="2026-02-16T00:01:00+00:00",
+        defer_reason="l5_defer:pressure_rate_exceeded",
+        now_iso="2026-02-16T00:00:10+00:00",
+    )
+    row1 = _read_queue_row(db_path, job_id)
+    assert row1["deferred_state"] == "NEW"
+    assert row1["deferred_count"] == 1
+
+    _ = repo.acquire_pending(limit=1, now_iso="2026-02-16T00:01:00+00:00")
+    repo.defer_jobs_to_pending(
+        job_ids=[job_id],
+        next_retry_at="2026-02-16T00:02:00+00:00",
+        defer_reason="l5_defer:pressure_rate_exceeded",
+        now_iso="2026-02-16T00:01:10+00:00",
+    )
+    row2 = _read_queue_row(db_path, job_id)
+    assert row2["deferred_state"] == "RETRY_WAIT"
+    assert row2["deferred_count"] == 2
+
+    _ = repo.acquire_pending(limit=1, now_iso="2026-02-16T00:02:00+00:00")
+    repo.defer_jobs_to_pending(
+        job_ids=[job_id],
+        next_retry_at="2026-02-16T00:03:00+00:00",
+        defer_reason="l5_defer:pressure_rate_exceeded",
+        now_iso="2026-02-16T00:02:10+00:00",
+    )
+    row3 = _read_queue_row(db_path, job_id)
+    assert row3["deferred_state"] == "BUMPED"
+    assert row3["deferred_count"] == 3
+
+
+def test_defer_jobs_to_pending_drops_when_cap_exceeded(tmp_path: Path) -> None:
+    """deferred cap 초과 시 신규 defer는 DROP(DONE + DROPPED) 처리되어야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = FileEnrichQueueRepository(db_path)
+    now_iso = "2026-02-16T00:00:00+00:00"
+    j1 = repo.enqueue("/repo", "a.py", "ha", 10, "l3", now_iso)
+    j2 = repo.enqueue("/repo", "b.py", "hb", 10, "l3", now_iso)
+    _ = repo.acquire_pending(limit=2, now_iso=now_iso)
+
+    changed1 = repo.defer_jobs_to_pending(
+        job_ids=[j1],
+        next_retry_at="2026-02-16T00:01:00+00:00",
+        defer_reason="l5_defer:pressure_burst_exceeded",
+        now_iso="2026-02-16T00:00:10+00:00",
+        max_deferred_queue_size=1,
+        max_deferred_per_workspace=10,
+        deferred_ttl_hours=168,
+    )
+    changed2 = repo.defer_jobs_to_pending(
+        job_ids=[j2],
+        next_retry_at="2026-02-16T00:01:00+00:00",
+        defer_reason="l5_defer:pressure_burst_exceeded",
+        now_iso="2026-02-16T00:00:20+00:00",
+        max_deferred_queue_size=1,
+        max_deferred_per_workspace=10,
+        deferred_ttl_hours=168,
+    )
+
+    assert changed1 == 1
+    assert changed2 == 0
+    row2 = _read_queue_row(db_path, j2)
+    assert row2["status"] == "DONE"
+    assert row2["deferred_state"] == "DROPPED"
+    assert row2["defer_reason"] == "l5_drop:deferred_cap_total"
+
+
+def test_defer_jobs_to_pending_drops_when_ttl_expired(tmp_path: Path) -> None:
+    """기존 defer가 TTL을 초과하면 재defer 시 DROP 처리되어야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = FileEnrichQueueRepository(db_path)
+    now_iso = "2026-02-16T00:00:00+00:00"
+    job_id = repo.enqueue("/repo", "ttl.py", "h-ttl", 10, "l3", now_iso)
+    _ = repo.acquire_pending(limit=1, now_iso=now_iso)
+    repo.defer_jobs_to_pending(
+        job_ids=[job_id],
+        next_retry_at="2026-02-16T00:01:00+00:00",
+        defer_reason="l5_defer:pressure_rate_exceeded",
+        now_iso="2026-02-16T00:00:10+00:00",
+    )
+    _ = repo.acquire_pending(limit=1, now_iso="2026-02-16T00:01:00+00:00")
+    changed = repo.defer_jobs_to_pending(
+        job_ids=[job_id],
+        next_retry_at="2026-02-16T02:00:00+00:00",
+        defer_reason="l5_defer:pressure_rate_exceeded",
+        now_iso="2026-02-16T01:30:10+00:00",
+        deferred_ttl_hours=1,
+    )
+    assert changed == 0
+    row = _read_queue_row(db_path, job_id)
+    assert row["status"] == "DONE"
+    assert row["deferred_state"] == "DROPPED"
+    assert row["defer_reason"] == "l5_drop:ttl_expired"
+
+
+def test_get_deferred_drop_stats_returns_reason_workspace_language_breakdown(tmp_path: Path) -> None:
+    """deferred DROP 집계는 reason/workspace/language top-k를 반환해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = FileEnrichQueueRepository(db_path)
+    now_iso = "2026-02-16T00:00:00+00:00"
+
+    j1 = repo.enqueue("/repo-a", "a.py", "h-a", 10, "l3", now_iso)
+    j2 = repo.enqueue("/repo-a", "b.js", "h-b", 10, "l3", now_iso)
+    j3 = repo.enqueue("/repo-b", "c.py", "h-c", 10, "l3", now_iso)
+    _ = repo.acquire_pending(limit=3, now_iso=now_iso)
+
+    _ = repo.defer_jobs_to_pending(
+        job_ids=[j1],
+        next_retry_at="2026-02-16T00:01:00+00:00",
+        defer_reason="l5_defer:pressure_rate_exceeded",
+        now_iso="2026-02-16T00:00:10+00:00",
+        max_deferred_queue_size=0,
+        max_deferred_per_workspace=10,
+    )
+    _ = repo.defer_jobs_to_pending(
+        job_ids=[j2],
+        next_retry_at="2026-02-16T00:01:00+00:00",
+        defer_reason="l5_defer:pressure_burst_exceeded",
+        now_iso="2026-02-16T00:00:20+00:00",
+        max_deferred_queue_size=1,
+        max_deferred_per_workspace=10,
+    )
+    _ = repo.defer_jobs_to_pending(
+        job_ids=[j3],
+        next_retry_at="2026-02-16T00:01:00+00:00",
+        defer_reason="l5_defer:pressure_rate_exceeded",
+        now_iso="2026-02-16T00:00:30+00:00",
+        max_deferred_queue_size=10,
+        max_deferred_per_workspace=10,
+    )
+    _ = repo.acquire_pending(limit=1, now_iso="2026-02-16T00:01:00+00:00")
+    _ = repo.defer_jobs_to_pending(
+        job_ids=[j3],
+        next_retry_at="2026-02-16T03:00:00+00:00",
+        defer_reason="l5_defer:pressure_rate_exceeded",
+        now_iso="2026-02-16T02:00:00+00:00",
+        deferred_ttl_hours=1,
+    )
+
+    stats = repo.get_deferred_drop_stats(top_k=5)
+    assert stats["dropped_total"] >= 2
+    assert stats["dropped_cap_total_count"] >= 1
+    assert stats["dropped_ttl_expired_count"] >= 1
+    assert isinstance(stats["by_reason"], dict)
+    assert stats["by_reason"].get("l5_drop:deferred_cap_total", 0) >= 1
+    assert stats["by_reason"].get("l5_drop:ttl_expired", 0) >= 1
+    by_workspace = {item["repo_root"]: int(item["count"]) for item in stats["by_workspace_topk"]}
+    assert by_workspace.get("/repo-a", 0) >= 1
+    by_language = {item["language"]: int(item["count"]) for item in stats["by_language_topk"]}
+    assert by_language.get("py", 0) >= 1
 
 
 def test_enqueue_many_same_hash_preserves_defer_fields(tmp_path: Path) -> None:

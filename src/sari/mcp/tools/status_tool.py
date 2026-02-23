@@ -13,6 +13,7 @@ from sari.db.repositories.runtime_repository import RuntimeRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.mcp.tools.admin_tools import validate_repo_argument
 from sari.mcp.tools.pack1 import Pack1MetaDTO, pack1_error, pack1_success
+from sari.services.pipeline_control_service import PipelineControlService
 
 
 def _success(items: list[dict[str, object]], *, warnings: list[dict[str, object]] | None = None) -> dict[str, object]:
@@ -96,6 +97,7 @@ class StatusTool:
         language_probe_repo: LanguageProbeRepository | None = None,
         lsp_metrics_provider: Callable[[], dict[str, int]] | None = None,
         reconcile_state_provider: Callable[[], dict[str, object]] | None = None,
+        pipeline_control_service: PipelineControlService | None = None,
     ) -> None:
         """필요 저장소 의존성을 주입한다."""
         self._workspace_repo = workspace_repo
@@ -105,6 +107,7 @@ class StatusTool:
         self._language_probe_repo = language_probe_repo
         self._lsp_metrics_provider = lsp_metrics_provider
         self._reconcile_state_provider = reconcile_state_provider
+        self._pipeline_control_service = pipeline_control_service
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """저장소 단위 상태 요약을 반환한다."""
@@ -139,6 +142,11 @@ class StatusTool:
                     "reconcile_last_run_ts": raw_state.get("reconcile_last_run_ts"),
                     "reconcile_last_result": raw_state.get("reconcile_last_result"),
                 }
+        auto_control: dict[str, object] | None = None
+        stage_rollout: dict[str, object] | None = None
+        if self._pipeline_control_service is not None:
+            auto_control = self._pipeline_control_service.get_auto_control_state().to_dict()
+            stage_rollout = self._pipeline_control_service.get_stage_rollout_state()
         return _success(
             [
                 {
@@ -151,6 +159,8 @@ class StatusTool:
                     "language_support": language_support,
                     "lsp_metrics": lsp_metrics,
                     "reconcile_state": reconcile_state,
+                    "auto_control": auto_control,
+                    "stage_rollout": stage_rollout,
                 }
             ],
             warnings=warnings_payload,

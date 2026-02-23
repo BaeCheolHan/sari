@@ -32,6 +32,12 @@ def ensure_migrated(db_path: Path) -> None:
     # CLI JSON stdout 오염 방지를 위해 Alembic 기본 로거 설정을 비활성화한다.
     config.attributes["configure_logger"] = False
     command.upgrade(config, "head")
+    # Alembic head와 별개로 additive fallback 확장 테이블을 항상 보장한다.
+    with _connect(db_path) as conn:
+        _fallback_upgrade_0009(conn)
+        _fallback_upgrade_0010(conn)
+        _fallback_upgrade_0011(conn)
+        conn.commit()
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
@@ -110,6 +116,11 @@ def _fallback_upgrade_sqlite(db_path: Path) -> None:
         if current_version < "20260222_0008":
             _fallback_upgrade_0008(conn)
             _set_version(conn, "20260222_0008")
+        # Alembic head(0008) 이후 additive fallback 확장:
+        # tool_data L3/L4/L5 분리 테이블은 버전 스탬프를 올리지 않고 보장한다.
+        _fallback_upgrade_0009(conn)
+        _fallback_upgrade_0010(conn)
+        _fallback_upgrade_0011(conn)
         conn.commit()
 
 
@@ -416,3 +427,109 @@ def _fallback_upgrade_0008(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE file_enrich_queue ADD COLUMN scope_root TEXT NULL")
     if "scope_attempts" not in queue_cols:
         conn.execute("ALTER TABLE file_enrich_queue ADD COLUMN scope_attempts INTEGER NOT NULL DEFAULT 0")
+
+
+def _fallback_upgrade_0009(conn: sqlite3.Connection) -> None:
+    """0009 리비전 tool_data L3/L4/L5 분리 테이블을 적용한다."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS tool_data_l3_symbols (
+            workspace_id TEXT NOT NULL,
+            repo_root TEXT NOT NULL CHECK (repo_root <> ''),
+            relative_path TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            symbols_json TEXT NOT NULL,
+            degraded INTEGER NOT NULL DEFAULT 0 CHECK (degraded IN (0, 1)),
+            l3_skipped_large_file INTEGER NOT NULL DEFAULT 0 CHECK (l3_skipped_large_file IN (0, 1)),
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (workspace_id, repo_root, relative_path, content_hash)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_tool_data_l3_lookup
+        ON tool_data_l3_symbols(workspace_id, repo_root, relative_path, updated_at DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS tool_data_l4_normalized_symbols (
+            workspace_id TEXT NOT NULL,
+            repo_root TEXT NOT NULL CHECK (repo_root <> ''),
+            relative_path TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            normalized_json TEXT NOT NULL,
+            confidence REAL NOT NULL,
+            ambiguity REAL NOT NULL,
+            coverage REAL NOT NULL,
+            needs_l5 INTEGER NOT NULL DEFAULT 0 CHECK (needs_l5 IN (0, 1)),
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (workspace_id, repo_root, relative_path, content_hash)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_tool_data_l4_lookup
+        ON tool_data_l4_normalized_symbols(workspace_id, repo_root, relative_path, updated_at DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS tool_data_l5_semantics (
+            workspace_id TEXT NOT NULL,
+            repo_root TEXT NOT NULL CHECK (repo_root <> ''),
+            relative_path TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            reason_code TEXT NOT NULL,
+            semantics_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (workspace_id, repo_root, relative_path, content_hash, reason_code)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_tool_data_l5_lookup
+        ON tool_data_l5_semantics(workspace_id, repo_root, relative_path, updated_at DESC)
+        """
+    )
+
+
+def _fallback_upgrade_0010(conn: sqlite3.Connection) -> None:
+    """0010 리비전 file_enrich_queue deferred 상태머신 컬럼을 적용한다."""
+    if not _table_exists(conn, "file_enrich_queue"):
+        return
+    queue_cols = _table_columns(conn, "file_enrich_queue")
+    if "deferred_state" not in queue_cols:
+        conn.execute("ALTER TABLE file_enrich_queue ADD COLUMN deferred_state TEXT NULL")
+    if "deferred_count" not in queue_cols:
+        conn.execute("ALTER TABLE file_enrich_queue ADD COLUMN deferred_count INTEGER NOT NULL DEFAULT 0")
+    if "first_deferred_at" not in queue_cols:
+        conn.execute("ALTER TABLE file_enrich_queue ADD COLUMN first_deferred_at TEXT NULL")
+    if "last_deferred_at" not in queue_cols:
+        conn.execute("ALTER TABLE file_enrich_queue ADD COLUMN last_deferred_at TEXT NULL")
+
+
+def _fallback_upgrade_0011(conn: sqlite3.Connection) -> None:
+    """0011 additive 확장: stage baseline SSOT 테이블을 적용한다."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS pipeline_stage_baseline (
+            singleton_key TEXT PRIMARY KEY,
+            l4_admission_rate_baseline_p50 REAL NULL,
+            l4_admission_rate_baseline_samples INTEGER NOT NULL DEFAULT 0,
+            p95_pending_available_age_baseline_sec REAL NULL,
+            p95_pending_available_age_baseline_samples INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    cols = _table_columns(conn, "pipeline_stage_baseline")
+    if "p95_pending_available_age_baseline_sec" not in cols:
+        conn.execute("ALTER TABLE pipeline_stage_baseline ADD COLUMN p95_pending_available_age_baseline_sec REAL NULL")
+    if "p95_pending_available_age_baseline_samples" not in cols:
+        conn.execute(
+            "ALTER TABLE pipeline_stage_baseline ADD COLUMN p95_pending_available_age_baseline_samples INTEGER NOT NULL DEFAULT 0"
+        )

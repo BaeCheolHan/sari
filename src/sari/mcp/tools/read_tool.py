@@ -8,6 +8,7 @@ from sari.core.exceptions import CollectionError
 from sari.core.models import ErrorResponseDTO
 from sari.db.repositories.knowledge_repository import KnowledgeRepository
 from sari.db.repositories.lsp_tool_data_repository import LspToolDataRepository
+from sari.db.repositories.tool_data_layer_repository import ToolDataLayerRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.mcp.stabilization.aggregation import add_read_to_bundle
 from sari.mcp.stabilization.budget_guard import apply_soft_limits, evaluate_budget_state
@@ -41,6 +42,7 @@ class ReadTool:
         file_collection_service: CollectionScanPort,
         lsp_repo: LspToolDataRepository,
         knowledge_repo: KnowledgeRepository,
+        tool_layer_repo: ToolDataLayerRepository | None = None,
         stabilization_enabled: bool = True,
     ) -> None:
         """필요 저장소/서비스 의존성을 주입한다."""
@@ -48,6 +50,7 @@ class ReadTool:
         self._file_collection_service = file_collection_service
         self._lsp_repo = lsp_repo
         self._knowledge_repo = knowledge_repo
+        self._tool_layer_repo = tool_layer_repo
         self._stabilization_enabled = stabilization_enabled
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
@@ -265,8 +268,20 @@ class ReadTool:
             return pack1_error(ErrorResponseDTO(code="ERR_INVALID_LIMIT", message="limit must be positive integer"))
         path_raw = arguments.get("path")
         path_prefix = path_raw if isinstance(path_raw, str) and path_raw.strip() != "" else None
-        rows = self._lsp_repo.search_symbols(repo_root=repo_root, query=target.strip(), limit=limit_raw, path_prefix=path_prefix)
-        row_items = [row.to_dict() for row in rows]
+        row_items: list[dict[str, object]] = []
+        if self._tool_layer_repo is not None:
+            workspace = self._workspace_repo.get_by_path(repo_root)
+            if workspace is not None:
+                row_items = self._tool_layer_repo.search_l3_symbols(
+                    workspace_id=workspace.path,
+                    repo_root=repo_root,
+                    query=target.strip(),
+                    limit=limit_raw,
+                    path_prefix=path_prefix,
+                )
+        if len(row_items) == 0:
+            rows = self._lsp_repo.search_symbols(repo_root=repo_root, query=target.strip(), limit=limit_raw, path_prefix=path_prefix)
+            row_items = [row.to_dict() for row in rows]
         content_text = "\n".join(str(item.get("name", "")) for item in row_items)
         stabilization = self._build_stabilization_meta(
             arguments=arguments,

@@ -309,9 +309,9 @@ class EventWatcher:
         if self._on_watcher_signal is not None:
             try:
                 self._on_watcher_signal(event_type, str(matched_root), relative_path, str(dest_path))
-            except Exception:
+            except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
                 # watcher signal feed는 best-effort (cheap signal only)
-                pass
+                ...
         now_monotonic = self._now_monotonic()
         with self._debounce_lock:
             self._debounce_events[key] = (now_monotonic, event_type, dest_path)

@@ -24,3 +24,23 @@ def test_top5_adapters_use_adapter_common_contract() -> None:
     assert "ensure_paths_exist" in pascal
     assert "ensure_paths_exist" in jdtls
     assert "first_executable_path" in rust
+
+
+def test_csharp_adapter_document_symbols_signature_supports_sync_hint() -> None:
+    """C# 어댑터 override는 base 계약(sync_with_ls)을 유지해야 한다."""
+    root = Path(__file__).resolve().parents[2] / "src" / "solidlsp" / "language_servers"
+    csharp = _read(root / "csharp_language_server.py")
+    assert "sync_with_ls: bool = True" in csharp
+
+
+def test_document_symbols_overrides_keep_sync_hint_contract() -> None:
+    """request_document_symbols override는 sync_with_ls 계약을 유지해야 한다."""
+    root = Path(__file__).resolve().parents[2] / "src" / "solidlsp" / "language_servers"
+    for rel in (
+        "bash_language_server.py",
+        "nixd_ls.py",
+        "al_language_server.py",
+        "fortran_language_server.py",
+    ):
+        content = _read(root / rel)
+        assert "sync_with_ls: bool = True" in content

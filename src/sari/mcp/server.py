@@ -16,10 +16,12 @@ from sari.db.repositories.file_body_repository import FileBodyRepository
 from sari.db.repositories.file_collection_repository import FileCollectionRepository
 from sari.db.repositories.file_enrich_queue_repository import FileEnrichQueueRepository
 from sari.db.repositories.lsp_tool_data_repository import LspToolDataRepository
+from sari.db.repositories.tool_data_layer_repository import ToolDataLayerRepository
 from sari.db.repositories.knowledge_repository import KnowledgeRepository
 from sari.db.repositories.vector_embedding_repository import VectorEmbeddingRepository
 from sari.db.repositories.pipeline_benchmark_repository import PipelineBenchmarkRepository
 from sari.db.repositories.pipeline_perf_repository import PipelinePerfRepository
+from sari.db.repositories.pipeline_stage_baseline_repository import PipelineStageBaselineRepository
 from sari.db.repositories.pipeline_quality_repository import PipelineQualityRepository
 from sari.db.repositories.language_probe_repository import LanguageProbeRepository
 from sari.db.repositories.pipeline_lsp_matrix_repository import PipelineLspMatrixRepository
@@ -119,6 +121,7 @@ class McpServer:
         enrich_queue_repo = FileEnrichQueueRepository(db_path)
         body_repo = FileBodyRepository(db_path)
         lsp_repo = LspToolDataRepository(db_path)
+        tool_layer_repo = ToolDataLayerRepository(db_path)
         knowledge_repo = KnowledgeRepository(db_path)
         readiness_repo = ToolReadinessRepository(db_path)
         policy_repo = PipelinePolicyRepository(db_path)
@@ -127,6 +130,7 @@ class McpServer:
         error_event_repo = PipelineErrorEventRepository(db_path)
         benchmark_repo = PipelineBenchmarkRepository(db_path)
         perf_repo = PipelinePerfRepository(db_path)
+        stage_baseline_repo = PipelineStageBaselineRepository(db_path)
         quality_repo = PipelineQualityRepository(db_path)
         language_probe_repo = LanguageProbeRepository(db_path)
         lsp_matrix_repo = PipelineLspMatrixRepository(db_path)
@@ -232,6 +236,15 @@ class McpServer:
             lsp_broker_vue_sticky_ttl_sec=runtime_config.lsp_broker_vue_sticky_ttl_sec,
             lsp_broker_vue_switch_cooldown_sec=runtime_config.lsp_broker_vue_switch_cooldown_sec,
             lsp_broker_vue_min_lease_ms=runtime_config.lsp_broker_vue_min_lease_ms,
+            l5_call_rate_total_max=runtime_config.l5_call_rate_total_max,
+            l5_call_rate_batch_max=runtime_config.l5_call_rate_batch_max,
+            l5_calls_per_min_per_lang_max=runtime_config.l5_calls_per_min_per_lang_max,
+            l5_tokens_per_10sec_global_max=runtime_config.l5_tokens_per_10sec_global_max,
+            l5_tokens_per_10sec_per_lang_max=runtime_config.l5_tokens_per_10sec_per_lang_max,
+            l5_tokens_per_10sec_per_workspace_max=runtime_config.l5_tokens_per_10sec_per_workspace_max,
+            l3_query_compile_cache_enabled=runtime_config.l3_query_compile_cache_enabled,
+            l3_query_compile_ms_budget=runtime_config.l3_query_compile_ms_budget,
+            l3_query_budget_ms=runtime_config.l3_query_budget_ms,
         )
         benchmark_collection_service = build_default_file_collection_service(
             workspace_repo=workspace_repo,
@@ -291,6 +304,15 @@ class McpServer:
             lsp_broker_vue_sticky_ttl_sec=runtime_config.lsp_broker_vue_sticky_ttl_sec,
             lsp_broker_vue_switch_cooldown_sec=runtime_config.lsp_broker_vue_switch_cooldown_sec,
             lsp_broker_vue_min_lease_ms=runtime_config.lsp_broker_vue_min_lease_ms,
+            l5_call_rate_total_max=runtime_config.l5_call_rate_total_max,
+            l5_call_rate_batch_max=runtime_config.l5_call_rate_batch_max,
+            l5_calls_per_min_per_lang_max=runtime_config.l5_calls_per_min_per_lang_max,
+            l5_tokens_per_10sec_global_max=runtime_config.l5_tokens_per_10sec_global_max,
+            l5_tokens_per_10sec_per_lang_max=runtime_config.l5_tokens_per_10sec_per_lang_max,
+            l5_tokens_per_10sec_per_workspace_max=runtime_config.l5_tokens_per_10sec_per_workspace_max,
+            l3_query_compile_cache_enabled=runtime_config.l3_query_compile_cache_enabled,
+            l3_query_compile_ms_budget=runtime_config.l3_query_compile_ms_budget,
+            l3_query_budget_ms=runtime_config.l3_query_budget_ms,
         )
         benchmark_service = PipelineBenchmarkService(file_collection_service=benchmark_collection_service, queue_repo=enrich_queue_repo, lsp_repo=lsp_repo, policy_repo=policy_repo, benchmark_repo=benchmark_repo, artifact_root=db_path.parent / 'artifacts')
         perf_service = PipelinePerfService(
@@ -299,6 +321,7 @@ class McpServer:
             benchmark_service=benchmark_service,
             perf_repo=perf_repo,
             artifact_root=db_path.parent / "artifacts",
+            stage_baseline_repo=stage_baseline_repo,
         )
         quality_service = PipelineQualityService(file_repo=file_repo, lsp_repo=lsp_repo, quality_repo=quality_repo, golden_backend=SerenaGoldenBackend(hub=shared_hub), artifact_root=db_path.parent / 'artifacts')
         language_probe_service = LanguageProbeService(
@@ -320,15 +343,45 @@ class McpServer:
             queue_repo=enrich_queue_repo,
             lsp_reconciler=shared_hub.reconcile_runtime,
         )
-        orchestrator = SearchOrchestrator(workspace_repo=workspace_repo, candidate_service=candidate_service, symbol_service=SymbolResolveService(hub=shared_hub, cache_repo=symbol_cache_repo, lsp_fallback_mode=runtime_config.search_lsp_fallback_mode), importance_scorer=importance_scorer, hierarchy_scorer=hierarchy_scorer, vector_reranker=vector_reranker, blend_config=RankingBlendConfigDTO(w_rrf=runtime_config.ranking_w_rrf, w_importance=runtime_config.ranking_w_importance, w_vector=runtime_config.ranking_w_vector, w_hierarchy=runtime_config.ranking_w_hierarchy, version='v2-config'), repo_registry_repo=repo_registry_repo)
+        symbol_service = SymbolResolveService(
+            hub=shared_hub,
+            cache_repo=symbol_cache_repo,
+            lsp_fallback_mode=runtime_config.search_lsp_fallback_mode,
+            include_info_default=runtime_config.lsp_include_info_default,
+            symbol_info_budget_sec=runtime_config.lsp_symbol_info_budget_sec,
+            lsp_pressure_guard_enabled=runtime_config.search_lsp_pressure_guard_enabled,
+            lsp_pressure_pending_threshold=runtime_config.search_lsp_pressure_pending_threshold,
+            lsp_pressure_timeout_threshold=runtime_config.search_lsp_pressure_timeout_threshold,
+            lsp_pressure_rejected_threshold=runtime_config.search_lsp_pressure_rejected_threshold,
+            lsp_recent_failure_cooldown_sec=runtime_config.search_lsp_recent_failure_cooldown_sec,
+        )
+        orchestrator = SearchOrchestrator(
+            workspace_repo=workspace_repo,
+            candidate_service=candidate_service,
+            symbol_service=symbol_service,
+            importance_scorer=importance_scorer,
+            hierarchy_scorer=hierarchy_scorer,
+            vector_reranker=vector_reranker,
+            blend_config=RankingBlendConfigDTO(
+                w_rrf=runtime_config.ranking_w_rrf,
+                w_importance=runtime_config.ranking_w_importance,
+                w_vector=runtime_config.ranking_w_vector,
+                w_hierarchy=runtime_config.ranking_w_hierarchy,
+                version="v2-config",
+            ),
+            repo_registry_repo=repo_registry_repo,
+        )
         self._file_collection_service = file_collection_service
         self._benchmark_collection_service = benchmark_collection_service
         self._search_tool = SearchTool(
             orchestrator=orchestrator,
             workspace_repo=workspace_repo,
+            tool_layer_repo=tool_layer_repo,
             metrics_provider=file_collection_service.get_pipeline_metrics,
             repo_registry_repo=repo_registry_repo,
             stabilization_enabled=runtime_config.stabilization_enabled,
+            include_info_default=runtime_config.lsp_include_info_default,
+            symbol_info_budget_sec_default=runtime_config.lsp_symbol_info_budget_sec,
         )
         self._doctor_tool = DoctorTool(admin_service=admin_service, workspace_repo=workspace_repo)
         self._rescan_tool = RescanTool(admin_service=admin_service, workspace_repo=workspace_repo)
@@ -348,12 +401,14 @@ class McpServer:
             language_probe_repo=language_probe_repo,
             lsp_metrics_provider=shared_hub.get_metrics,
             reconcile_state_provider=admin_service.get_runtime_reconcile_state,
+            pipeline_control_service=pipeline_control_service,
         )
         self._read_tool = ReadTool(
             workspace_repo=workspace_repo,
             file_collection_service=file_collection_service,
             lsp_repo=lsp_repo,
             knowledge_repo=knowledge_repo,
+            tool_layer_repo=tool_layer_repo,
             stabilization_enabled=runtime_config.stabilization_enabled,
         )
         self._dry_run_diff_tool = DryRunDiffTool(read_tool=self._read_tool)

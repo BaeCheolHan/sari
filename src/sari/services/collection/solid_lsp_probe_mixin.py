@@ -12,6 +12,7 @@ from solidlsp.ls_exceptions import SolidLSPException
 
 from sari.core.exceptions import DaemonError
 from sari.core.language_registry import resolve_language_from_path
+from sari.lsp.document_symbols import request_document_symbols_with_optional_sync
 from sari.lsp.path_normalizer import normalize_repo_relative_path
 
 @dataclass
@@ -354,7 +355,12 @@ class SolidLspProbeMixin:
             else:
                 lsp = self._hub.get_or_start(language=language, repo_root=runtime_scope_root, request_kind="indexing")
             with self._acquire_l1_probe_slot():
-                _ = list(lsp.request_document_symbols(runtime_relative_path).iter_symbols())
+                symbols_result, _sync_hint_accepted = request_document_symbols_with_optional_sync(
+                    lsp,
+                    runtime_relative_path,
+                    sync_with_ls=False,
+                )
+                _ = list(symbols_result.iter_symbols())
             with self._probe_lock:
                 state = self._probe_state.get(key)
                 if state is None:

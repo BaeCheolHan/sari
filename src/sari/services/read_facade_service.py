@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from sari.db.repositories.knowledge_repository import KnowledgeRepository
 from sari.db.repositories.lsp_tool_data_repository import LspToolDataRepository
+from sari.db.repositories.tool_data_layer_repository import ToolDataLayerRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.mcp.tools.read_tool import ReadTool
 from sari.services.collection.ports import CollectionScanPort
@@ -18,6 +19,7 @@ class ReadFacadeService:
         file_collection_service: CollectionScanPort,
         lsp_repo: LspToolDataRepository,
         knowledge_repo: KnowledgeRepository,
+        tool_layer_repo: ToolDataLayerRepository | None = None,
     ) -> None:
         """ReadTool 의존성을 구성한다."""
         self._read_tool = ReadTool(
@@ -25,6 +27,7 @@ class ReadFacadeService:
             file_collection_service=file_collection_service,
             lsp_repo=lsp_repo,
             knowledge_repo=knowledge_repo,
+            tool_layer_repo=tool_layer_repo,
         )
 
     def read(self, arguments: dict[str, object]) -> dict[str, object]:

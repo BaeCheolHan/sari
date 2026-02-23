@@ -19,6 +19,7 @@ from sari.db.repositories.candidate_index_change_repository import CandidateInde
 from sari.db.repositories.file_collection_repository import FileCollectionRepository
 from sari.db.repositories.file_enrich_queue_repository import FileEnrichQueueRepository
 from sari.db.repositories.lsp_tool_data_repository import LspToolDataRepository
+from sari.db.repositories.tool_data_layer_repository import ToolDataLayerRepository
 from sari.db.repositories.knowledge_repository import KnowledgeRepository
 from sari.db.repositories.vector_embedding_repository import VectorEmbeddingRepository
 from sari.db.repositories.pipeline_control_state_repository import PipelineControlStateRepository
@@ -27,6 +28,7 @@ from sari.db.repositories.pipeline_error_event_repository import PipelineErrorEv
 from sari.db.repositories.pipeline_policy_repository import PipelinePolicyRepository
 from sari.db.repositories.pipeline_benchmark_repository import PipelineBenchmarkRepository
 from sari.db.repositories.pipeline_perf_repository import PipelinePerfRepository
+from sari.db.repositories.pipeline_stage_baseline_repository import PipelineStageBaselineRepository
 from sari.db.repositories.pipeline_quality_repository import PipelineQualityRepository
 from sari.db.repositories.language_probe_repository import LanguageProbeRepository
 from sari.db.repositories.pipeline_lsp_matrix_repository import PipelineLspMatrixRepository
@@ -43,7 +45,7 @@ from sari.search.orchestrator import RankingBlendConfigDTO, SearchOrchestrator
 from sari.search.symbol_resolve import SymbolResolveService
 from sari.search.vector_reranker import VectorConfigDTO, VectorIndexSink, VectorReranker
 from sari.core.config import AppConfig
-from sari.core.exceptions import DaemonError, ErrorContext, ValidationError
+from sari.core.exceptions import DaemonError, ErrorContext, PerfError, ValidationError
 from sari.core.models import now_iso8601_utc
 from sari.services.admin_service import AdminService
 from sari.services.file_collection_service import SolidLspExtractionBackend, build_default_file_collection_service
@@ -94,6 +96,7 @@ def main() -> None:
     enrich_queue_repo = FileEnrichQueueRepository(db_path)
     body_repo = FileBodyRepository(db_path)
     lsp_repo = LspToolDataRepository(db_path)
+    tool_layer_repo = ToolDataLayerRepository(db_path)
     knowledge_repo = KnowledgeRepository(db_path)
     readiness_repo = ToolReadinessRepository(db_path)
     policy_repo = PipelinePolicyRepository(db_path)
@@ -102,6 +105,7 @@ def main() -> None:
     error_event_repo = PipelineErrorEventRepository(db_path)
     benchmark_repo = PipelineBenchmarkRepository(db_path)
     perf_repo = PipelinePerfRepository(db_path)
+    stage_baseline_repo = PipelineStageBaselineRepository(db_path)
     quality_repo = PipelineQualityRepository(db_path)
     language_probe_repo = LanguageProbeRepository(db_path)
     lsp_matrix_repo = PipelineLspMatrixRepository(db_path)
@@ -188,6 +192,13 @@ def main() -> None:
         hub=lsp_hub,
         cache_repo=symbol_cache_repo,
         lsp_fallback_mode=config.search_lsp_fallback_mode,
+        include_info_default=config.lsp_include_info_default,
+        symbol_info_budget_sec=config.lsp_symbol_info_budget_sec,
+        lsp_pressure_guard_enabled=config.search_lsp_pressure_guard_enabled,
+        lsp_pressure_pending_threshold=config.search_lsp_pressure_pending_threshold,
+        lsp_pressure_timeout_threshold=config.search_lsp_pressure_timeout_threshold,
+        lsp_pressure_rejected_threshold=config.search_lsp_pressure_rejected_threshold,
+        lsp_recent_failure_cooldown_sec=config.search_lsp_recent_failure_cooldown_sec,
     )
     search_orchestrator = SearchOrchestrator(
         workspace_repo=workspace_repo,
@@ -290,12 +301,32 @@ def main() -> None:
         lsp_broker_vue_sticky_ttl_sec=config.lsp_broker_vue_sticky_ttl_sec,
         lsp_broker_vue_switch_cooldown_sec=config.lsp_broker_vue_switch_cooldown_sec,
         lsp_broker_vue_min_lease_ms=config.lsp_broker_vue_min_lease_ms,
+        l5_call_rate_total_max=config.l5_call_rate_total_max,
+        l5_call_rate_batch_max=config.l5_call_rate_batch_max,
+        l5_calls_per_min_per_lang_max=config.l5_calls_per_min_per_lang_max,
+        l5_tokens_per_10sec_global_max=config.l5_tokens_per_10sec_global_max,
+        l5_tokens_per_10sec_per_lang_max=config.l5_tokens_per_10sec_per_lang_max,
+        l5_tokens_per_10sec_per_workspace_max=config.l5_tokens_per_10sec_per_workspace_max,
+        l3_query_compile_cache_enabled=config.l3_query_compile_cache_enabled,
+        l3_query_compile_ms_budget=config.l3_query_compile_ms_budget,
+        l3_query_budget_ms=config.l3_query_budget_ms,
+        tool_layer_repo=tool_layer_repo,
     )
+    runtime_search_defaults: dict[str, bool] = {"resolve_symbols_default": False}
+
+    def _set_search_resolve_symbols_default(enabled: bool) -> None:
+        runtime_search_defaults["resolve_symbols_default"] = bool(enabled)
+
+    def _get_search_resolve_symbols_default() -> bool:
+        return bool(runtime_search_defaults.get("resolve_symbols_default", False))
+
     pipeline_control_service = PipelineControlService(
         policy_repo=policy_repo,
         event_repo=event_repo,
         queue_repo=enrich_queue_repo,
         control_state_repo=control_state_repo,
+        set_l5_admission_mode=file_collection_service.set_l5_admission_mode,
+        set_search_resolve_symbols_default=_set_search_resolve_symbols_default,
     )
     pipeline_quality_service = PipelineQualityService(
         file_repo=file_repo,
@@ -318,6 +349,7 @@ def main() -> None:
         benchmark_service=pipeline_benchmark_service,
         perf_repo=perf_repo,
         artifact_root=config.db_path.parent / "artifacts",
+        stage_baseline_repo=stage_baseline_repo,
     )
     language_probe_service = LanguageProbeService(
         workspace_repo=workspace_repo,
@@ -337,6 +369,7 @@ def main() -> None:
         file_collection_service=file_collection_service,
         lsp_repo=lsp_repo,
         knowledge_repo=knowledge_repo,
+        tool_layer_repo=tool_layer_repo,
     )
 
     os.environ["SARI_MCP_FORWARD_TO_DAEMON"] = "0"
@@ -356,6 +389,7 @@ def main() -> None:
             language_probe_repo=language_probe_repo,
             repo_registry_repo=repo_registry_repo,
             lsp_metrics_provider=lsp_hub.get_metrics,
+            search_resolve_symbols_default_provider=_get_search_resolve_symbols_default,
             db_path=config.db_path,
             http_bg_proxy_enabled=config.http_bg_proxy_enabled,
             http_bg_proxy_target=config.http_bg_proxy_target,
@@ -407,6 +441,18 @@ def main() -> None:
                     os.kill(this_pid, signal.SIGTERM)
                     return
                 pipeline_control_service.evaluate_auto_hold()
+                try:
+                    latest_perf_summary = pipeline_perf_service.get_latest_report()
+                except PerfError:
+                    latest_perf_summary = None
+                rollout_action = pipeline_control_service.evaluate_stage_rollout(summary=latest_perf_summary)
+                if bool(rollout_action.get("changed")):
+                    event_repo.record_event(
+                        job_id="daemon:stage_rollout",
+                        status=str(rollout_action.get("action", "ROLLOUT_APPLIED")),
+                        latency_ms=0,
+                        created_at=now_iso8601_utc(),
+                    )
             except (ValidationError, sqlite3.Error, RuntimeError, OSError, ValueError, TypeError) as exc:
                 # 자동제어 실패를 침묵 처리하지 않고 명시적으로 기록한다.
                 log.exception("자동제어 평가 실패: %s", exc)

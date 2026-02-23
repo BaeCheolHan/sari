@@ -75,6 +75,10 @@ class FileEnrichQueueRepository:
                         updated_at = :updated_at,
                         last_error = NULL,
                         defer_reason = NULL,
+                        deferred_state = NULL,
+                        deferred_count = 0,
+                        first_deferred_at = NULL,
+                        last_deferred_at = NULL,
                         scope_level = NULL,
                         scope_root = NULL,
                         scope_attempts = 0
@@ -172,6 +176,22 @@ class FileEnrichQueueRepository:
                                 WHEN :is_supersede = 1 THEN NULL
                                 ELSE defer_reason
                             END,
+                            deferred_state = CASE
+                                WHEN :is_supersede = 1 THEN NULL
+                                ELSE deferred_state
+                            END,
+                            deferred_count = CASE
+                                WHEN :is_supersede = 1 THEN 0
+                                ELSE deferred_count
+                            END,
+                            first_deferred_at = CASE
+                                WHEN :is_supersede = 1 THEN NULL
+                                ELSE first_deferred_at
+                            END,
+                            last_deferred_at = CASE
+                                WHEN :is_supersede = 1 THEN NULL
+                                ELSE last_deferred_at
+                            END,
                             last_error = CASE
                                 WHEN :is_supersede = 1 THEN NULL
                                 ELSE last_error
@@ -259,7 +279,9 @@ class FileEnrichQueueRepository:
                   AND status IN ('PENDING', 'FAILED')
                   AND next_retry_at <= :now_iso
                 RETURNING job_id, repo_id, repo_root, relative_path, content_hash, priority, enqueue_source,
-                          status, attempt_count, last_error, defer_reason, scope_level, scope_root, scope_attempts,
+                          status, attempt_count, last_error, defer_reason,
+                          deferred_state, deferred_count, first_deferred_at, last_deferred_at,
+                          scope_level, scope_root, scope_attempts,
                           next_retry_at, created_at, updated_at
                 """,
                 {"limit": limit, "now_iso": now_iso},
@@ -280,6 +302,10 @@ class FileEnrichQueueRepository:
                         attempt_count=row_int(row, "attempt_count"),
                         last_error=row_optional_str(row, "last_error"),
                         defer_reason=row_optional_str(row, "defer_reason"),
+                        deferred_state=row_optional_str(row, "deferred_state"),
+                        deferred_count=row_int(row, "deferred_count"),
+                        first_deferred_at=row_optional_str(row, "first_deferred_at"),
+                        last_deferred_at=row_optional_str(row, "last_deferred_at"),
                         scope_level=row_optional_str(row, "scope_level"),
                         scope_root=row_optional_str(row, "scope_root"),
                         scope_attempts=row_int(row, "scope_attempts"),
@@ -309,6 +335,11 @@ class FileEnrichQueueRepository:
                         enqueue_source = 'l3',
                         attempt_count = 0,
                         last_error = NULL,
+                        defer_reason = NULL,
+                        deferred_state = NULL,
+                        deferred_count = 0,
+                        first_deferred_at = NULL,
+                        last_deferred_at = NULL,
                         next_retry_at = :now_iso,
                         updated_at = :now_iso
                     WHERE job_id = :job_id
@@ -360,25 +391,133 @@ class FileEnrichQueueRepository:
             conn.commit()
         return changed
 
-    def defer_jobs_to_pending(self, job_ids: list[str], next_retry_at: str, defer_reason: str, now_iso: str) -> int:
+    def defer_jobs_to_pending(
+        self,
+        job_ids: list[str],
+        next_retry_at: str,
+        defer_reason: str,
+        now_iso: str,
+        max_deferred_queue_size: int | None = None,
+        max_deferred_per_workspace: int | None = None,
+        deferred_ttl_hours: int | None = None,
+    ) -> int:
         """RUNNING/PENDING 작업을 broker defer 의미로 PENDING 상태로 되돌린다.
 
-        Phase 1 규칙:
+        규칙:
         - status는 PENDING으로 설정
         - next_retry_at/defer_reason만 갱신 (updated_at 포함)
         - attempt_count/error_count는 절대 건드리지 않음
+        - deferred 상태머신(NEW/RETRY_WAIT/BUMPED/DROPPED)을 함께 갱신
+        - cap/TTL 초과 시 DROP 처리(status=DONE, deferred_state=DROPPED)
         """
         if len(job_ids) == 0:
             return 0
         changed = 0
+        now_dt = self._parse_iso_utc(now_iso)
+        ttl_limit_dt = None
+        if now_dt is not None and deferred_ttl_hours is not None and deferred_ttl_hours > 0:
+            ttl_limit_dt = now_dt - timedelta(hours=int(deferred_ttl_hours))
         with connect(self._db_path) as conn:
             for job_id in job_ids:
+                current = conn.execute(
+                    """
+                    SELECT repo_root, deferred_state, deferred_count, first_deferred_at
+                    FROM file_enrich_queue
+                    WHERE job_id = :job_id
+                      AND status IN ('PENDING', 'RUNNING')
+                    """,
+                    {"job_id": job_id},
+                ).fetchone()
+                if current is None:
+                    continue
+
+                first_deferred_at = row_optional_str(current, "first_deferred_at")
+                if ttl_limit_dt is not None and first_deferred_at is not None:
+                    first_dt = self._parse_iso_utc(first_deferred_at)
+                    if first_dt is not None and first_dt <= ttl_limit_dt:
+                        conn.execute(
+                            """
+                            UPDATE file_enrich_queue
+                            SET status = 'DONE',
+                                defer_reason = 'l5_drop:ttl_expired',
+                                deferred_state = 'DROPPED',
+                                last_deferred_at = :updated_at,
+                                updated_at = :updated_at
+                            WHERE job_id = :job_id
+                            """,
+                            {"job_id": job_id, "updated_at": now_iso},
+                        )
+                        continue
+
+                if max_deferred_queue_size is not None or max_deferred_per_workspace is not None:
+                    counts = conn.execute(
+                        """
+                        SELECT
+                            SUM(
+                                CASE
+                                    WHEN status = 'PENDING'
+                                     AND next_retry_at > :now_iso
+                                     AND deferred_state IN ('NEW', 'RETRY_WAIT', 'BUMPED')
+                                    THEN 1 ELSE 0
+                                END
+                            ) AS total_deferred,
+                            SUM(
+                                CASE
+                                    WHEN repo_root = :repo_root
+                                     AND status = 'PENDING'
+                                     AND next_retry_at > :now_iso
+                                     AND deferred_state IN ('NEW', 'RETRY_WAIT', 'BUMPED')
+                                    THEN 1 ELSE 0
+                                END
+                            ) AS workspace_deferred
+                        FROM file_enrich_queue
+                        """,
+                        {"now_iso": now_iso, "repo_root": row_str(current, "repo_root")},
+                    ).fetchone()
+                    total_deferred = int(counts["total_deferred"] or 0) if counts is not None else 0
+                    workspace_deferred = int(counts["workspace_deferred"] or 0) if counts is not None else 0
+                    overflow_total = max_deferred_queue_size is not None and total_deferred >= int(max_deferred_queue_size)
+                    overflow_workspace = (
+                        max_deferred_per_workspace is not None and workspace_deferred >= int(max_deferred_per_workspace)
+                    )
+                    if overflow_total or overflow_workspace:
+                        drop_reason = "l5_drop:deferred_cap_workspace" if overflow_workspace else "l5_drop:deferred_cap_total"
+                        conn.execute(
+                            """
+                            UPDATE file_enrich_queue
+                            SET status = 'DONE',
+                                defer_reason = :defer_reason,
+                                deferred_state = 'DROPPED',
+                                last_deferred_at = :updated_at,
+                                updated_at = :updated_at
+                            WHERE job_id = :job_id
+                            """,
+                            {"job_id": job_id, "defer_reason": drop_reason, "updated_at": now_iso},
+                        )
+                        continue
+
+                prev_state = (row_optional_str(current, "deferred_state") or "").strip().upper()
+                prev_count = int(current["deferred_count"] or 0)
+                if prev_state == "DROPPED":
+                    continue
+                next_count = prev_count + 1
+                if prev_state == "BUMPED":
+                    next_state = "BUMPED"
+                elif prev_state in {"NEW", "RETRY_WAIT"}:
+                    next_state = "RETRY_WAIT" if next_count <= 2 else "BUMPED"
+                else:
+                    next_state = "NEW"
+
                 row = conn.execute(
                     """
                     UPDATE file_enrich_queue
                     SET status = 'PENDING',
                         next_retry_at = :next_retry_at,
                         defer_reason = :defer_reason,
+                        deferred_state = :deferred_state,
+                        deferred_count = :deferred_count,
+                        first_deferred_at = COALESCE(first_deferred_at, :first_deferred_at),
+                        last_deferred_at = :last_deferred_at,
                         updated_at = :updated_at
                     WHERE job_id = :job_id
                       AND status IN ('PENDING', 'RUNNING')
@@ -387,6 +526,10 @@ class FileEnrichQueueRepository:
                         "job_id": job_id,
                         "next_retry_at": next_retry_at,
                         "defer_reason": defer_reason,
+                        "deferred_state": next_state,
+                        "deferred_count": next_count,
+                        "first_deferred_at": now_iso,
+                        "last_deferred_at": now_iso,
                         "updated_at": now_iso,
                     },
                 )
@@ -592,6 +735,90 @@ class FileEnrichQueueRepository:
             "oldest_pending_available_age_sec": max(available_ages) if available_ages else None,
             "oldest_pending_deferred_age_sec": max(deferred_ages) if deferred_ages else None,
             "p95_pending_available_age_sec": self._percentile(available_ages, 95.0),
+        }
+
+    def get_deferred_drop_stats(self, top_k: int = 10) -> dict[str, object]:
+        """deferred DROP 상태의 reason/workspace/language 집계를 반환한다."""
+        safe_top_k = max(1, int(top_k))
+        with connect(self._db_path) as conn:
+            totals = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS dropped_total,
+                    SUM(CASE WHEN defer_reason = 'l5_drop:ttl_expired' THEN 1 ELSE 0 END) AS dropped_ttl_expired,
+                    SUM(CASE WHEN defer_reason = 'l5_drop:deferred_cap_total' THEN 1 ELSE 0 END) AS dropped_cap_total,
+                    SUM(CASE WHEN defer_reason = 'l5_drop:deferred_cap_workspace' THEN 1 ELSE 0 END) AS dropped_cap_workspace
+                FROM file_enrich_queue
+                WHERE deferred_state = 'DROPPED'
+                """
+            ).fetchone()
+
+            by_reason_rows = conn.execute(
+                """
+                SELECT defer_reason, COUNT(*) AS cnt
+                FROM file_enrich_queue
+                WHERE deferred_state = 'DROPPED'
+                GROUP BY defer_reason
+                ORDER BY cnt DESC
+                LIMIT :limit
+                """,
+                {"limit": safe_top_k},
+            ).fetchall()
+
+            by_workspace_rows = conn.execute(
+                """
+                SELECT repo_root, COUNT(*) AS cnt
+                FROM file_enrich_queue
+                WHERE deferred_state = 'DROPPED'
+                GROUP BY repo_root
+                ORDER BY cnt DESC
+                LIMIT :limit
+                """,
+                {"limit": safe_top_k},
+            ).fetchall()
+
+            language_rows = conn.execute(
+                """
+                SELECT relative_path
+                FROM file_enrich_queue
+                WHERE deferred_state = 'DROPPED'
+                """
+            ).fetchall()
+
+        dropped_total = int(totals["dropped_total"] or 0) if totals is not None else 0
+        by_reason: dict[str, int] = {}
+        for row in by_reason_rows:
+            reason = row_optional_str(row, "defer_reason") or "unknown"
+            by_reason[reason] = int(row["cnt"] or 0)
+
+        by_workspace_topk: list[dict[str, object]] = []
+        for row in by_workspace_rows:
+            by_workspace_topk.append(
+                {
+                    "repo_root": row_str(row, "repo_root"),
+                    "count": int(row["cnt"] or 0),
+                }
+            )
+
+        by_language_acc: dict[str, int] = {}
+        for row in language_rows:
+            relative_path = row_optional_str(row, "relative_path") or ""
+            suffix = Path(relative_path).suffix.lower().lstrip(".")
+            language_key = suffix if suffix != "" else "no_ext"
+            by_language_acc[language_key] = int(by_language_acc.get(language_key, 0)) + 1
+        by_language_topk = [
+            {"language": key, "count": value}
+            for key, value in sorted(by_language_acc.items(), key=lambda item: item[1], reverse=True)[:safe_top_k]
+        ]
+
+        return {
+            "dropped_total": dropped_total,
+            "dropped_ttl_expired_count": int(totals["dropped_ttl_expired"] or 0) if totals is not None else 0,
+            "dropped_cap_total_count": int(totals["dropped_cap_total"] or 0) if totals is not None else 0,
+            "dropped_cap_workspace_count": int(totals["dropped_cap_workspace"] or 0) if totals is not None else 0,
+            "by_reason": by_reason,
+            "by_workspace_topk": by_workspace_topk,
+            "by_language_topk": by_language_topk,
         }
 
     def get_eligible_counts(self, now_iso: str) -> dict[str, int]:

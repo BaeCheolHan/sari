@@ -695,7 +695,13 @@ class SolidLanguageServer(ABC):
             with self.open_file(relative_file_path) as opened_file_data:
                 return get_raw_document_symbols(opened_file_data)
 
-    def request_document_symbols(self, relative_file_path: str, file_buffer: LSPFileBuffer | None=None) -> DocumentSymbols:
+    def request_document_symbols(
+        self,
+        relative_file_path: str,
+        file_buffer: LSPFileBuffer | None = None,
+        *,
+        sync_with_ls: bool = True,
+    ) -> DocumentSymbols:
         with self._open_file_context(relative_file_path, file_buffer, open_in_ls=False) as file_data:
             cache_key = relative_file_path
             file_hash_and_result = self._document_symbols_cache.get(cache_key)
@@ -708,11 +714,12 @@ class SolidLanguageServer(ABC):
                     log.debug('Cached document symbol content for %s has changed', relative_file_path)
             else:
                 log.debug('No cache hit for document symbols in %s', relative_file_path)
-            try:
-                file_data.ensure_open_in_ls()
-            except (RuntimeError, OSError, ValueError, TypeError) as exc:
-                raise SolidLSPException(f'ERR_LSP_SYNC_OPEN_FAILED: {exc}') from exc
-            file_data.sync_changes_to_ls()
+            if sync_with_ls:
+                try:
+                    file_data.ensure_open_in_ls()
+                except (RuntimeError, OSError, ValueError, TypeError) as exc:
+                    raise SolidLSPException(f'ERR_LSP_SYNC_OPEN_FAILED: {exc}') from exc
+                file_data.sync_changes_to_ls()
             root_symbols = self._request_document_symbols(relative_file_path, file_data)
             if root_symbols is None:
                 log.warning(f"Received None response from the Language Server for document symbols in {relative_file_path}. This means the language server can't understand this file (possibly due to syntax errors). It may also be due to a bug or misconfiguration of the LS. Returning empty list")

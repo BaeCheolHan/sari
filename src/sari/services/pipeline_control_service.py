@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from collections.abc import Callable
 
 from sari.core.exceptions import ErrorContext, ValidationError
 from sari.core.models import (
@@ -28,12 +29,18 @@ class PipelineControlService:
         event_repo: PipelineJobEventRepository,
         queue_repo: FileEnrichQueueRepository,
         control_state_repo: PipelineControlStateRepository,
+        set_l5_admission_mode: Callable[[bool, bool], None] | None = None,
+        set_search_resolve_symbols_default: Callable[[bool], None] | None = None,
     ) -> None:
         """서비스 의존성을 저장한다."""
         self._policy_repo = policy_repo
         self._event_repo = event_repo
         self._queue_repo = queue_repo
         self._control_state_repo = control_state_repo
+        self._set_l5_admission_mode = set_l5_admission_mode
+        self._set_search_resolve_symbols_default = set_search_resolve_symbols_default
+        self._last_l5_admission_enforced: bool | None = None
+        self._last_resolve_symbols_default: bool | None = None
 
     def get_policy(self) -> PipelinePolicyDTO:
         """운영 정책을 조회한다."""
@@ -192,6 +199,11 @@ class PipelineControlService:
         """자동제어 상태를 조회한다."""
         return self._control_state_repo.get_state()
 
+    def get_stage_rollout_state(self) -> dict[str, object]:
+        """자동제어 상태(last_action)에서 stage rollout 상태를 추출한다."""
+        state = self._control_state_repo.get_state()
+        return _parse_stage_rollout_last_action(state.last_action)
+
     def set_auto_hold_enabled(self, enabled: bool) -> PipelineAutoControlStateDTO:
         """자동제어 활성화를 설정한다."""
         action = "auto_enabled" if enabled else "auto_disabled"
@@ -225,6 +237,72 @@ class PipelineControlService:
         updated = self._control_state_repo.update_state(last_action=f"no_change:{alert.state}")
         return {"action": "NO_CHANGE", "changed": False, "auto_control": updated.to_dict(), "alert": alert.to_dict()}
 
+    def evaluate_stage_rollout(self, summary: dict[str, object] | None) -> dict[str, object]:
+        """Stage exit 결과로 런타임 토글을 적용한다."""
+        self._hydrate_last_rollout_targets_from_state()
+        stage_exit = _extract_stage_exit(summary=summary)
+        if stage_exit is None:
+            self._control_state_repo.update_state(last_action="stage_rollout:no_report")
+            return {"action": "NO_REPORT", "changed": False}
+
+        stage_a = stage_exit.get("stage_a_to_b")
+        stage_b = stage_exit.get("stage_b_to_c")
+        stage_a_passed = isinstance(stage_a, dict) and bool(stage_a.get("passed"))
+        stage_b_passed = isinstance(stage_b, dict) and bool(stage_b.get("passed"))
+
+        target_l5_enforced = bool(stage_b_passed)
+        target_resolve_symbols_default = not bool(stage_a_passed)
+        changed = False
+
+        if self._set_l5_admission_mode is not None:
+            self._set_l5_admission_mode(shadow_enabled=True, enforced=target_l5_enforced)
+            if self._last_l5_admission_enforced is None or self._last_l5_admission_enforced != target_l5_enforced:
+                changed = True
+            self._last_l5_admission_enforced = target_l5_enforced
+        if self._set_search_resolve_symbols_default is not None:
+            self._set_search_resolve_symbols_default(target_resolve_symbols_default)
+            if (
+                self._last_resolve_symbols_default is None
+                or self._last_resolve_symbols_default != target_resolve_symbols_default
+            ):
+                changed = True
+            self._last_resolve_symbols_default = target_resolve_symbols_default
+
+        action = "ROLLOUT_APPLIED" if changed else "NO_CHANGE"
+        self._control_state_repo.update_state(
+            last_action=(
+                "stage_rollout:"
+                f"{action.lower()}:"
+                f"stage_a={int(stage_a_passed)}:"
+                f"stage_b={int(stage_b_passed)}:"
+                f"l5_enforced={int(target_l5_enforced)}:"
+                f"resolve_symbols_default={int(target_resolve_symbols_default)}"
+            )
+        )
+        return {
+            "action": action,
+            "changed": changed,
+            "stage_a_passed": stage_a_passed,
+            "stage_b_passed": stage_b_passed,
+            "l5_admission_enforced": target_l5_enforced,
+            "resolve_symbols_default": target_resolve_symbols_default,
+        }
+
+    def _hydrate_last_rollout_targets_from_state(self) -> None:
+        """프로세스 재시작 후에도 stage rollout 직전 토글 상태를 복원한다."""
+        if self._last_l5_admission_enforced is not None and self._last_resolve_symbols_default is not None:
+            return
+        state = self._control_state_repo.get_state()
+        parsed = _parse_stage_rollout_last_action(state.last_action)
+        if not bool(parsed.get("available")):
+            return
+        l5_value = parsed.get("l5_admission_enforced")
+        resolve_value = parsed.get("resolve_symbols_default")
+        if isinstance(l5_value, bool):
+            self._last_l5_admission_enforced = l5_value
+        if isinstance(resolve_value, bool):
+            self._last_resolve_symbols_default = resolve_value
+
 
 def _parse_iso(raw: str) -> datetime:
     """ISO8601 문자열을 UTC datetime으로 변환한다."""
@@ -232,6 +310,70 @@ def _parse_iso(raw: str) -> datetime:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _extract_stage_exit(summary: dict[str, object] | None) -> dict[str, object] | None:
+    """pipeline_perf summary에서 workspace_real stage_exit를 추출한다."""
+    if not isinstance(summary, dict):
+        return None
+    datasets = summary.get("datasets")
+    if isinstance(datasets, list):
+        for item in datasets:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("dataset_type")) != "workspace_real":
+                continue
+            integrity = item.get("integrity")
+            if not isinstance(integrity, dict):
+                continue
+            stage_exit = integrity.get("stage_exit")
+            if isinstance(stage_exit, dict):
+                return stage_exit
+    stage_exit_top = summary.get("stage_exit")
+    if isinstance(stage_exit_top, dict):
+        return stage_exit_top
+    return None
+
+
+def _parse_stage_rollout_last_action(last_action: str | None) -> dict[str, object]:
+    """last_action 문자열에서 stage rollout 상태를 파싱한다."""
+    if not isinstance(last_action, str) or not last_action.startswith("stage_rollout:"):
+        return {
+            "available": False,
+            "action": None,
+            "stage_a_passed": None,
+            "stage_b_passed": None,
+            "l5_admission_enforced": None,
+            "resolve_symbols_default": None,
+        }
+    parts = last_action.split(":")
+    action = parts[1] if len(parts) >= 2 else None
+    parsed: dict[str, object] = {
+        "available": True,
+        "action": action,
+        "stage_a_passed": None,
+        "stage_b_passed": None,
+        "l5_admission_enforced": None,
+        "resolve_symbols_default": None,
+    }
+    for token in parts[2:]:
+        if "=" not in token:
+            continue
+        key, value = token.split("=", 1)
+        parsed_value: object
+        if value in {"0", "1"}:
+            parsed_value = value == "1"
+        else:
+            parsed_value = value
+        if key == "stage_a":
+            parsed["stage_a_passed"] = parsed_value
+        elif key == "stage_b":
+            parsed["stage_b_passed"] = parsed_value
+        elif key == "l5_enforced":
+            parsed["l5_admission_enforced"] = parsed_value
+        elif key == "resolve_symbols_default":
+            parsed["resolve_symbols_default"] = parsed_value
+    return parsed
 
 
 def _percentile_95(values: list[int]) -> int:

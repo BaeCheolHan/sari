@@ -12,8 +12,9 @@ import time
 import math
 
 import hashlib
+import pytest
 
-from sari.core.models import CandidateIndexChangeDTO, CollectedFileL1DTO, CollectionPolicyDTO, FileEnrichJobDTO, ToolReadinessStateDTO, WorkspaceDTO
+from sari.core.models import CandidateIndexChangeDTO, CollectedFileL1DTO, CollectionPolicyDTO, FileEnrichJobDTO, L5RejectReason, ToolReadinessStateDTO, WorkspaceDTO
 from sari.db.repositories.candidate_index_change_repository import CandidateIndexChangeRepository
 from sari.db.repositories.file_body_repository import FileBodyRepository
 from sari.db.repositories.file_collection_repository import FileCollectionRepository
@@ -27,6 +28,11 @@ from sari.search.candidate_search import CandidateBackendError, CandidateSearchC
 from sari.search.orchestrator import SearchOrchestrator
 from sari.services.collection.enrich_engine import EnrichEngine
 import sari.services.collection.enrich_engine as enrich_engine_module
+from sari.services.collection.l3_treesitter_preprocess_service import (
+    L3PreprocessDecision,
+    L3PreprocessResultDTO,
+    L3TreeSitterPreprocessService,
+)
 from sari.services.collection.lsp_session_broker import LspBrokerLanguageProfile, LspSessionBroker
 from sari.services.collection.perf_trace import PerfTracer
 from sari.services.collection.watcher_hotness_tracker import WatcherHotnessTracker
@@ -42,6 +48,23 @@ class _NoopLspBackend(LspExtractionBackend):
         """항상 빈 LSP 결과를 반환한다."""
         del repo_root, relative_path, content_hash
         return LspExtractionResultDTO(symbols=[], relations=[], error_message=None)
+
+
+class _ProbeCountingBackend(_NoopLspBackend):
+    """probe 스케줄 호출 여부를 검증하기 위한 테스트 더블."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, bool, str]] = []
+
+    def schedule_probe_for_file(
+        self,
+        repo_root: str,
+        relative_path: str,
+        force: bool = False,
+        trigger: str = "background",
+    ) -> str:
+        self.calls.append((repo_root, relative_path, bool(force), str(trigger)))
+        return "scheduled"
 
 
 class _StubFileRow:
@@ -120,6 +143,27 @@ class _StubExtractBackend:
         return LspExtractionResultDTO(symbols=[], relations=[], error_message=self.error_message)
 
 
+class _StubExtractBackendShouldNotBeCalled:
+    def extract(self, repo_root: str, relative_path: str, content_hash: str) -> LspExtractionResultDTO:
+        _ = (repo_root, relative_path, content_hash)
+        raise AssertionError("LSP extract should not be called when preprocess skips")
+
+class _CaptureToolLayerRepo:
+    def __init__(self) -> None:
+        self.l3_calls: list[dict[str, object]] = []
+        self.l4_calls: list[dict[str, object]] = []
+        self.l5_calls: list[dict[str, object]] = []
+
+    def upsert_l3_symbols(self, **kwargs) -> None:  # noqa: ANN003
+        self.l3_calls.append(dict(kwargs))
+
+    def upsert_l4_normalized_symbols(self, **kwargs) -> None:  # noqa: ANN003
+        self.l4_calls.append(dict(kwargs))
+
+    def upsert_l5_semantics(self, **kwargs) -> None:  # noqa: ANN003
+        self.l5_calls.append(dict(kwargs))
+
+
 def _build_min_enrich_engine_for_l3_test(*, lsp_backend: object, queue_repo: object, error_policy: _StubErrorPolicy) -> EnrichEngine:
     engine = object.__new__(EnrichEngine)
     engine._perf_tracer = PerfTracer(component="test_enrich_engine")
@@ -137,6 +181,72 @@ def _build_min_enrich_engine_for_l3_test(*, lsp_backend: object, queue_repo: obj
     engine._lsp_probe_l1_languages = set()
     engine._l3_supported_languages = {Language.PYTHON}
     engine._schedule_l1_probe_after_l3_fallback_called = 0
+    engine._l5_total_decisions = 0
+    engine._l5_total_admitted = 0
+    engine._l5_batch_decisions = 0
+    engine._l5_batch_admitted = 0
+    engine._l5_admission_shadow_enabled = False
+    engine._l5_admission_enforced = False
+    engine._l5_calls_per_min_per_lang_max = 30
+    engine._l5_admitted_timestamps_by_lang = {}
+    class _StubQueueTransitionService:
+        def defer_after_l5_admission_rejection(self, *, job: FileEnrichJobDTO, admission) -> bool:  # noqa: ANN001
+            _ = admission
+            if hasattr(queue_repo, "defer_jobs_to_pending"):
+                changed = queue_repo.defer_jobs_to_pending(
+                    job_ids=[job.job_id],
+                    next_retry_at="2026-01-01T00:00:30+00:00",
+                    defer_reason="l5_defer:pressure_rate_exceeded",
+                    now_iso="2026-01-01T00:00:00+00:00",
+                )
+                return int(changed) > 0
+            return False
+
+        def defer_after_preprocess_heavy(self, *, job: FileEnrichJobDTO, reason: str) -> bool:
+            _ = reason
+            if hasattr(queue_repo, "defer_jobs_to_pending"):
+                changed = queue_repo.defer_jobs_to_pending(
+                    job_ids=[job.job_id],
+                    next_retry_at="2026-01-01T00:01:00+00:00",
+                    defer_reason="l5_defer:deferred_heavy:test",
+                    now_iso="2026-01-01T00:00:00+00:00",
+                )
+                return int(changed) > 0
+            return False
+
+        def defer_after_broker_lease_denial(self, *, job: FileEnrichJobDTO, error_message: str) -> bool:
+            if "ERR_LSP_BROKER_LEASE_REQUIRED" not in str(error_message):
+                return False
+            if hasattr(queue_repo, "defer_jobs_to_pending"):
+                changed = queue_repo.defer_jobs_to_pending(
+                    job_ids=[job.job_id],
+                    next_retry_at="2026-01-01T00:00:20+00:00",
+                    defer_reason="l5_defer:pressure_burst_exceeded",
+                    now_iso="2026-01-01T00:00:00+00:00",
+                )
+                return int(changed) > 0
+            return False
+
+        def escalate_scope_after_l3_extract_error(self, *, job: FileEnrichJobDTO, error_message: str) -> bool:
+            message = str(error_message).lower()
+            trigger = ("no workspace contains" in message) or ("workspace_mismatch" in message)
+            if not trigger:
+                return False
+            if int(getattr(job, "scope_attempts", 0)) >= 2:
+                return False
+            if hasattr(queue_repo, "escalate_scope_on_same_job"):
+                return bool(
+                    queue_repo.escalate_scope_on_same_job(
+                        job_id=job.job_id,
+                        next_scope_level="repo",
+                        next_scope_root=job.repo_root,
+                        next_retry_at="2026-01-01T00:00:00+00:00",
+                        now_iso="2026-01-01T00:00:00+00:00",
+                    )
+                )
+            return False
+
+    engine._l3_queue_transition_service = _StubQueueTransitionService()
 
     def _fallback_probe(*, job):  # noqa: ANN002, ANN003
         _ = job
@@ -199,8 +309,135 @@ def test_enrich_engine_l3_refactored_orchestrator_flag_routes_single_job() -> No
     assert engine._l3_orchestrator.calls[0].job_id == "j-refactor-route"
 
 
-def test_enrich_engine_l3_extract_error_scope_trigger_escalates_same_row() -> None:
-    """L3 extract 오류가 baseline taxonomy 트리거면 FAILED 대신 same-row escalation로 되돌린다."""
+def test_enrich_engine_evaluate_l5_admission_applies_workspace_content_hash_cooldown() -> None:
+    """동일 workspace+content_hash 요청은 cooldown 기간에 COOLDOWN_ACTIVE로 거부되어야 한다."""
+
+    class _StubAdmissionService:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def evaluate_batch(self, **kwargs):  # noqa: ANN003
+            self.calls.append(dict(kwargs))
+            cooldown_active = bool(kwargs.get("cooldown_active", False))
+            if cooldown_active:
+                return enrich_engine_module.L4AdmissionDecisionDTO(
+                    admit_l5=False,
+                    reason_code=enrich_engine_module.L5ReasonCode.GOLDENSET_COVERAGE,
+                    reject_reason=enrich_engine_module.L5RejectReason.COOLDOWN_ACTIVE,
+                )
+            return enrich_engine_module.L4AdmissionDecisionDTO(
+                admit_l5=False,
+                reason_code=enrich_engine_module.L5ReasonCode.GOLDENSET_COVERAGE,
+                reject_reason=enrich_engine_module.L5RejectReason.PRESSURE_RATE_EXCEEDED,
+            )
+
+    engine = object.__new__(EnrichEngine)
+    engine._l4_admission_service = _StubAdmissionService()
+    engine._l5_total_decisions = 0
+    engine._l5_total_admitted = 0
+    engine._l5_batch_decisions = 0
+    engine._l5_batch_admitted = 0
+    engine._l5_calls_per_min_per_lang_max = 999
+    engine._l5_admitted_timestamps_by_lang = {}
+    engine._l5_reject_counts_by_reason = {reason: 0 for reason in enrich_engine_module.L5RejectReason}
+    engine._l5_cooldown_until_by_scope_file = {}
+    engine._schedule_l4_admission_probe = lambda job: None
+
+    job = FileEnrichJobDTO(
+        job_id="j-cooldown",
+        repo_id="r1",
+        repo_root="/workspace",
+        relative_path="repo/src/a.py",
+        content_hash="h-cool",
+        priority=1,
+        enqueue_source="l3",
+        status="RUNNING",
+        attempt_count=0,
+        last_error=None,
+        next_retry_at="2026-01-01T00:00:00+00:00",
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+    )
+
+    first = engine._evaluate_l5_admission_for_job(job, "python")
+    second = engine._evaluate_l5_admission_for_job(job, "python")
+
+    assert first is not None
+    assert first.reject_reason == enrich_engine_module.L5RejectReason.PRESSURE_RATE_EXCEEDED
+    assert second is not None
+    assert second.reject_reason == enrich_engine_module.L5RejectReason.COOLDOWN_ACTIVE
+    assert len(engine._l4_admission_service.calls) == 2
+    assert bool(engine._l4_admission_service.calls[1].get("cooldown_active", False)) is True
+
+
+def test_enrich_engine_flush_persists_tool_layer_buffers() -> None:
+    """flush 단계에서 L3/L4/L5 tool_data 버퍼가 저장소로 반영되어야 한다."""
+    engine = object.__new__(EnrichEngine)
+    engine._body_repo = type("BodyRepo", (), {"upsert_body_many": lambda self, _: None, "delete_body_many": lambda self, _: None})()
+    engine._lsp_repo = type("LspRepo", (), {"replace_file_data_many": lambda self, _: None})()
+    engine._readiness_repo = type("ReadinessRepo", (), {"upsert_state_many": lambda self, _: None})()
+    engine._file_repo = type("FileRepo", (), {"update_enrich_state_many": lambda self, _: None})()
+    engine._enrich_queue_repo = type(
+        "QueueRepo",
+        (),
+        {"mark_done_many": lambda self, _: None, "mark_failed_with_backoff_many": lambda self, _: None},
+    )()
+    engine._tool_layer_repo = _CaptureToolLayerRepo()
+
+    engine._flush_enrich_buffers(
+        done_ids=[],
+        failed_updates=[],
+        state_updates=[],
+        body_upserts=[],
+        body_deletes=[],
+        lsp_updates=[],
+        readiness_updates=[],
+        l3_layer_upserts=[
+            {
+                "workspace_id": "ws",
+                "repo_root": "/workspace",
+                "relative_path": "a.py",
+                "content_hash": "h1",
+                "symbols": [{"name": "A", "kind": "class", "line": 1, "end_line": 1}],
+                "degraded": False,
+                "l3_skipped_large_file": False,
+                "updated_at": "2026-02-23T00:00:00+00:00",
+            }
+        ],
+        l4_layer_upserts=[
+            {
+                "workspace_id": "ws",
+                "repo_root": "/workspace",
+                "relative_path": "a.py",
+                "content_hash": "h1",
+                "normalized": {"decision": "l3_only"},
+                "confidence": 0.9,
+                "ambiguity": 0.1,
+                "coverage": 1.0,
+                "needs_l5": False,
+                "updated_at": "2026-02-23T00:00:00+00:00",
+            }
+        ],
+        l5_layer_upserts=[
+            {
+                "workspace_id": "ws",
+                "repo_root": "/workspace",
+                "relative_path": "a.py",
+                "content_hash": "h1",
+                "reason_code": "L5_REASON_GOLDENSET_COVERAGE",
+                "semantics": {"relations_count": 1},
+                "updated_at": "2026-02-23T00:00:00+00:00",
+            }
+        ],
+    )
+
+    assert len(engine._tool_layer_repo.l3_calls) == 1
+    assert len(engine._tool_layer_repo.l4_calls) == 1
+    assert len(engine._tool_layer_repo.l5_calls) == 1
+
+
+def test_enrich_engine_l3_needs_l5_does_not_escalate_scope_in_l3() -> None:
+    """NEEDS_L5 + scope trigger 오류는 L5 실행 후 scope escalation defer로 전환되어야 한다."""
     queue_repo = _CaptureEscalateQueueRepo()
     error_policy = _StubErrorPolicy()
     engine = _build_min_enrich_engine_for_l3_test(
@@ -232,17 +469,474 @@ def test_enrich_engine_l3_extract_error_scope_trigger_escalates_same_row() -> No
     assert result.finished_status == "PENDING"
     assert result.failure_update is None
     assert result.state_update is None
-    assert result.done_id is None
+    assert result.readiness_update is None
     assert len(queue_repo.calls) == 1
-    assert queue_repo.calls[0]["job_id"] == "j1"
-    assert queue_repo.calls[0]["next_scope_level"] == "repo"
-    assert queue_repo.calls[0]["next_scope_root"] == "/workspace/repo_a"
     assert engine._schedule_l1_probe_after_l3_fallback_called == 0
-    assert ("ERR_L3_SCOPE_ESCALATED", "enrich_l3_extract_scope_escalation") in error_policy.events
 
 
-def test_enrich_engine_l3_extract_error_transient_does_not_escalate() -> None:
-    """timeout류 L3 extract 오류는 baseline에서 scope escalation 트리거가 아니다."""
+def test_enrich_engine_l3_preprocess_can_skip_lsp_extract() -> None:
+    """전처리 결과가 충분하면 LSP extract 없이 TOOL_READY로 완료해야 한다."""
+    queue_repo = _CaptureEscalateQueueRepo()
+    error_policy = _StubErrorPolicy()
+    engine = _build_min_enrich_engine_for_l3_test(
+        lsp_backend=_StubExtractBackendShouldNotBeCalled(),
+        queue_repo=queue_repo,
+        error_policy=error_policy,
+    )
+
+    class _StubPreprocessService:
+        def preprocess(self, *, relative_path: str, content_text: str, max_bytes: int = 0) -> L3PreprocessResultDTO:
+            _ = (relative_path, content_text, max_bytes)
+            return L3PreprocessResultDTO(
+                symbols=[{"name": "alpha", "kind": "function", "line": 1, "end_line": 1}],
+                degraded=False,
+                decision=L3PreprocessDecision.L3_ONLY,
+                source="tree_sitter",
+                reason="l3_preprocess_only",
+            )
+
+    engine._l3_preprocess_service = _StubPreprocessService()
+    engine._l3_degraded_fallback_service = None
+    engine._l3_preprocess_max_bytes = 1024
+    job = FileEnrichJobDTO(
+        job_id="j-preprocess-skip",
+        repo_id="r1",
+        repo_root="/workspace",
+        relative_path="repo_a/src/a.py",
+        content_hash="h1",
+        priority=10,
+        enqueue_source="l3",
+        status="RUNNING",
+        attempt_count=0,
+        last_error=None,
+        next_retry_at="2026-01-01T00:00:00+00:00",
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+    )
+
+    result = engine._process_single_l3_job(job)
+
+    assert result.finished_status == "DONE"
+    assert result.failure_update is None
+    assert result.lsp_update is not None
+    assert len(result.lsp_update.symbols) == 1
+
+
+def test_l3_preprocess_large_file_marks_deferred_heavy() -> None:
+    """large file은 DEFERRED_HEAVY로 표기되어 배치 LSP 경로를 피해야 한다."""
+    service = L3TreeSitterPreprocessService(tree_sitter_enabled=False)
+    content = "a" * (300 * 1024)
+
+    result = service.preprocess(relative_path="repo_a/src/a.py", content_text=content, max_bytes=1024)
+
+    assert result.decision is L3PreprocessDecision.DEFERRED_HEAVY
+    assert result.decision is not L3PreprocessDecision.L3_ONLY
+    assert result.reason == "l3_preprocess_large_file"
+
+
+def test_l3_preprocess_single_symbol_routes_to_needs_l5() -> None:
+    """심볼 1개만 있는 저신뢰 파일은 NEEDS_L5로 분류해야 한다."""
+    service = L3TreeSitterPreprocessService(tree_sitter_enabled=False)
+    content = "def alpha():\n    return 1\n"
+
+    result = service.preprocess(relative_path="repo_a/src/a.py", content_text=content, max_bytes=1024)
+
+    assert result.decision is L3PreprocessDecision.NEEDS_L5
+    assert result.reason == "l3_preprocess_low_confidence"
+    assert len(result.symbols) == 1
+
+
+def test_l3_preprocess_single_symbol_config_filename_stays_l3_only() -> None:
+    """config/settings 계열 파일은 단일 심볼이어도 L3_ONLY로 유지해 L5 과승격을 줄여야 한다."""
+    service = L3TreeSitterPreprocessService(tree_sitter_enabled=False)
+    content = "def load_settings():\n    return {}\n"
+
+    result = service.preprocess(relative_path="repo_a/src/app_config.py", content_text=content, max_bytes=1024)
+
+    assert result.decision is L3PreprocessDecision.L3_ONLY
+    assert result.reason == "l3_preprocess_only"
+    assert len(result.symbols) == 1
+
+
+def test_l3_preprocess_single_symbol_regular_filename_still_needs_l5() -> None:
+    """일반 파일은 기존 임계값(심볼 2 미만) 규칙을 계속 적용해야 한다."""
+    service = L3TreeSitterPreprocessService(tree_sitter_enabled=False)
+    content = "def load_data():\n    return {}\n"
+
+    result = service.preprocess(relative_path="repo_a/src/service.py", content_text=content, max_bytes=1024)
+
+    assert result.decision is L3PreprocessDecision.NEEDS_L5
+    assert result.reason == "l3_preprocess_low_confidence"
+    assert len(result.symbols) == 1
+
+
+def test_l3_preprocess_multi_symbol_with_import_stays_l3_only() -> None:
+    """심볼이 충분한 파일은 import가 있어도 기본적으로 L3_ONLY를 유지해야 한다."""
+    service = L3TreeSitterPreprocessService(tree_sitter_enabled=False)
+    content = "import os\n\ndef alpha():\n    return 1\n\ndef beta():\n    return 2\n"
+
+    result = service.preprocess(relative_path="repo_a/src/a.py", content_text=content, max_bytes=1024)
+
+    assert result.decision is L3PreprocessDecision.L3_ONLY
+    assert result.reason == "l3_preprocess_only"
+    assert len(result.symbols) == 2
+
+
+def test_l3_preprocess_query_budget_exceeded_routes_to_needs_l5(monkeypatch: pytest.MonkeyPatch) -> None:
+    """query budget 초과 시 degraded + NEEDS_L5로 분기해야 한다."""
+    service = L3TreeSitterPreprocessService(query_budget_ms=1.0, tree_sitter_enabled=False)
+    ticks = iter([0.0, 0.0, 0.0, 2.0])
+    monkeypatch.setattr("sari.services.collection.l3_treesitter_preprocess_service.time.perf_counter", lambda: next(ticks))
+    result = service.preprocess(relative_path="repo_a/src/a.py", content_text="def alpha():\n    return 1\n", max_bytes=1024)
+    assert result.decision is L3PreprocessDecision.NEEDS_L5
+    assert result.degraded is True
+    assert result.reason == "l3_query_budget_exceeded"
+
+
+def test_l3_preprocess_compile_budget_exceeded_routes_to_needs_l5(monkeypatch: pytest.MonkeyPatch) -> None:
+    """compile budget 초과 시 degraded + NEEDS_L5로 분기해야 한다."""
+    service = L3TreeSitterPreprocessService(query_compile_ms_budget=1.0, tree_sitter_enabled=False)
+    ticks = iter([0.0, 0.0, 2.0])
+    monkeypatch.setattr("sari.services.collection.l3_treesitter_preprocess_service.time.perf_counter", lambda: next(ticks))
+    result = service.preprocess(relative_path="repo_a/src/a.py", content_text="def alpha():\n    return 1\n", max_bytes=1024)
+    assert result.decision is L3PreprocessDecision.NEEDS_L5
+    assert result.degraded is True
+    assert result.reason == "l3_query_compile_budget_exceeded"
+
+
+def test_l3_preprocess_tree_sitter_single_symbol_routes_to_needs_l5() -> None:
+    """tree-sitter라도 단일 심볼 저신뢰 케이스는 NEEDS_L5로 분류해야 한다."""
+
+    class _StubTreeSitterExtractor:
+        def is_available_for(self, lang_key: str) -> bool:
+            return lang_key == "py"
+
+        def extract_outline(self, *, lang_key: str, content_text: str, budget_sec: float):  # noqa: ANN001
+            _ = (lang_key, content_text, budget_sec)
+            return type(
+                "TreeSitterResult",
+                (),
+                {
+                    "symbols": [{"name": "alpha", "kind": "function", "line": 1, "end_line": 2, "symbol_key": "alpha:1"}],
+                    "degraded": False,
+                    "reason": None,
+                },
+            )()
+
+    service = L3TreeSitterPreprocessService(
+        tree_sitter_enabled=True,
+        tree_sitter_outline_extractor=_StubTreeSitterExtractor(),
+    )
+    result = service.preprocess(relative_path="repo_a/src/a.py", content_text="def alpha():\n    return 1\n", max_bytes=1024)
+    assert result.decision is L3PreprocessDecision.NEEDS_L5
+    assert result.source == "tree_sitter_outline"
+    assert result.reason == "l3_preprocess_low_confidence"
+    assert len(result.symbols) == 1
+
+
+def test_l3_preprocess_tree_sitter_degraded_uses_regex_fallback_before_l5() -> None:
+    """tree-sitter degraded 시 즉시 승격하지 않고 regex fallback 결과를 우선 사용한다."""
+
+    class _StubTreeSitterExtractor:
+        def is_available_for(self, lang_key: str) -> bool:
+            return lang_key == "py"
+
+        def extract_outline(self, *, lang_key: str, content_text: str, budget_sec: float):  # noqa: ANN001
+            _ = (lang_key, content_text, budget_sec)
+            return type(
+                "TreeSitterResult",
+                (),
+                {
+                    "symbols": [],
+                    "degraded": True,
+                    "reason": "tree_sitter_budget_exceeded",
+                },
+            )()
+
+    service = L3TreeSitterPreprocessService(
+        tree_sitter_enabled=True,
+        tree_sitter_outline_extractor=_StubTreeSitterExtractor(),
+    )
+    result = service.preprocess(relative_path="repo_a/src/a.py", content_text="def alpha():\n    return 1\n", max_bytes=1024)
+    assert result.decision is L3PreprocessDecision.NEEDS_L5
+    assert result.degraded is True
+    assert result.source == "regex_outline"
+    assert result.reason == "l3_preprocess_low_confidence"
+
+
+def test_enrich_engine_l3_preprocess_deferred_heavy_finishes_without_lsp() -> None:
+    """DEFERRED_HEAVY 결정은 배치 L3에서 LSP를 호출하지 않고 defer queue로 보내야 한다."""
+    queue_repo = _CaptureEscalateQueueRepo()
+    error_policy = _StubErrorPolicy()
+    engine = _build_min_enrich_engine_for_l3_test(
+        lsp_backend=_StubExtractBackendShouldNotBeCalled(),
+        queue_repo=queue_repo,
+        error_policy=error_policy,
+    )
+
+    class _StubPreprocessService:
+        def preprocess(self, *, relative_path: str, content_text: str, max_bytes: int = 0) -> L3PreprocessResultDTO:
+            _ = (relative_path, content_text, max_bytes)
+            return L3PreprocessResultDTO(
+                symbols=[],
+                degraded=True,
+                decision=L3PreprocessDecision.DEFERRED_HEAVY,
+                source="regex_outline",
+                reason="l3_preprocess_large_file",
+            )
+
+    engine._l3_preprocess_service = _StubPreprocessService()
+    engine._l3_degraded_fallback_service = None
+    engine._l3_preprocess_max_bytes = 1024
+    job = FileEnrichJobDTO(
+        job_id="j-preprocess-heavy",
+        repo_id="r1",
+        repo_root="/workspace",
+        relative_path="repo_a/src/a.py",
+        content_hash="h1",
+        priority=10,
+        enqueue_source="l3",
+        status="RUNNING",
+        attempt_count=0,
+        last_error=None,
+        next_retry_at="2026-01-01T00:00:00+00:00",
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+    )
+
+    result = engine._process_single_l3_job(job)
+
+    assert result.finished_status == "PENDING"
+    assert result.state_update is None
+    assert result.lsp_update is None
+    assert len(queue_repo.defer_calls) == 1
+    assert str(queue_repo.defer_calls[0]["defer_reason"]).startswith("l5_defer:deferred_heavy:")
+
+
+def test_enrich_engine_admission_admit_triggers_force_probe() -> None:
+    """L4 admission이 L5를 허용하면 해당 파일 probe를 즉시 force 스케줄해야 한다."""
+    queue_repo = _CaptureEscalateQueueRepo()
+    error_policy = _StubErrorPolicy()
+
+    class _ProbeCaptureBackend(_NoopLspBackend):
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, bool, str]] = []
+
+        def schedule_probe_for_file(
+            self,
+            repo_root: str,
+            relative_path: str,
+            force: bool = False,
+            trigger: str = "background",
+        ) -> str:
+            self.calls.append((repo_root, relative_path, bool(force), str(trigger)))
+            return "scheduled"
+
+    backend = _ProbeCaptureBackend()
+    engine = _build_min_enrich_engine_for_l3_test(
+        lsp_backend=backend,
+        queue_repo=queue_repo,
+        error_policy=error_policy,
+    )
+    engine._l5_total_decisions = 0
+    engine._l5_total_admitted = 0
+    engine._l5_batch_decisions = 0
+    engine._l5_batch_admitted = 0
+
+    class _AdmitAllL4Service:
+        def evaluate_batch(self, *, repo_root: str, language_key: str, total_rate: float, batch_rate: float, reason_code):  # noqa: ANN001
+            _ = (repo_root, language_key, total_rate, batch_rate, reason_code)
+            from sari.core.models import L4AdmissionDecisionDTO, L5ReasonCode, L5RequestMode
+
+            return L4AdmissionDecisionDTO(
+                admit_l5=True,
+                reason_code=L5ReasonCode.GOLDENSET_COVERAGE,
+                reject_reason=None,
+                budget_cost=1,
+                cooldown_until=None,
+                mode=L5RequestMode.BATCH,
+                workspace_uid="ws",
+            )
+
+    engine._l4_admission_service = _AdmitAllL4Service()
+    job = FileEnrichJobDTO(
+        job_id="j-admit",
+        repo_id="r1",
+        repo_root="/workspace",
+        relative_path="repo_a/src/a.py",
+        content_hash="h1",
+        priority=10,
+        enqueue_source="l3",
+        status="RUNNING",
+        attempt_count=0,
+        last_error=None,
+        next_retry_at="2026-01-01T00:00:00+00:00",
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+    )
+
+    decision = engine._evaluate_l5_admission_for_job(job, "python")
+
+    assert decision is not None
+    assert decision.admit_l5 is True
+    assert backend.calls == [("/workspace", "repo_a/src/a.py", True, "l4_admission")]
+
+
+def test_enrich_engine_l5_calls_per_min_per_lang_cap_rejects_second_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    """언어별 분당 상한 도달 시 두 번째 admit 시도는 즉시 거절되어야 한다."""
+    queue_repo = _CaptureEscalateQueueRepo()
+    error_policy = _StubErrorPolicy()
+    engine = _build_min_enrich_engine_for_l3_test(
+        lsp_backend=_NoopLspBackend(),
+        queue_repo=queue_repo,
+        error_policy=error_policy,
+    )
+    engine._l5_calls_per_min_per_lang_max = 1
+
+    class _AdmitAllL4Service:
+        def evaluate_batch(self, *, repo_root: str, language_key: str, total_rate: float, batch_rate: float, reason_code):  # noqa: ANN001
+            _ = (repo_root, language_key, total_rate, batch_rate, reason_code)
+            from sari.core.models import L4AdmissionDecisionDTO, L5ReasonCode, L5RequestMode
+
+            return L4AdmissionDecisionDTO(
+                admit_l5=True,
+                reason_code=L5ReasonCode.GOLDENSET_COVERAGE,
+                reject_reason=None,
+                budget_cost=1,
+                cooldown_until=None,
+                mode=L5RequestMode.BATCH,
+                workspace_uid="ws",
+            )
+
+    engine._l4_admission_service = _AdmitAllL4Service()
+    times = iter([100.0, 100.0, 100.0, 100.0])
+    monkeypatch.setattr(enrich_engine_module.time, "monotonic", lambda: next(times))
+    job = FileEnrichJobDTO(
+        job_id="j-admit-cap",
+        repo_id="r1",
+        repo_root="/workspace",
+        relative_path="repo_a/src/a.py",
+        content_hash="h1",
+        priority=10,
+        enqueue_source="l3",
+        status="RUNNING",
+        attempt_count=0,
+        last_error=None,
+        next_retry_at="2026-01-01T00:00:00+00:00",
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+    )
+    first = engine._evaluate_l5_admission_for_job(job, "python")
+    second = engine._evaluate_l5_admission_for_job(job, "python")
+    assert first is not None and first.admit_l5 is True
+    assert second is not None and second.admit_l5 is False
+    assert second.reject_reason is L5RejectReason.PRESSURE_RATE_EXCEEDED
+    metrics = engine.get_runtime_metrics()
+    assert metrics["l5_reject_count_by_reject_reason_pressure_rate_exceeded"] == pytest.approx(1.0)
+
+
+def test_enrich_engine_runtime_metrics_records_mode_not_allowed_reject() -> None:
+    """L4 정책 거절 사유는 reject_reason별 런타임 메트릭으로 집계되어야 한다."""
+    queue_repo = _CaptureEscalateQueueRepo()
+    error_policy = _StubErrorPolicy()
+    engine = _build_min_enrich_engine_for_l3_test(
+        lsp_backend=_NoopLspBackend(),
+        queue_repo=queue_repo,
+        error_policy=error_policy,
+    )
+
+    class _RejectL4Service:
+        def evaluate_batch(self, *, repo_root: str, language_key: str, total_rate: float, batch_rate: float, reason_code):  # noqa: ANN001
+            _ = (repo_root, language_key, total_rate, batch_rate, reason_code)
+            from sari.core.models import L4AdmissionDecisionDTO, L5ReasonCode, L5RejectReason, L5RequestMode
+
+            return L4AdmissionDecisionDTO(
+                admit_l5=False,
+                reason_code=L5ReasonCode.GOLDENSET_COVERAGE,
+                reject_reason=L5RejectReason.MODE_NOT_ALLOWED,
+                budget_cost=1,
+                cooldown_until=None,
+                mode=L5RequestMode.BATCH,
+                workspace_uid="ws",
+            )
+
+    engine._l4_admission_service = _RejectL4Service()
+    job = FileEnrichJobDTO(
+        job_id="j-reject-reason",
+        repo_id="r1",
+        repo_root="/workspace",
+        relative_path="repo_a/src/a.py",
+        content_hash="h1",
+        priority=10,
+        enqueue_source="l3",
+        status="RUNNING",
+        attempt_count=0,
+        last_error=None,
+        next_retry_at="2026-01-01T00:00:00+00:00",
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+    )
+
+    decision = engine._evaluate_l5_admission_for_job(job, "python")
+    assert decision is not None and decision.admit_l5 is False
+    assert decision.reject_reason is L5RejectReason.MODE_NOT_ALLOWED
+    metrics = engine.get_runtime_metrics()
+    assert metrics["l5_reject_count_by_reject_reason_mode_not_allowed"] == pytest.approx(1.0)
+
+
+def test_enrich_engine_runtime_metrics_include_l5_cost_units_dimensions() -> None:
+    """L5 decision budget_cost는 reason/language/workspace 축으로 누적되어야 한다."""
+    queue_repo = _CaptureEscalateQueueRepo()
+    error_policy = _StubErrorPolicy()
+    engine = _build_min_enrich_engine_for_l3_test(
+        lsp_backend=_NoopLspBackend(),
+        queue_repo=queue_repo,
+        error_policy=error_policy,
+    )
+
+    class _AdmitCostL4Service:
+        def evaluate_batch(self, *, repo_root: str, language_key: str, total_rate: float, batch_rate: float, reason_code):  # noqa: ANN001
+            _ = (repo_root, language_key, total_rate, batch_rate, reason_code)
+            from sari.core.models import L4AdmissionDecisionDTO, L5ReasonCode, L5RequestMode
+
+            return L4AdmissionDecisionDTO(
+                admit_l5=True,
+                reason_code=L5ReasonCode.GOLDENSET_COVERAGE,
+                reject_reason=None,
+                budget_cost=7,
+                cooldown_until=None,
+                mode=L5RequestMode.BATCH,
+                workspace_uid="ws",
+            )
+
+    engine._l4_admission_service = _AdmitCostL4Service()
+    job = FileEnrichJobDTO(
+        job_id="j-cost-metrics",
+        repo_id="r1",
+        repo_root="/workspace",
+        relative_path="repo_a/src/a.py",
+        content_hash="h1",
+        priority=10,
+        enqueue_source="l3",
+        status="RUNNING",
+        attempt_count=0,
+        last_error=None,
+        next_retry_at="2026-01-01T00:00:00+00:00",
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+    )
+
+    decision = engine._evaluate_l5_admission_for_job(job, "python")
+    assert decision is not None and decision.admit_l5 is True
+
+    metrics = engine.get_runtime_metrics()
+    assert metrics["l5_cost_units_total_by_reason_L5_REASON_GOLDENSET_COVERAGE"] == pytest.approx(7.0)
+    assert metrics["l5_cost_units_total_by_language_python"] == pytest.approx(7.0)
+    assert metrics["l5_cost_units_total_by_workspace_/workspace"] == pytest.approx(7.0)
+
+
+def test_enrich_engine_l3_needs_l5_finishes_without_extract_failure() -> None:
+    """NEEDS_L5에서 LSP 추출 오류가 나면 FAILED로 처리되어야 한다."""
     queue_repo = _CaptureEscalateQueueRepo()
     error_policy = _StubErrorPolicy()
     engine = _build_min_enrich_engine_for_l3_test(
@@ -275,12 +969,13 @@ def test_enrich_engine_l3_extract_error_transient_does_not_escalate() -> None:
     assert result.failure_update is not None
     assert result.state_update is not None
     assert result.state_update.enrich_state == "FAILED"
+    assert result.readiness_update is None
     assert len(queue_repo.calls) == 0
-    assert engine._schedule_l1_probe_after_l3_fallback_called == 1
+    assert engine._schedule_l1_probe_after_l3_fallback_called == 0
 
 
-def test_enrich_engine_l3_extract_error_broker_lease_denial_defers_pending() -> None:
-    """PR3 baseline: broker lease 거부는 FAILED가 아니라 queue defer(PENDING)로 전이해야 한다."""
+def test_enrich_engine_l3_broker_error_string_does_not_trigger_l3_defer() -> None:
+    """broker lease 오류 문자열은 L3에서 defer로 전환되어야 한다."""
     queue_repo = _CaptureEscalateQueueRepo()
     error_policy = _StubErrorPolicy()
     engine = _build_min_enrich_engine_for_l3_test(
@@ -314,18 +1009,14 @@ def test_enrich_engine_l3_extract_error_broker_lease_denial_defers_pending() -> 
     assert result.finished_status == "PENDING"
     assert result.failure_update is None
     assert result.state_update is None
-    assert result.done_id is None
+    assert result.readiness_update is None
     assert len(queue_repo.defer_calls) == 1
-    defer_call = queue_repo.defer_calls[0]
-    assert defer_call["job_ids"] == ["j-broker-defer"]
-    assert str(defer_call["defer_reason"]).startswith("broker_defer:")
     assert len(queue_repo.calls) == 0  # scope escalation 경로와 혼동되면 안 된다.
     assert engine._schedule_l1_probe_after_l3_fallback_called == 0
-    assert ("ERR_L3_DEFERRED_BY_BROKER", "enrich_l3_broker_defer") in error_policy.events
 
 
-def test_enrich_engine_l3_extract_error_wrapped_broker_lease_denial_defers_pending() -> None:
-    """실제 extract 래핑 메시지('LSP 추출 실패: ...')도 broker defer로 인식해야 한다."""
+def test_enrich_engine_l3_wrapped_broker_error_also_skips_to_l5_candidate() -> None:
+    """래핑된 broker 오류 문자열도 L3에서 defer 처리되어야 한다."""
     queue_repo = _CaptureEscalateQueueRepo()
     error_policy = _StubErrorPolicy()
     engine = _build_min_enrich_engine_for_l3_test(
@@ -359,12 +1050,13 @@ def test_enrich_engine_l3_extract_error_wrapped_broker_lease_denial_defers_pendi
 
     assert result.finished_status == "PENDING"
     assert result.failure_update is None
+    assert result.state_update is None
+    assert result.readiness_update is None
     assert len(queue_repo.defer_calls) == 1
-    assert queue_repo.defer_calls[0]["defer_reason"] == "broker_defer:cooldown"
 
 
-def test_enrich_engine_l3_extract_error_scope_trigger_stops_after_max_escalations() -> None:
-    """scope_attempts가 최대치에 도달한 job은 taxonomy 트리거여도 더 이상 escalation하지 않는다."""
+def test_enrich_engine_l3_scope_trigger_message_does_not_fail_when_extract_removed() -> None:
+    """scope trigger라도 escalation 한도 소진 시 FAILED 처리한다."""
     queue_repo = _CaptureEscalateQueueRepo()
     error_policy = _StubErrorPolicy()
     engine = _build_min_enrich_engine_for_l3_test(
@@ -395,6 +1087,9 @@ def test_enrich_engine_l3_extract_error_scope_trigger_stops_after_max_escalation
 
     assert result.finished_status == "FAILED"
     assert result.failure_update is not None
+    assert result.state_update is not None
+    assert result.state_update.enrich_state == "FAILED"
+    assert result.readiness_update is None
     assert len(queue_repo.calls) == 0
 
 
@@ -763,6 +1458,45 @@ def test_solid_lsp_extraction_backend_accepts_document_symbol_without_relative_p
     assert isinstance(result.symbols[0]["symbol_key"], str)
     assert result.symbols[0]["parent_symbol_key"] is None
     assert int(result.symbols[0]["depth"]) == 0
+
+
+def test_solid_lsp_extraction_backend_requests_document_symbols_without_sync_when_supported() -> None:
+    """L3 extract는 지원 시 sync_with_ls=False로 documentSymbol을 요청해야 한다."""
+
+    class _Symbols:
+        def iter_symbols(self) -> list[dict[str, object]]:
+            return [{"name": "alpha", "kind": "function", "location": {"range": {"start": {"line": 1}, "end": {"line": 1}}}}]
+
+    class _CaptureLsp:
+        def __init__(self) -> None:
+            self.flags: list[bool] = []
+
+        def request_document_symbols(self, relative_path: str, *, sync_with_ls: bool = True) -> _Symbols:
+            del relative_path
+            self.flags.append(bool(sync_with_ls))
+            return _Symbols()
+
+    class _FakeHub:
+        def __init__(self) -> None:
+            self.lsp = _CaptureLsp()
+
+        def resolve_language(self, relative_path: str) -> Language:
+            del relative_path
+            return Language.PYTHON
+
+        def get_or_start(self, language: Language, repo_root: str, request_kind: str = "indexing") -> _CaptureLsp:
+            del language, repo_root, request_kind
+            return self.lsp
+
+        def prewarm_language_pool(self, language: Language, repo_root: str) -> None:
+            del language, repo_root
+
+    hub = _FakeHub()
+    backend = SolidLspExtractionBackend(hub=hub)  # type: ignore[arg-type]
+    result = backend.extract(repo_root="/repo", relative_path="a.py", content_hash="h")
+
+    assert result.error_message is None
+    assert hub.lsp.flags == [False]
 
 
 def test_solid_lsp_extraction_backend_dedupes_inflight_same_request() -> None:
@@ -1154,6 +1888,33 @@ def test_file_collection_scan_once_skips_unchanged_read_bytes(tmp_path: Path, mo
     service.scan_once(str(repo_dir.resolve()))
 
     assert read_count["value"] == 0
+
+
+def test_file_collection_scan_once_does_not_schedule_l1_probe(tmp_path: Path) -> None:
+    """L1 스캔 경로는 probe를 직접 스케줄하지 않아야 한다(L4 admission 전용)."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_dir = tmp_path / "repo-l1-no-probe"
+    repo_dir.mkdir()
+    (repo_dir / "a.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+
+    backend = _ProbeCountingBackend()
+    service = FileCollectionService(
+        workspace_repo=WorkspaceRepository(db_path),
+        file_repo=FileCollectionRepository(db_path),
+        enrich_queue_repo=FileEnrichQueueRepository(db_path),
+        body_repo=FileBodyRepository(db_path),
+        lsp_repo=LspToolDataRepository(db_path),
+        readiness_repo=ToolReadinessRepository(db_path),
+        policy=_policy(),
+        lsp_backend=backend,
+        policy_repo=None,
+        event_repo=None,
+    )
+
+    service.scan_once(str(repo_dir.resolve()))
+
+    assert backend.calls == []
 
 
 def test_vector_embedding_runs_even_when_body_persistence_disabled(tmp_path: Path) -> None:
@@ -1594,8 +2355,8 @@ def test_enrich_l2_marks_l3_skipped_for_configured_unsupported_language(tmp_path
     assert backend.calls == 0
 
 
-def test_enrich_l3_failure_schedules_l3_fallback_probe_once(tmp_path: Path) -> None:
-    """L3 추출 실패 시 해당 언어가 허용 목록이면 l3_fallback probe를 예약해야 한다."""
+def test_enrich_l3_needs_l5_does_not_schedule_l3_fallback_probe(tmp_path: Path) -> None:
+    """L3 extract 제거 후에는 l3_fallback probe 예약이 발생하지 않아야 한다."""
     db_path = tmp_path / "state.db"
     init_schema(db_path)
     repo_dir = tmp_path / "repo-l3-fallback"
@@ -1637,11 +2398,7 @@ def test_enrich_l3_failure_schedules_l3_fallback_probe_once(tmp_path: Path) -> N
     _ = service.process_enrich_jobs_l3(limit=50)
 
     fallback_scheduled = [item for item in backend.scheduled if item[3] == "l3_fallback"]
-    assert len(fallback_scheduled) == 1
-    scheduled = fallback_scheduled[0]
-    assert scheduled[1] == "a.py"
-    assert scheduled[2] is False
-    assert scheduled[3] == "l3_fallback"
+    assert fallback_scheduled == []
 
 
 def test_enrich_l3_failure_does_not_schedule_when_probe_inflight(tmp_path: Path) -> None:
@@ -1690,8 +2447,8 @@ def test_enrich_l3_failure_does_not_schedule_when_probe_inflight(tmp_path: Path)
     assert fallback_scheduled == []
 
 
-def test_enrich_l3_parallel_timeout_marks_remaining_jobs_failed(tmp_path: Path) -> None:
-    """병렬 L3 그룹 future hang가 발생해도 timeout job은 RUNNING 잔류 없이 FAILED로 전이되어야 한다."""
+def test_enrich_l3_parallel_mode_no_longer_uses_extract_timeout_path(tmp_path: Path) -> None:
+    """L3 extract 제거 후 병렬 timeout 실패 전이는 발생하지 않아야 한다."""
     db_path = tmp_path / "state.db"
     init_schema(db_path)
     repo_dir = tmp_path / "repo-l3-timeout"
@@ -1736,11 +2493,11 @@ def test_enrich_l3_parallel_timeout_marks_remaining_jobs_failed(tmp_path: Path) 
     assert processed >= 2
     queue_counts = FileEnrichQueueRepository(db_path).get_status_counts()
     assert queue_counts["RUNNING"] == 0
-    assert queue_counts["FAILED"] >= 1
+    assert queue_counts["FAILED"] == 0
     row_a = FileCollectionRepository(db_path).get_file(repo_root=repo_root, relative_path="a.py")
     row_b = FileCollectionRepository(db_path).get_file(repo_root=repo_root, relative_path="b.py")
     assert row_a is not None and row_b is not None
-    assert "FAILED" in {row_a.enrich_state, row_b.enrich_state}
+    assert "FAILED" not in {row_a.enrich_state, row_b.enrich_state}
 
 
 def test_solid_lsp_unavailable_backoff_escalates_for_missing_server() -> None:

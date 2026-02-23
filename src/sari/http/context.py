@@ -39,6 +39,7 @@ class HttpContext:
         language_probe_repo: LanguageProbeRepository | None = None,
         repo_registry_repo: RepoRegistryRepository | None = None,
         lsp_metrics_provider: Callable[[], dict[str, int]] | None = None,
+        search_resolve_symbols_default_provider: Callable[[], bool] | None = None,
         db_path: Path | None = None,
         http_bg_proxy_enabled: bool = False,
         http_bg_proxy_target: str = "",
@@ -58,6 +59,7 @@ class HttpContext:
         self.language_probe_repo = language_probe_repo
         self.repo_registry_repo = repo_registry_repo
         self.lsp_metrics_provider = lsp_metrics_provider
+        self.search_resolve_symbols_default_provider = search_resolve_symbols_default_provider
         self.db_path = db_path
         self.http_bg_proxy_enabled = http_bg_proxy_enabled
         self.http_bg_proxy_target = http_bg_proxy_target

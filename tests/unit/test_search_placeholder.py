@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from sari.core.config import AppConfig
 from sari.core.models import SearchErrorDTO, SearchItemDTO, WorkspaceDTO
+from sari.db.repositories.tool_data_layer_repository import ToolDataLayerRepository
 from sari.db.repositories.symbol_cache_repository import SymbolCacheRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.http.app import HttpContext, search_endpoint
@@ -13,6 +14,7 @@ from sari.search.candidate_search import CandidateSearchService
 from sari.search.orchestrator import SearchMetaDTO, SearchOrchestrator, SearchPipelineResult
 from sari.search.symbol_resolve import SymbolResolveService
 from sari.db.repositories.runtime_repository import RuntimeRepository
+from sari.db.schema import connect
 from sari.db.schema import init_schema
 from sari.lsp.hub import LspHub
 from sari.services.admin_service import AdminService
@@ -165,3 +167,161 @@ def test_search_missing_repo_returns_explicit_error(tmp_path) -> None:
     assert response.status_code == 400
     payload = json.loads(response.body.decode("utf-8"))
     assert payload["error"]["code"] == "ERR_REPO_REQUIRED"
+
+
+class _SuccessSearchOrchestrator:
+    """레이어 병합 검증용 단일 파일 검색 결과를 반환한다."""
+
+    def __init__(self, repo_root: str) -> None:
+        self._repo_root = repo_root
+
+    def search(self, query: str, limit: int, repo_root: str, repo_id: str | None = None, resolve_symbols: bool = False):  # type: ignore[no-untyped-def]
+        del query, limit, repo_id, resolve_symbols
+        return SearchPipelineResult(
+            items=[
+                SearchItemDTO(
+                    item_type="file",
+                    repo=repo_root,
+                    relative_path="src/a.py",
+                    score=1.0,
+                    source="candidate",
+                    name=None,
+                    kind=None,
+                    content_hash="h1",
+                )
+            ],
+            meta=SearchMetaDTO(
+                candidate_count=1,
+                resolved_count=0,
+                candidate_source="scan",
+                errors=[],
+                fatal_error=False,
+                degraded=False,
+                error_count=0,
+            ),
+        )
+
+
+def test_search_success_merges_l4_l5_snapshot(tmp_path) -> None:
+    """HTTP /search 성공 응답 item은 l4/l5 snapshot을 포함해야 한다."""
+    context = _build_context(tmp_path)
+    context.db_path = tmp_path / "state.db"
+    repo_root = context.repo_for_test  # type: ignore[attr-defined]
+    with connect(tmp_path / "state.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO collected_files_l1(
+                repo_id, repo_root, relative_path, absolute_path, repo_label,
+                mtime_ns, size_bytes, content_hash, is_deleted, last_seen_at, updated_at, enrich_state
+            ) VALUES(
+                '', :repo_root, 'src/a.py', :abs_path, 'repo',
+                1, 10, 'h1', 0, '2026-02-23T12:00:00Z', '2026-02-23T12:00:00Z', 'READY'
+            )
+            """,
+            {
+                "repo_root": repo_root,
+                "abs_path": str((tmp_path / "repo-a" / "src" / "a.py").resolve()),
+            },
+        )
+        conn.commit()
+    tool_layer_repo = ToolDataLayerRepository(tmp_path / "state.db")
+    tool_layer_repo.upsert_l3_symbols(
+        workspace_id=repo_root,
+        repo_root=repo_root,
+        relative_path="src/a.py",
+        content_hash="h1",
+        symbols=[{"name": "Alpha"}],
+        degraded=False,
+        l3_skipped_large_file=False,
+        updated_at="2026-02-23T12:00:00Z",
+    )
+    tool_layer_repo.upsert_l4_normalized_symbols(
+        workspace_id=repo_root,
+        repo_root=repo_root,
+        relative_path="src/a.py",
+        content_hash="h1",
+        normalized={"outline": ["Alpha"]},
+        confidence=0.9,
+        ambiguity=0.1,
+        coverage=0.95,
+        needs_l5=True,
+        updated_at="2026-02-23T12:00:00Z",
+    )
+    tool_layer_repo.upsert_l5_semantics(
+        workspace_id=repo_root,
+        repo_root=repo_root,
+        relative_path="src/a.py",
+        content_hash="h1",
+        reason_code="L5_REASON_UNRESOLVED_SYMBOL",
+        semantics={"edges": 1},
+        updated_at="2026-02-23T12:00:00Z",
+    )
+    context.search_orchestrator = _SuccessSearchOrchestrator(repo_root=repo_root)  # type: ignore[assignment]
+    request = SimpleNamespace(
+        query_params={"repo": repo_root, "q": "alpha", "limit": "5"},
+        app=SimpleNamespace(state=SimpleNamespace(context=context)),
+    )
+
+    response = asyncio.run(search_endpoint(request))
+
+    assert response.status_code == 200
+    payload = json.loads(response.body.decode("utf-8"))
+    assert isinstance(payload["items"], list)
+    assert len(payload["items"]) == 1
+    assert isinstance(payload["items"][0]["l4"], dict)
+    assert payload["items"][0]["l4"]["normalized"]["outline"] == ["Alpha"]
+    assert isinstance(payload["items"][0]["l5"], list)
+    assert payload["items"][0]["l5"][0]["reason_code"] == "L5_REASON_UNRESOLVED_SYMBOL"
+
+
+def test_search_success_skips_l4_l5_when_active_file_row_missing(tmp_path) -> None:
+    """HTTP /search도 활성 파일 해시 확인 불가 시 L4/L5를 병합하지 않아야 한다."""
+    context = _build_context(tmp_path)
+    context.db_path = tmp_path / "state.db"
+    repo_root = context.repo_for_test  # type: ignore[attr-defined]
+    tool_layer_repo = ToolDataLayerRepository(tmp_path / "state.db")
+    tool_layer_repo.upsert_l3_symbols(
+        workspace_id=repo_root,
+        repo_root=repo_root,
+        relative_path="src/a.py",
+        content_hash="h1",
+        symbols=[{"name": "Alpha"}],
+        degraded=False,
+        l3_skipped_large_file=False,
+        updated_at="2026-02-23T12:00:00Z",
+    )
+    tool_layer_repo.upsert_l4_normalized_symbols(
+        workspace_id=repo_root,
+        repo_root=repo_root,
+        relative_path="src/a.py",
+        content_hash="h1",
+        normalized={"outline": ["Alpha"]},
+        confidence=0.9,
+        ambiguity=0.1,
+        coverage=0.95,
+        needs_l5=True,
+        updated_at="2026-02-23T12:00:00Z",
+    )
+    tool_layer_repo.upsert_l5_semantics(
+        workspace_id=repo_root,
+        repo_root=repo_root,
+        relative_path="src/a.py",
+        content_hash="h1",
+        reason_code="L5_REASON_UNRESOLVED_SYMBOL",
+        semantics={"edges": 1},
+        updated_at="2026-02-23T12:00:00Z",
+    )
+    context.search_orchestrator = _SuccessSearchOrchestrator(repo_root=repo_root)  # type: ignore[assignment]
+    request = SimpleNamespace(
+        query_params={"repo": repo_root, "q": "alpha", "limit": "5"},
+        app=SimpleNamespace(state=SimpleNamespace(context=context)),
+    )
+
+    response = asyncio.run(search_endpoint(request))
+
+    assert response.status_code == 200
+    payload = json.loads(response.body.decode("utf-8"))
+    assert isinstance(payload["items"], list)
+    assert len(payload["items"]) == 1
+    assert "l4" not in payload["items"][0]
+    assert "l5" not in payload["items"][0]

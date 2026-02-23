@@ -57,12 +57,14 @@ class AppConfig:
     daemon_heartbeat_interval_sec: int = 2
     daemon_stale_timeout_sec: int = 15
     lsp_request_timeout_sec: float = 20.0
-    lsp_max_instances_per_repo_language: int = 2
+    lsp_max_instances_per_repo_language: int = 3
     lsp_bulk_mode_enabled: bool = True
     lsp_bulk_max_instances_per_repo_language: int = 4
     lsp_interactive_reserved_slots_per_repo_language: int = 1
-    lsp_interactive_timeout_sec: float = 2.5
+    lsp_interactive_timeout_sec: float = 4.0
     lsp_interactive_queue_max: int = 256
+    lsp_symbol_info_budget_sec: float = 10.0
+    lsp_include_info_default: bool = False
     lsp_global_soft_limit: int = 0
     lsp_scale_out_hot_hits: int = 24
     l3_executor_max_workers: int = 0
@@ -164,6 +166,20 @@ class AppConfig:
     ranking_w_vector: float = 0.15
     ranking_w_hierarchy: float = 0.15
     search_lsp_fallback_mode: str = "normal"
+    search_lsp_pressure_guard_enabled: bool = True
+    search_lsp_pressure_pending_threshold: int = 1
+    search_lsp_pressure_timeout_threshold: int = 1
+    search_lsp_pressure_rejected_threshold: int = 1
+    search_lsp_recent_failure_cooldown_sec: float = 5.0
+    l5_call_rate_total_max: float = 0.05
+    l5_call_rate_batch_max: float = 0.01
+    l5_calls_per_min_per_lang_max: int = 30
+    l5_tokens_per_10sec_global_max: int = 120
+    l5_tokens_per_10sec_per_lang_max: int = 30
+    l5_tokens_per_10sec_per_workspace_max: int = 20
+    l3_query_compile_cache_enabled: bool = True
+    l3_query_compile_ms_budget: float = 10.0
+    l3_query_budget_ms: float = 30.0
     mcp_forward_to_daemon: bool = False
     mcp_daemon_autostart: bool = True
     mcp_daemon_timeout_sec: float = 2.0
@@ -198,7 +214,7 @@ class AppConfig:
         lsp_timeout_raw = os.getenv("SARI_LSP_REQUEST_TIMEOUT_SEC", str(file_config.get("lsp_request_timeout_sec", 20.0))).strip()
         lsp_max_per_repo_lang_raw = os.getenv(
             "SARI_LSP_MAX_INSTANCES_PER_REPO_LANGUAGE",
-            str(file_config.get("lsp_max_instances_per_repo_language", 2)),
+            str(file_config.get("lsp_max_instances_per_repo_language", 3)),
         ).strip()
         lsp_bulk_mode_enabled_raw = os.getenv(
             "SARI_LSP_BULK_MODE_ENABLED",
@@ -214,12 +230,20 @@ class AppConfig:
         ).strip()
         lsp_interactive_timeout_raw = os.getenv(
             "SARI_LSP_INTERACTIVE_TIMEOUT_SEC",
-            str(file_config.get("lsp_interactive_timeout_sec", 2.5)),
+            str(file_config.get("lsp_interactive_timeout_sec", 4.0)),
         ).strip()
         lsp_interactive_queue_max_raw = os.getenv(
             "SARI_LSP_INTERACTIVE_QUEUE_MAX",
             str(file_config.get("lsp_interactive_queue_max", 256)),
         ).strip()
+        lsp_symbol_info_budget_raw = os.getenv(
+            "SARI_LSP_SYMBOL_INFO_BUDGET_SEC",
+            str(file_config.get("lsp_symbol_info_budget_sec", 10.0)),
+        ).strip()
+        lsp_include_info_default_raw = os.getenv(
+            "SARI_LSP_INCLUDE_INFO_DEFAULT",
+            str(file_config.get("lsp_include_info_default", False)),
+        ).strip().lower()
         lsp_global_soft_limit_raw = os.getenv(
             "SARI_LSP_GLOBAL_SOFT_LIMIT",
             str(file_config.get("lsp_global_soft_limit", 0)),
@@ -517,6 +541,62 @@ class AppConfig:
             "SARI_SEARCH_LSP_FALLBACK_MODE",
             str(file_config.get("search_lsp_fallback_mode", "normal")),
         ).strip().lower()
+        search_lsp_pressure_guard_enabled_raw = os.getenv(
+            "SARI_SEARCH_LSP_PRESSURE_GUARD_ENABLED",
+            str(file_config.get("search_lsp_pressure_guard_enabled", True)),
+        ).strip().lower()
+        search_lsp_pressure_pending_threshold_raw = os.getenv(
+            "SARI_SEARCH_LSP_PRESSURE_PENDING_THRESHOLD",
+            str(file_config.get("search_lsp_pressure_pending_threshold", 1)),
+        ).strip()
+        search_lsp_pressure_timeout_threshold_raw = os.getenv(
+            "SARI_SEARCH_LSP_PRESSURE_TIMEOUT_THRESHOLD",
+            str(file_config.get("search_lsp_pressure_timeout_threshold", 1)),
+        ).strip()
+        search_lsp_pressure_rejected_threshold_raw = os.getenv(
+            "SARI_SEARCH_LSP_PRESSURE_REJECTED_THRESHOLD",
+            str(file_config.get("search_lsp_pressure_rejected_threshold", 1)),
+        ).strip()
+        search_lsp_recent_failure_cooldown_sec_raw = os.getenv(
+            "SARI_SEARCH_LSP_RECENT_FAILURE_COOLDOWN_SEC",
+            str(file_config.get("search_lsp_recent_failure_cooldown_sec", 5.0)),
+        ).strip()
+        l5_call_rate_total_max_raw = os.getenv(
+            "SARI_L5_CALL_RATE_TOTAL_MAX",
+            str(file_config.get("l5_call_rate_total_max", 0.05)),
+        ).strip()
+        l5_call_rate_batch_max_raw = os.getenv(
+            "SARI_L5_CALL_RATE_BATCH_MAX",
+            str(file_config.get("l5_call_rate_batch_max", 0.01)),
+        ).strip()
+        l5_calls_per_min_per_lang_max_raw = os.getenv(
+            "SARI_L5_CALLS_PER_MIN_PER_LANG_MAX",
+            str(file_config.get("l5_calls_per_min_per_lang_max", 30)),
+        ).strip()
+        l5_tokens_per_10sec_global_max_raw = os.getenv(
+            "SARI_L5_TOKENS_PER_10SEC_GLOBAL_MAX",
+            str(file_config.get("l5_tokens_per_10sec_global_max", 120)),
+        ).strip()
+        l5_tokens_per_10sec_per_lang_max_raw = os.getenv(
+            "SARI_L5_TOKENS_PER_10SEC_PER_LANG_MAX",
+            str(file_config.get("l5_tokens_per_10sec_per_lang_max", 30)),
+        ).strip()
+        l5_tokens_per_10sec_per_workspace_max_raw = os.getenv(
+            "SARI_L5_TOKENS_PER_10SEC_PER_WORKSPACE_MAX",
+            str(file_config.get("l5_tokens_per_10sec_per_workspace_max", 20)),
+        ).strip()
+        l3_query_compile_cache_enabled_raw = os.getenv(
+            "SARI_L3_QUERY_COMPILE_CACHE_ENABLED",
+            str(file_config.get("l3_query_compile_cache_enabled", True)),
+        ).strip().lower()
+        l3_query_compile_ms_budget_raw = os.getenv(
+            "SARI_L3_QUERY_COMPILE_MS_BUDGET",
+            str(file_config.get("l3_query_compile_ms_budget", 10.0)),
+        ).strip()
+        l3_query_budget_ms_raw = os.getenv(
+            "SARI_L3_QUERY_BUDGET_MS",
+            str(file_config.get("l3_query_budget_ms", 30.0)),
+        ).strip()
         mcp_forward_to_daemon_raw = os.getenv("SARI_MCP_FORWARD_TO_DAEMON", str(file_config.get("mcp_forward_to_daemon", False))).strip().lower()
         mcp_daemon_autostart_raw = os.getenv("SARI_MCP_DAEMON_AUTOSTART", str(file_config.get("mcp_daemon_autostart", True))).strip().lower()
         mcp_daemon_timeout_raw = os.getenv("SARI_MCP_DAEMON_TIMEOUT_SEC", str(file_config.get("mcp_daemon_timeout_sec", 2.0))).strip()
@@ -576,7 +656,7 @@ class AppConfig:
         try:
             lsp_max_instances_per_repo_language = max(1, int(lsp_max_per_repo_lang_raw))
         except ValueError:
-            lsp_max_instances_per_repo_language = 2
+            lsp_max_instances_per_repo_language = 3
         try:
             lsp_global_soft_limit = max(0, int(lsp_global_soft_limit_raw))
         except ValueError:
@@ -592,11 +672,15 @@ class AppConfig:
         try:
             lsp_interactive_timeout_sec = max(0.1, float(lsp_interactive_timeout_raw))
         except ValueError:
-            lsp_interactive_timeout_sec = 2.5
+            lsp_interactive_timeout_sec = 4.0
         try:
             lsp_interactive_queue_max = max(16, int(lsp_interactive_queue_max_raw))
         except ValueError:
             lsp_interactive_queue_max = 256
+        try:
+            lsp_symbol_info_budget_sec = max(0.0, float(lsp_symbol_info_budget_raw))
+        except ValueError:
+            lsp_symbol_info_budget_sec = 10.0
         try:
             l3_executor_max_workers = max(0, int(l3_executor_max_workers_raw))
         except ValueError:
@@ -819,6 +903,54 @@ class AppConfig:
         if normalized_mode not in {"none", "log1p", "minmax"}:
             normalized_mode = "log1p"
         search_lsp_fallback_mode = "strict" if search_lsp_fallback_mode_raw == "strict" else "normal"
+        try:
+            search_lsp_pressure_pending_threshold = max(0, int(search_lsp_pressure_pending_threshold_raw))
+        except ValueError:
+            search_lsp_pressure_pending_threshold = 1
+        try:
+            search_lsp_pressure_timeout_threshold = max(0, int(search_lsp_pressure_timeout_threshold_raw))
+        except ValueError:
+            search_lsp_pressure_timeout_threshold = 1
+        try:
+            search_lsp_pressure_rejected_threshold = max(0, int(search_lsp_pressure_rejected_threshold_raw))
+        except ValueError:
+            search_lsp_pressure_rejected_threshold = 1
+        try:
+            search_lsp_recent_failure_cooldown_sec = max(0.0, float(search_lsp_recent_failure_cooldown_sec_raw))
+        except ValueError:
+            search_lsp_recent_failure_cooldown_sec = 5.0
+        try:
+            l5_call_rate_total_max = max(0.0, min(1.0, float(l5_call_rate_total_max_raw)))
+        except ValueError:
+            l5_call_rate_total_max = 0.05
+        try:
+            l5_call_rate_batch_max = max(0.0, min(1.0, float(l5_call_rate_batch_max_raw)))
+        except ValueError:
+            l5_call_rate_batch_max = 0.01
+        try:
+            l5_calls_per_min_per_lang_max = max(1, int(l5_calls_per_min_per_lang_max_raw))
+        except ValueError:
+            l5_calls_per_min_per_lang_max = 30
+        try:
+            l5_tokens_per_10sec_global_max = max(1, int(l5_tokens_per_10sec_global_max_raw))
+        except ValueError:
+            l5_tokens_per_10sec_global_max = 120
+        try:
+            l5_tokens_per_10sec_per_lang_max = max(1, int(l5_tokens_per_10sec_per_lang_max_raw))
+        except ValueError:
+            l5_tokens_per_10sec_per_lang_max = 30
+        try:
+            l5_tokens_per_10sec_per_workspace_max = max(1, int(l5_tokens_per_10sec_per_workspace_max_raw))
+        except ValueError:
+            l5_tokens_per_10sec_per_workspace_max = 20
+        try:
+            l3_query_compile_ms_budget = max(0.1, float(l3_query_compile_ms_budget_raw))
+        except ValueError:
+            l3_query_compile_ms_budget = 10.0
+        try:
+            l3_query_budget_ms = max(0.1, float(l3_query_budget_ms_raw))
+        except ValueError:
+            l3_query_budget_ms = 30.0
         include_ext_raw = os.getenv("SARI_COLLECTION_INCLUDE_EXT", "")
         exclude_globs_raw = os.getenv("SARI_COLLECTION_EXCLUDE_GLOBS", "")
         vector_apply_types_raw = os.getenv("SARI_VECTOR_APPLY_TO_ITEM_TYPES", "")
@@ -884,6 +1016,8 @@ class AppConfig:
             lsp_interactive_reserved_slots_per_repo_language=lsp_interactive_reserved_slots_per_repo_language,
             lsp_interactive_timeout_sec=lsp_interactive_timeout_sec,
             lsp_interactive_queue_max=lsp_interactive_queue_max,
+            lsp_symbol_info_budget_sec=lsp_symbol_info_budget_sec,
+            lsp_include_info_default=lsp_include_info_default_raw in {"1", "true", "yes", "on"},
             lsp_global_soft_limit=lsp_global_soft_limit,
             lsp_scale_out_hot_hits=lsp_scale_out_hot_hits,
             l3_executor_max_workers=l3_executor_max_workers,
@@ -966,6 +1100,20 @@ class AppConfig:
             ranking_w_vector=ranking_w_vector,
             ranking_w_hierarchy=ranking_w_hierarchy,
             search_lsp_fallback_mode=search_lsp_fallback_mode,
+            search_lsp_pressure_guard_enabled=search_lsp_pressure_guard_enabled_raw in {"1", "true", "yes", "on"},
+            search_lsp_pressure_pending_threshold=search_lsp_pressure_pending_threshold,
+            search_lsp_pressure_timeout_threshold=search_lsp_pressure_timeout_threshold,
+            search_lsp_pressure_rejected_threshold=search_lsp_pressure_rejected_threshold,
+            search_lsp_recent_failure_cooldown_sec=search_lsp_recent_failure_cooldown_sec,
+            l5_call_rate_total_max=l5_call_rate_total_max,
+            l5_call_rate_batch_max=l5_call_rate_batch_max,
+            l5_calls_per_min_per_lang_max=l5_calls_per_min_per_lang_max,
+            l5_tokens_per_10sec_global_max=l5_tokens_per_10sec_global_max,
+            l5_tokens_per_10sec_per_lang_max=l5_tokens_per_10sec_per_lang_max,
+            l5_tokens_per_10sec_per_workspace_max=l5_tokens_per_10sec_per_workspace_max,
+            l3_query_compile_cache_enabled=l3_query_compile_cache_enabled_raw in {"1", "true", "yes", "on"},
+            l3_query_compile_ms_budget=l3_query_compile_ms_budget,
+            l3_query_budget_ms=l3_query_budget_ms,
             mcp_forward_to_daemon=mcp_forward_to_daemon_raw in {"1", "true", "yes", "on"},
             mcp_daemon_autostart=mcp_daemon_autostart_raw in {"1", "true", "yes", "on"},
             mcp_daemon_timeout_sec=mcp_daemon_timeout_sec,

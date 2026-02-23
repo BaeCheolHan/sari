@@ -9,6 +9,7 @@ import os
 import threading
 import time
 from functools import wraps
+import sys
 from itertools import count
 from typing import Any, Callable, TypeVar
 
@@ -99,10 +100,10 @@ class PerfTracer:
         error_type: str | None = None
         try:
             yield
-        except Exception as exc:
-            error_type = type(exc).__name__
-            raise
         finally:
+            exc = sys.exc_info()[1]
+            if exc is not None:
+                error_type = type(exc).__name__
             payload = dict(fields)
             payload["name"] = name
             payload["elapsed_ms"] = round((time.perf_counter() - started_at) * 1000.0, 3)
@@ -154,25 +155,29 @@ def _wrap_callable(component: str, method: str, fn: F) -> F:
         call_id = next(_CALL_SEQ)
         started_at = time.perf_counter()
         tracer.emit("fn_start", call_id=call_id, method=method)
+        result: object | None = None
         try:
             result = fn(*args, **kwargs)
-            tracer.emit(
-                "fn_end",
-                call_id=call_id,
-                method=method,
-                elapsed_ms=round((time.perf_counter() - started_at) * 1000.0, 3),
-            )
-            return result
-        except Exception as exc:
-            tracer.emit(
-                "fn_error",
-                call_id=call_id,
-                method=method,
-                error_type=type(exc).__name__,
-                error_message=str(exc),
-                elapsed_ms=round((time.perf_counter() - started_at) * 1000.0, 3),
-            )
-            raise
+        finally:
+            exc = sys.exc_info()[1]
+            elapsed_ms = round((time.perf_counter() - started_at) * 1000.0, 3)
+            if exc is None:
+                tracer.emit(
+                    "fn_end",
+                    call_id=call_id,
+                    method=method,
+                    elapsed_ms=elapsed_ms,
+                )
+            else:
+                tracer.emit(
+                    "fn_error",
+                    call_id=call_id,
+                    method=method,
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
+                    elapsed_ms=elapsed_ms,
+                )
+        return result
 
     return _wrapped  # type: ignore[return-value]
 

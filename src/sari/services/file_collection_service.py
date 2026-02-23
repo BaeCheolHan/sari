@@ -25,6 +25,7 @@ from sari.db.repositories.lsp_tool_data_repository import LspToolDataRepository
 from sari.db.repositories.pipeline_job_event_repository import PipelineJobEventRepository
 from sari.db.repositories.pipeline_error_event_repository import PipelineErrorEventRepository
 from sari.db.repositories.pipeline_policy_repository import PipelinePolicyRepository
+from sari.db.repositories.tool_data_layer_repository import ToolDataLayerRepository
 from sari.db.repositories.tool_readiness_repository import ToolReadinessRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.db.repositories.repo_registry_repository import RepoRegistryRepository
@@ -93,7 +94,7 @@ class FileCollectionService:
         "composer.json",
     )
 
-    def __init__(self, workspace_repo: WorkspaceRepository, file_repo: FileCollectionRepository, enrich_queue_repo: FileEnrichQueueRepository, body_repo: FileBodyRepository, lsp_repo: LspToolDataRepository, readiness_repo: ToolReadinessRepository, policy: CollectionPolicyDTO, lsp_backend: LspExtractionBackend, policy_repo: PipelinePolicyRepository | None=None, event_repo: PipelineJobEventRepository | None=None, error_event_repo: PipelineErrorEventRepository | None=None, candidate_index_sink: CandidateIndexSink | None=None, vector_index_sink: VectorIndexSink | None=None, run_mode: str='dev', parent_alive_probe: Callable[[], bool] | None=None, persist_body_for_read: bool=True, repo_registry_repo: RepoRegistryRepository | None=None, l3_parallel_enabled: bool=True, l3_executor_max_workers: int=0, l3_recent_success_ttl_sec: int=120, l3_backpressure_on_interactive: bool=True, l3_backpressure_cooldown_ms: int=300, l3_refactored_orchestrator_enabled: bool=False, l3_supported_languages: tuple[str, ...] | None=None, lsp_probe_bootstrap_file_window: int=256, lsp_probe_bootstrap_top_k: int=3, lsp_probe_language_priority: tuple[str, ...]=("go:1.5", "java:1.4", "kotlin:1.3"), lsp_probe_l1_languages: tuple[str, ...]=("go", "java", "kotlin"), lsp_session_broker_enabled: bool=True, lsp_session_broker_metrics_enabled: bool=True, lsp_broker_optional_scaffolding_enabled: bool=False, lsp_hotness_event_window_sec: float=10.0, lsp_hotness_decay_window_sec: float=30.0, lsp_broker_backlog_min_share: float=0.2, lsp_broker_max_standby_sessions_per_lang: int=2, lsp_broker_max_standby_sessions_per_budget_group: int=2, lsp_broker_ts_vue_active_cap: int=2, lsp_broker_java_hot_lanes: int=1, lsp_broker_java_backlog_lanes: int=1, lsp_broker_java_sticky_ttl_sec: float=600.0, lsp_broker_java_switch_cooldown_sec: float=5.0, lsp_broker_java_min_lease_ms: int=1500, lsp_broker_ts_hot_lanes: int=1, lsp_broker_ts_backlog_lanes: int=1, lsp_broker_ts_sticky_ttl_sec: float=180.0, lsp_broker_ts_switch_cooldown_sec: float=2.0, lsp_broker_ts_min_lease_ms: int=500, lsp_broker_vue_hot_lanes: int=1, lsp_broker_vue_backlog_lanes: int=1, lsp_broker_vue_sticky_ttl_sec: float=240.0, lsp_broker_vue_switch_cooldown_sec: float=3.0, lsp_broker_vue_min_lease_ms: int=800, lsp_scope_active_languages: tuple[str, ...] | None=None, lsp_broker_batch_throughput_mode_enabled: bool=False, lsp_broker_batch_throughput_pending_threshold: int=4, lsp_broker_batch_disable_java_probe: bool=False) -> None:
+    def __init__(self, workspace_repo: WorkspaceRepository, file_repo: FileCollectionRepository, enrich_queue_repo: FileEnrichQueueRepository, body_repo: FileBodyRepository, lsp_repo: LspToolDataRepository, readiness_repo: ToolReadinessRepository, policy: CollectionPolicyDTO, lsp_backend: LspExtractionBackend, policy_repo: PipelinePolicyRepository | None=None, event_repo: PipelineJobEventRepository | None=None, error_event_repo: PipelineErrorEventRepository | None=None, candidate_index_sink: CandidateIndexSink | None=None, vector_index_sink: VectorIndexSink | None=None, run_mode: str='dev', parent_alive_probe: Callable[[], bool] | None=None, persist_body_for_read: bool=True, repo_registry_repo: RepoRegistryRepository | None=None, l3_parallel_enabled: bool=True, l3_executor_max_workers: int=0, l3_recent_success_ttl_sec: int=120, l3_backpressure_on_interactive: bool=True, l3_backpressure_cooldown_ms: int=300, l3_refactored_orchestrator_enabled: bool=False, l3_supported_languages: tuple[str, ...] | None=None, lsp_probe_bootstrap_file_window: int=256, lsp_probe_bootstrap_top_k: int=3, lsp_probe_language_priority: tuple[str, ...]=("go:1.5", "java:1.4", "kotlin:1.3"), lsp_probe_l1_languages: tuple[str, ...]=("go", "java", "kotlin"), lsp_session_broker_enabled: bool=True, lsp_session_broker_metrics_enabled: bool=True, lsp_broker_optional_scaffolding_enabled: bool=False, lsp_hotness_event_window_sec: float=10.0, lsp_hotness_decay_window_sec: float=30.0, lsp_broker_backlog_min_share: float=0.2, lsp_broker_max_standby_sessions_per_lang: int=2, lsp_broker_max_standby_sessions_per_budget_group: int=2, lsp_broker_ts_vue_active_cap: int=2, lsp_broker_java_hot_lanes: int=1, lsp_broker_java_backlog_lanes: int=1, lsp_broker_java_sticky_ttl_sec: float=600.0, lsp_broker_java_switch_cooldown_sec: float=5.0, lsp_broker_java_min_lease_ms: int=1500, lsp_broker_ts_hot_lanes: int=1, lsp_broker_ts_backlog_lanes: int=1, lsp_broker_ts_sticky_ttl_sec: float=180.0, lsp_broker_ts_switch_cooldown_sec: float=2.0, lsp_broker_ts_min_lease_ms: int=500, lsp_broker_vue_hot_lanes: int=1, lsp_broker_vue_backlog_lanes: int=1, lsp_broker_vue_sticky_ttl_sec: float=240.0, lsp_broker_vue_switch_cooldown_sec: float=3.0, lsp_broker_vue_min_lease_ms: int=800, lsp_scope_active_languages: tuple[str, ...] | None=None, lsp_broker_batch_throughput_mode_enabled: bool=False, lsp_broker_batch_throughput_pending_threshold: int=4, lsp_broker_batch_disable_java_probe: bool=False, l5_call_rate_total_max: float=0.05, l5_call_rate_batch_max: float=0.01, l5_calls_per_min_per_lang_max: int=30, l5_tokens_per_10sec_global_max: int=120, l5_tokens_per_10sec_per_lang_max: int=30, l5_tokens_per_10sec_per_workspace_max: int=20, l3_query_compile_cache_enabled: bool=True, l3_query_compile_ms_budget: float=10.0, l3_query_budget_ms: float=30.0, tool_layer_repo: ToolDataLayerRepository | None=None) -> None:
         self._workspace_repo = workspace_repo
         self._file_repo = file_repo
         self._enrich_queue_repo = enrich_queue_repo
@@ -237,7 +238,8 @@ class FileCollectionService:
             candidate_index_sink=self._candidate_index_sink,
             resolve_lsp_language=self._repo_support.resolve_lsp_language,
             configure_lsp_prewarm_languages=self._repo_support.configure_lsp_prewarm_languages,
-            schedule_lsp_probe_for_file=self._repo_support.schedule_lsp_probe_for_file,
+            # Probe는 L4 admission 경로에서만 수행한다.
+            schedule_lsp_probe_for_file=None,
             resolve_repo_identity=self._repo_support.resolve_repo_identity,
             load_gitignore_spec=self._repo_support.load_gitignore_spec,
             is_collectible=self._repo_support.is_collectible,
@@ -283,6 +285,16 @@ class FileCollectionService:
             l3_refactored_orchestrator_enabled=l3_refactored_orchestrator_enabled,
             l3_supported_languages=self._l3_supported_languages,
             lsp_probe_l1_languages=self._lsp_probe_l1_languages,
+            l5_call_rate_total_max=l5_call_rate_total_max,
+            l5_call_rate_batch_max=l5_call_rate_batch_max,
+            l5_calls_per_min_per_lang_max=l5_calls_per_min_per_lang_max,
+            l5_tokens_per_10sec_global_max=l5_tokens_per_10sec_global_max,
+            l5_tokens_per_10sec_per_lang_max=l5_tokens_per_10sec_per_lang_max,
+            l5_tokens_per_10sec_per_workspace_max=l5_tokens_per_10sec_per_workspace_max,
+            l3_query_compile_cache_enabled=l3_query_compile_cache_enabled,
+            l3_query_compile_ms_budget=l3_query_compile_ms_budget,
+            l3_query_budget_ms=l3_query_budget_ms,
+            tool_layer_repo=tool_layer_repo,
         )
         self._pipeline_worker = PipelineWorker(
             process_enrich_jobs=self._enrich_engine.process_enrich_jobs,
@@ -475,25 +487,61 @@ class FileCollectionService:
         with self._metrics_lock:
             return self._watcher_last_overflow_at
 
-    def _lsp_runtime_metrics_snapshot(self) -> dict[str, int]:
+    def _lsp_runtime_metrics_snapshot(self) -> dict[str, float]:
         """LSP 런타임 메트릭 스냅샷을 반환한다."""
-        merged: dict[str, int] = {}
+        merged: dict[str, float] = {}
         if hasattr(self._lsp_backend, "get_runtime_metrics"):
             try:
                 metrics = getattr(self._lsp_backend, "get_runtime_metrics")()
                 if isinstance(metrics, dict):
-                    merged.update({str(key): int(value) for key, value in metrics.items()})
+                    merged.update(
+                        {
+                            str(key): float(value)
+                            for key, value in metrics.items()
+                            if isinstance(value, (int, float))
+                        }
+                    )
             except (RuntimeError, OSError, ValueError, TypeError):
                 merged = {}
+        enrich_metrics_getter = getattr(self._enrich_engine, "get_runtime_metrics", None)
+        if callable(enrich_metrics_getter):
+            try:
+                enrich_metrics = enrich_metrics_getter()
+                if isinstance(enrich_metrics, dict):
+                    merged.update(
+                        {
+                            str(key): float(value)
+                            for key, value in enrich_metrics.items()
+                            if isinstance(value, (int, float))
+                        }
+                    )
+            except (RuntimeError, OSError, ValueError, TypeError):
+                ...
         try:
-            merged.update(self._watcher_hotness_tracker.get_metrics())
+            watcher_metrics = self._watcher_hotness_tracker.get_metrics()
+            if isinstance(watcher_metrics, dict):
+                merged.update(
+                    {
+                        str(key): float(value)
+                        for key, value in watcher_metrics.items()
+                        if isinstance(value, (int, float))
+                    }
+                )
         except (RuntimeError, OSError, ValueError, TypeError):
-            pass
+            ...
         if self._lsp_session_broker_metrics_enabled:
             try:
-                merged.update(self._lsp_session_broker.get_metrics())
+                broker_metrics = self._lsp_session_broker.get_metrics()
+                if isinstance(broker_metrics, dict):
+                    merged.update(
+                        {
+                            str(key): float(value)
+                            for key, value in broker_metrics.items()
+                            if isinstance(value, (int, float))
+                        }
+                    )
             except (RuntimeError, OSError, ValueError, TypeError):
-                pass
+                ...
         return merged
 
     def _on_watcher_signal(self, event_type: str, repo_root: str, relative_path: str, dest_path: str) -> None:
@@ -518,14 +566,14 @@ class FileCollectionService:
             try:
                 invalidator(repo_root=repo_root, relative_path=relative_path)
             except (RuntimeError, OSError, ValueError, TypeError):
-                pass
+                ...
         planner = getattr(self._lsp_backend, "_lsp_scope_planner", None)
         planner_invalidate = getattr(planner, "invalidate_path", None) if planner is not None else None
         if callable(planner_invalidate):
             try:
                 planner_invalidate(str((Path(repo_root) / relative_path).resolve()))
             except (RuntimeError, OSError, ValueError, TypeError):
-                pass
+                ...
 
     def _derive_hotness_scope_hint(self, *, repo_root: str, relative_path: str) -> str | None:
         """cheap signal용 scope 힌트(top-level fallback)."""
@@ -650,6 +698,12 @@ class FileCollectionService:
         """성능 측정/진단용으로 인메모리 런타임 상태를 초기화한다."""
         self._enrich_engine.reset_runtime_state()
 
+    def set_l5_admission_mode(self, *, shadow_enabled: bool, enforced: bool) -> None:
+        """L5 admission 모드를 런타임에서 동적으로 갱신한다."""
+        setter = getattr(self._enrich_engine, "set_l5_admission_mode", None)
+        if callable(setter):
+            setter(shadow_enabled=shadow_enabled, enforced=enforced)
+
     @contextmanager
     def temporary_scan_exclude_globs(self, globs: tuple[str, ...]):
         """scan_once 동안만 추가 exclude globs를 적용한다 (perf 측정 전용)."""
@@ -718,7 +772,7 @@ class FileCollectionService:
     def _prune_error_events_if_needed(self) -> None:
         self._error_policy.prune_error_events_if_needed()
 
-def build_default_file_collection_service(workspace_repo: WorkspaceRepository, file_repo: FileCollectionRepository, enrich_queue_repo: FileEnrichQueueRepository, body_repo: FileBodyRepository, lsp_repo: LspToolDataRepository, readiness_repo: ToolReadinessRepository, policy_repo: PipelinePolicyRepository | None=None, event_repo: PipelineJobEventRepository | None=None, error_event_repo: PipelineErrorEventRepository | None=None, candidate_index_sink: CandidateIndexSink | None=None, vector_index_sink: VectorIndexSink | None=None, retry_max_attempts: int=5, retry_backoff_base_sec: int=1, queue_poll_interval_ms: int=500, include_ext: tuple[str, ...] | None=None, exclude_globs: tuple[str, ...] | None=None, watcher_debounce_ms: int=300, run_mode: str='dev', parent_alive_probe: Callable[[], bool] | None=None, lsp_backend: LspExtractionBackend | None=None, persist_body_for_read: bool=True, l3_parallel_enabled: bool=True, l3_executor_max_workers: int=0, l3_recent_success_ttl_sec: int=120, l3_backpressure_on_interactive: bool=True, l3_backpressure_cooldown_ms: int=300, l3_refactored_orchestrator_enabled: bool=False, l3_supported_languages: tuple[str, ...] | None=None, lsp_probe_bootstrap_file_window: int=256, lsp_probe_bootstrap_top_k: int=3, lsp_probe_language_priority: tuple[str, ...]=("go:1.5", "java:1.4", "kotlin:1.3"), lsp_probe_l1_languages: tuple[str, ...]=("go", "java", "kotlin"), lsp_scope_planner_enabled: bool=True, lsp_scope_planner_shadow_mode: bool=True, lsp_scope_java_markers: tuple[str, ...]=("pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"), lsp_scope_ts_markers: tuple[str, ...]=("tsconfig.json", "jsconfig.json", "package.json"), lsp_scope_vue_markers: tuple[str, ...]=("vue.config.js", "vite.config.ts", "package.json", "tsconfig.json"), lsp_scope_top_level_fallback: bool=True, lsp_scope_active_languages: tuple[str, ...] | None=None, lsp_session_broker_enabled: bool=True, lsp_session_broker_metrics_enabled: bool=True, lsp_broker_optional_scaffolding_enabled: bool=False, lsp_broker_batch_throughput_mode_enabled: bool=False, lsp_broker_batch_throughput_pending_threshold: int=4, lsp_broker_batch_disable_java_probe: bool=False, lsp_hotness_event_window_sec: float=10.0, lsp_hotness_decay_window_sec: float=30.0, lsp_broker_backlog_min_share: float=0.2, lsp_broker_max_standby_sessions_per_lang: int=2, lsp_broker_max_standby_sessions_per_budget_group: int=2, lsp_broker_ts_vue_active_cap: int=2, lsp_broker_java_hot_lanes: int=1, lsp_broker_java_backlog_lanes: int=1, lsp_broker_java_sticky_ttl_sec: float=600.0, lsp_broker_java_switch_cooldown_sec: float=5.0, lsp_broker_java_min_lease_ms: int=1500, lsp_broker_ts_hot_lanes: int=1, lsp_broker_ts_backlog_lanes: int=1, lsp_broker_ts_sticky_ttl_sec: float=180.0, lsp_broker_ts_switch_cooldown_sec: float=2.0, lsp_broker_ts_min_lease_ms: int=500, lsp_broker_vue_hot_lanes: int=1, lsp_broker_vue_backlog_lanes: int=1, lsp_broker_vue_sticky_ttl_sec: float=240.0, lsp_broker_vue_switch_cooldown_sec: float=3.0, lsp_broker_vue_min_lease_ms: int=800) -> CollectionRuntimePort:
+def build_default_file_collection_service(workspace_repo: WorkspaceRepository, file_repo: FileCollectionRepository, enrich_queue_repo: FileEnrichQueueRepository, body_repo: FileBodyRepository, lsp_repo: LspToolDataRepository, readiness_repo: ToolReadinessRepository, policy_repo: PipelinePolicyRepository | None=None, event_repo: PipelineJobEventRepository | None=None, error_event_repo: PipelineErrorEventRepository | None=None, candidate_index_sink: CandidateIndexSink | None=None, vector_index_sink: VectorIndexSink | None=None, retry_max_attempts: int=5, retry_backoff_base_sec: int=1, queue_poll_interval_ms: int=500, include_ext: tuple[str, ...] | None=None, exclude_globs: tuple[str, ...] | None=None, watcher_debounce_ms: int=300, run_mode: str='dev', parent_alive_probe: Callable[[], bool] | None=None, lsp_backend: LspExtractionBackend | None=None, persist_body_for_read: bool=True, l3_parallel_enabled: bool=True, l3_executor_max_workers: int=0, l3_recent_success_ttl_sec: int=120, l3_backpressure_on_interactive: bool=True, l3_backpressure_cooldown_ms: int=300, l3_refactored_orchestrator_enabled: bool=False, l3_supported_languages: tuple[str, ...] | None=None, lsp_probe_bootstrap_file_window: int=256, lsp_probe_bootstrap_top_k: int=3, lsp_probe_language_priority: tuple[str, ...]=("go:1.5", "java:1.4", "kotlin:1.3"), lsp_probe_l1_languages: tuple[str, ...]=("go", "java", "kotlin"), lsp_scope_planner_enabled: bool=True, lsp_scope_planner_shadow_mode: bool=True, lsp_scope_java_markers: tuple[str, ...]=("pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"), lsp_scope_ts_markers: tuple[str, ...]=("tsconfig.json", "jsconfig.json", "package.json"), lsp_scope_vue_markers: tuple[str, ...]=("vue.config.js", "vite.config.ts", "package.json", "tsconfig.json"), lsp_scope_top_level_fallback: bool=True, lsp_scope_active_languages: tuple[str, ...] | None=None, lsp_session_broker_enabled: bool=True, lsp_session_broker_metrics_enabled: bool=True, lsp_broker_optional_scaffolding_enabled: bool=False, lsp_broker_batch_throughput_mode_enabled: bool=False, lsp_broker_batch_throughput_pending_threshold: int=4, lsp_broker_batch_disable_java_probe: bool=False, lsp_hotness_event_window_sec: float=10.0, lsp_hotness_decay_window_sec: float=30.0, lsp_broker_backlog_min_share: float=0.2, lsp_broker_max_standby_sessions_per_lang: int=2, lsp_broker_max_standby_sessions_per_budget_group: int=2, lsp_broker_ts_vue_active_cap: int=2, lsp_broker_java_hot_lanes: int=1, lsp_broker_java_backlog_lanes: int=1, lsp_broker_java_sticky_ttl_sec: float=600.0, lsp_broker_java_switch_cooldown_sec: float=5.0, lsp_broker_java_min_lease_ms: int=1500, lsp_broker_ts_hot_lanes: int=1, lsp_broker_ts_backlog_lanes: int=1, lsp_broker_ts_sticky_ttl_sec: float=180.0, lsp_broker_ts_switch_cooldown_sec: float=2.0, lsp_broker_ts_min_lease_ms: int=500, lsp_broker_vue_hot_lanes: int=1, lsp_broker_vue_backlog_lanes: int=1, lsp_broker_vue_sticky_ttl_sec: float=240.0, lsp_broker_vue_switch_cooldown_sec: float=3.0, lsp_broker_vue_min_lease_ms: int=800, l5_call_rate_total_max: float=0.05, l5_call_rate_batch_max: float=0.01, l5_calls_per_min_per_lang_max: int=30, l5_tokens_per_10sec_global_max: int=120, l5_tokens_per_10sec_per_lang_max: int=30, l5_tokens_per_10sec_per_workspace_max: int=20, l3_query_compile_cache_enabled: bool=True, l3_query_compile_ms_budget: float=10.0, l3_query_budget_ms: float=30.0, tool_layer_repo: ToolDataLayerRepository | None=None) -> CollectionRuntimePort:
     resolved_include_ext = include_ext if include_ext is not None else get_default_collection_extensions()
     resolved_exclude_globs = exclude_globs if exclude_globs is not None else DEFAULT_COLLECTION_EXCLUDE_GLOBS
     policy = CollectionPolicyDTO(include_ext=resolved_include_ext, exclude_globs=resolved_exclude_globs, max_file_size_bytes=512 * 1024, scan_interval_sec=180, max_enrich_batch=20, retry_max_attempts=retry_max_attempts, retry_backoff_base_sec=retry_backoff_base_sec, queue_poll_interval_ms=queue_poll_interval_ms)
@@ -735,7 +789,7 @@ def build_default_file_collection_service(workspace_repo: WorkspaceRepository, f
             shadow_mode=lsp_scope_planner_shadow_mode,
         )
     repo_registry_repo = RepoRegistryRepository(file_repo.db_path)
-    service = FileCollectionService(workspace_repo=workspace_repo, file_repo=file_repo, enrich_queue_repo=enrich_queue_repo, body_repo=body_repo, lsp_repo=lsp_repo, readiness_repo=readiness_repo, policy=policy, lsp_backend=resolved_lsp_backend, policy_repo=policy_repo, event_repo=event_repo, error_event_repo=error_event_repo, candidate_index_sink=candidate_index_sink, vector_index_sink=vector_index_sink, run_mode=run_mode, parent_alive_probe=parent_alive_probe, persist_body_for_read=persist_body_for_read, repo_registry_repo=repo_registry_repo, l3_parallel_enabled=l3_parallel_enabled, l3_executor_max_workers=l3_executor_max_workers, l3_recent_success_ttl_sec=l3_recent_success_ttl_sec, l3_backpressure_on_interactive=l3_backpressure_on_interactive, l3_backpressure_cooldown_ms=l3_backpressure_cooldown_ms, l3_refactored_orchestrator_enabled=l3_refactored_orchestrator_enabled, l3_supported_languages=l3_supported_languages, lsp_probe_bootstrap_file_window=lsp_probe_bootstrap_file_window, lsp_probe_bootstrap_top_k=lsp_probe_bootstrap_top_k, lsp_probe_language_priority=lsp_probe_language_priority, lsp_probe_l1_languages=lsp_probe_l1_languages, lsp_session_broker_enabled=lsp_session_broker_enabled, lsp_session_broker_metrics_enabled=lsp_session_broker_metrics_enabled, lsp_broker_optional_scaffolding_enabled=lsp_broker_optional_scaffolding_enabled, lsp_broker_batch_throughput_mode_enabled=lsp_broker_batch_throughput_mode_enabled, lsp_broker_batch_throughput_pending_threshold=lsp_broker_batch_throughput_pending_threshold, lsp_broker_batch_disable_java_probe=lsp_broker_batch_disable_java_probe, lsp_scope_active_languages=lsp_scope_active_languages, lsp_hotness_event_window_sec=lsp_hotness_event_window_sec, lsp_hotness_decay_window_sec=lsp_hotness_decay_window_sec, lsp_broker_backlog_min_share=lsp_broker_backlog_min_share, lsp_broker_max_standby_sessions_per_lang=lsp_broker_max_standby_sessions_per_lang, lsp_broker_max_standby_sessions_per_budget_group=lsp_broker_max_standby_sessions_per_budget_group, lsp_broker_ts_vue_active_cap=lsp_broker_ts_vue_active_cap, lsp_broker_java_hot_lanes=lsp_broker_java_hot_lanes, lsp_broker_java_backlog_lanes=lsp_broker_java_backlog_lanes, lsp_broker_java_sticky_ttl_sec=lsp_broker_java_sticky_ttl_sec, lsp_broker_java_switch_cooldown_sec=lsp_broker_java_switch_cooldown_sec, lsp_broker_java_min_lease_ms=lsp_broker_java_min_lease_ms, lsp_broker_ts_hot_lanes=lsp_broker_ts_hot_lanes, lsp_broker_ts_backlog_lanes=lsp_broker_ts_backlog_lanes, lsp_broker_ts_sticky_ttl_sec=lsp_broker_ts_sticky_ttl_sec, lsp_broker_ts_switch_cooldown_sec=lsp_broker_ts_switch_cooldown_sec, lsp_broker_ts_min_lease_ms=lsp_broker_ts_min_lease_ms, lsp_broker_vue_hot_lanes=lsp_broker_vue_hot_lanes, lsp_broker_vue_backlog_lanes=lsp_broker_vue_backlog_lanes, lsp_broker_vue_sticky_ttl_sec=lsp_broker_vue_sticky_ttl_sec, lsp_broker_vue_switch_cooldown_sec=lsp_broker_vue_switch_cooldown_sec, lsp_broker_vue_min_lease_ms=lsp_broker_vue_min_lease_ms)
+    service = FileCollectionService(workspace_repo=workspace_repo, file_repo=file_repo, enrich_queue_repo=enrich_queue_repo, body_repo=body_repo, lsp_repo=lsp_repo, readiness_repo=readiness_repo, policy=policy, lsp_backend=resolved_lsp_backend, policy_repo=policy_repo, event_repo=event_repo, error_event_repo=error_event_repo, candidate_index_sink=candidate_index_sink, vector_index_sink=vector_index_sink, run_mode=run_mode, parent_alive_probe=parent_alive_probe, persist_body_for_read=persist_body_for_read, repo_registry_repo=repo_registry_repo, l3_parallel_enabled=l3_parallel_enabled, l3_executor_max_workers=l3_executor_max_workers, l3_recent_success_ttl_sec=l3_recent_success_ttl_sec, l3_backpressure_on_interactive=l3_backpressure_on_interactive, l3_backpressure_cooldown_ms=l3_backpressure_cooldown_ms, l3_refactored_orchestrator_enabled=l3_refactored_orchestrator_enabled, l3_supported_languages=l3_supported_languages, lsp_probe_bootstrap_file_window=lsp_probe_bootstrap_file_window, lsp_probe_bootstrap_top_k=lsp_probe_bootstrap_top_k, lsp_probe_language_priority=lsp_probe_language_priority, lsp_probe_l1_languages=lsp_probe_l1_languages, lsp_session_broker_enabled=lsp_session_broker_enabled, lsp_session_broker_metrics_enabled=lsp_session_broker_metrics_enabled, lsp_broker_optional_scaffolding_enabled=lsp_broker_optional_scaffolding_enabled, lsp_broker_batch_throughput_mode_enabled=lsp_broker_batch_throughput_mode_enabled, lsp_broker_batch_throughput_pending_threshold=lsp_broker_batch_throughput_pending_threshold, lsp_broker_batch_disable_java_probe=lsp_broker_batch_disable_java_probe, lsp_scope_active_languages=lsp_scope_active_languages, lsp_hotness_event_window_sec=lsp_hotness_event_window_sec, lsp_hotness_decay_window_sec=lsp_hotness_decay_window_sec, lsp_broker_backlog_min_share=lsp_broker_backlog_min_share, lsp_broker_max_standby_sessions_per_lang=lsp_broker_max_standby_sessions_per_lang, lsp_broker_max_standby_sessions_per_budget_group=lsp_broker_max_standby_sessions_per_budget_group, lsp_broker_ts_vue_active_cap=lsp_broker_ts_vue_active_cap, lsp_broker_java_hot_lanes=lsp_broker_java_hot_lanes, lsp_broker_java_backlog_lanes=lsp_broker_java_backlog_lanes, lsp_broker_java_sticky_ttl_sec=lsp_broker_java_sticky_ttl_sec, lsp_broker_java_switch_cooldown_sec=lsp_broker_java_switch_cooldown_sec, lsp_broker_java_min_lease_ms=lsp_broker_java_min_lease_ms, lsp_broker_ts_hot_lanes=lsp_broker_ts_hot_lanes, lsp_broker_ts_backlog_lanes=lsp_broker_ts_backlog_lanes, lsp_broker_ts_sticky_ttl_sec=lsp_broker_ts_sticky_ttl_sec, lsp_broker_ts_switch_cooldown_sec=lsp_broker_ts_switch_cooldown_sec, lsp_broker_ts_min_lease_ms=lsp_broker_ts_min_lease_ms, lsp_broker_vue_hot_lanes=lsp_broker_vue_hot_lanes, lsp_broker_vue_backlog_lanes=lsp_broker_vue_backlog_lanes, lsp_broker_vue_sticky_ttl_sec=lsp_broker_vue_sticky_ttl_sec, lsp_broker_vue_switch_cooldown_sec=lsp_broker_vue_switch_cooldown_sec, lsp_broker_vue_min_lease_ms=lsp_broker_vue_min_lease_ms, l5_call_rate_total_max=l5_call_rate_total_max, l5_call_rate_batch_max=l5_call_rate_batch_max, l5_calls_per_min_per_lang_max=l5_calls_per_min_per_lang_max, l5_tokens_per_10sec_global_max=l5_tokens_per_10sec_global_max, l5_tokens_per_10sec_per_lang_max=l5_tokens_per_10sec_per_lang_max, l5_tokens_per_10sec_per_workspace_max=l5_tokens_per_10sec_per_workspace_max, l3_query_compile_cache_enabled=l3_query_compile_cache_enabled, l3_query_compile_ms_budget=l3_query_compile_ms_budget, l3_query_budget_ms=l3_query_budget_ms, tool_layer_repo=tool_layer_repo)
     service._watcher_debounce_ms = max(50, watcher_debounce_ms)
     return service
 

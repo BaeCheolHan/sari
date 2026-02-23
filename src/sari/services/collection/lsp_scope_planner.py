@@ -282,7 +282,7 @@ class LspScopePlanner:
             a.relative_to(b)
             return True
         except ValueError:
-            pass
+            ...
         try:
             b.relative_to(a)
             return True

@@ -588,9 +588,9 @@ class LspHub:
                 if bool(guard(base_key[0], base_key[1])):
                     self._scale_out_guard_block_count += 1
                     return False
-            except Exception:
+            except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
                 # guard 오류는 서비스 가용성보다 낮은 우선순위다.
-                pass
+                ...
         # 전역 소프트 상한을 넘기면 추가 scale-out을 차단한다.
         if self._lsp_global_soft_limit > 0 and len(self._instances) >= self._lsp_global_soft_limit:
             return False

@@ -55,9 +55,9 @@ class WatcherHotnessTracker:
         if et in {"deleted", "moved"} and self._scope_cache_invalidator is not None:
             try:
                 self._scope_cache_invalidator(repo_root, relative_path)
-            except Exception:
+            except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
                 # hotness path는 best-effort
-                pass
+                ...
         if language is None or not isinstance(lsp_scope_root, str) or lsp_scope_root.strip() == "":
             return
         weight = 1.0
@@ -126,4 +126,3 @@ class WatcherHotnessTracker:
         now = self._now_monotonic()
         with self._lock:
             self._signals[key].append(_TimedWeight(at_monotonic=now, weight=weight))
-
