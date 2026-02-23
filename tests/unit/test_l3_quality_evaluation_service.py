@@ -94,3 +94,23 @@ def test_quality_eval_normalizes_ts_method_style_kinds_to_same_bucket() -> None:
 
     assert result.kind_match_rate == pytest.approx(1.0)
 
+
+def test_quality_eval_normalizes_lsp_symbolkind_numeric_strings_for_java() -> None:
+    service = L3QualityEvaluationService()
+    ast = [
+        _sym(name="Foo", kind="class", line=3),
+        _sym(name="bar", kind="method", line=10),
+        _sym(name="name", kind="field", line=6),
+    ]
+    # LSP SymbolKind values often arrive as numeric strings in persisted rows.
+    lsp = [
+        _sym(name="Foo", kind="5", line=3),   # Class
+        _sym(name="bar", kind="6", line=10),  # Method
+        _sym(name="name", kind="8", line=6),  # Field
+    ]
+
+    result = service.evaluate(language="java", ast_symbols=ast, lsp_symbols=lsp)
+
+    assert result.symbol_recall_proxy == pytest.approx(1.0)
+    assert result.symbol_precision_proxy == pytest.approx(1.0)
+    assert result.kind_match_rate == pytest.approx(1.0)

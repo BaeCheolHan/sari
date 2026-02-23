@@ -156,6 +156,21 @@ class L3QualityEvaluationService:
 
     def _kind_bucket(self, *, language: str, kind: str) -> str:
         lang = str(language).strip().lower()
+        lsp_numeric = {
+            "2": "module",      # SymbolKind.Module
+            "4": "module",      # SymbolKind.Package -> bucket as module
+            "5": "class",       # SymbolKind.Class
+            "6": "method",      # SymbolKind.Method
+            "7": "field",       # SymbolKind.Property -> bucket as field
+            "8": "field",       # SymbolKind.Field
+            "9": "method",      # SymbolKind.Constructor -> bucket as method
+            "10": "enum",       # SymbolKind.Enum
+            "11": "interface",  # SymbolKind.Interface
+            "12": "function",   # SymbolKind.Function
+            "13": "variable",   # SymbolKind.Variable
+        }
+        if kind in lsp_numeric:
+            return lsp_numeric[kind]
         direct = {
             "class": "class",
             "method": "method",
@@ -178,10 +193,11 @@ class L3QualityEvaluationService:
             "constructor": "method",
             "record": "class",
             "enum_constant": "field",
+            "variable": "field",
+            "property": "field",
         }
         if lang in {"typescript", "ts", "javascript", "js", "vue"} and kind in ts_aliases:
             return ts_aliases[kind]
         if lang in {"java"} and kind in java_aliases:
             return java_aliases[kind]
         return "other"
-

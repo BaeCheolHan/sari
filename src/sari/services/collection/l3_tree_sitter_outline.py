@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import importlib
+from pathlib import Path
 import time
 from typing import Any
 
@@ -28,6 +29,11 @@ class TreeSitterOutlineExtractor:
         "java": ("tree_sitter_java", "language"),
         "typescript": ("tree_sitter_typescript", "language_typescript"),
     }
+    _QUERY_LANGUAGE_PACKAGES = {
+        "python": "tree_sitter_python",
+        "java": "tree_sitter_java",
+        "typescript": "tree_sitter_typescript",
+    }
 
     _NODE_KIND_BY_TYPE = {
         "python": {
@@ -43,7 +49,11 @@ class TreeSitterOutlineExtractor:
         "java": {
             "class_declaration": "class",
             "interface_declaration": "interface",
-            "enum_declaration": "class",
+            "annotation_type_declaration": "interface",
+            "record_declaration": "class",
+            "enum_declaration": "enum",
+            "enum_constant": "field",
+            "variable_declarator": "field",
             "method_declaration": "method",
             "constructor_declaration": "method",
         },
@@ -64,9 +74,13 @@ class TreeSitterOutlineExtractor:
         "java": """
             (class_declaration name: (identifier) @name) @symbol.class
             (interface_declaration name: (identifier) @name) @symbol.interface
-            (enum_declaration name: (identifier) @name) @symbol.class
+            (annotation_type_declaration name: (identifier) @name) @symbol.interface
+            (record_declaration name: (identifier) @name) @symbol.class
+            (enum_declaration name: (identifier) @name) @symbol.enum
             (method_declaration name: (identifier) @name) @symbol.method
             (constructor_declaration name: (identifier) @name) @symbol.method
+            (field_declaration (variable_declarator name: (identifier) @name) @symbol.field)
+            (enum_constant name: (identifier) @name) @symbol.enum_constant
         """,
     }
 
@@ -81,6 +95,7 @@ class TreeSitterOutlineExtractor:
         self._query_cursor_cls = None
         self._get_language = None
         self._compiled_queries: dict[str, Any] = {}
+        self._query_source_cache: dict[str, str | None] = {}
         try:
             from tree_sitter import Language, Parser  # type: ignore
         except (ImportError, RuntimeError, OSError, ValueError, TypeError) as exc:
@@ -184,6 +199,7 @@ class TreeSitterOutlineExtractor:
             if isinstance(children, list):
                 for child in reversed(children):
                     stack.append(child)
+        symbols = self._postprocess_symbols(normalized=normalized, symbols=symbols)
         return TreeSitterOutlineResult(symbols=symbols, degraded=False)
 
     def _extract_outline_with_query(
@@ -199,7 +215,7 @@ class TreeSitterOutlineExtractor:
         # query compilation fails, fall back to the legacy traversal extractor.
         if self._query_cls is None:
             return None
-        query_source = self._QUERY_SOURCES.get(normalized)
+        query_source = self._get_query_source(normalized)
         if not query_source:
             return None
         language = self._languages.get(normalized)
@@ -207,9 +223,8 @@ class TreeSitterOutlineExtractor:
             return None
         query = self._compiled_queries.get(normalized)
         if query is None:
-            try:
-                query = self._query_cls(language, query_source)
-            except (RuntimeError, OSError, ValueError, TypeError):
+            query = self._compile_query(language=language, source=query_source)
+            if query is None:
                 return None
             self._compiled_queries[normalized] = query
         try:
@@ -222,6 +237,7 @@ class TreeSitterOutlineExtractor:
             return None
         symbols: list[dict[str, object]] = []
         pending: dict[int, dict[str, object]] = {}
+        names_by_parent_id: dict[int, tuple[str, int, int]] = {}
         capture_items = self._iter_capture_items(captures_iter, query=query)
         for item in capture_items:
             if (time.perf_counter() - started_at) > budget_sec:
@@ -230,15 +246,23 @@ class TreeSitterOutlineExtractor:
             if node is None or not isinstance(capture_name, str):
                 continue
             if capture_name == "name":
-                entry = pending.get(id(getattr(node, "parent", node)))
-                if entry is not None:
-                    text = getattr(node, "text", b"")
-                    if isinstance(text, bytes) and text:
-                        entry["name"] = text.decode("utf-8", errors="ignore") or "anonymous"
+                parent = getattr(node, "parent", node)
+                text = getattr(node, "text", b"")
+                if isinstance(text, bytes) and text:
+                    decoded = text.decode("utf-8", errors="ignore") or "anonymous"
+                    name_line = int(node.start_point[0]) + 1
+                    name_end_line = int(node.end_point[0]) + 1
+                    names_by_parent_id[id(parent)] = (decoded, name_line, name_end_line)
+                    entry = pending.get(id(parent))
+                    if entry is not None:
+                        entry["name"] = decoded
+                        entry["line"] = name_line
+                        entry["end_line"] = name_end_line
+                        entry["symbol_key"] = f"{decoded}:{name_line}"
                 continue
-            if not capture_name.startswith("symbol."):
+            kind = self._query_capture_to_kind(capture_name)
+            if kind is None:
                 continue
-            kind = capture_name.split(".", 1)[1]
             line = int(node.start_point[0]) + 1
             end_line = int(node.end_point[0]) + 1
             symbol = {
@@ -253,10 +277,82 @@ class TreeSitterOutlineExtractor:
             }
             symbol["symbol_key"] = f"{symbol['name']}:{line}"
             symbols.append(symbol)
-            pending[id(node)] = symbol
+            node_id = id(node)
+            pending[node_id] = symbol
+            pre_name = names_by_parent_id.get(node_id)
+            if isinstance(pre_name, tuple):
+                pre_name_text, pre_name_line, pre_name_end_line = pre_name
+                if pre_name_text:
+                    symbol["name"] = pre_name_text
+                    symbol["line"] = pre_name_line
+                    symbol["end_line"] = pre_name_end_line
+                    symbol["symbol_key"] = f"{pre_name_text}:{pre_name_line}"
         if not symbols:
             return None
+        symbols = self._postprocess_symbols(normalized=normalized, symbols=symbols)
         return TreeSitterOutlineResult(symbols=symbols, degraded=False)
+
+    def _postprocess_symbols(self, *, normalized: str, symbols: list[dict[str, object]]) -> list[dict[str, object]]:
+        filtered = symbols
+        if normalized == "java":
+            # Java LSP documentSymbol commonly omits package declarations; treat them as non-outline noise.
+            filtered = [s for s in filtered if str(s.get("kind", "")) != "module"]
+        return self._dedupe_symbols(filtered)
+
+    def _dedupe_symbols(self, symbols: list[dict[str, object]]) -> list[dict[str, object]]:
+        seen: set[tuple[str, str, int, int]] = set()
+        out: list[dict[str, object]] = []
+        for sym in symbols:
+            try:
+                key = (
+                    str(sym.get("name", "")),
+                    str(sym.get("kind", "other")),
+                    int(sym.get("line", 0) or 0),
+                    int(sym.get("end_line", 0) or 0),
+                )
+            except (TypeError, ValueError):
+                out.append(sym)
+                continue
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(sym)
+        return out
+
+    def _compile_query(self, *, language, source: str):
+        # tree-sitter Python bindings differ by version:
+        # - newer: Query(language, source)
+        # - older: language.query(source)
+        if self._query_cls is not None:
+            try:
+                return self._query_cls(language, source)
+            except (RuntimeError, OSError, ValueError, TypeError):
+                pass
+        lang_query = getattr(language, "query", None)
+        if callable(lang_query):
+            try:
+                return lang_query(source)
+            except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
+                return None
+        return None
+
+    def _query_capture_to_kind(self, capture_name: str) -> str | None:
+        if capture_name.startswith("symbol."):
+            return capture_name.split(".", 1)[1]
+        if capture_name.startswith("definition."):
+            raw = capture_name.split(".", 1)[1]
+            return {
+                "class": "class",
+                "method": "method",
+                "function": "function",
+                "interface": "interface",
+                "enum": "enum",
+                "module": "module",
+                "package": "module",
+                "field": "field",
+                "constant": "field",
+            }.get(raw, "other")
+        return None
 
     def _iter_capture_items(self, captures_iter, *, query):
         # Newer tree-sitter Python bindings may return dict[str, list[node]]
@@ -321,11 +417,45 @@ class TreeSitterOutlineExtractor:
         self._parsers[normalized_lang] = parser
         return parser
 
+    def _get_query_source(self, normalized_lang: str) -> str | None:
+        cached = self._query_source_cache.get(normalized_lang, ...)
+        if cached is not ...:
+            return cached
+        source = self._load_packaged_tags_query(normalized_lang)
+        if source and normalized_lang == "java":
+            # Packaged tags.scm is preferred, but it does not include package/field/constructor/enum
+            # definitions we need for outline parity.
+            source = f"{source}\n{self._QUERY_SOURCES['java']}"
+        if not source:
+            source = self._QUERY_SOURCES.get(normalized_lang)
+        self._query_source_cache[normalized_lang] = source
+        return source
+
+    def _load_packaged_tags_query(self, normalized_lang: str) -> str | None:
+        package_name = self._QUERY_LANGUAGE_PACKAGES.get(normalized_lang)
+        if package_name is None:
+            return None
+        try:
+            module = importlib.import_module(package_name)
+        except (ImportError, RuntimeError, OSError, ValueError, TypeError):
+            return None
+        module_file = getattr(module, "__file__", None)
+        if not isinstance(module_file, str) or not module_file:
+            return None
+        tags_path = Path(module_file).resolve().parent / "queries" / "tags.scm"
+        try:
+            if not tags_path.is_file():
+                return None
+            source = tags_path.read_text(encoding="utf-8")
+        except (OSError, RuntimeError, ValueError):
+            return None
+        return source or None
+
     def _load_language(self, normalized_lang: str):
         if callable(self._get_language):
             try:
                 return self._get_language(normalized_lang)
-            except (RuntimeError, OSError, ValueError, TypeError):
+            except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
                 ...
         fallback = self._FALLBACK_LANGUAGE_LOADERS.get(normalized_lang)
         if fallback is None:
@@ -342,15 +472,20 @@ class TreeSitterOutlineExtractor:
             return None
 
     def _build_parser(self, language):
+        # Prefer the explicit set_language path for compatibility across
+        # tree-sitter Python bindings / prebuilt language bundles.
+        parser = self._parser_cls()
+        setter = getattr(parser, "set_language", None)
+        if callable(setter):
+            try:
+                setter(language)
+                return parser
+            except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
+                ...
         try:
             return self._parser_cls(language)
         except TypeError:
-            parser = self._parser_cls()
-            setter = getattr(parser, "set_language", None)
-            if not callable(setter):
-                return None
-            setter(language)
-            return parser
+            return None
 
     def _resolve_symbol_name(self, *, node, content_text: str) -> str:
         by_field = getattr(node, "child_by_field_name", None)
