@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from sari.core.exceptions import BenchmarkError, CollectionError, ErrorContext
@@ -234,6 +235,8 @@ class PipelineBenchmarkService:
         worker_errors_lock = threading.Lock()
         worker_threads: list[threading.Thread] = []
         worker_count = self._resolve_benchmark_worker_count()
+        count_pending_perf_ignorable = getattr(self._queue_repo, "count_pending_perf_ignorable", None)
+        forced_heavy_finalize_attempted = False
 
         def _worker_loop() -> None:
             """벤치마크 큐를 병렬 처리하는 워커 루프다."""
@@ -253,24 +256,78 @@ class PipelineBenchmarkService:
             worker_threads.append(thread)
             thread.start()
 
-        try:
-            while time.time() < deadline:
-                with worker_errors_lock:
-                    first_error = worker_errors[0] if len(worker_errors) > 0 else None
-                if first_error is not None:
-                    raise BenchmarkError(
-                        ErrorContext(code="ERR_BENCHMARK_FAILED", message=f"benchmark enrich failed: {first_error}")
-                    ) from first_error
-                counts = self._queue_repo.get_status_counts()
-                queue_depth = int(counts.get("PENDING", 0) + counts.get("FAILED", 0) + counts.get("RUNNING", 0))
-                if queue_depth == 0:
-                    return
-                time.sleep(0.05)
-        finally:
-            stop_event.set()
-            for thread in worker_threads:
-                thread.join(timeout=1.0)
+        with self._force_heavy_deferred_finalization_mode():
+            try:
+                while time.time() < deadline:
+                    with worker_errors_lock:
+                        first_error = worker_errors[0] if len(worker_errors) > 0 else None
+                    if first_error is not None:
+                        raise BenchmarkError(
+                            ErrorContext(code="ERR_BENCHMARK_FAILED", message=f"benchmark enrich failed: {first_error}")
+                        ) from first_error
+                    counts = self._queue_repo.get_status_counts()
+                    ignored_pending = 0
+                    if callable(count_pending_perf_ignorable):
+                        try:
+                            ignored_pending = max(0, int(count_pending_perf_ignorable()))
+                        except (RuntimeError, OSError, ValueError, TypeError):
+                            ignored_pending = 0
+                    pending_total = int(counts.get("PENDING", 0))
+                    pending_effective = max(0, pending_total - ignored_pending)
+                    if pending_effective == 0 and ignored_pending > 0 and not forced_heavy_finalize_attempted:
+                        forced_heavy_finalize_attempted = True
+                        promoted = self._promote_heavy_deferred_for_finalization(limit=max(64, ignored_pending))
+                        if promoted > 0:
+                            continue
+                    queue_depth = int(pending_effective + counts.get("FAILED", 0) + counts.get("RUNNING", 0))
+                    if queue_depth == 0:
+                        return
+                    time.sleep(0.05)
+            finally:
+                stop_event.set()
+                for thread in worker_threads:
+                    thread.join(timeout=1.0)
         raise BenchmarkError(ErrorContext(code="ERR_BENCHMARK_TIMEOUT", message="enrich queue drain timeout"))
+
+    @contextmanager
+    def _force_heavy_deferred_finalization_mode(self):
+        fc = self._file_collection_service
+        enrich_engine = getattr(fc, "_enrich_engine", None)
+        if enrich_engine is None:
+            yield
+            return
+        orchestrator = getattr(enrich_engine, "_l3_orchestrator", None)
+        old_engine_max = getattr(enrich_engine, "_l3_preprocess_max_bytes", None)
+        old_orch_max = getattr(orchestrator, "_preprocess_max_bytes", None) if orchestrator is not None else None
+        forced_max = 64 * 1024 * 1024
+        try:
+            if isinstance(old_engine_max, int):
+                setattr(enrich_engine, "_l3_preprocess_max_bytes", max(old_engine_max, forced_max))
+            if orchestrator is not None and isinstance(old_orch_max, int):
+                setattr(orchestrator, "_preprocess_max_bytes", max(old_orch_max, forced_max))
+            yield
+        finally:
+            if isinstance(old_engine_max, int):
+                setattr(enrich_engine, "_l3_preprocess_max_bytes", old_engine_max)
+            if orchestrator is not None and isinstance(old_orch_max, int):
+                setattr(orchestrator, "_preprocess_max_bytes", old_orch_max)
+
+    def _promote_heavy_deferred_for_finalization(self, *, limit: int) -> int:
+        list_ids = getattr(self._queue_repo, "list_pending_perf_ignorable_job_ids", None)
+        promote = getattr(self._queue_repo, "promote_to_l3_many", None)
+        if not callable(list_ids) or not callable(promote):
+            return 0
+        try:
+            job_ids = list(list_ids(limit=int(limit)))
+        except (RuntimeError, OSError, ValueError, TypeError):
+            return 0
+        if len(job_ids) == 0:
+            return 0
+        try:
+            promote(job_ids=job_ids, now_iso=now_iso8601_utc())
+        except (RuntimeError, OSError, ValueError, TypeError):
+            return 0
+        return len(job_ids)
 
     def _resolve_benchmark_worker_count(self) -> int:
         """벤치마크 큐 처리 워커 수를 정책에서 계산한다."""

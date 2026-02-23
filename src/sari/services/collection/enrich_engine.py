@@ -43,6 +43,7 @@ from sari.services.collection.l3_degraded_fallback_service import L3DegradedFall
 from sari.services.collection.l4_admission_service import L4AdmissionService
 from sari.services.collection.l3_orchestrator import L3Orchestrator
 from sari.services.collection.l3_persist_service import L3PersistService
+from sari.services.collection.l3_quality_evaluation_service import L3QualityEvaluationService
 from sari.services.collection.l3_queue_transition_service import L3QueueTransitionService
 from sari.services.collection.l3_scope_resolution_service import L3ScopeResolutionService
 from sari.services.collection.l3_skip_eligibility_service import L3SkipEligibilityService
@@ -224,6 +225,7 @@ class EnrichEngine:
         self._l3_persist_service = L3PersistService(
             record_scope_learning=lambda job: self._record_scope_learning_after_l3_success(job=job),
         )
+        self._l3_quality_eval_service = L3QualityEvaluationService()
         self._l3_orchestrator = L3Orchestrator(
             file_repo=self._file_repo,
             lsp_backend=self._lsp_backend,
@@ -246,6 +248,11 @@ class EnrichEngine:
             preprocess_max_bytes=self._l3_preprocess_max_bytes,
             evaluate_l5_admission=self._evaluate_l5_admission_for_job if self._l5_admission_shadow_enabled else None,
             l5_admission_enforced=self._l5_admission_enforced,
+            quality_eval_service=self._l3_quality_eval_service,
+            quality_shadow_enabled=False,
+            quality_shadow_sample_rate=0.0,
+            quality_shadow_max_files=0,
+            quality_shadow_lang_allowlist=(),
         )
 
     def _build_default_language_policy_map(self) -> dict[str, LanguageL5Policy]:
@@ -334,6 +341,22 @@ class EnrichEngine:
         for workspace_key, cost_units in cost_by_workspace.items():
             metrics[f"l5_cost_units_total_by_workspace_{workspace_key}"] = float(cost_units)
         return metrics
+
+    def get_l3_quality_shadow_summary(self) -> dict[str, object]:
+        """L3 AST 품질 shadow 비교 요약을 반환한다 (Phase A, metrics-only)."""
+        orchestrator = getattr(self, "_l3_orchestrator", None)
+        if orchestrator is None:
+            return {"enabled": False, "sampled_files": 0, "shadow_eval_errors": 0}
+        getter = getattr(orchestrator, "get_quality_shadow_summary", None)
+        if not callable(getter):
+            return {"enabled": False, "sampled_files": 0, "shadow_eval_errors": 0}
+        try:
+            summary = getter()
+        except (RuntimeError, OSError, ValueError, TypeError):
+            return {"enabled": False, "sampled_files": 0, "shadow_eval_errors": 0}
+        if not isinstance(summary, dict):
+            return {"enabled": False, "sampled_files": 0, "shadow_eval_errors": 0}
+        return dict(summary)
 
     def set_l5_admission_mode(self, *, shadow_enabled: bool, enforced: bool) -> None:
         """L5 admission 모드를 런타임에서 동적으로 갱신한다."""
@@ -1200,352 +1223,16 @@ class EnrichEngine:
                 return
 
     def _process_single_l3_job(self, job: FileEnrichJobDTO) -> _L3JobResultDTO:
-        if getattr(self, "_l3_refactored_orchestrator_enabled", False):
-            orchestrator = getattr(self, "_l3_orchestrator", None)
-            if orchestrator is not None:
-                result = orchestrator.process_job(job)
-                if isinstance(result, _L3JobResultDTO):
-                    return result
-        started_at = time.perf_counter()
-        finished_status = "FAILED"
-        done_id: str | None = None
-        failure_update: FileEnrichFailureUpdateDTO | None = None
-        state_update: EnrichStateUpdateDTO | None = None
-        body_delete: FileBodyDeleteTargetDTO | None = None
-        lsp_update: LspExtractPersistDTO | None = None
-        readiness_update: ToolReadinessStateDTO | None = None
-        l3_layer_upsert: dict[str, object] | None = None
-        l4_layer_upsert: dict[str, object] | None = None
-        l5_layer_upsert: dict[str, object] | None = None
-        dev_error: CollectionError | None = None
-        try:
-            with self._perf_tracer.span("l3_job.get_file_row", phase="l3_job", repo_root=job.repo_root):
-                file_row = self._file_repo.get_file(job.repo_root, job.relative_path)
-            if file_row is None or file_row.is_deleted:
-                done_id = job.job_id
-                finished_status = "DONE"
-            elif file_row.content_hash != job.content_hash:
-                done_id = job.job_id
-                finished_status = "DONE"
-            elif self._is_recent_tool_ready(job=job):
-                now_iso = now_iso8601_utc()
-                state_update = EnrichStateUpdateDTO(
-                    repo_root=job.repo_root,
-                    relative_path=job.relative_path,
-                    enrich_state="TOOL_READY",
-                    updated_at=now_iso,
-                )
-                readiness_update = ToolReadinessStateDTO(
-                    repo_root=job.repo_root,
-                    relative_path=job.relative_path,
-                    content_hash=job.content_hash,
-                    list_files_ready=True,
-                    read_file_ready=True,
-                    search_symbol_ready=True,
-                    get_callers_ready=True,
-                    consistency_ready=True,
-                    quality_ready=True,
-                    tool_ready=True,
-                    last_reason="skip_recent_success",
-                    updated_at=now_iso,
-                )
-                if not self._is_deletion_hold_enabled():
-                    body_delete = FileBodyDeleteTargetDTO(
-                        repo_root=job.repo_root,
-                        relative_path=job.relative_path,
-                        content_hash=job.content_hash,
-                    )
-                done_id = job.job_id
-                finished_status = "DONE"
-            else:
-                now_iso = now_iso8601_utc()
-                preprocess_result = self._run_l3_preprocess(job=job, file_row=file_row)
-                with self._perf_tracer.span("l3_job.resolve_skip_reason", phase="l3_job", repo_root=job.repo_root):
-                    skip_reason = self._resolve_l3_skip_reason(job=job)
-                if skip_reason is not None:
-                    state_update = EnrichStateUpdateDTO(
-                        repo_root=job.repo_root,
-                        relative_path=job.relative_path,
-                        enrich_state="L3_SKIPPED",
-                        updated_at=now_iso,
-                    )
-                    readiness_update = self._build_l3_skipped_readiness(job=job, reason=skip_reason, now_iso=now_iso)
-                    done_id = job.job_id
-                    finished_status = "DONE"
-                else:
-                    language = self._resolve_lsp_language(job.relative_path)
-                    language_key = language.value if language is not None else "unknown"
-                    admission_decision = None
-                    if self._l5_admission_shadow_enabled and language is not None:
-                        admission_decision = self._evaluate_l5_admission_for_job(job, language_key)
-                    if admission_decision is not None and not admission_decision.admit_l5 and self._l5_admission_enforced:
-                        deferred = self._l3_queue_transition_service.defer_after_l5_admission_rejection(
-                            job=job,
-                            admission=admission_decision,
-                        )
-                        if deferred:
-                            finished_status = "PENDING"
-                        else:
-                            rejection = (
-                                admission_decision.reject_reason.value
-                                if admission_decision.reject_reason is not None
-                                else "unknown"
-                            )
-                            state_update = EnrichStateUpdateDTO(
-                                repo_root=job.repo_root,
-                                relative_path=job.relative_path,
-                                enrich_state="L3_SKIPPED",
-                                updated_at=now_iso,
-                            )
-                            readiness_update = self._build_l3_skipped_readiness(
-                                job=job,
-                                reason=f"l5_reject:{rejection}",
-                                now_iso=now_iso,
-                            )
-                            done_id = job.job_id
-                            finished_status = "DONE"
-                    elif (
-                        preprocess_result is not None
-                        and preprocess_result.decision is L3PreprocessDecision.DEFERRED_HEAVY
-                    ):
-                        deferred = self._l3_queue_transition_service.defer_after_preprocess_heavy(
-                            job=job,
-                            reason=preprocess_result.reason,
-                        )
-                        if deferred:
-                            finished_status = "PENDING"
-                        else:
-                            state_update = EnrichStateUpdateDTO(
-                                repo_root=job.repo_root,
-                                relative_path=job.relative_path,
-                                enrich_state="L3_SKIPPED",
-                                updated_at=now_iso,
-                            )
-                            readiness_update = self._build_l3_skipped_readiness(
-                                job=job,
-                                reason=preprocess_result.reason,
-                                now_iso=now_iso,
-                            )
-                            done_id = job.job_id
-                            finished_status = "DONE"
-                    elif (
-                        preprocess_result is not None
-                        and preprocess_result.decision is L3PreprocessDecision.L3_ONLY
-                        and len(preprocess_result.symbols) > 0
-                    ):
-                        l3_layer_upsert = self._build_l3_layer_upsert(job=job, preprocess_result=preprocess_result, now_iso=now_iso)
-                        l4_layer_upsert = self._build_l4_layer_upsert(
-                            job=job,
-                            preprocess_result=preprocess_result,
-                            admission_decision=admission_decision,
-                            now_iso=now_iso,
-                        )
-                        lsp_update = LspExtractPersistDTO(
-                            repo_root=job.repo_root,
-                            relative_path=job.relative_path,
-                            content_hash=job.content_hash,
-                            symbols=preprocess_result.symbols,
-                            relations=[],
-                            created_at=now_iso,
-                        )
-                        readiness_update = ToolReadinessStateDTO(
-                            repo_root=job.repo_root,
-                            relative_path=job.relative_path,
-                            content_hash=job.content_hash,
-                            list_files_ready=True,
-                            read_file_ready=True,
-                            search_symbol_ready=True,
-                            get_callers_ready=True,
-                            consistency_ready=True,
-                            quality_ready=True,
-                            tool_ready=True,
-                            last_reason=preprocess_result.reason,
-                            updated_at=now_iso,
-                        )
-                        state_update = EnrichStateUpdateDTO(
-                            repo_root=job.repo_root,
-                            relative_path=job.relative_path,
-                            enrich_state="TOOL_READY",
-                            updated_at=now_iso,
-                        )
-                        done_id = job.job_id
-                        finished_status = "DONE"
-                    else:
-                        if admission_decision is not None and not admission_decision.admit_l5:
-                            rejection = (
-                                admission_decision.reject_reason.value
-                                if admission_decision.reject_reason is not None
-                                else "unknown"
-                            )
-                            state_update = EnrichStateUpdateDTO(
-                                repo_root=job.repo_root,
-                                relative_path=job.relative_path,
-                                enrich_state="L3_SKIPPED",
-                                updated_at=now_iso,
-                            )
-                            readiness_update = self._build_l3_skipped_readiness(
-                                job=job,
-                                reason=f"l5_reject:{rejection}",
-                                now_iso=now_iso,
-                            )
-                            done_id = job.job_id
-                            finished_status = "DONE"
-                        else:
-                            extraction = self._lsp_backend.extract(job.repo_root, job.relative_path, job.content_hash)
-                            if extraction.error_message is not None:
-                                deferred = self._l3_queue_transition_service.defer_after_broker_lease_denial(
-                                    job=job,
-                                    error_message=extraction.error_message,
-                                )
-                                if deferred:
-                                    finished_status = "PENDING"
-                                else:
-                                    escalated = self._l3_queue_transition_service.escalate_scope_after_l3_extract_error(
-                                        job=job,
-                                        error_message=extraction.error_message,
-                                    )
-                                    if escalated:
-                                        finished_status = "PENDING"
-                                    else:
-                                        failure_now = now_iso8601_utc()
-                                        state_update = EnrichStateUpdateDTO(
-                                            repo_root=job.repo_root,
-                                            relative_path=job.relative_path,
-                                            enrich_state="FAILED",
-                                            updated_at=failure_now,
-                                        )
-                                        failure_update = FileEnrichFailureUpdateDTO(
-                                            job_id=job.job_id,
-                                            error_message=extraction.error_message,
-                                            now_iso=failure_now,
-                                            dead_threshold=self._policy.retry_max_attempts,
-                                            backoff_base_sec=self._policy.retry_backoff_base_sec,
-                                        )
-                                        self._error_policy.record_error_event(
-                                            component="file_collection_service",
-                                            phase="enrich_l3_extract",
-                                            severity="error",
-                                            error_code="ERR_LSP_EXTRACT_FAILED",
-                                            error_message=extraction.error_message,
-                                            error_type="LspExtractionError",
-                                            repo_root=job.repo_root,
-                                            relative_path=job.relative_path,
-                                            job_id=job.job_id,
-                                            attempt_count=job.attempt_count,
-                                            context_data={"content_hash": job.content_hash},
-                                        )
-                            else:
-                                lsp_update = LspExtractPersistDTO(
-                                    repo_root=job.repo_root,
-                                    relative_path=job.relative_path,
-                                    content_hash=job.content_hash,
-                                    symbols=extraction.symbols,
-                                    relations=extraction.relations,
-                                    created_at=now_iso,
-                                )
-                                readiness_update = ToolReadinessStateDTO(
-                                    repo_root=job.repo_root,
-                                    relative_path=job.relative_path,
-                                    content_hash=job.content_hash,
-                                    list_files_ready=True,
-                                    read_file_ready=True,
-                                    search_symbol_ready=True,
-                                    get_callers_ready=True,
-                                    consistency_ready=True,
-                                    quality_ready=True,
-                                    tool_ready=True,
-                                    last_reason="ok",
-                                    updated_at=now_iso,
-                                )
-                                state_update = EnrichStateUpdateDTO(
-                                    repo_root=job.repo_root,
-                                    relative_path=job.relative_path,
-                                    enrich_state="TOOL_READY",
-                                    updated_at=now_iso,
-                                )
-                                if not self._is_deletion_hold_enabled():
-                                    body_delete = FileBodyDeleteTargetDTO(
-                                        repo_root=job.repo_root,
-                                        relative_path=job.relative_path,
-                                        content_hash=job.content_hash,
-                                    )
-                                done_id = job.job_id
-                                finished_status = "DONE"
-                                l3_layer_upsert = self._build_l3_layer_upsert(job=job, preprocess_result=preprocess_result, now_iso=now_iso)
-                                l4_layer_upsert = self._build_l4_layer_upsert(
-                                    job=job,
-                                    preprocess_result=preprocess_result,
-                                    admission_decision=admission_decision,
-                                    now_iso=now_iso,
-                                )
-                                reason_code = (
-                                    admission_decision.reason_code
-                                    if admission_decision is not None and admission_decision.reason_code is not None
-                                    else L5ReasonCode.GOLDENSET_COVERAGE
-                                )
-                                l5_layer_upsert = self._build_l5_layer_upsert(
-                                    job=job,
-                                    reason_code=reason_code,
-                                    symbols=extraction.symbols,
-                                    relations=extraction.relations,
-                                    now_iso=now_iso,
-                                )
-        except (CollectionError, RuntimeError, OSError, ValueError, zlib.error) as exc:
-            failure_now = now_iso8601_utc()
-            state_update = EnrichStateUpdateDTO(
-                repo_root=job.repo_root,
-                relative_path=job.relative_path,
-                enrich_state="FAILED",
-                updated_at=failure_now,
+        orchestrator = getattr(self, "_l3_orchestrator", None)
+        if orchestrator is None:
+            raise RuntimeError("L3Orchestrator is not initialized")
+        result = orchestrator.process_job(job)
+        if not isinstance(result, _L3JobResultDTO):
+            raise TypeError(
+                f"L3Orchestrator returned unexpected result type: {type(result)!r}"
             )
-            failure_update = FileEnrichFailureUpdateDTO(
-                job_id=job.job_id,
-                error_message=f"L3 처리 실패: {exc}",
-                now_iso=failure_now,
-                dead_threshold=self._policy.retry_max_attempts,
-                backoff_base_sec=self._policy.retry_backoff_base_sec,
-            )
-            self._error_policy.record_error_event(
-                component="file_collection_service",
-                phase="enrich_l3",
-                severity="critical" if self._run_mode == "dev" else "error",
-                error_code="ERR_ENRICH_L3_FAILED",
-                error_message=f"L3 처리 실패: {exc}",
-                error_type=type(exc).__name__,
-                repo_root=job.repo_root,
-                relative_path=job.relative_path,
-                job_id=job.job_id,
-                attempt_count=job.attempt_count,
-                context_data={"content_hash": job.content_hash},
-                stacktrace_text=traceback.format_exc(),
-            )
-            if self._run_mode == "dev":
-                dev_error = CollectionError(ErrorContext(code="ERR_ENRICH_L3_FAILED", message=f"L3 처리 실패: {exc}"))
-        elapsed_ms = (time.perf_counter() - started_at) * 1000.0
-        self._record_enrich_latency(elapsed_ms)
-        if self._event_repo is not None:
-            with self._perf_tracer.span("l3_job.record_event", phase="l3_job_event"):
-                self._event_repo.record_event(
-                    job_id=job.job_id,
-                    status=finished_status,
-                    latency_ms=int(elapsed_ms),
-                    created_at=now_iso8601_utc(),
-                )
-        return _L3JobResultDTO(
-            job_id=job.job_id,
-            finished_status=finished_status,
-            elapsed_ms=elapsed_ms,
-            done_id=done_id,
-            failure_update=failure_update,
-            state_update=state_update,
-            body_delete=body_delete,
-            lsp_update=lsp_update,
-            readiness_update=readiness_update,
-            l3_layer_upsert=l3_layer_upsert,
-            l4_layer_upsert=l4_layer_upsert,
-            l5_layer_upsert=l5_layer_upsert,
-            dev_error=dev_error,
-        )
+        return result
+
 
     def _run_l3_preprocess(self, *, job: FileEnrichJobDTO, file_row: object) -> L3PreprocessResultDTO | None:
         preprocess_service = getattr(self, "_l3_preprocess_service", None)

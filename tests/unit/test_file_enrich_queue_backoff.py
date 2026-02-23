@@ -297,6 +297,32 @@ def test_get_deferred_drop_stats_returns_reason_workspace_language_breakdown(tmp
     assert by_language.get("py", 0) >= 1
 
 
+def test_count_pending_perf_ignorable_counts_l5_deferred_heavy_only(tmp_path: Path) -> None:
+    """perf 무시 가능 pending은 l5 deferred_heavy만 집계해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = FileEnrichQueueRepository(db_path)
+    now_iso = "2026-02-16T00:00:00+00:00"
+    j1 = repo.enqueue("/repo", "big1.js", "h1", 10, "l3", now_iso)
+    j2 = repo.enqueue("/repo", "big2.js", "h2", 10, "l3", now_iso)
+    j3 = repo.enqueue("/repo", "other.js", "h3", 10, "l3", now_iso)
+    _ = repo.acquire_pending(limit=3, now_iso=now_iso)
+    repo.defer_jobs_to_pending(
+        job_ids=[j1, j2],
+        next_retry_at="2026-02-16T01:00:00+00:00",
+        defer_reason="l5_defer:deferred_heavy:l3_preprocess_large_file",
+        now_iso="2026-02-16T00:00:10+00:00",
+    )
+    repo.defer_jobs_to_pending(
+        job_ids=[j3],
+        next_retry_at="2026-02-16T01:00:00+00:00",
+        defer_reason="broker_defer:budget",
+        now_iso="2026-02-16T00:00:11+00:00",
+    )
+
+    assert repo.count_pending_perf_ignorable() == 2
+
+
 def test_enqueue_many_same_hash_preserves_defer_fields(tmp_path: Path) -> None:
     """동일 해시 merge는 defer 필드를 덮어쓰면 안 된다."""
     db_path = tmp_path / "state.db"

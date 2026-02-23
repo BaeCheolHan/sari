@@ -296,3 +296,109 @@ def test_pipeline_benchmark_drain_worker_error_escalates(tmp_path: Path, monkeyp
 
     with pytest.raises(BenchmarkError, match="benchmark enrich failed"):
         benchmark_service._drain_enrich_queue(max_wait_sec=1.0)
+
+
+def test_pipeline_benchmark_drain_treats_l5_heavy_deferred_pending_as_terminal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """l5 heavy defer pending만 남은 상태는 benchmark drain에서 timeout으로 보지 않는다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_dir = tmp_path / "repo-a"
+    repo_dir.mkdir()
+    WorkspaceService(WorkspaceRepository(db_path)).add_workspace(str(repo_dir))
+    collection_service = FileCollectionService(
+        workspace_repo=WorkspaceRepository(db_path),
+        file_repo=FileCollectionRepository(db_path),
+        enrich_queue_repo=FileEnrichQueueRepository(db_path),
+        body_repo=FileBodyRepository(db_path),
+        lsp_repo=LspToolDataRepository(db_path),
+        readiness_repo=ToolReadinessRepository(db_path),
+        policy=PipelineBenchmarkService.default_collection_policy(),
+        lsp_backend=BenchmarkLspExtractionBackend(),
+        policy_repo=PipelinePolicyRepository(db_path),
+        event_repo=None,
+    )
+    benchmark_service = PipelineBenchmarkService(
+        file_collection_service=collection_service,
+        queue_repo=FileEnrichQueueRepository(db_path),
+        lsp_repo=LspToolDataRepository(db_path),
+        policy_repo=PipelinePolicyRepository(db_path),
+        benchmark_repo=PipelineBenchmarkRepository(db_path),
+        artifact_root=tmp_path / "artifacts",
+    )
+
+    monkeypatch.setattr(collection_service, "process_enrich_jobs", lambda *, limit: 0)
+    monkeypatch.setattr(
+        benchmark_service._queue_repo,
+        "get_status_counts",
+        lambda: {"PENDING": 8, "FAILED": 0, "RUNNING": 0, "DONE": 3975, "DEAD": 0},
+    )
+    monkeypatch.setattr(benchmark_service._queue_repo, "count_pending_perf_ignorable", lambda: 8)
+
+    benchmark_service._drain_enrich_queue(max_wait_sec=0.2)
+
+
+def test_pipeline_benchmark_drain_force_finalizes_l5_heavy_deferred_pending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """benchmark drain도 heavy deferred pending만 남으면 promote_to_l3_many를 호출해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_dir = tmp_path / "repo-a"
+    repo_dir.mkdir()
+    WorkspaceService(WorkspaceRepository(db_path)).add_workspace(str(repo_dir))
+    collection_service = FileCollectionService(
+        workspace_repo=WorkspaceRepository(db_path),
+        file_repo=FileCollectionRepository(db_path),
+        enrich_queue_repo=FileEnrichQueueRepository(db_path),
+        body_repo=FileBodyRepository(db_path),
+        lsp_repo=LspToolDataRepository(db_path),
+        readiness_repo=ToolReadinessRepository(db_path),
+        policy=PipelineBenchmarkService.default_collection_policy(),
+        lsp_backend=BenchmarkLspExtractionBackend(),
+        policy_repo=PipelinePolicyRepository(db_path),
+        event_repo=None,
+    )
+    benchmark_service = PipelineBenchmarkService(
+        file_collection_service=collection_service,
+        queue_repo=FileEnrichQueueRepository(db_path),
+        lsp_repo=LspToolDataRepository(db_path),
+        policy_repo=PipelinePolicyRepository(db_path),
+        benchmark_repo=PipelineBenchmarkRepository(db_path),
+        artifact_root=tmp_path / "artifacts",
+    )
+
+    state = {"pending": 3, "promote_calls": 0, "job_ids": []}
+
+    monkeypatch.setattr(collection_service, "process_enrich_jobs", lambda *, limit: 0)
+    monkeypatch.setattr(
+        benchmark_service._queue_repo,
+        "get_status_counts",
+        lambda: {
+            "PENDING": state["pending"],
+            "FAILED": 0,
+            "RUNNING": 0,
+            "DONE": 3975,
+            "DEAD": 0,
+        },
+    )
+    monkeypatch.setattr(benchmark_service._queue_repo, "count_pending_perf_ignorable", lambda: state["pending"])
+    monkeypatch.setattr(
+        benchmark_service._queue_repo,
+        "list_pending_perf_ignorable_job_ids",
+        lambda limit=256: [f"job-{i}" for i in range(min(int(limit), state["pending"]))],
+    )
+
+    def _promote(job_ids: list[str], now_iso: str) -> None:
+        del now_iso
+        state["promote_calls"] += 1
+        state["job_ids"].extend(job_ids)
+        state["pending"] = 0
+
+    monkeypatch.setattr(benchmark_service._queue_repo, "promote_to_l3_many", _promote)
+
+    benchmark_service._drain_enrich_queue(max_wait_sec=0.5)
+
+    assert state["promote_calls"] == 1
+    assert len(state["job_ids"]) == 3

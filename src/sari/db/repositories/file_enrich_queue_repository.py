@@ -821,6 +821,38 @@ class FileEnrichQueueRepository:
             "by_language_topk": by_language_topk,
         }
 
+    def count_pending_perf_ignorable(self) -> int:
+        """perf drain 종료 시 무시 가능한 heavy defer pending 개수를 반환한다."""
+        with connect(self._db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS cnt
+                FROM file_enrich_queue
+                WHERE status = 'PENDING'
+                  AND defer_reason = 'l5_defer:deferred_heavy:l3_preprocess_large_file'
+                """
+            ).fetchone()
+        if row is None:
+            return 0
+        return int(row["cnt"] or 0)
+
+    def list_pending_perf_ignorable_job_ids(self, limit: int = 256) -> list[str]:
+        """perf/batch 종료 직전 강제 소진 대상으로 사용할 heavy defer pending job_id 목록."""
+        capped_limit = max(1, int(limit))
+        with connect(self._db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT job_id
+                FROM file_enrich_queue
+                WHERE status = 'PENDING'
+                  AND defer_reason = 'l5_defer:deferred_heavy:l3_preprocess_large_file'
+                ORDER BY priority DESC, created_at ASC
+                LIMIT :limit
+                """,
+                {"limit": capped_limit},
+            ).fetchall()
+        return [row_str(row, "job_id") for row in rows]
+
     def get_eligible_counts(self, now_iso: str) -> dict[str, int]:
         """strict eligible(v1) queue-job 기준 집계를 반환한다.
 

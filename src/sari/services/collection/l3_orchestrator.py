@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import time
 from datetime import timezone, datetime
 from typing import Callable
@@ -29,6 +30,7 @@ from .l3_treesitter_preprocess_service import (
     L3PreprocessDecision,
     L3PreprocessResultDTO,
 )
+from .l3_quality_evaluation_service import L3QualityEvaluationService
 
 
 class L3Orchestrator:
@@ -58,6 +60,11 @@ class L3Orchestrator:
         preprocess_max_bytes: int = 262_144,
         evaluate_l5_admission: Callable[[FileEnrichJobDTO, str], L4AdmissionDecisionDTO | None] | None = None,
         l5_admission_enforced: bool = False,
+        quality_eval_service: L3QualityEvaluationService | None = None,
+        quality_shadow_enabled: bool = False,
+        quality_shadow_sample_rate: float = 0.0,
+        quality_shadow_max_files: int = 0,
+        quality_shadow_lang_allowlist: tuple[str, ...] = (),
     ) -> None:
         self._file_repo = file_repo
         self._lsp_backend = lsp_backend
@@ -81,6 +88,17 @@ class L3Orchestrator:
         self._evaluate_l5_admission = evaluate_l5_admission
         self._l5_admission_enforced = bool(l5_admission_enforced)
         self._perf_tracer = PerfTracer(component="l3_orchestrator")
+        self._quality_eval_service = quality_eval_service
+        self._quality_shadow_enabled = bool(quality_shadow_enabled) and quality_eval_service is not None
+        self._quality_shadow_sample_rate = max(0.0, min(1.0, float(quality_shadow_sample_rate)))
+        self._quality_shadow_max_files = max(0, int(quality_shadow_max_files))
+        self._quality_shadow_lang_allowlist = {
+            str(item).strip().lower() for item in quality_shadow_lang_allowlist if str(item).strip() != ""
+        }
+        self._quality_shadow_sampled_count = 0
+        self._quality_shadow_eval_errors = 0
+        self._quality_shadow_accumulators: dict[str, dict[str, float]] = {}
+        self._quality_shadow_flag_counts: dict[str, int] = {}
 
     def process_job(self, job: FileEnrichJobDTO) -> object:
         started_at = time.perf_counter()
@@ -329,6 +347,12 @@ class L3Orchestrator:
                                                             context_data={"content_hash": job.content_hash},
                                                         )
                                         else:
+                                            self._record_quality_shadow_compare(
+                                                job=job,
+                                                language=language,
+                                                preprocess_result=preprocess_result,
+                                                lsp_symbols=list(extraction.symbols),
+                                            )
                                             l3_layer_upsert = self._build_l3_layer_upsert(
                                                 repo_root=job.repo_root,
                                                 relative_path=job.relative_path,
@@ -463,6 +487,102 @@ class L3Orchestrator:
         """L5 admission runtime 토글을 갱신한다."""
         self._evaluate_l5_admission = evaluate_l5_admission
         self._l5_admission_enforced = bool(enforced)
+
+    def get_quality_shadow_summary(self) -> dict[str, object]:
+        """AST vs LSP shadow 비교 요약을 반환한다 (behavior 영향 없음)."""
+        if not bool(getattr(self, "_quality_shadow_enabled", False)):
+            return {
+                "enabled": False,
+                "sampled_files": int(getattr(self, "_quality_shadow_sampled_count", 0)),
+                "shadow_eval_errors": int(getattr(self, "_quality_shadow_eval_errors", 0)),
+            }
+        sampled_files_by_language: dict[str, int] = {}
+        avg_recall_proxy_by_language: dict[str, float] = {}
+        avg_precision_proxy_by_language: dict[str, float] = {}
+        avg_kind_match_rate_by_language: dict[str, float] = {}
+        avg_position_match_rate_by_language: dict[str, float] = {}
+        for language, acc in getattr(self, "_quality_shadow_accumulators", {}).items():
+            count = int(float(acc.get("count", 0.0)))
+            if count <= 0:
+                continue
+            denom = float(count)
+            sampled_files_by_language[str(language)] = count
+            avg_recall_proxy_by_language[str(language)] = float(acc.get("recall_sum", 0.0)) / denom
+            avg_precision_proxy_by_language[str(language)] = float(acc.get("precision_sum", 0.0)) / denom
+            avg_kind_match_rate_by_language[str(language)] = float(acc.get("kind_sum", 0.0)) / denom
+            avg_position_match_rate_by_language[str(language)] = float(acc.get("position_sum", 0.0)) / denom
+        return {
+            "enabled": True,
+            "sampled_files": int(getattr(self, "_quality_shadow_sampled_count", 0)),
+            "sampled_files_by_language": sampled_files_by_language,
+            "avg_recall_proxy_by_language": avg_recall_proxy_by_language,
+            "avg_precision_proxy_by_language": avg_precision_proxy_by_language,
+            "avg_kind_match_rate_by_language": avg_kind_match_rate_by_language,
+            "avg_position_match_rate_by_language": avg_position_match_rate_by_language,
+            "quality_flags_top_counts": dict(getattr(self, "_quality_shadow_flag_counts", {})),
+            "shadow_eval_errors": int(getattr(self, "_quality_shadow_eval_errors", 0)),
+        }
+
+    def _record_quality_shadow_compare(
+        self,
+        *,
+        job: FileEnrichJobDTO,
+        language: str,
+        preprocess_result: L3PreprocessResultDTO | None,
+        lsp_symbols: list[dict[str, object]],
+    ) -> None:
+        if not bool(getattr(self, "_quality_shadow_enabled", False)):
+            return
+        eval_service = getattr(self, "_quality_eval_service", None)
+        if eval_service is None:
+            return
+        normalized_language = str(language).strip().lower()
+        allowlist = getattr(self, "_quality_shadow_lang_allowlist", set())
+        if len(allowlist) > 0 and normalized_language not in allowlist:
+            return
+        if preprocess_result is None or len(preprocess_result.symbols) == 0:
+            return
+        max_files = int(getattr(self, "_quality_shadow_max_files", 0))
+        if max_files > 0 and int(getattr(self, "_quality_shadow_sampled_count", 0)) >= max_files:
+            return
+        if not self._quality_shadow_should_sample(job=job, language=normalized_language):
+            return
+        try:
+            result = eval_service.evaluate(
+                language=normalized_language,
+                ast_symbols=list(preprocess_result.symbols),
+                lsp_symbols=list(lsp_symbols),
+            )
+        except Exception:  # noqa: BLE001
+            self._quality_shadow_eval_errors = int(getattr(self, "_quality_shadow_eval_errors", 0)) + 1
+            return
+        self._quality_shadow_sampled_count = int(getattr(self, "_quality_shadow_sampled_count", 0)) + 1
+        accumulators = getattr(self, "_quality_shadow_accumulators")
+        acc = accumulators.setdefault(
+            normalized_language,
+            {"count": 0.0, "recall_sum": 0.0, "precision_sum": 0.0, "kind_sum": 0.0, "position_sum": 0.0},
+        )
+        acc["count"] += 1.0
+        acc["recall_sum"] += float(result.symbol_recall_proxy)
+        acc["precision_sum"] += float(result.symbol_precision_proxy)
+        acc["kind_sum"] += float(result.kind_match_rate)
+        acc["position_sum"] += float(result.position_match_rate)
+        flag_counts = getattr(self, "_quality_shadow_flag_counts")
+        for flag in getattr(result, "quality_flags", ()):
+            key = str(flag).strip()
+            if key == "":
+                continue
+            flag_counts[key] = int(flag_counts.get(key, 0)) + 1
+
+    def _quality_shadow_should_sample(self, *, job: FileEnrichJobDTO, language: str) -> bool:
+        sample_rate = float(getattr(self, "_quality_shadow_sample_rate", 0.0))
+        if sample_rate <= 0.0:
+            return False
+        if sample_rate >= 1.0:
+            return True
+        raw = f"{language}|{job.repo_root}|{job.relative_path}|{job.content_hash}".encode("utf-8", errors="ignore")
+        bucket = int(hashlib.sha1(raw).hexdigest()[:8], 16) / float(0xFFFFFFFF)
+        return bucket < sample_rate
 
     def _run_preprocess(self, *, job: FileEnrichJobDTO, file_row: object) -> L3PreprocessResultDTO | None:
         preprocess_service = self._preprocess_service

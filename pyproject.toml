@@ -25,6 +25,7 @@ dependencies = [
     "requests>=2.31.0",
     "watchdog>=4.0.0",
     "rich>=13.0.0",
+    "db>=0.1.1",
 ]
 
 [project.scripts]
@@ -33,3 +34,8 @@ sari = "sari.cli.main:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["sari*", "solidlsp*", "serena*", "sensai*"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]

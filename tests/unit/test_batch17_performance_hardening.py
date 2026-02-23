@@ -253,6 +253,57 @@ def _build_min_enrich_engine_for_l3_test(*, lsp_backend: object, queue_repo: obj
         engine._schedule_l1_probe_after_l3_fallback_called += 1
 
     engine._schedule_l1_probe_after_l3_fallback = _fallback_probe
+    engine._l3_refactored_orchestrator_enabled = True
+
+    class _SkipEligibilityAdapter:
+        def is_recent_tool_ready(self, job: FileEnrichJobDTO) -> bool:
+            return bool(engine._is_recent_tool_ready(job=job))
+
+        def resolve_skip_reason(self, job: FileEnrichJobDTO) -> str | None:
+            return engine._resolve_l3_skip_reason(job=job)
+
+        def build_skipped_readiness(self, *, job: FileEnrichJobDTO, reason: str, now_iso: str):
+            return engine._build_l3_skipped_readiness(job=job, reason=reason, now_iso=now_iso)
+
+    class _ScopeResolutionAdapter:
+        def resolve_language(self, relative_path: str):
+            return engine._resolve_lsp_language(relative_path)
+
+    class _PersistServiceStub:
+        pass
+
+    class _DelegatingOrchestrator:
+        def process_job(self, job: FileEnrichJobDTO):  # noqa: ANN001
+            orchestrator = enrich_engine_module.L3Orchestrator(
+                file_repo=engine._file_repo,
+                lsp_backend=engine._lsp_backend,
+                policy=engine._policy,
+                error_policy=engine._error_policy,
+                run_mode=engine._run_mode,
+                event_repo=engine._event_repo,
+                deletion_hold_enabled=lambda: bool(getattr(engine, "_deletion_hold_enabled", False)),
+                now_iso_supplier=enrich_engine_module.now_iso8601_utc,
+                record_enrich_latency=engine._record_enrich_latency,
+                result_builder=lambda **kwargs: enrich_engine_module._L3JobResultDTO(**kwargs),
+                classify_failure_kind=enrich_engine_module._classify_l3_extract_failure_kind,
+                schedule_l1_probe_after_l3_fallback=lambda j: engine._schedule_l1_probe_after_l3_fallback(job=j),
+                scope_resolution=_ScopeResolutionAdapter(),
+                queue_transition=engine._l3_queue_transition_service,
+                skip_eligibility=_SkipEligibilityAdapter(),
+                persist_service=_PersistServiceStub(),
+                preprocess_service=getattr(engine, "_l3_preprocess_service", None),
+                degraded_fallback_service=getattr(engine, "_l3_degraded_fallback_service", None),
+                preprocess_max_bytes=int(getattr(engine, "_l3_preprocess_max_bytes", 262_144)),
+                evaluate_l5_admission=(
+                    (lambda job_arg, language_key: engine._evaluate_l5_admission_for_job(job_arg, language_key))
+                    if bool(getattr(engine, "_l5_admission_shadow_enabled", False))
+                    else None
+                ),
+                l5_admission_enforced=bool(getattr(engine, "_l5_admission_enforced", False)),
+            )
+            return orchestrator.process_job(job)
+
+    engine._l3_orchestrator = _DelegatingOrchestrator()
     return engine
 
 
@@ -307,6 +358,133 @@ def test_enrich_engine_l3_refactored_orchestrator_flag_routes_single_job() -> No
     assert result.done_id == "j-refactor-route"
     assert len(engine._l3_orchestrator.calls) == 1
     assert engine._l3_orchestrator.calls[0].job_id == "j-refactor-route"
+
+
+def test_l3_orchestrator_quality_shadow_records_sampled_result() -> None:
+    orchestrator = object.__new__(enrich_engine_module.L3Orchestrator)
+    orchestrator._quality_shadow_enabled = True
+    orchestrator._quality_shadow_sample_rate = 1.0
+    orchestrator._quality_shadow_max_files = 10
+    orchestrator._quality_shadow_sampled_count = 0
+    orchestrator._quality_shadow_lang_allowlist = {"java"}
+    orchestrator._quality_shadow_accumulators = {}
+    orchestrator._quality_shadow_flag_counts = {}
+    orchestrator._quality_shadow_eval_errors = 0
+
+    class _EvalService:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def evaluate(self, **kwargs):  # noqa: ANN003
+            self.calls += 1
+            return type(
+                "_Result",
+                (),
+                {
+                    "symbol_recall_proxy": 0.5,
+                    "symbol_precision_proxy": 1.0,
+                    "kind_match_rate": 0.75,
+                    "position_match_rate": 1.0,
+                    "ast_symbol_count": 1,
+                    "lsp_symbol_count": 2,
+                    "quality_flags": ("ast_missing_symbols",),
+                },
+            )()
+
+    eval_service = _EvalService()
+    orchestrator._quality_eval_service = eval_service
+
+    job = FileEnrichJobDTO(
+        job_id="q1",
+        repo_id="r1",
+        repo_root="/repo",
+        relative_path="src/A.java",
+        content_hash="h1",
+        priority=1,
+        enqueue_source="l3",
+        status="RUNNING",
+        attempt_count=0,
+        last_error=None,
+        next_retry_at=None,
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+    )
+    preprocess_result = enrich_engine_module.L3PreprocessResultDTO(
+        symbols=[{"name": "A", "kind": "class", "line": 1, "end_line": 10}],
+        degraded=False,
+        decision=enrich_engine_module.L3PreprocessDecision.L3_ONLY,
+        source="tree_sitter",
+        reason="ok",
+    )
+
+    orchestrator._record_quality_shadow_compare(
+        job=job,
+        language="java",
+        preprocess_result=preprocess_result,
+        lsp_symbols=[
+            {"name": "A", "kind": "class", "line": 1, "end_line": 10},
+            {"name": "m", "kind": "method", "line": 3, "end_line": 3},
+        ],
+    )
+
+    summary = orchestrator.get_quality_shadow_summary()
+    assert eval_service.calls == 1
+    assert summary["enabled"] is True
+    assert summary["sampled_files"] == 1
+    assert summary["sampled_files_by_language"]["java"] == 1
+    assert summary["avg_recall_proxy_by_language"]["java"] == pytest.approx(0.5)
+    assert summary["quality_flags_top_counts"]["ast_missing_symbols"] == 1
+
+
+def test_l3_orchestrator_quality_shadow_swallows_eval_errors() -> None:
+    orchestrator = object.__new__(enrich_engine_module.L3Orchestrator)
+    orchestrator._quality_shadow_enabled = True
+    orchestrator._quality_shadow_sample_rate = 1.0
+    orchestrator._quality_shadow_max_files = 10
+    orchestrator._quality_shadow_sampled_count = 0
+    orchestrator._quality_shadow_lang_allowlist = {"java"}
+    orchestrator._quality_shadow_accumulators = {}
+    orchestrator._quality_shadow_flag_counts = {}
+    orchestrator._quality_shadow_eval_errors = 0
+
+    class _EvalService:
+        def evaluate(self, **kwargs):  # noqa: ANN003
+            raise RuntimeError("boom")
+
+    orchestrator._quality_eval_service = _EvalService()
+    job = FileEnrichJobDTO(
+        job_id="q2",
+        repo_id="r1",
+        repo_root="/repo",
+        relative_path="src/B.java",
+        content_hash="h2",
+        priority=1,
+        enqueue_source="l3",
+        status="RUNNING",
+        attempt_count=0,
+        last_error=None,
+        next_retry_at=None,
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+    )
+    preprocess_result = enrich_engine_module.L3PreprocessResultDTO(
+        symbols=[{"name": "B", "kind": "class", "line": 1, "end_line": 10}],
+        degraded=False,
+        decision=enrich_engine_module.L3PreprocessDecision.L3_ONLY,
+        source="tree_sitter",
+        reason="ok",
+    )
+
+    orchestrator._record_quality_shadow_compare(
+        job=job,
+        language="java",
+        preprocess_result=preprocess_result,
+        lsp_symbols=[{"name": "B", "kind": "class", "line": 1, "end_line": 10}],
+    )
+
+    summary = orchestrator.get_quality_shadow_summary()
+    assert summary["shadow_eval_errors"] == 1
+    assert summary["sampled_files"] == 0
 
 
 def test_enrich_engine_evaluate_l5_admission_applies_workspace_content_hash_cooldown() -> None:

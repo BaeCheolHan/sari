@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import importlib
 import time
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -47,12 +48,39 @@ class TreeSitterOutlineExtractor:
             "constructor_declaration": "method",
         },
     }
+    _QUERY_SOURCES = {
+        # Library-backed strategy: let tree-sitter Query engine do the node matching,
+        # then keep sari-side normalization minimal.
+        "python": """
+            (class_definition name: (identifier) @name) @symbol.class
+            (function_definition name: (identifier) @name) @symbol.function
+        """,
+        "typescript": """
+            (class_declaration name: (type_identifier) @name) @symbol.class
+            (function_declaration name: (identifier) @name) @symbol.function
+            (method_definition name: (property_identifier) @name) @symbol.method
+            (method_signature name: (property_identifier) @name) @symbol.method
+        """,
+        "java": """
+            (class_declaration name: (identifier) @name) @symbol.class
+            (interface_declaration name: (identifier) @name) @symbol.interface
+            (enum_declaration name: (identifier) @name) @symbol.class
+            (method_declaration name: (identifier) @name) @symbol.method
+            (constructor_declaration name: (identifier) @name) @symbol.method
+        """,
+    }
 
     def __init__(self) -> None:
         self._available = False
         self._parsers: dict[str, object] = {}
         self._languages: dict[str, object] = {}
         self._init_error_reason: str | None = None
+        self._language_cls = None
+        self._parser_cls = None
+        self._query_cls = None
+        self._query_cursor_cls = None
+        self._get_language = None
+        self._compiled_queries: dict[str, Any] = {}
         try:
             from tree_sitter import Language, Parser  # type: ignore
         except (ImportError, RuntimeError, OSError, ValueError, TypeError) as exc:
@@ -61,7 +89,18 @@ class TreeSitterOutlineExtractor:
             return
         self._language_cls = Language
         self._parser_cls = Parser
-        self._get_language = None
+        try:
+            from tree_sitter import Query  # type: ignore
+
+            self._query_cls = Query
+        except (ImportError, RuntimeError, OSError, ValueError, TypeError):
+            self._query_cls = None
+        try:
+            from tree_sitter import QueryCursor  # type: ignore
+
+            self._query_cursor_cls = QueryCursor
+        except (ImportError, RuntimeError, OSError, ValueError, TypeError):
+            self._query_cursor_cls = None
         try:
             from tree_sitter_languages import get_language  # type: ignore
             self._get_language = get_language
@@ -87,6 +126,32 @@ class TreeSitterOutlineExtractor:
         parser = self._get_or_create_parser(normalized)
         if parser is None:
             return TreeSitterOutlineResult(symbols=[], degraded=True, reason="tree_sitter_parser_init_failed")
+        query_result = self._extract_outline_with_query(
+            normalized=normalized,
+            parser=parser,
+            content_text=content_text,
+            budget_sec=budget_sec,
+            started_at=started_at,
+        )
+        if query_result is not None:
+            return query_result
+        return self._extract_outline_legacy(
+            normalized=normalized,
+            parser=parser,
+            content_text=content_text,
+            budget_sec=budget_sec,
+            started_at=started_at,
+        )
+
+    def _extract_outline_legacy(
+        self,
+        *,
+        normalized: str,
+        parser,
+        content_text: str,
+        budget_sec: float,
+        started_at: float,
+    ) -> TreeSitterOutlineResult:
         try:
             tree = parser.parse(content_text.encode("utf-8", errors="ignore"))
         except (RuntimeError, OSError, ValueError, TypeError):
@@ -120,6 +185,122 @@ class TreeSitterOutlineExtractor:
                 for child in reversed(children):
                     stack.append(child)
         return TreeSitterOutlineResult(symbols=symbols, degraded=False)
+
+    def _extract_outline_with_query(
+        self,
+        *,
+        normalized: str,
+        parser,
+        content_text: str,
+        budget_sec: float,
+        started_at: float,
+    ) -> TreeSitterOutlineResult | None:
+        # Query path is best-effort: if the runtime lacks Query/QueryCursor support or
+        # query compilation fails, fall back to the legacy traversal extractor.
+        if self._query_cls is None:
+            return None
+        query_source = self._QUERY_SOURCES.get(normalized)
+        if not query_source:
+            return None
+        language = self._languages.get(normalized)
+        if language is None:
+            return None
+        query = self._compiled_queries.get(normalized)
+        if query is None:
+            try:
+                query = self._query_cls(language, query_source)
+            except (RuntimeError, OSError, ValueError, TypeError):
+                return None
+            self._compiled_queries[normalized] = query
+        try:
+            tree = parser.parse(content_text.encode("utf-8", errors="ignore"))
+        except (RuntimeError, OSError, ValueError, TypeError):
+            return TreeSitterOutlineResult(symbols=[], degraded=True, reason="tree_sitter_parse_failed")
+        root = tree.root_node
+        captures_iter = self._run_query_captures(query=query, root=root)
+        if captures_iter is None:
+            return None
+        symbols: list[dict[str, object]] = []
+        pending: dict[int, dict[str, object]] = {}
+        capture_items = self._iter_capture_items(captures_iter, query=query)
+        for item in capture_items:
+            if (time.perf_counter() - started_at) > budget_sec:
+                return TreeSitterOutlineResult(symbols=symbols, degraded=True, reason="tree_sitter_budget_exceeded")
+            node, capture_name = self._unpack_capture_item(item, query=query)
+            if node is None or not isinstance(capture_name, str):
+                continue
+            if capture_name == "name":
+                entry = pending.get(id(getattr(node, "parent", node)))
+                if entry is not None:
+                    text = getattr(node, "text", b"")
+                    if isinstance(text, bytes) and text:
+                        entry["name"] = text.decode("utf-8", errors="ignore") or "anonymous"
+                continue
+            if not capture_name.startswith("symbol."):
+                continue
+            kind = capture_name.split(".", 1)[1]
+            line = int(node.start_point[0]) + 1
+            end_line = int(node.end_point[0]) + 1
+            symbol = {
+                "name": self._resolve_symbol_name(node=node, content_text=content_text),
+                "kind": kind,
+                "line": line,
+                "end_line": end_line,
+                "symbol_key": f"anonymous:{line}",
+                "parent_symbol_key": None,
+                "depth": 0,
+                "container_name": None,
+            }
+            symbol["symbol_key"] = f"{symbol['name']}:{line}"
+            symbols.append(symbol)
+            pending[id(node)] = symbol
+        if not symbols:
+            return None
+        return TreeSitterOutlineResult(symbols=symbols, degraded=False)
+
+    def _iter_capture_items(self, captures_iter, *, query):
+        # Newer tree-sitter Python bindings may return dict[str, list[node]]
+        if isinstance(captures_iter, dict):
+            flat: list[tuple[object, str]] = []
+            for capture_name, nodes in captures_iter.items():
+                if not isinstance(capture_name, str):
+                    continue
+                if not isinstance(nodes, list):
+                    continue
+                for node in nodes:
+                    flat.append((node, capture_name))
+            return flat
+        return captures_iter
+
+    def _run_query_captures(self, *, query, root):
+        # Support multiple tree-sitter Python API variants.
+        cursor_cls = self._query_cursor_cls
+        try:
+            if cursor_cls is not None:
+                cursor = cursor_cls()
+                captures = getattr(cursor, "captures", None)
+                if callable(captures):
+                    return captures(query, root)
+            captures = getattr(query, "captures", None)
+            if callable(captures):
+                return captures(root)
+        except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
+            return None
+        return None
+
+    def _unpack_capture_item(self, item, *, query):
+        # Variant A: tuple(node, "capture_name")
+        if isinstance(item, tuple) and len(item) == 2 and isinstance(item[1], str):
+            return item[0], item[1]
+        # Variant B: tuple(node, capture_index)
+        if isinstance(item, tuple) and len(item) == 2 and isinstance(item[1], int):
+            names = getattr(query, "capture_names", None)
+            if isinstance(names, (list, tuple)) and 0 <= item[1] < len(names):
+                return item[0], str(names[item[1]])
+        # Variant C: dict[str, list[node]]
+        if isinstance(item, tuple) and len(item) == 2 and hasattr(item[1], "__iter__"):
+            return None, None
+        return None, None
 
     def _get_or_create_parser(self, normalized_lang: str):
         parser = self._parsers.get(normalized_lang)

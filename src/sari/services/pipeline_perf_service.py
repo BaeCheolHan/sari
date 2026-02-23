@@ -366,6 +366,9 @@ class PipelinePerfService:
         """큐가 비워질 때까지 보강 작업을 반복 실행한다."""
         deadline = time.time() + max_wait_sec
         recovered_total = 0
+        ignored_deferred_pending_count = 0
+        forced_heavy_finalize_count = 0
+        forced_heavy_finalize_attempted = False
         last_recovery_check = 0.0
         drain_timeout_hit = False
         last_counts: dict[str, int] = self._queue_counts_snapshot()
@@ -373,101 +376,182 @@ class PipelinePerfService:
         unified_processor = getattr(self._file_collection_service, "process_enrich_jobs", None)
         l3_processor = getattr(self._file_collection_service, "process_enrich_jobs_l3", None)
         l3_queue_size_getter = getattr(self._file_collection_service, "l3_queue_size", None)
-        while time.time() < deadline:
-            with self._perf_tracer.span("drain.loop.process_enrich_jobs", phase="drain"):
-                if callable(l2_processor):
-                    processed_l2 = int(l2_processor(limit=100))
-                elif callable(unified_processor):
-                    processed_l2 = int(unified_processor(limit=100))
-                else:
-                    processed_l2 = 0
-            processed_l3 = 0
-            if callable(l3_processor):
-                with self._perf_tracer.span("drain.loop.process_enrich_jobs_l3", phase="drain"):
-                    processed_l3 = int(l3_processor(limit=100))
-            processed = processed_l2 + processed_l3
-            with self._perf_tracer.span("drain.loop.queue_snapshot", phase="drain"):
-                counts = self._queue_repo.get_status_counts()
-            last_counts = self._queue_counts_snapshot()
-            pending = int(counts.get("PENDING", 0))
-            running = int(counts.get("RUNNING", 0))
-            l3_pending = 0
-            if callable(l3_queue_size_getter):
-                try:
-                    l3_pending = max(0, int(l3_queue_size_getter()))
-                except (RuntimeError, OSError, ValueError, TypeError):
-                    l3_pending = 0
-            elif hasattr(self._file_collection_service, "_l3_ready_queue"):
-                queue_obj = getattr(self._file_collection_service, "_l3_ready_queue")
-                qsize = getattr(queue_obj, "qsize", None)
-                if callable(qsize):
+        count_pending_perf_ignorable = getattr(self._queue_repo, "count_pending_perf_ignorable", None)
+        with self._force_heavy_deferred_finalization_mode():
+            while time.time() < deadline:
+                with self._perf_tracer.span("drain.loop.process_enrich_jobs", phase="drain"):
+                    if callable(l2_processor):
+                        processed_l2 = int(l2_processor(limit=100))
+                    elif callable(unified_processor):
+                        processed_l2 = int(unified_processor(limit=100))
+                    else:
+                        processed_l2 = 0
+                processed_l3 = 0
+                if callable(l3_processor):
+                    with self._perf_tracer.span("drain.loop.process_enrich_jobs_l3", phase="drain"):
+                        processed_l3 = int(l3_processor(limit=100))
+                processed = processed_l2 + processed_l3
+                with self._perf_tracer.span("drain.loop.queue_snapshot", phase="drain"):
+                    counts = self._queue_repo.get_status_counts()
+                last_counts = self._queue_counts_snapshot()
+                pending = int(counts.get("PENDING", 0))
+                running = int(counts.get("RUNNING", 0))
+                l3_pending = 0
+                if callable(l3_queue_size_getter):
                     try:
-                        l3_pending = max(0, int(qsize()))
+                        l3_pending = max(0, int(l3_queue_size_getter()))
                     except (RuntimeError, OSError, ValueError, TypeError):
                         l3_pending = 0
-            if processed == 0 and pending == 0 and running == 0 and l3_pending == 0:
-                self._last_drain_diagnostics = {
-                    "stale_running_recovered_count": int(recovered_total),
-                    "drain_timeout_hit": False,
-                    "drain_timeout_last_queue_counts": last_counts,
-                }
-                return
-            now = time.time()
-            if now - last_recovery_check >= 2.0:
-                with self._perf_tracer.span("drain.loop.recover_stale_running", phase="drain"):
-                    recovered_total += self._recover_stale_running_jobs()
-                last_recovery_check = now
-            if processed == 0:
-                time.sleep(0.02)
+                elif hasattr(self._file_collection_service, "_l3_ready_queue"):
+                    queue_obj = getattr(self._file_collection_service, "_l3_ready_queue")
+                    qsize = getattr(queue_obj, "qsize", None)
+                    if callable(qsize):
+                        try:
+                            l3_pending = max(0, int(qsize()))
+                        except (RuntimeError, OSError, ValueError, TypeError):
+                            l3_pending = 0
+                ignored_pending = 0
+                if callable(count_pending_perf_ignorable):
+                    try:
+                        ignored_pending = max(0, int(count_pending_perf_ignorable()))
+                    except (RuntimeError, OSError, ValueError, TypeError):
+                        ignored_pending = 0
+                pending_effective = max(0, pending - ignored_pending)
+                if ignored_pending > 0:
+                    ignored_deferred_pending_count = ignored_pending
+                if processed == 0 and pending_effective == 0 and ignored_pending > 0 and not forced_heavy_finalize_attempted:
+                    forced_heavy_finalize_attempted = True
+                    promoted = self._promote_heavy_deferred_for_finalization(limit=max(64, ignored_pending))
+                    forced_heavy_finalize_count += promoted
+                    if promoted > 0:
+                        continue
+                if processed == 0 and pending_effective == 0 and running == 0 and l3_pending == 0:
+                    self._last_drain_diagnostics = {
+                        "stale_running_recovered_count": int(recovered_total),
+                        "drain_timeout_hit": False,
+                        "drain_timeout_last_queue_counts": last_counts,
+                        "ignored_perf_deferred_pending_count": int(ignored_deferred_pending_count),
+                        "forced_heavy_finalize_count": int(forced_heavy_finalize_count),
+                    }
+                    return
+                now = time.time()
+                if now - last_recovery_check >= 2.0:
+                    with self._perf_tracer.span("drain.loop.recover_stale_running", phase="drain"):
+                        recovered_total += self._recover_stale_running_jobs()
+                    last_recovery_check = now
+                if processed == 0:
+                    time.sleep(0.02)
         drain_timeout_hit = True
         with self._perf_tracer.span("drain.final_recover_stale_running", phase="drain"):
             recovered_total += self._recover_stale_running_jobs()
         grace_deadline = time.time() + 3.0
-        while time.time() < grace_deadline:
-            with self._perf_tracer.span("drain.grace.process_enrich_jobs", phase="drain"):
-                if callable(l2_processor):
-                    processed_l2 = int(l2_processor(limit=100))
-                elif callable(unified_processor):
-                    processed_l2 = int(unified_processor(limit=100))
-                else:
-                    processed_l2 = 0
-            processed_l3 = 0
-            if callable(l3_processor):
-                with self._perf_tracer.span("drain.grace.process_enrich_jobs_l3", phase="drain"):
-                    processed_l3 = int(l3_processor(limit=100))
-            processed = processed_l2 + processed_l3
-            last_counts = self._queue_counts_snapshot()
-            pending = int(last_counts.get("PENDING", 0))
-            running = int(last_counts.get("RUNNING", 0))
-            l3_pending = 0
-            if callable(l3_queue_size_getter):
-                try:
-                    l3_pending = max(0, int(l3_queue_size_getter()))
-                except (RuntimeError, OSError, ValueError, TypeError):
-                    l3_pending = 0
-            elif hasattr(self._file_collection_service, "_l3_ready_queue"):
-                queue_obj = getattr(self._file_collection_service, "_l3_ready_queue")
-                qsize = getattr(queue_obj, "qsize", None)
-                if callable(qsize):
+        with self._force_heavy_deferred_finalization_mode():
+            while time.time() < grace_deadline:
+                with self._perf_tracer.span("drain.grace.process_enrich_jobs", phase="drain"):
+                    if callable(l2_processor):
+                        processed_l2 = int(l2_processor(limit=100))
+                    elif callable(unified_processor):
+                        processed_l2 = int(unified_processor(limit=100))
+                    else:
+                        processed_l2 = 0
+                processed_l3 = 0
+                if callable(l3_processor):
+                    with self._perf_tracer.span("drain.grace.process_enrich_jobs_l3", phase="drain"):
+                        processed_l3 = int(l3_processor(limit=100))
+                processed = processed_l2 + processed_l3
+                last_counts = self._queue_counts_snapshot()
+                pending = int(last_counts.get("PENDING", 0))
+                running = int(last_counts.get("RUNNING", 0))
+                l3_pending = 0
+                if callable(l3_queue_size_getter):
                     try:
-                        l3_pending = max(0, int(qsize()))
+                        l3_pending = max(0, int(l3_queue_size_getter()))
                     except (RuntimeError, OSError, ValueError, TypeError):
                         l3_pending = 0
-            if processed == 0 and pending == 0 and running == 0 and l3_pending == 0:
-                self._last_drain_diagnostics = {
-                    "stale_running_recovered_count": int(recovered_total),
-                    "drain_timeout_hit": bool(drain_timeout_hit),
-                    "drain_timeout_last_queue_counts": last_counts,
-                }
-                return
-            if processed == 0:
-                time.sleep(0.02)
+                elif hasattr(self._file_collection_service, "_l3_ready_queue"):
+                    queue_obj = getattr(self._file_collection_service, "_l3_ready_queue")
+                    qsize = getattr(queue_obj, "qsize", None)
+                    if callable(qsize):
+                        try:
+                            l3_pending = max(0, int(qsize()))
+                        except (RuntimeError, OSError, ValueError, TypeError):
+                            l3_pending = 0
+                ignored_pending = 0
+                if callable(count_pending_perf_ignorable):
+                    try:
+                        ignored_pending = max(0, int(count_pending_perf_ignorable()))
+                    except (RuntimeError, OSError, ValueError, TypeError):
+                        ignored_pending = 0
+                pending_effective = max(0, pending - ignored_pending)
+                if ignored_pending > 0:
+                    ignored_deferred_pending_count = ignored_pending
+                if processed == 0 and pending_effective == 0 and ignored_pending > 0 and not forced_heavy_finalize_attempted:
+                    forced_heavy_finalize_attempted = True
+                    promoted = self._promote_heavy_deferred_for_finalization(limit=max(64, ignored_pending))
+                    forced_heavy_finalize_count += promoted
+                    if promoted > 0:
+                        continue
+                if processed == 0 and pending_effective == 0 and running == 0 and l3_pending == 0:
+                    self._last_drain_diagnostics = {
+                        "stale_running_recovered_count": int(recovered_total),
+                        "drain_timeout_hit": bool(drain_timeout_hit),
+                        "drain_timeout_last_queue_counts": last_counts,
+                        "ignored_perf_deferred_pending_count": int(ignored_deferred_pending_count),
+                        "forced_heavy_finalize_count": int(forced_heavy_finalize_count),
+                    }
+                    return
+                if processed == 0:
+                    time.sleep(0.02)
         self._last_drain_diagnostics = {
             "stale_running_recovered_count": int(recovered_total),
             "drain_timeout_hit": True,
             "drain_timeout_last_queue_counts": last_counts,
+            "ignored_perf_deferred_pending_count": int(ignored_deferred_pending_count),
+            "forced_heavy_finalize_count": int(forced_heavy_finalize_count),
         }
         raise PerfError(ErrorContext(code="ERR_PERF_TIMEOUT", message="perf queue drain timeout"))
+
+    @contextmanager
+    def _force_heavy_deferred_finalization_mode(self):
+        """drain 종료 직전 heavy defer를 다시 defer하지 않도록 preprocess threshold를 넓힌다."""
+        fc = self._file_collection_service
+        enrich_engine = getattr(fc, "_enrich_engine", None)
+        if enrich_engine is None:
+            yield
+            return
+        orchestrator = getattr(enrich_engine, "_l3_orchestrator", None)
+        old_engine_max = getattr(enrich_engine, "_l3_preprocess_max_bytes", None)
+        old_orch_max = getattr(orchestrator, "_preprocess_max_bytes", None) if orchestrator is not None else None
+        forced_max = 64 * 1024 * 1024
+        try:
+            if isinstance(old_engine_max, int):
+                setattr(enrich_engine, "_l3_preprocess_max_bytes", max(old_engine_max, forced_max))
+            if orchestrator is not None and isinstance(old_orch_max, int):
+                setattr(orchestrator, "_preprocess_max_bytes", max(old_orch_max, forced_max))
+            yield
+        finally:
+            if isinstance(old_engine_max, int):
+                setattr(enrich_engine, "_l3_preprocess_max_bytes", old_engine_max)
+            if orchestrator is not None and isinstance(old_orch_max, int):
+                setattr(orchestrator, "_preprocess_max_bytes", old_orch_max)
+
+    def _promote_heavy_deferred_for_finalization(self, *, limit: int) -> int:
+        """heavy deferred pending을 강제 파싱 대상으로 재승격한다."""
+        list_ids = getattr(self._queue_repo, "list_pending_perf_ignorable_job_ids", None)
+        promote = getattr(self._queue_repo, "promote_to_l3_many", None)
+        if not callable(list_ids) or not callable(promote):
+            return 0
+        try:
+            job_ids = list(list_ids(limit=int(limit)))
+        except (RuntimeError, OSError, ValueError, TypeError):
+            return 0
+        if len(job_ids) == 0:
+            return 0
+        try:
+            promote(job_ids=job_ids, now_iso=now_iso8601_utc())
+        except (RuntimeError, OSError, ValueError, TypeError):
+            return 0
+        return len(job_ids)
 
     def _recover_stale_running_jobs(self) -> int:
         """perf 측정 경로에서만 오래된 RUNNING 작업을 FAILED로 회수한다."""
@@ -626,6 +710,7 @@ class PipelinePerfService:
         readiness_repo = getattr(self._file_collection_service, "_readiness_repo", None)
         lsp_repo = getattr(self._file_collection_service, "_lsp_repo", None)
         runtime_metrics_getter = getattr(self._file_collection_service, "_lsp_runtime_metrics_snapshot", None)
+        quality_shadow_summary_getter = getattr(self._file_collection_service, "_l3_quality_shadow_summary_snapshot", None)
         broker_obj = getattr(self._file_collection_service, "_lsp_session_broker", None)
 
         get_state_counts = getattr(file_repo, "get_enrich_state_counts", None)
@@ -703,6 +788,13 @@ class PipelinePerfService:
                     str(key): float(value) for key, value in runtime_metrics.items()
                     if isinstance(value, (int, float))
                 }
+        if callable(quality_shadow_summary_getter):
+            try:
+                quality_summary = quality_shadow_summary_getter()
+            except (RuntimeError, OSError, ValueError, TypeError):
+                quality_summary = None
+            if isinstance(quality_summary, dict):
+                snapshot["quality_shadow_summary"] = dict(quality_summary)
         broker_snapshot_getter = getattr(broker_obj, "get_snapshot", None) if broker_obj is not None else None
         if callable(broker_snapshot_getter):
             try:

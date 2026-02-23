@@ -147,6 +147,52 @@ class _IdleCollectionService:
         return 0
 
 
+class _HeavyDeferredOnlyQueueRepository:
+    """L5 heavy defer pending만 남은 상태를 흉내내는 더미 저장소다."""
+
+    def __init__(self) -> None:
+        self._counts = {"PENDING": 8, "RUNNING": 0, "FAILED": 0, "DONE": 3975, "DEAD": 0}
+
+    def get_status_counts(self) -> dict[str, int]:
+        return dict(self._counts)
+
+    def count_pending_perf_ignorable(self) -> int:
+        return 8
+
+
+class _HeavyDeferredPromotableQueueRepository:
+    """heavy defer pending이 마지막에 강제 승격되는지 검증하는 더미 저장소다."""
+
+    def __init__(self) -> None:
+        self._pending = 4
+        self.promote_calls = 0
+        self.promoted_job_ids: list[str] = []
+
+    def get_status_counts(self) -> dict[str, int]:
+        return {
+            "PENDING": self._pending,
+            "RUNNING": 0,
+            "FAILED": 0,
+            "DONE": 100,
+            "DEAD": 0,
+        }
+
+    def count_pending_perf_ignorable(self) -> int:
+        return self._pending
+
+    def list_pending_perf_ignorable_job_ids(self, limit: int = 256) -> list[str]:
+        del limit
+        if self._pending <= 0:
+            return []
+        return [f"job-{i}" for i in range(self._pending)]
+
+    def promote_to_l3_many(self, job_ids: list[str], now_iso: str) -> None:
+        del now_iso
+        self.promote_calls += 1
+        self.promoted_job_ids.extend(job_ids)
+        self._pending = 0
+
+
 class _FakeCollectionServiceWithSeparateL3(_IdleCollectionService):
     def __init__(self) -> None:
         self.l2_calls = 0
@@ -216,6 +262,21 @@ class _FakeCollectionServiceWithPerfRuntimeSnapshot(_FakeCollectionServiceWithRe
             "broker_guard_reject_count": 3,
             "session_cache_hit_by_tier_single": 0,
             "session_eviction_churn_count": 0,
+        }
+
+
+class _FakeCollectionServiceWithQualityShadowSummary(_FakeCollectionServiceWithPerfRuntimeSnapshot):
+    def _l3_quality_shadow_summary_snapshot(self) -> dict[str, object]:
+        return {
+            "enabled": True,
+            "sampled_files": 2,
+            "sampled_files_by_language": {"java": 2},
+            "avg_recall_proxy_by_language": {"java": 0.75},
+            "avg_precision_proxy_by_language": {"java": 0.5},
+            "avg_kind_match_rate_by_language": {"java": 1.0},
+            "avg_position_match_rate_by_language": {"java": 1.0},
+            "quality_flags_top_counts": {"ast_missing_symbols": 1},
+            "shadow_eval_errors": 0,
         }
 
 
@@ -612,6 +673,48 @@ def test_pipeline_perf_service_drain_processes_separate_l3_queue(tmp_path: Path)
     assert collection.unified_calls == 0
 
 
+def test_pipeline_perf_service_drain_treats_l5_heavy_deferred_pending_as_terminal(tmp_path: Path) -> None:
+    """L5 heavy defer pending만 남으면 perf drain은 timeout 대신 정상 종료해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    queue_repo = _HeavyDeferredOnlyQueueRepository()
+    service = PipelinePerfService(
+        file_collection_service=_IdleCollectionService(),
+        queue_repo=queue_repo,
+        benchmark_service=_FakeBenchmarkService(),
+        perf_repo=PipelinePerfRepository(db_path),
+        artifact_root=tmp_path / "artifacts",
+    )
+
+    service._drain_enrich_queue(max_wait_sec=0.2)
+
+    diag = service._last_drain_diagnostics
+    assert diag["drain_timeout_hit"] is False
+    assert diag.get("ignored_perf_deferred_pending_count") == 8
+
+
+def test_pipeline_perf_service_drain_force_finalizes_l5_heavy_deferred_pending(tmp_path: Path) -> None:
+    """heavy deferred pending만 남으면 마지막에 promote_to_l3_many로 강제 승격을 시도해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    queue_repo = _HeavyDeferredPromotableQueueRepository()
+    service = PipelinePerfService(
+        file_collection_service=_IdleCollectionService(),
+        queue_repo=queue_repo,
+        benchmark_service=_FakeBenchmarkService(),
+        perf_repo=PipelinePerfRepository(db_path),
+        artifact_root=tmp_path / "artifacts",
+    )
+
+    service._drain_enrich_queue(max_wait_sec=0.5)
+
+    diag = service._last_drain_diagnostics
+    assert queue_repo.promote_calls == 1
+    assert len(queue_repo.promoted_job_ids) == 4
+    assert diag["drain_timeout_hit"] is False
+    assert diag.get("forced_heavy_finalize_count") == 4
+
+
 def test_pipeline_perf_integrity_snapshot_includes_pending_split_age_and_eligible_counts(tmp_path: Path) -> None:
     """workspace integrity 스냅샷에 pending split/age와 strict eligible 집계가 포함되어야 한다."""
     db_path = tmp_path / "state.db"
@@ -669,6 +772,27 @@ def test_pipeline_perf_integrity_snapshot_includes_broker_snapshot_and_runtime_m
     assert isinstance(broker_snapshot, dict)
     assert broker_snapshot["active_sessions_by_language"]["java"] == 1
     assert broker_snapshot["active_sessions_by_budget_group"]["ts-vue"] == 2
+
+
+def test_pipeline_perf_integrity_snapshot_includes_quality_shadow_summary_without_affecting_gate(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    queue_repo = _FakeQueueRepositoryWithPendingDetails()
+    service = PipelinePerfService(
+        file_collection_service=_FakeCollectionServiceWithQualityShadowSummary(),
+        queue_repo=queue_repo,
+        benchmark_service=_FakeBenchmarkService(),
+        perf_repo=PipelinePerfRepository(db_path),
+        artifact_root=tmp_path / "artifacts",
+    )
+
+    snap = service._collect_workspace_integrity_snapshot()
+    quality = snap.get("quality_shadow_summary")
+    assert isinstance(quality, dict)
+    assert quality["enabled"] is True
+    assert quality["sampled_files"] == 2
+    assert quality["avg_recall_proxy_by_language"]["java"] == pytest.approx(0.75)
+    assert "integrity_checks" in snap
 
 
 def test_pipeline_perf_integrity_snapshot_adds_strict_eligible_match_check(tmp_path: Path) -> None:

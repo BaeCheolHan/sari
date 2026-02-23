@@ -544,6 +544,19 @@ class FileCollectionService:
                 ...
         return merged
 
+    def _l3_quality_shadow_summary_snapshot(self) -> dict[str, object]:
+        """L3 AST 품질 shadow 요약 스냅샷을 반환한다 (best-effort)."""
+        getter = getattr(self._enrich_engine, "get_l3_quality_shadow_summary", None)
+        if not callable(getter):
+            return {"enabled": False, "sampled_files": 0, "shadow_eval_errors": 0}
+        try:
+            summary = getter()
+        except (RuntimeError, OSError, ValueError, TypeError):
+            return {"enabled": False, "sampled_files": 0, "shadow_eval_errors": 0}
+        if not isinstance(summary, dict):
+            return {"enabled": False, "sampled_files": 0, "shadow_eval_errors": 0}
+        return dict(summary)
+
     def _on_watcher_signal(self, event_type: str, repo_root: str, relative_path: str, dest_path: str) -> None:
         """watcher cheap signal을 hotness tracker로 전달한다 (Phase 1 Baseline)."""
         del dest_path
