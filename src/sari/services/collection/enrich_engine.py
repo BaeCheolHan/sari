@@ -30,6 +30,12 @@ from sari.core.models import (
 )
 from sari.core.text_decode import decode_bytes_with_policy
 from sari.services.collection.error_policy import CollectionErrorPolicy
+from sari.services.collection.l3_broker_admission_service import L3BrokerAdmissionService
+from sari.services.collection.l3_orchestrator import L3Orchestrator
+from sari.services.collection.l3_persist_service import L3PersistService
+from sari.services.collection.l3_queue_transition_service import L3QueueTransitionService
+from sari.services.collection.l3_scope_resolution_service import L3ScopeResolutionService
+from sari.services.collection.l3_skip_eligibility_service import L3SkipEligibilityService
 from sari.services.collection.perf_trace import PerfTracer
 
 
@@ -79,6 +85,7 @@ class EnrichEngine:
         l3_backpressure_cooldown_ms: int,
         l3_supported_languages: tuple[str, ...],
         lsp_probe_l1_languages: tuple[str, ...],
+        l3_refactored_orchestrator_enabled: bool,
     ) -> None:
         """엔진 실행에 필요한 의존성을 주입받는다."""
         self._file_repo = file_repo
@@ -115,6 +122,51 @@ class EnrichEngine:
         self._l3_supported_languages = self._parse_l3_supported_languages(l3_supported_languages)
         self._lsp_probe_l1_languages = self._parse_lsp_probe_l1_languages(lsp_probe_l1_languages)
         self._perf_tracer = PerfTracer(component="enrich_engine")
+        self._l3_refactored_orchestrator_enabled = bool(l3_refactored_orchestrator_enabled)
+        self._l3_scope_resolution_service = L3ScopeResolutionService()
+        self._l3_broker_admission_service = L3BrokerAdmissionService()
+        self._l3_skip_eligibility_service = L3SkipEligibilityService(
+            is_recent_tool_ready=self._is_recent_tool_ready,
+            resolve_l3_skip_reason=self._resolve_l3_skip_reason,
+            build_l3_skipped_readiness=lambda job, reason, now_iso: self._build_l3_skipped_readiness(
+                job=job,
+                reason=reason,
+                now_iso=now_iso,
+            ),
+        )
+        self._l3_queue_transition_service = L3QueueTransitionService(
+            queue_repo=self._enrich_queue_repo,
+            error_policy=self._error_policy,
+            now_iso_supplier=now_iso8601_utc,
+            broker_admission=self._l3_broker_admission_service,
+            extract_error_code=_extract_error_code_from_lsp_error_message,
+            is_scope_escalation_trigger=lambda code, message: _is_scope_escalation_trigger_error_for_l3(
+                code=code,
+                message=message,
+            ),
+            next_scope_level_for_escalation=_next_scope_level_for_l3_escalation,
+        )
+        self._l3_persist_service = L3PersistService(
+            record_scope_learning=lambda job: self._record_scope_learning_after_l3_success(job=job),
+        )
+        self._l3_orchestrator = L3Orchestrator(
+            file_repo=self._file_repo,
+            lsp_backend=self._lsp_backend,
+            policy=self._policy,
+            error_policy=self._error_policy,
+            run_mode=self._run_mode,
+            event_repo=self._event_repo,
+            deletion_hold_enabled=self._is_deletion_hold_enabled,
+            now_iso_supplier=now_iso8601_utc,
+            record_enrich_latency=self._record_enrich_latency,
+            result_builder=lambda **kwargs: _L3JobResultDTO(**kwargs),
+            classify_failure_kind=_classify_l3_extract_failure_kind,
+            schedule_l1_probe_after_l3_fallback=lambda job: self._schedule_l1_probe_after_l3_fallback(job=job),
+            scope_resolution=self._l3_scope_resolution_service,
+            queue_transition=self._l3_queue_transition_service,
+            skip_eligibility=self._l3_skip_eligibility_service,
+            persist_service=self._l3_persist_service,
+        )
 
     def shutdown(self) -> None:
         """L3 전역 executor를 종료한다."""
@@ -986,6 +1038,12 @@ class EnrichEngine:
                 return
 
     def _process_single_l3_job(self, job: FileEnrichJobDTO) -> _L3JobResultDTO:
+        if getattr(self, "_l3_refactored_orchestrator_enabled", False):
+            orchestrator = getattr(self, "_l3_orchestrator", None)
+            if orchestrator is not None:
+                result = orchestrator.process_job(job)
+                if isinstance(result, _L3JobResultDTO):
+                    return result
         started_at = time.perf_counter()
         finished_status = "FAILED"
         done_id: str | None = None

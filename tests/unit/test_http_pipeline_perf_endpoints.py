@@ -65,6 +65,18 @@ class _FakeCollectionService:
         del limit
         return 0
 
+    def reset_probe_state(self) -> None:
+        """프로브 상태 초기화를 흉내낸다."""
+        return None
+
+    def reset_lsp_runtime(self) -> None:
+        """LSP 런타임 초기화를 흉내낸다."""
+        return None
+
+    def reset_runtime_state(self) -> None:
+        """런타임 상태 초기화를 흉내낸다."""
+        return None
+
 
 def _build_context(tmp_path: Path) -> HttpContext:
     """성능 API 테스트용 HTTP 컨텍스트를 구성한다."""

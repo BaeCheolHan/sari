@@ -146,6 +146,59 @@ def _build_min_enrich_engine_for_l3_test(*, lsp_backend: object, queue_repo: obj
     return engine
 
 
+def test_enrich_engine_l3_refactored_orchestrator_flag_routes_single_job() -> None:
+    """리팩터링 플래그 ON이면 단일 L3 job 처리는 오케스트레이터로 위임되어야 한다."""
+
+    class _CaptureOrchestrator:
+        def __init__(self) -> None:
+            self.calls: list[FileEnrichJobDTO] = []
+
+        def process_job(self, job: FileEnrichJobDTO):  # noqa: ANN001
+            self.calls.append(job)
+            return enrich_engine_module._L3JobResultDTO(
+                job_id=job.job_id,
+                finished_status="DONE",
+                elapsed_ms=1.0,
+                done_id=job.job_id,
+                failure_update=None,
+                state_update=None,
+                body_delete=None,
+                lsp_update=None,
+                readiness_update=None,
+                dev_error=None,
+            )
+
+    engine = object.__new__(EnrichEngine)
+    engine._l3_refactored_orchestrator_enabled = True
+    engine._l3_orchestrator = _CaptureOrchestrator()
+    engine._record_enrich_latency = lambda _ms: None
+    engine._event_repo = None
+    engine._perf_tracer = PerfTracer(component="test_enrich_engine")
+
+    job = FileEnrichJobDTO(
+        job_id="j-refactor-route",
+        repo_id="r1",
+        repo_root="/workspace",
+        relative_path="repo_a/src/a.py",
+        content_hash="h1",
+        priority=1,
+        enqueue_source="l3",
+        status="RUNNING",
+        attempt_count=0,
+        last_error=None,
+        next_retry_at="2026-01-01T00:00:00+00:00",
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+    )
+
+    result = engine._process_single_l3_job(job)
+
+    assert result.finished_status == "DONE"
+    assert result.done_id == "j-refactor-route"
+    assert len(engine._l3_orchestrator.calls) == 1
+    assert engine._l3_orchestrator.calls[0].job_id == "j-refactor-route"
+
+
 def test_enrich_engine_l3_extract_error_scope_trigger_escalates_same_row() -> None:
     """L3 extract 오류가 baseline taxonomy 트리거면 FAILED 대신 same-row escalation로 되돌린다."""
     queue_repo = _CaptureEscalateQueueRepo()

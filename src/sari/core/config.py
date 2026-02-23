@@ -69,6 +69,7 @@ class AppConfig:
     l3_recent_success_ttl_sec: int = 120
     l3_backpressure_on_interactive: bool = True
     l3_backpressure_cooldown_ms: int = 300
+    l3_refactored_orchestrator_enabled: bool = False
     l3_supported_languages: tuple[str, ...] = get_enabled_language_names()
     lsp_file_buffer_idle_ttl_sec: float = 20.0
     lsp_file_buffer_max_open: int = 512
@@ -239,6 +240,10 @@ class AppConfig:
             "SARI_L3_BACKPRESSURE_COOLDOWN_MS",
             str(file_config.get("l3_backpressure_cooldown_ms", 300)),
         ).strip()
+        l3_refactored_orchestrator_enabled_raw = os.getenv(
+            "SARI_L3_REFACTORED_ORCHESTRATOR_ENABLED",
+            str(file_config.get("l3_refactored_orchestrator_enabled", cls.l3_refactored_orchestrator_enabled)),
+        ).strip().lower()
         l3_supported_languages_raw = os.getenv(
             "SARI_L3_SUPPORTED_LANGUAGES",
             str(",".join(_read_tuple_setting(file_config, "l3_supported_languages", cls.l3_supported_languages))),
@@ -885,6 +890,7 @@ class AppConfig:
             l3_recent_success_ttl_sec=l3_recent_success_ttl_sec,
             l3_backpressure_on_interactive=l3_backpressure_on_interactive_raw in {"1", "true", "yes", "on"},
             l3_backpressure_cooldown_ms=l3_backpressure_cooldown_ms,
+            l3_refactored_orchestrator_enabled=l3_refactored_orchestrator_enabled_raw in {"1", "true", "yes", "on"},
             l3_supported_languages=l3_supported_languages,
             lsp_file_buffer_idle_ttl_sec=lsp_file_buffer_idle_ttl_sec,
             lsp_file_buffer_max_open=lsp_file_buffer_max_open,
