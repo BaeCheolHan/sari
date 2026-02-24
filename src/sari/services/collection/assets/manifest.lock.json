@@ -1,0 +1,37 @@
+{
+  "version": "2026-02-24-l3-asset-v1",
+  "assets_root": "/Users/vendys-chulhan/Documents/study/sari/src/sari/services/collection/assets",
+  "status": "synced",
+  "sync": {
+    "languages": [
+      "java",
+      "javascript",
+      "python",
+      "typescript"
+    ],
+    "official_source": "remote",
+    "nvim_source": "remote",
+    "details": {
+      "java": {
+        "official_sha256": "bcb22147b8582d92743fc973864cefb894a4c12b3957f16f3d472b2ec7cd4c49",
+        "nvim_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "merged_sha256": "3282c8c60f4a9996f27a6418b334f9cc7da553d94304dd9f720c6600c4591fb2"
+      },
+      "javascript": {
+        "official_sha256": "6ef988cce5a428a15b5460e3ee96f1478705f965fc6e848a91a18bfa6c6f0212",
+        "nvim_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "merged_sha256": "0e4789dcceee5e256e60c59bfd7e078c413f730af6127091fa1e25d32b2844ed"
+      },
+      "python": {
+        "official_sha256": "d0f3e577878167bfabc30e526e497bce58d1699b9bcabf8ab3a50698efb5ca3e",
+        "nvim_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "merged_sha256": "d0f3e577878167bfabc30e526e497bce58d1699b9bcabf8ab3a50698efb5ca3e"
+      },
+      "typescript": {
+        "official_sha256": "b391288bcc71b513a5df7c9bb232d8bc7418d7e274b125aa0aa4bdd6121a0338",
+        "nvim_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "merged_sha256": "b391288bcc71b513a5df7c9bb232d8bc7418d7e274b125aa0aa4bdd6121a0338"
+      }
+    }
+  }
+}

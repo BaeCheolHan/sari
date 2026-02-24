@@ -511,3 +511,90 @@ def test_mcp_search_skips_layer_snapshot_when_active_file_row_missing(tmp_path: 
     assert len(items) == 1
     assert "l4" not in items[0]
     assert "l5" not in items[0]
+
+
+def test_mcp_search_symbol_exposes_single_line_from_l3_snapshot(tmp_path: Path) -> None:
+    """symbol 검색 결과는 외부에 line/end_line 한 쌍만 노출해야 한다(L3 우선)."""
+
+    class _OneSymbolItemOrchestrator:
+        def search(
+            self,
+            query: str,
+            limit: int,
+            repo_root: str,
+            repo_id: str | None = None,
+            resolve_symbols: bool = True,
+            include_info: bool | None = None,
+            symbol_info_budget_sec: float | None = None,
+        ) -> SearchPipelineResult:
+            del query, limit, repo_id, resolve_symbols, include_info, symbol_info_budget_sec
+            return SearchPipelineResult(
+                items=[
+                    SearchItemDTO(
+                        item_type="symbol",
+                        repo=repo_root,
+                        relative_path="src/a.py",
+                        score=1.0,
+                        source="candidate",
+                        name="Alpha",
+                        kind="class",
+                        content_hash="h1",
+                    )
+                ],
+                meta=SearchMetaDTO(
+                    candidate_count=1,
+                    resolved_count=1,
+                    candidate_source="scan",
+                    errors=[],
+                    fatal_error=False,
+                    degraded=False,
+                    error_count=0,
+                ),
+            )
+
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_root = str((tmp_path / "repo").resolve())
+    Path(repo_root).mkdir(parents=True, exist_ok=True)
+    WorkspaceRepository(db_path).add(WorkspaceDTO(path=repo_root, name="repo", indexed_at=None, is_active=True))
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO collected_files_l1(
+                repo_id, repo_root, relative_path, absolute_path, repo_label,
+                mtime_ns, size_bytes, content_hash, is_deleted, last_seen_at, updated_at, enrich_state
+            ) VALUES(
+                '', :repo_root, 'src/a.py', :abs_path, 'repo',
+                1, 10, 'h1', 0, '2026-02-23T12:00:00Z', '2026-02-23T12:00:00Z', 'READY'
+            )
+            """,
+            {
+                "repo_root": repo_root,
+                "abs_path": str((Path(repo_root) / "src" / "a.py").resolve()),
+            },
+        )
+        conn.commit()
+    layer_repo = ToolDataLayerRepository(db_path)
+    layer_repo.upsert_l3_symbols(
+        workspace_id=repo_root,
+        repo_root=repo_root,
+        relative_path="src/a.py",
+        content_hash="h1",
+        symbols=[{"name": "Alpha", "kind": "class", "line": 42, "end_line": 49}],
+        degraded=False,
+        l3_skipped_large_file=False,
+        updated_at="2026-02-23T12:00:00Z",
+    )
+    tool = SearchTool(
+        orchestrator=_OneSymbolItemOrchestrator(),
+        workspace_repo=WorkspaceRepository(db_path),
+        tool_layer_repo=layer_repo,
+    )
+
+    payload = tool.call({"repo": repo_root, "query": "alpha", "limit": 5})
+
+    assert payload["isError"] is False
+    item = payload["structuredContent"]["items"][0]
+    assert item["type"] == "symbol"
+    assert item["line"] == 42
+    assert item["end_line"] == 49

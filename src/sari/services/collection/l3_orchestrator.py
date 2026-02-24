@@ -502,6 +502,7 @@ class L3Orchestrator:
         avg_precision_proxy_by_language: dict[str, float] = {}
         avg_kind_match_rate_by_language: dict[str, float] = {}
         avg_position_match_rate_by_language: dict[str, float] = {}
+        avg_position_match_rate_relaxed_by_language: dict[str, float] = {}
         missing_patterns_top_by_language: dict[str, list[dict[str, object]]] = {}
         for language, acc in getattr(self, "_quality_shadow_accumulators", {}).items():
             count = int(float(acc.get("count", 0.0)))
@@ -513,6 +514,9 @@ class L3Orchestrator:
             avg_precision_proxy_by_language[str(language)] = float(acc.get("precision_sum", 0.0)) / denom
             avg_kind_match_rate_by_language[str(language)] = float(acc.get("kind_sum", 0.0)) / denom
             avg_position_match_rate_by_language[str(language)] = float(acc.get("position_sum", 0.0)) / denom
+            avg_position_match_rate_relaxed_by_language[str(language)] = float(
+                acc.get("position_relaxed_sum", 0.0)
+            ) / denom
             per_language_missing = dict(getattr(self, "_quality_shadow_missing_pattern_counts", {}).get(language, {}))
             top_items = sorted(per_language_missing.items(), key=lambda item: (-int(item[1]), str(item[0])))[:10]
             missing_patterns_top_by_language[str(language)] = [
@@ -526,6 +530,7 @@ class L3Orchestrator:
             "avg_precision_proxy_by_language": avg_precision_proxy_by_language,
             "avg_kind_match_rate_by_language": avg_kind_match_rate_by_language,
             "avg_position_match_rate_by_language": avg_position_match_rate_by_language,
+            "avg_position_match_rate_relaxed_by_language": avg_position_match_rate_relaxed_by_language,
             "quality_flags_top_counts": dict(getattr(self, "_quality_shadow_flag_counts", {})),
             "missing_patterns_top_by_language": missing_patterns_top_by_language,
             "shadow_eval_errors": int(getattr(self, "_quality_shadow_eval_errors", 0)),
@@ -575,6 +580,9 @@ class L3Orchestrator:
         acc["precision_sum"] += float(result.symbol_precision_proxy)
         acc["kind_sum"] += float(result.kind_match_rate)
         acc["position_sum"] += float(result.position_match_rate)
+        acc["position_relaxed_sum"] = float(acc.get("position_relaxed_sum", 0.0)) + float(
+            getattr(result, "position_match_rate_relaxed", result.position_match_rate)
+        )
         flag_counts = getattr(self, "_quality_shadow_flag_counts")
         for flag in getattr(result, "quality_flags", ()):
             key = str(flag).strip()

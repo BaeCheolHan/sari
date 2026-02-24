@@ -5,6 +5,7 @@ from __future__ import annotations
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 import hashlib
+import os
 from datetime import datetime, timedelta, timezone
 import queue
 import time
@@ -39,6 +40,7 @@ from sari.core.text_decode import decode_bytes_with_policy
 from sari.db.repositories.tool_data_layer_repository import ToolDataLayerRepository
 from sari.services.collection.error_policy import CollectionErrorPolicy
 from sari.services.collection.l3_broker_admission_service import L3BrokerAdmissionService
+from sari.services.collection.l3_asset_loader import L3AssetLoader
 from sari.services.collection.l3_degraded_fallback_service import L3DegradedFallbackService
 from sari.services.collection.l4_admission_service import L4AdmissionService
 from sari.services.collection.l3_orchestrator import L3Orchestrator
@@ -117,6 +119,8 @@ class EnrichEngine:
         l3_query_compile_cache_enabled: bool = True,
         l3_query_compile_ms_budget: float = 10.0,
         l3_query_budget_ms: float = 30.0,
+        l3_asset_mode: str = "shadow",
+        l3_asset_lang_allowlist: tuple[str, ...] = (),
     ) -> None:
         """엔진 실행에 필요한 의존성을 주입받는다."""
         self._file_repo = file_repo
@@ -192,10 +196,21 @@ class EnrichEngine:
             policy=self._l5_admission_policy,
         )
         self._l3_refactored_orchestrator_enabled = bool(l3_refactored_orchestrator_enabled)
+        self._l3_asset_loader = L3AssetLoader()
+        configured_l3_asset_mode = os.getenv("SARI_L3_ASSET_MODE", l3_asset_mode).strip().lower()
+        if configured_l3_asset_mode not in {"shadow", "gate", "apply"}:
+            configured_l3_asset_mode = "shadow"
+        self._l3_asset_mode = configured_l3_asset_mode
+        self._l3_asset_lang_allowlist = tuple(
+            item.strip().lower() for item in l3_asset_lang_allowlist if item.strip() != ""
+        )
         self._l3_preprocess_service = L3TreeSitterPreprocessService(
             query_compile_cache_enabled=l3_query_compile_cache_enabled,
             query_compile_ms_budget=l3_query_compile_ms_budget,
             query_budget_ms=l3_query_budget_ms,
+            asset_loader=self._l3_asset_loader,
+            asset_mode=self._l3_asset_mode,
+            asset_lang_allowlist=self._l3_asset_lang_allowlist,
         )
         self._l3_degraded_fallback_service = L3DegradedFallbackService()
         self._l3_preprocess_max_bytes = 262_144
@@ -225,7 +240,7 @@ class EnrichEngine:
         self._l3_persist_service = L3PersistService(
             record_scope_learning=lambda job: self._record_scope_learning_after_l3_success(job=job),
         )
-        self._l3_quality_eval_service = L3QualityEvaluationService()
+        self._l3_quality_eval_service = L3QualityEvaluationService(asset_loader=self._l3_asset_loader)
         self._l3_orchestrator = L3Orchestrator(
             file_repo=self._file_repo,
             lsp_backend=self._lsp_backend,

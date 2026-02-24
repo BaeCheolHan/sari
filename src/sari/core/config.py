@@ -180,6 +180,9 @@ class AppConfig:
     l3_query_compile_cache_enabled: bool = True
     l3_query_compile_ms_budget: float = 10.0
     l3_query_budget_ms: float = 30.0
+    l3_asset_mode: str = "shadow"
+    l3_asset_manifest_path: str = "src/sari/services/collection/assets/manifest.json"
+    l3_asset_lang_allowlist: tuple[str, ...] = ()
     mcp_forward_to_daemon: bool = False
     mcp_daemon_autostart: bool = True
     mcp_daemon_timeout_sec: float = 2.0
@@ -597,6 +600,18 @@ class AppConfig:
             "SARI_L3_QUERY_BUDGET_MS",
             str(file_config.get("l3_query_budget_ms", 30.0)),
         ).strip()
+        l3_asset_mode_raw = os.getenv(
+            "SARI_L3_ASSET_MODE",
+            str(file_config.get("l3_asset_mode", "shadow")),
+        ).strip().lower()
+        l3_asset_manifest_path = os.getenv(
+            "SARI_L3_ASSET_MANIFEST_PATH",
+            str(file_config.get("l3_asset_manifest_path", "src/sari/services/collection/assets/manifest.json")),
+        ).strip()
+        l3_asset_lang_allowlist_raw = os.getenv(
+            "SARI_L3_ASSET_LANG_ALLOWLIST",
+            str(file_config.get("l3_asset_lang_allowlist", "")),
+        ).strip()
         mcp_forward_to_daemon_raw = os.getenv("SARI_MCP_FORWARD_TO_DAEMON", str(file_config.get("mcp_forward_to_daemon", False))).strip().lower()
         mcp_daemon_autostart_raw = os.getenv("SARI_MCP_DAEMON_AUTOSTART", str(file_config.get("mcp_daemon_autostart", True))).strip().lower()
         mcp_daemon_timeout_raw = os.getenv("SARI_MCP_DAEMON_TIMEOUT_SEC", str(file_config.get("mcp_daemon_timeout_sec", 2.0))).strip()
@@ -962,6 +977,10 @@ class AppConfig:
             include_ext_raw,
             default_value=_read_tuple_setting(file_config, "collection_include_ext", cls.collection_include_ext),
         )
+        l3_asset_lang_allowlist = _parse_csv_setting(
+            l3_asset_lang_allowlist_raw,
+            default_value=_read_tuple_setting(file_config, "l3_asset_lang_allowlist", cls.l3_asset_lang_allowlist),
+        )
         exclude_globs = _parse_csv_setting(
             exclude_globs_raw,
             default_value=_read_tuple_setting(file_config, "collection_exclude_globs", cls.collection_exclude_globs),
@@ -1114,6 +1133,13 @@ class AppConfig:
             l3_query_compile_cache_enabled=l3_query_compile_cache_enabled_raw in {"1", "true", "yes", "on"},
             l3_query_compile_ms_budget=l3_query_compile_ms_budget,
             l3_query_budget_ms=l3_query_budget_ms,
+            l3_asset_mode=(
+                l3_asset_mode_raw
+                if l3_asset_mode_raw in {"shadow", "gate", "apply"}
+                else "shadow"
+            ),
+            l3_asset_manifest_path=l3_asset_manifest_path,
+            l3_asset_lang_allowlist=l3_asset_lang_allowlist,
             mcp_forward_to_daemon=mcp_forward_to_daemon_raw in {"1", "true", "yes", "on"},
             mcp_daemon_autostart=mcp_daemon_autostart_raw in {"1", "true", "yes", "on"},
             mcp_daemon_timeout_sec=mcp_daemon_timeout_sec,

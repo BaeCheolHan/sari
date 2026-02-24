@@ -8,6 +8,8 @@ from pathlib import Path
 import time
 from typing import Any
 
+from .l3_asset_loader import L3AssetLoader
+
 
 @dataclass(frozen=True)
 class TreeSitterOutlineResult:
@@ -21,17 +23,25 @@ class TreeSitterOutlineExtractor:
 
     _LANGUAGE_ALIASES = {
         "py": "python",
+        "js": "javascript",
+        "jsx": "javascript",
         "ts": "typescript",
+        "tsx": "typescript",
+        "mjs": "javascript",
+        "cjs": "javascript",
         "java": "java",
+        "vue": "typescript",
     }
     _FALLBACK_LANGUAGE_LOADERS = {
         "python": ("tree_sitter_python", "language"),
         "java": ("tree_sitter_java", "language"),
+        "javascript": ("tree_sitter_javascript", "language"),
         "typescript": ("tree_sitter_typescript", "language_typescript"),
     }
     _QUERY_LANGUAGE_PACKAGES = {
         "python": "tree_sitter_python",
         "java": "tree_sitter_java",
+        "javascript": "tree_sitter_javascript",
         "typescript": "tree_sitter_typescript",
     }
 
@@ -45,6 +55,13 @@ class TreeSitterOutlineExtractor:
             "function_declaration": "function",
             "method_definition": "method",
             "method_signature": "method",
+        },
+        "javascript": {
+            "class_declaration": "class",
+            "function_declaration": "function",
+            "method_definition": "method",
+            "lexical_declaration": "field",
+            "variable_declaration": "field",
         },
         "java": {
             "package_declaration": "module",
@@ -72,6 +89,13 @@ class TreeSitterOutlineExtractor:
             (method_definition name: (property_identifier) @name) @symbol.method
             (method_signature name: (property_identifier) @name) @symbol.method
         """,
+        "javascript": """
+            (class_declaration name: (identifier) @name) @symbol.class
+            (function_declaration name: (identifier) @name) @symbol.function
+            (method_definition name: (property_identifier) @name) @symbol.method
+            (lexical_declaration (variable_declarator name: (identifier) @name) @symbol.field)
+            (variable_declaration (variable_declarator name: (identifier) @name) @symbol.field)
+        """,
         "java": """
             (package_declaration (scoped_identifier) @name) @symbol.module
             (package_declaration (identifier) @name) @symbol.module
@@ -87,7 +111,13 @@ class TreeSitterOutlineExtractor:
         """,
     }
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        asset_loader: L3AssetLoader | None = None,
+        asset_mode: str = "shadow",
+        asset_lang_allowlist: tuple[str, ...] = (),
+    ) -> None:
         self._available = False
         self._parsers: dict[str, object] = {}
         self._languages: dict[str, object] = {}
@@ -99,6 +129,11 @@ class TreeSitterOutlineExtractor:
         self._get_language = None
         self._compiled_queries: dict[str, Any] = {}
         self._query_source_cache: dict[str, str | None] = {}
+        self._asset_loader = asset_loader or L3AssetLoader()
+        self._asset_mode = str(asset_mode or "shadow").strip().lower()
+        self._asset_lang_allowlist = {
+            str(item).strip().lower() for item in asset_lang_allowlist if str(item).strip() != ""
+        }
         try:
             from tree_sitter import Language, Parser  # type: ignore
         except (ImportError, RuntimeError, OSError, ValueError, TypeError) as exc:
@@ -253,6 +288,8 @@ class TreeSitterOutlineExtractor:
                 text = getattr(node, "text", b"")
                 if isinstance(text, bytes) and text:
                     decoded = text.decode("utf-8", errors="ignore") or "anonymous"
+                    if len(decoded) >= 2 and decoded[0] == decoded[-1] and decoded[0] in {"'", '"', "`"}:
+                        decoded = decoded[1:-1]
                     name_line = int(node.start_point[0]) + 1
                     name_end_line = int(node.end_point[0]) + 1
                     names_by_parent_id[id(parent)] = (decoded, name_line, name_end_line)
@@ -263,7 +300,7 @@ class TreeSitterOutlineExtractor:
                         entry["end_line"] = name_end_line
                         entry["symbol_key"] = f"{decoded}:{name_line}"
                 continue
-            kind = self._query_capture_to_kind(capture_name)
+            kind = self._query_capture_to_kind(capture_name, normalized=normalized)
             if kind is None:
                 continue
             line = int(node.start_point[0]) + 1
@@ -325,17 +362,21 @@ class TreeSitterOutlineExtractor:
         if self._query_cls is not None:
             try:
                 return self._query_cls(language, source)
-            except (RuntimeError, OSError, ValueError, TypeError):
+            except (RuntimeError, OSError, ValueError, TypeError, NameError):
                 pass
         lang_query = getattr(language, "query", None)
         if callable(lang_query):
             try:
                 return lang_query(source)
-            except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
+            except (RuntimeError, OSError, ValueError, TypeError, AttributeError, NameError):
                 return None
         return None
 
-    def _query_capture_to_kind(self, capture_name: str) -> str | None:
+    def _query_capture_to_kind(self, capture_name: str, *, normalized: str) -> str | None:
+        asset_map = self._asset_loader.load(normalized).capture_to_kind
+        mapped = asset_map.get(capture_name)
+        if mapped is not None and mapped.strip() != "":
+            return mapped.strip()
         if capture_name.startswith("symbol."):
             return capture_name.split(".", 1)[1]
         if capture_name.startswith("definition."):
@@ -372,10 +413,16 @@ class TreeSitterOutlineExtractor:
         cursor_cls = self._query_cursor_cls
         try:
             if cursor_cls is not None:
-                cursor = cursor_cls()
+                try:
+                    cursor = cursor_cls(query)
+                except TypeError:
+                    cursor = cursor_cls()
                 captures = getattr(cursor, "captures", None)
                 if callable(captures):
-                    return captures(query, root)
+                    try:
+                        return captures(query, root)
+                    except TypeError:
+                        return captures(root)
             captures = getattr(query, "captures", None)
             if callable(captures):
                 return captures(root)
@@ -420,8 +467,17 @@ class TreeSitterOutlineExtractor:
         cached = self._query_source_cache.get(normalized_lang, ...)
         if cached is not ...:
             return cached
-        source = self._load_packaged_tags_query(normalized_lang)
-        if source and normalized_lang == "java":
+        use_asset_query = self._asset_mode == "apply"
+        if self._asset_lang_allowlist and normalized_lang not in self._asset_lang_allowlist:
+            use_asset_query = False
+        source: str | None = None
+        asset_query: str | None = None
+        if use_asset_query:
+            asset_query = self._asset_loader.load(normalized_lang).query_source
+            source = asset_query
+        if not source:
+            source = self._load_packaged_tags_query(normalized_lang)
+        if source and normalized_lang == "java" and source != asset_query:
             # Packaged tags.scm is preferred, but it does not include package/field/constructor/enum
             # definitions we need for outline parity.
             source = f"{source}\n{self._QUERY_SOURCES['java']}"
@@ -487,6 +543,12 @@ class TreeSitterOutlineExtractor:
             return None
 
     def _resolve_symbol_name(self, *, node, content_text: str) -> str:
+        def _sanitize(raw: str) -> str:
+            value = raw.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"', "`"}:
+                value = value[1:-1]
+            return value
+
         node_type = str(getattr(node, "type", ""))
         if node_type == "package_declaration":
             start_byte = int(getattr(node, "start_byte", 0))
@@ -495,22 +557,27 @@ class TreeSitterOutlineExtractor:
             if snippet:
                 normalized = snippet.replace("package", "", 1).strip().rstrip(";").strip()
                 if normalized:
-                    return normalized
+                    return _sanitize(normalized)
         by_field = getattr(node, "child_by_field_name", None)
         if callable(by_field):
             name_node = by_field("name")
             if name_node is not None:
                 text = getattr(name_node, "text", b"")
                 if isinstance(text, bytes) and text:
-                    return text.decode("utf-8", errors="ignore") or "anonymous"
+                    return _sanitize(text.decode("utf-8", errors="ignore") or "anonymous")
         for child in getattr(node, "children", []) or []:
             if getattr(child, "type", "") in {"identifier", "type_identifier", "property_identifier"}:
                 text = getattr(child, "text", b"")
                 if isinstance(text, bytes) and text:
-                    return text.decode("utf-8", errors="ignore") or "anonymous"
+                    return _sanitize(text.decode("utf-8", errors="ignore") or "anonymous")
+        node_text = getattr(node, "text", b"")
+        if isinstance(node_text, bytes) and node_text:
+            decoded = _sanitize(node_text.decode("utf-8", errors="ignore"))
+            if decoded:
+                return decoded
         start_byte = int(getattr(node, "start_byte", 0))
         end_byte = int(getattr(node, "end_byte", 0))
         snippet = content_text[start_byte:end_byte].strip().splitlines()
         if snippet and snippet[0] != "":
-            return snippet[0][:80]
+            return _sanitize(snippet[0][:80])
         return "anonymous"

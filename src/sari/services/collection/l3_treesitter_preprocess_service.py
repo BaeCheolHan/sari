@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 from enum import Enum
 
+from .l3_asset_loader import L3AssetLoader
 from .l3_tree_sitter_outline import TreeSitterOutlineExtractor
 
 class L3PreprocessDecision(str, Enum):
@@ -41,6 +42,10 @@ class L3TreeSitterPreprocessService:
             (r"^\s*(?:export\s+)?class\s+([A-Za-z_][A-Za-z0-9_]*)\b", "class"),
             (r"^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", "function"),
         ),
+        "javascript": (
+            (r"^\s*(?:export\s+)?class\s+([A-Za-z_$][A-Za-z0-9_$]*)\b", "class"),
+            (r"^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(", "function"),
+        ),
         "java": (
             (r"^\s*(?:public\s+)?(?:abstract\s+)?class\s+([A-Za-z_][A-Za-z0-9_]*)\b", "class"),
             (r"^\s*(?:public|protected|private)?\s*(?:static\s+)?[A-Za-z_<>\[\]]+\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", "method"),
@@ -69,6 +74,9 @@ class L3TreeSitterPreprocessService:
         query_compile_ms_budget: float = 10.0,
         query_budget_ms: float = 30.0,
         tree_sitter_enabled: bool = True,
+        asset_loader: L3AssetLoader | None = None,
+        asset_mode: str = "shadow",
+        asset_lang_allowlist: tuple[str, ...] = (),
         tree_sitter_outline_extractor: TreeSitterOutlineExtractor | None = None,
     ) -> None:
         self._query_compile_cache_enabled = bool(query_compile_cache_enabled)
@@ -76,7 +84,11 @@ class L3TreeSitterPreprocessService:
         self._query_budget_sec = max(0.0001, float(query_budget_ms)) / 1000.0
         self._pattern_cache: dict[tuple[str, str, str], tuple[tuple[re.Pattern[str], str], ...]] = {}
         self._tree_sitter_enabled = bool(tree_sitter_enabled)
-        self._tree_sitter_outline_extractor = tree_sitter_outline_extractor or TreeSitterOutlineExtractor()
+        self._tree_sitter_outline_extractor = tree_sitter_outline_extractor or TreeSitterOutlineExtractor(
+            asset_loader=asset_loader,
+            asset_mode=asset_mode,
+            asset_lang_allowlist=asset_lang_allowlist,
+        )
 
     def preprocess(self, *, relative_path: str, content_text: str, max_bytes: int = 262_144) -> L3PreprocessResultDTO:
         started_at = time.perf_counter()
@@ -91,7 +103,9 @@ class L3TreeSitterPreprocessService:
 
         ext = relative_path.rsplit(".", 1)[-1].lower() if "." in relative_path else ""
         pattern_key = ext
-        if ext in {"tsx", "js", "jsx", "vue"}:
+        if ext in {"js", "jsx", "mjs", "cjs"}:
+            pattern_key = "javascript"
+        elif ext in {"tsx", "vue"}:
             pattern_key = "ts"
 
         tree_sitter_result = self._try_tree_sitter_outline(pattern_key=pattern_key, content_text=content_text)

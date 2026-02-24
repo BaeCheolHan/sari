@@ -29,6 +29,7 @@ dependencies = [
     "tree-sitter<0.22",
     "tree-sitter-languages>=1.10.2",
     "tree-sitter-java>=0.23.5",
+    "tree-sitter-javascript>=0.23.1",
     "tree-sitter-typescript>=0.23.2",
     "tree-sitter-python>=0.25.0",
 ]

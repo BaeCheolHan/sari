@@ -3,6 +3,7 @@ from __future__ import annotations
 import types
 from pathlib import Path
 
+from sari.services.collection.l3_asset_loader import L3AssetLoader
 from sari.services.collection.l3_tree_sitter_outline import TreeSitterOutlineExtractor
 from sari.services.collection.l3_tree_sitter_outline import TreeSitterOutlineResult
 
@@ -232,3 +233,189 @@ def test_query_source_falls_back_to_builtin_when_packaged_tags_missing(monkeypat
     source = extractor._get_query_source("java")
 
     assert source == extractor._QUERY_SOURCES["java"]
+
+
+def test_query_source_prefers_asset_query_in_apply_mode(tmp_path: Path) -> None:
+    assets = tmp_path / "assets"
+    (assets / "queries" / "java").mkdir(parents=True, exist_ok=True)
+    (assets / "mappings").mkdir(parents=True, exist_ok=True)
+    (assets / "manifest.json").write_text('{"version":"test"}', encoding="utf-8")
+    (assets / "mappings" / "default.yaml").write_text("{}", encoding="utf-8")
+    (assets / "queries" / "java" / "outline.scm").write_text(
+        "(class_declaration name: (identifier) @name) @symbol.class",
+        encoding="utf-8",
+    )
+    loader = L3AssetLoader(assets_root=assets)
+    extractor = TreeSitterOutlineExtractor(asset_loader=loader, asset_mode="apply")
+
+    source = extractor._get_query_source("java")
+
+    assert source is not None
+    assert source.strip() == "(class_declaration name: (identifier) @name) @symbol.class"
+
+
+def test_run_query_captures_supports_cursor_constructor_with_query() -> None:
+    extractor = TreeSitterOutlineExtractor()
+    query_obj = object()
+    root_obj = object()
+    expected = [("node", "symbol.class")]
+
+    class _Cursor:
+        def __init__(self, query) -> None:  # noqa: ANN001
+            self.query = query
+
+        def captures(self, root):  # noqa: ANN001
+            assert self.query is query_obj
+            assert root is root_obj
+            return expected
+
+    extractor._query_cursor_cls = _Cursor  # type: ignore[assignment]
+
+    got = extractor._run_query_captures(query=query_obj, root=root_obj)
+
+    assert got == expected
+
+
+def test_language_alias_maps_js_to_javascript() -> None:
+    extractor = TreeSitterOutlineExtractor()
+
+    assert extractor._LANGUAGE_ALIASES.get("js") == "javascript"
+
+
+def test_compile_query_returns_none_when_language_query_raises_name_error() -> None:
+    extractor = TreeSitterOutlineExtractor()
+    extractor._query_cls = None  # type: ignore[assignment]
+
+    class _Lang:
+        def query(self, source):  # noqa: ANN001
+            raise NameError("Invalid node type function_expression")
+
+    assert extractor._compile_query(language=_Lang(), source="(function_expression) @name") is None
+
+
+def test_javascript_outline_emits_object_pair_keys_as_field_symbols() -> None:
+    extractor = TreeSitterOutlineExtractor(asset_mode="apply")
+    if not extractor.is_available_for("js"):
+        return
+
+    js_src = """
+        const obj = {
+            foo: 1,
+            bar: () => 2,
+        };
+    """
+    result = extractor.extract_outline(lang_key="js", content_text=js_src, budget_sec=0.2)
+
+    assert result.degraded is False
+    field_names = {str(s.get("name")) for s in result.symbols if s.get("kind") == "field"}
+    assert "foo" in field_names
+    assert "bar" in field_names
+
+
+def test_javascript_outline_emits_string_and_shorthand_object_keys_as_field_symbols() -> None:
+    extractor = TreeSitterOutlineExtractor(asset_mode="apply")
+    if not extractor.is_available_for("js"):
+        return
+
+    js_src = """
+        const value = 1;
+        const obj = {
+            "baz": 3,
+            value,
+        };
+    """
+    result = extractor.extract_outline(lang_key="js", content_text=js_src, budget_sec=0.2)
+
+    assert result.degraded is False
+    field_names = {str(s.get("name")) for s in result.symbols if s.get("kind") == "field"}
+    assert "baz" in field_names
+    assert "value" in field_names
+
+
+def test_javascript_outline_emits_callback_function_symbols_from_call_expression() -> None:
+    extractor = TreeSitterOutlineExtractor(asset_mode="apply")
+    if not extractor.is_available_for("js"):
+        return
+
+    js_src = """
+        promise.catch(() => {});
+        app.use((req, res, next) => {});
+    """
+    result = extractor.extract_outline(lang_key="js", content_text=js_src, budget_sec=0.2)
+
+    assert result.degraded is False
+    fn_names = {str(s.get("name")) for s in result.symbols if s.get("kind") == "function"}
+    assert "catch" in fn_names
+    assert "use" in fn_names
+
+
+def test_javascript_outline_emits_exported_assignment_function_name() -> None:
+    extractor = TreeSitterOutlineExtractor(asset_mode="apply")
+    if not extractor.is_available_for("js"):
+        return
+
+    js_src = """
+        module.exports.getAdminUsers = async (adminIds) => {
+            return adminIds;
+        };
+    """
+    result = extractor.extract_outline(lang_key="js", content_text=js_src, budget_sec=0.2)
+
+    assert result.degraded is False
+    fn_names = {str(s.get("name")) for s in result.symbols if s.get("kind") == "function"}
+    assert "getAdminUsers" in fn_names
+
+
+def test_javascript_outline_emits_computed_object_key_field_symbols() -> None:
+    extractor = TreeSitterOutlineExtractor(asset_mode="apply")
+    if not extractor.is_available_for("js"):
+        return
+
+    js_src = """
+        const findOption = {
+            where: {
+                adminId: { [Op.in]: adminIds, [Op.eq]: targetId },
+            },
+        };
+    """
+    result = extractor.extract_outline(lang_key="js", content_text=js_src, budget_sec=0.2)
+
+    assert result.degraded is False
+    field_names = {str(s.get("name")) for s in result.symbols if s.get("kind") == "field"}
+    assert "[Op.in]" in field_names
+    assert "[Op.eq]" in field_names
+
+
+def test_javascript_outline_emits_destructured_require_names_as_field_symbols() -> None:
+    extractor = TreeSitterOutlineExtractor(asset_mode="apply")
+    if not extractor.is_available_for("js"):
+        return
+
+    js_src = """
+        const { Op, sequelizeLibrary } = require('sequelize');
+    """
+    result = extractor.extract_outline(lang_key="js", content_text=js_src, budget_sec=0.2)
+
+    assert result.degraded is False
+    field_names = {str(s.get("name")) for s in result.symbols if s.get("kind") == "field"}
+    assert "Op" in field_names
+    assert "sequelizeLibrary" in field_names
+
+
+def test_javascript_outline_emits_catch_parameter_as_variable_symbol() -> None:
+    extractor = TreeSitterOutlineExtractor(asset_mode="apply")
+    if not extractor.is_available_for("js"):
+        return
+
+    js_src = """
+        try {
+            run();
+        } catch (e) {
+            throw e;
+        }
+    """
+    result = extractor.extract_outline(lang_key="js", content_text=js_src, budget_sec=0.2)
+
+    assert result.degraded is False
+    variables = {str(s.get("name")) for s in result.symbols if s.get("kind") == "variable"}
+    assert "e" in variables

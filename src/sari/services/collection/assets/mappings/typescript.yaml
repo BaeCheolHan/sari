@@ -1,0 +1,20 @@
+{
+  "capture_to_kind": {
+    "symbol.class": "class",
+    "symbol.function": "function",
+    "symbol.method": "method",
+    "symbol.interface": "interface",
+    "symbol.enum": "enum",
+    "symbol.field": "field"
+  },
+  "kind_bucket_map": {
+    "method_definition": "method",
+    "function_declaration": "function",
+    "lexical_declaration": "variable",
+    "property_definition": "field"
+  },
+  "missing_pattern_rules": [],
+  "name_extract_rules": [],
+  "line_match_overrides": {}
+}
+

@@ -310,6 +310,8 @@ def main() -> None:
         l3_query_compile_cache_enabled=config.l3_query_compile_cache_enabled,
         l3_query_compile_ms_budget=config.l3_query_compile_ms_budget,
         l3_query_budget_ms=config.l3_query_budget_ms,
+        l3_asset_mode=config.l3_asset_mode,
+        l3_asset_lang_allowlist=config.l3_asset_lang_allowlist,
         tool_layer_repo=tool_layer_repo,
     )
     runtime_search_defaults: dict[str, bool] = {"resolve_symbols_default": False}
