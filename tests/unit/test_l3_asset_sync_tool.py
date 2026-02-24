@@ -9,6 +9,7 @@ import sys
 def _write_assets(root: Path) -> None:
     (root / "queries" / "java").mkdir(parents=True, exist_ok=True)
     (root / "queries" / "javascript").mkdir(parents=True, exist_ok=True)
+    (root / "queries" / "kotlin").mkdir(parents=True, exist_ok=True)
     (root / "queries" / "typescript").mkdir(parents=True, exist_ok=True)
     (root / "queries" / "python").mkdir(parents=True, exist_ok=True)
     (root / "mappings").mkdir(parents=True, exist_ok=True)
@@ -16,6 +17,7 @@ def _write_assets(root: Path) -> None:
     (root / "mappings" / "default.yaml").write_text("{}", encoding="utf-8")
     (root / "queries" / "java" / "outline.scm").write_text("(class_declaration) @symbol.class", encoding="utf-8")
     (root / "queries" / "javascript" / "outline.scm").write_text("(class_declaration) @symbol.class", encoding="utf-8")
+    (root / "queries" / "kotlin" / "outline.scm").write_text("(class_declaration) @symbol.class", encoding="utf-8")
     (root / "queries" / "typescript" / "outline.scm").write_text("(class_declaration) @symbol.class", encoding="utf-8")
     (root / "queries" / "python" / "outline.scm").write_text("(class_definition) @symbol.class", encoding="utf-8")
 
@@ -48,7 +50,7 @@ def test_sync_queries_merges_official_and_nvim_sources(tmp_path: Path) -> None:
     _write_assets(assets)
     official = tmp_path / "official"
     nvim = tmp_path / "nvim"
-    for lang in ("java", "javascript", "typescript", "python"):
+    for lang in ("java", "javascript", "kotlin", "typescript", "python"):
         (official / lang).mkdir(parents=True, exist_ok=True)
         (nvim / lang).mkdir(parents=True, exist_ok=True)
         (official / lang / "tags.scm").write_text(
@@ -90,4 +92,4 @@ def test_sync_queries_merges_official_and_nvim_sources(tmp_path: Path) -> None:
     assert "function_expression" not in js_merged
     lock = json.loads(lock_path.read_text(encoding="utf-8"))
     assert lock["status"] == "synced"
-    assert lock["sync"]["languages"] == ["java", "javascript", "python", "typescript"]
+    assert lock["sync"]["languages"] == ["java", "javascript", "kotlin", "python", "typescript"]

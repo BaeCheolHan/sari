@@ -282,6 +282,13 @@ def test_language_alias_maps_js_to_javascript() -> None:
     assert extractor._LANGUAGE_ALIASES.get("js") == "javascript"
 
 
+def test_language_alias_maps_kotlin_extensions_to_kotlin() -> None:
+    extractor = TreeSitterOutlineExtractor()
+
+    assert extractor._LANGUAGE_ALIASES.get("kt") == "kotlin"
+    assert extractor._LANGUAGE_ALIASES.get("kts") == "kotlin"
+
+
 def test_compile_query_returns_none_when_language_query_raises_name_error() -> None:
     extractor = TreeSitterOutlineExtractor()
     extractor._query_cls = None  # type: ignore[assignment]
@@ -291,6 +298,17 @@ def test_compile_query_returns_none_when_language_query_raises_name_error() -> N
             raise NameError("Invalid node type function_expression")
 
     assert extractor._compile_query(language=_Lang(), source="(function_expression) @name") is None
+
+
+def test_compile_query_returns_none_when_language_query_raises_syntax_error() -> None:
+    extractor = TreeSitterOutlineExtractor()
+    extractor._query_cls = None  # type: ignore[assignment]
+
+    class _Lang:
+        def query(self, source):  # noqa: ANN001
+            raise SyntaxError("Invalid syntax")
+
+    assert extractor._compile_query(language=_Lang(), source="(broken_query)") is None
 
 
 def test_javascript_outline_emits_object_pair_keys_as_field_symbols() -> None:
@@ -310,6 +328,76 @@ def test_javascript_outline_emits_object_pair_keys_as_field_symbols() -> None:
     field_names = {str(s.get("name")) for s in result.symbols if s.get("kind") == "field"}
     assert "foo" in field_names
     assert "bar" in field_names
+
+
+def test_kotlin_outline_excludes_local_declarations_and_marks_member_method() -> None:
+    extractor = TreeSitterOutlineExtractor(asset_mode="apply")
+    if not extractor.is_available_for("kt"):
+        return
+
+    kt_src = """
+        class Sample {
+            val field = 1
+
+            fun member() {
+                val localInMember = 1
+            }
+        }
+
+        fun topLevel() {
+            val localInTop = 2
+        }
+    """
+    result = extractor.extract_outline(lang_key="kt", content_text=kt_src, budget_sec=0.3)
+
+    assert result.degraded is False
+    by_name = {str(s.get("name")): str(s.get("kind")) for s in result.symbols}
+    assert by_name.get("Sample") == "class"
+    assert by_name.get("field") == "field"
+    assert by_name.get("member") == "method"
+    assert by_name.get("topLevel") == "function"
+    assert "localInMember" not in by_name
+    assert "localInTop" not in by_name
+
+
+def test_kotlin_outline_captures_top_level_property_and_constructor_property() -> None:
+    extractor = TreeSitterOutlineExtractor(asset_mode="apply")
+    if not extractor.is_available_for("kt"):
+        return
+
+    kt_src = """
+        data class User(
+            val id: Long,
+            val name: String,
+        )
+
+        val users = listOf<User>()
+    """
+    result = extractor.extract_outline(lang_key="kt", content_text=kt_src, budget_sec=0.3)
+
+    assert result.degraded is False
+    by_name = {str(s.get("name")): str(s.get("kind")) for s in result.symbols}
+    assert by_name.get("User") == "class"
+    assert by_name.get("id") == "field"
+    assert by_name.get("name") == "field"
+    assert by_name.get("users") == "field"
+
+
+def test_kotlin_outline_emits_interface_symbol() -> None:
+    extractor = TreeSitterOutlineExtractor(asset_mode="apply")
+    if not extractor.is_available_for("kt"):
+        return
+
+    kt_src = """
+        interface Api {
+            fun run()
+        }
+    """
+    result = extractor.extract_outline(lang_key="kt", content_text=kt_src, budget_sec=0.3)
+
+    assert result.degraded is False
+    by_name = {str(s.get("name")): str(s.get("kind")) for s in result.symbols}
+    assert by_name.get("Api") == "interface"
 
 
 def test_javascript_outline_emits_string_and_shorthand_object_keys_as_field_symbols() -> None:

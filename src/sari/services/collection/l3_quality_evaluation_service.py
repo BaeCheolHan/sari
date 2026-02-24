@@ -96,7 +96,7 @@ class L3QualityEvaluationService:
             lsp_sym = lsp[best_idx]
             if ast_sym.kind_bucket == lsp_sym.kind_bucket:
                 kind_matches += 1
-            line_gap = abs(ast_sym.line - lsp_sym.line)
+            line_gap = self._line_gap(ast_line=ast_sym.line, candidate=lsp_sym)
             if line_gap <= self._line_tolerance:
                 position_matches += 1
             relaxed_gap = self._resolve_relaxed_line_gap(language=language, kind_bucket=ast_sym.kind_bucket)
@@ -157,25 +157,30 @@ class L3QualityEvaluationService:
         matched_lsp_indices: set[int],
     ) -> int | None:
         lang = str(language).strip().lower()
-        best_idx: int | None = None
-        best_score = -1
+        best_idx_kind_match: int | None = None
+        best_score_kind_match = -1
+        best_idx_any: int | None = None
+        best_score_any = -1
         for idx, candidate in enumerate(lsp_symbols):
             if idx in matched_lsp_indices:
                 continue
             if candidate.name != ast_sym.name:
                 continue
-            if abs(candidate.line - ast_sym.line) > self._line_tolerance:
+            line_gap = self._line_gap(ast_line=ast_sym.line, candidate=candidate)
+            if line_gap > self._line_tolerance:
                 continue
             score = 0
             if candidate.kind_bucket == ast_sym.kind_bucket:
                 score += 2
-            line_gap = abs(candidate.line - ast_sym.line)
             score += max(0, self._line_tolerance - line_gap)
-            if score > best_score:
-                best_score = score
-                best_idx = idx
-        if best_idx is not None:
-            return best_idx
+            if candidate.kind_bucket == ast_sym.kind_bucket and score > best_score_kind_match:
+                best_score_kind_match = score
+                best_idx_kind_match = idx
+            if score > best_score_any:
+                best_score_any = score
+                best_idx_any = idx
+        if best_idx_kind_match is not None:
+            return best_idx_kind_match
 
         line_override = self._asset_loader.load(lang).line_match_overrides
         fallback_buckets = self._read_str_list(line_override.get("name_kind_fallback_buckets"))
@@ -190,14 +195,15 @@ class L3QualityEvaluationService:
                     continue
                 if candidate.kind_bucket != ast_sym.kind_bucket:
                     continue
-                gap = abs(candidate.line - ast_sym.line)
+                gap = self._line_gap(ast_line=ast_sym.line, candidate=candidate)
                 if fallback_max_gap is not None and gap > fallback_max_gap:
                     continue
                 if fallback_best_gap is None or gap < fallback_best_gap:
                     fallback_best_gap = gap
                     fallback_best_idx = idx
-            return fallback_best_idx
-        return best_idx
+            if fallback_best_idx is not None:
+                return fallback_best_idx
+        return best_idx_any
 
     def _normalize_symbol(self, *, language: str, raw: dict[str, object]) -> _NormalizedSymbol | None:
         try:
@@ -223,6 +229,11 @@ class L3QualityEvaluationService:
             line=line,
             end_line=end_line,
         )
+
+    def _line_gap(self, *, ast_line: int, candidate: _NormalizedSymbol) -> int:
+        if candidate.line <= ast_line <= candidate.end_line:
+            return 0
+        return min(abs(ast_line - candidate.line), abs(ast_line - candidate.end_line))
 
     def _collect_missing_patterns(
         self,
@@ -250,14 +261,25 @@ class L3QualityEvaluationService:
         matched_lsp_indices: set[int],
     ) -> set[int]:
         lang = str(language).strip().lower()
-        if lang != "java":
-            return set()
         ignored: set[int] = set()
-        for idx, symbol in enumerate(lsp_symbols):
-            if idx in matched_lsp_indices:
-                continue
-            if self._JAVA_SYNTHETIC_CLASS_PATTERN.match(symbol.name):
-                ignored.add(idx)
+        if lang == "java":
+            for idx, symbol in enumerate(lsp_symbols):
+                if idx in matched_lsp_indices:
+                    continue
+                if self._JAVA_SYNTHETIC_CLASS_PATTERN.match(symbol.name):
+                    ignored.add(idx)
+            return ignored
+        if lang == "kotlin":
+            for idx, symbol in enumerate(lsp_symbols):
+                if idx in matched_lsp_indices:
+                    continue
+                if symbol.kind_raw == "9":
+                    ignored.add(idx)
+                    continue
+                if symbol.name == "get" and symbol.kind_bucket == "method":
+                    ignored.add(idx)
+                    continue
+            return ignored
         return ignored
 
     def _dedupe_symbols_for_proxy(

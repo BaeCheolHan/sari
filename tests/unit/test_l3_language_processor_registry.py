@@ -41,3 +41,11 @@ def test_registry_returns_default_for_unsupported_language() -> None:
     assert processor.pattern_key(relative_path="src/file.rs") is None
     assert processor.should_route_to_l5(context=_ctx("src/file.rs")) is True
 
+
+def test_registry_resolves_kotlin_extension() -> None:
+    registry = L3LanguageProcessorRegistry()
+
+    processor = registry.resolve(relative_path="app/src/main/kotlin/App.kt")
+
+    assert processor.name == "kotlin"
+    assert processor.pattern_key(relative_path="app/src/main/kotlin/App.kt") == "kotlin"

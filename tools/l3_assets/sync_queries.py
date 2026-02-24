@@ -13,16 +13,18 @@ from urllib.error import URLError
 from urllib.request import urlopen
 
 
-_LANGUAGES = ("java", "javascript", "python", "typescript")
+_LANGUAGES = ("java", "javascript", "kotlin", "python", "typescript")
 _OFFICIAL_URLS = {
     "java": "https://raw.githubusercontent.com/tree-sitter/tree-sitter-java/master/queries/tags.scm",
     "javascript": "https://raw.githubusercontent.com/tree-sitter/tree-sitter-javascript/master/queries/tags.scm",
+    "kotlin": "https://raw.githubusercontent.com/tree-sitter-grammars/tree-sitter-kotlin/master/queries/tags.scm",
     "python": "https://raw.githubusercontent.com/tree-sitter/tree-sitter-python/master/queries/tags.scm",
     "typescript": "https://raw.githubusercontent.com/tree-sitter/tree-sitter-typescript/master/queries/tags.scm",
 }
 _NVIM_URLS = {
     "java": "https://raw.githubusercontent.com/nvim-treesitter/nvim-treesitter/master/queries/java/tags.scm",
     "javascript": "https://raw.githubusercontent.com/nvim-treesitter/nvim-treesitter/master/queries/javascript/tags.scm",
+    "kotlin": "https://raw.githubusercontent.com/nvim-treesitter/nvim-treesitter/master/queries/kotlin/tags.scm",
     "python": "https://raw.githubusercontent.com/nvim-treesitter/nvim-treesitter/master/queries/python/tags.scm",
     "typescript": "https://raw.githubusercontent.com/nvim-treesitter/nvim-treesitter/master/queries/typescript/tags.scm",
 }
@@ -66,6 +68,7 @@ def _required_files(root: Path) -> tuple[Path, ...]:
         root / "mappings" / "default.yaml",
         root / "queries" / "java" / "outline.scm",
         root / "queries" / "javascript" / "outline.scm",
+        root / "queries" / "kotlin" / "outline.scm",
         root / "queries" / "typescript" / "outline.scm",
         root / "queries" / "python" / "outline.scm",
     )

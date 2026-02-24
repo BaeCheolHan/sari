@@ -31,6 +31,9 @@ class TreeSitterOutlineExtractor:
         "mjs": "javascript",
         "cjs": "javascript",
         "java": "java",
+        "kt": "kotlin",
+        "kts": "kotlin",
+        "kotlin": "kotlin",
         "vue": "typescript",
     }
     _FALLBACK_LANGUAGE_LOADERS = {
@@ -38,12 +41,14 @@ class TreeSitterOutlineExtractor:
         "java": ("tree_sitter_java", "language"),
         "javascript": ("tree_sitter_javascript", "language"),
         "typescript": ("tree_sitter_typescript", "language_typescript"),
+        "kotlin": ("tree_sitter_kotlin", "language"),
     }
     _QUERY_LANGUAGE_PACKAGES = {
         "python": "tree_sitter_python",
         "java": "tree_sitter_java",
         "javascript": "tree_sitter_javascript",
         "typescript": "tree_sitter_typescript",
+        "kotlin": "tree_sitter_kotlin",
     }
 
     _NODE_KIND_BY_TYPE = {
@@ -75,6 +80,14 @@ class TreeSitterOutlineExtractor:
             "variable_declarator": "field",
             "method_declaration": "method",
             "constructor_declaration": "method",
+        },
+        "kotlin": {
+            "class_declaration": "class",
+            "object_declaration": "class",
+            "type_alias": "class",
+            "function_declaration": "function",
+            "property_declaration": "field",
+            "secondary_constructor": "method",
         },
     }
     _QUERY_SOURCES = {
@@ -109,6 +122,17 @@ class TreeSitterOutlineExtractor:
             (constructor_declaration name: (identifier) @name) @symbol.method
             (field_declaration (variable_declarator name: (identifier) @name) @symbol.field)
             (enum_constant name: (identifier) @name) @symbol.enum_constant
+        """,
+        "kotlin": """
+            (class_declaration name: (type_identifier) @name) @symbol.class
+            (object_declaration name: (type_identifier) @name) @symbol.class
+            (type_alias name: (type_identifier) @name) @symbol.class
+            (class_declaration (primary_constructor (class_parameter (simple_identifier) @name) @symbol.field))
+            (source_file (function_declaration name: (simple_identifier) @name) @symbol.function)
+            (source_file (property_declaration (variable_declaration (simple_identifier) @name)) @symbol.field)
+            (class_body (function_declaration name: (simple_identifier) @name) @symbol.method)
+            (class_body (secondary_constructor) @symbol.method)
+            (class_body (property_declaration (variable_declaration (simple_identifier) @name)) @symbol.field)
         """,
     }
 
@@ -177,7 +201,6 @@ class TreeSitterOutlineExtractor:
         normalized = self._LANGUAGE_ALIASES.get(lang_key)
         if normalized is None:
             return TreeSitterOutlineResult(symbols=[], degraded=False, reason="tree_sitter_unsupported_language")
-        started_at = time.perf_counter()
         parser = self._get_or_create_parser(normalized)
         if parser is None:
             return TreeSitterOutlineResult(symbols=[], degraded=True, reason="tree_sitter_parser_init_failed")
@@ -186,7 +209,6 @@ class TreeSitterOutlineExtractor:
             parser=parser,
             content_text=content_text,
             budget_sec=budget_sec,
-            started_at=started_at,
         )
         if query_result is not None:
             return query_result
@@ -195,7 +217,6 @@ class TreeSitterOutlineExtractor:
             parser=parser,
             content_text=content_text,
             budget_sec=budget_sec,
-            started_at=started_at,
         )
 
     def _extract_outline_legacy(
@@ -205,12 +226,12 @@ class TreeSitterOutlineExtractor:
         parser,
         content_text: str,
         budget_sec: float,
-        started_at: float,
     ) -> TreeSitterOutlineResult:
         try:
             tree = parser.parse(content_text.encode("utf-8", errors="ignore"))
         except (RuntimeError, OSError, ValueError, TypeError):
             return TreeSitterOutlineResult(symbols=[], degraded=True, reason="tree_sitter_parse_failed")
+        started_at = time.perf_counter()
         symbols: list[dict[str, object]] = []
         node_kind_map = self._NODE_KIND_BY_TYPE[normalized]
         stack = [tree.root_node]
@@ -239,7 +260,7 @@ class TreeSitterOutlineExtractor:
             if isinstance(children, list):
                 for child in reversed(children):
                     stack.append(child)
-        symbols = self._postprocess_symbols(normalized=normalized, symbols=symbols)
+        symbols = self._postprocess_symbols(normalized=normalized, symbols=symbols, content_text=content_text)
         return TreeSitterOutlineResult(symbols=symbols, degraded=False)
 
     def _extract_outline_with_query(
@@ -249,7 +270,6 @@ class TreeSitterOutlineExtractor:
         parser,
         content_text: str,
         budget_sec: float,
-        started_at: float,
     ) -> TreeSitterOutlineResult | None:
         # Query path is best-effort: if the runtime lacks Query/QueryCursor support or
         # query compilation fails, fall back to the legacy traversal extractor.
@@ -272,12 +292,13 @@ class TreeSitterOutlineExtractor:
         except (RuntimeError, OSError, ValueError, TypeError):
             return TreeSitterOutlineResult(symbols=[], degraded=True, reason="tree_sitter_parse_failed")
         root = tree.root_node
+        started_at = time.perf_counter()
         captures_iter = self._run_query_captures(query=query, root=root)
         if captures_iter is None:
             return None
         symbols: list[dict[str, object]] = []
-        pending: dict[int, dict[str, object]] = {}
-        names_by_parent_id: dict[int, tuple[str, int, int]] = {}
+        pending: dict[tuple[int, int, str], dict[str, object]] = {}
+        names_by_parent_id: dict[tuple[int, int, str], str] = {}
         capture_items = self._iter_capture_items(captures_iter, query=query)
         for item in capture_items:
             if (time.perf_counter() - started_at) > budget_sec:
@@ -292,15 +313,21 @@ class TreeSitterOutlineExtractor:
                     decoded = text.decode("utf-8", errors="ignore") or "anonymous"
                     if len(decoded) >= 2 and decoded[0] == decoded[-1] and decoded[0] in {"'", '"', "`"}:
                         decoded = decoded[1:-1]
-                    name_line = int(node.start_point[0]) + 1
-                    name_end_line = int(node.end_point[0]) + 1
-                    names_by_parent_id[id(parent)] = (decoded, name_line, name_end_line)
-                    entry = pending.get(id(parent))
-                    if entry is not None:
-                        entry["name"] = decoded
-                        entry["line"] = name_line
-                        entry["end_line"] = name_end_line
-                        entry["symbol_key"] = f"{decoded}:{name_line}"
+                    cur = parent
+                    while cur is not None:
+                        cur_id = self._node_identity(cur)
+                        if cur_id not in names_by_parent_id:
+                            names_by_parent_id[cur_id] = decoded
+                        entry = pending.get(cur_id)
+                        if entry is not None:
+                            entry["name"] = decoded
+                            try:
+                                line_value = int(entry.get("line", 0) or 0)
+                            except (TypeError, ValueError):
+                                line_value = 0
+                            entry["symbol_key"] = f"{decoded}:{line_value}"
+                            break
+                        cur = getattr(cur, "parent", None)
                 continue
             kind = self._query_capture_to_kind(capture_name, normalized=normalized)
             if kind is None:
@@ -319,22 +346,40 @@ class TreeSitterOutlineExtractor:
             }
             symbol["symbol_key"] = f"{symbol['name']}:{line}"
             symbols.append(symbol)
-            node_id = id(node)
+            node_id = self._node_identity(node)
             pending[node_id] = symbol
             pre_name = names_by_parent_id.get(node_id)
-            if isinstance(pre_name, tuple):
-                pre_name_text, pre_name_line, pre_name_end_line = pre_name
-                if pre_name_text:
-                    symbol["name"] = pre_name_text
-                    symbol["line"] = pre_name_line
-                    symbol["end_line"] = pre_name_end_line
-                    symbol["symbol_key"] = f"{pre_name_text}:{pre_name_line}"
+            if isinstance(pre_name, str) and pre_name:
+                symbol["name"] = pre_name
+                symbol["symbol_key"] = f"{pre_name}:{line}"
         if not symbols:
             return None
-        symbols = self._postprocess_symbols(normalized=normalized, symbols=symbols)
+        symbols = self._postprocess_symbols(normalized=normalized, symbols=symbols, content_text=content_text)
         return TreeSitterOutlineResult(symbols=symbols, degraded=False)
 
-    def _postprocess_symbols(self, *, normalized: str, symbols: list[dict[str, object]]) -> list[dict[str, object]]:
+    def _postprocess_symbols(
+        self,
+        *,
+        normalized: str,
+        symbols: list[dict[str, object]],
+        content_text: str,
+    ) -> list[dict[str, object]]:
+        if normalized == "kotlin":
+            lines = content_text.splitlines()
+            for sym in symbols:
+                kind = str(sym.get("kind", ""))
+                if kind != "class":
+                    continue
+                line_value = sym.get("line")
+                if not isinstance(line_value, int) or line_value <= 0:
+                    continue
+                idx = line_value - 1
+                if idx >= len(lines):
+                    continue
+                declaration_line = lines[idx].strip().lower()
+                # Kotlin grammar exposes interface declarations as class_declaration.
+                if declaration_line.startswith("interface "):
+                    sym["kind"] = "interface"
         return self._dedupe_symbols(symbols)
 
     def _dedupe_symbols(self, symbols: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -365,13 +410,13 @@ class TreeSitterOutlineExtractor:
         if self._query_cls is not None:
             try:
                 return self._query_cls(language, source)
-            except (RuntimeError, OSError, ValueError, TypeError, NameError) as exc:
+            except (RuntimeError, OSError, ValueError, TypeError, NameError, SyntaxError) as exc:
                 primary_error = exc
         lang_query = getattr(language, "query", None)
         if callable(lang_query):
             try:
                 return lang_query(source)
-            except (RuntimeError, OSError, ValueError, TypeError, AttributeError, NameError) as fallback_exc:
+            except (RuntimeError, OSError, ValueError, TypeError, AttributeError, NameError, SyntaxError) as fallback_exc:
                 if primary_error is not None:
                     self._logger.debug(
                         "tree-sitter query compile failed on both APIs: primary=%s fallback=%s",
@@ -588,7 +633,7 @@ class TreeSitterOutlineExtractor:
                 if isinstance(text, bytes) and text:
                     return _sanitize(text.decode("utf-8", errors="ignore") or "anonymous")
         for child in getattr(node, "children", []) or []:
-            if getattr(child, "type", "") in {"identifier", "type_identifier", "property_identifier"}:
+            if getattr(child, "type", "") in {"identifier", "type_identifier", "property_identifier", "simple_identifier"}:
                 text = getattr(child, "text", b"")
                 if isinstance(text, bytes) and text:
                     return _sanitize(text.decode("utf-8", errors="ignore") or "anonymous")
@@ -603,3 +648,14 @@ class TreeSitterOutlineExtractor:
         if snippet and snippet[0] != "":
             return _sanitize(snippet[0][:80])
         return "anonymous"
+
+    def _node_identity(self, node: object) -> tuple[int, int, str]:
+        try:
+            start = int(getattr(node, "start_byte", 0))
+        except (TypeError, ValueError):
+            start = 0
+        try:
+            end = int(getattr(node, "end_byte", 0))
+        except (TypeError, ValueError):
+            end = 0
+        return (start, end, str(getattr(node, "type", "")))

@@ -127,6 +127,67 @@ def test_quality_eval_normalizes_lsp_symbolkind_numeric_strings_for_java() -> No
     assert result.kind_match_rate == pytest.approx(1.0)
 
 
+def test_quality_eval_normalizes_kotlin_variable_and_interface_symbolkinds() -> None:
+    service = L3QualityEvaluationService()
+    ast = [
+        _sym(name="MockApi", kind="interface", line=8),
+        _sym(name="users", kind="field", line=12),
+    ]
+    # Kotlin LSP implementations often emit interface=11 and local/property-like variable=13.
+    lsp = [
+        _sym(name="MockApi", kind="11", line=8),
+        _sym(name="users", kind="13", line=12),
+    ]
+
+    result = service.evaluate(language="kotlin", ast_symbols=ast, lsp_symbols=lsp)
+
+    assert result.symbol_recall_proxy == pytest.approx(1.0)
+    assert result.symbol_precision_proxy == pytest.approx(1.0)
+    assert result.kind_match_rate == pytest.approx(1.0)
+
+
+def test_quality_eval_kotlin_field_line_gap_uses_name_kind_fallback() -> None:
+    service = L3QualityEvaluationService(line_tolerance=2)
+    ast = [_sym(name="compileTestKotlin", kind="field", line=64)]
+    lsp = [_sym(name="compileTestKotlin", kind="7", line=60, end_line=64)]
+
+    result = service.evaluate(language="kotlin", ast_symbols=ast, lsp_symbols=lsp)
+
+    assert result.symbol_recall_proxy == pytest.approx(1.0)
+    assert result.symbol_precision_proxy == pytest.approx(1.0)
+    assert result.kind_match_rate == pytest.approx(1.0)
+
+
+def test_quality_eval_kotlin_prefers_kind_consistent_match_over_closer_constructor() -> None:
+    service = L3QualityEvaluationService(line_tolerance=2)
+    ast = [_sym(name="TodoActivity", kind="class", line=28)]
+    lsp = [
+        _sym(name="TodoActivity", kind="9", line=30),  # constructor-like candidate (closer, wrong kind)
+        _sym(name="TodoActivity", kind="5", line=24),  # class candidate (farther, right kind)
+    ]
+
+    result = service.evaluate(language="kotlin", ast_symbols=ast, lsp_symbols=lsp)
+
+    assert result.symbol_recall_proxy == pytest.approx(1.0)
+    assert result.symbol_precision_proxy == pytest.approx(1.0)
+    assert result.kind_match_rate == pytest.approx(1.0)
+
+
+def test_quality_eval_ignores_kotlin_accessor_get_and_class_initializer_symbols() -> None:
+    service = L3QualityEvaluationService()
+    ast = [_sym(name="TasksScreenTest", kind="class", line=44)]
+    lsp = [
+        _sym(name="TasksScreenTest", kind="5", line=44),
+        _sym(name="get", kind="6", line=60),
+        _sym(name="<class initializer>", kind="9", line=70),
+    ]
+
+    result = service.evaluate(language="kotlin", ast_symbols=ast, lsp_symbols=lsp)
+
+    assert result.symbol_recall_proxy == pytest.approx(1.0)
+    assert result.symbol_precision_proxy == pytest.approx(1.0)
+
+
 def test_quality_eval_normalizes_java_names_and_ignores_synthetic_entries() -> None:
     service = L3QualityEvaluationService()
     ast = [
