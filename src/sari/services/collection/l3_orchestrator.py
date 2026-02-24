@@ -99,6 +99,7 @@ class L3Orchestrator:
         self._quality_shadow_eval_errors = 0
         self._quality_shadow_accumulators: dict[str, dict[str, float]] = {}
         self._quality_shadow_flag_counts: dict[str, int] = {}
+        self._quality_shadow_missing_pattern_counts: dict[str, dict[str, int]] = {}
 
     def process_job(self, job: FileEnrichJobDTO) -> object:
         started_at = time.perf_counter()
@@ -501,6 +502,7 @@ class L3Orchestrator:
         avg_precision_proxy_by_language: dict[str, float] = {}
         avg_kind_match_rate_by_language: dict[str, float] = {}
         avg_position_match_rate_by_language: dict[str, float] = {}
+        missing_patterns_top_by_language: dict[str, list[dict[str, object]]] = {}
         for language, acc in getattr(self, "_quality_shadow_accumulators", {}).items():
             count = int(float(acc.get("count", 0.0)))
             if count <= 0:
@@ -511,6 +513,11 @@ class L3Orchestrator:
             avg_precision_proxy_by_language[str(language)] = float(acc.get("precision_sum", 0.0)) / denom
             avg_kind_match_rate_by_language[str(language)] = float(acc.get("kind_sum", 0.0)) / denom
             avg_position_match_rate_by_language[str(language)] = float(acc.get("position_sum", 0.0)) / denom
+            per_language_missing = dict(getattr(self, "_quality_shadow_missing_pattern_counts", {}).get(language, {}))
+            top_items = sorted(per_language_missing.items(), key=lambda item: (-int(item[1]), str(item[0])))[:10]
+            missing_patterns_top_by_language[str(language)] = [
+                {"pattern": str(pattern), "count": int(value)} for pattern, value in top_items
+            ]
         return {
             "enabled": True,
             "sampled_files": int(getattr(self, "_quality_shadow_sampled_count", 0)),
@@ -520,6 +527,7 @@ class L3Orchestrator:
             "avg_kind_match_rate_by_language": avg_kind_match_rate_by_language,
             "avg_position_match_rate_by_language": avg_position_match_rate_by_language,
             "quality_flags_top_counts": dict(getattr(self, "_quality_shadow_flag_counts", {})),
+            "missing_patterns_top_by_language": missing_patterns_top_by_language,
             "shadow_eval_errors": int(getattr(self, "_quality_shadow_eval_errors", 0)),
         }
 
@@ -573,6 +581,13 @@ class L3Orchestrator:
             if key == "":
                 continue
             flag_counts[key] = int(flag_counts.get(key, 0)) + 1
+        missing_pattern_counts = getattr(self, "_quality_shadow_missing_pattern_counts")
+        lang_counts = missing_pattern_counts.setdefault(normalized_language, {})
+        for pattern in getattr(result, "missing_patterns", ()):
+            key = str(pattern).strip()
+            if key == "":
+                continue
+            lang_counts[key] = int(lang_counts.get(key, 0)) + 1
 
     def _quality_shadow_should_sample(self, *, job: FileEnrichJobDTO, language: str) -> bool:
         sample_rate = float(getattr(self, "_quality_shadow_sample_rate", 0.0))

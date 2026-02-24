@@ -369,6 +369,7 @@ def test_l3_orchestrator_quality_shadow_records_sampled_result() -> None:
     orchestrator._quality_shadow_lang_allowlist = {"java"}
     orchestrator._quality_shadow_accumulators = {}
     orchestrator._quality_shadow_flag_counts = {}
+    orchestrator._quality_shadow_missing_pattern_counts = {}
     orchestrator._quality_shadow_eval_errors = 0
 
     class _EvalService:
@@ -388,6 +389,7 @@ def test_l3_orchestrator_quality_shadow_records_sampled_result() -> None:
                     "ast_symbol_count": 1,
                     "lsp_symbol_count": 2,
                     "quality_flags": ("ast_missing_symbols",),
+                    "missing_patterns": ("missing_field", "missing_constructor"),
                 },
             )()
 
@@ -434,6 +436,11 @@ def test_l3_orchestrator_quality_shadow_records_sampled_result() -> None:
     assert summary["sampled_files_by_language"]["java"] == 1
     assert summary["avg_recall_proxy_by_language"]["java"] == pytest.approx(0.5)
     assert summary["quality_flags_top_counts"]["ast_missing_symbols"] == 1
+    top_missing = summary["missing_patterns_top_by_language"]["java"]
+    assert top_missing[0]["pattern"] == "missing_constructor"
+    assert top_missing[0]["count"] == 1
+    assert top_missing[1]["pattern"] == "missing_field"
+    assert top_missing[1]["count"] == 1
 
 
 def test_l3_orchestrator_quality_shadow_swallows_eval_errors() -> None:
@@ -445,6 +452,7 @@ def test_l3_orchestrator_quality_shadow_swallows_eval_errors() -> None:
     orchestrator._quality_shadow_lang_allowlist = {"java"}
     orchestrator._quality_shadow_accumulators = {}
     orchestrator._quality_shadow_flag_counts = {}
+    orchestrator._quality_shadow_missing_pattern_counts = {}
     orchestrator._quality_shadow_eval_errors = 0
 
     class _EvalService:
