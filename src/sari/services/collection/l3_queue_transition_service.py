@@ -15,6 +15,8 @@ from .l3_broker_admission_service import L3BrokerAdmissionService
 class L3QueueTransitionService:
     """L3 defer/escalation queue 상태 전이를 담당한다."""
 
+    _TSLS_FAST_PATH_EXTENSIONS: tuple[str, ...] = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
+
     def __init__(
         self,
         *,
@@ -49,7 +51,7 @@ class L3QueueTransitionService:
         lease_reason = self._broker_admission.extract_lease_reason(error_message)
         defer_reason = self._broker_admission.map_defer_reason(lease_reason)
         delay_sec = self._broker_admission.defer_delay_seconds(lease_reason)
-        now_dt = datetime.now(timezone.utc)
+        now_dt = self._now_datetime_utc()
         next_retry_at = (now_dt + timedelta(seconds=delay_sec)).isoformat()
         now_iso = now_dt.isoformat()
         try:
@@ -99,17 +101,28 @@ class L3QueueTransitionService:
         defer_writer = getattr(self._queue_repo, "defer_jobs_to_pending", None)
         if not callable(defer_writer):
             return False
-        delay_by_reason: dict[L5RejectReason, int] = {
-            L5RejectReason.PRESSURE_RATE_EXCEEDED: 30,
-            L5RejectReason.PRESSURE_BURST_EXCEEDED: 10,
-            L5RejectReason.PRESSURE_WORKSPACE_EXCEEDED: 20,
-            L5RejectReason.COOLDOWN_ACTIVE: 15,
-        }
+        is_tsls_fast = self._is_tsls_fast_group_path(relative_path=job.relative_path)
+        if is_tsls_fast:
+            # TSLS fast 경로는 짧은 주기로 재시도한다(사용자 합의: 10~15초).
+            delay_by_reason: dict[L5RejectReason, int] = {
+                L5RejectReason.PRESSURE_RATE_EXCEEDED: 15,
+                L5RejectReason.PRESSURE_BURST_EXCEEDED: 10,
+                L5RejectReason.PRESSURE_WORKSPACE_EXCEEDED: 15,
+                L5RejectReason.COOLDOWN_ACTIVE: 15,
+            }
+            defer_reason = f"l5_defer:tsls_fast:{reject_reason.value}"
+        else:
+            delay_by_reason = {
+                L5RejectReason.PRESSURE_RATE_EXCEEDED: 30,
+                L5RejectReason.PRESSURE_BURST_EXCEEDED: 10,
+                L5RejectReason.PRESSURE_WORKSPACE_EXCEEDED: 20,
+                L5RejectReason.COOLDOWN_ACTIVE: 15,
+            }
+            defer_reason = f"l5_defer:{reject_reason.value}"
         delay_sec = int(delay_by_reason.get(reject_reason, 10))
-        now_dt = datetime.now(timezone.utc)
+        now_dt = self._now_datetime_utc()
         next_retry_at = (now_dt + timedelta(seconds=delay_sec)).isoformat()
         now_iso = now_dt.isoformat()
-        defer_reason = f"l5_defer:{reject_reason.value}"
         try:
             try:
                 updated = int(
@@ -164,7 +177,7 @@ class L3QueueTransitionService:
         defer_writer = getattr(self._queue_repo, "defer_jobs_to_pending", None)
         if not callable(defer_writer):
             return False
-        now_dt = datetime.now(timezone.utc)
+        now_dt = self._now_datetime_utc()
         next_retry_at = (now_dt + timedelta(seconds=60)).isoformat()
         now_iso = now_dt.isoformat()
         defer_reason = f"l5_defer:deferred_heavy:{reason.strip() or 'unknown'}"
@@ -275,3 +288,20 @@ class L3QueueTransitionService:
             if len(parts) >= 2 and parts[0] not in ("", ".", ".."):
                 return str(Path(job.repo_root) / parts[0])
         return job.repo_root
+
+    def _is_tsls_fast_group_path(self, *, relative_path: str) -> bool:
+        lowered = relative_path.lower()
+        if lowered.endswith(".vue"):
+            return False
+        return lowered.endswith(self._TSLS_FAST_PATH_EXTENSIONS)
+
+    def _now_datetime_utc(self) -> datetime:
+        now_iso_supplier = self._now_iso_supplier
+        try:
+            raw_now_iso = str(now_iso_supplier())
+            now_dt = datetime.fromisoformat(raw_now_iso.replace("Z", "+00:00"))
+            if now_dt.tzinfo is None:
+                return now_dt.replace(tzinfo=timezone.utc)
+            return now_dt.astimezone(timezone.utc)
+        except (RuntimeError, OSError, ValueError, TypeError):
+            return datetime.now(timezone.utc)

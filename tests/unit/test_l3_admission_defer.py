@@ -98,12 +98,12 @@ class _NoopQueueTransition:
         return False
 
 
-def _job() -> FileEnrichJobDTO:
+def _job(*, relative_path: str = "a.py") -> FileEnrichJobDTO:
     return FileEnrichJobDTO(
         job_id="j1",
         repo_id="r1",
         repo_root="/repo",
-        relative_path="a.py",
+        relative_path=relative_path,
         content_hash="h1",
         priority=10,
         enqueue_source="l3",
@@ -140,6 +140,37 @@ def test_l3_queue_transition_defers_on_pressure_reject_reason() -> None:
     assert changed is True
     assert len(queue_repo.defer_calls) == 1
     assert queue_repo.defer_calls[0]["defer_reason"] == "l5_defer:pressure_burst_exceeded"
+
+
+def test_l3_queue_transition_tsls_fast_reject_uses_tsls_reason_and_short_delay() -> None:
+    """TSLS 그룹은 reject defer를 tsls_fast reason + 짧은 delay로 기록해야 한다."""
+    queue_repo = _StubQueueRepo()
+    error_policy = _StubErrorPolicy()
+    service = L3QueueTransitionService(
+        queue_repo=queue_repo,
+        error_policy=error_policy,
+        now_iso_supplier=lambda: "2026-02-23T00:00:00+00:00",
+        broker_admission=_StubL3BrokerAdmission(),
+        extract_error_code=lambda _message: "ERR_X",
+        is_scope_escalation_trigger=lambda _code, _message: False,
+        next_scope_level_for_escalation=lambda _scope: None,
+    )
+    decision = L4AdmissionDecisionDTO(
+        admit_l5=False,
+        reason_code=L5ReasonCode.USER_INTERACTIVE,
+        reject_reason=L5RejectReason.PRESSURE_RATE_EXCEEDED,
+    )
+
+    changed = service.defer_after_l5_admission_rejection(
+        job=_job(relative_path="src/app.ts"),
+        admission=decision,
+    )
+
+    assert changed is True
+    assert len(queue_repo.defer_calls) == 1
+    call = queue_repo.defer_calls[0]
+    assert call["defer_reason"] == "l5_defer:tsls_fast:pressure_rate_exceeded"
+    assert call["next_retry_at"] == "2026-02-23T00:00:15+00:00"
 
 
 def test_l3_queue_transition_defers_on_preprocess_deferred_heavy() -> None:

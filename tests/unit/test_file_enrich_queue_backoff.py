@@ -639,11 +639,63 @@ def test_pending_split_counts_and_age_stats(tmp_path: Path) -> None:
     split = repo.get_pending_split_counts(now_iso="2026-02-16T00:00:00+00:00")
     assert split["PENDING_AVAILABLE"] == 2
     assert split["PENDING_DEFERRED"] == 1
+    assert split["PENDING_DEFERRED_FAST"] == 0
+    assert split["PENDING_DEFERRED_HEAVY"] == 0
 
     age = repo.get_pending_age_stats(now_iso="2026-02-16T00:00:00+00:00")
     assert age["oldest_pending_available_age_sec"] == pytest.approx(30.0)
     assert age["oldest_pending_deferred_age_sec"] == pytest.approx(600.0)
     assert age["p95_pending_available_age_sec"] is not None
+
+
+def test_pending_split_counts_include_fast_and_heavy_defer_buckets(tmp_path: Path) -> None:
+    """defer_reason prefix에 따라 fast/heavy 분리 카운트가 집계되어야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = FileEnrichQueueRepository(db_path)
+
+    base_now = "2026-02-16T00:00:00+00:00"
+    _ = repo.enqueue(
+        repo_root="/repo",
+        relative_path="fast.ts",
+        content_hash="h-fast",
+        priority=10,
+        enqueue_source="scan",
+        now_iso=base_now,
+    )
+    _ = repo.enqueue(
+        repo_root="/repo",
+        relative_path="heavy.java",
+        content_hash="h-heavy",
+        priority=10,
+        enqueue_source="scan",
+        now_iso=base_now,
+    )
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE file_enrich_queue
+            SET next_retry_at = '2026-02-16T00:00:15+00:00',
+                defer_reason = 'l5_defer:tsls_fast:pressure_rate_exceeded'
+            WHERE relative_path = 'fast.ts'
+            """
+        )
+        conn.execute(
+            """
+            UPDATE file_enrich_queue
+            SET next_retry_at = '2026-02-16T00:01:00+00:00',
+                defer_reason = 'l5_defer:deferred_heavy:l3_preprocess_large_file'
+            WHERE relative_path = 'heavy.java'
+            """
+        )
+        conn.commit()
+
+    split = repo.get_pending_split_counts(now_iso=base_now)
+
+    assert split["PENDING_AVAILABLE"] == 0
+    assert split["PENDING_DEFERRED"] == 2
+    assert split["PENDING_DEFERRED_FAST"] == 1
+    assert split["PENDING_DEFERRED_HEAVY"] == 1
 
 
 def test_pending_age_stats_handles_mixed_naive_and_aware_timestamps(tmp_path: Path) -> None:

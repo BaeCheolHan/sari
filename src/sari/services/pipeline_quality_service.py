@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +18,13 @@ from sari.lsp.hub import LspHub
 from sari.lsp.path_normalizer import normalize_repo_relative_path
 from sari.services.file_collection_service import LspExtractionBackend, LspExtractionResultDTO
 from solidlsp.ls_exceptions import SolidLSPException
+
+QUALITY_EXCLUDE_GLOBS: tuple[str, ...] = (
+    "benchmark_dataset/**",
+    "**/benchmark_dataset/**",
+)
+QUALITY_SYMBOL_LINE_TOLERANCE = 2
+QUALITY_RECALL_MIN_PCT = 95.0
 
 
 @dataclass(frozen=True)
@@ -89,9 +97,7 @@ class SerenaGoldenBackend(LspExtractionBackend):
                     continue
             line = 0
             end_line = 0
-            range_data = None
-            if isinstance(location, dict):
-                range_data = location.get("range")
+            range_data = self._extract_range_data(raw=raw, location=location)
             if isinstance(range_data, dict):
                 start_data = range_data.get("start")
                 end_data = range_data.get("end")
@@ -111,6 +117,21 @@ class SerenaGoldenBackend(LspExtractionBackend):
                 }
             )
         return symbols
+
+    def _extract_range_data(self, *, raw: dict[str, object], location: object) -> dict[str, object] | None:
+        """심볼 라인 추출용 range 데이터를 읽는다.
+
+        일부 LS는 documentSymbol 항목에 location 없이 range만 채워서 반환하므로,
+        location.range -> raw.range 순서로 폴백한다.
+        """
+        if isinstance(location, dict):
+            location_range = location.get("range")
+            if isinstance(location_range, dict):
+                return location_range
+        direct_range = raw.get("range")
+        if isinstance(direct_range, dict):
+            return direct_range
+        return None
 
     def _normalize_symbol_kind(self, kind: object) -> str:
         """LSP SymbolKind(int/string)을 비교용 문자열 kind로 정규화한다."""
@@ -229,6 +250,8 @@ class PipelineQualityService:
             evaluated_files = 0
 
             for file_item in files:
+                if _is_excluded_from_quality(file_item.relative_path):
+                    continue
                 language = resolve_language_from_path(file_item.relative_path)
                 language_name = "unknown" if language is None else language.value
                 if normalized_filter is not None and language_name not in normalized_filter:
@@ -289,27 +312,47 @@ class PipelineQualityService:
                 raise QualityError(ErrorContext(code="ERR_QUALITY_EMPTY_DATASET", message="language filter에 해당하는 파일이 없습니다"))
 
             symbol_precision = _precision_percent(symbol_counts.tp, symbol_counts.fp)
+            symbol_recall = _recall_percent(symbol_counts.tp, symbol_counts.fn)
             caller_precision = _precision_percent(caller_counts.tp, caller_counts.fp)
+            caller_recall = _recall_percent(caller_counts.tp, caller_counts.fn)
             total_precision = _weighted_average(
                 symbol_precision=symbol_precision,
                 caller_precision=caller_precision,
                 symbol_weight=symbol_counts.tp + symbol_counts.fp,
                 caller_weight=caller_counts.tp + caller_counts.fp,
             )
+            total_recall = _weighted_average(
+                symbol_precision=symbol_recall,
+                caller_precision=caller_recall,
+                symbol_weight=symbol_counts.tp + symbol_counts.fn,
+                caller_weight=caller_counts.tp + caller_counts.fn,
+            )
             error_rate = _ratio_percent(error_count, evaluated_files)
             per_language: list[dict[str, object]] = []
             per_language_all_passed = True
             for language_name, totals in sorted(per_language_totals.items(), key=lambda item: item[0]):
                 per_symbol_precision = _precision_percent(totals["symbol_tp"], totals["symbol_fp"])
+                per_symbol_recall = _recall_percent(totals["symbol_tp"], totals["symbol_fn"])
                 per_caller_precision = _precision_percent(totals["caller_tp"], totals["caller_fp"])
+                per_caller_recall = _recall_percent(totals["caller_tp"], totals["caller_fn"])
                 per_total_precision = _weighted_average(
                     symbol_precision=per_symbol_precision,
                     caller_precision=per_caller_precision,
                     symbol_weight=totals["symbol_tp"] + totals["symbol_fp"],
                     caller_weight=totals["caller_tp"] + totals["caller_fp"],
                 )
+                per_total_recall = _weighted_average(
+                    symbol_precision=per_symbol_recall,
+                    caller_precision=per_caller_recall,
+                    symbol_weight=totals["symbol_tp"] + totals["symbol_fn"],
+                    caller_weight=totals["caller_tp"] + totals["caller_fn"],
+                )
                 per_error_rate = _ratio_percent(totals["error_files"], totals["evaluated_files"])
-                per_passed = per_total_precision >= 95.0 and per_error_rate <= 1.0
+                per_passed = (
+                    per_total_precision >= 95.0
+                    and per_total_recall >= QUALITY_RECALL_MIN_PCT
+                    and per_error_rate <= 1.0
+                )
                 if not per_passed:
                     per_language_all_passed = False
                 per_language.append(
@@ -321,10 +364,18 @@ class PipelineQualityService:
                         "precision_symbol": per_symbol_precision,
                         "precision_caller": per_caller_precision,
                         "precision_total": per_total_precision,
+                        "recall_symbol": per_symbol_recall,
+                        "recall_caller": per_caller_recall,
+                        "recall_total": per_total_recall,
                         "gate_passed": per_passed,
                     }
                 )
-            gate_passed = total_precision >= 95.0 and error_rate <= 1.0 and per_language_all_passed
+            gate_passed = (
+                total_precision >= 95.0
+                and total_recall >= QUALITY_RECALL_MIN_PCT
+                and error_rate <= 1.0
+                and per_language_all_passed
+            )
 
             summary = {
                 "run_id": run_id,
@@ -341,9 +392,15 @@ class PipelineQualityService:
                     "caller": caller_precision,
                     "total": total_precision,
                 },
+                "recall": {
+                    "symbol": symbol_recall,
+                    "caller": caller_recall,
+                    "total": total_recall,
+                },
                 "per_language": per_language,
                 "thresholds": {
                     "precision_min": 95.0,
+                    "recall_min": QUALITY_RECALL_MIN_PCT,
                     "error_rate_max": 1.0,
                 },
                 "totals": {
@@ -399,14 +456,14 @@ class PipelineQualityService:
 
     def _diff_file(self, predicted: L3ReferenceDataDTO, golden: L3ReferenceDataDTO) -> L3DiffResultDTO:
         """파일 단위 predicted/golden 차이를 계산한다."""
-        predicted_symbols = {_symbol_key(item) for item in predicted.symbols}
-        golden_symbols = {_symbol_key(item) for item in golden.symbols}
+        symbol_tp, symbol_fp, symbol_fn = _compute_symbol_counts(
+            predicted_symbols=predicted.symbols,
+            golden_symbols=golden.symbols,
+            line_tolerance=QUALITY_SYMBOL_LINE_TOLERANCE,
+        )
         predicted_callers = {_caller_key(item) for item in predicted.relations}
         golden_callers = {_caller_key(item) for item in golden.relations}
 
-        symbol_tp = len(predicted_symbols.intersection(golden_symbols))
-        symbol_fp = len(predicted_symbols.difference(golden_symbols))
-        symbol_fn = len(golden_symbols.difference(predicted_symbols))
         caller_tp = len(predicted_callers.intersection(golden_callers))
         caller_fp = len(predicted_callers.difference(golden_callers))
         caller_fn = len(golden_callers.difference(predicted_callers))
@@ -436,7 +493,6 @@ def _symbol_key(item: dict[str, object]) -> str:
             str(item.get("name", "")),
             str(item.get("kind", "")),
             str(int(item.get("line", 0))),
-            str(int(item.get("end_line", 0))),
         ]
     )
 
@@ -460,6 +516,14 @@ def _precision_percent(tp: int, fp: int) -> float:
     return (float(tp) * 100.0) / float(denominator)
 
 
+def _recall_percent(tp: int, fn: int) -> float:
+    """재현율 백분율을 계산한다."""
+    denominator = tp + fn
+    if denominator == 0:
+        return 100.0
+    return (float(tp) * 100.0) / float(denominator)
+
+
 def _ratio_percent(numerator: int, denominator: int) -> float:
     """비율 백분율을 계산한다."""
     if denominator == 0:
@@ -473,3 +537,77 @@ def _weighted_average(symbol_precision: float, caller_precision: float, symbol_w
     if total_weight == 0:
         return 100.0
     return ((symbol_precision * float(symbol_weight)) + (caller_precision * float(caller_weight))) / float(total_weight)
+
+
+def _compute_symbol_counts(
+    *,
+    predicted_symbols: list[dict[str, object]],
+    golden_symbols: list[dict[str, object]],
+    line_tolerance: int,
+) -> tuple[int, int, int]:
+    """심볼 TP/FP/FN을 line tolerance 기반으로 계산한다.
+
+    exact end_line 일치에 의존하면 언어/LS별 range 편차로 TP가 과도하게 0으로 떨어지므로,
+    이름 우선 + line tolerance 기반으로 1:1 매칭한다.
+    """
+    tolerance = max(0, int(line_tolerance))
+    predicted = [_normalize_symbol_for_match(item) for item in predicted_symbols]
+    golden = [_normalize_symbol_for_match(item) for item in golden_symbols]
+    predicted = [item for item in predicted if item is not None]
+    golden = [item for item in golden if item is not None]
+    used_golden_indices: set[int] = set()
+    tp = 0
+    for pred in predicted:
+        assert pred is not None
+        best_idx: int | None = None
+        best_score = -1
+        for idx, cand in enumerate(golden):
+            if idx in used_golden_indices:
+                continue
+            assert cand is not None
+            if pred["name"] != cand["name"]:
+                continue
+            line_gap = abs(int(pred["line"]) - int(cand["line"]))
+            if line_gap > tolerance:
+                continue
+            score = 0
+            if pred["kind"] == cand["kind"]:
+                score += 10
+            score += max(0, tolerance - line_gap)
+            if score > best_score:
+                best_score = score
+                best_idx = idx
+        if best_idx is not None:
+            used_golden_indices.add(best_idx)
+            tp += 1
+    fp = max(0, len(predicted) - tp)
+    fn = max(0, len(golden) - tp)
+    return tp, fp, fn
+
+
+def _normalize_symbol_for_match(item: dict[str, object]) -> dict[str, object] | None:
+    """심볼 매칭용 최소 정규화를 수행한다."""
+    name = str(item.get("name", "")).strip()
+    if name == "":
+        return None
+    kind = str(item.get("kind", "")).strip().lower()
+    try:
+        line = int(item.get("line", 0))
+    except (TypeError, ValueError):
+        line = 0
+    return {"name": name, "kind": kind, "line": max(0, line)}
+
+
+def _is_excluded_from_quality(relative_path: str) -> bool:
+    """품질 평가 대상에서 제외할 경로인지 판정한다.
+
+    benchmark_dataset는 성능 벤치용 fixture가 포함되므로 품질 게이트 비교에서는 제외한다.
+    """
+    normalized = str(relative_path).replace("\\", "/").lstrip("./")
+    for pattern in DEFAULT_COLLECTION_EXCLUDE_GLOBS:
+        if fnmatch.fnmatch(normalized, pattern):
+            return True
+    for pattern in QUALITY_EXCLUDE_GLOBS:
+        if fnmatch.fnmatch(normalized, pattern):
+            return True
+    return False

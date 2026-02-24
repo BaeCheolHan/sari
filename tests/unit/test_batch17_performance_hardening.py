@@ -253,7 +253,6 @@ def _build_min_enrich_engine_for_l3_test(*, lsp_backend: object, queue_repo: obj
         engine._schedule_l1_probe_after_l3_fallback_called += 1
 
     engine._schedule_l1_probe_after_l3_fallback = _fallback_probe
-    engine._l3_refactored_orchestrator_enabled = True
 
     class _SkipEligibilityAdapter:
         def is_recent_tool_ready(self, job: FileEnrichJobDTO) -> bool:
@@ -330,7 +329,6 @@ def test_enrich_engine_l3_refactored_orchestrator_flag_routes_single_job() -> No
             )
 
     engine = object.__new__(EnrichEngine)
-    engine._l3_refactored_orchestrator_enabled = True
     engine._l3_orchestrator = _CaptureOrchestrator()
     engine._record_enrich_latency = lambda _ms: None
     engine._event_repo = None
@@ -859,6 +857,20 @@ def test_l3_preprocess_vue_high_symbol_stays_l3_only() -> None:
     assert result.decision is L3PreprocessDecision.L3_ONLY
     assert result.source == "regex_outline"
     assert len(result.symbols) == 11
+
+
+def test_l3_preprocess_tsls_group_shortcuts_to_needs_l5_without_symbols() -> None:
+    """TSLS 그룹(ts/js)은 L3 파싱 없이 L5 fast-path로 직행해야 한다."""
+    service = L3TreeSitterPreprocessService(tree_sitter_enabled=False)
+    content = "export function alpha() { return 1 }\n"
+
+    result = service.preprocess(relative_path="repo_a/src/main.ts", content_text=content, max_bytes=1024)
+
+    assert result.decision is L3PreprocessDecision.NEEDS_L5
+    assert result.source == "none"
+    assert result.reason == "l3_preprocess_tsls_fast_path"
+    assert result.degraded is False
+    assert result.symbols == []
 
 
 def test_l3_preprocess_tree_sitter_degraded_uses_regex_fallback_before_l5() -> None:

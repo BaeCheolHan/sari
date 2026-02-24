@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from enum import Enum
 
 from .l3_asset_loader import L3AssetLoader
+from .l3_language_processor import L3LowConfidenceContext
+from .l3_language_processor_registry import L3LanguageProcessorRegistry
 from .l3_tree_sitter_outline import TreeSitterOutlineExtractor
 
 class L3PreprocessDecision(str, Enum):
@@ -33,6 +35,10 @@ class L3PreprocessResultDTO:
 class L3TreeSitterPreprocessService:
     """tree-sitter 경량 전처리(없으면 regex fallback) 서비스."""
 
+    # TSLS(typescript-language-server) 그룹은 L3 파싱을 건너뛰고 L5로 빠르게 위임한다.
+    # Vue(.vue)는 별도 경로(L3->L4->L5)를 유지해야 하므로 제외한다.
+    _TSLS_FAST_PATH_EXTENSIONS: tuple[str, ...] = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
+
     _PATTERN_TEXTS: dict[str, tuple[tuple[str, str], ...]] = {
         "py": (
             (r"^\s*class\s+([A-Za-z_][A-Za-z0-9_]*)\s*(\(|:)", "class"),
@@ -53,21 +59,6 @@ class L3TreeSitterPreprocessService:
     }
     _IMPORT_LIKE = re.compile(r"^\s*(?:import|from\s+\S+\s+import|using|use|require\(|#include)\b", re.MULTILINE)
     _CROSS_FILE_HINT = re.compile(r"\b(?:extends|implements|::|->|\.)\b")
-    _MIN_SYMBOLS_FOR_L3_ONLY = 2
-    _VUE_MIN_SYMBOLS_FOR_L3_ONLY = 10
-    _VUE_IMPORT_HEAVY_MIN_SYMBOLS_FOR_L3_ONLY = 16
-    _LOW_CONFIDENCE_RELAXED_FILENAME_HINTS = (
-        "config",
-        "settings",
-        "option",
-        "schema",
-        "types",
-        "typing",
-        "dto",
-        "model",
-        "interface",
-        "constant",
-    )
 
     def __init__(
         self,
@@ -80,6 +71,7 @@ class L3TreeSitterPreprocessService:
         asset_mode: str = "shadow",
         asset_lang_allowlist: tuple[str, ...] = (),
         tree_sitter_outline_extractor: TreeSitterOutlineExtractor | None = None,
+        language_registry: L3LanguageProcessorRegistry | None = None,
     ) -> None:
         self._query_compile_cache_enabled = bool(query_compile_cache_enabled)
         self._query_compile_ms_budget_sec = max(0.0001, float(query_compile_ms_budget)) / 1000.0
@@ -91,9 +83,18 @@ class L3TreeSitterPreprocessService:
             asset_mode=asset_mode,
             asset_lang_allowlist=asset_lang_allowlist,
         )
+        self._language_registry = language_registry or L3LanguageProcessorRegistry()
 
     def preprocess(self, *, relative_path: str, content_text: str, max_bytes: int = 262_144) -> L3PreprocessResultDTO:
         started_at = time.perf_counter()
+        if self._is_tsls_fast_path(relative_path=relative_path):
+            return L3PreprocessResultDTO(
+                symbols=[],
+                degraded=False,
+                decision=L3PreprocessDecision.NEEDS_L5,
+                source="none",
+                reason="l3_preprocess_tsls_fast_path",
+            )
         if len(content_text.encode("utf-8", errors="ignore")) > max_bytes:
             return L3PreprocessResultDTO(
                 symbols=[],
@@ -103,25 +104,17 @@ class L3TreeSitterPreprocessService:
                 reason="l3_preprocess_large_file",
             )
 
-        ext = relative_path.rsplit(".", 1)[-1].lower() if "." in relative_path else ""
-        pattern_key = ext
-        if ext in {"js", "jsx", "mjs", "cjs"}:
-            pattern_key = "javascript"
-        elif ext in {"tsx", "vue"}:
-            pattern_key = "ts"
+        language_processor = self._language_registry.resolve(relative_path=relative_path)
+        pattern_key = language_processor.pattern_key(relative_path=relative_path)
 
-        tree_sitter_result = self._try_tree_sitter_outline(pattern_key=pattern_key, content_text=content_text)
+        tree_sitter_result = self._try_tree_sitter_outline(pattern_key=pattern_key, content_text=content_text) if pattern_key else None
         tree_sitter_degraded_reason: str | None = None
         if tree_sitter_result is not None:
             if tree_sitter_result.degraded:
                 tree_sitter_degraded_reason = tree_sitter_result.reason or "tree_sitter_degraded"
             elif len(tree_sitter_result.symbols) == 0:
                 tree_sitter_degraded_reason = "l3_preprocess_no_symbols"
-            elif self._needs_l5_by_low_confidence(
-                relative_path=relative_path,
-                content_text=content_text,
-                symbols=tree_sitter_result.symbols,
-            ):
+            elif self._needs_l5_by_low_confidence(relative_path=relative_path, content_text=content_text, symbols=tree_sitter_result.symbols):
                 return L3PreprocessResultDTO(
                     symbols=tree_sitter_result.symbols,
                     degraded=False,
@@ -138,7 +131,7 @@ class L3TreeSitterPreprocessService:
                     reason="l3_preprocess_tree_sitter_only",
                 )
 
-        if pattern_key not in self._PATTERN_TEXTS:
+        if pattern_key is None or pattern_key not in self._PATTERN_TEXTS:
             return L3PreprocessResultDTO(
                 symbols=[],
                 degraded=tree_sitter_degraded_reason is not None,
@@ -216,35 +209,17 @@ class L3TreeSitterPreprocessService:
             return None
 
     def _needs_l5_by_low_confidence(self, *, relative_path: str, content_text: str, symbols: list[dict[str, object]]) -> bool:
-        symbol_count = len(symbols)
-        lowered_path = relative_path.lower()
-        # Vue SFC는 LSP가 template/script 구간에서 더 풍부한 심볼을 제공한다.
-        # L3가 소수 outline만 확보한 경우에는 L5로 승격해 보강 추출을 허용한다.
-        if lowered_path.endswith(".vue"):
-            has_import_like = self._IMPORT_LIKE.search(content_text) is not None
-            vue_min_symbols = self._VUE_IMPORT_HEAVY_MIN_SYMBOLS_FOR_L3_ONLY if has_import_like else self._VUE_MIN_SYMBOLS_FOR_L3_ONLY
-            if symbol_count < vue_min_symbols:
-                return True
-        min_symbols_for_l3_only = self._min_symbols_for_l3_only(relative_path=relative_path)
-        if symbol_count < min_symbols_for_l3_only:
-            return True
-        # import/cross-file 신호는 "심볼이 적은 파일"에서만 L5 후보로 승격한다.
-        # 심볼이 충분하면 L3 결과를 기본값으로 유지하여 LSP 과호출을 막는다.
+        language_processor = self._language_registry.resolve(relative_path=relative_path)
         has_import_like = self._IMPORT_LIKE.search(content_text) is not None
         has_cross_file_hint = self._CROSS_FILE_HINT.search(content_text) is not None
-        if symbol_count == 2 and has_import_like and has_cross_file_hint:
-            return True
-        return False
-
-    def _min_symbols_for_l3_only(self, *, relative_path: str) -> int:
-        lowered = relative_path.lower()
-        if lowered.endswith((".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf")):
-            return 1
-        filename = lowered.rsplit("/", 1)[-1]
-        for hint in self._LOW_CONFIDENCE_RELAXED_FILENAME_HINTS:
-            if hint in filename:
-                return 1
-        return self._MIN_SYMBOLS_FOR_L3_ONLY
+        context = L3LowConfidenceContext(
+            relative_path=relative_path,
+            content_text=content_text,
+            symbol_count=len(symbols),
+            has_import_like=has_import_like,
+            has_cross_file_hint=has_cross_file_hint,
+        )
+        return language_processor.should_route_to_l5(context=context)
 
     def _get_patterns_for_ext(self, *, pattern_key: str) -> tuple[tuple[re.Pattern[str], str], ...] | None:
         pattern_texts = self._PATTERN_TEXTS.get(pattern_key)
@@ -286,3 +261,9 @@ class L3TreeSitterPreprocessService:
                 }
             )
         return output
+
+    def _is_tsls_fast_path(self, *, relative_path: str) -> bool:
+        lowered = relative_path.lower()
+        if lowered.endswith(".vue"):
+            return False
+        return lowered.endswith(self._TSLS_FAST_PATH_EXTENSIONS)

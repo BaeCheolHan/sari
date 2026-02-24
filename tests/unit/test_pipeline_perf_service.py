@@ -358,7 +358,12 @@ class _FakeQueueRepositoryForStageGate(_FakeQueueRepository):
 
     def get_pending_split_counts(self, now_iso: str) -> dict[str, int]:
         self.pending_split_calls.append(now_iso)
-        return {"PENDING_AVAILABLE": 18, "PENDING_DEFERRED": 2}
+        return {
+            "PENDING_AVAILABLE": 18,
+            "PENDING_DEFERRED": 2,
+            "PENDING_DEFERRED_FAST": 1,
+            "PENDING_DEFERRED_HEAVY": 1,
+        }
 
     def get_pending_age_stats(self, now_iso: str) -> dict[str, float | None]:
         self.pending_age_calls.append(now_iso)
@@ -389,7 +394,12 @@ class _FakeQueueRepositoryWithPendingDetails(_FakeQueueRepository):
 
     def get_pending_split_counts(self, now_iso: str) -> dict[str, int]:
         self.pending_split_calls.append(now_iso)
-        return {"PENDING_AVAILABLE": 4, "PENDING_DEFERRED": 7}
+        return {
+            "PENDING_AVAILABLE": 4,
+            "PENDING_DEFERRED": 7,
+            "PENDING_DEFERRED_FAST": 3,
+            "PENDING_DEFERRED_HEAVY": 2,
+        }
 
     def get_pending_age_stats(self, now_iso: str) -> dict[str, float | None]:
         self.pending_age_calls.append(now_iso)
@@ -734,6 +744,8 @@ def test_pipeline_perf_integrity_snapshot_includes_pending_split_age_and_eligibl
     assert isinstance(queue_detailed, dict)
     assert queue_detailed["PENDING_AVAILABLE"] == 4
     assert queue_detailed["PENDING_DEFERRED"] == 7
+    assert queue_detailed["PENDING_DEFERRED_FAST"] == 3
+    assert queue_detailed["PENDING_DEFERRED_HEAVY"] == 2
     pending_age = snap["pending_age_stats"]
     assert isinstance(pending_age, dict)
     assert pending_age["oldest_pending_available_age_sec"] == pytest.approx(12.0)

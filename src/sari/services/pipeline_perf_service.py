@@ -590,9 +590,13 @@ class PipelinePerfService:
                 split = {}
             detailed["PENDING_AVAILABLE"] = int(split.get("PENDING_AVAILABLE", max(0, detailed.get("PENDING", 0))))
             detailed["PENDING_DEFERRED"] = int(split.get("PENDING_DEFERRED", 0))
+            detailed["PENDING_DEFERRED_FAST"] = int(split.get("PENDING_DEFERRED_FAST", 0))
+            detailed["PENDING_DEFERRED_HEAVY"] = int(split.get("PENDING_DEFERRED_HEAVY", 0))
         else:
             detailed["PENDING_AVAILABLE"] = int(detailed.get("PENDING", 0))
             detailed["PENDING_DEFERRED"] = 0
+            detailed["PENDING_DEFERRED_FAST"] = 0
+            detailed["PENDING_DEFERRED_HEAVY"] = 0
         return detailed
 
     def _build_dataset_result(

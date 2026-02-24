@@ -428,4 +428,3 @@ class L3QualityEvaluationService:
         if name_contains and not any(token in symbol.name for token in name_contains):
             return False
         return True
-    _JS_CALLBACK_NAME_PATTERN = re.compile(r"^(?:.+\.)?([A-Za-z_$][A-Za-z0-9_$]*)\(\)\s+callback$")

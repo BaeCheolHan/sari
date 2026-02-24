@@ -683,16 +683,44 @@ class FileEnrichQueueRepository:
                 """
                 SELECT
                     SUM(CASE WHEN status = 'PENDING' AND next_retry_at <= :now_iso THEN 1 ELSE 0 END) AS pending_available,
-                    SUM(CASE WHEN status = 'PENDING' AND next_retry_at > :now_iso THEN 1 ELSE 0 END) AS pending_deferred
+                    SUM(CASE WHEN status = 'PENDING' AND next_retry_at > :now_iso THEN 1 ELSE 0 END) AS pending_deferred,
+                    SUM(
+                        CASE
+                            WHEN status = 'PENDING'
+                             AND next_retry_at > :now_iso
+                             AND COALESCE(defer_reason, '') LIKE 'l5_defer:tsls_fast:%'
+                            THEN 1 ELSE 0
+                        END
+                    ) AS pending_deferred_fast,
+                    SUM(
+                        CASE
+                            WHEN status = 'PENDING'
+                             AND next_retry_at > :now_iso
+                             AND COALESCE(defer_reason, '') LIKE 'l5_defer:deferred_heavy:%'
+                            THEN 1 ELSE 0
+                        END
+                    ) AS pending_deferred_heavy
                 FROM file_enrich_queue
                 """,
                 {"now_iso": now_iso},
             ).fetchone()
         if row is None:
-            return {"PENDING_AVAILABLE": 0, "PENDING_DEFERRED": 0}
+            return {
+                "PENDING_AVAILABLE": 0,
+                "PENDING_DEFERRED": 0,
+                "PENDING_DEFERRED_FAST": 0,
+                "PENDING_DEFERRED_HEAVY": 0,
+            }
         pending_available = int(row["pending_available"] or 0)
         pending_deferred = int(row["pending_deferred"] or 0)
-        return {"PENDING_AVAILABLE": pending_available, "PENDING_DEFERRED": pending_deferred}
+        pending_deferred_fast = int(row["pending_deferred_fast"] or 0)
+        pending_deferred_heavy = int(row["pending_deferred_heavy"] or 0)
+        return {
+            "PENDING_AVAILABLE": pending_available,
+            "PENDING_DEFERRED": pending_deferred,
+            "PENDING_DEFERRED_FAST": pending_deferred_fast,
+            "PENDING_DEFERRED_HEAVY": pending_deferred_heavy,
+        }
 
     def get_pending_age_stats(self, now_iso: str) -> dict[str, float | None]:
         """현재 시각 기준 PENDING available/deferred 작업의 age 통계를 계산한다."""

@@ -107,7 +107,6 @@ class EnrichEngine:
         l3_backpressure_cooldown_ms: int,
         l3_supported_languages: tuple[str, ...],
         lsp_probe_l1_languages: tuple[str, ...],
-        l3_refactored_orchestrator_enabled: bool,
         l5_admission_shadow_enabled: bool = False,
         l5_admission_enforced: bool = False,
         l5_call_rate_total_max: float = 0.05,
@@ -195,7 +194,6 @@ class EnrichEngine:
         self._l4_admission_service = L4AdmissionService(
             policy=self._l5_admission_policy,
         )
-        self._l3_refactored_orchestrator_enabled = bool(l3_refactored_orchestrator_enabled)
         self._l3_asset_loader = L3AssetLoader()
         configured_l3_asset_mode = os.getenv("SARI_L3_ASSET_MODE", l3_asset_mode).strip().lower()
         if configured_l3_asset_mode not in {"shadow", "gate", "apply"}:
