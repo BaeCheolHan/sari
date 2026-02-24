@@ -1,7 +1,9 @@
 import dataclasses
+import hashlib
 import logging
 import os
 import pathlib
+import re
 import shutil
 import threading
 import uuid
@@ -28,6 +30,110 @@ def _project_ready_timeout_seconds() -> int:
         return max(0, int(raw))
     except ValueError:
         return 20
+
+
+def _gradle_wrapper_first_enabled() -> bool:
+    raw = os.getenv("SARI_JDTLS_GRADLE_WRAPPER_FIRST", "").strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return True
+
+
+def _parse_gradle_wrapper_version(repository_root_path: str) -> tuple[int, int, int] | None:
+    wrapper_props = pathlib.Path(repository_root_path) / "gradle" / "wrapper" / "gradle-wrapper.properties"
+    if not wrapper_props.exists():
+        return None
+    try:
+        text = wrapper_props.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None
+    match = re.search(r"distributionUrl=.*gradle-([0-9]+)\.([0-9]+)(?:\.([0-9]+))?", text)
+    if match is None:
+        return None
+    major = int(match.group(1))
+    minor = int(match.group(2))
+    patch_raw = match.group(3)
+    patch = int(patch_raw) if patch_raw is not None else 0
+    return (major, minor, patch)
+
+
+def _auto_wrapper_first_enabled(repository_root_path: str) -> bool:
+    """Env 미지정 시 프로젝트 상태로 wrapper-first를 자동 선택한다."""
+    wrapper_jar = pathlib.Path(repository_root_path) / "gradle" / "wrapper" / "gradle-wrapper.jar"
+    wrapper_props = pathlib.Path(repository_root_path) / "gradle" / "wrapper" / "gradle-wrapper.properties"
+    if not wrapper_props.exists():
+        log.info("JDTLS wrapper-first auto fallback: gradle-wrapper.properties 미존재로 bundled gradle 사용")
+        return False
+    if not wrapper_jar.exists():
+        # 일부 프로젝트는 properties만 커밋하는 경우가 있어 jar 부재만으로 차단하지 않는다.
+        log.info("JDTLS wrapper-first auto fallback: gradle-wrapper.jar 미존재(계속 진행)")
+    version = _parse_gradle_wrapper_version(repository_root_path)
+    if version is None:
+        log.info("JDTLS wrapper-first auto mode: wrapper 버전 파싱 실패, wrapper-first 유지")
+        return True
+    major, minor, _patch = version
+    # Gradle 7.6 미만은 최신 Java/JDTLS 조합에서 import 실패 확률이 높아 bundled gradle로 내린다.
+    if major < 7 or (major == 7 and minor < 6):
+        log.info(
+            "JDTLS wrapper-first auto fallback: legacy wrapper version=%s.%s -> bundled gradle 사용",
+            major,
+            minor,
+        )
+        return False
+    return True
+
+
+def _resolve_gradle_wrapper_first(repository_root_path: str) -> bool:
+    raw = os.getenv("SARI_JDTLS_GRADLE_WRAPPER_FIRST", "").strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return _auto_wrapper_first_enabled(repository_root_path)
+
+
+def _gradle_user_home_isolated_enabled() -> bool:
+    raw = os.getenv("SARI_JDTLS_GRADLE_USER_HOME_ISOLATED", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def _project_ready_required() -> bool:
+    raw = os.getenv("SARI_JDTLS_REQUIRE_PROJECT_READY", "0").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def _set_java_home_env_for_ls_enabled() -> bool:
+    raw = os.getenv("SARI_JDTLS_SET_JAVA_HOME_FOR_LS", "0").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _isolated_gradle_user_home(*, ls_resources_dir: str, repository_root_path: str) -> str:
+    normalized = os.path.abspath(repository_root_path)
+    digest = hashlib.sha1(normalized.encode("utf-8"), usedforsecurity=False).hexdigest()[:16]
+    return str(PurePath(ls_resources_dir, "EclipseJDTLS", ".isolated-gradle-home", digest))
+
+
+def _wait_project_ready_or_raise(project_ready_event: threading.Event, *, timeout_sec: int) -> None:
+    if not _project_ready_required():
+        if project_ready_event.is_set():
+            log.info("Project is ready")
+        else:
+            log.warning("Project ready status is not required in current mode; continuing without blocking wait")
+        return
+    if project_ready_event.wait(timeout=max(0, int(timeout_sec))):
+        log.info("Project is ready")
+        return
+    raise RuntimeError(f"Project readiness event was not received within {timeout_sec} seconds")
+
+
+def _resolve_ls_resources_dir_for_instance(instance: object) -> str:
+    settings = getattr(instance, "_solidlsp_settings", None)
+    ls_resources_dir = getattr(settings, "ls_resources_dir", None)
+    if isinstance(ls_resources_dir, str) and ls_resources_dir.strip():
+        return ls_resources_dir
+    return str(pathlib.Path.home() / ".solidlsp" / "language_servers" / "static")
 
 
 @dataclasses.dataclass
@@ -287,7 +393,17 @@ class EclipseJDTLS(SolidLanguageServer):
             ]
             return cmd
         def create_launch_command_env(self) -> dict[str, str]:
-            return {"syntaxserver": "false", "JAVA_HOME": self.runtime_dependency_paths.jre_home_path}
+            env = {"syntaxserver": "false"}
+            if _set_java_home_env_for_ls_enabled():
+                env["JAVA_HOME"] = self.runtime_dependency_paths.jre_home_path
+            if _gradle_user_home_isolated_enabled():
+                gradle_user_home = _isolated_gradle_user_home(
+                    ls_resources_dir=self._solidlsp_settings.ls_resources_dir,
+                    repository_root_path=self._repository_root_path,
+                )
+                os.makedirs(gradle_user_home, exist_ok=True)
+                env["GRADLE_USER_HOME"] = gradle_user_home
+            return env
     def _get_initialize_params(self, repository_absolute_path: str) -> InitializeParams:
         if not os.path.isabs(repository_absolute_path):
             repository_absolute_path = os.path.abspath(repository_absolute_path)
@@ -311,7 +427,6 @@ class EclipseJDTLS(SolidLanguageServer):
         else:
             maven_settings_path = None
             log.info(f"Maven settings not found at default location ({default_maven_settings_path}), will use JDTLS defaults")
-        default_gradle_home = os.path.join(os.path.expanduser("~"), ".gradle")
         custom_gradle_home = self._custom_settings.get("gradle_user_home")
         if custom_gradle_home is not None:
             if not os.path.exists(custom_gradle_home):
@@ -324,12 +439,21 @@ class EclipseJDTLS(SolidLanguageServer):
                 raise FileNotFoundError(error_msg)
             gradle_user_home = custom_gradle_home
             log.info(f"Using Gradle user home from custom location: {gradle_user_home}")
-        elif os.path.exists(default_gradle_home):
-            gradle_user_home = default_gradle_home
-            log.info(f"Using Gradle user home from default location: {gradle_user_home}")
+        elif _gradle_user_home_isolated_enabled():
+            gradle_user_home = _isolated_gradle_user_home(
+                ls_resources_dir=_resolve_ls_resources_dir_for_instance(self),
+                repository_root_path=repository_absolute_path,
+            )
+            os.makedirs(gradle_user_home, exist_ok=True)
+            log.info("Using isolated Gradle user home: %s", gradle_user_home)
         else:
-            gradle_user_home = None
-            log.info(f"Gradle user home not found at default location ({default_gradle_home}), will use JDTLS defaults")
+            default_gradle_home = os.path.join(os.path.expanduser("~"), ".gradle")
+            if os.path.exists(default_gradle_home):
+                gradle_user_home = default_gradle_home
+                log.info(f"Using Gradle user home from default location: {gradle_user_home}")
+            else:
+                gradle_user_home = None
+                log.info(f"Gradle user home not found at default location ({default_gradle_home}), will use JDTLS defaults")
         initialize_params = {
             "locale": "en",
             "rootPath": repository_absolute_path,
@@ -637,8 +761,16 @@ class EclipseJDTLS(SolidLanguageServer):
             assert "path" in runtime
             ensure_paths_exist([runtime["path"]], context="eclipse_jdtls.runtime")
         gradle_settings = initialize_params["initializationOptions"]["settings"]["java"]["import"]["gradle"]  # type: ignore
-        gradle_settings["home"] = self.runtime_dependency_paths.gradle_path
-        gradle_settings["java"]["home"] = self.runtime_dependency_paths.jre_path
+        if _resolve_gradle_wrapper_first(repository_absolute_path):
+            gradle_settings["wrapper"]["enabled"] = True
+            gradle_settings.pop("home", None)
+            gradle_java = gradle_settings.get("java")
+            if isinstance(gradle_java, dict):
+                gradle_java.pop("home", None)
+        else:
+            gradle_settings["wrapper"]["enabled"] = False
+            gradle_settings["home"] = self.runtime_dependency_paths.gradle_path
+            gradle_settings["java"]["home"] = self.runtime_dependency_paths.jre_path
         return cast(InitializeParams, initialize_params)
     def _start_server(self) -> None:
         def register_capability_handler(params: dict) -> None:
@@ -706,10 +838,7 @@ class EclipseJDTLS(SolidLanguageServer):
         if not self._project_ready_event.is_set():
             log.info("Waiting for project to be ready ...")
             project_ready_timeout = _project_ready_timeout_seconds()  # Configurable timeout for indexing/perf tuning
-            if self._project_ready_event.wait(timeout=project_ready_timeout):
-                log.info("Project is ready")
-            else:
-                log.warning("Did not receive project ready status within %d seconds; proceeding anyway", project_ready_timeout)
+            _wait_project_ready_or_raise(self._project_ready_event, timeout_sec=project_ready_timeout)
         else:
             log.info("Project is ready")
         log.info("Startup complete")

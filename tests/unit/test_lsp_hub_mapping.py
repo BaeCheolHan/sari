@@ -639,6 +639,93 @@ def test_lsp_hub_maps_assertion_error_to_explicit_unavailable(monkeypatch) -> No
     hub.stop_all()
 
 
+def test_lsp_hub_java_auto_fallback_retries_with_bundled_gradle(monkeypatch, tmp_path) -> None:
+    """Java 시작 실패 시 wrapper-first 자동 fallback으로 1회 재시도해야 한다."""
+
+    repo = tmp_path / "repo-java"
+    wrapper_dir = repo / "gradle" / "wrapper"
+    wrapper_dir.mkdir(parents=True)
+    (wrapper_dir / "gradle-wrapper.properties").write_text(
+        "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.7-bin.zip\n",
+        encoding="utf-8",
+    )
+
+    class _Runtime:
+        def is_running(self) -> bool:
+            return True
+
+    class _FakeServer:
+        def __init__(self) -> None:
+            self.server = _Runtime()
+
+        def start(self) -> None:
+            if os.getenv("SARI_JDTLS_GRADLE_WRAPPER_FIRST", "") != "0":
+                raise RuntimeError("simulated jdtls wrapper-first failure")
+
+        def stop(self) -> None:
+            return None
+
+    create_calls: list[str] = []
+
+    def _fake_create(*args, **kwargs):  # noqa: ANN001, ANN201
+        del args, kwargs
+        create_calls.append(os.getenv("SARI_JDTLS_GRADLE_WRAPPER_FIRST", ""))
+        return _FakeServer()
+
+    monkeypatch.delenv("SARI_JDTLS_GRADLE_WRAPPER_FIRST", raising=False)
+    monkeypatch.setattr("sari.lsp.hub.SolidLanguageServer.create", _fake_create)
+
+    hub = LspHub()
+    server = hub.get_or_start(language=Language.JAVA, repo_root=str(repo))
+    assert server.server.is_running() is True
+    assert len(create_calls) == 2
+    assert create_calls[0] == ""
+    assert create_calls[1] == "0"
+    hub.stop_all()
+
+
+def test_lsp_hub_java_explicit_wrapper_setting_disables_auto_fallback(monkeypatch, tmp_path) -> None:
+    """wrapper 정책이 명시되면 자동 fallback 재시도를 수행하지 않는다."""
+
+    repo = tmp_path / "repo-java-explicit"
+    wrapper_dir = repo / "gradle" / "wrapper"
+    wrapper_dir.mkdir(parents=True)
+    (wrapper_dir / "gradle-wrapper.properties").write_text(
+        "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.7-bin.zip\n",
+        encoding="utf-8",
+    )
+
+    class _Runtime:
+        def is_running(self) -> bool:
+            return True
+
+    class _BrokenServer:
+        def __init__(self) -> None:
+            self.server = _Runtime()
+
+        def start(self) -> None:
+            raise RuntimeError("forced failure")
+
+        def stop(self) -> None:
+            return None
+
+    create_calls = {"count": 0}
+
+    def _fake_create(*args, **kwargs):  # noqa: ANN001, ANN201
+        del args, kwargs
+        create_calls["count"] += 1
+        return _BrokenServer()
+
+    monkeypatch.setenv("SARI_JDTLS_GRADLE_WRAPPER_FIRST", "1")
+    monkeypatch.setattr("sari.lsp.hub.SolidLanguageServer.create", _fake_create)
+
+    hub = LspHub()
+    with pytest.raises(DaemonError):
+        hub.get_or_start(language=Language.JAVA, repo_root=str(repo))
+    assert create_calls["count"] == 1
+    hub.stop_all()
+
+
 def test_lsp_hub_restart_if_unhealthy_uses_stop_timeout_guard(monkeypatch) -> None:
     """restart_if_unhealthy도 stop timeout 가드를 통해 비정상 서버를 정리해야 한다."""
 

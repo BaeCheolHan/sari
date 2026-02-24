@@ -11,6 +11,7 @@ class _NormalizedSymbol:
 
     name: str
     kind_bucket: str
+    kind_raw: str
     line: int
     end_line: int
 
@@ -26,6 +27,7 @@ class L3QualityEvalResultDTO:
     ast_symbol_count: int
     lsp_symbol_count: int
     quality_flags: tuple[str, ...]
+    missing_patterns: tuple[str, ...] = ()
 
 
 class L3QualityEvaluationService:
@@ -65,7 +67,12 @@ class L3QualityEvaluationService:
         position_matches = 0
 
         for ast_idx, ast_sym in enumerate(ast):
-            best_idx = self._find_match(ast_sym=ast_sym, lsp_symbols=lsp, matched_lsp_indices=matched_lsp_indices)
+            best_idx = self._find_match(
+                language=language,
+                ast_sym=ast_sym,
+                lsp_symbols=lsp,
+                matched_lsp_indices=matched_lsp_indices,
+            )
             if best_idx is None:
                 continue
             matched_ast_indices.add(ast_idx)
@@ -93,6 +100,11 @@ class L3QualityEvaluationService:
             flags.append("position_mismatch_present")
         if lsp_count > 0 and match_count == 0:
             flags.append("no_proxy_matches")
+        missing_patterns = self._collect_missing_patterns(
+            language=language,
+            lsp_symbols=lsp,
+            matched_lsp_indices=matched_lsp_indices,
+        )
 
         return L3QualityEvalResultDTO(
             symbol_recall_proxy=recall,
@@ -102,15 +114,18 @@ class L3QualityEvaluationService:
             ast_symbol_count=ast_count,
             lsp_symbol_count=lsp_count,
             quality_flags=tuple(flags),
+            missing_patterns=tuple(missing_patterns),
         )
 
     def _find_match(
         self,
         *,
+        language: str,
         ast_sym: _NormalizedSymbol,
         lsp_symbols: list[_NormalizedSymbol],
         matched_lsp_indices: set[int],
     ) -> int | None:
+        lang = str(language).strip().lower()
         best_idx: int | None = None
         best_score = -1
         for idx, candidate in enumerate(lsp_symbols):
@@ -128,6 +143,26 @@ class L3QualityEvaluationService:
             if score > best_score:
                 best_score = score
                 best_idx = idx
+        if best_idx is not None:
+            return best_idx
+
+        # Java class/module 계열은 LSP가 annotation/javadoc 시작 줄을 range start로 주는 경우가 많아
+        # line tolerance를 넘는 오탐 미스매치가 발생한다. 이름+kind 일치 시 완화 매칭을 허용한다.
+        if lang == "java" and ast_sym.kind_bucket in {"class", "interface", "enum", "module"}:
+            fallback_best_idx: int | None = None
+            fallback_best_gap: int | None = None
+            for idx, candidate in enumerate(lsp_symbols):
+                if idx in matched_lsp_indices:
+                    continue
+                if candidate.name != ast_sym.name:
+                    continue
+                if candidate.kind_bucket != ast_sym.kind_bucket:
+                    continue
+                gap = abs(candidate.line - ast_sym.line)
+                if fallback_best_gap is None or gap < fallback_best_gap:
+                    fallback_best_gap = gap
+                    fallback_best_idx = idx
+            return fallback_best_idx
         return best_idx
 
     def _normalize_symbol(self, *, language: str, raw: dict[str, object]) -> _NormalizedSymbol | None:
@@ -147,9 +182,37 @@ class L3QualityEvaluationService:
         return _NormalizedSymbol(
             name=self._normalize_name(name),
             kind_bucket=self._kind_bucket(language=language, kind=kind_raw),
+            kind_raw=kind_raw,
             line=line,
             end_line=end_line,
         )
+
+    def _collect_missing_patterns(
+        self,
+        *,
+        language: str,
+        lsp_symbols: list[_NormalizedSymbol],
+        matched_lsp_indices: set[int],
+    ) -> list[str]:
+        out: list[str] = []
+        for idx, symbol in enumerate(lsp_symbols):
+            if idx in matched_lsp_indices:
+                continue
+            out.append(self._missing_pattern(language=language, symbol=symbol))
+        return out
+
+    def _missing_pattern(self, *, language: str, symbol: _NormalizedSymbol) -> str:
+        lang = str(language).strip().lower()
+        if lang != "java":
+            return f"missing_{symbol.kind_bucket}"
+        raw = symbol.kind_raw
+        if raw in {"9", "constructor", "constructor_declaration"}:
+            return "missing_constructor"
+        if symbol.kind_bucket == "field":
+            return "missing_field"
+        if symbol.kind_bucket in {"class", "interface", "enum"} and ("." in symbol.name or "$" in symbol.name):
+            return "missing_nested_type"
+        return f"missing_{symbol.kind_bucket}"
 
     def _normalize_name(self, name: str) -> str:
         return name.strip()

@@ -114,3 +114,38 @@ def test_quality_eval_normalizes_lsp_symbolkind_numeric_strings_for_java() -> No
     assert result.symbol_recall_proxy == pytest.approx(1.0)
     assert result.symbol_precision_proxy == pytest.approx(1.0)
     assert result.kind_match_rate == pytest.approx(1.0)
+
+
+def test_quality_eval_reports_java_missing_pattern_categories() -> None:
+    service = L3QualityEvaluationService()
+    ast = [_sym(name="Foo", kind="class", line=3)]
+    lsp = [
+        _sym(name="Foo", kind="5", line=3),  # class
+        _sym(name="Foo", kind="9", line=6),  # constructor
+        _sym(name="name", kind="8", line=9),  # field
+        _sym(name="Outer.Inner", kind="5", line=12),  # nested type heuristic
+    ]
+
+    result = service.evaluate(language="java", ast_symbols=ast, lsp_symbols=lsp)
+
+    assert result.symbol_recall_proxy == pytest.approx(0.25)
+    assert result.missing_patterns.count("missing_constructor") == 1
+    assert result.missing_patterns.count("missing_field") == 1
+    assert result.missing_patterns.count("missing_nested_type") == 1
+
+
+def test_quality_eval_java_class_and_module_can_match_with_large_line_gap() -> None:
+    service = L3QualityEvaluationService(line_tolerance=2)
+    ast = [
+        _sym(name="kr.co.vendys.company.api", kind="module", line=1),
+        _sym(name="QAuditable", kind="class", line=15),
+    ]
+    lsp = [
+        _sym(name="kr.co.vendys.company.api", kind="4", line=1),   # package/module
+        _sym(name="QAuditable", kind="5", line=12),                 # class (annotation offset)
+    ]
+
+    result = service.evaluate(language="java", ast_symbols=ast, lsp_symbols=lsp)
+
+    assert result.symbol_recall_proxy == pytest.approx(1.0)
+    assert result.symbol_precision_proxy == pytest.approx(1.0)

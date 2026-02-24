@@ -184,6 +184,26 @@ def test_java_outline_does_not_emit_field_type_name_as_field_symbol() -> None:
     assert "int" not in field_names
 
 
+def test_java_outline_emits_package_as_module_symbol() -> None:
+    extractor = TreeSitterOutlineExtractor()
+    if not extractor.is_available_for("java"):
+        return
+
+    java_src = """
+        package kr.co.vendys.company.api;
+
+        class Sample {
+            void run() {}
+        }
+    """
+    result = extractor.extract_outline(lang_key="java", content_text=java_src, budget_sec=0.2)
+
+    assert result.degraded is False
+    modules = [s for s in result.symbols if s.get("kind") == "module"]
+    assert len(modules) >= 1
+    assert any("kr.co.vendys.company.api" in str(s.get("name", "")) for s in modules)
+
+
 def test_query_source_prefers_packaged_tags_scm(monkeypatch, tmp_path: Path) -> None:
     extractor = TreeSitterOutlineExtractor()
     tags_path = tmp_path / "tree_sitter_java" / "queries" / "tags.scm"

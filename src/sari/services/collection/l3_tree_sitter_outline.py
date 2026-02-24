@@ -47,6 +47,7 @@ class TreeSitterOutlineExtractor:
             "method_signature": "method",
         },
         "java": {
+            "package_declaration": "module",
             "class_declaration": "class",
             "interface_declaration": "interface",
             "annotation_type_declaration": "interface",
@@ -72,6 +73,8 @@ class TreeSitterOutlineExtractor:
             (method_signature name: (property_identifier) @name) @symbol.method
         """,
         "java": """
+            (package_declaration (scoped_identifier) @name) @symbol.module
+            (package_declaration (identifier) @name) @symbol.module
             (class_declaration name: (identifier) @name) @symbol.class
             (interface_declaration name: (identifier) @name) @symbol.interface
             (annotation_type_declaration name: (identifier) @name) @symbol.interface
@@ -293,11 +296,7 @@ class TreeSitterOutlineExtractor:
         return TreeSitterOutlineResult(symbols=symbols, degraded=False)
 
     def _postprocess_symbols(self, *, normalized: str, symbols: list[dict[str, object]]) -> list[dict[str, object]]:
-        filtered = symbols
-        if normalized == "java":
-            # Java LSP documentSymbol commonly omits package declarations; treat them as non-outline noise.
-            filtered = [s for s in filtered if str(s.get("kind", "")) != "module"]
-        return self._dedupe_symbols(filtered)
+        return self._dedupe_symbols(symbols)
 
     def _dedupe_symbols(self, symbols: list[dict[str, object]]) -> list[dict[str, object]]:
         seen: set[tuple[str, str, int, int]] = set()
@@ -488,6 +487,15 @@ class TreeSitterOutlineExtractor:
             return None
 
     def _resolve_symbol_name(self, *, node, content_text: str) -> str:
+        node_type = str(getattr(node, "type", ""))
+        if node_type == "package_declaration":
+            start_byte = int(getattr(node, "start_byte", 0))
+            end_byte = int(getattr(node, "end_byte", 0))
+            snippet = content_text[start_byte:end_byte].strip()
+            if snippet:
+                normalized = snippet.replace("package", "", 1).strip().rstrip(";").strip()
+                if normalized:
+                    return normalized
         by_field = getattr(node, "child_by_field_name", None)
         if callable(by_field):
             name_node = by_field("name")

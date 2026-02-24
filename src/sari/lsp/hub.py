@@ -775,39 +775,95 @@ class LspHub:
             repo_root=repo_root,
         ):
             runtime_context = self._runtime_broker.resolve(language)
-        try:
-            with self._temporary_process_env(runtime_context.env_overrides):
-                config = LanguageServerConfig(code_language=language)
-                settings = SolidLSPSettings()
-                settings.ls_specific_settings[language] = {
-                    "open_file_buffer_idle_ttl_sec": self._file_buffer_idle_ttl_sec,
-                    "open_file_buffer_max_open": self._file_buffer_max_open,
-                }
-                with self._perf_tracer.span(
-                    "create_and_start.server_create",
-                    phase="lsp_hub",
-                    language=language.value,
-                    repo_root=repo_root,
-                ):
-                    ls = SolidLanguageServer.create(
-                        config=config,
-                        repository_root_path=repo_root,
-                        timeout=self._request_timeout_sec,
-                        solidlsp_settings=settings,
+        attempts = self._resolve_start_attempt_envs(
+            language=language,
+            repo_root=repo_root,
+            base_env_overrides=runtime_context.env_overrides,
+        )
+        last_exc: Exception | None = None
+        for attempt_index, attempt_env in enumerate(attempts):
+            ls: SolidLanguageServer | None = None
+            try:
+                with self._temporary_process_env(attempt_env):
+                    config = LanguageServerConfig(code_language=language)
+                    settings = SolidLSPSettings()
+                    settings.ls_specific_settings[language] = {
+                        "open_file_buffer_idle_ttl_sec": self._file_buffer_idle_ttl_sec,
+                        "open_file_buffer_max_open": self._file_buffer_max_open,
+                    }
+                    with self._perf_tracer.span(
+                        "create_and_start.server_create",
+                        phase="lsp_hub",
+                        language=language.value,
+                        repo_root=repo_root,
+                    ):
+                        ls = SolidLanguageServer.create(
+                            config=config,
+                            repository_root_path=repo_root,
+                            timeout=self._request_timeout_sec,
+                            solidlsp_settings=settings,
+                        )
+                    with self._perf_tracer.span(
+                        "create_and_start.server_start",
+                        phase="lsp_hub",
+                        language=language.value,
+                        repo_root=repo_root,
+                    ):
+                        ls.start()
+                    if not hasattr(ls, "started"):
+                        setattr(ls, "started", True)
+                    if attempt_index > 0:
+                        log.warning(
+                            "LSP auto-fallback success (language=%s, repo=%s, attempt=%d/%d)",
+                            language.value,
+                            repo_root,
+                            attempt_index + 1,
+                            len(attempts),
+                        )
+                    return ls
+            except (ImportError, RuntimeError, OSError, ValueError, TypeError, AssertionError) as exc:
+                last_exc = exc
+                if ls is not None:
+                    try:
+                        ls.stop()
+                    except (RuntimeError, OSError, ValueError):
+                        pass
+                if attempt_index + 1 < len(attempts):
+                    log.warning(
+                        "LSP start failed, retrying with fallback profile (language=%s, repo=%s, attempt=%d/%d, error=%s)",
+                        language.value,
+                        repo_root,
+                        attempt_index + 1,
+                        len(attempts),
+                        exc,
                     )
-                with self._perf_tracer.span(
-                    "create_and_start.server_start",
-                    phase="lsp_hub",
-                    language=language.value,
-                    repo_root=repo_root,
-                ):
-                    ls.start()
-                if not hasattr(ls, "started"):
-                    setattr(ls, "started", True)
-        except (ImportError, RuntimeError, OSError, ValueError, TypeError, AssertionError) as exc:
-            err_code, err_message = _classify_lsp_start_exception(exc=exc, language=language, repo_root=repo_root)
-            raise DaemonError(ErrorContext(code=err_code, message=err_message)) from exc
-        return ls
+                    continue
+                break
+        assert last_exc is not None
+        err_code, err_message = _classify_lsp_start_exception(exc=last_exc, language=language, repo_root=repo_root)
+        raise DaemonError(ErrorContext(code=err_code, message=err_message)) from last_exc
+
+    def _resolve_start_attempt_envs(
+        self,
+        *,
+        language: Language,
+        repo_root: str,
+        base_env_overrides: dict[str, str],
+    ) -> list[dict[str, str]]:
+        """언어/프로젝트별 LSP 시작 프로파일 시퀀스를 반환한다."""
+        attempts: list[dict[str, str]] = [dict(base_env_overrides)]
+        if language != Language.JAVA:
+            return attempts
+        explicit = os.getenv("SARI_JDTLS_GRADLE_WRAPPER_FIRST", "").strip().lower()
+        if explicit in {"0", "false", "no", "off", "1", "true", "yes", "on"}:
+            return attempts
+        wrapper_props = Path(repo_root) / "gradle" / "wrapper" / "gradle-wrapper.properties"
+        if not wrapper_props.exists():
+            return attempts
+        retry_env = dict(base_env_overrides)
+        retry_env["SARI_JDTLS_GRADLE_WRAPPER_FIRST"] = "0"
+        attempts.append(retry_env)
+        return attempts
 
     @contextmanager
     def _temporary_process_env(self, env_overrides: dict[str, str]):
