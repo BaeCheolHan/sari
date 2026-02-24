@@ -36,6 +36,8 @@ class L3QualityEvalResultDTO:
 
 class L3QualityEvaluationService:
     """정규화된 심볼 proxy 비교로 품질 지표를 계산한다."""
+    _JS_CALLBACK_NAME_PATTERN = re.compile(r"^(?:.+\.)?([A-Za-z_$][A-Za-z0-9_$]*)\(\)\s+callback$")
+    _JAVA_SYNTHETIC_CLASS_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*Builder(?:Impl)?$")
 
     def __init__(
         self,
@@ -57,6 +59,8 @@ class L3QualityEvaluationService:
         lsp = [self._normalize_symbol(language=language, raw=item) for item in lsp_symbols]
         ast = [item for item in ast if item is not None]
         lsp = [item for item in lsp if item is not None]
+        ast = self._dedupe_symbols_for_proxy(language=language, symbols=ast)
+        lsp = self._dedupe_symbols_for_proxy(language=language, symbols=lsp)
 
         ast_count = len(ast)
         lsp_count = len(lsp)
@@ -100,7 +104,13 @@ class L3QualityEvaluationService:
                 position_matches_relaxed += 1
 
         match_count = len(matched_ast_indices)
-        recall = 1.0 if lsp_count == 0 else float(match_count) / float(lsp_count)
+        ignored_lsp_indices = self._collect_ignored_lsp_indices(
+            language=language,
+            lsp_symbols=lsp,
+            matched_lsp_indices=matched_lsp_indices,
+        )
+        effective_lsp_count = max(0, lsp_count - len(ignored_lsp_indices))
+        recall = 1.0 if effective_lsp_count == 0 else float(match_count) / float(effective_lsp_count)
         precision = 1.0 if ast_count == 0 else float(match_count) / float(ast_count)
         kind_match_rate = 1.0 if match_count == 0 else float(kind_matches) / float(match_count)
         position_match_rate = 1.0 if match_count == 0 else float(position_matches) / float(match_count)
@@ -109,7 +119,7 @@ class L3QualityEvaluationService:
         )
 
         flags: list[str] = []
-        if lsp_count > ast_count:
+        if effective_lsp_count > ast_count:
             flags.append("ast_missing_symbols")
         if ast_count > lsp_count:
             flags.append("ast_extra_symbols")
@@ -117,12 +127,13 @@ class L3QualityEvaluationService:
             flags.append("kind_mismatch_present")
         if match_count > 0 and position_matches < match_count:
             flags.append("position_mismatch_present")
-        if lsp_count > 0 and match_count == 0:
+        if effective_lsp_count > 0 and match_count == 0:
             flags.append("no_proxy_matches")
         missing_patterns = self._collect_missing_patterns(
             language=language,
             lsp_symbols=lsp,
             matched_lsp_indices=matched_lsp_indices,
+            ignored_lsp_indices=ignored_lsp_indices,
         )
 
         return L3QualityEvalResultDTO(
@@ -219,12 +230,55 @@ class L3QualityEvaluationService:
         language: str,
         lsp_symbols: list[_NormalizedSymbol],
         matched_lsp_indices: set[int],
+        ignored_lsp_indices: set[int] | None = None,
     ) -> list[str]:
         out: list[str] = []
+        ignored = ignored_lsp_indices or set()
         for idx, symbol in enumerate(lsp_symbols):
             if idx in matched_lsp_indices:
                 continue
+            if idx in ignored:
+                continue
             out.append(self._missing_pattern(language=language, symbol=symbol))
+        return out
+
+    def _collect_ignored_lsp_indices(
+        self,
+        *,
+        language: str,
+        lsp_symbols: list[_NormalizedSymbol],
+        matched_lsp_indices: set[int],
+    ) -> set[int]:
+        lang = str(language).strip().lower()
+        if lang != "java":
+            return set()
+        ignored: set[int] = set()
+        for idx, symbol in enumerate(lsp_symbols):
+            if idx in matched_lsp_indices:
+                continue
+            if self._JAVA_SYNTHETIC_CLASS_PATTERN.match(symbol.name):
+                ignored.add(idx)
+        return ignored
+
+    def _dedupe_symbols_for_proxy(
+        self,
+        *,
+        language: str,
+        symbols: list[_NormalizedSymbol],
+    ) -> list[_NormalizedSymbol]:
+        lang = str(language).strip().lower()
+        if lang != "java":
+            return symbols
+        # Java LSP can emit duplicate field symbols (e.g., Lombok builder context)
+        # for the same identifier. Keep one to avoid penalizing recall with synthetic duplicates.
+        seen_field_names: set[str] = set()
+        out: list[_NormalizedSymbol] = []
+        for symbol in symbols:
+            if symbol.kind_bucket == "field":
+                if symbol.name in seen_field_names:
+                    continue
+                seen_field_names.add(symbol.name)
+            out.append(symbol)
         return out
 
     def _missing_pattern(self, *, language: str, symbol: _NormalizedSymbol) -> str:

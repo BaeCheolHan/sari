@@ -194,3 +194,53 @@ def test_serena_golden_backend_collects_fallback_reason_stats() -> None:
     assert stats["request_count"] == 1
     assert stats["fallback_count"] == 1
     assert stats["fallback_reason_SolidLSPException"] == 1
+
+
+def test_serena_golden_backend_normalizes_lsp_kind_and_line() -> None:
+    """골든 심볼은 비교 일관성을 위해 kind/line을 정규화해야 한다."""
+
+    class _DocSymbols:
+        def iter_symbols(self) -> list[dict[str, object]]:
+            return [
+                {
+                    "name": "doWork",
+                    "kind": 12,
+                    "location": {
+                        "relativePath": "src/App.vue",
+                        "range": {
+                            "start": {"line": 0},
+                            "end": {"line": 1},
+                        },
+                    },
+                }
+            ]
+
+    class _Lsp:
+        def request_document_symbols(self, relative_path: str) -> _DocSymbols:
+            del relative_path
+            return _DocSymbols()
+
+        def request_workspace_symbol(self, query: str) -> list[dict[str, object]]:
+            del query
+            return []
+
+    class _Hub:
+        def resolve_language(self, relative_path: str) -> Language:
+            del relative_path
+            return Language.VUE
+
+        def get_or_start(self, language: Language, repo_root: str) -> _Lsp:
+            del language, repo_root
+            return _Lsp()
+
+    backend = SerenaGoldenBackend(hub=_Hub())  # type: ignore[arg-type]
+    result = backend.extract(repo_root="/repo", relative_path="src/App.vue", content_hash="hash")
+    assert result.error_message is None
+    assert result.symbols == [
+        {
+            "name": "doWork",
+            "kind": "function",
+            "line": 1,
+            "end_line": 2,
+        }
+    ]

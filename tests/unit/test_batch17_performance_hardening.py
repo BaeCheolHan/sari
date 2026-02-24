@@ -820,6 +820,47 @@ def test_l3_preprocess_tree_sitter_single_symbol_routes_to_needs_l5() -> None:
     assert len(result.symbols) == 1
 
 
+def test_l3_preprocess_vue_low_symbol_routes_to_needs_l5() -> None:
+    """Vue SFC는 소수 심볼만 추출되면 L5 보강 대상으로 승격해야 한다."""
+    service = L3TreeSitterPreprocessService(tree_sitter_enabled=False)
+    content = "\n".join(
+        [
+            "<template><div>{{ message }}</div></template>",
+            "<script setup lang=\"ts\">",
+            "function alpha() { return 1 }",
+            "function beta() { return 2 }",
+            "</script>",
+        ]
+    )
+
+    result = service.preprocess(relative_path="repo_a/src/App.vue", content_text=content, max_bytes=1024)
+
+    assert result.decision is L3PreprocessDecision.NEEDS_L5
+    assert result.reason == "l3_preprocess_low_confidence"
+    assert result.source == "regex_outline"
+    assert len(result.symbols) == 2
+
+
+def test_l3_preprocess_vue_high_symbol_stays_l3_only() -> None:
+    """Vue SFC라도 심볼이 충분하면 L3_ONLY를 유지해야 한다."""
+    service = L3TreeSitterPreprocessService(tree_sitter_enabled=False)
+    script_lines = [f"function f{i}() {{ return {i} }}" for i in range(1, 12)]
+    content = "\n".join(
+        [
+            "<template><div>ok</div></template>",
+            "<script setup lang=\"ts\">",
+            *script_lines,
+            "</script>",
+        ]
+    )
+
+    result = service.preprocess(relative_path="repo_a/src/App.vue", content_text=content, max_bytes=4096)
+
+    assert result.decision is L3PreprocessDecision.L3_ONLY
+    assert result.source == "regex_outline"
+    assert len(result.symbols) == 11
+
+
 def test_l3_preprocess_tree_sitter_degraded_uses_regex_fallback_before_l5() -> None:
     """tree-sitter degraded 시 즉시 승격하지 않고 regex fallback 결과를 우선 사용한다."""
 

@@ -96,18 +96,60 @@ class SerenaGoldenBackend(LspExtractionBackend):
                 start_data = range_data.get("start")
                 end_data = range_data.get("end")
                 if isinstance(start_data, dict):
-                    line = int(start_data.get("line", 0))
+                    # LSP range line is zero-based. Persist one-based to align with
+                    # sari symbol rows and AST comparison paths.
+                    line = int(start_data.get("line", 0)) + 1
                 if isinstance(end_data, dict):
-                    end_line = int(end_data.get("line", line))
+                    end_line = int(end_data.get("line", max(0, line - 1))) + 1
+            kind_value = self._normalize_symbol_kind(raw.get("kind"))
             symbols.append(
                 {
                     "name": str(raw.get("name", "")),
-                    "kind": str(raw.get("kind", "")),
+                    "kind": kind_value,
                     "line": line,
                     "end_line": end_line,
                 }
             )
         return symbols
+
+    def _normalize_symbol_kind(self, kind: object) -> str:
+        """LSP SymbolKind(int/string)을 비교용 문자열 kind로 정규화한다."""
+        kind_map = {
+            1: "file",
+            2: "module",
+            3: "namespace",
+            4: "package",
+            5: "class",
+            6: "method",
+            7: "property",
+            8: "field",
+            9: "constructor",
+            10: "enum",
+            11: "interface",
+            12: "function",
+            13: "variable",
+            14: "constant",
+            15: "string",
+            16: "number",
+            17: "boolean",
+            18: "array",
+            19: "object",
+            20: "key",
+            21: "null",
+            22: "enum_member",
+            23: "struct",
+            24: "event",
+            25: "operator",
+            26: "type_parameter",
+        }
+        if isinstance(kind, int):
+            return kind_map.get(kind, str(kind))
+        raw = str(kind).strip().lower()
+        if raw == "":
+            return ""
+        if raw.isdigit():
+            return kind_map.get(int(raw), raw)
+        return raw
 
     def reset_stats(self) -> None:
         """골든 추출 통계를 초기화한다."""

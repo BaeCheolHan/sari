@@ -54,6 +54,8 @@ class L3TreeSitterPreprocessService:
     _IMPORT_LIKE = re.compile(r"^\s*(?:import|from\s+\S+\s+import|using|use|require\(|#include)\b", re.MULTILINE)
     _CROSS_FILE_HINT = re.compile(r"\b(?:extends|implements|::|->|\.)\b")
     _MIN_SYMBOLS_FOR_L3_ONLY = 2
+    _VUE_MIN_SYMBOLS_FOR_L3_ONLY = 10
+    _VUE_IMPORT_HEAVY_MIN_SYMBOLS_FOR_L3_ONLY = 16
     _LOW_CONFIDENCE_RELAXED_FILENAME_HINTS = (
         "config",
         "settings",
@@ -215,6 +217,14 @@ class L3TreeSitterPreprocessService:
 
     def _needs_l5_by_low_confidence(self, *, relative_path: str, content_text: str, symbols: list[dict[str, object]]) -> bool:
         symbol_count = len(symbols)
+        lowered_path = relative_path.lower()
+        # Vue SFC는 LSP가 template/script 구간에서 더 풍부한 심볼을 제공한다.
+        # L3가 소수 outline만 확보한 경우에는 L5로 승격해 보강 추출을 허용한다.
+        if lowered_path.endswith(".vue"):
+            has_import_like = self._IMPORT_LIKE.search(content_text) is not None
+            vue_min_symbols = self._VUE_IMPORT_HEAVY_MIN_SYMBOLS_FOR_L3_ONLY if has_import_like else self._VUE_MIN_SYMBOLS_FOR_L3_ONLY
+            if symbol_count < vue_min_symbols:
+                return True
         min_symbols_for_l3_only = self._min_symbols_for_l3_only(relative_path=relative_path)
         if symbol_count < min_symbols_for_l3_only:
             return True

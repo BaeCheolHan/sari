@@ -146,6 +146,42 @@ def test_quality_eval_normalizes_java_names_and_ignores_synthetic_entries() -> N
     assert result.symbol_precision_proxy == pytest.approx(1.0)
 
 
+def test_quality_eval_ignores_java_lombok_builder_like_symbols() -> None:
+    service = L3QualityEvaluationService()
+    ast = [
+        _sym(name="OrderListDto", kind="class", line=10),
+    ]
+    lsp = [
+        _sym(name="OrderListDto", kind="5", line=10),
+        _sym(name="OrderListBuilder", kind="5", line=30),
+        _sym(name="OrderListBuilderImpl", kind="5", line=31),
+    ]
+
+    result = service.evaluate(language="java", ast_symbols=ast, lsp_symbols=lsp)
+
+    assert result.symbol_recall_proxy == pytest.approx(1.0)
+    assert result.symbol_precision_proxy == pytest.approx(1.0)
+
+
+def test_quality_eval_ignores_java_duplicate_field_symbols_with_same_name() -> None:
+    service = L3QualityEvaluationService()
+    ast = [
+        _sym(name="LedgerMasterCreate", kind="class", line=10),
+        _sym(name="couponId", kind="field", line=13),
+    ]
+    lsp = [
+        _sym(name="LedgerMasterCreate", kind="5", line=10),
+        _sym(name="LedgerMasterCreateBuilder", kind="5", line=11),
+        _sym(name="couponId", kind="8", line=13),  # real field
+        _sym(name="couponId", kind="8", line=11),  # synthetic duplicate from builder context
+    ]
+
+    result = service.evaluate(language="java", ast_symbols=ast, lsp_symbols=lsp)
+
+    assert result.symbol_recall_proxy == pytest.approx(1.0)
+    assert result.symbol_precision_proxy == pytest.approx(1.0)
+
+
 def test_quality_eval_reports_java_missing_pattern_categories() -> None:
     service = L3QualityEvaluationService()
     ast = [_sym(name="Foo", kind="class", line=3)]
