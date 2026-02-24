@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import logging
 from pathlib import Path
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -35,11 +38,17 @@ class L3AssetLoader:
         self._query_root = self._assets_root / "queries"
         self._mapping_root = self._assets_root / "mappings"
         self._cache: dict[str, L3AssetBundle] = {}
+        self._last_load_error: str | None = None
         self._manifest_version = self._load_manifest_version()
 
     @property
     def manifest_version(self) -> str:
         return self._manifest_version
+
+    @property
+    def last_load_error(self) -> str | None:
+        """최근 자산 로드 실패 사유를 반환한다."""
+        return self._last_load_error
 
     def load(self, language: str) -> L3AssetBundle:
         normalized = self._normalize_language(language)
@@ -75,7 +84,9 @@ class L3AssetLoader:
     def _load_manifest_version(self) -> str:
         try:
             payload = json.loads(self._manifest_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, TypeError):
+        except (OSError, ValueError, TypeError) as exc:
+            self._last_load_error = f"manifest_load_error:{type(exc).__name__}"
+            log.debug("failed to load asset manifest(path=%s)", self._manifest_path, exc_info=True)
             return "unknown"
         raw = payload.get("version")
         return str(raw) if raw is not None else "unknown"
@@ -86,7 +97,9 @@ class L3AssetLoader:
             if not query_path.is_file():
                 return None
             source = query_path.read_text(encoding="utf-8")
-        except (OSError, ValueError, TypeError):
+        except (OSError, ValueError, TypeError) as exc:
+            self._last_load_error = f"query_load_error:{language}:{type(exc).__name__}"
+            log.debug("failed to load query source(path=%s, language=%s)", query_path, language, exc_info=True)
             return None
         return source or None
 
@@ -105,7 +118,9 @@ class L3AssetLoader:
                 return None
             # JSON is valid YAML; keep dependency-free loader for now.
             payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, TypeError):
+        except (OSError, ValueError, TypeError) as exc:
+            self._last_load_error = f"mapping_load_error:{path.name}:{type(exc).__name__}"
+            log.debug("failed to load mapping file(path=%s)", path, exc_info=True)
             return None
         if not isinstance(payload, dict):
             return None

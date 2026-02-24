@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import importlib
+import logging
 from pathlib import Path
 import time
 from typing import Any
@@ -160,6 +161,7 @@ class TreeSitterOutlineExtractor:
         except (ImportError, RuntimeError, OSError, ValueError, TypeError):
             self._get_language = None
         self._available = True
+        self._logger = logging.getLogger(__name__)
 
     def is_available_for(self, lang_key: str) -> bool:
         if not self._available:
@@ -359,17 +361,31 @@ class TreeSitterOutlineExtractor:
         # tree-sitter Python bindings differ by version:
         # - newer: Query(language, source)
         # - older: language.query(source)
+        primary_error: Exception | None = None
         if self._query_cls is not None:
             try:
                 return self._query_cls(language, source)
-            except (RuntimeError, OSError, ValueError, TypeError, NameError):
-                pass
+            except (RuntimeError, OSError, ValueError, TypeError, NameError) as exc:
+                primary_error = exc
         lang_query = getattr(language, "query", None)
         if callable(lang_query):
             try:
                 return lang_query(source)
-            except (RuntimeError, OSError, ValueError, TypeError, AttributeError, NameError):
+            except (RuntimeError, OSError, ValueError, TypeError, AttributeError, NameError) as fallback_exc:
+                if primary_error is not None:
+                    self._logger.debug(
+                        "tree-sitter query compile failed on both APIs: primary=%s fallback=%s",
+                        type(primary_error).__name__,
+                        type(fallback_exc).__name__,
+                        exc_info=True,
+                    )
                 return None
+        if primary_error is not None:
+            self._logger.debug(
+                "tree-sitter primary query compile failed and fallback API is unavailable: %s",
+                type(primary_error).__name__,
+                exc_info=True,
+            )
         return None
 
     def _query_capture_to_kind(self, capture_name: str, *, normalized: str) -> str | None:
@@ -427,6 +443,7 @@ class TreeSitterOutlineExtractor:
             if callable(captures):
                 return captures(root)
         except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
+            self._logger.debug("tree-sitter captures API failed", exc_info=True)
             return None
         return None
 
@@ -459,6 +476,7 @@ class TreeSitterOutlineExtractor:
             if parser is None:
                 return None
         except (RuntimeError, OSError, ValueError, TypeError):
+            self._logger.debug("failed to initialize parser for language=%s", normalized_lang, exc_info=True)
             return None
         self._parsers[normalized_lang] = parser
         return parser
@@ -493,6 +511,7 @@ class TreeSitterOutlineExtractor:
         try:
             module = importlib.import_module(package_name)
         except (ImportError, RuntimeError, OSError, ValueError, TypeError):
+            self._logger.debug("failed to import packaged query module=%s", package_name, exc_info=True)
             return None
         module_file = getattr(module, "__file__", None)
         if not isinstance(module_file, str) or not module_file:
@@ -503,6 +522,7 @@ class TreeSitterOutlineExtractor:
                 return None
             source = tags_path.read_text(encoding="utf-8")
         except (OSError, RuntimeError, ValueError):
+            self._logger.debug("failed to read packaged tags query=%s", tags_path, exc_info=True)
             return None
         return source or None
 
@@ -524,6 +544,7 @@ class TreeSitterOutlineExtractor:
             capsule = loader()
             return self._language_cls(capsule)
         except (ImportError, RuntimeError, OSError, ValueError, TypeError, AttributeError):
+            self._logger.debug("failed to load tree-sitter language=%s", normalized_lang, exc_info=True)
             return None
 
     def _build_parser(self, language):
@@ -536,10 +557,11 @@ class TreeSitterOutlineExtractor:
                 setter(language)
                 return parser
             except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
-                ...
+                self._logger.debug("parser.set_language failed; trying constructor fallback", exc_info=True)
         try:
             return self._parser_cls(language)
         except TypeError:
+            self._logger.debug("parser constructor(language) is unavailable", exc_info=True)
             return None
 
     def _resolve_symbol_name(self, *, node, content_text: str) -> str:

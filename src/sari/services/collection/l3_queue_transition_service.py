@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import logging
 from pathlib import Path
 from typing import Callable
 
@@ -10,6 +11,8 @@ from sari.core.models import L4AdmissionDecisionDTO, L5RejectReason
 from sari.core.models import FileEnrichJobDTO
 
 from .l3_broker_admission_service import L3BrokerAdmissionService
+
+log = logging.getLogger(__name__)
 
 
 class L3QueueTransitionService:
@@ -64,6 +67,12 @@ class L3QueueTransitionService:
                 )
             )
         except (RuntimeError, OSError, ValueError, TypeError):
+            log.warning(
+                "Failed to defer job after broker lease denial (job_id=%s, reason=%s)",
+                job.job_id,
+                defer_reason,
+                exc_info=True,
+            )
             return False
         if updated <= 0:
             return False
@@ -146,6 +155,13 @@ class L3QueueTransitionService:
                     )
                 )
         except (RuntimeError, OSError, ValueError, TypeError):
+            log.warning(
+                "Failed to defer job after L5 admission rejection (job_id=%s, reject_reason=%s, defer_reason=%s)",
+                job.job_id,
+                reject_reason.value,
+                defer_reason,
+                exc_info=True,
+            )
             return False
         if updated <= 0:
             return False
@@ -204,6 +220,12 @@ class L3QueueTransitionService:
                     )
                 )
         except (RuntimeError, OSError, ValueError, TypeError):
+            log.warning(
+                "Failed to defer DEFERRED_HEAVY job (job_id=%s, defer_reason=%s)",
+                job.job_id,
+                defer_reason,
+                exc_info=True,
+            )
             return False
         if updated <= 0:
             return False
@@ -253,6 +275,12 @@ class L3QueueTransitionService:
                 )
             )
         except (RuntimeError, OSError, ValueError, TypeError):
+            log.warning(
+                "Failed to escalate scope after L3 extract error (job_id=%s, next_scope=%s)",
+                job.job_id,
+                next_scope_level,
+                exc_info=True,
+            )
             return False
         if not updated:
             return False

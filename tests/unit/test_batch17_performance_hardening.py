@@ -900,7 +900,68 @@ def test_l3_preprocess_tree_sitter_degraded_uses_regex_fallback_before_l5() -> N
     assert result.decision is L3PreprocessDecision.NEEDS_L5
     assert result.degraded is True
     assert result.source == "regex_outline"
-    assert result.reason == "l3_preprocess_low_confidence"
+    assert result.reason == "tree_sitter_budget_exceeded"
+
+
+def test_l3_preprocess_tree_sitter_exception_returns_explicit_reason() -> None:
+    """tree-sitter 예외 발생 시에도 전처리 결과 reason에 예외 타입이 명시되어야 한다."""
+
+    class _StubTreeSitterExtractorRaises:
+        def is_available_for(self, lang_key: str) -> bool:
+            return lang_key == "py"
+
+        def extract_outline(self, *, lang_key: str, content_text: str, budget_sec: float):  # noqa: ANN001
+            _ = (lang_key, content_text, budget_sec)
+            raise OSError("boom")
+
+    service = L3TreeSitterPreprocessService(
+        tree_sitter_enabled=True,
+        tree_sitter_outline_extractor=_StubTreeSitterExtractorRaises(),
+    )
+    result = service.preprocess(relative_path="repo_a/src/a.py", content_text="def alpha():\n    return 1\n", max_bytes=1024)
+
+    assert result.decision is L3PreprocessDecision.NEEDS_L5
+    assert result.degraded is True
+    assert result.source == "regex_outline"
+    assert result.reason == "tree_sitter_outline_exception:OSError"
+
+
+def test_enrich_engine_run_l3_preprocess_returns_explicit_exception_result_on_read_error() -> None:
+    """파일 읽기 실패 시 None 대신 명시적 예외 reason을 가진 NEEDS_L5 결과를 반환해야 한다."""
+    queue_repo = _CaptureEscalateQueueRepo()
+    error_policy = _StubErrorPolicy()
+    engine = _build_min_enrich_engine_for_l3_test(
+        lsp_backend=_StubExtractBackendShouldNotBeCalled(),
+        queue_repo=queue_repo,
+        error_policy=error_policy,
+    )
+    engine._l3_preprocess_service = L3TreeSitterPreprocessService(tree_sitter_enabled=False)
+    engine._l3_preprocess_max_bytes = 1024
+
+    job = FileEnrichJobDTO(
+        job_id="j-preprocess-read-error",
+        repo_id="r1",
+        repo_root="/workspace",
+        relative_path="repo_a/src/a.py",
+        content_hash="h1",
+        priority=10,
+        enqueue_source="scan",
+        status="RUNNING",
+        attempt_count=0,
+        last_error=None,
+        next_retry_at="2026-01-01T00:00:00+00:00",
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+    )
+    file_row = type("FileRow", (), {"absolute_path": "/path/does/not/exist.py"})()
+
+    result = engine._run_l3_preprocess(job=job, file_row=file_row)
+
+    assert result is not None
+    assert result.decision is L3PreprocessDecision.NEEDS_L5
+    assert result.degraded is True
+    assert result.source == "none"
+    assert str(result.reason).startswith("l3_preprocess_exception:")
 
 
 def test_enrich_engine_l3_preprocess_deferred_heavy_finishes_without_lsp() -> None:
@@ -2592,6 +2653,42 @@ def test_enrich_l2_marks_l3_skipped_for_configured_unsupported_language(tmp_path
     assert readiness.last_reason == "skip_unsupported_language"
     assert readiness.tool_ready is False
     assert backend.calls == 0
+
+
+def test_enrich_engine_resolve_l3_skip_reason_reports_probe_check_error_explicitly() -> None:
+    """probe availability checker 예외는 skip reason으로 명시되어야 한다."""
+
+    class _ProbeCheckErrorBackend(_NoopLspBackend):
+        def is_l3_permanently_unavailable_for_file(self, *, repo_root: str, relative_path: str) -> bool:
+            _ = (repo_root, relative_path)
+            raise OSError("probe checker failed")
+
+    queue_repo = _CaptureEscalateQueueRepo()
+    error_policy = _StubErrorPolicy()
+    engine = _build_min_enrich_engine_for_l3_test(
+        lsp_backend=_ProbeCheckErrorBackend(),
+        queue_repo=queue_repo,
+        error_policy=error_policy,
+    )
+    job = FileEnrichJobDTO(
+        job_id="j-skip-check-error",
+        repo_id="r1",
+        repo_root="/workspace",
+        relative_path="repo_a/src/a.py",
+        content_hash="h1",
+        priority=10,
+        enqueue_source="scan",
+        status="RUNNING",
+        attempt_count=0,
+        last_error=None,
+        next_retry_at="2026-01-01T00:00:00+00:00",
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+    )
+
+    reason = engine._resolve_l3_skip_reason(job=job)
+
+    assert reason == "skip_probe_check_error"
 
 
 def test_enrich_l3_needs_l5_does_not_schedule_l3_fallback_probe(tmp_path: Path) -> None:

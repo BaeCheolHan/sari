@@ -106,13 +106,9 @@ def resolve_repo_key(repo_root: str, workspace_paths: list[str]) -> str:
 
 def is_path_within_repo_boundary(repo_root: str, path_value: str | Path) -> bool:
     """주어진 경로가 repo 경계 내부인지 여부를 반환한다."""
-    try:
-        root = Path(repo_root).resolve()
-        target = Path(path_value).resolve()
-        target.relative_to(root)
-        return True
-    except ValueError:
-        return False
+    root = Path(repo_root).resolve()
+    target = Path(path_value).resolve()
+    return target.is_relative_to(root)
 
 
 def _normalize_input_path(repo_or_path: str) -> Path:
@@ -263,11 +259,7 @@ def _find_exact_workspace_match(path_value: Path, workspace_paths: list[Path]) -
 
 def _is_path_descendant(target: Path, root: Path) -> bool:
     """target이 root 내부 경로인지 판단한다."""
-    try:
-        target.relative_to(root)
-        return True
-    except ValueError:
-        return False
+    return target.is_relative_to(root)
 
 
 def _finalize_repo_candidate(candidate: Path, original_input: Path, workspace_paths: list[Path]) -> str:

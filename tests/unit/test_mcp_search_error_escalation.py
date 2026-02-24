@@ -218,6 +218,44 @@ def test_mcp_search_returns_success_without_fatal() -> None:
     assert meta["ranking_components_enabled"]["hierarchy"] is True
 
 
+def test_mcp_search_progress_meta_contains_error_reason_when_metrics_provider_fails() -> None:
+    """metrics provider 실패 시 index_progress에 명시적 error_reason이 포함되어야 한다."""
+
+    def _broken_metrics_provider() -> object:
+        raise OSError("metrics down")
+
+    tool = SearchTool(
+        orchestrator=_SuccessOrchestrator(),
+        metrics_provider=_broken_metrics_provider,
+    )
+
+    payload = tool.call({"repo": "/repo", "query": "hello", "limit": 5})
+
+    assert payload["isError"] is False
+    index_progress = payload["structuredContent"]["meta"].get("index_progress")
+    assert isinstance(index_progress, dict)
+    assert str(index_progress.get("error_reason", "")).startswith("metrics_provider_error:")
+
+
+def test_mcp_search_progress_meta_contains_reason_when_to_dict_missing() -> None:
+    """metrics provider가 to_dict를 제공하지 않으면 명시적 사유를 반환해야 한다."""
+
+    class _NoToDictMetrics:
+        pass
+
+    tool = SearchTool(
+        orchestrator=_SuccessOrchestrator(),
+        metrics_provider=lambda: _NoToDictMetrics(),
+    )
+
+    payload = tool.call({"repo": "/repo", "query": "hello", "limit": 5})
+
+    assert payload["isError"] is False
+    index_progress = payload["structuredContent"]["meta"].get("index_progress")
+    assert isinstance(index_progress, dict)
+    assert index_progress.get("error_reason") == "metrics_provider_missing_to_dict"
+
+
 def test_mcp_search_sets_stabilization_on_degraded_non_fatal() -> None:
     """비치명 저하 오류는 성공 응답 + stabilization 경고로 전달되어야 한다."""
     tool = SearchTool(orchestrator=_DegradedOrchestrator())

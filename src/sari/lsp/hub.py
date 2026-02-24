@@ -827,7 +827,12 @@ class LspHub:
                     try:
                         ls.stop()
                     except (RuntimeError, OSError, ValueError):
-                        pass
+                        log.debug(
+                            "LSP stop failed during fallback cleanup (language=%s, repo=%s)",
+                            language.value,
+                            repo_root,
+                            exc_info=True,
+                        )
                 if attempt_index + 1 < len(attempts):
                     log.warning(
                         "LSP start failed, retrying with fallback profile (language=%s, repo=%s, attempt=%d/%d, error=%s)",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import time
 from typing import Callable
 
@@ -37,6 +38,8 @@ from .l3_stages.extract_stage import L3ExtractStage
 from .l3_stages.finalize_stage import L3FinalizeStage
 from .l3_stages.persist_stage import L3PersistStage
 from .l3_stages.preprocess_stage import L3PreprocessStage
+
+log = logging.getLogger(__name__)
 
 
 class L3Orchestrator:
@@ -481,7 +484,7 @@ class L3Orchestrator:
                 ast_symbols=list(preprocess_result.symbols),
                 lsp_symbols=list(lsp_symbols),
             )
-        except Exception:  # noqa: BLE001
+        except (RuntimeError, OSError, ValueError, TypeError):
             self._quality_shadow_eval_errors = int(getattr(self, "_quality_shadow_eval_errors", 0)) + 1
             return
         self._quality_shadow_sampled_count = int(getattr(self, "_quality_shadow_sampled_count", 0)) + 1
@@ -548,8 +551,20 @@ class L3Orchestrator:
                     content_text=content_text,
                 )
             return result
-        except (OSError, UnicodeError, ValueError, TypeError):
-            return None
+        except (OSError, UnicodeError, ValueError, TypeError) as exc:
+            log.warning(
+                "L3 preprocess failed, returning explicit degraded NEEDS_L5 result (repo=%s, path=%s)",
+                job.repo_root,
+                job.relative_path,
+                exc_info=True,
+            )
+            return L3PreprocessResultDTO(
+                symbols=[],
+                degraded=True,
+                decision=L3PreprocessDecision.NEEDS_L5,
+                source="none",
+                reason=f"l3_preprocess_exception:{type(exc).__name__}",
+            )
 
     def _normalize_workspace_uid(self, repo_root: str) -> str:
         # tool_data.workspace_id는 조회 경로(read/search)와 동일하게 workspace path를 사용한다.

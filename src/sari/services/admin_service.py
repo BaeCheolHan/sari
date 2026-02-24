@@ -6,6 +6,7 @@ import importlib.metadata
 import json
 import os
 import subprocess
+import logging
 from typing import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -20,6 +21,8 @@ from sari.db.repositories.file_enrich_queue_repository import FileEnrichQueueRep
 from sari.db.repositories.runtime_repository import RuntimeRepository
 from sari.db.repositories.symbol_cache_repository import SymbolCacheRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
+
+log = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class DoctorCheckDTO:
@@ -113,6 +116,7 @@ class AdminService:
             try:
                 source = file_path.read_text(encoding="utf-8")
             except OSError:
+                log.debug("failed to read repository source for orm backend detection(path=%s)", file_path, exc_info=True)
                 continue
             if "from sari.db.schema import connect" in source:
                 legacy_count += 1
@@ -285,6 +289,7 @@ class AdminService:
         try:
             loaded = json.loads(path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
+            log.warning("invalid JSON config file detected(path=%s)", path, exc_info=True)
             return None
         if not isinstance(loaded, dict):
             return None

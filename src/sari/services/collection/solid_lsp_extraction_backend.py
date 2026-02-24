@@ -326,16 +326,8 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
         return str(parent).replace("\\", "/")
 
     def _paths_overlap(self, candidate: Path, target: Path) -> bool:
-        try:
-            candidate.relative_to(target)
-            return True
-        except ValueError:
-            ...
-        try:
-            target.relative_to(candidate)
-            return True
-        except ValueError:
-            return False
+        # Path.is_relative_to를 사용해 예외 기반 제어흐름을 피한다.
+        return candidate.is_relative_to(target) or target.is_relative_to(candidate)
 
     def _resolve_lsp_runtime_scope(self, *, repo_root: str, normalized_relative_path: str, language: Language) -> tuple[str, str]:
         override = self.get_scope_override(repo_root=repo_root, relative_path=normalized_relative_path)
@@ -367,6 +359,13 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
                     language=language,
                 )
         except (RuntimeError, OSError, ValueError, TypeError):
+            log.debug(
+                "scope planner resolve failed, fallback to workspace scope (repo=%s, path=%s, lang=%s)",
+                repo_root,
+                normalized_relative_path,
+                language.value,
+                exc_info=True,
+            )
             return (repo_root, normalized_relative_path)
         if getattr(resolution, "strategy", "") == "FALLBACK_INDEX_BUILDING":
             self._lsp_scope_planner_fallback_index_building_count += 1
@@ -543,6 +542,7 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
         try:
             return bool(is_profiled(language))
         except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
+            log.debug("is_profiled_language failed for lang=%s", language.value, exc_info=True)
             return False
 
     def get_l3_group_sort_key(self, *, repo_root: str, sample_relative_path: str, group_size: int) -> tuple[int, int, float, str]:
@@ -556,6 +556,12 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
         try:
             language = self._hub.resolve_language(normalized_relative)
         except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
+            log.debug(
+                "failed to resolve language for group sort key (repo=%s, path=%s)",
+                repo_root,
+                normalized_relative,
+                exc_info=True,
+            )
             return (3, 1, 0.0, f"{repo_root}:{normalized_relative}")
         runtime_scope_root, _runtime_relative = self._resolve_lsp_runtime_scope(
             repo_root=repo_root,
@@ -600,6 +606,12 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
             try:
                 language = self._hub.resolve_language(normalized_relative)
             except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
+                log.debug(
+                    "failed to resolve language while priming pending hints (repo=%s, path=%s)",
+                    repo_root,
+                    normalized_relative,
+                    exc_info=True,
+                )
                 continue
             if not self._is_profiled_broker_language(language):
                 continue

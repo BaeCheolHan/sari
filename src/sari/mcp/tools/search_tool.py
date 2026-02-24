@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from collections.abc import Callable
 
 from sari.core.models import ErrorResponseDTO
@@ -15,6 +16,8 @@ from sari.mcp.stabilization.session_state import record_search_metrics
 from sari.mcp.stabilization.warning_sink import warn
 from sari.mcp.tools.pack1 import Pack1MetaDTO, pack1_error, pack1_success
 from sari.search.orchestrator import SearchOrchestrator
+
+log = logging.getLogger(__name__)
 
 
 class SearchTool:
@@ -265,10 +268,30 @@ class SearchTool:
             return None
         try:
             metrics = self._metrics_provider()
-        except (RuntimeError, OSError, ValueError, TypeError):
-            return None
+        except (RuntimeError, OSError, ValueError, TypeError) as exc:
+            reason = f"metrics_provider_error:{type(exc).__name__}"
+            log.debug("failed to collect search progress metrics", exc_info=True)
+            return {
+                "progress_percent_l2": 0.0,
+                "progress_percent_l3": 0.0,
+                "eta_l2_sec": -1,
+                "eta_l3_sec": -1,
+                "remaining_jobs_l2": 0,
+                "remaining_jobs_l3": 0,
+                "worker_state": "unknown",
+                "error_reason": reason,
+            }
         if not hasattr(metrics, "to_dict"):
-            return None
+            return {
+                "progress_percent_l2": 0.0,
+                "progress_percent_l3": 0.0,
+                "eta_l2_sec": -1,
+                "eta_l3_sec": -1,
+                "remaining_jobs_l2": 0,
+                "remaining_jobs_l3": 0,
+                "worker_state": "unknown",
+                "error_reason": "metrics_provider_missing_to_dict",
+            }
         payload = metrics.to_dict()
         return {
             "progress_percent_l2": float(payload.get("progress_percent_l2", 0.0)),

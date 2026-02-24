@@ -278,13 +278,5 @@ class LspScopePlanner:
         return index
 
     def _paths_overlap(self, a: Path, b: Path) -> bool:
-        try:
-            a.relative_to(b)
-            return True
-        except ValueError:
-            ...
-        try:
-            b.relative_to(a)
-            return True
-        except ValueError:
-            return False
+        # Path.is_relative_to를 사용해 예외 기반 제어흐름을 피한다.
+        return a.is_relative_to(b) or b.is_relative_to(a)

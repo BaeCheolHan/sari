@@ -83,6 +83,7 @@ class WorkspaceWatchSynchronizer:
             try:
                 observer.unschedule(watch)
             except (RuntimeError, OSError, ValueError):
+                log.warning("failed to unschedule observer watch(workspace=%s)", workspace_path, exc_info=True)
                 continue
             self._debounce_pruner.prune_repo_root(workspace_path)
 
@@ -369,8 +370,4 @@ class EventWatcher:
 
 def _path_is_relative_to(path: Path, base: Path) -> bool:
     """path가 base 하위인지 판정한다."""
-    try:
-        path.relative_to(base)
-    except ValueError:
-        return False
-    return True
+    return path.is_relative_to(base)

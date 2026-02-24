@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 import queue
 import time
 import traceback
+import logging
 import zlib
 from collections import deque
 from pathlib import Path
@@ -55,6 +56,8 @@ from sari.services.collection.l3_treesitter_preprocess_service import (
     L3PreprocessResultDTO,
 )
 from sari.services.collection.perf_trace import PerfTracer
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -1268,8 +1271,20 @@ class EnrichEngine:
                 if fallback is not None:
                     return fallback.fallback(relative_path=job.relative_path, content_text=content_text)
             return result
-        except (OSError, UnicodeError, ValueError, TypeError):
-            return None
+        except (OSError, UnicodeError, ValueError, TypeError) as exc:
+            log.warning(
+                "EnrichEngine L3 preprocess failed, returning explicit degraded NEEDS_L5 result (repo=%s, path=%s)",
+                job.repo_root,
+                job.relative_path,
+                exc_info=True,
+            )
+            return L3PreprocessResultDTO(
+                symbols=[],
+                degraded=True,
+                decision=L3PreprocessDecision.NEEDS_L5,
+                source="none",
+                reason=f"l3_preprocess_exception:{type(exc).__name__}",
+            )
 
     def _schedule_l1_probe_after_l3_fallback(self, job: FileEnrichJobDTO) -> None:
         """L3 fail-open 시 백그라운드 L1 probe를 조건부로 예약한다."""
@@ -1294,6 +1309,12 @@ class EnrichEngine:
                 trigger="l3_fallback",
             )
         except (RuntimeError, OSError, ValueError, TypeError):
+            log.warning(
+                "Failed to schedule l3_fallback probe (repo=%s, path=%s)",
+                job.repo_root,
+                job.relative_path,
+                exc_info=True,
+            )
             return
 
     def _try_escalate_scope_after_l3_extract_error(self, *, job: FileEnrichJobDTO, error_message: str) -> bool:
@@ -1324,6 +1345,12 @@ class EnrichEngine:
                 )
             )
         except (RuntimeError, OSError, ValueError, TypeError):
+            log.warning(
+                "Failed to escalate scope after L3 extract error (repo=%s, path=%s)",
+                job.repo_root,
+                job.relative_path,
+                exc_info=True,
+            )
             return False
         if not updated:
             return False
@@ -1372,6 +1399,12 @@ class EnrichEngine:
                 )
             )
         except (RuntimeError, OSError, ValueError, TypeError):
+            log.warning(
+                "Failed to defer broker lease denied job (repo=%s, path=%s)",
+                job.repo_root,
+                job.relative_path,
+                exc_info=True,
+            )
             return False
         if updated <= 0:
             return False
@@ -1419,6 +1452,12 @@ class EnrichEngine:
                 scope_level=scope_level,
             )
         except (RuntimeError, OSError, ValueError, TypeError):
+            log.debug(
+                "Failed to record scope learning after L3 success (repo=%s, path=%s)",
+                job.repo_root,
+                job.relative_path,
+                exc_info=True,
+            )
             return
 
     def _should_perf_trace_tick(self) -> bool:
@@ -1810,7 +1849,13 @@ class EnrichEngine:
                 if bool(checker(repo_root=job.repo_root, relative_path=job.relative_path)):
                     return "skip_probe_unavailable"
             except (RuntimeError, OSError, ValueError, TypeError):
-                return None
+                log.warning(
+                    "Failed to evaluate L3 permanent-unavailable probe guard (repo=%s, path=%s)",
+                    job.repo_root,
+                    job.relative_path,
+                    exc_info=True,
+                )
+                return "skip_probe_check_error"
         return None
 
     def _build_l3_skipped_readiness(
@@ -1850,6 +1895,12 @@ class EnrichEngine:
         try:
             updated_at = datetime.fromisoformat(state.updated_at)
         except ValueError:
+            log.debug(
+                "Invalid readiness updated_at; treating as not recent (repo=%s, path=%s, updated_at=%s)",
+                job.repo_root,
+                job.relative_path,
+                state.updated_at,
+            )
             return False
         if updated_at.tzinfo is None:
             updated_at = updated_at.replace(tzinfo=timezone.utc)

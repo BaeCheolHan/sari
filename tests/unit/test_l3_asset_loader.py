@@ -40,3 +40,18 @@ def test_asset_loader_normalizes_js_to_javascript() -> None:
     bundle = loader.load("js")
 
     assert bundle.language == "javascript"
+
+
+def test_asset_loader_exposes_last_load_error_for_invalid_mapping(tmp_path: Path) -> None:
+    assets = tmp_path / "assets"
+    (assets / "mappings").mkdir(parents=True, exist_ok=True)
+    (assets / "queries").mkdir(parents=True, exist_ok=True)
+    (assets / "manifest.json").write_text('{"version":"test"}', encoding="utf-8")
+    (assets / "mappings" / "default.yaml").write_text("{invalid-json", encoding="utf-8")
+
+    loader = L3AssetLoader(assets_root=assets)
+    bundle = loader.load("unknown_lang")
+
+    assert bundle.language == "unknown_lang"
+    assert loader.last_load_error is not None
+    assert str(loader.last_load_error).startswith("mapping_load_error:")

@@ -53,6 +53,8 @@ class SolidLspQueryBackend:
         """LSP Hub 의존성을 주입한다."""
         self._hub = hub
         self._last_query_stats = SymbolInfoStats()
+        self._last_hover_error_reason: str | None = None
+        self._last_pressure_error_reason: str | None = None
 
     @property
     def last_query_stats(self) -> SymbolInfoStats:
@@ -238,7 +240,15 @@ class SolidLspQueryBackend:
         column = int(start_data.get("character", 0))
         try:
             hover = request_hover(relative_path, line, column)
-        except (SolidLSPException, RuntimeError, OSError, ValueError, TypeError):
+        except (SolidLSPException, RuntimeError, OSError, ValueError, TypeError) as exc:
+            self._last_hover_error_reason = f"hover_request_error:{type(exc).__name__}"
+            log.debug(
+                "symbol hover request failed(path=%s, line=%s, col=%s)",
+                relative_path,
+                line,
+                column,
+                exc_info=True,
+            )
             return None
         return self._extract_hover_text(hover)
 
@@ -567,7 +577,9 @@ class SymbolResolveService:
             return False
         try:
             pressure = get_pressure()
-        except (RuntimeError, OSError, ValueError, TypeError):
+        except (RuntimeError, OSError, ValueError, TypeError) as exc:
+            self._last_pressure_error_reason = f"interactive_pressure_error:{type(exc).__name__}"
+            log.debug("failed to read interactive pressure snapshot", exc_info=True)
             return False
         pending = int(pressure.get("pending_interactive", 0))
         timeout_count = int(pressure.get("interactive_timeout_count", 0))

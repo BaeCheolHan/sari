@@ -776,11 +776,8 @@ class TantivyCandidateBackend:
         repo_path = Path(repo_root)
         for workspace_root in workspace_roots:
             workspace_path = Path(workspace_root)
-            try:
-                repo_path.relative_to(workspace_path)
+            if repo_path.is_relative_to(workspace_path):
                 return True
-            except ValueError:
-                continue
         return False
 
     def _merge_delete_visibility_failures(self, apply_outcome: PendingApplyOutcomeDTO) -> PendingApplyOutcomeDTO:

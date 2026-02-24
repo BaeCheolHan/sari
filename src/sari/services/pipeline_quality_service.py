@@ -309,7 +309,46 @@ class PipelineQualityService:
                     }
                 )
             if evaluated_files == 0:
-                raise QualityError(ErrorContext(code="ERR_QUALITY_EMPTY_DATASET", message="language filter에 해당하는 파일이 없습니다"))
+                if normalized_filter is None:
+                    raise QualityError(ErrorContext(code="ERR_QUALITY_EMPTY_DATASET", message="language filter에 해당하는 파일이 없습니다"))
+                # CLI/운영에서는 필터 결과 0건을 "실패 리포트"로 반환해 후속 판단이 가능해야 한다.
+                summary = {
+                    "run_id": run_id,
+                    "status": "FAILED",
+                    "repo_root": root,
+                    "limit_files": limit_files,
+                    "profile": profile,
+                    "language_filter": list(normalized_filter),
+                    "evaluated_files": 0,
+                    "error_files": 0,
+                    "error_rate": 0.0,
+                    "precision": {"symbol": 100.0, "caller": 100.0, "total": 100.0},
+                    "recall": {"symbol": 0.0, "caller": 0.0, "total": 0.0},
+                    "per_language": [],
+                    "thresholds": {
+                        "precision_min": 95.0,
+                        "recall_min": QUALITY_RECALL_MIN_PCT,
+                        "error_rate_max": 1.0,
+                    },
+                    "totals": {
+                        "symbol_tp": 0,
+                        "symbol_fp": 0,
+                        "symbol_fn": 0,
+                        "caller_tp": 0,
+                        "caller_fp": 0,
+                        "caller_fn": 0,
+                    },
+                    "samples": [],
+                    "error": "language filter에 해당하는 파일이 없습니다",
+                }
+                self._write_artifact(run_id=run_id, summary=summary)
+                self._quality_repo.complete_run(
+                    run_id=run_id,
+                    finished_at=now_iso8601_utc(),
+                    status=str(summary["status"]),
+                    summary=summary,
+                )
+                return summary
 
             symbol_precision = _precision_percent(symbol_counts.tp, symbol_counts.fp)
             symbol_recall = _recall_percent(symbol_counts.tp, symbol_counts.fn)

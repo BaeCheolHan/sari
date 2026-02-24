@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 import time
 from dataclasses import dataclass
@@ -11,7 +12,9 @@ from enum import Enum
 from .l3_asset_loader import L3AssetLoader
 from .l3_language_processor import L3LowConfidenceContext
 from .l3_language_processor_registry import L3LanguageProcessorRegistry
-from .l3_tree_sitter_outline import TreeSitterOutlineExtractor
+from .l3_tree_sitter_outline import TreeSitterOutlineExtractor, TreeSitterOutlineResult
+
+log = logging.getLogger(__name__)
 
 class L3PreprocessDecision(str, Enum):
     """L3 전처리 이후 LSP 진입 결정을 표현한다."""
@@ -179,7 +182,7 @@ class L3TreeSitterPreprocessService:
                 degraded=tree_sitter_degraded_reason is not None,
                 decision=L3PreprocessDecision.NEEDS_L5,
                 source="regex_outline",
-                reason="l3_preprocess_low_confidence",
+                reason=tree_sitter_degraded_reason or "l3_preprocess_low_confidence",
             )
         return L3PreprocessResultDTO(
             symbols=symbols,
@@ -205,8 +208,17 @@ class L3TreeSitterPreprocessService:
                 content_text=content_text,
                 budget_sec=self._query_budget_sec,
             )
-        except (RuntimeError, OSError, ValueError, TypeError):
-            return None
+        except (RuntimeError, OSError, ValueError, TypeError) as exc:
+            log.debug(
+                "L3 tree-sitter outline extraction failed; fallback to regex path (pattern_key=%s)",
+                pattern_key,
+                exc_info=True,
+            )
+            return TreeSitterOutlineResult(
+                symbols=[],
+                degraded=True,
+                reason=f"tree_sitter_outline_exception:{type(exc).__name__}",
+            )
 
     def _needs_l5_by_low_confidence(self, *, relative_path: str, content_text: str, symbols: list[dict[str, object]]) -> bool:
         language_processor = self._language_registry.resolve(relative_path=relative_path)
