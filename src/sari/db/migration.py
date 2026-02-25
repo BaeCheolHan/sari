@@ -37,6 +37,7 @@ def ensure_migrated(db_path: Path) -> None:
         _fallback_upgrade_0009(conn)
         _fallback_upgrade_0010(conn)
         _fallback_upgrade_0011(conn)
+        _fallback_upgrade_0012(conn)
         conn.commit()
 
 
@@ -121,6 +122,7 @@ def _fallback_upgrade_sqlite(db_path: Path) -> None:
         _fallback_upgrade_0009(conn)
         _fallback_upgrade_0010(conn)
         _fallback_upgrade_0011(conn)
+        _fallback_upgrade_0012(conn)
         conn.commit()
 
 
@@ -533,3 +535,128 @@ def _fallback_upgrade_0011(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE pipeline_stage_baseline ADD COLUMN p95_pending_available_age_baseline_samples INTEGER NOT NULL DEFAULT 0"
         )
+
+
+def _fallback_upgrade_0012(conn: sqlite3.Connection) -> None:
+    """0012 additive 확장: scope_repo_root 컬럼/인덱스를 적용한다."""
+    target_tables: tuple[str, ...] = (
+        "collected_files_l1",
+        "file_enrich_queue",
+        "candidate_index_changes",
+        "collected_file_bodies_l2",
+        "lsp_symbols",
+        "lsp_call_relations",
+        "tool_data_l3_symbols",
+        "tool_data_l4_normalized_symbols",
+        "tool_data_l5_semantics",
+        "tool_readiness_state",
+        "pipeline_error_events",
+        "pipeline_perf_runs",
+        "pipeline_quality_runs",
+        "pipeline_lsp_matrix_runs",
+        "file_embeddings",
+        "snippet_entries",
+        "knowledge_entries",
+        "symbol_importance_cache",
+    )
+    for table_name in target_tables:
+        if not _table_exists(conn, table_name):
+            continue
+        cols = _table_columns(conn, table_name)
+        if "scope_repo_root" not in cols:
+            if table_name == "pipeline_error_events":
+                # GLOBAL 이벤트(repo_root=NULL)와 런타임 insert(repo_root=None)를 허용해야 하므로 nullable 유지.
+                conn.execute("ALTER TABLE pipeline_error_events ADD COLUMN scope_repo_root TEXT NULL")
+            else:
+                conn.execute(f"ALTER TABLE {table_name} ADD COLUMN scope_repo_root TEXT NOT NULL DEFAULT ''")
+            cols = _table_columns(conn, table_name)
+        if "repo_root" in cols:
+            if table_name == "pipeline_error_events":
+                conn.execute(
+                    """
+                    UPDATE pipeline_error_events
+                    SET scope_repo_root = repo_root
+                    WHERE scope_repo_root IS NULL OR TRIM(scope_repo_root) = ''
+                    """
+                )
+            else:
+                conn.execute(
+                    f"""
+                    UPDATE {table_name}
+                    SET scope_repo_root = COALESCE(repo_root, '')
+                    WHERE scope_repo_root IS NULL OR TRIM(scope_repo_root) = ''
+                    """
+                )
+    index_specs: tuple[tuple[str, tuple[str, ...], str], ...] = (
+        (
+            "collected_files_l1",
+            ("scope_repo_root", "is_deleted"),
+            """
+            CREATE INDEX IF NOT EXISTS idx_collected_files_l1_scope_repo
+            ON collected_files_l1(scope_repo_root, is_deleted)
+            """,
+        ),
+        (
+            "file_enrich_queue",
+            ("scope_repo_root", "status", "next_retry_at"),
+            """
+            CREATE INDEX IF NOT EXISTS idx_file_enrich_queue_scope_sched
+            ON file_enrich_queue(scope_repo_root, status, next_retry_at)
+            """,
+        ),
+        (
+            "candidate_index_changes",
+            ("scope_repo_root", "relative_path", "status"),
+            """
+            CREATE INDEX IF NOT EXISTS idx_candidate_index_changes_scope_path_status
+            ON candidate_index_changes(scope_repo_root, relative_path, status)
+            """,
+        ),
+        (
+            "tool_data_l3_symbols",
+            ("workspace_id", "scope_repo_root", "relative_path", "updated_at"),
+            """
+            CREATE INDEX IF NOT EXISTS idx_tool_data_l3_scope_lookup
+            ON tool_data_l3_symbols(workspace_id, scope_repo_root, relative_path, updated_at DESC)
+            """,
+        ),
+        (
+            "tool_data_l4_normalized_symbols",
+            ("workspace_id", "scope_repo_root", "relative_path", "updated_at"),
+            """
+            CREATE INDEX IF NOT EXISTS idx_tool_data_l4_scope_lookup
+            ON tool_data_l4_normalized_symbols(workspace_id, scope_repo_root, relative_path, updated_at DESC)
+            """,
+        ),
+        (
+            "tool_data_l5_semantics",
+            ("workspace_id", "scope_repo_root", "relative_path", "updated_at"),
+            """
+            CREATE INDEX IF NOT EXISTS idx_tool_data_l5_scope_lookup
+            ON tool_data_l5_semantics(workspace_id, scope_repo_root, relative_path, updated_at DESC)
+            """,
+        ),
+        (
+            "pipeline_error_events",
+            ("scope_repo_root", "relative_path"),
+            """
+            CREATE INDEX IF NOT EXISTS idx_pipeline_error_events_scope_path
+            ON pipeline_error_events(scope_repo_root, relative_path)
+            """,
+        ),
+        (
+            "symbol_importance_cache",
+            ("scope_repo_root", "reference_count"),
+            """
+            CREATE INDEX IF NOT EXISTS idx_symbol_importance_scope_count
+            ON symbol_importance_cache(scope_repo_root, reference_count DESC)
+            """,
+        ),
+    )
+    for table_name, required_cols, index_sql in index_specs:
+        if not _table_exists(conn, table_name):
+            continue
+        cols = _table_columns(conn, table_name)
+        if not set(required_cols).issubset(cols):
+            continue
+        conn.execute(index_sql)

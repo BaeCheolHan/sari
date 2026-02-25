@@ -85,10 +85,11 @@ class FileScanner:
         self._bootstrap_file_window = max(1, int(bootstrap_file_window))
         self._bootstrap_top_k = max(1, int(bootstrap_top_k))
         self._language_priority_weights = language_priority_weights or {}
-    def scan_once(self, repo_root: str) -> CollectionScanResultDTO:
+    def scan_once(self, repo_root: str, *, scope_repo_root: str | None = None) -> CollectionScanResultDTO:
         """단일 저장소 스캔을 실행한다."""
         total_started_at = time.perf_counter()
         root = Path(repo_root).expanduser().resolve()
+        resolved_scope_repo_root = str(Path(scope_repo_root).expanduser().resolve()) if scope_repo_root else str(root)
         if not root.exists() or not root.is_dir():
             raise CollectionError(ErrorContext(code="ERR_REPO_NOT_FOUND", message="repo 경로를 찾을 수 없습니다"))
         gitignore_spec = self._load_gitignore_spec(root)
@@ -145,6 +146,7 @@ class FileScanner:
                     CollectedFileL1DTO(
                         repo_id=repo_id,
                         repo_root=str(root),
+                        scope_repo_root=resolved_scope_repo_root,
                         relative_path=relative_path,
                         absolute_path=str(file_path.resolve()),
                         repo_label=repo_label,
@@ -184,6 +186,7 @@ class FileScanner:
                 CollectedFileL1DTO(
                     repo_id=hash_result.repo_id,
                     repo_root=hash_result.repo_root,
+                    scope_repo_root=resolved_scope_repo_root,
                     relative_path=hash_result.relative_path,
                     absolute_path=hash_result.absolute_path,
                     repo_label=hash_result.repo_label,
@@ -200,6 +203,7 @@ class FileScanner:
                 EnqueueRequestDTO(
                     repo_id=hash_result.repo_id,
                     repo_root=hash_result.repo_root,
+                    scope_repo_root=resolved_scope_repo_root,
                     relative_path=hash_result.relative_path,
                     content_hash=hash_result.content_hash,
                     priority=self._priority_low,
@@ -212,6 +216,7 @@ class FileScanner:
                     CandidateIndexChangeDTO(
                         repo_id=hash_result.repo_id,
                         repo_root=hash_result.repo_root,
+                        scope_repo_root=resolved_scope_repo_root,
                         relative_path=hash_result.relative_path,
                         absolute_path=hash_result.absolute_path,
                         content_hash=hash_result.content_hash,
@@ -289,11 +294,12 @@ class FileScanner:
             except (RuntimeError, ValueError, OSError):
                 continue
 
-    def index_file(self, repo_root: str, relative_path: str) -> CollectionScanResultDTO:
+    def index_file(self, repo_root: str, relative_path: str, *, scope_repo_root: str | None = None) -> CollectionScanResultDTO:
         """단일 파일 강제 인덱싱을 실행한다."""
         if relative_path.strip() == "":
             raise CollectionError(ErrorContext(code="ERR_RELATIVE_PATH_REQUIRED", message="relative_path는 필수입니다"))
         root = Path(repo_root).expanduser().resolve()
+        resolved_scope_repo_root = str(Path(scope_repo_root).expanduser().resolve()) if scope_repo_root else str(root)
         file_path = (root / relative_path).resolve()
         if not file_path.exists() or not file_path.is_file():
             raise CollectionError(ErrorContext(code="ERR_FILE_NOT_FOUND", message="대상 파일을 찾을 수 없습니다"))
@@ -309,6 +315,7 @@ class FileScanner:
         l1_row = CollectedFileL1DTO(
             repo_id=repo_id,
             repo_root=str(root),
+            scope_repo_root=resolved_scope_repo_root,
             relative_path=str(file_path.relative_to(root).as_posix()),
             absolute_path=str(file_path),
             repo_label=repo_label,
@@ -324,6 +331,7 @@ class FileScanner:
         self._enrich_queue_repo.enqueue(
             repo_id=repo_id,
             repo_root=str(root),
+            scope_repo_root=resolved_scope_repo_root,
             relative_path=str(file_path.relative_to(root).as_posix()),
             content_hash=content_hash,
             priority=self._priority_medium,
@@ -335,6 +343,7 @@ class FileScanner:
                 CandidateIndexChangeDTO(
                     repo_id=repo_id,
                     repo_root=str(root),
+                    scope_repo_root=resolved_scope_repo_root,
                     relative_path=str(file_path.relative_to(root).as_posix()),
                     absolute_path=str(file_path),
                     content_hash=content_hash,

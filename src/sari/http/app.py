@@ -331,9 +331,12 @@ def _build_search_item_payload(context: HttpContext, repo_root: str, item: objec
     workspace = context.workspace_repo.get_by_path(repo_root)
     if workspace is None:
         return payload
+    effective_repo_root = getattr(item, "repo", repo_root)
+    if not isinstance(effective_repo_root, str) or effective_repo_root.strip() == "":
+        effective_repo_root = repo_root
     snapshot = ToolDataLayerRepository(db_path).load_effective_snapshot(
         workspace_id=workspace.path,
-        repo_root=repo_root,
+        repo_root=effective_repo_root,
         relative_path=relative_path,
         content_hash=content_hash,
     )

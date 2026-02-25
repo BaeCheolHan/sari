@@ -1,0 +1,855 @@
+OpenAI Codex v0.104.0 (research preview)
+--------
+workdir: /Users/vendys-chulhan/Documents/study/sari
+model: gpt-5.3-codex
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: auto
+session id: 019c9378-ff39-7240-87a2-5fb0270d87c0
+--------
+user
+current changes
+mcp: obsidian starting
+mcp: codex_apps starting
+mcp: sari starting
+mcp: serena starting
+mcp: obsidian starting
+mcp: codex_apps starting
+mcp: sari starting
+mcp: serena starting
+mcp: sari ready
+mcp: sari ready
+mcp: obsidian ready
+mcp: obsidian ready
+mcp: codex_apps ready
+mcp: codex_apps ready
+mcp: serena ready
+mcp startup: ready: sari, obsidian, codex_apps, serena
+mcp: serena ready
+mcp startup: ready: sari, obsidian, codex_apps, serena
+
+thinking
+**Clarifying skill invocation approach**
+thinking
+**Clarifying skill invocation approach**
+exec
+/bin/zsh -lc 'cat /Users/vendys-chulhan/.codex/superpowers/skills/using-superpowers/SKILL.md' in /Users/vendys-chulhan/Documents/study/sari succeeded in 51ms:
+---
+name: using-superpowers
+description: Use when starting any conversation - establishes how to find and use skills, requiring Skill tool invocation before ANY response including clarifying questions
+---
+
+<EXTREMELY-IMPORTANT>
+If you think there is even a 1% chance a skill might apply to what you are doing, you ABSOLUTELY MUST invoke the skill.
+
+IF A SKILL APPLIES TO YOUR TASK, YOU DO NOT HAVE A CHOICE. YOU MUST USE IT.
+
+This is not negotiable. This is not optional. You cannot rationalize your way out of this.
+</EXTREMELY-IMPORTANT>
+
+## How to Access Skills
+
+**In Claude Code:** Use the `Skill` tool. When you invoke a skill, its content is loaded and presented to you—follow it directly. Never use the Read tool on skill files.
+
+**In other environments:** Check your platform's documentation for how skills are loaded.
+
+# Using Skills
+
+thinking
+**Reviewing skill utility**
+thinking
+**Reviewing skill utility**
+exec
+/bin/zsh -lc 'cat /Users/vendys-chulhan/.codex/superpowers/skills/requesting-code-review/SKILL.md' in /Users/vendys-chulhan/Documents/study/sari succeeded in 51ms:
+---
+name: requesting-code-review
+description: Use when completing tasks, implementing major features, or before merging to verify work meets requirements
+---
+
+# Requesting Code Review
+
+Dispatch superpowers:code-reviewer subagent to catch issues before they cascade.
+
+**Core principle:** Review early, review often.
+
+## When to Request Review
+
+**Mandatory:**
+- After each task in subagent-driven development
+- After completing major feature
+- Before merge to main
+
+**Optional but valuable:**
+- When stuck (fresh perspective)
+
+thinking
+**Prioritizing git status and diff**
+thinking
+**Prioritizing git status and diff**
+exec
+/bin/zsh -lc 'git -C /Users/vendys-chulhan/Documents/study/sari status --short' in /Users/vendys-chulhan/Documents/study/sari succeeded in 52ms:
+ M src/sari/core/models.py
+ M src/sari/db/migration.py
+ M src/sari/db/repositories/candidate_index_change_repository.py
+ M src/sari/db/repositories/file_body_repository.py
+ M src/sari/db/repositories/file_collection_repository.py
+ M src/sari/db/repositories/file_enrich_queue_repository.py
+ M src/sari/db/repositories/lsp_tool_data_repository.py
+ M src/sari/db/repositories/pipeline_error_event_repository.py
+ M src/sari/db/repositories/pipeline_lsp_matrix_repository.py
+ M src/sari/db/repositories/pipeline_perf_repository.py
+ M src/sari/db/repositories/pipeline_quality_repository.py
+ M src/sari/db/repositories/symbol_importance_repository.py
+ M src/sari/db/repositories/tool_data_layer_repository.py
+ M src/sari/db/repositories/tool_readiness_repository.py
+ M src/sari/db/repositories/vector_embedding_repository.py
+ M src/sari/db/schema.py
+ M src/sari/http/app.py
+ M src/sari/mcp/tools/admin_tools.py
+ M src/sari/mcp/tools/search_tool.py
+ M src/sari/mcp/tools/status_tool.py
+
+thinking
+**Assessing large diff risks**
+thinking
+**Assessing large diff risks**
+exec
+/bin/zsh -lc 'git -C /Users/vendys-chulhan/Documents/study/sari diff --stat' in /Users/vendys-chulhan/Documents/study/sari succeeded in 62ms:
+ src/sari/core/models.py                            |  17 ++
+ src/sari/db/migration.py                           | 127 +++++++++++++
+ .../candidate_index_change_repository.py           |  12 +-
+ src/sari/db/repositories/file_body_repository.py   |  10 +-
+ .../db/repositories/file_collection_repository.py  | 131 ++++++++++++-
+ .../repositories/file_enrich_queue_repository.py   |  12 +-
+ .../db/repositories/lsp_tool_data_repository.py    |  82 ++++++++-
+ .../pipeline_error_event_repository.py             |   5 +-
+ .../repositories/pipeline_lsp_matrix_repository.py |   5 +-
+ .../db/repositories/pipeline_perf_repository.py    |   5 +-
+ .../db/repositories/pipeline_quality_repository.py |  45 +++--
+ .../repositories/symbol_importance_repository.py   |   6 +-
+ .../db/repositories/tool_data_layer_repository.py  | 178 +++++++++++++++---
+ .../db/repositories/tool_readiness_repository.py   |  13 +-
+ .../db/repositories/vector_embedding_repository.py |   6 +-
+ src/sari/db/schema.py                              |  42 +++++
+ src/sari/http/app.py                               |   5 +-
+ src/sari/mcp/tools/admin_tools.py                  |   5 +-
+ src/sari/mcp/tools/search_tool.py                  |   5 +-
+ src/sari/mcp/tools/status_tool.py                  |  19 +-
+
+thinking
+**Planning targeted bug inspection**
+thinking
+**Planning targeted bug inspection**
+exec
+/bin/zsh -lc 'git -C /Users/vendys-chulhan/Documents/study/sari diff -- src/sari/services/file_collection_service.py' in /Users/vendys-chulhan/Documents/study/sari succeeded in 51ms:
+diff --git a/src/sari/services/file_collection_service.py b/src/sari/services/file_collection_service.py
+index 7cbf8c9..4910b58 100644
+--- a/src/sari/services/file_collection_service.py
++++ b/src/sari/services/file_collection_service.py
+@@ -366,7 +366,7 @@ class FileCollectionService:
+         root_path = Path(repo_root).expanduser().resolve()
+         fanout_targets = self._fanout_resolver.resolve_targets(root_path)
+         if len(fanout_targets) == 0:
+-            return self._scanner.scan_once(str(root_path))
++            return self._scanner_scan_once(repo_root=str(root_path), scope_repo_root=str(root_path))
+         return self._scan_workspace_fanout(root_path=root_path, targets=fanout_targets)
+ 
+     def _scan_workspace_fanout(self, root_path: Path, targets: list[Path]) -> CollectionScanResultDTO:
+@@ -379,7 +379,7 @@ class FileCollectionService:
+         results: list[CollectionScanRepoResultDTO] = []
+         for target in targets:
+             try:
+-                scan_result = self._scanner.scan_once(str(target))
++                scan_result = self._scanner_scan_once(repo_root=str(target), scope_repo_root=str(root_path))
+                 scanned_total += scan_result.scanned_count
+exec
+/bin/zsh -lc 'git -C /Users/vendys-chulhan/Documents/study/sari diff -- src/sari/services/collection/scanner.py' in /Users/vendys-chulhan/Documents/study/sari succeeded in 52ms:
+diff --git a/src/sari/services/collection/scanner.py b/src/sari/services/collection/scanner.py
+index 11949d7..ca30a11 100644
+--- a/src/sari/services/collection/scanner.py
++++ b/src/sari/services/collection/scanner.py
+@@ -85,10 +85,11 @@ class FileScanner:
+         self._bootstrap_file_window = max(1, int(bootstrap_file_window))
+         self._bootstrap_top_k = max(1, int(bootstrap_top_k))
+         self._language_priority_weights = language_priority_weights or {}
+-    def scan_once(self, repo_root: str) -> CollectionScanResultDTO:
++    def scan_once(self, repo_root: str, *, scope_repo_root: str | None = None) -> CollectionScanResultDTO:
+         """단일 저장소 스캔을 실행한다."""
+         total_started_at = time.perf_counter()
+         root = Path(repo_root).expanduser().resolve()
++        resolved_scope_repo_root = str(Path(scope_repo_root).expanduser().resolve()) if scope_repo_root else str(root)
+         if not root.exists() or not root.is_dir():
+             raise CollectionError(ErrorContext(code="ERR_REPO_NOT_FOUND", message="repo 경로를 찾을 수 없습니다"))
+         gitignore_spec = self._load_gitignore_spec(root)
+@@ -145,6 +146,7 @@ class FileScanner:
+                     CollectedFileL1DTO(
+                         repo_id=repo_id,
+
+thinking
+**Inspecting schema migration issues**
+thinking
+**Inspecting schema migration issues**
+exec
+/bin/zsh -lc 'git -C /Users/vendys-chulhan/Documents/study/sari diff -- src/sari/db/schema.py src/sari/db/migration.py' in /Users/vendys-chulhan/Documents/study/sari succeeded in 51ms:
+diff --git a/src/sari/db/migration.py b/src/sari/db/migration.py
+index eb0206d..f37b11c 100644
+--- a/src/sari/db/migration.py
++++ b/src/sari/db/migration.py
+@@ -37,6 +37,7 @@ def ensure_migrated(db_path: Path) -> None:
+         _fallback_upgrade_0009(conn)
+         _fallback_upgrade_0010(conn)
+         _fallback_upgrade_0011(conn)
++        _fallback_upgrade_0012(conn)
+         conn.commit()
+ 
+ 
+@@ -121,6 +122,7 @@ def _fallback_upgrade_sqlite(db_path: Path) -> None:
+         _fallback_upgrade_0009(conn)
+         _fallback_upgrade_0010(conn)
+         _fallback_upgrade_0011(conn)
++        _fallback_upgrade_0012(conn)
+         conn.commit()
+ 
+ 
+
+thinking
+**Reviewing model DTO defaults**
+thinking
+**Reviewing model DTO defaults**
+exec
+/bin/zsh -lc 'git -C /Users/vendys-chulhan/Documents/study/sari diff -- src/sari/core/models.py' in /Users/vendys-chulhan/Documents/study/sari succeeded in 52ms:
+diff --git a/src/sari/core/models.py b/src/sari/core/models.py
+index f5e5e08..a962c54 100644
+--- a/src/sari/core/models.py
++++ b/src/sari/core/models.py
+@@ -205,10 +205,12 @@ class CandidateIndexChangeDTO:
+     size_bytes: int
+     event_source: str
+     recorded_at: str
++    scope_repo_root: str | None = None
+     def to_sql_params(self) -> dict[str, object]:
+         return {
+             "repo_id": self.repo_id,
+             "repo_root": self.repo_root,
++            "scope_repo_root": self.scope_repo_root or self.repo_root,
+             "relative_path": self.relative_path,
+             "absolute_path": self.absolute_path,
+             "content_hash": self.content_hash,
+@@ -233,6 +235,7 @@ class CandidateIndexChangeLogDTO:
+     reason: str | None
+     created_at: str
+
+thinking
+**Inspecting repository usage**
+thinking
+**Inspecting repository usage**
+exec
+/bin/zsh -lc 'git -C /Users/vendys-chulhan/Documents/study/sari diff -- src/sari/db/repositories/file_collection_repository.py' in /Users/vendys-chulhan/Documents/study/sari succeeded in 51ms:
+diff --git a/src/sari/db/repositories/file_collection_repository.py b/src/sari/db/repositories/file_collection_repository.py
+index 97024e2..075ca4c 100644
+--- a/src/sari/db/repositories/file_collection_repository.py
++++ b/src/sari/db/repositories/file_collection_repository.py
+@@ -27,15 +27,16 @@ class FileCollectionRepository:
+             conn.execute(
+                 """
+                 INSERT INTO collected_files_l1(
+-                    repo_id, repo_root, relative_path, absolute_path, repo_label, mtime_ns, size_bytes,
++                    repo_id, repo_root, scope_repo_root, relative_path, absolute_path, repo_label, mtime_ns, size_bytes,
+                     content_hash, is_deleted, last_seen_at, updated_at, enrich_state
+                 )
+                 VALUES(
+-                    :repo_id, :repo_root, :relative_path, :absolute_path, :repo_label, :mtime_ns, :size_bytes,
++                    :repo_id, :repo_root, :scope_repo_root, :relative_path, :absolute_path, :repo_label, :mtime_ns, :size_bytes,
+                     :content_hash, :is_deleted, :last_seen_at, :updated_at, :enrich_state
+                 )
+                 ON CONFLICT(repo_root, relative_path) DO UPDATE SET
+                     repo_id = excluded.repo_id,
++                    scope_repo_root = excluded.scope_repo_root,
+
+thinking
+**Evaluating scope for delete marking**
+thinking
+**Evaluating scope for delete marking**
+exec
+/bin/zsh -lc 'git -C /Users/vendys-chulhan/Documents/study/sari diff -- src/sari/db/repositories/lsp_tool_data_repository.py' in /Users/vendys-chulhan/Documents/study/sari succeeded in 52ms:
+diff --git a/src/sari/db/repositories/lsp_tool_data_repository.py b/src/sari/db/repositories/lsp_tool_data_repository.py
+index 377d464..bb3d2a3 100644
+--- a/src/sari/db/repositories/lsp_tool_data_repository.py
++++ b/src/sari/db/repositories/lsp_tool_data_repository.py
+@@ -315,7 +315,15 @@ class LspToolDataRepository:
+                 SELECT repo_root, relative_path, name, kind, line, end_line, content_hash,
+                        symbol_key, parent_symbol_key, depth, container_name
+                 FROM lsp_symbols
+-                WHERE repo_root = :repo_root
++                WHERE (
++                        repo_root = :repo_root
++                        OR repo_root IN (
++                            SELECT DISTINCT repo_root
++                            FROM collected_files_l1
++                            WHERE scope_repo_root = :repo_root
++                              AND is_deleted = 0
++                        )
++                    )
+                   AND name LIKE :query_like
+                   {where_prefix}
+
+thinking
+**Checking data layer repository**
+thinking
+**Checking data layer repository**
+exec
+/bin/zsh -lc 'git -C /Users/vendys-chulhan/Documents/study/sari diff -- src/sari/db/repositories/tool_data_layer_repository.py' in /Users/vendys-chulhan/Documents/study/sari succeeded in 52ms:
+diff --git a/src/sari/db/repositories/tool_data_layer_repository.py b/src/sari/db/repositories/tool_data_layer_repository.py
+index b718991..3439734 100644
+--- a/src/sari/db/repositories/tool_data_layer_repository.py
++++ b/src/sari/db/repositories/tool_data_layer_repository.py
+@@ -20,6 +20,7 @@ class ToolDataLayerRepository:
+         *,
+         workspace_id: str,
+         repo_root: str,
++        scope_repo_root: str | None = None,
+         relative_path: str,
+         content_hash: str,
+         symbols: list[dict[str, object]],
+@@ -32,6 +33,7 @@ class ToolDataLayerRepository:
+                 {
+                     "workspace_id": workspace_id,
+                     "repo_root": repo_root,
++                    "scope_repo_root": scope_repo_root,
+                     "relative_path": relative_path,
+                     "content_hash": content_hash,
+                     "symbols": symbols,
+
+thinking
+**Inspecting repository scope handling**
+thinking
+**Inspecting repository scope handling**
+exec
+/bin/zsh -lc 'git -C /Users/vendys-chulhan/Documents/study/sari diff -- src/sari/db/repositories/file_body_repository.py' in /Users/vendys-chulhan/Documents/study/sariexec
+/bin/zsh -lc 'git -C /Users/vendys-chulhan/Documents/study/sari diff -- src/sari/db/repositories/candidate_index_change_repository.py' in /Users/vendys-chulhan/Documents/study/sariexec
+/bin/zsh -lc 'git -C /Users/vendys-chulhan/Documents/study/sari diff -- src/sari/db/repositories/file_enrich_queue_repository.py' in /Users/vendys-chulhan/Documents/study/sari succeeded in 52ms:
+diff --git a/src/sari/db/repositories/file_body_repository.py b/src/sari/db/repositories/file_body_repository.py
+index 4f27167..ac1215d 100644
+--- a/src/sari/db/repositories/file_body_repository.py
++++ b/src/sari/db/repositories/file_body_repository.py
+@@ -36,14 +36,15 @@ class FileBodyRepository:
+             conn.execute(
+                 """
+                 INSERT INTO collected_file_bodies_l2(
+-                    repo_root, relative_path, content_hash, content_zlib, content_len,
++                    repo_root, scope_repo_root, relative_path, content_hash, content_zlib, content_len,
+                     normalized_text, created_at, updated_at
+                 )
+                 VALUES(
+-                    :repo_root, :relative_path, :content_hash, :content_zlib, :content_len,
++                    :repo_root, :scope_repo_root, :relative_path, :content_hash, :content_zlib, :content_len,
+                     :normalized_text, :created_at, :updated_at
+                 )
+                 ON CONFLICT(repo_root, relative_path, content_hash) DO UPDATE SET
++                    scope_repo_root = excluded.scope_repo_root,
+                     content_zlib = excluded.content_zlib,
+ succeeded in 51ms:
+diff --git a/src/sari/db/repositories/file_enrich_queue_repository.py b/src/sari/db/repositories/file_enrich_queue_repository.py
+index 6322cd5..287c890 100644
+--- a/src/sari/db/repositories/file_enrich_queue_repository.py
++++ b/src/sari/db/repositories/file_enrich_queue_repository.py
+@@ -27,14 +27,17 @@ class FileEnrichQueueRepository:
+         enqueue_source: str,
+         now_iso: str,
+         repo_id: str | None = None,
++        scope_repo_root: str | None = None,
+     ) -> str:
+         """L2 본문 보강 큐 작업을 적재한다."""
+         resolved_repo_id = repo_id if repo_id is not None and repo_id.strip() != "" else f"r_{uuid.uuid5(uuid.NAMESPACE_URL, repo_root).hex[:20]}"
++        resolved_scope_repo_root = scope_repo_root if scope_repo_root is not None and scope_repo_root.strip() != "" else repo_root
+         job_id = str(uuid.uuid4())
+         job = FileEnrichJobDTO(
+             job_id=job_id,
+             repo_id=resolved_repo_id,
+             repo_root=repo_root,
++            scope_repo_root=resolved_scope_repo_root,
+             relative_path=relative_path,
+ succeeded in 52ms:
+diff --git a/src/sari/db/repositories/candidate_index_change_repository.py b/src/sari/db/repositories/candidate_index_change_repository.py
+index 34c1f4b..6fbff45 100644
+--- a/src/sari/db/repositories/candidate_index_change_repository.py
++++ b/src/sari/db/repositories/candidate_index_change_repository.py
+@@ -74,11 +74,11 @@ class CandidateIndexChangeRepository:
+             cursor = conn.execute(
+                 """
+                 INSERT INTO candidate_index_changes(
+-                    change_type, status, repo_id, repo_root, relative_path, absolute_path,
++                    change_type, status, repo_id, repo_root, scope_repo_root, relative_path, absolute_path,
+                     content_hash, mtime_ns, size_bytes, event_source, reason, created_at, updated_at
+                 )
+                 VALUES(
+-                    'UPSERT', 'PENDING', :repo_id, :repo_root, :relative_path, :absolute_path,
++                    'UPSERT', 'PENDING', :repo_id, :repo_root, :scope_repo_root, :relative_path, :absolute_path,
+                     :content_hash, :mtime_ns, :size_bytes, :event_source, NULL, :recorded_at, :recorded_at
+                 )
+                 """,
+@@ -134,17 +134,18 @@ class CandidateIndexChangeRepository:
+             cursor = conn.execute(
+
+thinking
+**Checking scope usage in other repos**
+thinking
+**Checking scope usage in other repos**
+exec
+/bin/zsh -lc 'git -C /Users/vendys-chulhan/Documents/study/sari diff -- src/sari/mcp/tools/status_tool.py' in /Users/vendys-chulhan/Documents/study/sariexec
+/bin/zsh -lc 'git -C /Users/vendys-chulhan/Documents/study/sari diff -- src/sari/db/repositories/pipeline_quality_repository.py' in /Users/vendys-chulhan/Documents/study/sariexec
+/bin/zsh -lc 'git -C /Users/vendys-chulhan/Documents/study/sari diff -- src/sari/services/pipeline_quality_service.py' in /Users/vendys-chulhan/Documents/study/sari succeeded in 51ms:
+diff --git a/src/sari/mcp/tools/status_tool.py b/src/sari/mcp/tools/status_tool.py
+index feeb139..7a1f20a 100644
+--- a/src/sari/mcp/tools/status_tool.py
++++ b/src/sari/mcp/tools/status_tool.py
+@@ -117,12 +117,16 @@ class StatusTool:
+         warnings_payload = [warning.to_dict() for warning in validation.warnings]
+         repo_root = str(arguments["repo"])
+         runtime = self._runtime_repo.get_runtime()
+-        repo_stats = self._file_repo.get_repo_stats()
+-        file_count = 0
+-        for stat in repo_stats:
+-            if str(stat.get("repo", "")) == repo_root:
+-                file_count = int(stat.get("file_count", 0))
+-                break
++        file_count = self._file_repo.count_active_files_by_scope(scope_repo_root=repo_root)
++        module_repo_count = self._file_repo.count_distinct_repo_roots_by_scope(scope_repo_root=repo_root)
++        if file_count == 0:
++            # fanout 이전/혼합 데이터에서는 module row가 repo_root 기준으로만 존재할 수 있다.
++            # list_files/read_file과 동일한 하위호환 계약을 위해 repo_root 카운트로 폴백한다.
++            repo_file_count = self._file_repo.count_active_files(repo_root=repo_root)
+ succeeded in 51ms:
+diff --git a/src/sari/db/repositories/pipeline_quality_repository.py b/src/sari/db/repositories/pipeline_quality_repository.py
+index 4ddbb25..6ccdbff 100644
+--- a/src/sari/db/repositories/pipeline_quality_repository.py
++++ b/src/sari/db/repositories/pipeline_quality_repository.py
+@@ -17,22 +17,30 @@ class PipelineQualityRepository:
+         """저장소 DB 경로를 저장한다."""
+         self._db_path = db_path
+ 
+-    def create_run(self, repo_root: str, limit_files: int, profile: str, started_at: str) -> str:
++    def create_run(
++        self,
++        repo_root: str,
++        limit_files: int,
++        profile: str,
++        started_at: str,
++        scope_repo_root: str | None = None,
++    ) -> str:
+         """신규 품질 실행을 생성한다."""
+         run_id = str(uuid.uuid4())
+         with connect(self._db_path) as conn:
+ succeeded in 51ms:
+diff --git a/src/sari/services/pipeline_quality_service.py b/src/sari/services/pipeline_quality_service.py
+index 88b7a85..b5b3a48 100644
+--- a/src/sari/services/pipeline_quality_service.py
++++ b/src/sari/services/pipeline_quality_service.py
+@@ -254,9 +254,18 @@ class PipelineQualityService:
+         except ValueError as exc:
+             raise QualityError(ErrorContext(code="ERR_INVALID_LANGUAGE_FILTER", message=str(exc))) from exc
+         started_at = now_iso8601_utc()
+-        run_id = self._quality_repo.create_run(repo_root=root, limit_files=limit_files, profile=profile, started_at=started_at)
++        run_id = self._quality_repo.create_run(
++            repo_root=root,
++            scope_repo_root=root,
++            limit_files=limit_files,
++            profile=profile,
++            started_at=started_at,
++        )
+         try:
+-            files = self._file_repo.list_files(repo_root=root, limit=limit_files)
++            files = self._file_repo.list_files_by_scope(scope_repo_root=root, limit=limit_files)
++            if len(files) == 0:
+
+thinking
+**Reviewing app directory**
+thinking
+**Reviewing app directory**
+exec
+/bin/zsh -lc 'git -C /Users/vendys-chulhan/Documents/study/sari diff -- src/sari/http/app.py src/sari/mcp/tools/search_tool.py src/sari/mcp/tools/admin_tools.py' in /Users/vendys-chulhan/Documents/study/sari succeeded in 51ms:
+diff --git a/src/sari/http/app.py b/src/sari/http/app.py
+index f18ce1e..1c90d6b 100644
+--- a/src/sari/http/app.py
++++ b/src/sari/http/app.py
+@@ -331,9 +331,12 @@ def _build_search_item_payload(context: HttpContext, repo_root: str, item: objec
+     workspace = context.workspace_repo.get_by_path(repo_root)
+     if workspace is None:
+         return payload
++    effective_repo_root = getattr(item, "repo", repo_root)
++    if not isinstance(effective_repo_root, str) or effective_repo_root.strip() == "":
++        effective_repo_root = repo_root
+     snapshot = ToolDataLayerRepository(db_path).load_effective_snapshot(
+         workspace_id=workspace.path,
+-        repo_root=repo_root,
++        repo_root=effective_repo_root,
+         relative_path=relative_path,
+         content_hash=content_hash,
+     )
+diff --git a/src/sari/mcp/tools/admin_tools.py b/src/sari/mcp/tools/admin_tools.py
+index be4d094..8e15afd 100644
+
+thinking
+**Investigating scope persistence bug**
+thinking
+**Investigating scope persistence bug**
+exec
+/bin/zsh -lc 'git -C /Users/vendys-chulhan/Documents/study/sari diff -- src/sari/db/repositories/pipeline_perf_repository.py' in /Users/vendys-chulhan/Documents/study/sariexec
+/bin/zsh -lc 'git -C /Users/vendys-chulhan/Documents/study/sari diff -- src/sari/db/repositories/pipeline_lsp_matrix_repository.py' in /Users/vendys-chulhan/Documents/study/sariexec
+/bin/zsh -lc 'git -C /Users/vendys-chulhan/Documents/study/sari diff -- src/sari/db/repositories/pipeline_error_event_repository.py' in /Users/vendys-chulhan/Documents/study/sari succeeded in 52ms:
+diff --git a/src/sari/db/repositories/pipeline_perf_repository.py b/src/sari/db/repositories/pipeline_perf_repository.py
+index 4e90c64..18a7618 100644
+--- a/src/sari/db/repositories/pipeline_perf_repository.py
++++ b/src/sari/db/repositories/pipeline_perf_repository.py
+@@ -24,15 +24,16 @@ class PipelinePerfRepository:
+             conn.execute(
+                 """
+                 INSERT INTO pipeline_perf_runs(
+-                    run_id, repo_root, target_files, profile, started_at, finished_at, status, summary_json
++                    run_id, repo_root, scope_repo_root, target_files, profile, started_at, finished_at, status, summary_json
+                 )
+                 VALUES(
+-                    :run_id, :repo_root, :target_files, :profile, :started_at, NULL, 'RUNNING', NULL
++                    :run_id, :repo_root, :scope_repo_root, :target_files, :profile, :started_at, NULL, 'RUNNING', NULL
+                 )
+                 """,
+                 {
+                     "run_id": run_id,
+                     "repo_root": repo_root,
++                    "scope_repo_root": repo_root,
+ succeeded in 52ms:
+diff --git a/src/sari/db/repositories/pipeline_error_event_repository.py b/src/sari/db/repositories/pipeline_error_event_repository.py
+index 704bf41..04df7fd 100644
+--- a/src/sari/db/repositories/pipeline_error_event_repository.py
++++ b/src/sari/db/repositories/pipeline_error_event_repository.py
+@@ -46,14 +46,14 @@ class PipelineErrorEventRepository:
+                 INSERT INTO pipeline_error_events(
+                     event_id, occurred_at, component, phase, severity,
+                     scope_type,
+-                    repo_root, relative_path, job_id, attempt_count,
++                    repo_root, scope_repo_root, relative_path, job_id, attempt_count,
+                     error_code, error_message, error_type, stacktrace_text, context_json,
+                     worker_name, run_mode, resolved, resolved_at
+                 )
+                 VALUES(
+                     :event_id, :occurred_at, :component, :phase, :severity,
+                     :scope_type,
+-                    :repo_root, :relative_path, :job_id, :attempt_count,
++                    :repo_root, :scope_repo_root, :relative_path, :job_id, :attempt_count,
+                     :error_code, :error_message, :error_type, :stacktrace_text, :context_json,
+                     :worker_name, :run_mode, 0, NULL
+ succeeded in 52ms:
+diff --git a/src/sari/db/repositories/pipeline_lsp_matrix_repository.py b/src/sari/db/repositories/pipeline_lsp_matrix_repository.py
+index 90050c4..6faeb89 100644
+--- a/src/sari/db/repositories/pipeline_lsp_matrix_repository.py
++++ b/src/sari/db/repositories/pipeline_lsp_matrix_repository.py
+@@ -31,15 +31,16 @@ class PipelineLspMatrixRepository:
+             conn.execute(
+                 """
+                 INSERT INTO pipeline_lsp_matrix_runs(
+-                    run_id, repo_root, required_languages_json, fail_on_unavailable, strict_symbol_gate, started_at, finished_at, status, summary_json
++                    run_id, repo_root, scope_repo_root, required_languages_json, fail_on_unavailable, strict_symbol_gate, started_at, finished_at, status, summary_json
+                 )
+                 VALUES(
+-                    :run_id, :repo_root, :required_languages_json, :fail_on_unavailable, :strict_symbol_gate, :started_at, NULL, 'RUNNING', NULL
++                    :run_id, :repo_root, :scope_repo_root, :required_languages_json, :fail_on_unavailable, :strict_symbol_gate, :started_at, NULL, 'RUNNING', NULL
+                 )
+                 """,
+                 {
+                     "run_id": run_id,
+                     "repo_root": repo_root,
++                    "scope_repo_root": repo_root,
+
+thinking
+**Considering repository scope insertion**
+thinking
+**Considering repository scope insertion**
+exec
+/bin/zsh -lc 'git -C /Users/vendys-chulhan/Documents/study/sari diff -- src/sari/db/repositories/symbol_importance_repository.py' in /Users/vendys-chulhan/Documents/study/sariexec
+/bin/zsh -lc 'git -C /Users/vendys-chulhan/Documents/study/sari diff -- src/sari/db/repositories/tool_readiness_repository.py' in /Users/vendys-chulhan/Documents/study/sariexec
+/bin/zsh -lc 'git -C /Users/vendys-chulhan/Documents/study/sari diff -- src/sari/db/repositories/vector_embedding_repository.py' in /Users/vendys-chulhan/Documents/study/sari succeeded in 51ms:
+diff --git a/src/sari/db/repositories/symbol_importance_repository.py b/src/sari/db/repositories/symbol_importance_repository.py
+index 89e6667..9b0b6f8 100644
+--- a/src/sari/db/repositories/symbol_importance_repository.py
++++ b/src/sari/db/repositories/symbol_importance_repository.py
+@@ -48,15 +48,17 @@ class SymbolImportanceRepository:
+         with connect(self._db_path) as conn:
+             conn.execute(
+                 """
+-                INSERT INTO symbol_importance_cache(repo_root, symbol_name, reference_count, revision_epoch, updated_at)
+-                VALUES(:repo_root, :symbol_name, :reference_count, :revision_epoch, :updated_at)
++                INSERT INTO symbol_importance_cache(repo_root, scope_repo_root, symbol_name, reference_count, revision_epoch, updated_at)
++                VALUES(:repo_root, :scope_repo_root, :symbol_name, :reference_count, :revision_epoch, :updated_at)
+                 ON CONFLICT(repo_root, symbol_name) DO UPDATE SET
++                    scope_repo_root = excluded.scope_repo_root,
+                     reference_count = excluded.reference_count,
+                     revision_epoch = excluded.revision_epoch,
+                     updated_at = excluded.updated_at
+                 """,
+                 {
+                     "repo_root": repo_root,
+ succeeded in 52ms:
+diff --git a/src/sari/db/repositories/vector_embedding_repository.py b/src/sari/db/repositories/vector_embedding_repository.py
+index c11dc6d..27ddc98 100644
+--- a/src/sari/db/repositories/vector_embedding_repository.py
++++ b/src/sari/db/repositories/vector_embedding_repository.py
+@@ -31,18 +31,20 @@ class VectorEmbeddingRepository:
+             conn.execute(
+                 """
+                 INSERT INTO file_embeddings(
+-                    repo_root, relative_path, content_hash, model_id, dim, vector_json, updated_at
++                    repo_root, scope_repo_root, relative_path, content_hash, model_id, dim, vector_json, updated_at
+                 )
+                 VALUES(
+-                    :repo_root, :relative_path, :content_hash, :model_id, :dim, :vector_json, :updated_at
++                    :repo_root, :scope_repo_root, :relative_path, :content_hash, :model_id, :dim, :vector_json, :updated_at
+                 )
+                 ON CONFLICT(repo_root, relative_path, content_hash, model_id) DO UPDATE SET
++                    scope_repo_root = excluded.scope_repo_root,
+                     dim = excluded.dim,
+                     vector_json = excluded.vector_json,
+                     updated_at = excluded.updated_at
+ succeeded in 52ms:
+diff --git a/src/sari/db/repositories/tool_readiness_repository.py b/src/sari/db/repositories/tool_readiness_repository.py
+index bb65bca..f14af57 100644
+--- a/src/sari/db/repositories/tool_readiness_repository.py
++++ b/src/sari/db/repositories/tool_readiness_repository.py
+@@ -22,16 +22,17 @@ class ToolReadinessRepository:
+             conn.execute(
+                 """
+                 INSERT INTO tool_readiness_state(
+-                    repo_root, relative_path, content_hash,
++                    repo_root, scope_repo_root, relative_path, content_hash,
+                     list_files_ready, read_file_ready, search_symbol_ready, get_callers_ready,
+                     consistency_ready, quality_ready, tool_ready, last_reason, updated_at
+                 )
+                 VALUES(
+-                    :repo_root, :relative_path, :content_hash,
++                    :repo_root, :scope_repo_root, :relative_path, :content_hash,
+                     :list_files_ready, :read_file_ready, :search_symbol_ready, :get_callers_ready,
+                     :consistency_ready, :quality_ready, :tool_ready, :last_reason, :updated_at
+                 )
+                 ON CONFLICT(repo_root, relative_path) DO UPDATE SET
+
+thinking
+**Inspecting service collection diffs**
+thinking
+**Inspecting service collection diffs**
+exec
+/bin/zsh -lc 'git -C /Users/vendys-chulhan/Documents/study/sari diff -- src/sari/services/collection/l3_language_processors/scala_processor.py' in /Users/vendys-chulhan/Documents/study/sariexec
+/bin/zsh -lc 'git -C /Users/vendys-chulhan/Documents/study/sari diff -- src/sari/services/collection/l3_treesitter_preprocess_service.py' in /Users/vendys-chulhan/Documents/study/sariexec
+/bin/zsh -lc 'git -C /Users/vendys-chulhan/Documents/study/sari diff -- src/sari/services/collection/l3_language_processor_registry.py' in /Users/vendys-chulhan/Documents/study/sariexec
+/bin/zsh -lc 'git -C /Users/vendys-chulhan/Documents/study/sari diff -- src/sari/services/collection/l3_tree_sitter_outline.py' in /Users/vendys-chulhan/Documents/study/sari succeeded in 51ms:
+
+ succeeded in 52ms:
+diff --git a/src/sari/services/collection/l3_language_processor_registry.py b/src/sari/services/collection/l3_language_processor_registry.py
+index df6de52..1bed83f 100644
+--- a/src/sari/services/collection/l3_language_processor_registry.py
++++ b/src/sari/services/collection/l3_language_processor_registry.py
+@@ -8,6 +8,7 @@ from .l3_language_processors.java_processor import JavaL3LanguageProcessor
+ from .l3_language_processors.javascript_processor import JavaScriptL3LanguageProcessor
+ from .l3_language_processors.kotlin_processor import KotlinL3LanguageProcessor
+ from .l3_language_processors.python_processor import PythonL3LanguageProcessor
++from .l3_language_processors.scala_processor import ScalaL3LanguageProcessor
+ from .l3_language_processors.typescript_processor import TypeScriptL3LanguageProcessor
+ from .l3_language_processors.vue_processor import VueL3LanguageProcessor
+ 
+@@ -21,6 +22,7 @@ class L3LanguageProcessorRegistry:
+             PythonL3LanguageProcessor(),
+             JavaL3LanguageProcessor(),
+             KotlinL3LanguageProcessor(),
++            ScalaL3LanguageProcessor(),
+             TypeScriptL3LanguageProcessor(),
+             JavaScriptL3LanguageProcessor(),
+         )
+ succeeded in 51ms:
+diff --git a/src/sari/services/collection/l3_tree_sitter_outline.py b/src/sari/services/collection/l3_tree_sitter_outline.py
+index 0feae78..1a75979 100644
+--- a/src/sari/services/collection/l3_tree_sitter_outline.py
++++ b/src/sari/services/collection/l3_tree_sitter_outline.py
+@@ -36,6 +36,7 @@ class TreeSitterOutlineExtractor:
+         "kt": "kotlin",
+         "kts": "kotlin",
+         "kotlin": "kotlin",
++        "scala": "scala",
+         "vue": "typescript",
+     }
+     _FALLBACK_LANGUAGE_LOADERS = {
+@@ -44,6 +45,7 @@ class TreeSitterOutlineExtractor:
+         "javascript": ("tree_sitter_javascript", "language"),
+         "typescript": ("tree_sitter_typescript", "language_typescript"),
+         "kotlin": ("tree_sitter_kotlin", "language"),
++        "scala": ("tree_sitter_scala", "language"),
+     }
+     _QUERY_LANGUAGE_PACKAGES = {
+         "python": "tree_sitter_python",
+ succeeded in 52ms:
+diff --git a/src/sari/services/collection/l3_treesitter_preprocess_service.py b/src/sari/services/collection/l3_treesitter_preprocess_service.py
+index d367353..c153455 100644
+--- a/src/sari/services/collection/l3_treesitter_preprocess_service.py
++++ b/src/sari/services/collection/l3_treesitter_preprocess_service.py
+@@ -59,6 +59,12 @@ class L3TreeSitterPreprocessService:
+             (r"^\s*(?:public\s+)?(?:abstract\s+)?class\s+([A-Za-z_][A-Za-z0-9_]*)\b", "class"),
+             (r"^\s*(?:public|protected|private)?\s*(?:static\s+)?[A-Za-z_<>\[\]]+\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", "method"),
+         ),
++        "scala": (
++            (r"^\s*package\s+([A-Za-z_][A-Za-z0-9_\.]*)\b", "module"),
++            (r"^\s*(?:sealed\s+|final\s+|case\s+|abstract\s+)*(?:class|trait|object|enum)\s+([A-Za-z_][A-Za-z0-9_]*)\b", "class"),
++            (r"^\s*def\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[|\()", "method"),
++            (r"^\s*(?:lazy\s+)?(?:val|var)\s+([A-Za-z_][A-Za-z0-9_]*)\b", "field"),
++        ),
+     }
+     _IMPORT_LIKE = re.compile(r"^\s*(?:import|from\s+\S+\s+import|using|use|require\(|#include)\b", re.MULTILINE)
+     _CROSS_FILE_HINT = re.compile(r"\b(?:extends|implements|::|->|\.)\b")
+
+thinking
+**Using git show for new file diff**
+thinking
+**Using git show for new file diff**
+exec
+/bin/zsh -lc 'cat /Users/vendys-chulhan/Documents/study/sari/src/sari/services/collection/l3_language_processors/scala_processor.py' in /Users/vendys-chulhan/Documents/study/sari succeeded in 51ms:
+"""Scala language processor."""
+
+from __future__ import annotations
+
+from .base import BaseL3LanguageProcessor, _BaseConfig
+
+
+class ScalaL3LanguageProcessor(BaseL3LanguageProcessor):
+    def __init__(self) -> None:
+        super().__init__(
+            _BaseConfig(
+                name="scala",
+                extensions=(".scala", ".sbt"),
+                pattern_key="scala",
+                min_symbols_for_l3_only=2,
+            )
+        )
+
+
+thinking
+**Analyzing potential subtle bugs around scope and fallback logic**
+thinking
+**Analyzing potential subtle bugs around scope and fallback logic**
+exec
+/bin/zsh -lc 'git -C /Users/vendys-chulhan/Documents/study/sari diff -- tests/unit/test_file_collection_soc_delegation.py' in /Users/vendys-chulhan/Documents/study/sari succeeded in 52ms:
+diff --git a/tests/unit/test_file_collection_soc_delegation.py b/tests/unit/test_file_collection_soc_delegation.py
+index 5de0b75..5469cbd 100644
+--- a/tests/unit/test_file_collection_soc_delegation.py
++++ b/tests/unit/test_file_collection_soc_delegation.py
+@@ -3,8 +3,9 @@
+ from __future__ import annotations
+ 
+ from pathlib import Path
++import zlib
+ 
+-from sari.core.models import CollectionPolicyDTO, CollectionScanResultDTO, PipelineMetricsDTO
++from sari.core.models import CollectedFileBodyDTO, CollectionPolicyDTO, CollectionScanResultDTO, PipelineMetricsDTO
+ from sari.db.repositories.file_body_repository import FileBodyRepository
+ from sari.db.repositories.file_collection_repository import FileCollectionRepository
+ from sari.db.repositories.file_enrich_queue_repository import FileEnrichQueueRepository
+@@ -244,3 +245,112 @@ def test_file_collection_service_watcher_signal_updates_hotness_and_broker_can_g
+     assert lease.granted is True
+     assert lease.lane == "hot"
+     service._lsp_session_broker.release_lease(lease)  # noqa: SLF001
++
+
+thinking
+**Examining scope assignment in delete logic**
+thinking
+**Examining scope assignment in delete logic**
+exec
+/bin/zsh -lc 'grep -n "record_delete" -n src/sari/services/collection/scanner.py src/sari/db/repositories/candidate_index_change_repository.py src/sari/services/file_collection_service.py' in /Users/vendys-chulhan/Documents/study/sari succeeded in 52ms:
+src/sari/services/file_collection_service.py:57:    def record_delete(self, repo_root: str, relative_path: str, reason: str) -> None:
+
+thinking
+**Checking scanner usage**
+thinking
+**Checking scanner usage**
+exec
+/bin/zsh -lc "grep -n \"candidate_index_sink\\|mark_missing_as_deleted\\|record_delete\" src/sari/services/collection/scanner.py" in /Users/vendys-chulhan/Documents/study/sari succeeded in 52ms:
+54:        candidate_index_sink: object | None,
+73:        self._candidate_index_sink = candidate_index_sink
+214:            if self._candidate_index_sink is not None:
+246:        deleted_count = self._file_repo.mark_missing_as_deleted(str(root), seen_paths, now_iso, scan_started_at=scan_started_at)
+248:        if self._candidate_index_sink is not None and deleted_count > 0:
+249:            self._candidate_index_sink.mark_repo_dirty(str(root))
+341:        if self._candidate_index_sink is not None:
+342:            self._candidate_index_sink.record_upsert(
+398:        if self._candidate_index_sink is not None and len(candidate_changes) > 0:
+400:                self._candidate_index_sink.record_upsert(change)
+
+thinking
+**Noticing removal of delete records**
+thinking
+**Noticing removal of delete records**
+exec
+/bin/zsh -lc "sed -n '360,430p' /Users/vendys-chulhan/Documents/study/sari/src/sari/services/collection/scanner.py" in /Users/vendys-chulhan/Documents/study/sari succeeded in 52ms:
+        if len(jobs) == 0:
+            return []
+        worker_count = min(self._scan_hash_max_workers, max(1, os.cpu_count() or 1), len(jobs))
+        with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="scan-hash") as executor:
+            return list(executor.map(self._compute_scan_hash, jobs))
+
+    def _compute_scan_hash(self, job: _ScanHashJobDTO) -> _ScanHashResultDTO:
+        """단일 파일 해시를 계산한다."""
+        try:
+            raw_bytes = Path(job.absolute_path).read_bytes()
+        except OSError as exc:
+            raise CollectionError(ErrorContext(code="ERR_SCAN_READ_FAILED", message=f"scan read failed: {job.relative_path}: {exc}")) from exc
+        content_hash = hashlib.sha256(raw_bytes).hexdigest()
+        return _ScanHashResultDTO(
+            repo_id=job.repo_id,
+            repo_root=job.repo_root,
+            relative_path=job.relative_path,
+            absolute_path=job.absolute_path,
+            repo_label=job.repo_label,
+            mtime_ns=job.mtime_ns,
+
+thinking
+**Inspecting query files and migrations**
+thinking
+**Inspecting query files and migrations**
+exec
+/bin/zsh -lc "find /Users/vendys-chulhan/Documents/study/sari/src/sari/services/collection/assets/queries/scala -type f -maxdepth 3 -print -exec sed -n '1,120p' {} \\;" in /Users/vendys-chulhan/Documents/study/sari succeeded in 51ms:
+/Users/vendys-chulhan/Documents/study/sari/src/sari/services/collection/assets/queries/scala/outline.scm
+(package_clause (package_identifier) @name) @symbol.module
+(class_definition name: (identifier) @name) @symbol.class
+(trait_definition name: (identifier) @name) @symbol.interface
+(object_definition name: (identifier) @name) @symbol.class
+(enum_definition name: (identifier) @name) @symbol.enum
+(function_definition name: (identifier) @name) @symbol.method
+(function_declaration name: (identifier) @name) @symbol.method
+(val_definition (identifier) @name) @symbol.field
+(var_definition (identifier) @name) @symbol.field
+
+thinking
+**Identifying need for mapping file**
+thinking
+**Identifying need for mapping file**
+exec
+/bin/zsh -lc 'cat /Users/vendys-chulhan/Documents/study/sari/src/sari/services/collection/assets/mappings/scala.yaml' in /Users/vendys-chulhan/Documents/study/sari succeeded in 52ms:
+{
+  "capture_to_kind": {
+    "symbol.module": "module",
+    "symbol.class": "class",
+    "symbol.interface": "interface",
+    "symbol.enum": "enum",
+    "symbol.method": "method",
+    "symbol.field": "field"
+  },
+  "kind_bucket_map": {
+    "module": "module",
+    "class": "class",
+    "trait": "interface",
+    "interface": "interface",
+    "enum": "enum",
+    "object": "class",
+    "method": "method",
+    "function": "method",
+    "field": "field",
+    "variable": "field",
+
+[timeout] command exceeded timeout

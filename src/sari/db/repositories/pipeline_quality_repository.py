@@ -17,22 +17,30 @@ class PipelineQualityRepository:
         """저장소 DB 경로를 저장한다."""
         self._db_path = db_path
 
-    def create_run(self, repo_root: str, limit_files: int, profile: str, started_at: str) -> str:
+    def create_run(
+        self,
+        repo_root: str,
+        limit_files: int,
+        profile: str,
+        started_at: str,
+        scope_repo_root: str | None = None,
+    ) -> str:
         """신규 품질 실행을 생성한다."""
         run_id = str(uuid.uuid4())
         with connect(self._db_path) as conn:
             conn.execute(
                 """
                 INSERT INTO pipeline_quality_runs(
-                    run_id, repo_root, limit_files, profile, started_at, finished_at, status, summary_json
+                    run_id, repo_root, scope_repo_root, limit_files, profile, started_at, finished_at, status, summary_json
                 )
                 VALUES(
-                    :run_id, :repo_root, :limit_files, :profile, :started_at, NULL, 'RUNNING', NULL
+                    :run_id, :repo_root, :scope_repo_root, :limit_files, :profile, :started_at, NULL, 'RUNNING', NULL
                 )
                 """,
                 {
                     "run_id": run_id,
                     "repo_root": repo_root,
+                    "scope_repo_root": scope_repo_root or repo_root,
                     "limit_files": limit_files,
                     "profile": profile,
                     "started_at": started_at,
@@ -61,17 +69,29 @@ class PipelineQualityRepository:
             )
             conn.commit()
 
-    def get_latest_run(self) -> dict[str, object] | None:
+    def get_latest_run(self, scope_repo_root: str | None = None) -> dict[str, object] | None:
         """최신 품질 실행 결과를 반환한다."""
         with connect(self._db_path) as conn:
-            row = conn.execute(
-                """
-                SELECT run_id, repo_root, limit_files, profile, started_at, finished_at, status, summary_json
-                FROM pipeline_quality_runs
-                ORDER BY started_at DESC
-                LIMIT 1
-                """
-            ).fetchone()
+            if scope_repo_root is None or scope_repo_root.strip() == "":
+                row = conn.execute(
+                    """
+                    SELECT run_id, repo_root, scope_repo_root, limit_files, profile, started_at, finished_at, status, summary_json
+                    FROM pipeline_quality_runs
+                    ORDER BY started_at DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """
+                    SELECT run_id, repo_root, scope_repo_root, limit_files, profile, started_at, finished_at, status, summary_json
+                    FROM pipeline_quality_runs
+                    WHERE scope_repo_root = :scope_repo_root
+                    ORDER BY started_at DESC
+                    LIMIT 1
+                    """,
+                    {"scope_repo_root": scope_repo_root},
+                ).fetchone()
         if row is None:
             return None
 
@@ -85,6 +105,7 @@ class PipelineQualityRepository:
         return {
             "run_id": row_str(row, "run_id"),
             "repo_root": row_str(row, "repo_root"),
+            "scope_repo_root": row_str(row, "scope_repo_root"),
             "limit_files": row_int(row, "limit_files"),
             "profile": row_str(row, "profile"),
             "started_at": row_str(row, "started_at"),

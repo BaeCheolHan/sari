@@ -205,10 +205,12 @@ class CandidateIndexChangeDTO:
     size_bytes: int
     event_source: str
     recorded_at: str
+    scope_repo_root: str | None = None
     def to_sql_params(self) -> dict[str, object]:
         return {
             "repo_id": self.repo_id,
             "repo_root": self.repo_root,
+            "scope_repo_root": self.scope_repo_root or self.repo_root,
             "relative_path": self.relative_path,
             "absolute_path": self.absolute_path,
             "content_hash": self.content_hash,
@@ -233,6 +235,7 @@ class CandidateIndexChangeLogDTO:
     reason: str | None
     created_at: str
     updated_at: str
+    scope_repo_root: str | None = None
 @dataclass(frozen=True)
 class RankingComponentsDTO:
     """검색 점수 구성요소를 표현한다."""
@@ -294,10 +297,12 @@ class CollectedFileL1DTO:
     last_seen_at: str
     updated_at: str
     enrich_state: str
+    scope_repo_root: str | None = None
     def to_sql_params(self) -> dict[str, object]:
         return {
             "repo_id": self.repo_id,
             "repo_root": self.repo_root,
+            "scope_repo_root": self.scope_repo_root or self.repo_root,
             "relative_path": self.relative_path,
             "absolute_path": self.absolute_path,
             "repo_label": self.repo_label,
@@ -332,11 +337,13 @@ class FileEnrichJobDTO:
     scope_level: str | None = None
     scope_root: str | None = None
     scope_attempts: int = 0
+    scope_repo_root: str | None = None
     def to_sql_params(self) -> dict[str, object]:
         return {
             "job_id": self.job_id,
             "repo_id": self.repo_id,
             "repo_root": self.repo_root,
+            "scope_repo_root": self.scope_repo_root or self.repo_root,
             "relative_path": self.relative_path,
             "content_hash": self.content_hash,
             "priority": self.priority,
@@ -373,6 +380,7 @@ class EnqueueRequestDTO:
     enqueue_source: str
     now_iso: str
     defer_reason: str | None = None
+    scope_repo_root: str | None = None
 @dataclass(frozen=True)
 class CollectedFileBodyDTO:
     repo_id: str
@@ -384,10 +392,12 @@ class CollectedFileBodyDTO:
     normalized_text: str
     created_at: str
     updated_at: str
+    scope_repo_root: str | None = None
     def to_sql_params(self) -> dict[str, object]:
         return {
             "repo_id": self.repo_id,
             "repo_root": self.repo_root,
+            "scope_repo_root": self.scope_repo_root or self.repo_root,
             "relative_path": self.relative_path,
             "content_hash": self.content_hash,
             "content_zlib": self.content_zlib,
@@ -410,9 +420,11 @@ class ToolReadinessStateDTO:
     tool_ready: bool
     last_reason: str
     updated_at: str
+    scope_repo_root: str | None = None
     def to_sql_params(self) -> dict[str, object]:
         return {
             "repo_root": self.repo_root,
+            "scope_repo_root": self.scope_repo_root or self.repo_root,
             "relative_path": self.relative_path,
             "content_hash": self.content_hash,
             "list_files_ready": 1 if self.list_files_ready else 0,
@@ -431,9 +443,11 @@ class EnrichStateUpdateDTO:
     relative_path: str
     enrich_state: str
     updated_at: str
+    scope_repo_root: str | None = None
     def to_sql_params(self) -> dict[str, object]:
         return {
             "repo_root": self.repo_root,
+            "scope_repo_root": self.scope_repo_root or self.repo_root,
             "relative_path": self.relative_path,
             "enrich_state": self.enrich_state,
             "updated_at": self.updated_at,
@@ -443,9 +457,11 @@ class FileBodyDeleteTargetDTO:
     repo_root: str
     relative_path: str
     content_hash: str
+    scope_repo_root: str | None = None
     def to_sql_params(self) -> dict[str, object]:
         return {
             "repo_root": self.repo_root,
+            "scope_repo_root": self.scope_repo_root or self.repo_root,
             "relative_path": self.relative_path,
             "content_hash": self.content_hash,
         }
@@ -457,6 +473,7 @@ class LspExtractPersistDTO:
     symbols: list[dict[str, object]]
     relations: list[dict[str, object]]
     created_at: str
+    scope_repo_root: str | None = None
 @dataclass(frozen=True)
 class FileListItemDTO:
     repo: str

@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from sari.db.migration import HEAD_VERSION, ensure_migrated
+from sari.db.repositories.pipeline_error_event_repository import PipelineErrorEventRepository
 from sari.db.schema import init_schema, connect
 
 
@@ -214,3 +215,140 @@ def test_init_schema_handles_legacy_db_missing_repo_id_columns(tmp_path: Path) -
     assert "repo_id" in queue_cols
     assert version_row is not None
     assert str(version_row["version_num"]) == HEAD_VERSION
+
+
+def test_ensure_migrated_handles_partial_legacy_schema_without_optional_tables(tmp_path: Path) -> None:
+    """부분 legacy 스키마(일부 optional 테이블 누락)에서도 migration이 중단되지 않아야 한다."""
+    db_path = tmp_path / "partial-legacy.db"
+    with connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS collected_files_l1 (
+                repo_root TEXT NOT NULL,
+                relative_path TEXT NOT NULL,
+                absolute_path TEXT NOT NULL,
+                repo_label TEXT NOT NULL,
+                mtime_ns INTEGER NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                content_hash TEXT NOT NULL,
+                is_deleted INTEGER NOT NULL DEFAULT 0,
+                last_seen_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                enrich_state TEXT NOT NULL,
+                PRIMARY KEY(repo_root, relative_path)
+            );
+            CREATE TABLE IF NOT EXISTS alembic_version (
+                version_num VARCHAR(32) NOT NULL PRIMARY KEY
+            );
+            DELETE FROM alembic_version;
+            INSERT INTO alembic_version(version_num) VALUES('20260222_0008');
+            """
+        )
+        conn.commit()
+
+    # optional 테이블(pipeline_error_events 등)이 없어도 예외 없이 완료되어야 한다.
+    ensure_migrated(db_path)
+
+    with connect(db_path) as conn:
+        version_row = conn.execute("SELECT version_num FROM alembic_version LIMIT 1").fetchone()
+        indexes = {
+            str(row["name"])
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='collected_files_l1'"
+            ).fetchall()
+        }
+    assert version_row is not None
+    assert str(version_row["version_num"]) == HEAD_VERSION
+    assert "idx_collected_files_l1_scope_repo" in indexes
+
+
+def test_ensure_migrated_handles_pipeline_error_events_null_repo_root(tmp_path: Path) -> None:
+    """pipeline_error_events.repo_root=NULL 레거시 행이 있어도 0012 백필이 실패하지 않아야 한다."""
+    db_path = tmp_path / "legacy-null-repo-root.db"
+    with connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS pipeline_error_events (
+                event_id TEXT PRIMARY KEY,
+                occurred_at TEXT NOT NULL,
+                component TEXT NOT NULL,
+                phase TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                scope_type TEXT NOT NULL DEFAULT 'GLOBAL',
+                repo_root TEXT NULL,
+                relative_path TEXT NULL,
+                job_id TEXT NULL,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                error_code TEXT NOT NULL DEFAULT '',
+                error_message TEXT NOT NULL DEFAULT '',
+                error_type TEXT NOT NULL DEFAULT '',
+                stacktrace_text TEXT NOT NULL DEFAULT '',
+                context_json TEXT NOT NULL DEFAULT '{}',
+                worker_name TEXT NOT NULL DEFAULT '',
+                run_mode TEXT NOT NULL DEFAULT 'prod',
+                resolved INTEGER NOT NULL DEFAULT 0,
+                resolved_at TEXT NULL
+            );
+            CREATE TABLE IF NOT EXISTS alembic_version (
+                version_num VARCHAR(32) NOT NULL PRIMARY KEY
+            );
+            DELETE FROM alembic_version;
+            INSERT INTO alembic_version(version_num) VALUES('20260222_0008');
+            INSERT INTO pipeline_error_events(
+                event_id, occurred_at, component, phase, severity, scope_type,
+                repo_root, relative_path, job_id, attempt_count,
+                error_code, error_message, error_type, stacktrace_text, context_json,
+                worker_name, run_mode, resolved, resolved_at
+            )
+            VALUES(
+                'e1', '2026-02-25T00:00:00+00:00', 'migration', 'seed', 'error', 'GLOBAL',
+                NULL, NULL, NULL, 0,
+                'ERR_SEED', 'seed error', 'RuntimeError', '', '{}',
+                'worker', 'test', 0, NULL
+            );
+            """
+        )
+        conn.commit()
+
+    ensure_migrated(db_path)
+
+    with connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT scope_repo_root
+            FROM pipeline_error_events
+            WHERE event_id = 'e1'
+            """
+        ).fetchone()
+        pragma_row = conn.execute(
+            """
+            SELECT name, type, "notnull"
+            FROM pragma_table_info('pipeline_error_events')
+            WHERE name = 'scope_repo_root'
+            """
+        ).fetchone()
+    assert row is not None
+    assert row["scope_repo_root"] is None
+    assert pragma_row is not None
+    assert int(pragma_row["notnull"]) == 0
+
+    repo = PipelineErrorEventRepository(db_path)
+    event_id = repo.record_event(
+        occurred_at="2026-02-25T00:10:00+00:00",
+        component="file_collection_service",
+        phase="legacy_migration_check",
+        severity="error",
+        repo_root=None,
+        relative_path=None,
+        job_id=None,
+        attempt_count=0,
+        error_code="ERR_GLOBAL_SAMPLE",
+        error_message="global error sample",
+        error_type="RuntimeError",
+        stacktrace_text="trace",
+        context_data={},
+        worker_name="worker",
+        run_mode="test",
+    )
+    assert isinstance(event_id, str)
+    assert len(event_id) > 0

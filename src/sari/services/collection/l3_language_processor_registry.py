@@ -8,6 +8,7 @@ from .l3_language_processors.java_processor import JavaL3LanguageProcessor
 from .l3_language_processors.javascript_processor import JavaScriptL3LanguageProcessor
 from .l3_language_processors.kotlin_processor import KotlinL3LanguageProcessor
 from .l3_language_processors.python_processor import PythonL3LanguageProcessor
+from .l3_language_processors.scala_processor import ScalaL3LanguageProcessor
 from .l3_language_processors.typescript_processor import TypeScriptL3LanguageProcessor
 from .l3_language_processors.vue_processor import VueL3LanguageProcessor
 
@@ -21,6 +22,7 @@ class L3LanguageProcessorRegistry:
             PythonL3LanguageProcessor(),
             JavaL3LanguageProcessor(),
             KotlinL3LanguageProcessor(),
+            ScalaL3LanguageProcessor(),
             TypeScriptL3LanguageProcessor(),
             JavaScriptL3LanguageProcessor(),
         )
@@ -44,6 +46,7 @@ class L3LanguageProcessorRegistry:
             "python": "python",
             "java": "java",
             "kotlin": "kotlin",
+            "scala": "scala",
             "javascript": "javascript",
             "js": "javascript",
             "typescript": "typescript",

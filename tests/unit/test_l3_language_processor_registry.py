@@ -49,3 +49,12 @@ def test_registry_resolves_kotlin_extension() -> None:
 
     assert processor.name == "kotlin"
     assert processor.pattern_key(relative_path="app/src/main/kotlin/App.kt") == "kotlin"
+
+
+def test_registry_resolves_scala_extension() -> None:
+    registry = L3LanguageProcessorRegistry()
+
+    processor = registry.resolve(relative_path="modules/core/src/main/scala/com/acme/App.scala")
+
+    assert processor.name == "scala"
+    assert processor.pattern_key(relative_path="modules/core/src/main/scala/com/acme/App.scala") == "scala"

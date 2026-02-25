@@ -315,7 +315,15 @@ class LspToolDataRepository:
                 SELECT repo_root, relative_path, name, kind, line, end_line, content_hash,
                        symbol_key, parent_symbol_key, depth, container_name
                 FROM lsp_symbols
-                WHERE repo_root = :repo_root
+                WHERE (
+                        repo_root = :repo_root
+                        OR repo_root IN (
+                            SELECT DISTINCT repo_root
+                            FROM collected_files_l1
+                            WHERE scope_repo_root = :repo_root
+                              AND is_deleted = 0
+                        )
+                    )
                   AND name LIKE :query_like
                   {where_prefix}
                 ORDER BY relative_path ASC, line ASC
@@ -348,7 +356,15 @@ class LspToolDataRepository:
                 """
                 SELECT repo_root, relative_path, from_symbol, to_symbol, line, content_hash
                 FROM lsp_call_relations
-                WHERE repo_root = :repo_root
+                WHERE (
+                        repo_root = :repo_root
+                        OR repo_root IN (
+                            SELECT DISTINCT repo_root
+                            FROM collected_files_l1
+                            WHERE scope_repo_root = :repo_root
+                              AND is_deleted = 0
+                        )
+                    )
                   AND to_symbol = :to_symbol
                 ORDER BY relative_path ASC, line ASC
                 LIMIT :limit
@@ -375,7 +391,15 @@ class LspToolDataRepository:
                 """
                 SELECT repo_root, relative_path, from_symbol, to_symbol, line, content_hash
                 FROM lsp_call_relations
-                WHERE repo_root = :repo_root
+                WHERE (
+                        repo_root = :repo_root
+                        OR repo_root IN (
+                            SELECT DISTINCT repo_root
+                            FROM collected_files_l1
+                            WHERE scope_repo_root = :repo_root
+                              AND is_deleted = 0
+                        )
+                    )
                   AND from_symbol = :from_symbol
                 ORDER BY relative_path ASC, line ASC
                 LIMIT :limit
@@ -402,7 +426,15 @@ class LspToolDataRepository:
                 SELECT repo_root, relative_path, name, kind, line, end_line, content_hash,
                        symbol_key, parent_symbol_key, depth, container_name
                 FROM lsp_symbols
-                WHERE repo_root = :repo_root
+                WHERE (
+                        repo_root = :repo_root
+                        OR repo_root IN (
+                            SELECT DISTINCT repo_root
+                            FROM collected_files_l1
+                            WHERE scope_repo_root = :repo_root
+                              AND is_deleted = 0
+                        )
+                    )
                   AND name LIKE :name_like
                 ORDER BY relative_path ASC, line ASC
                 LIMIT :limit
@@ -433,7 +465,15 @@ class LspToolDataRepository:
                 """
                 SELECT COUNT(*) AS symbol_count
                 FROM lsp_symbols
-                WHERE repo_root = :repo_root
+                WHERE (
+                        repo_root = :repo_root
+                        OR repo_root IN (
+                            SELECT DISTINCT repo_root
+                            FROM collected_files_l1
+                            WHERE scope_repo_root = :repo_root
+                              AND is_deleted = 0
+                        )
+                    )
                 """,
                 {"repo_root": repo_root},
             ).fetchone()
@@ -441,7 +481,15 @@ class LspToolDataRepository:
                 """
                 SELECT COUNT(*) AS relation_count
                 FROM lsp_call_relations
-                WHERE repo_root = :repo_root
+                WHERE (
+                        repo_root = :repo_root
+                        OR repo_root IN (
+                            SELECT DISTINCT repo_root
+                            FROM collected_files_l1
+                            WHERE scope_repo_root = :repo_root
+                              AND is_deleted = 0
+                        )
+                    )
                 """,
                 {"repo_root": repo_root},
             ).fetchone()
@@ -449,7 +497,15 @@ class LspToolDataRepository:
                 """
                 SELECT COUNT(*) AS orphan_relation_count
                 FROM lsp_call_relations rel
-                WHERE rel.repo_root = :repo_root
+                WHERE (
+                        rel.repo_root = :repo_root
+                        OR rel.repo_root IN (
+                            SELECT DISTINCT repo_root
+                            FROM collected_files_l1
+                            WHERE scope_repo_root = :repo_root
+                              AND is_deleted = 0
+                        )
+                    )
                   AND NOT EXISTS (
                     SELECT 1
                     FROM lsp_symbols sym
@@ -471,9 +527,17 @@ class LspToolDataRepository:
         with connect(self._db_path) as conn:
             row = conn.execute(
                 """
-                SELECT COUNT(DISTINCT relative_path) AS caller_file_count
+                SELECT COUNT(DISTINCT (repo_root || '::' || relative_path)) AS caller_file_count
                 FROM lsp_call_relations
-                WHERE repo_root = :repo_root
+                WHERE (
+                        repo_root = :repo_root
+                        OR repo_root IN (
+                            SELECT DISTINCT repo_root
+                            FROM collected_files_l1
+                            WHERE scope_repo_root = :repo_root
+                              AND is_deleted = 0
+                        )
+                    )
                   AND to_symbol = :to_symbol
                 """,
                 {"repo_root": repo_root, "to_symbol": symbol_name},

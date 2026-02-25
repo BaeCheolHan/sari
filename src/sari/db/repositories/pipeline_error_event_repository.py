@@ -46,14 +46,14 @@ class PipelineErrorEventRepository:
                 INSERT INTO pipeline_error_events(
                     event_id, occurred_at, component, phase, severity,
                     scope_type,
-                    repo_root, relative_path, job_id, attempt_count,
+                    repo_root, scope_repo_root, relative_path, job_id, attempt_count,
                     error_code, error_message, error_type, stacktrace_text, context_json,
                     worker_name, run_mode, resolved, resolved_at
                 )
                 VALUES(
                     :event_id, :occurred_at, :component, :phase, :severity,
                     :scope_type,
-                    :repo_root, :relative_path, :job_id, :attempt_count,
+                    :repo_root, :scope_repo_root, :relative_path, :job_id, :attempt_count,
                     :error_code, :error_message, :error_type, :stacktrace_text, :context_json,
                     :worker_name, :run_mode, 0, NULL
                 )
@@ -66,6 +66,7 @@ class PipelineErrorEventRepository:
                     "severity": severity,
                     "scope_type": scope_type,
                     "repo_root": repo_root,
+                    "scope_repo_root": repo_root,
                     "relative_path": relative_path,
                     "job_id": job_id,
                     "attempt_count": attempt_count,

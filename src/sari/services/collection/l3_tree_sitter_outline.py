@@ -36,6 +36,7 @@ class TreeSitterOutlineExtractor:
         "kt": "kotlin",
         "kts": "kotlin",
         "kotlin": "kotlin",
+        "scala": "scala",
         "vue": "typescript",
     }
     _FALLBACK_LANGUAGE_LOADERS = {
@@ -44,6 +45,7 @@ class TreeSitterOutlineExtractor:
         "javascript": ("tree_sitter_javascript", "language"),
         "typescript": ("tree_sitter_typescript", "language_typescript"),
         "kotlin": ("tree_sitter_kotlin", "language"),
+        "scala": ("tree_sitter_scala", "language"),
     }
     _QUERY_LANGUAGE_PACKAGES = {
         "python": "tree_sitter_python",
@@ -51,6 +53,7 @@ class TreeSitterOutlineExtractor:
         "javascript": "tree_sitter_javascript",
         "typescript": "tree_sitter_typescript",
         "kotlin": "tree_sitter_kotlin",
+        "scala": "tree_sitter_scala",
     }
 
     _NODE_KIND_BY_TYPE = {
@@ -90,6 +93,17 @@ class TreeSitterOutlineExtractor:
             "function_declaration": "function",
             "property_declaration": "field",
             "secondary_constructor": "method",
+        },
+        "scala": {
+            "package_clause": "module",
+            "class_definition": "class",
+            "trait_definition": "interface",
+            "object_definition": "class",
+            "enum_definition": "enum",
+            "function_definition": "method",
+            "function_declaration": "method",
+            "val_definition": "field",
+            "var_definition": "field",
         },
     }
     _QUERY_SOURCES = {
@@ -135,6 +149,17 @@ class TreeSitterOutlineExtractor:
             (class_body (function_declaration name: (simple_identifier) @name) @symbol.method)
             (class_body (secondary_constructor) @symbol.method)
             (class_body (property_declaration (variable_declaration (simple_identifier) @name)) @symbol.field)
+        """,
+        "scala": """
+            (package_clause (package_identifier) @name) @symbol.module
+            (class_definition name: (identifier) @name) @symbol.class
+            (trait_definition name: (identifier) @name) @symbol.interface
+            (object_definition name: (identifier) @name) @symbol.class
+            (enum_definition name: (identifier) @name) @symbol.enum
+            (function_definition name: (identifier) @name) @symbol.method
+            (function_declaration name: (identifier) @name) @symbol.method
+            (val_definition (identifier) @name) @symbol.field
+            (var_definition (identifier) @name) @symbol.field
         """,
     }
     _JAVA_METHOD_LINE_REGEX = re.compile(

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+import zlib
 
-from sari.core.models import CollectionPolicyDTO, CollectionScanResultDTO, PipelineMetricsDTO
+from sari.core.models import CollectedFileBodyDTO, CollectionPolicyDTO, CollectionScanResultDTO, PipelineMetricsDTO
 from sari.db.repositories.file_body_repository import FileBodyRepository
 from sari.db.repositories.file_collection_repository import FileCollectionRepository
 from sari.db.repositories.file_enrich_queue_repository import FileEnrichQueueRepository
@@ -244,3 +245,112 @@ def test_file_collection_service_watcher_signal_updates_hotness_and_broker_can_g
     assert lease.granted is True
     assert lease.lane == "hot"
     service._lsp_session_broker.release_lease(lease)  # noqa: SLF001
+
+
+def test_file_collection_service_list_files_falls_back_to_repo_root_after_fanout_shape(tmp_path: Path) -> None:
+    """fanout shape(모듈 row + 다른 scope_root)에서도 module repo list_files가 비지 않아야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    scope_root = str((tmp_path / "workspace").resolve())
+    module_root = str((tmp_path / "workspace" / "mod-a").resolve())
+
+    service = FileCollectionService(
+        workspace_repo=WorkspaceRepository(db_path),
+        file_repo=FileCollectionRepository(db_path),
+        enrich_queue_repo=FileEnrichQueueRepository(db_path),
+        body_repo=FileBodyRepository(db_path),
+        lsp_repo=LspToolDataRepository(db_path),
+        readiness_repo=ToolReadinessRepository(db_path),
+        policy=_policy(),
+        lsp_backend=_NoopLspBackend(),
+        policy_repo=None,
+        event_repo=None,
+    )
+
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO collected_files_l1(
+                repo_id, repo_root, scope_repo_root, relative_path, absolute_path, repo_label,
+                mtime_ns, size_bytes, content_hash, is_deleted, last_seen_at, updated_at, enrich_state
+            ) VALUES(
+                'r_mod', :repo_root, :scope_repo_root, 'alpha.py', :absolute_path, 'mod-a',
+                1, 10, 'h1', 0, '2026-02-25T00:00:00+00:00', '2026-02-25T00:00:00+00:00', 'DONE'
+            )
+            """,
+            {
+                "repo_root": module_root,
+                "scope_repo_root": scope_root,
+                "absolute_path": str((tmp_path / "workspace" / "mod-a" / "alpha.py").resolve()),
+            },
+        )
+        conn.commit()
+
+    rows = service.list_files(repo_root=module_root, limit=10, prefix=None)
+    assert len(rows) == 1
+    assert rows[0]["relative_path"] == "alpha.py"
+
+
+def test_file_collection_service_read_file_falls_back_to_repo_root_after_fanout_shape(tmp_path: Path) -> None:
+    """fanout shape에서도 module repo_root read_file이 metadata/body를 정상 조회해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    scope_root = str((tmp_path / "workspace").resolve())
+    module_root = str((tmp_path / "workspace" / "mod-a").resolve())
+    absolute_path = str((tmp_path / "workspace" / "mod-a" / "alpha.py").resolve())
+    content = "line1\nline2\n"
+    content_hash = "h1"
+    now_iso = "2026-02-25T00:00:00+00:00"
+
+    service = FileCollectionService(
+        workspace_repo=WorkspaceRepository(db_path),
+        file_repo=FileCollectionRepository(db_path),
+        enrich_queue_repo=FileEnrichQueueRepository(db_path),
+        body_repo=FileBodyRepository(db_path),
+        lsp_repo=LspToolDataRepository(db_path),
+        readiness_repo=ToolReadinessRepository(db_path),
+        policy=_policy(),
+        lsp_backend=_NoopLspBackend(),
+        policy_repo=None,
+        event_repo=None,
+    )
+
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO collected_files_l1(
+                repo_id, repo_root, scope_repo_root, relative_path, absolute_path, repo_label,
+                mtime_ns, size_bytes, content_hash, is_deleted, last_seen_at, updated_at, enrich_state
+            ) VALUES(
+                'r_mod', :repo_root, :scope_repo_root, 'alpha.py', :absolute_path, 'mod-a',
+                1, 10, :content_hash, 0, :now_iso, :now_iso, 'DONE'
+            )
+            """,
+            {
+                "repo_root": module_root,
+                "scope_repo_root": scope_root,
+                "absolute_path": absolute_path,
+                "content_hash": content_hash,
+                "now_iso": now_iso,
+            },
+        )
+        conn.commit()
+
+    service._body_repo.upsert_body(  # noqa: SLF001
+        CollectedFileBodyDTO(
+            repo_id="r_mod",
+            repo_root=module_root,
+            scope_repo_root=scope_root,
+            relative_path="alpha.py",
+            content_hash=content_hash,
+            content_zlib=zlib.compress(content.encode("utf-8")),
+            content_len=len(content.encode("utf-8")),
+            normalized_text=content,
+            created_at=now_iso,
+            updated_at=now_iso,
+        )
+    )
+
+    result = service.read_file(repo_root=module_root, relative_path="alpha.py", offset=0, limit=None)
+    assert result.source == "l2"
+    assert result.content == content.rstrip("\n")

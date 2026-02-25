@@ -419,3 +419,205 @@ def test_tool_data_layer_repository_load_supports_legacy_workspace_hash_key(tmp_
     )
     assert isinstance(snapshot["l4"], dict)
     assert snapshot["l4"]["normalized"]["outline"] == ["Alpha"]
+
+
+def test_tool_data_layer_repository_load_effective_snapshot_supports_scope_root_unique_match(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = ToolDataLayerRepository(db_path)
+    now_iso = "2026-02-25T12:00:00+00:00"
+    scope_root = "/workspace"
+    module_root = "/workspace/mod-a"
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO collected_files_l1(
+                repo_id, repo_root, scope_repo_root, relative_path, absolute_path, repo_label,
+                mtime_ns, size_bytes, content_hash, is_deleted, last_seen_at, updated_at, enrich_state
+            ) VALUES(
+                '', :repo_root, :scope_repo_root, 'src/a.py', '/workspace/mod-a/src/a.py', 'repo',
+                1, 10, 'h1', 0, :now_iso, :now_iso, 'READY'
+            )
+            """,
+            {"repo_root": module_root, "scope_repo_root": scope_root, "now_iso": now_iso},
+        )
+        conn.commit()
+
+    repo.upsert_l3_symbols(
+        workspace_id=scope_root,
+        repo_root=module_root,
+        scope_repo_root=scope_root,
+        relative_path="src/a.py",
+        content_hash="h1",
+        symbols=[{"name": "A"}],
+        degraded=False,
+        l3_skipped_large_file=False,
+        updated_at=now_iso,
+    )
+
+    snapshot = repo.load_effective_snapshot(
+        workspace_id=scope_root,
+        repo_root=scope_root,
+        relative_path="src/a.py",
+        content_hash="h1",
+    )
+    assert isinstance(snapshot["l3"], dict)
+    assert snapshot["l3"]["symbols"][0]["name"] == "A"
+
+
+def test_tool_data_layer_repository_search_l3_symbols_supports_scope_root(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = ToolDataLayerRepository(db_path)
+    now_iso = "2026-02-25T12:00:00+00:00"
+    scope_root = "/workspace"
+    module_root = "/workspace/mod-a"
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO collected_files_l1(
+                repo_id, repo_root, scope_repo_root, relative_path, absolute_path, repo_label,
+                mtime_ns, size_bytes, content_hash, is_deleted, last_seen_at, updated_at, enrich_state
+            ) VALUES(
+                '', :repo_root, :scope_repo_root, 'src/a.py', '/workspace/mod-a/src/a.py', 'repo',
+                1, 10, 'h1', 0, :now_iso, :now_iso, 'READY'
+            )
+            """,
+            {"repo_root": module_root, "scope_repo_root": scope_root, "now_iso": now_iso},
+        )
+        conn.commit()
+
+    repo.upsert_l3_symbols(
+        workspace_id=scope_root,
+        repo_root=module_root,
+        scope_repo_root=scope_root,
+        relative_path="src/a.py",
+        content_hash="h1",
+        symbols=[{"name": "Alpha", "kind": "function", "line": 1, "end_line": 1}],
+        degraded=False,
+        l3_skipped_large_file=False,
+        updated_at=now_iso,
+    )
+
+    rows = repo.search_l3_symbols(
+        workspace_id=scope_root,
+        repo_root=scope_root,
+        query="Alpha",
+        limit=5,
+    )
+    assert len(rows) == 1
+    assert rows[0]["repo"] == module_root
+
+
+def test_tool_data_layer_repository_search_scope_root_falls_back_when_workspace_id_is_module(tmp_path: Path) -> None:
+    """scope 조회 시 writer workspace_id가 module root여도 L3 검색이 비지 않아야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = ToolDataLayerRepository(db_path)
+    now_iso = "2026-02-25T12:00:00+00:00"
+    scope_root = "/workspace"
+    module_root = "/workspace/mod-a"
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO collected_files_l1(
+                repo_id, repo_root, scope_repo_root, relative_path, absolute_path, repo_label,
+                mtime_ns, size_bytes, content_hash, is_deleted, last_seen_at, updated_at, enrich_state
+            ) VALUES(
+                '', :repo_root, :scope_repo_root, 'src/a.py', '/workspace/mod-a/src/a.py', 'repo',
+                1, 10, 'h1', 0, :now_iso, :now_iso, 'READY'
+            )
+            """,
+            {"repo_root": module_root, "scope_repo_root": scope_root, "now_iso": now_iso},
+        )
+        conn.commit()
+
+    # 실제 writer 경로처럼 workspace_id=module_root, scope_repo_root 누락(=repo_root로 저장) 케이스를 재현한다.
+    repo.upsert_l3_symbols(
+        workspace_id=module_root,
+        repo_root=module_root,
+        relative_path="src/a.py",
+        content_hash="h1",
+        symbols=[{"name": "Alpha", "kind": "function", "line": 1, "end_line": 1}],
+        degraded=False,
+        l3_skipped_large_file=False,
+        updated_at=now_iso,
+    )
+
+    rows = repo.search_l3_symbols(
+        workspace_id=scope_root,
+        repo_root=scope_root,
+        query="Alpha",
+        limit=5,
+    )
+    assert len(rows) == 1
+    assert rows[0]["repo"] == module_root
+
+
+def test_tool_data_layer_repository_load_snapshot_scope_root_uses_effective_workspace_candidates(tmp_path: Path) -> None:
+    """scope 요청에서 effective repo_root가 module로 해석되면 module workspace_id 후보도 조회에 포함해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = ToolDataLayerRepository(db_path)
+    now_iso = "2026-02-25T12:00:00+00:00"
+    scope_root = "/workspace"
+    module_root = "/workspace/mod-a"
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO collected_files_l1(
+                repo_id, repo_root, scope_repo_root, relative_path, absolute_path, repo_label,
+                mtime_ns, size_bytes, content_hash, is_deleted, last_seen_at, updated_at, enrich_state
+            ) VALUES(
+                '', :repo_root, :scope_repo_root, 'src/a.py', '/workspace/mod-a/src/a.py', 'repo',
+                1, 10, 'h1', 0, :now_iso, :now_iso, 'READY'
+            )
+            """,
+            {"repo_root": module_root, "scope_repo_root": scope_root, "now_iso": now_iso},
+        )
+        conn.commit()
+
+    repo.upsert_l3_symbols(
+        workspace_id=module_root,
+        repo_root=module_root,
+        relative_path="src/a.py",
+        content_hash="h1",
+        symbols=[{"name": "Alpha", "kind": "function", "line": 1, "end_line": 1}],
+        degraded=False,
+        l3_skipped_large_file=False,
+        updated_at=now_iso,
+    )
+    repo.upsert_l4_normalized_symbols(
+        workspace_id=module_root,
+        repo_root=module_root,
+        relative_path="src/a.py",
+        content_hash="h1",
+        normalized={"outline": ["Alpha"]},
+        confidence=0.9,
+        ambiguity=0.1,
+        coverage=0.95,
+        needs_l5=True,
+        updated_at=now_iso,
+    )
+    repo.upsert_l5_semantics(
+        workspace_id=module_root,
+        repo_root=module_root,
+        relative_path="src/a.py",
+        content_hash="h1",
+        reason_code="L5_REASON_UNRESOLVED_SYMBOL",
+        semantics={"edges": 2},
+        updated_at=now_iso,
+    )
+
+    snapshot = repo.load_effective_snapshot(
+        workspace_id=scope_root,
+        repo_root=scope_root,
+        relative_path="src/a.py",
+        content_hash="h1",
+    )
+    assert isinstance(snapshot["l3"], dict)
+    assert isinstance(snapshot["l4"], dict)
+    assert isinstance(snapshot["l5"], list)
+    assert snapshot["l3"]["symbols"][0]["name"] == "Alpha"
+    assert snapshot["l4"]["normalized"]["outline"] == ["Alpha"]
+    assert snapshot["l5"][0]["reason_code"] == "L5_REASON_UNRESOLVED_SYMBOL"

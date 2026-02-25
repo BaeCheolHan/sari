@@ -14,6 +14,7 @@ from sari.db.repositories.lsp_tool_data_repository import LspToolDataRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.core.models import WorkspaceDTO
 from sari.db.schema import init_schema
+from sari.db.schema import connect
 from sari.http.app import HttpContext, status_endpoint
 from sari.mcp.tools.status_tool import StatusTool
 from sari.services.pipeline_control_service import PipelineControlService
@@ -142,3 +143,144 @@ def test_mcp_status_exposes_language_readiness_snapshot(tmp_path: Path) -> None:
     assert item["reconcile_state"]["reconcile_last_run_ts"] == "2026-02-19T12:00:00+00:00"
     assert "stage_rollout" in item
     assert isinstance(item["stage_rollout"], dict)
+
+
+def test_mcp_status_aggregates_scope_file_count_and_module_count(tmp_path: Path) -> None:
+    """status는 scope_root 기준 file_count/module_repo_count를 집계해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    scope_root = tmp_path / "workspace"
+    module_a = scope_root / "mod-a"
+    module_b = scope_root / "mod-b"
+    module_a.mkdir(parents=True, exist_ok=True)
+    module_b.mkdir(parents=True, exist_ok=True)
+
+    workspace_repo = WorkspaceRepository(db_path)
+    workspace_repo.add(
+        WorkspaceDTO(
+            path=str(scope_root.resolve()),
+            name="workspace",
+            indexed_at=None,
+            is_active=True,
+        )
+    )
+    workspace_repo.add(
+        WorkspaceDTO(
+            path=str(module_a.resolve()),
+            name="mod-a",
+            indexed_at=None,
+            is_active=True,
+        )
+    )
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO collected_files_l1(
+                repo_id, repo_root, scope_repo_root, relative_path, absolute_path, repo_label,
+                mtime_ns, size_bytes, content_hash, is_deleted, last_seen_at, updated_at, enrich_state
+            ) VALUES(
+                '', :repo_root, :scope_repo_root, :relative_path, :absolute_path, 'repo',
+                1, 10, :content_hash, 0, '2026-02-25T00:00:00+00:00', '2026-02-25T00:00:00+00:00', 'DONE'
+            )
+            """,
+            {
+                "repo_root": str(module_a.resolve()),
+                "scope_repo_root": str(scope_root.resolve()),
+                "relative_path": "src/main.py",
+                "absolute_path": str((module_a / "src" / "main.py").resolve()),
+                "content_hash": "h-a",
+            },
+        )
+        conn.execute(
+            """
+            INSERT INTO collected_files_l1(
+                repo_id, repo_root, scope_repo_root, relative_path, absolute_path, repo_label,
+                mtime_ns, size_bytes, content_hash, is_deleted, last_seen_at, updated_at, enrich_state
+            ) VALUES(
+                '', :repo_root, :scope_repo_root, :relative_path, :absolute_path, 'repo',
+                1, 10, :content_hash, 0, '2026-02-25T00:00:00+00:00', '2026-02-25T00:00:00+00:00', 'DONE'
+            )
+            """,
+            {
+                "repo_root": str(module_b.resolve()),
+                "scope_repo_root": str(scope_root.resolve()),
+                "relative_path": "src/main.py",
+                "absolute_path": str((module_b / "src" / "main.py").resolve()),
+                "content_hash": "h-b",
+            },
+        )
+        conn.commit()
+
+    tool = StatusTool(
+        workspace_repo=workspace_repo,
+        runtime_repo=RuntimeRepository(db_path),
+        file_repo=FileCollectionRepository(db_path),
+        lsp_repo=LspToolDataRepository(db_path),
+    )
+    payload = tool.call({"repo": str(scope_root.resolve())})
+    assert payload["isError"] is False
+    item = payload["structuredContent"]["items"][0]
+    assert item["scope_repo_root"] == str(scope_root.resolve())
+    assert item["file_count"] == 2
+    assert item["module_repo_count"] == 2
+    assert item["repo_scope_kind"] == "workspace_scope"
+
+
+def test_mcp_status_falls_back_to_module_repo_count_when_scope_rows_are_missing(tmp_path: Path) -> None:
+    """fanout 혼합 shape에서도 module repo 요청 시 file_count가 0으로 왜곡되면 안 된다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    scope_root = tmp_path / "workspace"
+    module_a = scope_root / "mod-a"
+    module_a.mkdir(parents=True, exist_ok=True)
+
+    workspace_repo = WorkspaceRepository(db_path)
+    workspace_repo.add(
+        WorkspaceDTO(
+            path=str(scope_root.resolve()),
+            name="workspace",
+            indexed_at=None,
+            is_active=True,
+        )
+    )
+    workspace_repo.add(
+        WorkspaceDTO(
+            path=str(module_a.resolve()),
+            name="mod-a",
+            indexed_at=None,
+            is_active=True,
+        )
+    )
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO collected_files_l1(
+                repo_id, repo_root, scope_repo_root, relative_path, absolute_path, repo_label,
+                mtime_ns, size_bytes, content_hash, is_deleted, last_seen_at, updated_at, enrich_state
+            ) VALUES(
+                '', :repo_root, :scope_repo_root, :relative_path, :absolute_path, 'repo',
+                1, 10, :content_hash, 0, '2026-02-25T00:00:00+00:00', '2026-02-25T00:00:00+00:00', 'DONE'
+            )
+            """,
+            {
+                "repo_root": str(module_a.resolve()),
+                "scope_repo_root": str(scope_root.resolve()),
+                "relative_path": "src/main.py",
+                "absolute_path": str((module_a / "src" / "main.py").resolve()),
+                "content_hash": "h-a",
+            },
+        )
+        conn.commit()
+
+    tool = StatusTool(
+        workspace_repo=workspace_repo,
+        runtime_repo=RuntimeRepository(db_path),
+        file_repo=FileCollectionRepository(db_path),
+        lsp_repo=LspToolDataRepository(db_path),
+    )
+    payload = tool.call({"repo": str(module_a.resolve())})
+    assert payload["isError"] is False
+    item = payload["structuredContent"]["items"][0]
+    assert item["file_count"] == 1
+    assert item["module_repo_count"] == 1
+    assert item["repo_scope_kind"] == "module_scope"

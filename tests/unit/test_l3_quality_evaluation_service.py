@@ -166,6 +166,26 @@ def test_quality_eval_normalizes_kotlin_variable_and_interface_symbolkinds() -> 
     assert result.kind_match_rate == pytest.approx(1.0)
 
 
+def test_quality_eval_normalizes_scala_numeric_symbolkinds() -> None:
+    service = L3QualityEvaluationService()
+    ast = [
+        _sym(name="PaymentService", kind="class", line=3),
+        _sym(name="authorize", kind="method", line=10),
+        _sym(name="version", kind="field", line=6),
+    ]
+    lsp = [
+        _sym(name="PaymentService", kind="5", line=3),
+        _sym(name="authorize", kind="6", line=10),
+        _sym(name="version", kind="13", line=6),
+    ]
+
+    result = service.evaluate(language="scala", ast_symbols=ast, lsp_symbols=lsp)
+
+    assert result.symbol_recall_proxy == pytest.approx(1.0)
+    assert result.symbol_precision_proxy == pytest.approx(1.0)
+    assert result.kind_match_rate == pytest.approx(1.0)
+
+
 def test_quality_eval_kotlin_field_line_gap_uses_name_kind_fallback() -> None:
     service = L3QualityEvaluationService(line_tolerance=2)
     ast = [_sym(name="compileTestKotlin", kind="field", line=64)]

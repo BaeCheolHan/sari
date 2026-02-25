@@ -70,6 +70,35 @@ def test_mcp_rescan_returns_invalidation_count(tmp_path: Path) -> None:
     assert "invalidated_cache_rows" in structured
 
 
+def test_mcp_doctor_includes_repo_scope_root_item(tmp_path: Path) -> None:
+    """doctor 응답은 요청 repo scope root 컨텍스트를 첫 항목으로 포함해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_dir = tmp_path / "repo-a"
+    repo_dir.mkdir()
+    WorkspaceService(WorkspaceRepository(db_path)).add_workspace(str(repo_dir))
+
+    server = McpServer(db_path=db_path)
+    response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 13,
+            "method": "tools/call",
+            "params": {
+                "name": "doctor",
+                "arguments": {"repo": str(repo_dir.resolve()), "options": {"structured": 1}},
+            },
+        }
+    )
+    payload = response.to_dict()
+    result = payload["result"]
+    assert result["isError"] is False
+    items = result["structuredContent"]["items"]
+    assert len(items) >= 1
+    assert items[0]["name"] == "repo_scope_root"
+    assert items[0]["detail"] == str(repo_dir.resolve())
+
+
 def test_validate_repo_argument_rejects_inactive_workspace(tmp_path: Path) -> None:
     """validate_repo_argument는 비활성 workspace를 명시적으로 거부해야 한다."""
     db_path = tmp_path / "state.db"

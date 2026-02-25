@@ -42,6 +42,16 @@ def test_asset_loader_normalizes_js_to_javascript() -> None:
     assert bundle.language == "javascript"
 
 
+def test_asset_loader_loads_scala_bundle() -> None:
+    loader = L3AssetLoader()
+
+    bundle = loader.load("scala")
+
+    assert bundle.language == "scala"
+    assert bundle.query_source is not None
+    assert bundle.capture_to_kind.get("symbol.method") == "method"
+
+
 def test_asset_loader_exposes_last_load_error_for_invalid_mapping(tmp_path: Path) -> None:
     assets = tmp_path / "assets"
     (assets / "mappings").mkdir(parents=True, exist_ok=True)

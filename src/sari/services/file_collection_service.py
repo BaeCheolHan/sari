@@ -366,7 +366,7 @@ class FileCollectionService:
         root_path = Path(repo_root).expanduser().resolve()
         fanout_targets = self._fanout_resolver.resolve_targets(root_path)
         if len(fanout_targets) == 0:
-            return self._scanner.scan_once(str(root_path))
+            return self._scanner_scan_once(repo_root=str(root_path), scope_repo_root=str(root_path))
         return self._scan_workspace_fanout(root_path=root_path, targets=fanout_targets)
 
     def _scan_workspace_fanout(self, root_path: Path, targets: list[Path]) -> CollectionScanResultDTO:
@@ -379,7 +379,7 @@ class FileCollectionService:
         results: list[CollectionScanRepoResultDTO] = []
         for target in targets:
             try:
-                scan_result = self._scanner.scan_once(str(target))
+                scan_result = self._scanner_scan_once(repo_root=str(target), scope_repo_root=str(root_path))
                 scanned_total += scan_result.scanned_count
                 indexed_total += scan_result.indexed_count
                 deleted_total += scan_result.deleted_count
@@ -418,7 +418,23 @@ class FileCollectionService:
 
     def index_file(self, repo_root: str, relative_path: str) -> CollectionScanResultDTO:
         """단일 파일 인덱싱을 전용 스캐너 컴포넌트로 위임한다."""
-        return self._scanner.index_file(repo_root, relative_path)
+        return self._scanner_index_file(repo_root=repo_root, relative_path=relative_path, scope_repo_root=repo_root)
+
+    def _scanner_scan_once(self, *, repo_root: str, scope_repo_root: str) -> CollectionScanResultDTO:
+        """신/구 시그니처 모두 호환해 scanner.scan_once를 호출한다."""
+        scanner_scan_once = getattr(self._scanner, "scan_once")
+        try:
+            return scanner_scan_once(repo_root, scope_repo_root=scope_repo_root)
+        except TypeError:
+            return scanner_scan_once(repo_root)
+
+    def _scanner_index_file(self, *, repo_root: str, relative_path: str, scope_repo_root: str) -> CollectionScanResultDTO:
+        """신/구 시그니처 모두 호환해 scanner.index_file을 호출한다."""
+        scanner_index_file = getattr(self._scanner, "index_file")
+        try:
+            return scanner_index_file(repo_root, relative_path, scope_repo_root=scope_repo_root)
+        except TypeError:
+            return scanner_index_file(repo_root, relative_path)
 
     def process_enrich_jobs(self, limit: int) -> int:
         """L2/L3 통합 보강 처리를 전용 워커 컴포넌트로 위임한다."""
@@ -645,7 +661,11 @@ class FileCollectionService:
     def list_files(self, repo_root: str, limit: int, prefix: str | None) -> list[dict[str, object]]:
         if limit <= 0:
             raise CollectionError(ErrorContext(code='ERR_INVALID_LIMIT', message='limit는 1 이상이어야 합니다'))
-        rows = self._file_repo.list_files(repo_root=repo_root, limit=limit, prefix=prefix)
+        rows = self._file_repo.list_files_by_scope(scope_repo_root=repo_root, limit=limit, prefix=prefix)
+        if len(rows) == 0:
+            # fanout 스캔 이전/혼합 상태에서는 module repo_root 기준 row만 존재할 수 있다.
+            # 이 경우 기존 계약(list_files(repo_root))을 유지하기 위해 module 조회로 폴백한다.
+            rows = self._file_repo.list_files(repo_root=repo_root, limit=limit, prefix=prefix)
         return [{'repo': item.repo, 'relative_path': item.relative_path, 'size_bytes': item.size_bytes, 'mtime_ns': item.mtime_ns, 'content_hash': item.content_hash, 'enrich_state': item.enrich_state} for item in rows]
 
     def read_file(self, repo_root: str, relative_path: str, offset: int, limit: int | None) -> FileReadResultDTO:
@@ -653,11 +673,34 @@ class FileCollectionService:
             raise CollectionError(ErrorContext(code='ERR_INVALID_OFFSET', message='offset은 0 이상이어야 합니다'))
         if limit is not None and limit <= 0:
             raise CollectionError(ErrorContext(code='ERR_INVALID_LIMIT', message='limit는 1 이상이어야 합니다'))
-        row = self._file_repo.get_file(repo_root=repo_root, relative_path=relative_path)
-        if row is None or row.is_deleted:
-            raise CollectionError(ErrorContext(code='ERR_FILE_NOT_FOUND', message='파일 메타데이터를 찾을 수 없습니다'))
+        candidates = [item for item in self._file_repo.get_files_by_scope(scope_repo_root=repo_root, relative_path=relative_path, limit=16) if not item.is_deleted]
+        if len(candidates) == 0:
+            # fanout 스캔 이후 module-root 호출은 scope 조회가 비어도 repo_root 기준 단일 행이 존재할 수 있다.
+            # list_files와 동일한 하위호환 계약을 위해 module repo_root 조회로 한 번 더 폴백한다.
+            fallback = self._file_repo.get_file(repo_root=repo_root, relative_path=relative_path)
+            if fallback is None or fallback.is_deleted:
+                raise CollectionError(ErrorContext(code='ERR_FILE_NOT_FOUND', message='파일 메타데이터를 찾을 수 없습니다'))
+            row = fallback
+        else:
+            if len(candidates) > 1:
+                # 혼합 마이그레이션 구간(기존 repo_root row + fanout row)에서는
+                # 요청 repo_root와 정확히 일치하는 행을 우선 선택해야 기존 read 계약이 유지된다.
+                exact_matches = [item for item in candidates if item.repo_root == repo_root]
+                if len(exact_matches) == 1:
+                    row = exact_matches[0]
+                else:
+                    raise CollectionError(ErrorContext(code='ERR_AMBIGUOUS_PATH_IN_SCOPE', message='scope 내 동일 relative_path가 여러 repo에 존재합니다'))
+            else:
+                row = candidates[0]
         try:
-            body_text = self._body_repo.read_body_text(repo_root=repo_root, relative_path=relative_path, content_hash=row.content_hash)
+            # L2 본문 PK는 실제 파일이 저장된 module repo_root 기준이다.
+            # scope repo_root(상위 fanout 루트)로 조회하면 L2 hit가 누락되어
+            # 불필요한 FS fallback이 발생하므로 row.repo_root를 사용한다.
+            body_text = self._body_repo.read_body_text(
+                repo_root=row.repo_root,
+                relative_path=relative_path,
+                content_hash=row.content_hash,
+            )
         except FileBodyDecodeError as exc:
             self._error_policy.record_error_event(component='file_collection_service', phase='read_file', severity='error', error_code='ERR_L2_BODY_CORRUPT', error_message=str(exc), error_type=type(exc).__name__, repo_root=repo_root, relative_path=relative_path, job_id=None, attempt_count=0, context_data={'content_hash': row.content_hash}, worker_name='http_read', stacktrace_text=traceback.format_exc())
             raise CollectionError(ErrorContext(code='ERR_L2_BODY_CORRUPT', message='L2 본문 데이터가 손상되어 읽을 수 없습니다')) from exc
@@ -763,11 +806,11 @@ class FileCollectionService:
         now_iso = now_iso8601_utc()
         content_bytes = file_path.read_bytes()
         content_hash = hashlib.sha256(content_bytes).hexdigest()
-        l1_row = CollectedFileL1DTO(repo_id=repo_identity.repo_id, repo_root=str(root), relative_path=str(file_path.relative_to(root).as_posix()), absolute_path=str(file_path), repo_label=repo_identity.repo_label, mtime_ns=file_path.stat().st_mtime_ns, size_bytes=file_path.stat().st_size, content_hash=content_hash, is_deleted=False, last_seen_at=now_iso, updated_at=now_iso, enrich_state='PENDING')
+        l1_row = CollectedFileL1DTO(repo_id=repo_identity.repo_id, repo_root=str(root), scope_repo_root=str(root), relative_path=str(file_path.relative_to(root).as_posix()), absolute_path=str(file_path), repo_label=repo_identity.repo_label, mtime_ns=file_path.stat().st_mtime_ns, size_bytes=file_path.stat().st_size, content_hash=content_hash, is_deleted=False, last_seen_at=now_iso, updated_at=now_iso, enrich_state='PENDING')
         self._file_repo.upsert_file(l1_row)
-        self._enrich_queue_repo.enqueue(repo_id=repo_identity.repo_id, repo_root=str(root), relative_path=str(file_path.relative_to(root).as_posix()), content_hash=content_hash, priority=priority, enqueue_source=enqueue_source, now_iso=now_iso)
+        self._enrich_queue_repo.enqueue(repo_id=repo_identity.repo_id, repo_root=str(root), scope_repo_root=str(root), relative_path=str(file_path.relative_to(root).as_posix()), content_hash=content_hash, priority=priority, enqueue_source=enqueue_source, now_iso=now_iso)
         if self._candidate_index_sink is not None:
-            self._candidate_index_sink.record_upsert(CandidateIndexChangeDTO(repo_id=repo_identity.repo_id, repo_root=str(root), relative_path=str(file_path.relative_to(root).as_posix()), absolute_path=str(file_path), content_hash=content_hash, mtime_ns=file_path.stat().st_mtime_ns, size_bytes=file_path.stat().st_size, event_source=enqueue_source, recorded_at=now_iso))
+            self._candidate_index_sink.record_upsert(CandidateIndexChangeDTO(repo_id=repo_identity.repo_id, repo_root=str(root), scope_repo_root=str(root), relative_path=str(file_path.relative_to(root).as_posix()), absolute_path=str(file_path), content_hash=content_hash, mtime_ns=file_path.stat().st_mtime_ns, size_bytes=file_path.stat().st_size, event_source=enqueue_source, recorded_at=now_iso))
 
     def _assert_parent_alive(self, worker_name: str) -> None:
         if self._parent_alive_probe is None:

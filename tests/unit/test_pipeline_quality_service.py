@@ -16,7 +16,7 @@ from sari.db.repositories.pipeline_quality_repository import PipelineQualityRepo
 from sari.db.repositories.tool_data_layer_repository import ToolDataLayerRepository
 from sari.db.repositories.tool_readiness_repository import ToolReadinessRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
-from sari.db.schema import init_schema
+from sari.db.schema import connect, init_schema
 from sari.services.file_collection_service import FileCollectionService, LspExtractionBackend, LspExtractionResultDTO
 from sari.services.pipeline_quality_service import (
     PipelineQualityService,
@@ -118,6 +118,44 @@ def test_pipeline_quality_service_raises_for_empty_dataset(tmp_path: Path) -> No
 
     with pytest.raises(QualityError, match="index된 파일이 없습니다"):
         quality_service.run(repo_root=str(repo_dir), limit_files=10, profile="default")
+
+
+def test_pipeline_quality_service_falls_back_to_repo_root_after_fanout_shape(tmp_path: Path) -> None:
+    """fanout shape(모듈 row + 다른 scope_root)에서도 module repo_root 품질 실행이 가능해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+
+    scope_root = str((tmp_path / "workspace").resolve())
+    module_root = str((tmp_path / "workspace" / "mod-a").resolve())
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO collected_files_l1(
+                repo_id, repo_root, scope_repo_root, relative_path, absolute_path, repo_label,
+                mtime_ns, size_bytes, content_hash, is_deleted, last_seen_at, updated_at, enrich_state
+            ) VALUES(
+                'r_mod', :repo_root, :scope_repo_root, 'a.py', :absolute_path, 'mod-a',
+                1, 10, 'h1', 0, '2026-02-25T00:00:00+00:00', '2026-02-25T00:00:00+00:00', 'DONE'
+            )
+            """,
+            {
+                "repo_root": module_root,
+                "scope_repo_root": scope_root,
+                "absolute_path": str((tmp_path / "workspace" / "mod-a" / "a.py").resolve()),
+            },
+        )
+        conn.commit()
+
+    quality_service = PipelineQualityService(
+        file_repo=FileCollectionRepository(db_path),
+        lsp_repo=LspToolDataRepository(db_path),
+        quality_repo=PipelineQualityRepository(db_path),
+        golden_backend=_GoldenBackend(),
+        artifact_root=tmp_path / "artifacts",
+    )
+
+    summary = quality_service.run(repo_root=module_root, limit_files=10, profile="default")
+    assert summary["evaluated_files"] == 1
 
 
 def test_pipeline_quality_service_fails_when_recall_is_low(tmp_path: Path) -> None:
@@ -413,6 +451,54 @@ def test_serena_golden_backend_collects_fallback_reason_stats() -> None:
     assert stats["request_count"] == 1
     assert stats["fallback_count"] == 1
     assert stats["fallback_reason_SolidLSPException"] == 1
+
+
+def test_pipeline_quality_service_get_latest_report_filters_by_scope_repo_root(tmp_path: Path) -> None:
+    """최신 리포트 조회는 전역 최신이 아니라 요청 repo scope 기준으로 선택해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    quality_repo = PipelineQualityRepository(db_path)
+
+    repo_a = str((tmp_path / "repo-a").resolve())
+    repo_b = str((tmp_path / "repo-b").resolve())
+
+    run_a = quality_repo.create_run(
+        repo_root=repo_a,
+        scope_repo_root=repo_a,
+        limit_files=10,
+        profile="default",
+        started_at="2026-02-25T10:00:00+00:00",
+    )
+    quality_repo.complete_run(
+        run_id=run_a,
+        finished_at="2026-02-25T10:00:10+00:00",
+        status="PASSED",
+        summary={"repo_root": repo_a, "status": "PASSED"},
+    )
+    run_b = quality_repo.create_run(
+        repo_root=repo_b,
+        scope_repo_root=repo_b,
+        limit_files=10,
+        profile="default",
+        started_at="2026-02-25T10:01:00+00:00",
+    )
+    quality_repo.complete_run(
+        run_id=run_b,
+        finished_at="2026-02-25T10:01:10+00:00",
+        status="FAILED",
+        summary={"repo_root": repo_b, "status": "FAILED"},
+    )
+
+    service = PipelineQualityService(
+        file_repo=FileCollectionRepository(db_path),
+        lsp_repo=LspToolDataRepository(db_path),
+        quality_repo=quality_repo,
+        golden_backend=_GoldenBackend(),
+        artifact_root=tmp_path / "artifacts",
+    )
+    latest_a = service.get_latest_report(repo_root=repo_a)
+    assert latest_a["repo_root"] == repo_a
+    assert latest_a["status"] == "PASSED"
 
 
 def test_serena_golden_backend_normalizes_lsp_kind_and_line() -> None:

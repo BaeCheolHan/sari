@@ -313,6 +313,25 @@ def test_query_source_prefers_asset_query_in_apply_mode(tmp_path: Path) -> None:
     assert source.strip() == "(class_declaration name: (identifier) @name) @symbol.class"
 
 
+def test_query_source_reads_scala_asset_in_apply_mode(tmp_path: Path) -> None:
+    assets = tmp_path / "assets"
+    (assets / "queries" / "scala").mkdir(parents=True, exist_ok=True)
+    (assets / "mappings").mkdir(parents=True, exist_ok=True)
+    (assets / "manifest.json").write_text('{"version":"test"}', encoding="utf-8")
+    (assets / "mappings" / "default.yaml").write_text("{}", encoding="utf-8")
+    (assets / "queries" / "scala" / "outline.scm").write_text(
+        "(class_definition name: (identifier) @name) @symbol.class",
+        encoding="utf-8",
+    )
+    loader = L3AssetLoader(assets_root=assets)
+    extractor = TreeSitterOutlineExtractor(asset_loader=loader, asset_mode="apply")
+
+    source = extractor._get_query_source("scala")
+
+    assert source is not None
+    assert "class_definition" in source
+
+
 def test_run_query_captures_supports_cursor_constructor_with_query() -> None:
     extractor = TreeSitterOutlineExtractor()
     query_obj = object()

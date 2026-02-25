@@ -254,9 +254,18 @@ class PipelineQualityService:
         except ValueError as exc:
             raise QualityError(ErrorContext(code="ERR_INVALID_LANGUAGE_FILTER", message=str(exc))) from exc
         started_at = now_iso8601_utc()
-        run_id = self._quality_repo.create_run(repo_root=root, limit_files=limit_files, profile=profile, started_at=started_at)
+        run_id = self._quality_repo.create_run(
+            repo_root=root,
+            scope_repo_root=root,
+            limit_files=limit_files,
+            profile=profile,
+            started_at=started_at,
+        )
         try:
-            files = self._file_repo.list_files(repo_root=root, limit=limit_files)
+            files = self._file_repo.list_files_by_scope(scope_repo_root=root, limit=limit_files)
+            if len(files) == 0:
+                # fanout 이전/혼합 데이터는 module repo_root로만 저장됐을 수 있어 하위호환 폴백이 필요하다.
+                files = self._file_repo.list_files(repo_root=root, limit=limit_files)
             if len(files) == 0:
                 raise QualityError(ErrorContext(code="ERR_QUALITY_EMPTY_DATASET", message="index된 파일이 없습니다"))
             if isinstance(self._golden_backend, SerenaGoldenBackend):
@@ -298,11 +307,11 @@ class PipelineQualityService:
                     }
                 per_language_totals[language_name]["evaluated_files"] += 1
                 predicted = self._load_predicted_reference_data(
-                    repo_root=root,
+                    repo_root=file_item.repo,
                     relative_path=file_item.relative_path,
                     content_hash=file_item.content_hash,
                 )
-                golden_raw = self._golden_backend.extract(root, file_item.relative_path, file_item.content_hash)
+                golden_raw = self._golden_backend.extract(file_item.repo, file_item.relative_path, file_item.content_hash)
                 golden = L3ReferenceDataDTO(
                     symbols=golden_raw.symbols,
                     relations=golden_raw.relations,
@@ -353,6 +362,7 @@ class PipelineQualityService:
                 diff_items.append(
                     {
                         "language": language_name,
+                        "repo_root": file_item.repo,
                         "relative_path": file_item.relative_path,
                         "content_hash": file_item.content_hash,
                         "diff": diff.to_dict(),
@@ -605,14 +615,14 @@ class PipelineQualityService:
 
     def get_latest_report(self, repo_root: str) -> dict[str, object]:
         """최신 품질 리포트를 반환한다."""
-        latest = self._quality_repo.get_latest_run()
+        normalized_repo = str(Path(repo_root).expanduser().resolve())
+        latest = self._quality_repo.get_latest_run(scope_repo_root=normalized_repo)
         if latest is None:
             raise QualityError(ErrorContext(code="ERR_QUALITY_NOT_FOUND", message="no quality run found"))
         summary = latest.get("summary")
         if not isinstance(summary, dict):
             raise QualityError(ErrorContext(code="ERR_QUALITY_NOT_FOUND", message="no quality run found"))
         summary_repo = str(summary.get("repo_root", ""))
-        normalized_repo = str(Path(repo_root).expanduser().resolve())
         if summary_repo != normalized_repo:
             raise QualityError(ErrorContext(code="ERR_QUALITY_NOT_FOUND", message="no quality run found for repo"))
         return summary

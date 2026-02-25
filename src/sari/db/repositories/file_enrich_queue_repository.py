@@ -27,14 +27,17 @@ class FileEnrichQueueRepository:
         enqueue_source: str,
         now_iso: str,
         repo_id: str | None = None,
+        scope_repo_root: str | None = None,
     ) -> str:
         """L2 본문 보강 큐 작업을 적재한다."""
         resolved_repo_id = repo_id if repo_id is not None and repo_id.strip() != "" else f"r_{uuid.uuid5(uuid.NAMESPACE_URL, repo_root).hex[:20]}"
+        resolved_scope_repo_root = scope_repo_root if scope_repo_root is not None and scope_repo_root.strip() != "" else repo_root
         job_id = str(uuid.uuid4())
         job = FileEnrichJobDTO(
             job_id=job_id,
             repo_id=resolved_repo_id,
             repo_root=repo_root,
+            scope_repo_root=resolved_scope_repo_root,
             relative_path=relative_path,
             content_hash=content_hash,
             priority=priority,
@@ -98,12 +101,12 @@ class FileEnrichQueueRepository:
             conn.execute(
                 """
                 INSERT INTO file_enrich_queue(
-                    job_id, repo_id, repo_root, relative_path, content_hash, content_raw, content_encoding,
+                    job_id, repo_id, repo_root, scope_repo_root, relative_path, content_hash, content_raw, content_encoding,
                     priority, enqueue_source, status, attempt_count, last_error, defer_reason,
                     scope_level, scope_root, scope_attempts, next_retry_at, created_at, updated_at
                 )
                 VALUES(
-                    :job_id, :repo_id, :repo_root, :relative_path, :content_hash, '', 'utf-8',
+                    :job_id, :repo_id, :repo_root, :scope_repo_root, :relative_path, :content_hash, '', 'utf-8',
                     :priority, :enqueue_source, :status, :attempt_count, :last_error, :defer_reason,
                     :scope_level, :scope_root, :scope_attempts, :next_retry_at, :created_at, :updated_at
                 )
@@ -130,6 +133,7 @@ class FileEnrichQueueRepository:
                     job_id=job_id,
                     repo_id=resolved_repo_id,
                     repo_root=request.repo_root,
+                    scope_repo_root=request.scope_repo_root,
                     relative_path=request.relative_path,
                     content_hash=request.content_hash,
                     priority=request.priority,
@@ -225,12 +229,12 @@ class FileEnrichQueueRepository:
                 conn.execute(
                     """
                     INSERT INTO file_enrich_queue(
-                        job_id, repo_id, repo_root, relative_path, content_hash, content_raw, content_encoding,
+                        job_id, repo_id, repo_root, scope_repo_root, relative_path, content_hash, content_raw, content_encoding,
                         priority, enqueue_source, status, attempt_count, last_error, defer_reason,
                         scope_level, scope_root, scope_attempts, next_retry_at, created_at, updated_at
                     )
                     VALUES(
-                        :job_id, :repo_id, :repo_root, :relative_path, :content_hash, '', 'utf-8',
+                        :job_id, :repo_id, :repo_root, :scope_repo_root, :relative_path, :content_hash, '', 'utf-8',
                         :priority, :enqueue_source, :status, :attempt_count, :last_error, :defer_reason,
                         :scope_level, :scope_root, :scope_attempts, :next_retry_at, :created_at, :updated_at
                     )

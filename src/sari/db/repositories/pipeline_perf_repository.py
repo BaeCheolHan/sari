@@ -24,15 +24,16 @@ class PipelinePerfRepository:
             conn.execute(
                 """
                 INSERT INTO pipeline_perf_runs(
-                    run_id, repo_root, target_files, profile, started_at, finished_at, status, summary_json
+                    run_id, repo_root, scope_repo_root, target_files, profile, started_at, finished_at, status, summary_json
                 )
                 VALUES(
-                    :run_id, :repo_root, :target_files, :profile, :started_at, NULL, 'RUNNING', NULL
+                    :run_id, :repo_root, :scope_repo_root, :target_files, :profile, :started_at, NULL, 'RUNNING', NULL
                 )
                 """,
                 {
                     "run_id": run_id,
                     "repo_root": repo_root,
+                    "scope_repo_root": repo_root,
                     "target_files": target_files,
                     "profile": profile,
                     "started_at": started_at,

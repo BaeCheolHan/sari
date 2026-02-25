@@ -117,12 +117,16 @@ class StatusTool:
         warnings_payload = [warning.to_dict() for warning in validation.warnings]
         repo_root = str(arguments["repo"])
         runtime = self._runtime_repo.get_runtime()
-        repo_stats = self._file_repo.get_repo_stats()
-        file_count = 0
-        for stat in repo_stats:
-            if str(stat.get("repo", "")) == repo_root:
-                file_count = int(stat.get("file_count", 0))
-                break
+        file_count = self._file_repo.count_active_files_by_scope(scope_repo_root=repo_root)
+        module_repo_count = self._file_repo.count_distinct_repo_roots_by_scope(scope_repo_root=repo_root)
+        if file_count == 0:
+            # fanout 이전/혼합 데이터에서는 module row가 repo_root 기준으로만 존재할 수 있다.
+            # list_files/read_file과 동일한 하위호환 계약을 위해 repo_root 카운트로 폴백한다.
+            repo_file_count = self._file_repo.count_active_files(repo_root=repo_root)
+            if repo_file_count > 0:
+                file_count = repo_file_count
+                module_repo_count = 1
+        repo_scope_kind = "workspace_scope" if module_repo_count > 1 else "module_scope"
         graph_health = self._lsp_repo.get_repo_call_graph_health(repo_root=repo_root)
         language_support = _build_language_support_payload(self._language_probe_repo)
         lsp_metrics: dict[str, int] = {}
@@ -151,6 +155,9 @@ class StatusTool:
             [
                 {
                     "repo": repo_root,
+                    "scope_repo_root": repo_root,
+                    "repo_scope_kind": repo_scope_kind,
+                    "module_repo_count": module_repo_count,
                     "daemon_state": None if runtime is None else runtime.state,
                     "file_count": file_count,
                     "symbol_count": graph_health["symbol_count"],

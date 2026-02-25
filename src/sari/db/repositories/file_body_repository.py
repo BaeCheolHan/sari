@@ -36,14 +36,15 @@ class FileBodyRepository:
             conn.execute(
                 """
                 INSERT INTO collected_file_bodies_l2(
-                    repo_root, relative_path, content_hash, content_zlib, content_len,
+                    repo_root, scope_repo_root, relative_path, content_hash, content_zlib, content_len,
                     normalized_text, created_at, updated_at
                 )
                 VALUES(
-                    :repo_root, :relative_path, :content_hash, :content_zlib, :content_len,
+                    :repo_root, :scope_repo_root, :relative_path, :content_hash, :content_zlib, :content_len,
                     :normalized_text, :created_at, :updated_at
                 )
                 ON CONFLICT(repo_root, relative_path, content_hash) DO UPDATE SET
+                    scope_repo_root = excluded.scope_repo_root,
                     content_zlib = excluded.content_zlib,
                     content_len = excluded.content_len,
                     normalized_text = excluded.normalized_text,
@@ -62,14 +63,15 @@ class FileBodyRepository:
                 conn.execute(
                     """
                     INSERT INTO collected_file_bodies_l2(
-                        repo_root, relative_path, content_hash, content_zlib, content_len,
+                        repo_root, scope_repo_root, relative_path, content_hash, content_zlib, content_len,
                         normalized_text, created_at, updated_at
                     )
                     VALUES(
-                        :repo_root, :relative_path, :content_hash, :content_zlib, :content_len,
+                        :repo_root, :scope_repo_root, :relative_path, :content_hash, :content_zlib, :content_len,
                         :normalized_text, :created_at, :updated_at
                     )
                     ON CONFLICT(repo_root, relative_path, content_hash) DO UPDATE SET
+                        scope_repo_root = excluded.scope_repo_root,
                         content_zlib = excluded.content_zlib,
                         content_len = excluded.content_len,
                         normalized_text = excluded.normalized_text,

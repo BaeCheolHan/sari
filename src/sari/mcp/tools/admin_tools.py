@@ -143,11 +143,12 @@ class DoctorTool:
         if validation.error is not None:
             return pack1_error(validation.error)
         warnings_payload = [warning.to_dict() for warning in validation.warnings]
+        repo_root = str(arguments["repo"])
 
-        items = [
+        items = [DoctorItemDTO(name="repo_scope_root", passed=True, detail=repo_root).to_dict(), *[
             DoctorItemDTO(name=check.name, passed=check.passed, detail=check.detail).to_dict()
             for check in self._admin_service.doctor()
-        ]
+        ]]
         return pack1_success(
             {
                 "items": items,

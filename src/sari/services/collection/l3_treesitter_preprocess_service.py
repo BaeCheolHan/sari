@@ -59,6 +59,12 @@ class L3TreeSitterPreprocessService:
             (r"^\s*(?:public\s+)?(?:abstract\s+)?class\s+([A-Za-z_][A-Za-z0-9_]*)\b", "class"),
             (r"^\s*(?:public|protected|private)?\s*(?:static\s+)?[A-Za-z_<>\[\]]+\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", "method"),
         ),
+        "scala": (
+            (r"^\s*package\s+([A-Za-z_][A-Za-z0-9_\.]*)\b", "module"),
+            (r"^\s*(?:sealed\s+|final\s+|case\s+|abstract\s+)*(?:class|trait|object|enum)\s+([A-Za-z_][A-Za-z0-9_]*)\b", "class"),
+            (r"^\s*def\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[|\()", "method"),
+            (r"^\s*(?:lazy\s+)?(?:val|var)\s+([A-Za-z_][A-Za-z0-9_]*)\b", "field"),
+        ),
     }
     _IMPORT_LIKE = re.compile(r"^\s*(?:import|from\s+\S+\s+import|using|use|require\(|#include)\b", re.MULTILINE)
     _CROSS_FILE_HINT = re.compile(r"\b(?:extends|implements|::|->|\.)\b")

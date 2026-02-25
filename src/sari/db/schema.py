@@ -90,6 +90,7 @@ ON lsp_symbol_cache(repo_root, query, invalidated);
 CREATE TABLE IF NOT EXISTS collected_files_l1 (
     repo_id TEXT NOT NULL DEFAULT '',
     repo_root TEXT NOT NULL CHECK (repo_root <> ''),
+    scope_repo_root TEXT NOT NULL DEFAULT '',
     relative_path TEXT NOT NULL,
     absolute_path TEXT NOT NULL,
     repo_label TEXT NOT NULL,
@@ -112,10 +113,14 @@ ON collected_files_l1(repo_label, is_deleted);
 CREATE INDEX IF NOT EXISTS idx_collected_files_l1_seen
 ON collected_files_l1(repo_root, last_seen_at);
 
+CREATE INDEX IF NOT EXISTS idx_collected_files_l1_scope_repo
+ON collected_files_l1(scope_repo_root, is_deleted);
+
 CREATE TABLE IF NOT EXISTS file_enrich_queue (
     job_id TEXT PRIMARY KEY,
     repo_id TEXT NOT NULL DEFAULT '',
     repo_root TEXT NOT NULL CHECK (repo_root <> ''),
+    scope_repo_root TEXT NOT NULL DEFAULT '',
     relative_path TEXT NOT NULL,
     content_hash TEXT NOT NULL,
     content_raw TEXT NOT NULL DEFAULT '',
@@ -147,12 +152,16 @@ ON file_enrich_queue(repo_root, relative_path);
 CREATE INDEX IF NOT EXISTS idx_file_enrich_queue_sched
 ON file_enrich_queue(status, priority DESC, next_retry_at, created_at);
 
+CREATE INDEX IF NOT EXISTS idx_file_enrich_queue_scope_sched
+ON file_enrich_queue(scope_repo_root, status, next_retry_at);
+
 CREATE TABLE IF NOT EXISTS candidate_index_changes (
     change_id INTEGER PRIMARY KEY AUTOINCREMENT,
     change_type TEXT NOT NULL,
     status TEXT NOT NULL,
     repo_id TEXT NOT NULL DEFAULT '',
     repo_root TEXT NOT NULL CHECK (repo_root <> ''),
+    scope_repo_root TEXT NOT NULL DEFAULT '',
     relative_path TEXT NOT NULL,
     absolute_path TEXT NULL,
     content_hash TEXT NULL,
@@ -170,9 +179,13 @@ ON candidate_index_changes(status, change_id);
 CREATE INDEX IF NOT EXISTS idx_candidate_index_changes_path_status
 ON candidate_index_changes(repo_root, relative_path, status);
 
+CREATE INDEX IF NOT EXISTS idx_candidate_index_changes_scope_path_status
+ON candidate_index_changes(scope_repo_root, relative_path, status);
+
 CREATE TABLE IF NOT EXISTS collected_file_bodies_l2 (
     repo_id TEXT NOT NULL DEFAULT '',
     repo_root TEXT NOT NULL CHECK (repo_root <> ''),
+    scope_repo_root TEXT NOT NULL DEFAULT '',
     relative_path TEXT NOT NULL,
     content_hash TEXT NOT NULL,
     content_zlib BLOB NOT NULL,
@@ -186,6 +199,7 @@ CREATE TABLE IF NOT EXISTS collected_file_bodies_l2 (
 CREATE TABLE IF NOT EXISTS lsp_symbols (
     repo_id TEXT NOT NULL DEFAULT '',
     repo_root TEXT NOT NULL CHECK (repo_root <> ''),
+    scope_repo_root TEXT NOT NULL DEFAULT '',
     relative_path TEXT NOT NULL,
     content_hash TEXT NOT NULL,
     name TEXT NOT NULL,
@@ -209,6 +223,7 @@ ON lsp_symbols(repo_root, relative_path, content_hash, symbol_key);
 CREATE TABLE IF NOT EXISTS lsp_call_relations (
     repo_id TEXT NOT NULL DEFAULT '',
     repo_root TEXT NOT NULL CHECK (repo_root <> ''),
+    scope_repo_root TEXT NOT NULL DEFAULT '',
     relative_path TEXT NOT NULL,
     content_hash TEXT NOT NULL,
     from_symbol TEXT NOT NULL,
@@ -221,6 +236,7 @@ CREATE TABLE IF NOT EXISTS lsp_call_relations (
 CREATE TABLE IF NOT EXISTS tool_data_l3_symbols (
     workspace_id TEXT NOT NULL,
     repo_root TEXT NOT NULL CHECK (repo_root <> ''),
+    scope_repo_root TEXT NOT NULL DEFAULT '',
     relative_path TEXT NOT NULL,
     content_hash TEXT NOT NULL,
     symbols_json TEXT NOT NULL,
@@ -233,9 +249,13 @@ CREATE TABLE IF NOT EXISTS tool_data_l3_symbols (
 CREATE INDEX IF NOT EXISTS idx_tool_data_l3_lookup
 ON tool_data_l3_symbols(workspace_id, repo_root, relative_path, updated_at DESC);
 
+CREATE INDEX IF NOT EXISTS idx_tool_data_l3_scope_lookup
+ON tool_data_l3_symbols(workspace_id, scope_repo_root, relative_path, updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS tool_data_l4_normalized_symbols (
     workspace_id TEXT NOT NULL,
     repo_root TEXT NOT NULL CHECK (repo_root <> ''),
+    scope_repo_root TEXT NOT NULL DEFAULT '',
     relative_path TEXT NOT NULL,
     content_hash TEXT NOT NULL,
     normalized_json TEXT NOT NULL,
@@ -250,9 +270,13 @@ CREATE TABLE IF NOT EXISTS tool_data_l4_normalized_symbols (
 CREATE INDEX IF NOT EXISTS idx_tool_data_l4_lookup
 ON tool_data_l4_normalized_symbols(workspace_id, repo_root, relative_path, updated_at DESC);
 
+CREATE INDEX IF NOT EXISTS idx_tool_data_l4_scope_lookup
+ON tool_data_l4_normalized_symbols(workspace_id, scope_repo_root, relative_path, updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS tool_data_l5_semantics (
     workspace_id TEXT NOT NULL,
     repo_root TEXT NOT NULL CHECK (repo_root <> ''),
+    scope_repo_root TEXT NOT NULL DEFAULT '',
     relative_path TEXT NOT NULL,
     content_hash TEXT NOT NULL,
     reason_code TEXT NOT NULL,
@@ -264,8 +288,12 @@ CREATE TABLE IF NOT EXISTS tool_data_l5_semantics (
 CREATE INDEX IF NOT EXISTS idx_tool_data_l5_lookup
 ON tool_data_l5_semantics(workspace_id, repo_root, relative_path, updated_at DESC);
 
+CREATE INDEX IF NOT EXISTS idx_tool_data_l5_scope_lookup
+ON tool_data_l5_semantics(workspace_id, scope_repo_root, relative_path, updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS symbol_importance_cache (
     repo_root TEXT NOT NULL CHECK (repo_root <> ''),
+    scope_repo_root TEXT NOT NULL DEFAULT '',
     symbol_name TEXT NOT NULL,
     reference_count INTEGER NOT NULL,
     revision_epoch INTEGER NOT NULL DEFAULT 0,
@@ -276,8 +304,12 @@ CREATE TABLE IF NOT EXISTS symbol_importance_cache (
 CREATE INDEX IF NOT EXISTS idx_symbol_importance_repo_count
 ON symbol_importance_cache(repo_root, reference_count DESC);
 
+CREATE INDEX IF NOT EXISTS idx_symbol_importance_scope_count
+ON symbol_importance_cache(scope_repo_root, reference_count DESC);
+
 CREATE TABLE IF NOT EXISTS tool_readiness_state (
     repo_root TEXT NOT NULL CHECK (repo_root <> ''),
+    scope_repo_root TEXT NOT NULL DEFAULT '',
     relative_path TEXT NOT NULL,
     content_hash TEXT NOT NULL,
     list_files_ready INTEGER NOT NULL CHECK (list_files_ready IN (0, 1)),
@@ -348,6 +380,7 @@ CREATE TABLE IF NOT EXISTS pipeline_error_events (
     severity TEXT NOT NULL,
     scope_type TEXT NOT NULL DEFAULT 'GLOBAL' CHECK (scope_type IN ('GLOBAL', 'REPO')),
     repo_root TEXT NULL,
+    scope_repo_root TEXT NULL,
     relative_path TEXT NULL,
     job_id TEXT NULL,
     attempt_count INTEGER NOT NULL,
@@ -371,6 +404,9 @@ ON pipeline_error_events(component, phase);
 CREATE INDEX IF NOT EXISTS idx_pipeline_error_events_repo_path
 ON pipeline_error_events(repo_root, relative_path);
 
+CREATE INDEX IF NOT EXISTS idx_pipeline_error_events_scope_path
+ON pipeline_error_events(scope_repo_root, relative_path);
+
 CREATE INDEX IF NOT EXISTS idx_pipeline_error_events_code
 ON pipeline_error_events(error_code);
 
@@ -380,6 +416,7 @@ ON pipeline_error_events(scope_type, occurred_at DESC);
 CREATE TABLE IF NOT EXISTS pipeline_perf_runs (
     run_id TEXT PRIMARY KEY,
     repo_root TEXT NOT NULL CHECK (repo_root <> ''),
+    scope_repo_root TEXT NOT NULL DEFAULT '',
     target_files INTEGER NOT NULL,
     profile TEXT NOT NULL,
     started_at TEXT NOT NULL,
@@ -394,6 +431,7 @@ ON pipeline_perf_runs(started_at DESC);
 CREATE TABLE IF NOT EXISTS pipeline_quality_runs (
     run_id TEXT PRIMARY KEY,
     repo_root TEXT NOT NULL CHECK (repo_root <> ''),
+    scope_repo_root TEXT NOT NULL DEFAULT '',
     limit_files INTEGER NOT NULL,
     profile TEXT NOT NULL,
     started_at TEXT NOT NULL,
@@ -408,6 +446,7 @@ ON pipeline_quality_runs(started_at DESC);
 CREATE TABLE IF NOT EXISTS pipeline_lsp_matrix_runs (
     run_id TEXT PRIMARY KEY,
     repo_root TEXT NOT NULL CHECK (repo_root <> ''),
+    scope_repo_root TEXT NOT NULL DEFAULT '',
     required_languages_json TEXT NOT NULL,
     fail_on_unavailable INTEGER NOT NULL CHECK (fail_on_unavailable IN (0, 1)),
     strict_symbol_gate INTEGER NOT NULL CHECK (strict_symbol_gate IN (0, 1)) DEFAULT 1,
@@ -435,6 +474,7 @@ ON language_probe_status(available, updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS file_embeddings (
     repo_root TEXT NOT NULL CHECK (repo_root <> ''),
+    scope_repo_root TEXT NOT NULL DEFAULT '',
     relative_path TEXT NOT NULL,
     content_hash TEXT NOT NULL,
     model_id TEXT NOT NULL,
@@ -459,6 +499,7 @@ CREATE TABLE IF NOT EXISTS query_embeddings (
 CREATE TABLE IF NOT EXISTS snippet_entries (
     snippet_id INTEGER PRIMARY KEY AUTOINCREMENT,
     repo_root TEXT NOT NULL CHECK (repo_root <> ''),
+    scope_repo_root TEXT NOT NULL DEFAULT '',
     source_path TEXT NOT NULL,
     start_line INTEGER NOT NULL,
     end_line INTEGER NOT NULL,
@@ -479,6 +520,7 @@ CREATE TABLE IF NOT EXISTS knowledge_entries (
     entry_id INTEGER PRIMARY KEY AUTOINCREMENT,
     kind TEXT NOT NULL,
     repo_root TEXT NOT NULL CHECK (repo_root <> ''),
+    scope_repo_root TEXT NOT NULL DEFAULT '',
     topic TEXT NOT NULL,
     content_text TEXT NOT NULL,
     tags_json TEXT NOT NULL,

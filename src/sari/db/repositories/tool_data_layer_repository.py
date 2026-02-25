@@ -20,6 +20,7 @@ class ToolDataLayerRepository:
         *,
         workspace_id: str,
         repo_root: str,
+        scope_repo_root: str | None = None,
         relative_path: str,
         content_hash: str,
         symbols: list[dict[str, object]],
@@ -32,6 +33,7 @@ class ToolDataLayerRepository:
                 {
                     "workspace_id": workspace_id,
                     "repo_root": repo_root,
+                    "scope_repo_root": scope_repo_root,
                     "relative_path": relative_path,
                     "content_hash": content_hash,
                     "symbols": symbols,
@@ -49,6 +51,7 @@ class ToolDataLayerRepository:
             {
                 "workspace_id": str(item["workspace_id"]),
                 "repo_root": str(item["repo_root"]),
+                "scope_repo_root": str(item.get("scope_repo_root") or item["repo_root"]),
                 "relative_path": str(item["relative_path"]),
                 "content_hash": str(item["content_hash"]),
                 "symbols_json": json.dumps(item.get("symbols", []), ensure_ascii=False),
@@ -62,14 +65,15 @@ class ToolDataLayerRepository:
             conn.executemany(
                 """
                 INSERT INTO tool_data_l3_symbols(
-                    workspace_id, repo_root, relative_path, content_hash, symbols_json,
+                    workspace_id, repo_root, scope_repo_root, relative_path, content_hash, symbols_json,
                     degraded, l3_skipped_large_file, updated_at
                 )
                 VALUES(
-                    :workspace_id, :repo_root, :relative_path, :content_hash, :symbols_json,
+                    :workspace_id, :repo_root, :scope_repo_root, :relative_path, :content_hash, :symbols_json,
                     :degraded, :l3_skipped_large_file, :updated_at
                 )
                 ON CONFLICT(workspace_id, repo_root, relative_path, content_hash) DO UPDATE SET
+                    scope_repo_root = excluded.scope_repo_root,
                     symbols_json = excluded.symbols_json,
                     degraded = excluded.degraded,
                     l3_skipped_large_file = excluded.l3_skipped_large_file,
@@ -84,6 +88,7 @@ class ToolDataLayerRepository:
         *,
         workspace_id: str,
         repo_root: str,
+        scope_repo_root: str | None = None,
         relative_path: str,
         content_hash: str,
         normalized: dict[str, object],
@@ -98,6 +103,7 @@ class ToolDataLayerRepository:
                 {
                     "workspace_id": workspace_id,
                     "repo_root": repo_root,
+                    "scope_repo_root": scope_repo_root,
                     "relative_path": relative_path,
                     "content_hash": content_hash,
                     "normalized": normalized,
@@ -117,6 +123,7 @@ class ToolDataLayerRepository:
             {
                 "workspace_id": str(item["workspace_id"]),
                 "repo_root": str(item["repo_root"]),
+                "scope_repo_root": str(item.get("scope_repo_root") or item["repo_root"]),
                 "relative_path": str(item["relative_path"]),
                 "content_hash": str(item["content_hash"]),
                 "normalized_json": json.dumps(item.get("normalized", {}), ensure_ascii=False),
@@ -132,14 +139,15 @@ class ToolDataLayerRepository:
             conn.executemany(
                 """
                 INSERT INTO tool_data_l4_normalized_symbols(
-                    workspace_id, repo_root, relative_path, content_hash, normalized_json,
+                    workspace_id, repo_root, scope_repo_root, relative_path, content_hash, normalized_json,
                     confidence, ambiguity, coverage, needs_l5, updated_at
                 )
                 VALUES(
-                    :workspace_id, :repo_root, :relative_path, :content_hash, :normalized_json,
+                    :workspace_id, :repo_root, :scope_repo_root, :relative_path, :content_hash, :normalized_json,
                     :confidence, :ambiguity, :coverage, :needs_l5, :updated_at
                 )
                 ON CONFLICT(workspace_id, repo_root, relative_path, content_hash) DO UPDATE SET
+                    scope_repo_root = excluded.scope_repo_root,
                     normalized_json = excluded.normalized_json,
                     confidence = excluded.confidence,
                     ambiguity = excluded.ambiguity,
@@ -156,6 +164,7 @@ class ToolDataLayerRepository:
         *,
         workspace_id: str,
         repo_root: str,
+        scope_repo_root: str | None = None,
         relative_path: str,
         content_hash: str,
         reason_code: str,
@@ -167,6 +176,7 @@ class ToolDataLayerRepository:
                 {
                     "workspace_id": workspace_id,
                     "repo_root": repo_root,
+                    "scope_repo_root": scope_repo_root,
                     "relative_path": relative_path,
                     "content_hash": content_hash,
                     "reason_code": reason_code,
@@ -183,6 +193,7 @@ class ToolDataLayerRepository:
             {
                 "workspace_id": str(item["workspace_id"]),
                 "repo_root": str(item["repo_root"]),
+                "scope_repo_root": str(item.get("scope_repo_root") or item["repo_root"]),
                 "relative_path": str(item["relative_path"]),
                 "content_hash": str(item["content_hash"]),
                 "reason_code": str(item["reason_code"]),
@@ -195,10 +206,10 @@ class ToolDataLayerRepository:
             conn.executemany(
                 """
                 INSERT INTO tool_data_l5_semantics(
-                    workspace_id, repo_root, relative_path, content_hash, reason_code, semantics_json, updated_at
+                    workspace_id, repo_root, scope_repo_root, relative_path, content_hash, reason_code, semantics_json, updated_at
                 )
                 SELECT
-                    :workspace_id, :repo_root, :relative_path, :content_hash, :reason_code, :semantics_json, :updated_at
+                    :workspace_id, :repo_root, :scope_repo_root, :relative_path, :content_hash, :reason_code, :semantics_json, :updated_at
                 WHERE EXISTS (
                     SELECT 1
                     FROM collected_files_l1 AS f
@@ -216,6 +227,7 @@ class ToolDataLayerRepository:
                       AND f.content_hash <> :content_hash
                 )
                 ON CONFLICT(workspace_id, repo_root, relative_path, content_hash, reason_code) DO UPDATE SET
+                    scope_repo_root = excluded.scope_repo_root,
                     semantics_json = excluded.semantics_json,
                     updated_at = excluded.updated_at
                 """,
@@ -232,8 +244,20 @@ class ToolDataLayerRepository:
         content_hash: str,
     ) -> dict[str, object]:
         """content_hash 일치 레코드만 로드한다."""
-        workspace_ids = self._workspace_id_candidates(workspace_id=workspace_id, repo_root=repo_root)
         with connect(self._db_path) as conn:
+            resolved_repo_root = self._resolve_effective_repo_root(
+                conn=conn,
+                repo_root=repo_root,
+                relative_path=relative_path,
+                content_hash=content_hash,
+            )
+            if resolved_repo_root is None:
+                return {"l3": None, "l4": None, "l5": []}
+            workspace_ids = self._workspace_id_candidates_for_effective(
+                workspace_id=workspace_id,
+                requested_repo_root=repo_root,
+                effective_repo_root=resolved_repo_root,
+            )
             active_row = conn.execute(
                 """
                 SELECT content_hash
@@ -244,27 +268,30 @@ class ToolDataLayerRepository:
                 LIMIT 1
                 """,
                 {
-                    "repo_root": repo_root,
+                    "repo_root": resolved_repo_root,
                     "relative_path": relative_path,
                 },
             ).fetchone()
-            if active_row is None:
-                return {"l3": None, "l4": None, "l5": []}
-            if str(active_row["content_hash"]) != content_hash:
+            if active_row is None or str(active_row["content_hash"]) != content_hash:
                 return {"l3": None, "l4": None, "l5": []}
             l3_row = conn.execute(
                 """
                 SELECT symbols_json, degraded, l3_skipped_large_file, updated_at
                 FROM tool_data_l3_symbols
-                WHERE workspace_id IN (:workspace_id, :workspace_id_legacy)
+                WHERE workspace_id IN (
+                    :workspace_id_1, :workspace_id_2, :workspace_id_3, :workspace_id_4, :workspace_id_5
+                )
                   AND repo_root = :repo_root
                   AND relative_path = :relative_path
                   AND content_hash = :content_hash
                 """,
                 {
-                    "workspace_id": workspace_ids[0],
-                    "workspace_id_legacy": workspace_ids[1],
-                    "repo_root": repo_root,
+                    "workspace_id_1": workspace_ids[0],
+                    "workspace_id_2": workspace_ids[1],
+                    "workspace_id_3": workspace_ids[2],
+                    "workspace_id_4": workspace_ids[3],
+                    "workspace_id_5": workspace_ids[4],
+                    "repo_root": resolved_repo_root,
                     "relative_path": relative_path,
                     "content_hash": content_hash,
                 },
@@ -273,15 +300,20 @@ class ToolDataLayerRepository:
                 """
                 SELECT normalized_json, confidence, ambiguity, coverage, needs_l5, updated_at
                 FROM tool_data_l4_normalized_symbols
-                WHERE workspace_id IN (:workspace_id, :workspace_id_legacy)
+                WHERE workspace_id IN (
+                    :workspace_id_1, :workspace_id_2, :workspace_id_3, :workspace_id_4, :workspace_id_5
+                )
                   AND repo_root = :repo_root
                   AND relative_path = :relative_path
                   AND content_hash = :content_hash
                 """,
                 {
-                    "workspace_id": workspace_ids[0],
-                    "workspace_id_legacy": workspace_ids[1],
-                    "repo_root": repo_root,
+                    "workspace_id_1": workspace_ids[0],
+                    "workspace_id_2": workspace_ids[1],
+                    "workspace_id_3": workspace_ids[2],
+                    "workspace_id_4": workspace_ids[3],
+                    "workspace_id_5": workspace_ids[4],
+                    "repo_root": resolved_repo_root,
                     "relative_path": relative_path,
                     "content_hash": content_hash,
                 },
@@ -290,16 +322,21 @@ class ToolDataLayerRepository:
                 """
                 SELECT reason_code, semantics_json, updated_at
                 FROM tool_data_l5_semantics
-                WHERE workspace_id IN (:workspace_id, :workspace_id_legacy)
+                WHERE workspace_id IN (
+                    :workspace_id_1, :workspace_id_2, :workspace_id_3, :workspace_id_4, :workspace_id_5
+                )
                   AND repo_root = :repo_root
                   AND relative_path = :relative_path
                   AND content_hash = :content_hash
                 ORDER BY reason_code
                 """,
                 {
-                    "workspace_id": workspace_ids[0],
-                    "workspace_id_legacy": workspace_ids[1],
-                    "repo_root": repo_root,
+                    "workspace_id_1": workspace_ids[0],
+                    "workspace_id_2": workspace_ids[1],
+                    "workspace_id_3": workspace_ids[2],
+                    "workspace_id_4": workspace_ids[3],
+                    "workspace_id_5": workspace_ids[4],
+                    "repo_root": resolved_repo_root,
                     "relative_path": relative_path,
                     "content_hash": content_hash,
                 },
@@ -375,7 +412,7 @@ class ToolDataLayerRepository:
         params: dict[str, object] = {
             "workspace_id": workspace_ids[0],
             "workspace_id_legacy": workspace_ids[1],
-            "repo_root": repo_root,
+            "scope_repo_root": repo_root,
         }
         where_prefix = ""
         if path_prefix is not None and path_prefix.strip() != "":
@@ -384,7 +421,7 @@ class ToolDataLayerRepository:
         with connect(self._db_path) as conn:
             rows = conn.execute(
                 f"""
-                SELECT l3.relative_path, l3.content_hash, l3.symbols_json, l3.updated_at
+                SELECT l3.repo_root, l3.relative_path, l3.content_hash, l3.symbols_json, l3.updated_at
                 FROM tool_data_l3_symbols AS l3
                 JOIN collected_files_l1 AS f
                   ON f.repo_root = l3.repo_root
@@ -392,16 +429,36 @@ class ToolDataLayerRepository:
                  AND f.content_hash = l3.content_hash
                  AND f.is_deleted = 0
                 WHERE (l3.workspace_id = :workspace_id OR l3.workspace_id = :workspace_id_legacy)
-                  AND l3.repo_root = :repo_root
+                  AND (f.scope_repo_root = :scope_repo_root OR f.repo_root = :scope_repo_root)
                   {where_prefix}
-                ORDER BY l3.updated_at DESC, l3.relative_path ASC
+                ORDER BY l3.updated_at DESC, l3.repo_root ASC, l3.relative_path ASC
                 LIMIT 500
                 """,
                 params,
             ).fetchall()
+            if len(rows) == 0:
+                # 일부 writer가 module-root workspace_id로 저장한 혼합 구간을 위해 scope/file 기준으로 폴백한다.
+                # scope 조회에서 workspace_id 불일치만으로 L3/L4/L5가 누락되지 않아야 한다.
+                rows = conn.execute(
+                    f"""
+                    SELECT l3.repo_root, l3.relative_path, l3.content_hash, l3.symbols_json, l3.updated_at
+                    FROM tool_data_l3_symbols AS l3
+                    JOIN collected_files_l1 AS f
+                      ON f.repo_root = l3.repo_root
+                     AND f.relative_path = l3.relative_path
+                     AND f.content_hash = l3.content_hash
+                     AND f.is_deleted = 0
+                    WHERE (f.scope_repo_root = :scope_repo_root OR f.repo_root = :scope_repo_root)
+                      {where_prefix}
+                    ORDER BY l3.updated_at DESC, l3.repo_root ASC, l3.relative_path ASC
+                    LIMIT 500
+                    """,
+                    params,
+                ).fetchall()
         needle = query.lower()
         results: list[dict[str, object]] = []
         for row in rows:
+            effective_repo_root = str(row["repo_root"])
             relative_path = str(row["relative_path"])
             content_hash = str(row["content_hash"])
             raw_symbols = json.loads(str(row["symbols_json"]))
@@ -409,7 +466,7 @@ class ToolDataLayerRepository:
                 continue
             snapshot = self.load_effective_snapshot(
                 workspace_id=workspace_id,
-                repo_root=repo_root,
+                repo_root=effective_repo_root,
                 relative_path=relative_path,
                 content_hash=content_hash,
             )
@@ -421,7 +478,7 @@ class ToolDataLayerRepository:
                     continue
                 results.append(
                     {
-                        "repo": repo_root,
+                        "repo": effective_repo_root,
                         "relative_path": relative_path,
                         "name": name,
                         "kind": str(symbol.get("kind", "")),
@@ -440,6 +497,43 @@ class ToolDataLayerRepository:
                     return results
         return results
 
+    def _resolve_effective_repo_root(
+        self,
+        *,
+        conn,
+        repo_root: str,
+        relative_path: str,
+        content_hash: str,
+    ) -> str | None:
+        rows = conn.execute(
+            """
+            SELECT repo_root, scope_repo_root, content_hash
+            FROM collected_files_l1
+            WHERE relative_path = :relative_path
+              AND is_deleted = 0
+              AND (repo_root = :repo_root OR scope_repo_root = :scope_repo_root)
+            ORDER BY CASE WHEN repo_root = :repo_root THEN 0 ELSE 1 END, updated_at DESC
+            """,
+            {
+                "repo_root": repo_root,
+                "scope_repo_root": repo_root,
+                "relative_path": relative_path,
+            },
+        ).fetchall()
+        if len(rows) == 0:
+            return None
+
+        direct = [row for row in rows if str(row["repo_root"]) == repo_root]
+        for row in direct:
+            if str(row["content_hash"]) == content_hash:
+                return str(row["repo_root"])
+
+        scoped = [row for row in rows if str(row["scope_repo_root"]) == repo_root and str(row["content_hash"]) == content_hash]
+        scoped_roots = {str(row["repo_root"]) for row in scoped}
+        if len(scoped_roots) == 1:
+            return next(iter(scoped_roots))
+        return None
+
     def _workspace_id_candidates(self, *, workspace_id: str, repo_root: str) -> tuple[str, str]:
         primary = str(workspace_id or "").strip()
         if primary == "":
@@ -448,3 +542,29 @@ class ToolDataLayerRepository:
         if primary == legacy:
             return (primary, primary)
         return (primary, legacy)
+
+    def _workspace_id_candidates_for_effective(
+        self,
+        *,
+        workspace_id: str,
+        requested_repo_root: str,
+        effective_repo_root: str,
+    ) -> tuple[str, str, str, str, str]:
+        values: list[str] = []
+        for candidate in (
+            str(workspace_id or "").strip(),
+            str(requested_repo_root or "").strip(),
+            str(effective_repo_root or "").strip(),
+        ):
+            if candidate != "" and candidate not in values:
+                values.append(candidate)
+        for candidate in (requested_repo_root, effective_repo_root):
+            normalized = str(candidate or "").strip()
+            if normalized == "":
+                continue
+            digest = hashlib.sha1(normalized.encode("utf-8")).hexdigest()
+            if digest not in values:
+                values.append(digest)
+        while len(values) < 5:
+            values.append("__unused_workspace_id__")
+        return (values[0], values[1], values[2], values[3], values[4])

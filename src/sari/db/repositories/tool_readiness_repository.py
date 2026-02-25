@@ -22,16 +22,17 @@ class ToolReadinessRepository:
             conn.execute(
                 """
                 INSERT INTO tool_readiness_state(
-                    repo_root, relative_path, content_hash,
+                    repo_root, scope_repo_root, relative_path, content_hash,
                     list_files_ready, read_file_ready, search_symbol_ready, get_callers_ready,
                     consistency_ready, quality_ready, tool_ready, last_reason, updated_at
                 )
                 VALUES(
-                    :repo_root, :relative_path, :content_hash,
+                    :repo_root, :scope_repo_root, :relative_path, :content_hash,
                     :list_files_ready, :read_file_ready, :search_symbol_ready, :get_callers_ready,
                     :consistency_ready, :quality_ready, :tool_ready, :last_reason, :updated_at
                 )
                 ON CONFLICT(repo_root, relative_path) DO UPDATE SET
+                    scope_repo_root = excluded.scope_repo_root,
                     content_hash = excluded.content_hash,
                     list_files_ready = excluded.list_files_ready,
                     read_file_ready = excluded.read_file_ready,
@@ -56,16 +57,17 @@ class ToolReadinessRepository:
                 conn.execute(
                     """
                     INSERT INTO tool_readiness_state(
-                        repo_root, relative_path, content_hash,
+                        repo_root, scope_repo_root, relative_path, content_hash,
                         list_files_ready, read_file_ready, search_symbol_ready, get_callers_ready,
                         consistency_ready, quality_ready, tool_ready, last_reason, updated_at
                     )
                     VALUES(
-                        :repo_root, :relative_path, :content_hash,
+                        :repo_root, :scope_repo_root, :relative_path, :content_hash,
                         :list_files_ready, :read_file_ready, :search_symbol_ready, :get_callers_ready,
                         :consistency_ready, :quality_ready, :tool_ready, :last_reason, :updated_at
                     )
                     ON CONFLICT(repo_root, relative_path) DO UPDATE SET
+                        scope_repo_root = excluded.scope_repo_root,
                         content_hash = excluded.content_hash,
                         list_files_ready = excluded.list_files_ready,
                         read_file_ready = excluded.read_file_ready,
@@ -86,7 +88,7 @@ class ToolReadinessRepository:
         with connect(self._db_path) as conn:
             row = conn.execute(
                 """
-                SELECT repo_root, relative_path, content_hash, list_files_ready, read_file_ready,
+                SELECT repo_root, scope_repo_root, relative_path, content_hash, list_files_ready, read_file_ready,
                        search_symbol_ready, get_callers_ready, consistency_ready, quality_ready,
                        tool_ready, last_reason, updated_at
                 FROM tool_readiness_state
@@ -99,6 +101,7 @@ class ToolReadinessRepository:
             return None
         return ToolReadinessStateDTO(
             repo_root=row_str(row, "repo_root"),
+            scope_repo_root=row_str(row, "scope_repo_root"),
             relative_path=row_str(row, "relative_path"),
             content_hash=row_str(row, "content_hash"),
             list_files_ready=row_bool(row, "list_files_ready"),

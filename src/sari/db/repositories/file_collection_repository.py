@@ -27,15 +27,16 @@ class FileCollectionRepository:
             conn.execute(
                 """
                 INSERT INTO collected_files_l1(
-                    repo_id, repo_root, relative_path, absolute_path, repo_label, mtime_ns, size_bytes,
+                    repo_id, repo_root, scope_repo_root, relative_path, absolute_path, repo_label, mtime_ns, size_bytes,
                     content_hash, is_deleted, last_seen_at, updated_at, enrich_state
                 )
                 VALUES(
-                    :repo_id, :repo_root, :relative_path, :absolute_path, :repo_label, :mtime_ns, :size_bytes,
+                    :repo_id, :repo_root, :scope_repo_root, :relative_path, :absolute_path, :repo_label, :mtime_ns, :size_bytes,
                     :content_hash, :is_deleted, :last_seen_at, :updated_at, :enrich_state
                 )
                 ON CONFLICT(repo_root, relative_path) DO UPDATE SET
                     repo_id = excluded.repo_id,
+                    scope_repo_root = excluded.scope_repo_root,
                     absolute_path = excluded.absolute_path,
                     repo_label = excluded.repo_label,
                     mtime_ns = excluded.mtime_ns,
@@ -59,15 +60,16 @@ class FileCollectionRepository:
                 conn.execute(
                     """
                     INSERT INTO collected_files_l1(
-                        repo_id, repo_root, relative_path, absolute_path, repo_label, mtime_ns, size_bytes,
+                        repo_id, repo_root, scope_repo_root, relative_path, absolute_path, repo_label, mtime_ns, size_bytes,
                         content_hash, is_deleted, last_seen_at, updated_at, enrich_state
                     )
                     VALUES(
-                        :repo_id, :repo_root, :relative_path, :absolute_path, :repo_label, :mtime_ns, :size_bytes,
+                        :repo_id, :repo_root, :scope_repo_root, :relative_path, :absolute_path, :repo_label, :mtime_ns, :size_bytes,
                         :content_hash, :is_deleted, :last_seen_at, :updated_at, :enrich_state
                     )
                     ON CONFLICT(repo_root, relative_path) DO UPDATE SET
                         repo_id = excluded.repo_id,
+                        scope_repo_root = excluded.scope_repo_root,
                         absolute_path = excluded.absolute_path,
                         repo_label = excluded.repo_label,
                         mtime_ns = excluded.mtime_ns,
@@ -152,12 +154,46 @@ class FileCollectionRepository:
             )
         return items
 
+    def list_files_by_scope(self, scope_repo_root: str, limit: int, prefix: str | None = None) -> list[FileListItemDTO]:
+        """scope 루트 기준 활성 파일 목록을 조회한다."""
+        where_prefix = ""
+        params: dict[str, object] = {"scope_repo_root": scope_repo_root, "limit": limit}
+        if prefix is not None and prefix.strip() != "":
+            where_prefix = "AND relative_path LIKE :prefix"
+            params["prefix"] = f"{prefix.strip()}%"
+        with connect(self._db_path) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT repo_root, relative_path, size_bytes, mtime_ns, content_hash, enrich_state
+                FROM collected_files_l1
+                WHERE scope_repo_root = :scope_repo_root
+                  AND is_deleted = 0
+                  {where_prefix}
+                ORDER BY relative_path ASC, repo_root ASC
+                LIMIT :limit
+                """,
+                params,
+            ).fetchall()
+        items: list[FileListItemDTO] = []
+        for row in rows:
+            items.append(
+                FileListItemDTO(
+                    repo=row_str(row, "repo_root"),
+                    relative_path=row_str(row, "relative_path"),
+                    size_bytes=row_int(row, "size_bytes"),
+                    mtime_ns=row_int(row, "mtime_ns"),
+                    content_hash=row_str(row, "content_hash"),
+                    enrich_state=row_str(row, "enrich_state"),
+                )
+            )
+        return items
+
     def get_file(self, repo_root: str, relative_path: str) -> CollectedFileL1DTO | None:
         """단일 파일 메타데이터를 조회한다."""
         with connect(self._db_path) as conn:
             row = conn.execute(
                 """
-                SELECT repo_id, repo_root, relative_path, absolute_path, repo_label, mtime_ns, size_bytes, content_hash,
+                SELECT repo_id, repo_root, scope_repo_root, relative_path, absolute_path, repo_label, mtime_ns, size_bytes, content_hash,
                        is_deleted, last_seen_at, updated_at, enrich_state
                 FROM collected_files_l1
                 WHERE repo_root = :repo_root
@@ -180,7 +216,92 @@ class FileCollectionRepository:
             last_seen_at=row_str(row, "last_seen_at"),
             updated_at=row_str(row, "updated_at"),
             enrich_state=row_str(row, "enrich_state"),
+            scope_repo_root=row_str(row, "scope_repo_root"),
         )
+
+    def get_files_by_scope(self, scope_repo_root: str, relative_path: str, limit: int = 10) -> list[CollectedFileL1DTO]:
+        """scope 루트에서 동일 상대경로 파일 후보를 조회한다."""
+        with connect(self._db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT repo_id, repo_root, scope_repo_root, relative_path, absolute_path, repo_label, mtime_ns, size_bytes, content_hash,
+                       is_deleted, last_seen_at, updated_at, enrich_state
+                FROM collected_files_l1
+                WHERE scope_repo_root = :scope_repo_root
+                  AND relative_path = :relative_path
+                ORDER BY is_deleted ASC, updated_at DESC
+                LIMIT :limit
+                """,
+                {"scope_repo_root": scope_repo_root, "relative_path": relative_path, "limit": limit},
+            ).fetchall()
+        out: list[CollectedFileL1DTO] = []
+        for row in rows:
+            out.append(
+                CollectedFileL1DTO(
+                    repo_id=row_str(row, "repo_id"),
+                    repo_root=row_str(row, "repo_root"),
+                    scope_repo_root=row_str(row, "scope_repo_root"),
+                    relative_path=row_str(row, "relative_path"),
+                    absolute_path=row_str(row, "absolute_path"),
+                    repo_label=row_str(row, "repo_label"),
+                    mtime_ns=row_int(row, "mtime_ns"),
+                    size_bytes=row_int(row, "size_bytes"),
+                    content_hash=row_str(row, "content_hash"),
+                    is_deleted=row_bool(row, "is_deleted"),
+                    last_seen_at=row_str(row, "last_seen_at"),
+                    updated_at=row_str(row, "updated_at"),
+                    enrich_state=row_str(row, "enrich_state"),
+                )
+            )
+        return out
+
+    def count_distinct_repo_roots_by_scope(self, scope_repo_root: str) -> int:
+        """scope 루트 내 활성 repo_root 개수를 반환한다."""
+        with connect(self._db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(DISTINCT repo_root) AS repo_count
+                FROM collected_files_l1
+                WHERE scope_repo_root = :scope_repo_root
+                  AND is_deleted = 0
+                """,
+                {"scope_repo_root": scope_repo_root},
+            ).fetchone()
+        if row is None:
+            return 0
+        return row_int(row, "repo_count")
+
+    def count_active_files_by_scope(self, scope_repo_root: str) -> int:
+        """scope 루트 내 활성 파일 개수를 반환한다."""
+        with connect(self._db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS file_count
+                FROM collected_files_l1
+                WHERE scope_repo_root = :scope_repo_root
+                  AND is_deleted = 0
+                """,
+                {"scope_repo_root": scope_repo_root},
+            ).fetchone()
+        if row is None:
+            return 0
+        return row_int(row, "file_count")
+
+    def count_active_files(self, repo_root: str) -> int:
+        """repo 루트 내 활성 파일 개수를 반환한다."""
+        with connect(self._db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS file_count
+                FROM collected_files_l1
+                WHERE repo_root = :repo_root
+                  AND is_deleted = 0
+                """,
+                {"repo_root": repo_root},
+            ).fetchone()
+        if row is None:
+            return 0
+        return row_int(row, "file_count")
 
     def mark_missing_as_deleted(self, repo_root: str, seen_relative_paths: list[str], updated_at: str, scan_started_at: str) -> int:
         """스캔 시작 시각 이전 last_seen 항목 중 누락 파일을 삭제 상태로 전환한다."""
