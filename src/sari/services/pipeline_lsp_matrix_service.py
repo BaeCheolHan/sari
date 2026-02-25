@@ -8,7 +8,7 @@ from sari.core.exceptions import DaemonError, ErrorContext
 from sari.core.language_registry import get_critical_language_names, get_enabled_language_names, normalize_language_filter
 from sari.core.models import now_iso8601_utc
 from sari.db.repositories.pipeline_lsp_matrix_repository import PipelineLspMatrixRepository
-from sari.services.language_probe_service import LanguageProbeService
+from sari.services.pipeline_lsp_matrix_ports import LanguageProbePort
 
 PASS_THRESHOLD_PERCENT = 98.0
 
@@ -18,7 +18,7 @@ class PipelineLspMatrixService:
 
     def __init__(
         self,
-        probe_service: LanguageProbeService,
+        probe_service: LanguageProbePort,
         run_repo: PipelineLspMatrixRepository,
     ) -> None:
         """필요 의존성을 저장한다."""

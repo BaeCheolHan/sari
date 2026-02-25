@@ -8,7 +8,7 @@ from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.mcp.tools.arg_parser import parse_boolean, parse_string_list
 from sari.mcp.tools.admin_tools import validate_repo_argument
 from sari.mcp.tools.pack1 import Pack1MetaDTO, pack1_error, pack1_success
-from sari.services.pipeline_lsp_matrix_service import PipelineLspMatrixService
+from sari.services.pipeline_lsp_matrix_ports import PipelineLspMatrixPort
 
 
 def _parse_required_languages(arguments: dict[str, object]) -> tuple[tuple[str, ...] | None, ErrorResponseDTO | None]:
@@ -42,7 +42,7 @@ def _matrix_error(exc: DaemonError) -> dict[str, object]:
 class PipelineLspMatrixRunTool:
     """pipeline_lsp_matrix_run MCP 도구를 처리한다."""
 
-    def __init__(self, workspace_repo: WorkspaceRepository, matrix_service: PipelineLspMatrixService) -> None:
+    def __init__(self, workspace_repo: WorkspaceRepository, matrix_service: PipelineLspMatrixPort) -> None:
         """필요 의존성을 주입한다."""
         self._workspace_repo = workspace_repo
         self._matrix_service = matrix_service
@@ -93,7 +93,7 @@ class PipelineLspMatrixRunTool:
 class PipelineLspMatrixReportTool:
     """pipeline_lsp_matrix_report MCP 도구를 처리한다."""
 
-    def __init__(self, workspace_repo: WorkspaceRepository, matrix_service: PipelineLspMatrixService) -> None:
+    def __init__(self, workspace_repo: WorkspaceRepository, matrix_service: PipelineLspMatrixPort) -> None:
         """필요 의존성을 주입한다."""
         self._workspace_repo = workspace_repo
         self._matrix_service = matrix_service

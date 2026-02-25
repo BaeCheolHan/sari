@@ -13,7 +13,7 @@ from sari.search.orchestrator import SearchOrchestrator
 from sari.services.admin_service import AdminService
 from sari.services.collection.ports import CollectionRuntimePort
 from sari.services.pipeline_control_service import PipelineControlService
-from sari.services.pipeline_lsp_matrix_service import PipelineLspMatrixService
+from sari.services.pipeline_lsp_matrix_ports import PipelineLspMatrixPort
 from sari.services.pipeline_perf_service import PipelinePerfService
 from sari.services.pipeline_quality_service import PipelineQualityService
 from sari.services.read_facade_service import ReadFacadeService
@@ -32,7 +32,7 @@ class HttpContext:
         pipeline_control_service: PipelineControlService | None = None,
         pipeline_perf_service: PipelinePerfService | None = None,
         pipeline_quality_service: PipelineQualityService | None = None,
-        pipeline_lsp_matrix_service: PipelineLspMatrixService | None = None,
+        pipeline_lsp_matrix_service: PipelineLspMatrixPort | None = None,
         read_facade_service: ReadFacadeService | None = None,
         language_probe_repo: LanguageProbeRepository | None = None,
         repo_registry_repo: RepoRegistryRepository | None = None,

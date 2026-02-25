@@ -46,6 +46,7 @@ from sari.services.pipeline_quality_service import PipelineQualityService, Seren
 from sari.services.pipeline_control_service import PipelineControlService
 from sari.services.language_probe_service import LanguageProbeService
 from sari.services.lsp_matrix_diagnose_service import LspMatrixDiagnoseService
+from sari.services.pipeline_lsp_matrix_ports import LanguageProbePort, PipelineLspMatrixPort
 from sari.services.pipeline_lsp_matrix_service import PipelineLspMatrixService
 from sari.services.workspace_service import WorkspaceService
 from sari.lsp.hub import LspHub
@@ -88,8 +89,8 @@ class CliServiceBundle:
     pipeline_control_service: PipelineControlService
     pipeline_perf_service: PipelinePerfService
     pipeline_quality_service: PipelineQualityService
-    language_probe_service: LanguageProbeService
-    pipeline_lsp_matrix_service: PipelineLspMatrixService
+    language_probe_service: LanguageProbePort
+    pipeline_lsp_matrix_service: PipelineLspMatrixPort
     lsp_matrix_diagnose_service: LspMatrixDiagnoseService
 
 
