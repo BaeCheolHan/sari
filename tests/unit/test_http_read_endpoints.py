@@ -24,10 +24,10 @@ from sari.http.app import (
     read_file_endpoint,
 )
 from sari.search.orchestrator import SearchOrchestrator
-from sari.services.admin_service import AdminService
-from sari.services.file_collection_service import FileCollectionService
-from sari.services.pipeline_quality_service import MirrorGoldenBackend, PipelineQualityService
-from sari.services.read_facade_service import ReadFacadeService
+from sari.services.admin.service import AdminService
+from sari.services.collection.service import FileCollectionService
+from sari.services.pipeline.quality_service import MirrorGoldenBackend, PipelineQualityService
+from sari.services.read.facade_service import ReadFacadeService
 
 
 class _DummySearchOrchestrator(SearchOrchestrator):  # type: ignore[misc]

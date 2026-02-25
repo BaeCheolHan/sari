@@ -16,8 +16,8 @@ from sari.db.repositories.lsp_tool_data_repository import LspToolDataRepository
 from sari.db.repositories.tool_readiness_repository import ToolReadinessRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.db.schema import init_schema
-from sari.services.file_collection_service import FileCollectionService
-from sari.services.pipeline_quality_service import MirrorGoldenBackend, PipelineQualityService
+from sari.services.collection.service import FileCollectionService
+from sari.services.pipeline.quality_service import MirrorGoldenBackend, PipelineQualityService
 
 
 def _build_service(db_path: Path, repo_root: str) -> FileCollectionService:

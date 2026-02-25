@@ -11,7 +11,7 @@ from sari.core.lsp_provision_policy import get_lsp_provision_policy
 from sari.core.models import LanguageProbeStatusDTO
 from sari.lsp.document_symbols import request_document_symbols_with_optional_sync
 from sari.lsp.hub import LspHub
-from sari.services.language_probe_error_classifier import (
+from sari.services.language_probe.error_classifier import (
     classify_lsp_error_code,
     extract_error_code,
     extract_missing_dependency,
@@ -194,4 +194,3 @@ class LanguageProbeWorker:
         finally:
             if callable(set_timeout):
                 set_timeout(self._lsp_request_timeout_sec)
-

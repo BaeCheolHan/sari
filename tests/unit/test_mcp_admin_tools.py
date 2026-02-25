@@ -10,7 +10,7 @@ from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.db.schema import init_schema
 from sari.mcp.server import McpServer
 from sari.mcp.tools.admin_tools import validate_repo_argument
-from sari.services.workspace_service import WorkspaceService
+from sari.services.workspace.service import WorkspaceService
 
 
 def test_mcp_repo_candidates_returns_registered_workspace(tmp_path: Path) -> None:

@@ -15,7 +15,7 @@ from sari.db.repositories.daemon_registry_repository import DaemonRegistryReposi
 from sari.db.repositories.runtime_repository import RuntimeRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.mcp.server_daemon_forward import DaemonForwardError
-from sari.services.daemon_service import DaemonService
+from sari.services.daemon import DaemonService
 
 StartDaemonFn = Callable[[Path, str | None], bool]
 ResolveTargetFn = Callable[[Path, str | None, str | None, int | None], tuple[str, int]]

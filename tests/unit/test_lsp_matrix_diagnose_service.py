@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sari.services.lsp_matrix_diagnose_service import LspMatrixDiagnoseService
+from sari.services.lsp_matrix.diagnose_service import LspMatrixDiagnoseService
 
 
 def test_lsp_matrix_diagnose_service_builds_expected_groups(tmp_path: Path) -> None:

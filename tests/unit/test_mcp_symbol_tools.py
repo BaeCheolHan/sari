@@ -8,7 +8,7 @@ from sari.db.repositories.lsp_tool_data_repository import LspToolDataRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.db.schema import connect, init_schema
 from sari.mcp.server import McpServer
-from sari.services.workspace_service import WorkspaceService
+from sari.services.workspace.service import WorkspaceService
 
 
 def test_mcp_tools_list_includes_symbol_tools(tmp_path: Path) -> None:

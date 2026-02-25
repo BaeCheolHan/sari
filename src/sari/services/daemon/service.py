@@ -62,7 +62,8 @@ class DaemonService:
         if selected_run_mode not in {"dev", "prod"}:
             raise DaemonError(ErrorContext(code="ERR_INVALID_RUN_MODE", message="run_mode는 dev 또는 prod여야 합니다"))
         command.extend(["--run-mode", selected_run_mode])
-        src_root = str(Path(__file__).resolve().parents[2])
+        # 패키지 이관 후에도 프로젝트 src 루트를 정확히 가리켜야 한다.
+        src_root = str(Path(__file__).resolve().parents[3])
         env = os.environ.copy()
         existing_pythonpath = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = src_root if existing_pythonpath == "" else f"{src_root}:{existing_pythonpath}"

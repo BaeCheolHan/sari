@@ -15,9 +15,9 @@ from sari.db.repositories.pipeline_policy_repository import PipelinePolicyReposi
 from sari.db.repositories.tool_readiness_repository import ToolReadinessRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.db.schema import init_schema
-from sari.services.file_collection_service import FileCollectionService
+from sari.services.collection.service import FileCollectionService
 from sari.services.lsp_extraction_contracts import LspExtractionResultDTO
-from sari.services.pipeline_quality_service import PipelineQualityService
+from sari.services.pipeline.quality_service import PipelineQualityService
 
 
 class _NoopLspBackend:

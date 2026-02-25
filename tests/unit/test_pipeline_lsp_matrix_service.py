@@ -8,7 +8,7 @@ from sari.core.exceptions import DaemonError
 from sari.core.language_registry import get_enabled_language_names
 from sari.db.repositories.pipeline_lsp_matrix_repository import PipelineLspMatrixRepository
 from sari.db.schema import init_schema
-from sari.services.pipeline_lsp_matrix_service import PipelineLspMatrixService
+from sari.services.pipeline.lsp_matrix_service import PipelineLspMatrixService
 
 
 class _FakeProbeService:

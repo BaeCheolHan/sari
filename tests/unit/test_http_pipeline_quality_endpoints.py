@@ -27,10 +27,10 @@ from sari.lsp.hub import LspHub
 from sari.search.candidate_search import CandidateSearchService
 from sari.search.orchestrator import SearchOrchestrator
 from sari.search.symbol_resolve import SymbolResolveService
-from sari.services.admin_service import AdminService
-from sari.services.file_collection_service import FileCollectionService
-from sari.services.pipeline_quality_service import MirrorGoldenBackend, PipelineQualityService
-from sari.services.workspace_service import WorkspaceService
+from sari.services.admin.service import AdminService
+from sari.services.collection.service import FileCollectionService
+from sari.services.pipeline.quality_service import MirrorGoldenBackend, PipelineQualityService
+from sari.services.workspace.service import WorkspaceService
 
 
 def _default_context(tmp_path: Path) -> HttpContext:

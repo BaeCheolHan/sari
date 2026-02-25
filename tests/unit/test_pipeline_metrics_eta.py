@@ -12,7 +12,7 @@ from sari.db.repositories.lsp_tool_data_repository import LspToolDataRepository
 from sari.db.repositories.tool_readiness_repository import ToolReadinessRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.db.schema import init_schema
-from sari.services.file_collection_service import FileCollectionService, LspExtractionBackend, LspExtractionResultDTO
+from sari.services.collection.service import FileCollectionService, LspExtractionBackend, LspExtractionResultDTO
 
 
 class _NoopLspBackend(LspExtractionBackend):

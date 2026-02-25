@@ -17,9 +17,9 @@ from sari.http.app import HttpContext, pipeline_perf_report_api_endpoint, pipeli
 from sari.search.candidate_search import CandidateSearchService
 from sari.search.orchestrator import SearchOrchestrator
 from sari.search.symbol_resolve import SymbolResolveService
-from sari.services.admin_service import AdminService
-from sari.services.pipeline_perf_service import PipelinePerfService
-from sari.services.workspace_service import WorkspaceService
+from sari.services.admin.service import AdminService
+from sari.services.pipeline.perf_service import PipelinePerfService
+from sari.services.workspace.service import WorkspaceService
 from sari.lsp.hub import LspHub
 
 

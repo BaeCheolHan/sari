@@ -12,7 +12,7 @@ from sari.db.repositories.lsp_tool_data_repository import LspToolDataRepository
 from sari.db.repositories.runtime_repository import RuntimeRepository
 from sari.mcp.tools.admin_tools import RepoValidationPort, validate_repo_argument
 from sari.mcp.tools.pack1 import Pack1MetaDTO, pack1_error, pack1_success
-from sari.services.pipeline_control_service import PipelineControlService
+from sari.services.pipeline.control_service import PipelineControlService
 
 
 def _success(items: list[dict[str, object]], *, warnings: list[dict[str, object]] | None = None) -> dict[str, object]:

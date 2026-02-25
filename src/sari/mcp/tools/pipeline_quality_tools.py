@@ -7,7 +7,7 @@ from sari.core.models import ErrorResponseDTO
 from sari.mcp.tools.arg_parser import parse_string_list
 from sari.mcp.tools.admin_tools import RepoValidationPort, validate_repo_argument
 from sari.mcp.tools.pack1 import Pack1MetaDTO, pack1_error, pack1_success
-from sari.services.pipeline_quality_service import PipelineQualityService
+from sari.services.pipeline.quality_service import PipelineQualityService
 
 
 def _parse_language_filter(arguments: dict[str, object]) -> tuple[tuple[str, ...] | None, ErrorResponseDTO | None]:

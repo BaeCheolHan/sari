@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from click.testing import CliRunner
 
 from sari.cli.main import cli
-from sari.services.lsp_matrix_diagnose_service import LspMatrixDiagnoseService
+from sari.services.lsp_matrix.diagnose_service import LspMatrixDiagnoseService
 
 
 class _FakeLspMatrixService:

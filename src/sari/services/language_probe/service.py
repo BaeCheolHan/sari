@@ -12,9 +12,9 @@ from sari.core.models import LanguageProbeStatusDTO, now_iso8601_utc
 from sari.db.repositories.language_probe_repository import LanguageProbeRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.lsp.hub import LspHub
-from sari.services.language_probe_file_sampler import LanguageProbeFileSampler
-from sari.services.language_probe_thread_runner import LanguageProbeThreadRunner
-from sari.services.language_probe_worker import LanguageProbeWorker
+from sari.services.language_probe.file_sampler import LanguageProbeFileSampler
+from sari.services.language_probe.thread_runner import LanguageProbeThreadRunner
+from sari.services.language_probe.worker import LanguageProbeWorker
 
 
 class LanguageProbeService:
@@ -135,4 +135,3 @@ class LanguageProbeService:
         """언어별 probe timeout을 계산한다."""
         normalized = language.strip().lower()
         return self._per_language_timeout_overrides.get(normalized, self._per_language_timeout_sec)
-

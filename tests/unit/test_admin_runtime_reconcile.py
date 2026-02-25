@@ -13,7 +13,7 @@ from sari.db.repositories.runtime_repository import RuntimeRepository
 from sari.db.repositories.symbol_cache_repository import SymbolCacheRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.db.schema import init_schema
-from sari.services.admin_service import AdminService
+from sari.services.admin.service import AdminService
 
 
 def _build_service(

@@ -18,7 +18,7 @@ from sari.core.exceptions import DaemonError
 from sari.core.models import DaemonRuntimeDTO
 from sari.db.repositories.runtime_repository import RuntimeRepository
 from sari.db.schema import init_schema
-from sari.services.daemon_service import DaemonService
+from sari.services.daemon.service import DaemonService
 
 
 def _pick_free_port() -> int:

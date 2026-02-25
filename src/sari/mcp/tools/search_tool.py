@@ -211,7 +211,7 @@ class SearchTool:
             raise _SearchToolBusyError("search tool worker busy")
         try:
             future = self._timeout_executor.submit(self._run_search_task, kwargs)
-        except Exception:
+        except RuntimeError:
             self._timeout_semaphore.release()
             raise
         try:

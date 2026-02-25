@@ -17,7 +17,7 @@ from sari.db.repositories.symbol_cache_repository import SymbolCacheRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.db.schema import init_schema
 from sari.http.app import HttpContext, create_app, pipeline_policy_set_endpoint
-from sari.services.admin_service import AdminService
+from sari.services.admin.service import AdminService
 
 
 class _PipelineServiceValidationError:

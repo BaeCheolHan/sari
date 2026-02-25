@@ -17,7 +17,7 @@ from sari.db.schema import init_schema
 from sari.db.schema import connect
 from sari.http.app import HttpContext, status_endpoint
 from sari.mcp.tools.status_tool import StatusTool
-from sari.services.pipeline_control_service import PipelineControlService
+from sari.services.pipeline.control_service import PipelineControlService
 from sari.db.repositories.pipeline_policy_repository import PipelinePolicyRepository
 from sari.db.repositories.pipeline_job_event_repository import PipelineJobEventRepository
 from sari.db.repositories.file_enrich_queue_repository import FileEnrichQueueRepository

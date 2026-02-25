@@ -1,13 +1,12 @@
 """워크스페이스 도메인 서비스를 구현한다."""
 
+from __future__ import annotations
+
 from pathlib import Path
 
 from sari.core.exceptions import ErrorContext, WorkspaceError
 from sari.core.models import WorkspaceDTO
 from sari.services.workspace.ports import WorkspaceRepositoryPort
-
-# Backward-compatible alias: 기존 import 경로를 유지한다.
-WorkspaceRepositoryProtocol = WorkspaceRepositoryPort
 
 
 class WorkspaceService:

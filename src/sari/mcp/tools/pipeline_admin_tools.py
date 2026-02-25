@@ -7,7 +7,7 @@ from sari.core.models import ErrorResponseDTO
 from sari.mcp.tools.arg_parser import parse_optional_boolean, parse_optional_loose_int
 from sari.mcp.tools.admin_tools import RepoValidationPort, validate_repo_argument
 from sari.mcp.tools.pack1 import Pack1MetaDTO, pack1_error, pack1_success
-from sari.services.pipeline_control_service import PipelineControlService
+from sari.services.pipeline.control_service import PipelineControlService
 
 
 def _service_error(exc: SariBaseError) -> dict[str, object]:

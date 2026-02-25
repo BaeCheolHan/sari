@@ -19,7 +19,7 @@ from sari.core.language_registry import get_enabled_language_names
 from sari.core.config import AppConfig
 from sari.db.repositories.runtime_repository import RuntimeRepository
 from sari.db.schema import init_schema
-from sari.services.daemon_service import DaemonService
+from sari.services.daemon.service import DaemonService
 
 
 def _pick_free_port() -> int:

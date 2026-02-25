@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from sari.mcp.server import McpServer
-from sari.services.workspace_service import WorkspaceService
+from sari.services.workspace.service import WorkspaceService
 from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.db.schema import init_schema
 

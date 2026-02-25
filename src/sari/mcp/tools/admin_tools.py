@@ -14,7 +14,7 @@ from sari.core.repo_context_resolver import (
 )
 from sari.core.repo_resolver import resolve_repo_key
 from sari.mcp.tools.pack1 import Pack1MetaDTO, pack1_error, pack1_success
-from sari.services.admin_service import AdminService
+from sari.services.admin import AdminService
 
 ERR_REPO_ARGUMENT_CONFLICT = "ERR_REPO_ARGUMENT_CONFLICT"
 REPO_ARGUMENT_CONFLICT_MESSAGE = "repo and repo_key resolve to different repositories"

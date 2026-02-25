@@ -7,7 +7,7 @@ from pathlib import Path
 from sari.core.config import AppConfig
 from sari.db.repositories.runtime_repository import RuntimeRepository
 from sari.db.schema import init_schema
-from sari.services.daemon_service import DaemonService
+from sari.services.daemon.service import DaemonService
 
 
 def _build_service(tmp_path: Path) -> DaemonService:
@@ -27,11 +27,11 @@ def test_signal_process_tree_skips_killpg_for_same_process_group(monkeypatch, tm
     recorded_kill: list[tuple[int, int]] = []
     recorded_killpg: list[tuple[int, int]] = []
 
-    monkeypatch.setattr("sari.services.daemon_service.os.getpgid", lambda _pid: target_group)
-    monkeypatch.setattr("sari.services.daemon_service.os.getpgrp", lambda: target_group)
-    monkeypatch.setattr("sari.services.daemon_service.os.kill", lambda pid, sig: recorded_kill.append((pid, int(sig))))
+    monkeypatch.setattr("sari.services.daemon.service.os.getpgid", lambda _pid: target_group)
+    monkeypatch.setattr("sari.services.daemon.service.os.getpgrp", lambda: target_group)
+    monkeypatch.setattr("sari.services.daemon.service.os.kill", lambda pid, sig: recorded_kill.append((pid, int(sig))))
     monkeypatch.setattr(
-        "sari.services.daemon_service.os.killpg",
+        "sari.services.daemon.service.os.killpg",
         lambda pgid, sig: recorded_killpg.append((pgid, int(sig))),
     )
 

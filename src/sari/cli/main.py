@@ -38,17 +38,17 @@ from sari.db.migration import ensure_migrated
 from sari.db.schema import init_schema
 from sari.mcp.proxy import run_stdio_proxy
 from sari.mcp.server import run_stdio
-from sari.services.admin_service import AdminService
-from sari.services.daemon_service import DaemonService
-from sari.services.file_collection_service import build_default_file_collection_service
-from sari.services.pipeline_perf_service import PipelinePerfService
-from sari.services.pipeline_quality_service import PipelineQualityService, SerenaGoldenBackend
-from sari.services.pipeline_control_service import PipelineControlService
-from sari.services.language_probe_service import LanguageProbeService
-from sari.services.lsp_matrix_diagnose_service import LspMatrixDiagnoseService
-from sari.services.pipeline_lsp_matrix_ports import LanguageProbePort, PipelineLspMatrixPort
-from sari.services.pipeline_lsp_matrix_service import PipelineLspMatrixService
-from sari.services.workspace_service import WorkspaceService
+from sari.services.admin import AdminService
+from sari.services.collection.service import build_default_file_collection_service
+from sari.services.daemon import DaemonService
+from sari.services.pipeline.perf_service import PipelinePerfService
+from sari.services.pipeline.quality_service import PipelineQualityService, SerenaGoldenBackend
+from sari.services.pipeline.control_service import PipelineControlService
+from sari.services.language_probe.service import LanguageProbeService
+from sari.services.lsp_matrix.diagnose_service import LspMatrixDiagnoseService
+from sari.services.pipeline.lsp_matrix_ports import LanguageProbePort, PipelineLspMatrixPort
+from sari.services.pipeline.lsp_matrix_service import PipelineLspMatrixService
+from sari.services.workspace import WorkspaceService
 from sari.lsp.hub import LspHub
 
 

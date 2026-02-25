@@ -12,7 +12,7 @@ from sari.db.repositories.daemon_registry_repository import DaemonRegistryReposi
 from sari.db.repositories.runtime_repository import RuntimeRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.db.schema import init_schema
-from sari.services.daemon_service import DaemonService
+from sari.services.daemon.service import DaemonService
 
 
 class _DummyProcess:
@@ -49,7 +49,7 @@ def test_daemon_service_start_registers_registry_entry(tmp_path: Path, monkeypat
     monkeypatch.setattr(service, "_clear_stale_runtime_if_needed", lambda: None)
     monkeypatch.setattr(service, "_is_pid_alive", lambda pid: False)
     monkeypatch.setattr(
-        "sari.services.daemon_service.subprocess.Popen",
+        "sari.services.daemon.service.subprocess.Popen",
         lambda *args, **kwargs: _DummyProcess(pid=43210),
     )
 
@@ -86,10 +86,10 @@ def test_daemon_service_stop_removes_registry_entry(tmp_path: Path, monkeypatch:
     monkeypatch.setattr(service, "_clear_stale_runtime_if_needed", lambda: None)
     monkeypatch.setattr(service, "_is_pid_alive", lambda pid: False)
     monkeypatch.setattr(
-        "sari.services.daemon_service.subprocess.Popen",
+        "sari.services.daemon.service.subprocess.Popen",
         lambda *args, **kwargs: _DummyProcess(pid=43211),
     )
-    monkeypatch.setattr("sari.services.daemon_service.os.kill", lambda pid, sig: None)
+    monkeypatch.setattr("sari.services.daemon.service.os.kill", lambda pid, sig: None)
 
     runtime = service.start(run_mode="dev")
     assert runtime.pid == 43211
@@ -125,7 +125,7 @@ def test_daemon_service_stop_signals_process_group(tmp_path: Path, monkeypatch: 
     monkeypatch.setattr(service, "_clear_stale_runtime_if_needed", lambda: None)
     monkeypatch.setattr(service, "_is_pid_alive", lambda pid: False)
     monkeypatch.setattr(
-        "sari.services.daemon_service.subprocess.Popen",
+        "sari.services.daemon.service.subprocess.Popen",
         lambda *args, **kwargs: _DummyProcess(pid=43212),
     )
 
@@ -140,9 +140,9 @@ def test_daemon_service_stop_signals_process_group(tmp_path: Path, monkeypatch: 
     def _fake_killpg(pgid: int, sig: int) -> None:
         called_signals.append(("pgid", pgid, sig))
 
-    monkeypatch.setattr("sari.services.daemon_service.os.kill", _fake_kill)
-    monkeypatch.setattr("sari.services.daemon_service.os.getpgid", _fake_getpgid)
-    monkeypatch.setattr("sari.services.daemon_service.os.killpg", _fake_killpg)
+    monkeypatch.setattr("sari.services.daemon.service.os.kill", _fake_kill)
+    monkeypatch.setattr("sari.services.daemon.service.os.getpgid", _fake_getpgid)
+    monkeypatch.setattr("sari.services.daemon.service.os.killpg", _fake_killpg)
 
     runtime = service.start(run_mode="dev")
     assert runtime.pid == 43212
@@ -188,10 +188,10 @@ def test_clear_stale_runtime_kills_process_group(tmp_path: Path, monkeypatch: Mo
     runtime_repo.upsert_runtime(runtime)
 
     monkeypatch.setattr(service, "_is_pid_alive", lambda pid: True)
-    monkeypatch.setattr("sari.services.daemon_service.os.getpgid", lambda pid: pid)
+    monkeypatch.setattr("sari.services.daemon.service.os.getpgid", lambda pid: pid)
     stale_calls: list[tuple[str, int, int]] = []
-    monkeypatch.setattr("sari.services.daemon_service.os.kill", lambda pid, sig: stale_calls.append(("pid", pid, sig)))
-    monkeypatch.setattr("sari.services.daemon_service.os.killpg", lambda pgid, sig: stale_calls.append(("pgid", pgid, sig)))
+    monkeypatch.setattr("sari.services.daemon.service.os.kill", lambda pid, sig: stale_calls.append(("pid", pid, sig)))
+    monkeypatch.setattr("sari.services.daemon.service.os.killpg", lambda pgid, sig: stale_calls.append(("pgid", pgid, sig)))
 
     service._clear_stale_runtime_if_needed()
 
@@ -230,7 +230,7 @@ def test_daemon_start_redirects_stdout_stderr_to_log_files(tmp_path: Path, monke
     monkeypatch.setattr(service, "_is_port_free", lambda host, port: True)
     monkeypatch.setattr(service, "_clear_stale_runtime_if_needed", lambda: None)
     monkeypatch.setattr(service, "_is_pid_alive", lambda pid: False)
-    monkeypatch.setattr("sari.services.daemon_service.subprocess.Popen", _fake_popen)
+    monkeypatch.setattr("sari.services.daemon.service.subprocess.Popen", _fake_popen)
 
     runtime = service.start(run_mode="dev")
     assert runtime.pid == 43213

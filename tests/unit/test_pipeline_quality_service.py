@@ -17,13 +17,13 @@ from sari.db.repositories.tool_data_layer_repository import ToolDataLayerReposit
 from sari.db.repositories.tool_readiness_repository import ToolReadinessRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.db.schema import connect, init_schema
-from sari.services.file_collection_service import FileCollectionService, LspExtractionBackend, LspExtractionResultDTO
-from sari.services.pipeline_quality_service import (
+from sari.services.collection.service import FileCollectionService, LspExtractionBackend, LspExtractionResultDTO
+from sari.services.pipeline.quality_service import (
     PipelineQualityService,
     SerenaGoldenBackend,
     _compute_symbol_counts,
 )
-from sari.services.workspace_service import WorkspaceService
+from sari.services.workspace.service import WorkspaceService
 from solidlsp.ls_config import Language
 from solidlsp.ls_exceptions import SolidLSPException
 

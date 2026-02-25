@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from sari.http.app import _search_progress_meta
+from sari.http.search_endpoints import _search_progress_meta
 
 
 class _Metrics:
@@ -77,4 +77,3 @@ def test_search_progress_meta_parses_numeric_strings() -> None:
         "remaining_jobs_l3": 22,
         "worker_state": "running",
     }
-

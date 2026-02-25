@@ -36,8 +36,9 @@ from sari.services.collection.l3_treesitter_preprocess_service import (
 from sari.services.collection.lsp_session_broker import LspBrokerLanguageProfile, LspSessionBroker
 from sari.services.collection.perf_trace import PerfTracer
 from sari.services.collection.watcher_hotness_tracker import WatcherHotnessTracker
-from sari.services.file_collection_service import FileCollectionService, LspExtractionBackend, LspExtractionResultDTO, SolidLspExtractionBackend
-import sari.services.file_collection_service as file_collection_service_module
+from sari.services.collection.enrich_flush_coordinator import EnrichFlushCoordinator
+from sari.services.collection.service import FileCollectionService, LspExtractionBackend, LspExtractionResultDTO, SolidLspExtractionBackend
+import sari.services.collection.service as file_collection_service_module
 import sari.db.repositories.file_collection_repository as file_collection_repository_module
 
 
@@ -568,19 +569,26 @@ def test_enrich_engine_evaluate_l5_admission_applies_workspace_content_hash_cool
 
 def test_enrich_engine_flush_persists_tool_layer_buffers() -> None:
     """flush 단계에서 L3/L4/L5 tool_data 버퍼가 저장소로 반영되어야 한다."""
-    engine = object.__new__(EnrichEngine)
-    engine._body_repo = type("BodyRepo", (), {"upsert_body_many": lambda self, _: None, "delete_body_many": lambda self, _: None})()
-    engine._lsp_repo = type("LspRepo", (), {"replace_file_data_many": lambda self, _: None})()
-    engine._readiness_repo = type("ReadinessRepo", (), {"upsert_state_many": lambda self, _: None})()
-    engine._file_repo = type("FileRepo", (), {"update_enrich_state_many": lambda self, _: None})()
-    engine._enrich_queue_repo = type(
+    body_repo = type("BodyRepo", (), {"upsert_body_many": lambda self, _: None, "delete_body_many": lambda self, _: None})()
+    lsp_repo = type("LspRepo", (), {"replace_file_data_many": lambda self, _: None})()
+    readiness_repo = type("ReadinessRepo", (), {"upsert_state_many": lambda self, _: None})()
+    file_repo = type("FileRepo", (), {"update_enrich_state_many": lambda self, _: None})()
+    enrich_queue_repo = type(
         "QueueRepo",
         (),
         {"mark_done_many": lambda self, _: None, "mark_failed_with_backoff_many": lambda self, _: None},
     )()
-    engine._tool_layer_repo = _CaptureToolLayerRepo()
+    tool_layer_repo = _CaptureToolLayerRepo()
+    coordinator = EnrichFlushCoordinator(
+        body_repo=body_repo,
+        lsp_repo=lsp_repo,
+        readiness_repo=readiness_repo,
+        file_repo=file_repo,
+        enrich_queue_repo=enrich_queue_repo,
+        tool_layer_repo=tool_layer_repo,
+    )
 
-    engine._flush_enrich_buffers(
+    coordinator.flush(
         done_ids=[],
         failed_updates=[],
         state_updates=[],
@@ -627,15 +635,15 @@ def test_enrich_engine_flush_persists_tool_layer_buffers() -> None:
         ],
     )
 
-    assert len(engine._tool_layer_repo.l3_many_calls) == 1
-    assert len(engine._tool_layer_repo.l4_many_calls) == 1
-    assert len(engine._tool_layer_repo.l5_many_calls) == 1
-    assert len(engine._tool_layer_repo.l3_many_calls[0]) == 1
-    assert len(engine._tool_layer_repo.l4_many_calls[0]) == 1
-    assert len(engine._tool_layer_repo.l5_many_calls[0]) == 1
-    assert len(engine._tool_layer_repo.l3_calls) == 0
-    assert len(engine._tool_layer_repo.l4_calls) == 0
-    assert len(engine._tool_layer_repo.l5_calls) == 0
+    assert len(tool_layer_repo.l3_many_calls) == 1
+    assert len(tool_layer_repo.l4_many_calls) == 1
+    assert len(tool_layer_repo.l5_many_calls) == 1
+    assert len(tool_layer_repo.l3_many_calls[0]) == 1
+    assert len(tool_layer_repo.l4_many_calls[0]) == 1
+    assert len(tool_layer_repo.l5_many_calls[0]) == 1
+    assert len(tool_layer_repo.l3_calls) == 0
+    assert len(tool_layer_repo.l4_calls) == 0
+    assert len(tool_layer_repo.l5_calls) == 0
 
 
 def test_enrich_engine_l3_needs_l5_does_not_escalate_scope_in_l3() -> None:

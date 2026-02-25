@@ -68,7 +68,7 @@ def _load_error_policy() -> _ErrorPolicy:
             loaded = _parse_policy_file(candidate)
             if loaded is not None:
                 return loaded
-    default_path = Path(__file__).with_name("language_probe_error_policy.json")
+    default_path = Path(__file__).with_name("error_policy.json")
     loaded = _parse_policy_file(default_path)
     if loaded is not None:
         return loaded

@@ -9,7 +9,7 @@ from sari.db.repositories.pipeline_control_state_repository import PipelineContr
 from sari.db.repositories.pipeline_job_event_repository import PipelineJobEventRepository
 from sari.db.repositories.pipeline_policy_repository import PipelinePolicyRepository
 from sari.db.schema import init_schema
-from sari.services.pipeline_control_service import PipelineControlService
+from sari.services.pipeline.control_service import PipelineControlService
 
 
 def test_pipeline_auto_control_enables_hold_on_warn_and_releases_on_ok(tmp_path: Path) -> None:

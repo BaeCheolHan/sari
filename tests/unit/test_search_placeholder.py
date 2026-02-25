@@ -17,7 +17,7 @@ from sari.db.repositories.runtime_repository import RuntimeRepository
 from sari.db.schema import connect
 from sari.db.schema import init_schema
 from sari.lsp.hub import LspHub
-from sari.services.admin_service import AdminService
+from sari.services.admin.service import AdminService
 
 
 def _build_context(tmp_path) -> HttpContext:

@@ -121,7 +121,7 @@ class ReadTool:
             raise _ReadToolBusyError("read tool worker busy")
         try:
             future = self._timeout_executor.submit(self._run_read_task, repo_root=repo_root, mode=mode, arguments=arguments)
-        except Exception:
+        except RuntimeError:
             self._timeout_semaphore.release()
             raise
         try:

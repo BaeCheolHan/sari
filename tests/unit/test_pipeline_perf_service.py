@@ -11,7 +11,7 @@ from sari.core.exceptions import PerfError
 from sari.db.repositories.pipeline_perf_repository import PipelinePerfRepository
 from sari.db.repositories.pipeline_stage_baseline_repository import PipelineStageBaselineRepository
 from sari.db.schema import init_schema
-from sari.services.pipeline_perf_service import PipelinePerfService
+from sari.services.pipeline.perf_service import PipelinePerfService
 
 
 class _FakeBenchmarkService:

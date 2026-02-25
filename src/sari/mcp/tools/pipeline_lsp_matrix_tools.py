@@ -7,7 +7,7 @@ from sari.core.models import ErrorResponseDTO
 from sari.mcp.tools.arg_parser import parse_boolean, parse_string_list
 from sari.mcp.tools.admin_tools import RepoValidationPort, validate_repo_argument
 from sari.mcp.tools.pack1 import Pack1MetaDTO, pack1_error, pack1_success
-from sari.services.pipeline_lsp_matrix_ports import PipelineLspMatrixPort
+from sari.services.pipeline.lsp_matrix_ports import PipelineLspMatrixPort
 
 
 def _parse_required_languages(arguments: dict[str, object]) -> tuple[tuple[str, ...] | None, ErrorResponseDTO | None]:

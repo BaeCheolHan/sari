@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sari.services.pipeline_ab_report import compare_case_metrics, extract_workspace_metrics
+from sari.services.pipeline.ab_report import compare_case_metrics, extract_workspace_metrics
 
 
 def _summary(

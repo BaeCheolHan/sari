@@ -9,7 +9,7 @@ from sari.core.language_registry import LanguageSupportEntry
 from sari.core.models import WorkspaceDTO
 from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.db.schema import init_schema
-from sari.services.language_probe_service import LanguageProbeService
+from sari.services.language_probe.service import LanguageProbeService
 from solidlsp.ls_config import Language
 from solidlsp.ls_exceptions import SolidLSPException
 

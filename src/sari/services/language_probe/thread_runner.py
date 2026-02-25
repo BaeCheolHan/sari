@@ -7,7 +7,7 @@ from typing import Callable
 
 from sari.core.lsp_provision_policy import get_lsp_provision_policy
 from sari.core.models import LanguageProbeStatusDTO
-from sari.services.language_probe_error_classifier import (
+from sari.services.language_probe.error_classifier import (
     classify_lsp_error_code,
     extract_missing_dependency,
     is_timeout_error,
@@ -108,4 +108,3 @@ class LanguageProbeThreadRunner:
                 install_hint=policy.install_hint,
             )
         return result_box[0]
-

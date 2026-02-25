@@ -6,7 +6,7 @@ from sari.core.exceptions import PerfError
 from sari.core.models import ErrorResponseDTO
 from sari.mcp.tools.admin_tools import RepoValidationPort, validate_repo_argument
 from sari.mcp.tools.pack1 import Pack1MetaDTO, pack1_error, pack1_success
-from sari.services.pipeline_perf_service import PipelinePerfService
+from sari.services.pipeline.perf_service import PipelinePerfService
 
 
 def _perf_error(exc: PerfError) -> dict[str, object]:

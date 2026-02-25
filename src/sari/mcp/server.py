@@ -66,13 +66,13 @@ from sari.search.importance_scorer import ImportanceScorePolicyDTO, ImportanceSc
 from sari.search.orchestrator import RankingBlendConfigDTO, SearchOrchestrator
 from sari.search.symbol_resolve import SymbolResolveService
 from sari.search.vector_reranker import VectorConfigDTO, VectorIndexSink, VectorReranker
-from sari.services.admin_service import AdminService
-from sari.services.file_collection_service import SolidLspExtractionBackend, build_default_file_collection_service
-from sari.services.pipeline_perf_service import PipelinePerfService
-from sari.services.pipeline_control_service import PipelineControlService
-from sari.services.language_probe_service import LanguageProbeService
-from sari.services.pipeline_lsp_matrix_service import PipelineLspMatrixService
-from sari.services.pipeline_quality_service import PipelineQualityService, SerenaGoldenBackend
+from sari.services.admin import AdminService
+from sari.services.collection.service import SolidLspExtractionBackend, build_default_file_collection_service
+from sari.services.pipeline.perf_service import PipelinePerfService
+from sari.services.pipeline.control_service import PipelineControlService
+from sari.services.language_probe.service import LanguageProbeService
+from sari.services.pipeline.lsp_matrix_service import PipelineLspMatrixService
+from sari.services.pipeline.quality_service import PipelineQualityService, SerenaGoldenBackend
 
 MAX_CONSECUTIVE_INVALID_FRAMES = 3
 

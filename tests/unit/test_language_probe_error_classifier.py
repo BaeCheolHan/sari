@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from sari.services import language_probe_error_classifier as classifier
+from sari.services.language_probe import error_classifier as classifier
 
 
 def test_classifier_default_policy_behaves_as_before() -> None:

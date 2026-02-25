@@ -10,7 +10,7 @@ from click.testing import CliRunner
 from pytest import MonkeyPatch
 
 from sari.cli.main import _build_services, cli
-from sari.services.file_collection_service import SolidLspExtractionBackend
+from sari.services.collection.service import SolidLspExtractionBackend
 
 
 def _prepare_home(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
