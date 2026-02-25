@@ -12,7 +12,6 @@ from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.search.orchestrator import SearchOrchestrator
 from sari.services.admin_service import AdminService
 from sari.services.collection.ports import CollectionRuntimePort
-from sari.services.pipeline_benchmark_service import PipelineBenchmarkService
 from sari.services.pipeline_control_service import PipelineControlService
 from sari.services.pipeline_lsp_matrix_service import PipelineLspMatrixService
 from sari.services.pipeline_perf_service import PipelinePerfService
@@ -31,7 +30,6 @@ class HttpContext:
         admin_service: AdminService,
         file_collection_service: CollectionRuntimePort | None = None,
         pipeline_control_service: PipelineControlService | None = None,
-        pipeline_benchmark_service: PipelineBenchmarkService | None = None,
         pipeline_perf_service: PipelinePerfService | None = None,
         pipeline_quality_service: PipelineQualityService | None = None,
         pipeline_lsp_matrix_service: PipelineLspMatrixService | None = None,
@@ -51,7 +49,6 @@ class HttpContext:
         self.admin_service = admin_service
         self.file_collection_service = file_collection_service
         self.pipeline_control_service = pipeline_control_service
-        self.pipeline_benchmark_service = pipeline_benchmark_service
         self.pipeline_perf_service = pipeline_perf_service
         self.pipeline_quality_service = pipeline_quality_service
         self.pipeline_lsp_matrix_service = pipeline_lsp_matrix_service

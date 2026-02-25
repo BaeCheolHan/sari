@@ -248,6 +248,50 @@ class LspHub:
                 self._instances.pop(key, None)
         return self.get_or_start(language=language, repo_root=normalized_root)
 
+    def force_restart(self, language: Language, repo_root: str, request_kind: str = "indexing") -> SolidLanguageServer:
+        """언어/저장소 인스턴스를 강제 재시작한다."""
+        normalized_root = str(Path(repo_root).resolve())
+        keys = self._runtime_keys_for(language=language, repo_root=normalized_root)
+        failure_messages: list[str] = []
+        with self._lock:
+            for key in keys:
+                entry = self._instances.get(key)
+                if entry is None:
+                    continue
+                try:
+                    self._stop_server_with_timeout(entry.server)
+                except (RuntimeError, OSError, ValueError) as exc:
+                    log.warning(
+                        "LSP force restart stop failed(language=%s, repo=%s, slot=%s): %s",
+                        key.language.value,
+                        key.repo_root,
+                        key.slot,
+                        exc,
+                    )
+                    failure_messages.append(f"{key.language.value}@{key.repo_root}#{key.slot}: {exc}")
+                except DaemonError as exc:
+                    log.warning(
+                        "LSP force restart stop timeout(language=%s, repo=%s, slot=%s): %s",
+                        key.language.value,
+                        key.repo_root,
+                        key.slot,
+                        exc.context.code,
+                    )
+                    failure_messages.append(f"{key.language.value}@{key.repo_root}#{key.slot}: {exc.context.code}")
+                self._instances.pop(key, None)
+            for key in list(self._starting_events.keys()):
+                if key.language == language and key.repo_root == normalized_root:
+                    event = self._starting_events.pop(key)
+                    event.set()
+        if len(failure_messages) > 0:
+            raise DaemonError(
+                ErrorContext(
+                    code="ERR_LSP_RESTART_FAILED",
+                    message="LSP 강제 재시작 중 종료 실패: " + "; ".join(failure_messages[:3]),
+                )
+            )
+        return self.get_or_start(language=language, repo_root=normalized_root, request_kind=request_kind)
+
     def prewarm_language_pool(self, language: Language, repo_root: str) -> None:
         """지정 언어/저장소의 LSP 풀을 목표 슬롯 수까지 선기동한다."""
         normalized_root = str(Path(repo_root).resolve())

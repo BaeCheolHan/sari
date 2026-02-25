@@ -12,8 +12,6 @@ from sari.db.repositories.file_body_repository import FileBodyRepository
 from sari.db.repositories.file_collection_repository import FileCollectionRepository
 from sari.db.repositories.file_enrich_queue_repository import FileEnrichQueueRepository
 from sari.db.repositories.lsp_tool_data_repository import LspToolDataRepository
-from sari.db.repositories.pipeline_benchmark_repository import PipelineBenchmarkRepository
-from sari.db.repositories.pipeline_policy_repository import PipelinePolicyRepository
 from sari.db.repositories.pipeline_quality_repository import PipelineQualityRepository
 from sari.db.repositories.runtime_repository import RuntimeRepository
 from sari.db.repositories.symbol_cache_repository import SymbolCacheRepository
@@ -22,8 +20,6 @@ from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.db.schema import init_schema
 from sari.http.app import (
     HttpContext,
-    pipeline_benchmark_report_api_endpoint,
-    pipeline_benchmark_run_api_endpoint,
     pipeline_quality_report_api_endpoint,
     pipeline_quality_run_api_endpoint,
 )
@@ -33,7 +29,6 @@ from sari.search.orchestrator import SearchOrchestrator
 from sari.search.symbol_resolve import SymbolResolveService
 from sari.services.admin_service import AdminService
 from sari.services.file_collection_service import FileCollectionService
-from sari.services.pipeline_benchmark_service import PipelineBenchmarkService
 from sari.services.pipeline_quality_service import MirrorGoldenBackend, PipelineQualityService
 from sari.services.workspace_service import WorkspaceService
 
@@ -75,15 +70,6 @@ def _default_context(tmp_path: Path) -> HttpContext:
         golden_backend=MirrorGoldenBackend(),
         artifact_root=tmp_path / "artifacts",
     )
-    benchmark_service = PipelineBenchmarkService(
-        file_collection_service=collection_service,
-        queue_repo=FileEnrichQueueRepository(db_path),
-        lsp_repo=lsp_repo,
-        policy_repo=PipelinePolicyRepository(db_path),
-        benchmark_repo=PipelineBenchmarkRepository(db_path),
-        artifact_root=tmp_path / "artifacts",
-    )
-
     orchestrator = SearchOrchestrator(
         workspace_repo=workspace_repo,
         candidate_service=CandidateSearchService.build_default(
@@ -108,7 +94,6 @@ def _default_context(tmp_path: Path) -> HttpContext:
         admin_service=admin_service,
         file_collection_service=collection_service,
         pipeline_control_service=None,
-        pipeline_benchmark_service=benchmark_service,
         pipeline_quality_service=quality_service,
     )
 
@@ -133,34 +118,3 @@ def test_pipeline_quality_run_and_report_endpoint(tmp_path: Path) -> None:
     assert report_response.status_code == 200
     report_payload = json.loads(report_response.body.decode("utf-8"))
     assert "quality" in report_payload
-
-
-def test_pipeline_benchmark_run_and_report_endpoint(tmp_path: Path) -> None:
-    """벤치마크 실행/리포트 API가 정상 응답을 반환해야 한다."""
-    context = _default_context(tmp_path)
-    run_request = SimpleNamespace(
-        query_params={
-            "repo": "repo-a",
-            "target_files": "20",
-            "profile": "default",
-            "language_filter": "python",
-            "per_language_report": "true",
-        },
-        app=SimpleNamespace(state=SimpleNamespace(context=context)),
-    )
-    run_response = asyncio.run(pipeline_benchmark_run_api_endpoint(run_request))
-    assert run_response.status_code == 200
-    run_payload = json.loads(run_response.body.decode("utf-8"))
-    assert run_payload["benchmark"]["status"] == "COMPLETED"
-    assert run_payload["benchmark"]["language_filter"] == ["python"]
-    assert run_payload["benchmark"]["per_language_report"] is True
-    assert "per_language" in run_payload["benchmark"]
-
-    report_request = SimpleNamespace(
-        query_params={"repo": "repo-a"},
-        app=SimpleNamespace(state=SimpleNamespace(context=context)),
-    )
-    report_response = asyncio.run(pipeline_benchmark_report_api_endpoint(report_request))
-    assert report_response.status_code == 200
-    report_payload = json.loads(report_response.body.decode("utf-8"))
-    assert "benchmark" in report_payload

@@ -164,6 +164,44 @@ def test_extract_outline_supports_query_captures_dict_shape_when_name_bucket_com
     assert result.symbols[0]["name"] == "Bar"
 
 
+def test_extract_outline_does_not_overwrite_method_name_with_nested_identifier_capture() -> None:
+    extractor = TreeSitterOutlineExtractor()
+    extractor._available = True
+
+    class _Node:
+        def __init__(self, node_type: str, line: int, text: bytes, parent=None) -> None:
+            self.type = node_type
+            self.start_point = (line - 1, 0)
+            self.end_point = (line - 1, 1)
+            self.text = text
+            self.parent = parent
+
+    method_node = _Node("method_declaration", 10, b"void doWork() { String body = \"x\"; }")
+    method_name_node = _Node("identifier", 10, b"doWork", parent=method_node)
+    block_node = _Node("block", 11, b"{ String body = \"x\"; }", parent=method_node)
+    nested_identifier_node = _Node("identifier", 11, b"body", parent=block_node)
+
+    class _Parser:
+        def parse(self, data):  # noqa: ANN001
+            return types.SimpleNamespace(root_node=object())
+
+    extractor._get_or_create_parser = lambda normalized_lang: _Parser()  # type: ignore[assignment]
+    extractor._languages["java"] = object()
+    extractor._compiled_queries["java"] = object()
+    extractor._query_cls = object  # type: ignore[assignment]
+    extractor._run_query_captures = lambda **kwargs: {  # type: ignore[method-assign]
+        "symbol.method": [method_node],
+        "name": [method_name_node, nested_identifier_node],
+    }
+
+    result = extractor.extract_outline(lang_key="java", content_text="class X {}", budget_sec=0.1)
+
+    assert result.degraded is False
+    assert result.symbols
+    assert result.symbols[0]["kind"] == "method"
+    assert result.symbols[0]["name"] == "doWork"
+
+
 def test_java_outline_does_not_emit_field_type_name_as_field_symbol() -> None:
     extractor = TreeSitterOutlineExtractor()
     if not extractor.is_available_for("java"):
@@ -203,6 +241,27 @@ def test_java_outline_emits_package_as_module_symbol() -> None:
     modules = [s for s in result.symbols if s.get("kind") == "module"]
     assert len(modules) >= 1
     assert any("kr.co.vendys.company.api" in str(s.get("name", "")) for s in modules)
+
+
+def test_java_outline_supplements_unicode_method_names_with_regex() -> None:
+    extractor = TreeSitterOutlineExtractor()
+    if not extractor.is_available_for("java"):
+        return
+
+    java_src = """
+        class SampleTest {
+            public void setUp() {}
+            public void 특가대장_포인트_사용하기() {}
+            public void 특가대장_포인트_취소하기() {}
+        }
+    """
+    result = extractor.extract_outline(lang_key="java", content_text=java_src, budget_sec=0.2)
+
+    assert result.degraded is False
+    method_names = {str(s.get("name")) for s in result.symbols if s.get("kind") == "method"}
+    assert "setUp" in method_names
+    assert "특가대장_포인트_사용하기" in method_names
+    assert "특가대장_포인트_취소하기" in method_names
 
 
 def test_query_source_prefers_packaged_tags_scm(monkeypatch, tmp_path: Path) -> None:
@@ -398,6 +457,28 @@ def test_kotlin_outline_emits_interface_symbol() -> None:
     assert result.degraded is False
     by_name = {str(s.get("name")): str(s.get("kind")) for s in result.symbols}
     assert by_name.get("Api") == "interface"
+
+
+def test_python_outline_captures_async_function_and_method() -> None:
+    extractor = TreeSitterOutlineExtractor(asset_mode="apply")
+    if not extractor.is_available_for("py"):
+        return
+
+    py_src = """
+class Service:
+    async def run(self):
+        return 1
+
+async def main():
+    return await Service().run()
+"""
+    result = extractor.extract_outline(lang_key="py", content_text=py_src, budget_sec=0.3)
+
+    assert result.degraded is False
+    by_name = {str(s.get("name")): str(s.get("kind")) for s in result.symbols}
+    assert by_name.get("Service") == "class"
+    assert by_name.get("run") == "method"
+    assert by_name.get("main") == "function"
 
 
 def test_javascript_outline_emits_string_and_shorthand_object_keys_as_field_symbols() -> None:

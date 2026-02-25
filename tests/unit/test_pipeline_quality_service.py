@@ -13,6 +13,7 @@ from sari.db.repositories.file_collection_repository import FileCollectionReposi
 from sari.db.repositories.file_enrich_queue_repository import FileEnrichQueueRepository
 from sari.db.repositories.lsp_tool_data_repository import LspToolDataRepository
 from sari.db.repositories.pipeline_quality_repository import PipelineQualityRepository
+from sari.db.repositories.tool_data_layer_repository import ToolDataLayerRepository
 from sari.db.repositories.tool_readiness_repository import ToolReadinessRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.db.schema import init_schema
@@ -55,7 +56,7 @@ def _default_policy() -> CollectionPolicyDTO:
 
 
 def test_pipeline_quality_service_runs_and_returns_metrics(tmp_path: Path) -> None:
-    """품질 실행은 precision/error_rate를 포함한 요약을 반환해야 한다."""
+    """품질 실행은 precision/error_rate와 position 지표를 포함한 요약을 반환해야 한다."""
     db_path = tmp_path / "state.db"
     init_schema(db_path)
 
@@ -95,6 +96,8 @@ def test_pipeline_quality_service_runs_and_returns_metrics(tmp_path: Path) -> No
     assert summary["precision"]["total"] >= 95.0
     assert summary["recall"]["total"] >= 95.0
     assert summary["error_rate"] <= 1.0
+    assert "position" in summary
+    assert set(summary["position"].keys()) >= {"strict", "relaxed", "kind_match"}
 
 
 def test_pipeline_quality_service_raises_for_empty_dataset(tmp_path: Path) -> None:
@@ -265,6 +268,113 @@ def test_pipeline_quality_service_excludes_benchmark_dataset_paths(tmp_path: Pat
     assert all("benchmark_dataset/" not in str(item.get("relative_path", "")) for item in samples)
 
 
+def test_pipeline_quality_service_uses_tool_layer_l3_symbols_as_predicted(tmp_path: Path) -> None:
+    """L3 분리 저장소가 있으면 품질 predicted는 tool_data_l3_symbols를 우선 사용해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+
+    repo_dir = tmp_path / "repo-a"
+    repo_dir.mkdir()
+    file_path = repo_dir / "a.py"
+    file_path.write_text("def alpha():\n    return 1\n", encoding="utf-8")
+    WorkspaceService(WorkspaceRepository(db_path)).add_workspace(str(repo_dir))
+
+    collection_service = FileCollectionService(
+        workspace_repo=WorkspaceRepository(db_path),
+        file_repo=FileCollectionRepository(db_path),
+        enrich_queue_repo=FileEnrichQueueRepository(db_path),
+        body_repo=FileBodyRepository(db_path),
+        lsp_repo=LspToolDataRepository(db_path),
+        readiness_repo=ToolReadinessRepository(db_path),
+        policy=_default_policy(),
+        lsp_backend=_GoldenBackend(),
+        policy_repo=None,
+        event_repo=None,
+    )
+    collection_service.scan_once(str(repo_dir))
+    collection_service.process_enrich_jobs(limit=20)
+
+    file_repo = FileCollectionRepository(db_path)
+    indexed_files = file_repo.list_files(repo_root=str(repo_dir.resolve()), limit=10)
+    assert len(indexed_files) == 1
+    file_item = indexed_files[0]
+
+    # 기존 lsp_tool_data를 비워도 tool_data_l3_symbols만으로 품질 비교가 가능해야 한다.
+    lsp_repo = LspToolDataRepository(db_path)
+    lsp_repo.replace_symbols(
+        str(repo_dir.resolve()),
+        file_item.relative_path,
+        file_item.content_hash,
+        [],
+        "2026-02-25T00:00:00Z",
+    )
+
+    tool_layer_repo = ToolDataLayerRepository(db_path)
+    tool_layer_repo.upsert_l3_symbols(
+        workspace_id=str(repo_dir.resolve()),
+        repo_root=str(repo_dir.resolve()),
+        relative_path=file_item.relative_path,
+        content_hash=file_item.content_hash,
+        symbols=[{"name": "alpha", "kind": "function", "line": 1, "end_line": 2}],
+        degraded=False,
+        l3_skipped_large_file=False,
+        updated_at="2026-02-25T00:00:00Z",
+    )
+
+    quality_service = PipelineQualityService(
+        file_repo=file_repo,
+        lsp_repo=lsp_repo,
+        quality_repo=PipelineQualityRepository(db_path),
+        golden_backend=_GoldenBackend(),
+        artifact_root=tmp_path / "artifacts",
+        tool_layer_repo=tool_layer_repo,
+    )
+    summary = quality_service.run(repo_root=str(repo_dir), limit_files=50, profile="default")
+    assert summary["totals"]["symbol_tp"] >= 1
+    assert summary["totals"]["symbol_fn"] == 0
+
+
+def test_pipeline_quality_service_falls_back_to_latest_lsp_symbols_when_hash_mismatch(tmp_path: Path) -> None:
+    """quality 경로는 strict hash miss 시 latest path 심볼로 폴백해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+
+    repo_dir = tmp_path / "repo-a"
+    repo_dir.mkdir()
+    file_path = repo_dir / "a.py"
+    file_path.write_text("def alpha():\n    return 1\n", encoding="utf-8")
+    WorkspaceService(WorkspaceRepository(db_path)).add_workspace(str(repo_dir))
+
+    collection_service = FileCollectionService(
+        workspace_repo=WorkspaceRepository(db_path),
+        file_repo=FileCollectionRepository(db_path),
+        enrich_queue_repo=FileEnrichQueueRepository(db_path),
+        body_repo=FileBodyRepository(db_path),
+        lsp_repo=LspToolDataRepository(db_path),
+        readiness_repo=ToolReadinessRepository(db_path),
+        policy=_default_policy(),
+        lsp_backend=_GoldenBackend(),
+        policy_repo=None,
+        event_repo=None,
+    )
+    collection_service.scan_once(str(repo_dir))
+    collection_service.process_enrich_jobs(limit=20)
+
+    # 현재 collected_files의 content_hash를 바꿔 strict hash miss를 의도적으로 만든다.
+    file_path.write_text("def alpha():\n    return 2\n", encoding="utf-8")
+    collection_service.scan_once(str(repo_dir))
+
+    quality_service = PipelineQualityService(
+        file_repo=FileCollectionRepository(db_path),
+        lsp_repo=LspToolDataRepository(db_path),
+        quality_repo=PipelineQualityRepository(db_path),
+        golden_backend=_GoldenBackend(),
+        artifact_root=tmp_path / "artifacts",
+    )
+    summary = quality_service.run(repo_root=str(repo_dir), limit_files=50, profile="default")
+    assert summary["totals"]["symbol_tp"] >= 1
+
+
 def test_serena_golden_backend_collects_fallback_reason_stats() -> None:
     """품질 전용 fallback 발생 시 reason 카운트가 통계에 기록되어야 한다."""
 
@@ -418,3 +528,23 @@ def test_compute_symbol_counts_matches_with_line_tolerance() -> None:
     assert tp == 1
     assert fp == 1
     assert fn == 1
+
+
+def test_compute_symbol_counts_matches_field_like_symbols_with_large_line_gap() -> None:
+    """field/constant/enum_member는 라인 갭이 커도 이름/종류가 같으면 매칭되어야 한다."""
+    tp, fp, fn = _compute_symbol_counts(
+        predicted_symbols=[
+            {"name": "updateDate", "kind": "field", "line": 241, "end_line": 241},
+            {"name": "ACTIVE", "kind": "field", "line": 120, "end_line": 120},
+            {"name": "log", "kind": "field", "line": 17, "end_line": 17},
+        ],
+        golden_symbols=[
+            {"name": "updateDate", "kind": "field", "line": 22, "end_line": 22},
+            {"name": "ACTIVE", "kind": "enum_member", "line": 22, "end_line": 22},
+            {"name": "log", "kind": "constant", "line": 22, "end_line": 22},
+        ],
+        line_tolerance=2,
+    )
+    assert tp == 3
+    assert fp == 0
+    assert fn == 0

@@ -22,3 +22,19 @@ class DefaultL3LanguageProcessor(L3LanguageProcessor):
         _ = context
         return True
 
+    def should_replace_symbol_name(
+        self,
+        *,
+        current_name: str,
+        candidate_name: str,
+        symbol_kind: str,
+        symbol_node_type: str,
+        name_parent_node_type: str,
+        climb_depth: int,
+    ) -> bool:
+        _ = (current_name, candidate_name, symbol_kind, symbol_node_type, name_parent_node_type, climb_depth)
+        return False
+
+    def allows_name_capture_climb(self, *, parent_node_type: str, climb_depth: int) -> bool:
+        _ = (parent_node_type, climb_depth)
+        return False

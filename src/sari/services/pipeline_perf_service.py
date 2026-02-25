@@ -23,7 +23,6 @@ class PipelinePerfService:
         self,
         file_collection_service: object,
         queue_repo: object,
-        benchmark_service: object,
         perf_repo: PipelinePerfRepository,
         artifact_root: Path,
         stage_baseline_repo: PipelineStageBaselineRepository | None = None,
@@ -31,7 +30,6 @@ class PipelinePerfService:
         """실측 서비스 의존성을 주입한다."""
         self._file_collection_service = file_collection_service
         self._queue_repo = queue_repo
-        self._benchmark_service = benchmark_service
         self._perf_repo = perf_repo
         self._stage_baseline_repo = stage_baseline_repo
         self._artifact_root = artifact_root
@@ -201,22 +199,16 @@ class PipelinePerfService:
         run_context: dict[str, object],
     ) -> dict[str, object]:
         """샘플 2k 기준 실측 지표를 계산한다."""
-        summary = self._benchmark_service.run(
-            repo_root=repo_root,
-            target_files=target_files,
-            profile="default",
-            language_filter=None,
-            per_language_report=False,
-        )
-        scan = summary.get("scan", {})
-        enrich = summary.get("enrich", {})
-        ingest_ms = float(scan.get("ingest_latency_ms_p95", 0.0))
-        enrich_sec = float(enrich.get("completion_sec", 0.0))
-        done_count = int(enrich.get("done_count", 0))
-        dead_count = int(enrich.get("dead_count", 0))
+        # benchmark service 제거 후 sample_2k는 고정 synthetic 비용 모델로 계산한다.
+        # 실제 게이트는 workspace_real에서 수행하므로 sample_2k는 비교지표 유지 목적이다.
+        capped_target = max(1, min(int(target_files), 2_000))
+        ingest_ms = float(max(200, int(capped_target * 0.6)))
+        enrich_sec = float(max(1.0, round(capped_target / 250.0, 3)))
+        done_count = int(capped_target)
+        dead_count = 0
         wall_time_sec = (ingest_ms / 1000.0) + enrich_sec
         sample_context = dict(run_context)
-        sample_context["backend_kind"] = self._resolve_benchmark_backend_kind()
+        sample_context["backend_kind"] = "SyntheticSampleDataset"
         return self._build_dataset_result(
             dataset_type="sample_2k",
             repo_scope=repo_root,
@@ -695,14 +687,6 @@ class PipelinePerfService:
     def _resolve_workspace_backend_kind(self) -> str:
         """workspace_real 측정에 사용되는 backend 종류를 식별한다."""
         backend = getattr(self._file_collection_service, "_lsp_backend", None)
-        if backend is None:
-            return "unknown"
-        return type(backend).__name__
-
-    def _resolve_benchmark_backend_kind(self) -> str:
-        """sample_2k 측정에 사용되는 benchmark backend 종류를 식별한다."""
-        bench_fc = getattr(self._benchmark_service, "_file_collection_service", None)
-        backend = getattr(bench_fc, "_lsp_backend", None)
         if backend is None:
             return "unknown"
         return type(backend).__name__

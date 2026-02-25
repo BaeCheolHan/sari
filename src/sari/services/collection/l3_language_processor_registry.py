@@ -25,9 +25,34 @@ class L3LanguageProcessorRegistry:
             JavaScriptL3LanguageProcessor(),
         )
         self._fallback: L3LanguageProcessor = DefaultL3LanguageProcessor()
+        self._name_index: dict[str, L3LanguageProcessor] = {
+            processor.name.strip().lower(): processor for processor in self._processors
+        }
 
     def resolve(self, *, relative_path: str) -> L3LanguageProcessor:
         for processor in self._processors:
             if processor.supports_path(relative_path=relative_path):
+                return processor
+        return self._fallback
+
+    def resolve_by_pattern_key(self, *, pattern_key: str) -> L3LanguageProcessor:
+        target = str(pattern_key).strip().lower()
+        if target == "":
+            return self._fallback
+        alias_map = {
+            "py": "python",
+            "python": "python",
+            "java": "java",
+            "kotlin": "kotlin",
+            "javascript": "javascript",
+            "js": "javascript",
+            "typescript": "typescript",
+            "ts": "typescript",
+            "vue": "vue",
+        }
+        mapped = alias_map.get(target)
+        if mapped is not None:
+            processor = self._name_index.get(mapped)
+            if processor is not None:
                 return processor
         return self._fallback

@@ -26,7 +26,6 @@ from sari.db.repositories.pipeline_control_state_repository import PipelineContr
 from sari.db.repositories.pipeline_job_event_repository import PipelineJobEventRepository
 from sari.db.repositories.pipeline_error_event_repository import PipelineErrorEventRepository
 from sari.db.repositories.pipeline_policy_repository import PipelinePolicyRepository
-from sari.db.repositories.pipeline_benchmark_repository import PipelineBenchmarkRepository
 from sari.db.repositories.pipeline_perf_repository import PipelinePerfRepository
 from sari.db.repositories.pipeline_stage_baseline_repository import PipelineStageBaselineRepository
 from sari.db.repositories.pipeline_quality_repository import PipelineQualityRepository
@@ -50,7 +49,6 @@ from sari.core.models import now_iso8601_utc
 from sari.services.admin_service import AdminService
 from sari.services.file_collection_service import SolidLspExtractionBackend, build_default_file_collection_service
 from sari.services.pipeline_control_service import PipelineControlService
-from sari.services.pipeline_benchmark_service import PipelineBenchmarkService
 from sari.services.pipeline_perf_service import PipelinePerfService
 from sari.services.language_probe_service import LanguageProbeService
 from sari.services.pipeline_lsp_matrix_service import PipelineLspMatrixService
@@ -103,7 +101,6 @@ def main() -> None:
     control_state_repo = PipelineControlStateRepository(db_path)
     event_repo = PipelineJobEventRepository(db_path)
     error_event_repo = PipelineErrorEventRepository(db_path)
-    benchmark_repo = PipelineBenchmarkRepository(db_path)
     perf_repo = PipelinePerfRepository(db_path)
     stage_baseline_repo = PipelineStageBaselineRepository(db_path)
     quality_repo = PipelineQualityRepository(db_path)
@@ -333,21 +330,13 @@ def main() -> None:
         file_repo=file_repo,
         lsp_repo=lsp_repo,
         quality_repo=quality_repo,
-        golden_backend=SerenaGoldenBackend(hub=lsp_hub),
+        golden_backend=SerenaGoldenBackend(hub=lsp_hub, lsp_repo=lsp_repo),
         artifact_root=config.db_path.parent / "artifacts",
-    )
-    pipeline_benchmark_service = PipelineBenchmarkService(
-        file_collection_service=file_collection_service,
-        queue_repo=enrich_queue_repo,
-        lsp_repo=lsp_repo,
-        policy_repo=policy_repo,
-        benchmark_repo=benchmark_repo,
-        artifact_root=config.db_path.parent / "artifacts",
+        tool_layer_repo=tool_layer_repo,
     )
     pipeline_perf_service = PipelinePerfService(
         file_collection_service=file_collection_service,
         queue_repo=enrich_queue_repo,
-        benchmark_service=pipeline_benchmark_service,
         perf_repo=perf_repo,
         artifact_root=config.db_path.parent / "artifacts",
         stage_baseline_repo=stage_baseline_repo,
@@ -382,7 +371,6 @@ def main() -> None:
             admin_service=admin_service,
             file_collection_service=file_collection_service,
             pipeline_control_service=pipeline_control_service,
-            pipeline_benchmark_service=pipeline_benchmark_service,
             pipeline_perf_service=pipeline_perf_service,
             pipeline_quality_service=pipeline_quality_service,
             pipeline_lsp_matrix_service=pipeline_lsp_matrix_service,

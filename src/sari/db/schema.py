@@ -377,20 +377,6 @@ ON pipeline_error_events(error_code);
 CREATE INDEX IF NOT EXISTS idx_pipeline_error_events_scope_time
 ON pipeline_error_events(scope_type, occurred_at DESC);
 
-CREATE TABLE IF NOT EXISTS pipeline_benchmark_runs (
-    run_id TEXT PRIMARY KEY,
-    repo_root TEXT NOT NULL CHECK (repo_root <> ''),
-    target_files INTEGER NOT NULL,
-    profile TEXT NOT NULL,
-    started_at TEXT NOT NULL,
-    finished_at TEXT NULL,
-    status TEXT NOT NULL,
-    summary_json TEXT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_pipeline_benchmark_runs_started
-ON pipeline_benchmark_runs(started_at DESC);
-
 CREATE TABLE IF NOT EXISTS pipeline_perf_runs (
     run_id TEXT PRIMARY KEY,
     repo_root TEXT NOT NULL CHECK (repo_root <> ''),

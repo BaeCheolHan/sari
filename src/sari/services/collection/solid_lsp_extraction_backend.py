@@ -117,6 +117,10 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
         self._scope_override_hit_count = 0
         self._probe_l1_skipped_batch_count = 0
         self._probe_schedule_skipped_batch_count = 0
+        self._runtime_mismatch_auto_recovered_count = 0
+        self._runtime_mismatch_auto_recover_failed_count = 0
+        self._runtime_mismatch_restart_cooldown_sec = 2.0
+        self._runtime_mismatch_last_restart_at: dict[tuple[str, str], float] = {}
         self._session_broker: LspSessionBroker | None = None
         self._watcher_hotness_tracker: WatcherHotnessTracker | None = None
         self._session_broker_enabled = False
@@ -174,6 +178,27 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
                     error_code=error_code,
                     error_message=result.error_message,
                 )
+                if error_code == "ERR_RUNTIME_MISMATCH":
+                    recovered = self._recover_from_runtime_mismatch(
+                        repo_root=normalized_repo_root,
+                        relative_path=normalized_relative_path,
+                    )
+                    if recovered:
+                        with self._perf_tracer.span(
+                            "extract._extract_once_retry_runtime_mismatch",
+                            phase="l3_extract",
+                            repo_root=normalized_repo_root,
+                        ):
+                            result = self._extract_once(
+                                repo_root=repo_root,
+                                normalized_relative_path=normalized_relative_path,
+                            )
+                        if result.error_message is None:
+                            self._runtime_mismatch_auto_recovered_count += 1
+                        else:
+                            self._runtime_mismatch_auto_recover_failed_count += 1
+                    else:
+                        self._runtime_mismatch_auto_recover_failed_count += 1
                 if self._should_force_recover_from_extract_error(
                     repo_root=normalized_repo_root,
                     relative_path=normalized_relative_path,
@@ -837,6 +862,8 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
             self._lsp_scope_planner_fallback_index_building_count
         )
         metrics["scope_override_hit_count"] = int(self._scope_override_hit_count)
+        metrics["runtime_mismatch_auto_recovered_count"] = int(self._runtime_mismatch_auto_recovered_count)
+        metrics["runtime_mismatch_auto_recover_failed_count"] = int(self._runtime_mismatch_auto_recover_failed_count)
         metrics["broker_guard_reject_count"] = int(self._broker_guard_reject_count)
         metrics["broker_parallelism_guard_skip_count"] = int(self._broker_parallelism_guard_skip_count)
         metrics["document_symbol_sync_skip_requested_count"] = int(self._document_symbol_sync_skip_requested_count)
@@ -852,6 +879,33 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
         metrics.setdefault("lsp_memory_total_rss_mb", 0)
         metrics.setdefault("lsp_memory_pressure_state", 0)
         return metrics
+
+    def _recover_from_runtime_mismatch(self, *, repo_root: str, relative_path: str) -> bool:
+        """ERR_RUNTIME_MISMATCH 발생 시 repo/language LSP 런타임을 강제 재시작한다."""
+        language = resolve_language_from_path(file_path=relative_path)
+        if language is None:
+            return False
+        key = (repo_root, language.value)
+        now = time.monotonic()
+        last_restart = self._runtime_mismatch_last_restart_at.get(key)
+        if last_restart is not None and (now - last_restart) < self._runtime_mismatch_restart_cooldown_sec:
+            return False
+        force_restart = getattr(self._hub, "force_restart", None)
+        if not callable(force_restart):
+            return False
+        try:
+            force_restart(language=language, repo_root=repo_root, request_kind="indexing")
+            self._runtime_mismatch_last_restart_at[key] = now
+            return True
+        except (DaemonError, RuntimeError, OSError, ValueError, TypeError):
+            log.warning(
+                "runtime mismatch auto-restart failed(repo=%s, path=%s, language=%s)",
+                repo_root,
+                relative_path,
+                language.value,
+                exc_info=True,
+            )
+            return False
 
     def get_interactive_pressure(self) -> dict[str, int]:
         """인터랙티브 요청 압력 지표를 반환한다."""

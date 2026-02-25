@@ -153,6 +153,9 @@ class _CaptureToolLayerRepo:
         self.l3_calls: list[dict[str, object]] = []
         self.l4_calls: list[dict[str, object]] = []
         self.l5_calls: list[dict[str, object]] = []
+        self.l3_many_calls: list[list[dict[str, object]]] = []
+        self.l4_many_calls: list[list[dict[str, object]]] = []
+        self.l5_many_calls: list[list[dict[str, object]]] = []
 
     def upsert_l3_symbols(self, **kwargs) -> None:  # noqa: ANN003
         self.l3_calls.append(dict(kwargs))
@@ -162,6 +165,15 @@ class _CaptureToolLayerRepo:
 
     def upsert_l5_semantics(self, **kwargs) -> None:  # noqa: ANN003
         self.l5_calls.append(dict(kwargs))
+
+    def upsert_l3_symbols_many(self, upserts: list[dict[str, object]]) -> None:
+        self.l3_many_calls.append([dict(item) for item in upserts])
+
+    def upsert_l4_normalized_symbols_many(self, upserts: list[dict[str, object]]) -> None:
+        self.l4_many_calls.append([dict(item) for item in upserts])
+
+    def upsert_l5_semantics_many(self, upserts: list[dict[str, object]]) -> None:
+        self.l5_many_calls.append([dict(item) for item in upserts])
 
 
 def _build_min_enrich_engine_for_l3_test(*, lsp_backend: object, queue_repo: object, error_policy: _StubErrorPolicy) -> EnrichEngine:
@@ -615,9 +627,15 @@ def test_enrich_engine_flush_persists_tool_layer_buffers() -> None:
         ],
     )
 
-    assert len(engine._tool_layer_repo.l3_calls) == 1
-    assert len(engine._tool_layer_repo.l4_calls) == 1
-    assert len(engine._tool_layer_repo.l5_calls) == 1
+    assert len(engine._tool_layer_repo.l3_many_calls) == 1
+    assert len(engine._tool_layer_repo.l4_many_calls) == 1
+    assert len(engine._tool_layer_repo.l5_many_calls) == 1
+    assert len(engine._tool_layer_repo.l3_many_calls[0]) == 1
+    assert len(engine._tool_layer_repo.l4_many_calls[0]) == 1
+    assert len(engine._tool_layer_repo.l5_many_calls[0]) == 1
+    assert len(engine._tool_layer_repo.l3_calls) == 0
+    assert len(engine._tool_layer_repo.l4_calls) == 0
+    assert len(engine._tool_layer_repo.l5_calls) == 0
 
 
 def test_enrich_engine_l3_needs_l5_does_not_escalate_scope_in_l3() -> None:

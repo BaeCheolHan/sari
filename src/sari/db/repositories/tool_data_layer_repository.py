@@ -27,9 +27,39 @@ class ToolDataLayerRepository:
         l3_skipped_large_file: bool,
         updated_at: str,
     ) -> None:
-        payload = json.dumps(symbols, ensure_ascii=False)
+        self.upsert_l3_symbols_many(
+            [
+                {
+                    "workspace_id": workspace_id,
+                    "repo_root": repo_root,
+                    "relative_path": relative_path,
+                    "content_hash": content_hash,
+                    "symbols": symbols,
+                    "degraded": degraded,
+                    "l3_skipped_large_file": l3_skipped_large_file,
+                    "updated_at": updated_at,
+                }
+            ]
+        )
+
+    def upsert_l3_symbols_many(self, upserts: list[dict[str, object]]) -> None:
+        if len(upserts) == 0:
+            return
+        params = [
+            {
+                "workspace_id": str(item["workspace_id"]),
+                "repo_root": str(item["repo_root"]),
+                "relative_path": str(item["relative_path"]),
+                "content_hash": str(item["content_hash"]),
+                "symbols_json": json.dumps(item.get("symbols", []), ensure_ascii=False),
+                "degraded": 1 if bool(item.get("degraded", False)) else 0,
+                "l3_skipped_large_file": 1 if bool(item.get("l3_skipped_large_file", False)) else 0,
+                "updated_at": str(item["updated_at"]),
+            }
+            for item in upserts
+        ]
         with connect(self._db_path) as conn:
-            conn.execute(
+            conn.executemany(
                 """
                 INSERT INTO tool_data_l3_symbols(
                     workspace_id, repo_root, relative_path, content_hash, symbols_json,
@@ -45,16 +75,7 @@ class ToolDataLayerRepository:
                     l3_skipped_large_file = excluded.l3_skipped_large_file,
                     updated_at = excluded.updated_at
                 """,
-                {
-                    "workspace_id": workspace_id,
-                    "repo_root": repo_root,
-                    "relative_path": relative_path,
-                    "content_hash": content_hash,
-                    "symbols_json": payload,
-                    "degraded": 1 if degraded else 0,
-                    "l3_skipped_large_file": 1 if l3_skipped_large_file else 0,
-                    "updated_at": updated_at,
-                },
+                params,
             )
             conn.commit()
 
@@ -72,9 +93,43 @@ class ToolDataLayerRepository:
         needs_l5: bool,
         updated_at: str,
     ) -> None:
-        payload = json.dumps(normalized, ensure_ascii=False)
+        self.upsert_l4_normalized_symbols_many(
+            [
+                {
+                    "workspace_id": workspace_id,
+                    "repo_root": repo_root,
+                    "relative_path": relative_path,
+                    "content_hash": content_hash,
+                    "normalized": normalized,
+                    "confidence": confidence,
+                    "ambiguity": ambiguity,
+                    "coverage": coverage,
+                    "needs_l5": needs_l5,
+                    "updated_at": updated_at,
+                }
+            ]
+        )
+
+    def upsert_l4_normalized_symbols_many(self, upserts: list[dict[str, object]]) -> None:
+        if len(upserts) == 0:
+            return
+        params = [
+            {
+                "workspace_id": str(item["workspace_id"]),
+                "repo_root": str(item["repo_root"]),
+                "relative_path": str(item["relative_path"]),
+                "content_hash": str(item["content_hash"]),
+                "normalized_json": json.dumps(item.get("normalized", {}), ensure_ascii=False),
+                "confidence": float(item.get("confidence", 0.0)),
+                "ambiguity": float(item.get("ambiguity", 0.0)),
+                "coverage": float(item.get("coverage", 0.0)),
+                "needs_l5": 1 if bool(item.get("needs_l5", False)) else 0,
+                "updated_at": str(item["updated_at"]),
+            }
+            for item in upserts
+        ]
         with connect(self._db_path) as conn:
-            conn.execute(
+            conn.executemany(
                 """
                 INSERT INTO tool_data_l4_normalized_symbols(
                     workspace_id, repo_root, relative_path, content_hash, normalized_json,
@@ -92,18 +147,7 @@ class ToolDataLayerRepository:
                     needs_l5 = excluded.needs_l5,
                     updated_at = excluded.updated_at
                 """,
-                {
-                    "workspace_id": workspace_id,
-                    "repo_root": repo_root,
-                    "relative_path": relative_path,
-                    "content_hash": content_hash,
-                    "normalized_json": payload,
-                    "confidence": float(confidence),
-                    "ambiguity": float(ambiguity),
-                    "coverage": float(coverage),
-                    "needs_l5": 1 if needs_l5 else 0,
-                    "updated_at": updated_at,
-                },
+                params,
             )
             conn.commit()
 
@@ -118,9 +162,37 @@ class ToolDataLayerRepository:
         semantics: dict[str, object],
         updated_at: str,
     ) -> None:
-        payload = json.dumps(semantics, ensure_ascii=False)
+        self.upsert_l5_semantics_many(
+            [
+                {
+                    "workspace_id": workspace_id,
+                    "repo_root": repo_root,
+                    "relative_path": relative_path,
+                    "content_hash": content_hash,
+                    "reason_code": reason_code,
+                    "semantics": semantics,
+                    "updated_at": updated_at,
+                }
+            ]
+        )
+
+    def upsert_l5_semantics_many(self, upserts: list[dict[str, object]]) -> None:
+        if len(upserts) == 0:
+            return
+        params = [
+            {
+                "workspace_id": str(item["workspace_id"]),
+                "repo_root": str(item["repo_root"]),
+                "relative_path": str(item["relative_path"]),
+                "content_hash": str(item["content_hash"]),
+                "reason_code": str(item["reason_code"]),
+                "semantics_json": json.dumps(item.get("semantics", {}), ensure_ascii=False),
+                "updated_at": str(item["updated_at"]),
+            }
+            for item in upserts
+        ]
         with connect(self._db_path) as conn:
-            conn.execute(
+            conn.executemany(
                 """
                 INSERT INTO tool_data_l5_semantics(
                     workspace_id, repo_root, relative_path, content_hash, reason_code, semantics_json, updated_at
@@ -147,15 +219,7 @@ class ToolDataLayerRepository:
                     semantics_json = excluded.semantics_json,
                     updated_at = excluded.updated_at
                 """,
-                {
-                    "workspace_id": workspace_id,
-                    "repo_root": repo_root,
-                    "relative_path": relative_path,
-                    "content_hash": content_hash,
-                    "reason_code": reason_code,
-                    "semantics_json": payload,
-                    "updated_at": updated_at,
-                },
+                params,
             )
             conn.commit()
 

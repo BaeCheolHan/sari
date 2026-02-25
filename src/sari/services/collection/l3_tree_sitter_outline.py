@@ -6,10 +6,12 @@ from dataclasses import dataclass
 import importlib
 import logging
 from pathlib import Path
+import re
 import time
 from typing import Any
 
 from .l3_asset_loader import L3AssetLoader
+from .l3_language_processor_registry import L3LanguageProcessorRegistry
 
 
 @dataclass(frozen=True)
@@ -135,6 +137,12 @@ class TreeSitterOutlineExtractor:
             (class_body (property_declaration (variable_declaration (simple_identifier) @name)) @symbol.field)
         """,
     }
+    _JAVA_METHOD_LINE_REGEX = re.compile(
+        r"^\s*(?:public|protected|private)?\s*(?:static\s+)?(?:final\s+)?(?:synchronized\s+)?"
+        r"(?:native\s+)?(?:abstract\s+)?(?:<[^>]+>\s*)?(?:[A-Za-z_$\u0080-\uffff][\w$<>\[\],?.]*?)\s+"
+        r"([A-Za-z_$\u0080-\uffff][\w$\u0080-\uffff]*)\s*\([^)\n;]*\)\s*"
+        r"(?:throws\s+[A-Za-z0-9_.$,\s]+)?\s*\{\s*\}?\s*$"
+    )
 
     def __init__(
         self,
@@ -142,6 +150,7 @@ class TreeSitterOutlineExtractor:
         asset_loader: L3AssetLoader | None = None,
         asset_mode: str = "shadow",
         asset_lang_allowlist: tuple[str, ...] = (),
+        language_registry: L3LanguageProcessorRegistry | None = None,
     ) -> None:
         self._available = False
         self._parsers: dict[str, object] = {}
@@ -155,6 +164,7 @@ class TreeSitterOutlineExtractor:
         self._compiled_queries: dict[str, Any] = {}
         self._query_source_cache: dict[str, str | None] = {}
         self._asset_loader = asset_loader or L3AssetLoader()
+        self._language_registry = language_registry or L3LanguageProcessorRegistry()
         self._asset_mode = str(asset_mode or "shadow").strip().lower()
         self._asset_lang_allowlist = {
             str(item).strip().lower() for item in asset_lang_allowlist if str(item).strip() != ""
@@ -201,6 +211,7 @@ class TreeSitterOutlineExtractor:
         normalized = self._LANGUAGE_ALIASES.get(lang_key)
         if normalized is None:
             return TreeSitterOutlineResult(symbols=[], degraded=False, reason="tree_sitter_unsupported_language")
+        language_processor = self._language_registry.resolve_by_pattern_key(pattern_key=normalized)
         parser = self._get_or_create_parser(normalized)
         if parser is None:
             return TreeSitterOutlineResult(symbols=[], degraded=True, reason="tree_sitter_parser_init_failed")
@@ -209,6 +220,7 @@ class TreeSitterOutlineExtractor:
             parser=parser,
             content_text=content_text,
             budget_sec=budget_sec,
+            language_processor=language_processor,
         )
         if query_result is not None:
             return query_result
@@ -270,6 +282,7 @@ class TreeSitterOutlineExtractor:
         parser,
         content_text: str,
         budget_sec: float,
+        language_processor,
     ) -> TreeSitterOutlineResult | None:
         # Query path is best-effort: if the runtime lacks Query/QueryCursor support or
         # query compilation fails, fall back to the legacy traversal extractor.
@@ -307,27 +320,45 @@ class TreeSitterOutlineExtractor:
             if node is None or not isinstance(capture_name, str):
                 continue
             if capture_name == "name":
-                parent = getattr(node, "parent", node)
+                parent = getattr(node, "parent", None)
+                if parent is None:
+                    continue
                 text = getattr(node, "text", b"")
                 if isinstance(text, bytes) and text:
                     decoded = text.decode("utf-8", errors="ignore") or "anonymous"
                     if len(decoded) >= 2 and decoded[0] == decoded[-1] and decoded[0] in {"'", '"', "`"}:
                         decoded = decoded[1:-1]
-                    cur = parent
-                    while cur is not None:
-                        cur_id = self._node_identity(cur)
-                        if cur_id not in names_by_parent_id:
-                            names_by_parent_id[cur_id] = decoded
-                        entry = pending.get(cur_id)
+                    current = parent
+                    climb_depth = 0
+                    while current is not None:
+                        current_id = self._node_identity(current)
+                        if current_id not in names_by_parent_id:
+                            names_by_parent_id[current_id] = decoded
+                        entry = pending.get(current_id)
                         if entry is not None:
-                            entry["name"] = decoded
-                            try:
-                                line_value = int(entry.get("line", 0) or 0)
-                            except (TypeError, ValueError):
-                                line_value = 0
-                            entry["symbol_key"] = f"{decoded}:{line_value}"
+                            current_name = str(entry.get("name", "")).strip()
+                            if language_processor.should_replace_symbol_name(
+                                current_name=current_name,
+                                candidate_name=decoded,
+                                symbol_kind=str(entry.get("kind", "")),
+                                symbol_node_type=str(getattr(current, "type", "")),
+                                name_parent_node_type=str(getattr(parent, "type", "")),
+                                climb_depth=climb_depth,
+                            ):
+                                entry["name"] = decoded
+                                try:
+                                    line_value = int(entry.get("line", 0) or 0)
+                                except (TypeError, ValueError):
+                                    line_value = 0
+                                entry["symbol_key"] = f"{decoded}:{line_value}"
                             break
-                        cur = getattr(cur, "parent", None)
+                        if not language_processor.allows_name_capture_climb(
+                            parent_node_type=str(getattr(current, "type", "")),
+                            climb_depth=climb_depth,
+                        ):
+                            break
+                        current = getattr(current, "parent", None)
+                        climb_depth += 1
                 continue
             kind = self._query_capture_to_kind(capture_name, normalized=normalized)
             if kind is None:
@@ -364,6 +395,8 @@ class TreeSitterOutlineExtractor:
         symbols: list[dict[str, object]],
         content_text: str,
     ) -> list[dict[str, object]]:
+        if normalized == "java":
+            symbols = self._supplement_java_unicode_methods(symbols=symbols, content_text=content_text)
         if normalized == "kotlin":
             lines = content_text.splitlines()
             for sym in symbols:
@@ -381,6 +414,40 @@ class TreeSitterOutlineExtractor:
                 if declaration_line.startswith("interface "):
                     sym["kind"] = "interface"
         return self._dedupe_symbols(symbols)
+
+    def _supplement_java_unicode_methods(
+        self,
+        *,
+        symbols: list[dict[str, object]],
+        content_text: str,
+    ) -> list[dict[str, object]]:
+        out = list(symbols)
+        keywords = {"if", "for", "while", "switch", "catch", "return", "new", "throw"}
+        # Keep supplemental scan line-based so one match cannot consume multiple method headers.
+        for idx, line_text in enumerate(content_text.splitlines(), start=1):
+            match = self._JAVA_METHOD_LINE_REGEX.match(line_text)
+            if match is None:
+                continue
+            method_name = str(match.group(1) or "").strip()
+            if method_name == "" or method_name in keywords:
+                continue
+            # Supplemental scan is only for unicode identifiers that tree-sitter-java
+            # can miss in 일부 테스트 코드 스타일.
+            if all(ord(ch) <= 127 for ch in method_name):
+                continue
+            out.append(
+                {
+                    "name": method_name,
+                    "kind": "method",
+                    "line": idx,
+                    "end_line": idx,
+                    "symbol_key": f"{method_name}:{idx}",
+                    "parent_symbol_key": None,
+                    "depth": 0,
+                    "container_name": None,
+                }
+            )
+        return out
 
     def _dedupe_symbols(self, symbols: list[dict[str, object]]) -> list[dict[str, object]]:
         seen: set[tuple[str, str, int, int]] = set()

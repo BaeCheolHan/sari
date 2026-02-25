@@ -76,6 +76,81 @@ def test_tool_data_layer_repository_roundtrip_by_content_hash(tmp_path: Path) ->
     assert snapshot["l5"][0]["reason_code"] == "L5_REASON_UNRESOLVED_SYMBOL"
 
 
+def test_tool_data_layer_repository_batch_upserts_roundtrip(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = ToolDataLayerRepository(db_path)
+    now_iso = "2026-02-23T12:00:00+00:00"
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO collected_files_l1(
+                repo_id, repo_root, relative_path, absolute_path, repo_label,
+                mtime_ns, size_bytes, content_hash, is_deleted, last_seen_at, updated_at, enrich_state
+            ) VALUES(
+                '', '/repo', 'src/a.py', '/repo/src/a.py', 'repo',
+                1, 10, 'h1', 0, :now_iso, :now_iso, 'READY'
+            )
+            """,
+            {"now_iso": now_iso},
+        )
+        conn.commit()
+
+    repo.upsert_l3_symbols_many(
+        [
+            {
+                "workspace_id": "ws-a",
+                "repo_root": "/repo",
+                "relative_path": "src/a.py",
+                "content_hash": "h1",
+                "symbols": [{"name": "A", "kind": "class", "line": 1, "end_line": 1}],
+                "degraded": False,
+                "l3_skipped_large_file": False,
+                "updated_at": now_iso,
+            }
+        ]
+    )
+    repo.upsert_l4_normalized_symbols_many(
+        [
+            {
+                "workspace_id": "ws-a",
+                "repo_root": "/repo",
+                "relative_path": "src/a.py",
+                "content_hash": "h1",
+                "normalized": {"top": ["A"]},
+                "confidence": 0.95,
+                "ambiguity": 0.05,
+                "coverage": 0.9,
+                "needs_l5": True,
+                "updated_at": now_iso,
+            }
+        ]
+    )
+    repo.upsert_l5_semantics_many(
+        [
+            {
+                "workspace_id": "ws-a",
+                "repo_root": "/repo",
+                "relative_path": "src/a.py",
+                "content_hash": "h1",
+                "reason_code": "L5_REASON_GOLDENSET_COVERAGE",
+                "semantics": {"edges": 4},
+                "updated_at": now_iso,
+            }
+        ]
+    )
+
+    snapshot = repo.load_effective_snapshot(
+        workspace_id="ws-a",
+        repo_root="/repo",
+        relative_path="src/a.py",
+        content_hash="h1",
+    )
+    assert snapshot["l3"]["symbols"][0]["name"] == "A"
+    assert snapshot["l4"]["needs_l5"] is True
+    assert snapshot["l5"][0]["reason_code"] == "L5_REASON_GOLDENSET_COVERAGE"
+
+
 def test_tool_data_layer_repository_drops_stale_l5_rows(tmp_path: Path) -> None:
     db_path = tmp_path / "state.db"
     init_schema(db_path)

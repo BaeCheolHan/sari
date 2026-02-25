@@ -11,7 +11,6 @@ from pytest import MonkeyPatch
 
 from sari.cli.main import _build_services, cli
 from sari.services.file_collection_service import SolidLspExtractionBackend
-from sari.services.pipeline_benchmark_service import BenchmarkLspExtractionBackend
 
 
 def _prepare_home(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
@@ -74,14 +73,12 @@ def test_cli_pipeline_perf_run_and_report(tmp_path: Path, monkeypatch: MonkeyPat
     assert report_payload["perf"]["status"] == "COMPLETED"
 
 
-def test_build_services_separates_benchmark_and_perf_backends(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+def test_build_services_perf_backend_is_real_lsp(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     """perf 측정 서비스는 real LSP backend를 사용해야 한다."""
     _prepare_home(tmp_path=tmp_path, monkeypatch=monkeypatch)
     services = _build_services()
-    benchmark_backend = services.pipeline_benchmark_service._file_collection_service._lsp_backend  # type: ignore[attr-defined]
     perf_backend = services.pipeline_perf_service._file_collection_service._lsp_backend  # type: ignore[attr-defined]
 
-    assert isinstance(benchmark_backend, BenchmarkLspExtractionBackend)
     assert isinstance(perf_backend, SolidLspExtractionBackend)
 
 

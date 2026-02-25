@@ -510,6 +510,31 @@ class LspToolDataRepository:
             for row in rows
         ]
 
+    def list_file_symbols_latest(self, repo_root: str, relative_path: str) -> list[dict[str, object]]:
+        """content_hash 불일치 상황에서도 파일 최신 심볼 집합을 반환한다.
+
+        품질 비교(offline/report) 경로에서만 사용한다. 실시간 read/search 경로는
+        content_hash 일치 강제 조회(list_file_symbols)를 그대로 사용해야 한다.
+        """
+        with connect(self._db_path) as conn:
+            latest = conn.execute(
+                """
+                SELECT content_hash
+                FROM lsp_symbols
+                WHERE repo_root = :repo_root
+                  AND relative_path = :relative_path
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                {
+                    "repo_root": repo_root,
+                    "relative_path": relative_path,
+                },
+            ).fetchone()
+        if latest is None:
+            return []
+        return self.list_file_symbols(repo_root, relative_path, row_str(latest, "content_hash"))
+
     def list_file_relations(self, repo_root: str, relative_path: str, content_hash: str) -> list[dict[str, object]]:
         """파일 단위 호출 관계 집합을 반환한다."""
         with connect(self._db_path) as conn:
@@ -536,3 +561,24 @@ class LspToolDataRepository:
             }
             for row in rows
         ]
+
+    def list_file_relations_latest(self, repo_root: str, relative_path: str) -> list[dict[str, object]]:
+        """content_hash 불일치 상황에서도 파일 최신 호출 관계 집합을 반환한다."""
+        with connect(self._db_path) as conn:
+            latest = conn.execute(
+                """
+                SELECT content_hash
+                FROM lsp_call_relations
+                WHERE repo_root = :repo_root
+                  AND relative_path = :relative_path
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                {
+                    "repo_root": repo_root,
+                    "relative_path": relative_path,
+                },
+            ).fetchone()
+        if latest is None:
+            return []
+        return self.list_file_relations(repo_root, relative_path, row_str(latest, "content_hash"))

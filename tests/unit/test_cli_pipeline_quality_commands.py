@@ -18,7 +18,7 @@ def _prepare_home(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
 
 
 def test_cli_pipeline_quality_run_and_report(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
-    """pipeline quality run/report 명령이 정상 동작해야 한다."""
+    """pipeline quality run/report 명령은 데이터셋 부재 시 명시 오류를 반환해야 한다."""
     _prepare_home(tmp_path=tmp_path, monkeypatch=monkeypatch)
     runner = CliRunner()
 
@@ -26,12 +26,6 @@ def test_cli_pipeline_quality_run_and_report(tmp_path: Path, monkeypatch: Monkey
     repo_dir.mkdir()
     add_result = runner.invoke(cli, ["roots", "add", str(repo_dir)])
     assert add_result.exit_code == 0
-
-    benchmark_result = runner.invoke(
-        cli,
-        ["pipeline", "benchmark", "run", "--repo", str(repo_dir.resolve()), "--target-files", "10", "--profile", "default"],
-    )
-    assert benchmark_result.exit_code == 0
 
     run_result = runner.invoke(
         cli,
@@ -49,12 +43,11 @@ def test_cli_pipeline_quality_run_and_report(tmp_path: Path, monkeypatch: Monkey
             "python",
         ],
     )
-    assert run_result.exit_code == 0
+    assert run_result.exit_code == 1
     run_payload = json.loads(run_result.output)
-    assert run_payload["quality"]["status"] in {"PASSED", "FAILED"}
-    assert run_payload["quality"]["language_filter"] == ["python"]
+    assert run_payload["error"]["code"] in {"ERR_QUALITY_EMPTY_DATASET", "ERR_QUALITY_NOT_FOUND"}
 
     report_result = runner.invoke(cli, ["pipeline", "quality", "report", "--repo", str(repo_dir.resolve())])
     assert report_result.exit_code == 0
     report_payload = json.loads(report_result.output)
-    assert "quality" in report_payload
+    assert report_payload["quality"]["status"] == "FAILED"

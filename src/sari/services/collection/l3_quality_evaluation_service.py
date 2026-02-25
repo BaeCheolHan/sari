@@ -185,6 +185,11 @@ class L3QualityEvaluationService:
         line_override = self._asset_loader.load(lang).line_match_overrides
         fallback_buckets = self._read_str_list(line_override.get("name_kind_fallback_buckets"))
         fallback_max_gap = self._read_non_negative_int(line_override.get("name_kind_fallback_max_line_gap"))
+        fallback_by_bucket = self._read_non_negative_int_map(
+            line_override.get("name_kind_fallback_max_line_gap_by_bucket")
+        )
+        if ast_sym.kind_bucket in fallback_by_bucket:
+            fallback_max_gap = fallback_by_bucket[ast_sym.kind_bucket]
         if ast_sym.kind_bucket in fallback_buckets:
             fallback_best_idx: int | None = None
             fallback_best_gap: int | None = None
@@ -379,6 +384,8 @@ class L3QualityEvaluationService:
             "method": "method",
             "function": "function",
             "field": "field",
+            "constant": "field",
+            "enum_member": "field",
             "variable": "variable",
             "interface": "interface",
             "enum": "enum",
@@ -426,6 +433,22 @@ class L3QualityEvaluationService:
         if value < 0:
             return None
         return value
+
+    def _read_non_negative_int_map(self, raw: object) -> dict[str, int]:
+        if not isinstance(raw, dict):
+            return {}
+        out: dict[str, int] = {}
+        for key, value in raw.items():
+            if not isinstance(key, str):
+                continue
+            parsed = self._read_non_negative_int(value)
+            if parsed is None:
+                continue
+            normalized = key.strip()
+            if normalized == "":
+                continue
+            out[normalized] = parsed
+        return out
 
     def _resolve_relaxed_line_gap(self, *, language: str, kind_bucket: str) -> int:
         base = self._line_tolerance

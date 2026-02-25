@@ -13,6 +13,11 @@ class KotlinL3LanguageProcessor(BaseL3LanguageProcessor):
                 extensions=(".kt", ".kts"),
                 pattern_key="kotlin",
                 min_symbols_for_l3_only=2,
+                name_capture_bridge_node_types=(
+                    "variable_declaration",
+                    "variable_declarator",
+                    "class_parameter",
+                    "formal_parameter",
+                ),
             )
         )
-

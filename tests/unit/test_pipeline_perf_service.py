@@ -477,7 +477,6 @@ def test_pipeline_perf_service_run_returns_gate_summary(tmp_path: Path) -> None:
     service = PipelinePerfService(
         file_collection_service=_FakeCollectionService(),
         queue_repo=_FakeQueueRepository(),
-        benchmark_service=_FakeBenchmarkService(),
         perf_repo=PipelinePerfRepository(db_path),
         artifact_root=tmp_path / "artifacts",
     )
@@ -510,7 +509,6 @@ def test_pipeline_perf_service_rejects_invalid_repo(tmp_path: Path) -> None:
     service = PipelinePerfService(
         file_collection_service=_FakeCollectionService(),
         queue_repo=_FakeQueueRepository(),
-        benchmark_service=_FakeBenchmarkService(),
         perf_repo=PipelinePerfRepository(db_path),
         artifact_root=tmp_path / "artifacts",
     )
@@ -527,7 +525,6 @@ def test_pipeline_perf_service_rejects_invalid_dataset_mode(tmp_path: Path) -> N
     service = PipelinePerfService(
         file_collection_service=_FakeCollectionService(),
         queue_repo=_FakeQueueRepository(),
-        benchmark_service=_FakeBenchmarkService(),
         perf_repo=PipelinePerfRepository(db_path),
         artifact_root=tmp_path / "artifacts",
     )
@@ -545,7 +542,6 @@ def test_pipeline_perf_service_applies_cold_reset_options(tmp_path: Path) -> Non
     service = PipelinePerfService(
         file_collection_service=collection_service,
         queue_repo=_FakeQueueRepository(),
-        benchmark_service=_FakeBenchmarkService(),
         perf_repo=PipelinePerfRepository(db_path),
         artifact_root=tmp_path / "artifacts",
     )
@@ -578,7 +574,6 @@ def test_pipeline_perf_service_rejects_missing_probe_reset_capability(tmp_path: 
     service = PipelinePerfService(
         file_collection_service=_FakeCollectionServiceWithoutReset(),
         queue_repo=_FakeQueueRepository(),
-        benchmark_service=_FakeBenchmarkService(),
         perf_repo=PipelinePerfRepository(db_path),
         artifact_root=tmp_path / "artifacts",
     )
@@ -600,7 +595,6 @@ def test_pipeline_perf_service_rejects_missing_lsp_reset_capability(tmp_path: Pa
     service = PipelinePerfService(
         file_collection_service=_FakeCollectionServiceWithoutLspReset(),
         queue_repo=_FakeQueueRepository(),
-        benchmark_service=_FakeBenchmarkService(),
         perf_repo=PipelinePerfRepository(db_path),
         artifact_root=tmp_path / "artifacts",
     )
@@ -623,7 +617,6 @@ def test_pipeline_perf_service_records_workspace_exclude_globs_in_run_context(tm
     service = PipelinePerfService(
         file_collection_service=collection_service,
         queue_repo=_FakeQueueRepository(),
-        benchmark_service=_FakeBenchmarkService(),
         perf_repo=PipelinePerfRepository(db_path),
         artifact_root=tmp_path / "artifacts",
     )
@@ -651,7 +644,6 @@ def test_pipeline_perf_service_drain_recovers_stale_running_for_perf_only(tmp_pa
     service = PipelinePerfService(
         file_collection_service=_IdleCollectionService(),
         queue_repo=queue_repo,
-        benchmark_service=_FakeBenchmarkService(),
         perf_repo=PipelinePerfRepository(db_path),
         artifact_root=tmp_path / "artifacts",
     )
@@ -671,7 +663,6 @@ def test_pipeline_perf_service_drain_processes_separate_l3_queue(tmp_path: Path)
     service = PipelinePerfService(
         file_collection_service=collection,
         queue_repo=queue_repo,
-        benchmark_service=_FakeBenchmarkService(),
         perf_repo=PipelinePerfRepository(db_path),
         artifact_root=tmp_path / "artifacts",
     )
@@ -691,7 +682,6 @@ def test_pipeline_perf_service_drain_treats_l5_heavy_deferred_pending_as_termina
     service = PipelinePerfService(
         file_collection_service=_IdleCollectionService(),
         queue_repo=queue_repo,
-        benchmark_service=_FakeBenchmarkService(),
         perf_repo=PipelinePerfRepository(db_path),
         artifact_root=tmp_path / "artifacts",
     )
@@ -711,7 +701,6 @@ def test_pipeline_perf_service_drain_force_finalizes_l5_heavy_deferred_pending(t
     service = PipelinePerfService(
         file_collection_service=_IdleCollectionService(),
         queue_repo=queue_repo,
-        benchmark_service=_FakeBenchmarkService(),
         perf_repo=PipelinePerfRepository(db_path),
         artifact_root=tmp_path / "artifacts",
     )
@@ -733,7 +722,6 @@ def test_pipeline_perf_integrity_snapshot_includes_pending_split_age_and_eligibl
     service = PipelinePerfService(
         file_collection_service=_FakeCollectionServiceWithRepos(),
         queue_repo=queue_repo,
-        benchmark_service=_FakeBenchmarkService(),
         perf_repo=PipelinePerfRepository(db_path),
         artifact_root=tmp_path / "artifacts",
     )
@@ -765,7 +753,6 @@ def test_pipeline_perf_integrity_snapshot_includes_broker_snapshot_and_runtime_m
     service = PipelinePerfService(
         file_collection_service=_FakeCollectionServiceWithPerfRuntimeSnapshot(),
         queue_repo=queue_repo,
-        benchmark_service=_FakeBenchmarkService(),
         perf_repo=PipelinePerfRepository(db_path),
         artifact_root=tmp_path / "artifacts",
     )
@@ -793,7 +780,6 @@ def test_pipeline_perf_integrity_snapshot_includes_quality_shadow_summary_withou
     service = PipelinePerfService(
         file_collection_service=_FakeCollectionServiceWithQualityShadowSummary(),
         queue_repo=queue_repo,
-        benchmark_service=_FakeBenchmarkService(),
         perf_repo=PipelinePerfRepository(db_path),
         artifact_root=tmp_path / "artifacts",
     )
@@ -814,7 +800,6 @@ def test_pipeline_perf_integrity_snapshot_adds_strict_eligible_match_check(tmp_p
     service = PipelinePerfService(
         file_collection_service=_FakeCollectionServiceWithRepos(),
         queue_repo=queue_repo,
-        benchmark_service=_FakeBenchmarkService(),
         perf_repo=PipelinePerfRepository(db_path),
         artifact_root=tmp_path / "artifacts",
     )
@@ -832,7 +817,6 @@ def test_build_dataset_result_for_workspace_real_fails_gate_when_integrity_check
     service = PipelinePerfService(
         file_collection_service=_FakeCollectionService(),
         queue_repo=_FakeQueueRepository(),
-        benchmark_service=_FakeBenchmarkService(),
         perf_repo=PipelinePerfRepository(db_path),
         artifact_root=tmp_path / "artifacts",
     )
@@ -865,7 +849,6 @@ def test_build_dataset_result_for_workspace_real_passes_only_when_threshold_and_
     service = PipelinePerfService(
         file_collection_service=_FakeCollectionService(),
         queue_repo=_FakeQueueRepository(),
-        benchmark_service=_FakeBenchmarkService(),
         perf_repo=PipelinePerfRepository(db_path),
         artifact_root=tmp_path / "artifacts",
     )
@@ -901,7 +884,6 @@ def test_pipeline_perf_integrity_snapshot_allows_zero_symbol_tool_ready_gap_when
     service = PipelinePerfService(
         file_collection_service=_FakeCollectionServiceWithReposGap(),
         queue_repo=_FakeQueueRepositoryWithPendingDetailsAndGap(),
-        benchmark_service=_FakeBenchmarkService(),
         perf_repo=PipelinePerfRepository(db_path),
         artifact_root=tmp_path / "artifacts",
     )
@@ -921,7 +903,6 @@ def test_pipeline_perf_integrity_snapshot_includes_stage_exit_criteria_report(tm
     service = PipelinePerfService(
         file_collection_service=_FakeCollectionServiceForStageGate(),
         queue_repo=_FakeQueueRepositoryForStageGate(),
-        benchmark_service=_FakeBenchmarkService(),
         perf_repo=PipelinePerfRepository(db_path),
         artifact_root=tmp_path / "artifacts",
     )
@@ -961,7 +942,6 @@ def test_stage_exit_search_quality_requires_explicit_runtime_metric(tmp_path: Pa
     service = PipelinePerfService(
         file_collection_service=_NoSearchMetricCollectionService(),
         queue_repo=_FakeQueueRepositoryForStageGate(),
-        benchmark_service=_FakeBenchmarkService(),
         perf_repo=PipelinePerfRepository(db_path),
         artifact_root=tmp_path / "artifacts",
     )
@@ -984,7 +964,6 @@ def test_pipeline_perf_service_enables_l5_shadow_for_workspace_measurement(tmp_p
     service = PipelinePerfService(
         file_collection_service=collection_service,
         queue_repo=_FakeQueueRepositoryForStageGate(),
-        benchmark_service=_FakeBenchmarkService(),
         perf_repo=PipelinePerfRepository(db_path),
         artifact_root=tmp_path / "artifacts",
     )
@@ -1008,7 +987,6 @@ def test_stage_exit_uses_persisted_l4_admission_baseline_p50(tmp_path: Path) -> 
     service_first = PipelinePerfService(
         file_collection_service=_FakeCollectionServiceForStageGate(),
         queue_repo=_FakeQueueRepositoryForStageGate(),
-        benchmark_service=_FakeBenchmarkService(),
         perf_repo=PipelinePerfRepository(db_path),
         artifact_root=tmp_path / "artifacts",
         stage_baseline_repo=baseline_repo,
@@ -1022,7 +1000,6 @@ def test_stage_exit_uses_persisted_l4_admission_baseline_p50(tmp_path: Path) -> 
     service_second = PipelinePerfService(
         file_collection_service=_FakeCollectionServiceForStageGateHigherL5(),
         queue_repo=_FakeQueueRepositoryForStageGate(),
-        benchmark_service=_FakeBenchmarkService(),
         perf_repo=PipelinePerfRepository(db_path),
         artifact_root=tmp_path / "artifacts",
         stage_baseline_repo=PipelineStageBaselineRepository(db_path),
@@ -1044,7 +1021,6 @@ def test_stage_exit_uses_persisted_pending_age_baseline_for_regression_detection
     first = PipelinePerfService(
         file_collection_service=_FakeCollectionServiceForStageGate(),
         queue_repo=_FakeQueueRepositoryForStageGate(),
-        benchmark_service=_FakeBenchmarkService(),
         perf_repo=PipelinePerfRepository(db_path),
         artifact_root=tmp_path / "artifacts",
         stage_baseline_repo=baseline_repo,
@@ -1058,7 +1034,6 @@ def test_stage_exit_uses_persisted_pending_age_baseline_for_regression_detection
     second = PipelinePerfService(
         file_collection_service=_FakeCollectionServiceForStageGate(),
         queue_repo=_FakeQueueRepositoryForStageGateHigherPendingAge(),
-        benchmark_service=_FakeBenchmarkService(),
         perf_repo=PipelinePerfRepository(db_path),
         artifact_root=tmp_path / "artifacts",
         stage_baseline_repo=PipelineStageBaselineRepository(db_path),
@@ -1077,7 +1052,6 @@ def test_build_dataset_result_supports_real_lsp_phase1_profile_for_workspace_rea
     service = PipelinePerfService(
         file_collection_service=_FakeCollectionService(),
         queue_repo=_FakeQueueRepository(),
-        benchmark_service=_FakeBenchmarkService(),
         perf_repo=PipelinePerfRepository(db_path),
         artifact_root=tmp_path / "artifacts",
     )

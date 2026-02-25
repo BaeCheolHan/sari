@@ -14,9 +14,11 @@ from sari.core.models import CollectionPolicyDTO, L3DiffResultDTO, L3ReferenceDa
 from sari.db.repositories.file_collection_repository import FileCollectionRepository
 from sari.db.repositories.lsp_tool_data_repository import LspToolDataRepository
 from sari.db.repositories.pipeline_quality_repository import PipelineQualityRepository
+from sari.db.repositories.tool_data_layer_repository import ToolDataLayerRepository
 from sari.lsp.hub import LspHub
 from sari.lsp.path_normalizer import normalize_repo_relative_path
 from sari.services.file_collection_service import LspExtractionBackend, LspExtractionResultDTO
+from sari.services.collection.l3_quality_evaluation_service import L3QualityEvaluationService
 from solidlsp.ls_exceptions import SolidLSPException
 
 QUALITY_EXCLUDE_GLOBS: tuple[str, ...] = (
@@ -48,17 +50,25 @@ class MirrorGoldenBackend(LspExtractionBackend):
 class SerenaGoldenBackend(LspExtractionBackend):
     """Serena solidlsp 경로를 사용해 골든 L3 참조를 추출한다."""
 
-    def __init__(self, hub: LspHub) -> None:
+    def __init__(self, hub: LspHub, lsp_repo: LspToolDataRepository | None = None) -> None:
         """LSP hub 의존성을 저장한다."""
         self._hub = hub
+        self._lsp_repo = lsp_repo
         self._request_count = 0
+        self._persisted_count = 0
+        self._live_count = 0
         self._fallback_count = 0
         self._fallback_reason_counts: dict[str, int] = {}
 
     def extract(self, repo_root: str, relative_path: str, content_hash: str) -> LspExtractionResultDTO:
         """파일 기준 골든 심볼/호출자 데이터를 추출한다."""
-        del content_hash
         self._request_count += 1
+        if self._lsp_repo is not None:
+            persisted_symbols = self._lsp_repo.list_file_symbols(repo_root, relative_path, content_hash)
+            if len(persisted_symbols) > 0:
+                self._persisted_count += 1
+                return LspExtractionResultDTO(symbols=persisted_symbols, relations=[], error_message=None)
+        self._live_count += 1
         try:
             language = self._hub.resolve_language(relative_path)
             lsp = self._hub.get_or_start(language=language, repo_root=repo_root)
@@ -175,12 +185,19 @@ class SerenaGoldenBackend(LspExtractionBackend):
     def reset_stats(self) -> None:
         """골든 추출 통계를 초기화한다."""
         self._request_count = 0
+        self._persisted_count = 0
+        self._live_count = 0
         self._fallback_count = 0
         self._fallback_reason_counts = {}
 
     def stats(self) -> dict[str, int]:
         """골든 추출 통계를 반환한다."""
-        payload: dict[str, int] = {"request_count": self._request_count, "fallback_count": self._fallback_count}
+        payload: dict[str, int] = {
+            "request_count": self._request_count,
+            "persisted_count": self._persisted_count,
+            "live_count": self._live_count,
+            "fallback_count": self._fallback_count,
+        }
         for reason, count in sorted(self._fallback_reason_counts.items(), key=lambda item: item[0]):
             payload[f"fallback_reason_{reason}"] = count
         return payload
@@ -196,13 +213,16 @@ class PipelineQualityService:
         quality_repo: PipelineQualityRepository,
         golden_backend: LspExtractionBackend,
         artifact_root: Path,
+        tool_layer_repo: ToolDataLayerRepository | None = None,
     ) -> None:
         """품질 평가 의존성을 주입한다."""
         self._file_repo = file_repo
         self._lsp_repo = lsp_repo
+        self._tool_layer_repo = tool_layer_repo
         self._quality_repo = quality_repo
         self._golden_backend = golden_backend
         self._artifact_root = artifact_root
+        self._l3_quality_eval = L3QualityEvaluationService()
 
     @staticmethod
     def default_collection_policy() -> CollectionPolicyDTO:
@@ -248,6 +268,10 @@ class PipelineQualityService:
             diff_items: list[dict[str, object]] = []
             per_language_totals: dict[str, dict[str, int]] = {}
             evaluated_files = 0
+            position_weight_total = 0
+            position_strict_sum = 0.0
+            position_relaxed_sum = 0.0
+            kind_match_sum = 0.0
 
             for file_item in files:
                 if _is_excluded_from_quality(file_item.relative_path):
@@ -267,12 +291,16 @@ class PipelineQualityService:
                         "caller_fn": 0,
                         "evaluated_files": 0,
                         "error_files": 0,
+                        "position_weight": 0,
+                        "position_strict_sum": 0.0,
+                        "position_relaxed_sum": 0.0,
+                        "kind_match_sum": 0.0,
                     }
                 per_language_totals[language_name]["evaluated_files"] += 1
-                predicted = L3ReferenceDataDTO(
-                    symbols=self._lsp_repo.list_file_symbols(root, file_item.relative_path, file_item.content_hash),
-                    relations=self._lsp_repo.list_file_relations(root, file_item.relative_path, file_item.content_hash),
-                    error_message=None,
+                predicted = self._load_predicted_reference_data(
+                    repo_root=root,
+                    relative_path=file_item.relative_path,
+                    content_hash=file_item.content_hash,
                 )
                 golden_raw = self._golden_backend.extract(root, file_item.relative_path, file_item.content_hash)
                 golden = L3ReferenceDataDTO(
@@ -281,6 +309,28 @@ class PipelineQualityService:
                     error_message=golden_raw.error_message,
                 )
                 diff = self._diff_file(predicted=predicted, golden=golden)
+                proxy_eval = self._l3_quality_eval.evaluate(
+                    language=language_name,
+                    ast_symbols=predicted.symbols,
+                    lsp_symbols=golden.symbols,
+                )
+                # position/kind는 매칭 가능한 심볼 수에 비례해 가중 평균한다.
+                position_weight = max(0, min(int(proxy_eval.ast_symbol_count), int(proxy_eval.lsp_symbol_count)))
+                if position_weight > 0:
+                    position_weight_total += position_weight
+                    position_strict_sum += proxy_eval.position_match_rate * float(position_weight)
+                    position_relaxed_sum += proxy_eval.position_match_rate_relaxed * float(position_weight)
+                    kind_match_sum += proxy_eval.kind_match_rate * float(position_weight)
+                    per_language_totals[language_name]["position_weight"] += position_weight
+                    per_language_totals[language_name]["position_strict_sum"] += (
+                        proxy_eval.position_match_rate * float(position_weight)
+                    )
+                    per_language_totals[language_name]["position_relaxed_sum"] += (
+                        proxy_eval.position_match_rate_relaxed * float(position_weight)
+                    )
+                    per_language_totals[language_name]["kind_match_sum"] += (
+                        proxy_eval.kind_match_rate * float(position_weight)
+                    )
                 if golden.has_error():
                     error_count += 1
                     per_language_totals[language_name]["error_files"] += 1
@@ -324,6 +374,7 @@ class PipelineQualityService:
                     "error_rate": 0.0,
                     "precision": {"symbol": 100.0, "caller": 100.0, "total": 100.0},
                     "recall": {"symbol": 0.0, "caller": 0.0, "total": 0.0},
+                    "position": {"strict": 0.0, "relaxed": 0.0, "kind_match": 0.0},
                     "per_language": [],
                     "thresholds": {
                         "precision_min": 95.0,
@@ -387,6 +438,15 @@ class PipelineQualityService:
                     caller_weight=totals["caller_tp"] + totals["caller_fn"],
                 )
                 per_error_rate = _ratio_percent(totals["error_files"], totals["evaluated_files"])
+                per_position_weight = int(totals["position_weight"])
+                if per_position_weight > 0:
+                    per_position_strict = (float(totals["position_strict_sum"]) / float(per_position_weight)) * 100.0
+                    per_position_relaxed = (float(totals["position_relaxed_sum"]) / float(per_position_weight)) * 100.0
+                    per_kind_match = (float(totals["kind_match_sum"]) / float(per_position_weight)) * 100.0
+                else:
+                    per_position_strict = 100.0
+                    per_position_relaxed = 100.0
+                    per_kind_match = 100.0
                 per_passed = (
                     per_total_precision >= 95.0
                     and per_total_recall >= QUALITY_RECALL_MIN_PCT
@@ -406,6 +466,9 @@ class PipelineQualityService:
                         "recall_symbol": per_symbol_recall,
                         "recall_caller": per_caller_recall,
                         "recall_total": per_total_recall,
+                        "position_match_rate": per_position_strict,
+                        "position_match_rate_relaxed": per_position_relaxed,
+                        "kind_match_rate": per_kind_match,
                         "gate_passed": per_passed,
                     }
                 )
@@ -435,6 +498,23 @@ class PipelineQualityService:
                     "symbol": symbol_recall,
                     "caller": caller_recall,
                     "total": total_recall,
+                },
+                "position": {
+                    "strict": (
+                        (position_strict_sum / float(position_weight_total)) * 100.0
+                        if position_weight_total > 0
+                        else 100.0
+                    ),
+                    "relaxed": (
+                        (position_relaxed_sum / float(position_weight_total)) * 100.0
+                        if position_weight_total > 0
+                        else 100.0
+                    ),
+                    "kind_match": (
+                        (kind_match_sum / float(position_weight_total)) * 100.0
+                        if position_weight_total > 0
+                        else 100.0
+                    ),
                 },
                 "per_language": per_language,
                 "thresholds": {
@@ -478,6 +558,50 @@ class PipelineQualityService:
                 summary=failed,
             )
             raise
+
+    def _load_predicted_reference_data(
+        self,
+        *,
+        repo_root: str,
+        relative_path: str,
+        content_hash: str,
+    ) -> L3ReferenceDataDTO:
+        """품질 비교용 predicted 데이터를 현재 레이어 저장소 우선으로 읽는다.
+
+        L3/L4/L5 분리 이후에는 lsp_tool_data에 심볼이 남지 않을 수 있으므로
+        tool_data_l3_symbols를 1순위로 사용하고, 없을 때만 기존 저장소로 폴백한다.
+        """
+        if self._tool_layer_repo is not None:
+            snapshot = self._tool_layer_repo.load_effective_snapshot(
+                workspace_id=repo_root,
+                repo_root=repo_root,
+                relative_path=relative_path,
+                content_hash=content_hash,
+            )
+            l3 = snapshot.get("l3")
+            if isinstance(l3, dict):
+                symbols = l3.get("symbols")
+                if isinstance(symbols, list):
+                    return L3ReferenceDataDTO(
+                        symbols=[item for item in symbols if isinstance(item, dict)],
+                        relations=[],
+                        error_message=None,
+                    )
+        strict_symbols = self._lsp_repo.list_file_symbols(repo_root, relative_path, content_hash)
+        strict_relations = self._lsp_repo.list_file_relations(repo_root, relative_path, content_hash)
+        if len(strict_symbols) > 0 or len(strict_relations) > 0:
+            return L3ReferenceDataDTO(
+                symbols=strict_symbols,
+                relations=strict_relations,
+                error_message=None,
+            )
+        # Quality report should not silently collapse to tp=0 when the source file hash
+        # moved but the latest extracted symbols still exist for the same path.
+        return L3ReferenceDataDTO(
+            symbols=self._lsp_repo.list_file_symbols_latest(repo_root, relative_path),
+            relations=self._lsp_repo.list_file_relations_latest(repo_root, relative_path),
+            error_message=None,
+        )
 
     def get_latest_report(self, repo_root: str) -> dict[str, object]:
         """최신 품질 리포트를 반환한다."""
@@ -606,13 +730,20 @@ def _compute_symbol_counts(
             assert cand is not None
             if pred["name"] != cand["name"]:
                 continue
+            normalized_pred_kind = _normalize_kind_for_symbol_match(str(pred.get("kind", "")))
+            normalized_cand_kind = _normalize_kind_for_symbol_match(str(cand.get("kind", "")))
+            allowed_gap = tolerance
+            if normalized_pred_kind == "field" and normalized_cand_kind == "field":
+                # Java/Kotlin LSP can anchor field symbols to container/class line.
+                # Keep name/kind strict but relax line-gap for field-like kinds.
+                allowed_gap = max(tolerance, 512)
             line_gap = abs(int(pred["line"]) - int(cand["line"]))
-            if line_gap > tolerance:
+            if line_gap > allowed_gap:
                 continue
             score = 0
-            if pred["kind"] == cand["kind"]:
+            if normalized_pred_kind == normalized_cand_kind:
                 score += 10
-            score += max(0, tolerance - line_gap)
+            score += max(0, allowed_gap - line_gap)
             if score > best_score:
                 best_score = score
                 best_idx = idx
@@ -635,6 +766,15 @@ def _normalize_symbol_for_match(item: dict[str, object]) -> dict[str, object] | 
     except (TypeError, ValueError):
         line = 0
     return {"name": name, "kind": kind, "line": max(0, line)}
+
+
+def _normalize_kind_for_symbol_match(kind: str) -> str:
+    normalized = str(kind).strip().lower()
+    if normalized in {"field", "constant", "enum_member", "enum_constant", "property"}:
+        return "field"
+    if normalized in {"constructor", "constructor_declaration"}:
+        return "method"
+    return normalized
 
 
 def _is_excluded_from_quality(relative_path: str) -> bool:

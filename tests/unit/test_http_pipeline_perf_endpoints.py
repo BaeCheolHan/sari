@@ -23,27 +23,6 @@ from sari.services.workspace_service import WorkspaceService
 from sari.lsp.hub import LspHub
 
 
-class _FakeBenchmarkService:
-    """벤치마크 결과를 고정 반환한다."""
-
-    def run(
-        self,
-        repo_root: str,
-        target_files: int,
-        profile: str,
-        language_filter: tuple[str, ...] | None = None,
-        per_language_report: bool = False,
-    ) -> dict[str, object]:
-        """샘플 벤치 요약을 반환한다."""
-        del repo_root, profile, language_filter, per_language_report
-        return {
-            "status": "COMPLETED",
-            "target_files": target_files,
-            "scan": {"ingest_latency_ms_p95": 1000},
-            "enrich": {"completion_sec": 8.0, "done_count": 2000, "dead_count": 0},
-        }
-
-
 class _FakeQueueRepository:
     """큐 상태를 고정 반환한다."""
 
@@ -93,7 +72,6 @@ def _build_context(tmp_path: Path) -> HttpContext:
     perf_service = PipelinePerfService(
         file_collection_service=_FakeCollectionService(),
         queue_repo=_FakeQueueRepository(),
-        benchmark_service=_FakeBenchmarkService(),
         perf_repo=PipelinePerfRepository(db_path),
         artifact_root=tmp_path / "artifacts",
     )

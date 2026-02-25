@@ -16,7 +16,16 @@ from sari.db.repositories.tool_readiness_repository import ToolReadinessReposito
 from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.db.schema import init_schema
 from sari.services.file_collection_service import FileCollectionService
-from sari.services.pipeline_benchmark_service import BenchmarkLspExtractionBackend, PipelineBenchmarkService
+from sari.services.lsp_extraction_contracts import LspExtractionResultDTO
+from sari.services.pipeline_quality_service import PipelineQualityService
+
+
+class _NoopLspBackend:
+    """고아 감지 테스트는 LSP 품질이 아니라 제어 흐름만 검증한다."""
+
+    def extract(self, repo_root: str, relative_path: str, content_hash: str) -> LspExtractionResultDTO:
+        _ = (repo_root, relative_path, content_hash)
+        return LspExtractionResultDTO(symbols=[], relations=[], error_message=None)
 
 
 def test_process_enrich_jobs_raises_collection_error_when_orphan_detected(tmp_path: Path) -> None:
@@ -31,8 +40,8 @@ def test_process_enrich_jobs_raises_collection_error_when_orphan_detected(tmp_pa
         body_repo=FileBodyRepository(db_path),
         lsp_repo=LspToolDataRepository(db_path),
         readiness_repo=ToolReadinessRepository(db_path),
-        policy=PipelineBenchmarkService.default_collection_policy(),
-        lsp_backend=BenchmarkLspExtractionBackend(),
+        policy=PipelineQualityService.default_collection_policy(),
+        lsp_backend=_NoopLspBackend(),
         policy_repo=PipelinePolicyRepository(db_path),
         parent_alive_probe=lambda: False,
     )

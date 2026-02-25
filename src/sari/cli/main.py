@@ -13,7 +13,7 @@ from pathlib import Path
 import click
 
 from sari.core.config import AppConfig
-from sari.core.exceptions import BenchmarkError, DaemonError, PerfError, QualityError, SariBaseError, WorkspaceError
+from sari.core.exceptions import DaemonError, PerfError, QualityError, SariBaseError, WorkspaceError
 from sari.db.repositories.file_body_repository import FileBodyRepository
 from sari.db.repositories.file_collection_repository import FileCollectionRepository
 from sari.db.repositories.runtime_repository import RuntimeRepository
@@ -21,7 +21,6 @@ from sari.db.repositories.symbol_cache_repository import SymbolCacheRepository
 from sari.db.repositories.file_enrich_queue_repository import FileEnrichQueueRepository
 from sari.db.repositories.daemon_registry_repository import DaemonRegistryRepository
 from sari.db.repositories.lsp_tool_data_repository import LspToolDataRepository
-from sari.db.repositories.pipeline_benchmark_repository import PipelineBenchmarkRepository
 from sari.db.repositories.pipeline_perf_repository import PipelinePerfRepository
 from sari.db.repositories.pipeline_stage_baseline_repository import PipelineStageBaselineRepository
 from sari.db.repositories.pipeline_quality_repository import PipelineQualityRepository
@@ -29,9 +28,11 @@ from sari.db.repositories.pipeline_control_state_repository import PipelineContr
 from sari.db.repositories.pipeline_job_event_repository import PipelineJobEventRepository
 from sari.db.repositories.pipeline_error_event_repository import PipelineErrorEventRepository
 from sari.db.repositories.pipeline_policy_repository import PipelinePolicyRepository
+from sari.db.repositories.tool_data_layer_repository import ToolDataLayerRepository
 from sari.db.repositories.tool_readiness_repository import ToolReadinessRepository
 from sari.db.repositories.language_probe_repository import LanguageProbeRepository
 from sari.db.repositories.pipeline_lsp_matrix_repository import PipelineLspMatrixRepository
+from sari.db.repositories.tool_data_layer_repository import ToolDataLayerRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.db.migration import ensure_migrated
 from sari.db.schema import init_schema
@@ -40,7 +41,6 @@ from sari.mcp.server import run_stdio
 from sari.services.admin_service import AdminService
 from sari.services.daemon_service import DaemonService
 from sari.services.file_collection_service import build_default_file_collection_service
-from sari.services.pipeline_benchmark_service import BenchmarkLspExtractionBackend, PipelineBenchmarkService
 from sari.services.pipeline_perf_service import PipelinePerfService
 from sari.services.pipeline_quality_service import PipelineQualityService, SerenaGoldenBackend
 from sari.services.pipeline_control_service import PipelineControlService
@@ -86,7 +86,6 @@ class CliServiceBundle:
     daemon_service: DaemonService
     admin_service: AdminService
     pipeline_control_service: PipelineControlService
-    pipeline_benchmark_service: PipelineBenchmarkService
     pipeline_perf_service: PipelinePerfService
     pipeline_quality_service: PipelineQualityService
     language_probe_service: LanguageProbeService
@@ -111,65 +110,8 @@ def _build_services() -> CliServiceBundle:
     file_repo = FileCollectionRepository(config.db_path)
     body_repo = FileBodyRepository(config.db_path)
     lsp_repo = LspToolDataRepository(config.db_path)
+    tool_layer_repo = ToolDataLayerRepository(config.db_path)
     readiness_repo = ToolReadinessRepository(config.db_path)
-    benchmark_file_collection_service = build_default_file_collection_service(
-        workspace_repo=workspace_repo,
-        file_repo=file_repo,
-        enrich_queue_repo=queue_repo,
-        body_repo=body_repo,
-        lsp_repo=lsp_repo,
-        readiness_repo=readiness_repo,
-        policy_repo=policy_repo,
-        event_repo=event_repo,
-        error_event_repo=error_event_repo,
-        run_mode=config.run_mode,
-        lsp_backend=BenchmarkLspExtractionBackend(),
-        persist_body_for_read=False,
-        l3_parallel_enabled=config.l3_parallel_enabled,
-        l3_executor_max_workers=config.l3_executor_max_workers,
-        l3_recent_success_ttl_sec=config.l3_recent_success_ttl_sec,
-        l3_backpressure_on_interactive=config.l3_backpressure_on_interactive,
-        l3_backpressure_cooldown_ms=config.l3_backpressure_cooldown_ms,
-        l3_supported_languages=config.l3_supported_languages,
-        lsp_probe_bootstrap_file_window=config.lsp_probe_bootstrap_file_window,
-        lsp_probe_bootstrap_top_k=config.lsp_probe_bootstrap_top_k,
-        lsp_probe_language_priority=config.lsp_probe_language_priority,
-        lsp_probe_l1_languages=config.lsp_probe_l1_languages,
-        lsp_scope_planner_enabled=config.lsp_scope_planner_enabled,
-        lsp_scope_planner_shadow_mode=config.lsp_scope_planner_shadow_mode,
-        lsp_scope_java_markers=config.lsp_scope_java_markers,
-        lsp_scope_ts_markers=config.lsp_scope_ts_markers,
-        lsp_scope_vue_markers=config.lsp_scope_vue_markers,
-        lsp_scope_top_level_fallback=config.lsp_scope_top_level_fallback,
-        lsp_scope_active_languages=config.lsp_scope_active_languages,
-        lsp_session_broker_enabled=config.lsp_session_broker_enabled,
-        lsp_session_broker_metrics_enabled=config.lsp_session_broker_metrics_enabled,
-        lsp_broker_optional_scaffolding_enabled=config.lsp_broker_optional_scaffolding_enabled,
-        lsp_broker_batch_throughput_mode_enabled=config.lsp_broker_batch_throughput_mode_enabled,
-        lsp_broker_batch_throughput_pending_threshold=config.lsp_broker_batch_throughput_pending_threshold,
-        lsp_broker_batch_disable_java_probe=config.lsp_broker_batch_disable_java_probe,
-        lsp_hotness_event_window_sec=config.lsp_hotness_event_window_sec,
-        lsp_hotness_decay_window_sec=config.lsp_hotness_decay_window_sec,
-        lsp_broker_backlog_min_share=config.lsp_broker_backlog_min_share,
-        lsp_broker_max_standby_sessions_per_lang=config.lsp_broker_max_standby_sessions_per_lang,
-        lsp_broker_max_standby_sessions_per_budget_group=config.lsp_broker_max_standby_sessions_per_budget_group,
-        lsp_broker_ts_vue_active_cap=config.lsp_broker_ts_vue_active_cap,
-        lsp_broker_java_hot_lanes=config.lsp_broker_java_hot_lanes,
-        lsp_broker_java_backlog_lanes=config.lsp_broker_java_backlog_lanes,
-        lsp_broker_java_sticky_ttl_sec=config.lsp_broker_java_sticky_ttl_sec,
-        lsp_broker_java_switch_cooldown_sec=config.lsp_broker_java_switch_cooldown_sec,
-        lsp_broker_java_min_lease_ms=config.lsp_broker_java_min_lease_ms,
-        lsp_broker_ts_hot_lanes=config.lsp_broker_ts_hot_lanes,
-        lsp_broker_ts_backlog_lanes=config.lsp_broker_ts_backlog_lanes,
-        lsp_broker_ts_sticky_ttl_sec=config.lsp_broker_ts_sticky_ttl_sec,
-        lsp_broker_ts_switch_cooldown_sec=config.lsp_broker_ts_switch_cooldown_sec,
-        lsp_broker_ts_min_lease_ms=config.lsp_broker_ts_min_lease_ms,
-        lsp_broker_vue_hot_lanes=config.lsp_broker_vue_hot_lanes,
-        lsp_broker_vue_backlog_lanes=config.lsp_broker_vue_backlog_lanes,
-        lsp_broker_vue_sticky_ttl_sec=config.lsp_broker_vue_sticky_ttl_sec,
-        lsp_broker_vue_switch_cooldown_sec=config.lsp_broker_vue_switch_cooldown_sec,
-        lsp_broker_vue_min_lease_ms=config.lsp_broker_vue_min_lease_ms,
-    )
     perf_file_collection_service = build_default_file_collection_service(
         workspace_repo=workspace_repo,
         file_repo=file_repo,
@@ -227,8 +169,8 @@ def _build_services() -> CliServiceBundle:
         lsp_broker_vue_sticky_ttl_sec=config.lsp_broker_vue_sticky_ttl_sec,
         lsp_broker_vue_switch_cooldown_sec=config.lsp_broker_vue_switch_cooldown_sec,
         lsp_broker_vue_min_lease_ms=config.lsp_broker_vue_min_lease_ms,
+        tool_layer_repo=tool_layer_repo,
     )
-    benchmark_repo = PipelineBenchmarkRepository(config.db_path)
     perf_repo = PipelinePerfRepository(config.db_path)
     stage_baseline_repo = PipelineStageBaselineRepository(config.db_path)
     quality_repo = PipelineQualityRepository(config.db_path)
@@ -273,14 +215,6 @@ def _build_services() -> CliServiceBundle:
         lsp_request_timeout_sec=config.lsp_request_timeout_sec,
         go_warmup_timeout_sec=config.lsp_probe_timeout_go_sec,
     )
-    pipeline_benchmark_service = PipelineBenchmarkService(
-        file_collection_service=benchmark_file_collection_service,
-        queue_repo=queue_repo,
-        lsp_repo=lsp_repo,
-        policy_repo=policy_repo,
-        benchmark_repo=benchmark_repo,
-        artifact_root=config.db_path.parent / "artifacts",
-    )
     return CliServiceBundle(
         workspace_service=WorkspaceService(workspace_repo),
         daemon_service=DaemonService(
@@ -302,11 +236,9 @@ def _build_services() -> CliServiceBundle:
             queue_repo=queue_repo,
             control_state_repo=control_state_repo,
         ),
-        pipeline_benchmark_service=pipeline_benchmark_service,
         pipeline_perf_service=PipelinePerfService(
             file_collection_service=perf_file_collection_service,
             queue_repo=queue_repo,
-            benchmark_service=pipeline_benchmark_service,
             perf_repo=perf_repo,
             artifact_root=config.db_path.parent / "artifacts",
             stage_baseline_repo=stage_baseline_repo,
@@ -315,8 +247,9 @@ def _build_services() -> CliServiceBundle:
             file_repo=file_repo,
             lsp_repo=lsp_repo,
             quality_repo=quality_repo,
-            golden_backend=SerenaGoldenBackend(hub=quality_hub),
+            golden_backend=SerenaGoldenBackend(hub=quality_hub, lsp_repo=lsp_repo),
             artifact_root=config.db_path.parent / "artifacts",
+            tool_layer_repo=tool_layer_repo,
         ),
         language_probe_service=language_probe_service,
         pipeline_lsp_matrix_service=PipelineLspMatrixService(
@@ -873,54 +806,6 @@ def pipeline_auto_tick_command() -> None:
     """자동제어 평가를 1회 수행한다."""
     services = _build_services()
     _print_json(services.pipeline_control_service.evaluate_auto_hold())
-
-
-@pipeline_group.group("benchmark")
-def pipeline_benchmark_group() -> None:
-    """파이프라인 벤치마크 명령 그룹이다."""
-
-
-@pipeline_benchmark_group.command("run")
-@click.option("--repo", type=str, required=True)
-@click.option("--target-files", type=int, default=50_000, show_default=True)
-@click.option("--profile", type=str, default="default", show_default=True)
-@click.option("--language-filter", type=str, multiple=True)
-@click.option("--per-language-report", is_flag=True, default=False)
-def pipeline_benchmark_run_command(
-    repo: str,
-    target_files: int,
-    profile: str,
-    language_filter: tuple[str, ...],
-    per_language_report: bool,
-) -> None:
-    """벤치마크를 실행하고 요약 결과를 출력한다."""
-    services = _build_services()
-    try:
-        summary = services.pipeline_benchmark_service.run(
-            repo_root=repo,
-            target_files=target_files,
-            profile=profile,
-            language_filter=(None if len(language_filter) == 0 else tuple(language_filter)),
-            per_language_report=per_language_report,
-        )
-    except BenchmarkError as exc:
-        _print_json({"error": asdict(exc.context)}, exit_code=1)
-        return
-    _print_json({"benchmark": summary})
-
-
-@pipeline_benchmark_group.command("report")
-@click.option("--latest", is_flag=True, default=False)
-def pipeline_benchmark_report_command(latest: bool) -> None:
-    """최신 벤치마크 리포트를 출력한다."""
-    del latest
-    services = _build_services()
-    try:
-        summary = services.pipeline_benchmark_service.get_latest_report()
-    except BenchmarkError as exc:
-        _print_json({"error": asdict(exc.context)}, exit_code=1)
-        return
-    _print_json({"benchmark": summary})
 
 
 @pipeline_group.group("perf")

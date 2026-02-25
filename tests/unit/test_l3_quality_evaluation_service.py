@@ -127,6 +127,26 @@ def test_quality_eval_normalizes_lsp_symbolkind_numeric_strings_for_java() -> No
     assert result.kind_match_rate == pytest.approx(1.0)
 
 
+def test_quality_eval_normalizes_python_numeric_symbolkinds_to_expected_buckets() -> None:
+    service = L3QualityEvaluationService()
+    ast = [
+        _sym(name="Client", kind="class", line=3),
+        _sym(name="run", kind="method", line=10),
+        _sym(name="DEFAULT_TIMEOUT", kind="field", line=2),
+    ]
+    lsp = [
+        _sym(name="Client", kind="5", line=3),
+        _sym(name="run", kind="6", line=10),
+        _sym(name="DEFAULT_TIMEOUT", kind="14", line=2),
+    ]
+
+    result = service.evaluate(language="python", ast_symbols=ast, lsp_symbols=lsp)
+
+    assert result.symbol_recall_proxy == pytest.approx(1.0)
+    assert result.symbol_precision_proxy == pytest.approx(1.0)
+    assert result.kind_match_rate == pytest.approx(1.0)
+
+
 def test_quality_eval_normalizes_kotlin_variable_and_interface_symbolkinds() -> None:
     service = L3QualityEvaluationService()
     ast = [
@@ -328,6 +348,50 @@ def test_quality_eval_fallback_line_gap_respects_max_limit(tmp_path: Path) -> No
 
     assert result.symbol_recall_proxy == pytest.approx(0.0)
     assert result.symbol_precision_proxy == pytest.approx(0.0)
+
+
+def test_quality_eval_java_field_can_match_with_large_line_gap_bucket_override(tmp_path: Path) -> None:
+    assets = tmp_path / "assets"
+    (assets / "mappings").mkdir(parents=True, exist_ok=True)
+    (assets / "queries").mkdir(parents=True, exist_ok=True)
+    (assets / "manifest.json").write_text('{"version":"test"}', encoding="utf-8")
+    (assets / "mappings" / "default.yaml").write_text("{}", encoding="utf-8")
+    (assets / "mappings" / "java.yaml").write_text(
+        (
+            '{"kind_bucket_map":{"8":"field","field":"field"},'
+            '"capture_to_kind":{},'
+            '"line_match_overrides":{"name_kind_fallback_buckets":["field"],'
+            '"name_kind_fallback_max_line_gap":12,'
+            '"name_kind_fallback_max_line_gap_by_bucket":{"field":512}}}'
+        ),
+        encoding="utf-8",
+    )
+    loader = L3AssetLoader(assets_root=assets)
+    service = L3QualityEvaluationService(line_tolerance=2, asset_loader=loader)
+    ast = [_sym(name="updateDate", kind="field", line=241)]
+    lsp = [_sym(name="updateDate", kind="8", line=22)]
+
+    result = service.evaluate(language="java", ast_symbols=ast, lsp_symbols=lsp)
+
+    assert result.symbol_recall_proxy == pytest.approx(1.0)
+    assert result.symbol_precision_proxy == pytest.approx(1.0)
+
+
+def test_quality_eval_java_maps_constant_and_enum_member_to_field_bucket() -> None:
+    service = L3QualityEvaluationService()
+    ast = [
+        _sym(name="log", kind="field", line=10),
+        _sym(name="ACTIVE", kind="field", line=11),
+    ]
+    lsp = [
+        _sym(name="log", kind="constant", line=10),
+        _sym(name="ACTIVE", kind="enum_member", line=11),
+    ]
+
+    result = service.evaluate(language="java", ast_symbols=ast, lsp_symbols=lsp)
+
+    assert result.symbol_recall_proxy == pytest.approx(1.0)
+    assert result.symbol_precision_proxy == pytest.approx(1.0)
 
 
 def test_quality_eval_uses_asset_missing_pattern_rules(tmp_path: Path) -> None:

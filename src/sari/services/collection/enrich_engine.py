@@ -1982,16 +1982,28 @@ class EnrichEngine:
             readiness_updates.clear()
         tool_layer_repo = getattr(self, "_tool_layer_repo", None)
         if tool_layer_repo is not None and len(l3_layer_upserts) > 0:
-            for upsert in l3_layer_upserts:
-                tool_layer_repo.upsert_l3_symbols(**upsert)
+            upsert_many = getattr(tool_layer_repo, "upsert_l3_symbols_many", None)
+            if callable(upsert_many):
+                upsert_many(l3_layer_upserts)
+            else:
+                for upsert in l3_layer_upserts:
+                    tool_layer_repo.upsert_l3_symbols(**upsert)
             l3_layer_upserts.clear()
         if tool_layer_repo is not None and len(l4_layer_upserts) > 0:
-            for upsert in l4_layer_upserts:
-                tool_layer_repo.upsert_l4_normalized_symbols(**upsert)
+            upsert_many = getattr(tool_layer_repo, "upsert_l4_normalized_symbols_many", None)
+            if callable(upsert_many):
+                upsert_many(l4_layer_upserts)
+            else:
+                for upsert in l4_layer_upserts:
+                    tool_layer_repo.upsert_l4_normalized_symbols(**upsert)
             l4_layer_upserts.clear()
         if tool_layer_repo is not None and len(l5_layer_upserts) > 0:
-            for upsert in l5_layer_upserts:
-                tool_layer_repo.upsert_l5_semantics(**upsert)
+            upsert_many = getattr(tool_layer_repo, "upsert_l5_semantics_many", None)
+            if callable(upsert_many):
+                upsert_many(l5_layer_upserts)
+            else:
+                for upsert in l5_layer_upserts:
+                    tool_layer_repo.upsert_l5_semantics(**upsert)
             l5_layer_upserts.clear()
         if len(body_deletes) > 0:
             self._body_repo.delete_body_many(body_deletes)

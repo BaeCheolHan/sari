@@ -7,9 +7,23 @@ from pathlib import Path
 from sari.mcp.server import McpServer
 
 
-def test_mcp_pipeline_benchmark_run_and_report_are_hidden(tmp_path: Path) -> None:
-    """pipeline_benchmark_run/report 도구는 MCP에서 숨김 처리되어야 한다."""
+def test_mcp_pipeline_benchmark_run_and_report_are_removed(tmp_path: Path) -> None:
+    """pipeline_benchmark_run/report 도구는 MCP 목록과 호출 경로에서 제거되어야 한다."""
     server = McpServer(db_path=tmp_path / "state.db")
+
+    list_response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 80,
+            "method": "tools/list",
+            "params": {},
+        }
+    )
+    list_payload = list_response.to_dict()
+    tool_names = {tool.get("name") for tool in list_payload["result"].get("tools", [])}
+    assert "pipeline_benchmark_run" not in tool_names
+    assert "pipeline_benchmark_report" not in tool_names
+
     run_response = server.handle_request(
         {
             "jsonrpc": "2.0",

@@ -26,6 +26,7 @@ class _BaseConfig:
         "interface",
         "constant",
     )
+    name_capture_bridge_node_types: tuple[str, ...] = ()
 
 
 class BaseL3LanguageProcessor(L3LanguageProcessor):
@@ -65,3 +66,36 @@ class BaseL3LanguageProcessor(L3LanguageProcessor):
                 return 1
         return self._config.min_symbols_for_l3_only
 
+    def should_replace_symbol_name(
+        self,
+        *,
+        current_name: str,
+        candidate_name: str,
+        symbol_kind: str,
+        symbol_node_type: str,
+        name_parent_node_type: str,
+        climb_depth: int,
+    ) -> bool:
+        _ = (symbol_kind, symbol_node_type, name_parent_node_type, climb_depth)
+        current = str(current_name).strip()
+        candidate = str(candidate_name).strip()
+        if candidate == "":
+            return False
+        if current == "" or current == "anonymous":
+            return True
+        if current == candidate:
+            return False
+        if self._looks_like_symbol_identifier(current):
+            return False
+        return True
+
+    def allows_name_capture_climb(self, *, parent_node_type: str, climb_depth: int) -> bool:
+        _ = climb_depth
+        return str(parent_node_type).strip() in self._config.name_capture_bridge_node_types
+
+    def _looks_like_symbol_identifier(self, value: str) -> bool:
+        text = str(value).strip()
+        if text == "":
+            return False
+        allowed = set("._$<>[]?,")
+        return all(ch.isalnum() or ch in allowed for ch in text)

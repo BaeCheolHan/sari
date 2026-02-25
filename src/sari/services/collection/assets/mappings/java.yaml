@@ -39,6 +39,9 @@
   ],
   "line_match_overrides": {
     "name_kind_fallback_buckets": ["class", "interface", "enum", "module", "method", "field"],
-    "name_kind_fallback_max_line_gap": 12
+    "name_kind_fallback_max_line_gap": 12,
+    "name_kind_fallback_max_line_gap_by_bucket": {
+      "field": 512
+    }
   }
 }
