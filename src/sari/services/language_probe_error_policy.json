@@ -1,0 +1,49 @@
+{
+  "timeout_codes": [
+    "ERR_LSP_TIMEOUT",
+    "ERR_LSP_REQUEST_TIMEOUT",
+    "ERR_LSP_DOCUMENT_SYMBOL_TIMEOUT"
+  ],
+  "timeout_tokens": [
+    "timeout",
+    "timed out"
+  ],
+  "missing_server_tokens": [
+    "command not found",
+    "no such file",
+    "file not found",
+    "not installed",
+    "missing executable",
+    "failed to spawn",
+    "failed to start",
+    "cannot find",
+    "filenotfounderror"
+  ],
+  "missing_dependency_rules": [
+    {
+      "dependency": "pyright",
+      "tokens": ["pyright"]
+    },
+    {
+      "dependency": "node",
+      "tokens": ["node"]
+    },
+    {
+      "dependency": "npm",
+      "tokens": ["npm"]
+    },
+    {
+      "dependency": "dotnet",
+      "tokens": ["dotnet"]
+    },
+    {
+      "dependency": "java",
+      "tokens": ["java"]
+    }
+  ],
+  "server_binary_tokens": [
+    "no such file",
+    "command not found",
+    "missing required commands"
+  ]
+}
