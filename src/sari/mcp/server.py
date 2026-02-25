@@ -48,6 +48,7 @@ from sari.mcp.tools.pipeline_lsp_matrix_tools import PipelineLspMatrixReportTool
 from sari.mcp.tools.pipeline_quality_tools import PipelineQualityReportTool, PipelineQualityRunTool
 from sari.mcp.tools.pack1 import pack1_error
 from sari.mcp.pack1_line import PackLineOptionsDTO, render_pack_v2
+from sari.mcp.stabilization.stabilization_service import StabilizationService
 from sari.mcp.tools.file_collection_tools import IndexFileTool, ListFilesTool, ReadFileTool, ScanOnceTool
 from sari.mcp.tools.symbol_tools import GetCallersTool, SearchSymbolTool
 from sari.mcp.tools.arg_normalizer import ArgNormalizationError, normalize_tool_arguments
@@ -303,6 +304,7 @@ class McpServer:
             ),
             repo_registry_repo=repo_registry_repo,
         )
+        stabilization_service = StabilizationService(enabled=runtime_config.stabilization_enabled)
         self._file_collection_service = file_collection_service
         self._search_tool = SearchTool(
             orchestrator=orchestrator,
@@ -311,6 +313,7 @@ class McpServer:
             metrics_provider=file_collection_service.get_pipeline_metrics,
             repo_registry_repo=repo_registry_repo,
             stabilization_enabled=runtime_config.stabilization_enabled,
+            stabilization_service=stabilization_service,
             include_info_default=runtime_config.lsp_include_info_default,
             symbol_info_budget_sec_default=runtime_config.lsp_symbol_info_budget_sec,
         )
@@ -341,6 +344,7 @@ class McpServer:
             knowledge_repo=knowledge_repo,
             tool_layer_repo=tool_layer_repo,
             stabilization_enabled=runtime_config.stabilization_enabled,
+            stabilization_service=stabilization_service,
         )
         self._dry_run_diff_tool = DryRunDiffTool(read_tool=self._read_tool)
         self._list_symbols_tool = ListSymbolsTool(workspace_repo=workspace_repo, lsp_repo=lsp_repo)

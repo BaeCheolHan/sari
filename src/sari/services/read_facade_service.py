@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from sari.mcp.stabilization.ports import StabilizationPort
 from sari.mcp.tools.read_ports import ReadKnowledgePort, ReadLayerSymbolPort, ReadSymbolPort, ReadWorkspacePort
 from sari.mcp.tools.read_tool import ReadTool
 from sari.services.collection.ports import CollectionScanPort
@@ -17,6 +18,7 @@ class ReadFacadeService:
         lsp_repo: ReadSymbolPort,
         knowledge_repo: ReadKnowledgePort,
         tool_layer_repo: ReadLayerSymbolPort | None = None,
+        stabilization_service: StabilizationPort | None = None,
     ) -> None:
         """ReadTool 의존성을 구성한다."""
         self._read_tool = ReadTool(
@@ -25,6 +27,7 @@ class ReadFacadeService:
             lsp_repo=lsp_repo,
             knowledge_repo=knowledge_repo,
             tool_layer_repo=tool_layer_repo,
+            stabilization_service=stabilization_service,
         )
 
     def read(self, arguments: dict[str, object]) -> dict[str, object]:

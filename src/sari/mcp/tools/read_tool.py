@@ -6,22 +6,12 @@ from pathlib import Path
 
 from sari.core.exceptions import CollectionError
 from sari.core.models import ErrorResponseDTO
-from sari.mcp.stabilization.aggregation import add_read_to_bundle
-from sari.mcp.stabilization.budget_guard import apply_soft_limits, evaluate_budget_state
-from sari.mcp.stabilization.reason_codes import ReasonCode
-from sari.mcp.stabilization.relevance_guard import assess_relevance
-from sari.mcp.stabilization.session_state import (
-    get_metrics_snapshot,
-    get_search_context,
-    get_session_key,
-    record_read_metrics,
-    requires_strict_session_id,
-)
+from sari.mcp.stabilization.ports import StabilizationPort
+from sari.mcp.stabilization.stabilization_service import StabilizationService
 from sari.mcp.tools.admin_tools import validate_repo_argument
 from sari.mcp.tools.pack1 import pack1_error
 from sari.mcp.tools.tool_common import (
     argument_error,
-    content_hash,
     normalize_source_path,
     pack1_items_success,
     resolve_source_path,
@@ -41,6 +31,7 @@ class ReadTool:
         knowledge_repo: ReadKnowledgePort,
         tool_layer_repo: ReadLayerSymbolPort | None = None,
         stabilization_enabled: bool = True,
+        stabilization_service: StabilizationPort | None = None,
     ) -> None:
         """필요 저장소/서비스 의존성을 주입한다."""
         self._workspace_repo = workspace_repo
@@ -48,7 +39,9 @@ class ReadTool:
         self._lsp_repo = lsp_repo
         self._knowledge_repo = knowledge_repo
         self._tool_layer_repo = tool_layer_repo
-        self._stabilization_enabled = stabilization_enabled
+        self._stabilization_service = (
+            stabilization_service if stabilization_service is not None else StabilizationService(enabled=stabilization_enabled)
+        )
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """모드별 read 응답을 반환한다."""
@@ -56,35 +49,13 @@ class ReadTool:
         if validation.error is not None:
             return pack1_error(validation.error)
         warnings_payload = [warning.to_dict() for warning in validation.warnings]
-        stabilization_enabled = self._stabilization_enabled
-        if stabilization_enabled and requires_strict_session_id(arguments):
-            return pack1_error(
-                ErrorResponseDTO(code="ERR_SESSION_ID_REQUIRED", message="session_id is required by strict session policy."),
-                stabilization={
-                    "budget_state": "NORMAL",
-                    "suggested_next_action": "read",
-                    "warnings": ["Provide session_id or disable strict mode."],
-                    "reason_codes": [ReasonCode.SESSION_ID_REQUIRED.value],
-                    "next_calls": [],
-                    "metrics_snapshot": get_metrics_snapshot(arguments, [str(arguments["repo"])]),
-                },
-            )
         repo_root = str(arguments["repo"])
-        if stabilization_enabled:
-            pre_metrics = get_metrics_snapshot(arguments, [repo_root])
-            budget_state, budget_warnings, suggested_next_action = evaluate_budget_state(pre_metrics)
-            if budget_state == "HARD_LIMIT":
-                return pack1_error(
-                    ErrorResponseDTO(code="ERR_BUDGET_HARD_LIMIT", message="read budget exceeded. use search first."),
-                    stabilization={
-                        "budget_state": budget_state,
-                        "suggested_next_action": suggested_next_action or "search",
-                        "warnings": budget_warnings,
-                        "reason_codes": [ReasonCode.BUDGET_HARD_LIMIT.value],
-                        "next_calls": [{"tool": "search", "arguments": {"query": "target", "limit": 5}}],
-                        "metrics_snapshot": pre_metrics,
-                    },
-                )
+        precheck = self._stabilization_service.precheck_read_call(arguments=arguments, repo_root=repo_root)
+        if precheck.blocked:
+            return pack1_error(
+                ErrorResponseDTO(code=str(precheck.error_code), message=str(precheck.error_message)),
+                stabilization=precheck.meta,
+            )
         mode_raw = arguments.get("mode", "file")
         if not isinstance(mode_raw, str) or mode_raw.strip() == "":
             return argument_error(
@@ -126,61 +97,17 @@ class ReadTool:
         degraded: bool,
     ) -> dict[str, object] | None:
         """read 성공 응답용 stabilization 메타를 생성한다."""
-        if not self._stabilization_enabled:
-            return None
-        metrics_snapshot = record_read_metrics(
-            arguments,
-            [repo_root],
-            read_lines=read_lines,
-            read_chars=len(content_text),
-            read_span=read_span,
-        )
-        budget_state, budget_warnings, suggested_next_action = evaluate_budget_state(metrics_snapshot)
-        search_context = get_search_context(arguments, [repo_root])
-        relevance_state, relevance_warnings, relevance_alternatives, relevance_suggested = assess_relevance(
+        return self._stabilization_service.build_read_success_meta(
+            arguments=arguments,
+            repo_root=repo_root,
             mode=mode,
             target=target,
-            search_context=search_context,
+            content_text=content_text,
+            read_lines=read_lines,
+            read_span=read_span,
+            warnings=warnings,
+            degraded=degraded,
         )
-        session_key = get_session_key(arguments, [repo_root])
-        bundle_info = add_read_to_bundle(
-            session_key=session_key,
-            mode=mode,
-            path=target,
-            text=content_text,
-        )
-        reason_codes: list[str] = []
-        if degraded:
-            reason_codes.append(ReasonCode.BUDGET_SOFT_LIMIT.value)
-        if relevance_state == "LOW_RELEVANCE":
-            reason_codes.append(ReasonCode.LOW_RELEVANCE_OUTSIDE_TOPK.value)
-        all_warnings = [*warnings, *budget_warnings, *relevance_warnings]
-        next_calls = self._next_calls_for_read(mode=mode, target=target, alternatives=relevance_alternatives)
-        suggested = relevance_suggested or suggested_next_action or "read"
-        return {
-            "budget_state": budget_state,
-            "suggested_next_action": suggested,
-            "warnings": all_warnings,
-            "reason_codes": reason_codes,
-            "bundle_id": str(bundle_info.get("context_bundle_id") or ""),
-            "next_calls": next_calls,
-            "metrics_snapshot": metrics_snapshot,
-            "evidence_refs": [
-                {
-                    "kind": mode,
-                    "path": target,
-                    "content_hash": content_hash(content_text),
-                }
-            ],
-        }
-
-    def _next_calls_for_read(self, mode: str, target: str, alternatives: list[str]) -> list[dict[str, object]]:
-        """read 응답의 다음 호출 힌트를 생성한다."""
-        if mode == "symbol":
-            return [{"tool": "search", "arguments": {"query": target, "limit": 5}}]
-        if len(alternatives) > 0:
-            return [{"tool": "read", "arguments": {"mode": "file", "target": alternatives[0]}}]
-        return [{"tool": "search", "arguments": {"query": target, "limit": 5}}]
 
     def _read_file_mode(
         self,
@@ -205,7 +132,10 @@ class ReadTool:
         if limit_raw is not None and (not isinstance(limit_raw, int) or limit_raw <= 0):
             return pack1_error(ErrorResponseDTO(code="ERR_INVALID_LIMIT", message="limit must be positive integer or null"))
         delegated_args = {"offset": offset_raw, "limit": limit_raw}
-        constrained_args, degraded, soft_warnings = apply_soft_limits(mode="file", delegated_args=delegated_args)
+        constrained_args, degraded, soft_warnings = self._stabilization_service.apply_soft_limits(
+            mode="file",
+            delegated_args=delegated_args,
+        )
         constrained_offset = constrained_args.get("offset", offset_raw)
         constrained_limit = constrained_args.get("limit", limit_raw)
         if not isinstance(constrained_offset, int) or constrained_offset < 0:
@@ -313,7 +243,7 @@ class ReadTool:
         limit_raw = arguments.get("limit", 20)
         if not isinstance(limit_raw, int) or limit_raw <= 0:
             return pack1_error(ErrorResponseDTO(code="ERR_INVALID_LIMIT", message="limit must be positive integer"))
-        constrained_args, degraded, soft_warnings = apply_soft_limits(
+        constrained_args, degraded, soft_warnings = self._stabilization_service.apply_soft_limits(
             mode="snippet",
             delegated_args={"limit": limit_raw, "context_lines": arguments.get("context_lines")},
         )
@@ -352,7 +282,7 @@ class ReadTool:
             return pack1_error(ErrorResponseDTO(code="ERR_CONTENT_REQUIRED", message="content is required"))
         against_raw = arguments.get("against", "WORKTREE")
         against = against_raw if isinstance(against_raw, str) and against_raw.strip() != "" else "WORKTREE"
-        constrained_args, degraded, soft_warnings = apply_soft_limits(
+        constrained_args, degraded, soft_warnings = self._stabilization_service.apply_soft_limits(
             mode="diff_preview",
             delegated_args={"max_preview_chars": arguments.get("max_preview_chars")},
         )

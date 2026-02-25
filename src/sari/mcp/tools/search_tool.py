@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import logging
 from collections.abc import Callable
 
@@ -11,9 +10,8 @@ from sari.core.repo_context_resolver import resolve_repo_context
 from sari.db.repositories.repo_registry_repository import RepoRegistryRepository
 from sari.db.repositories.tool_data_layer_repository import ToolDataLayerRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
-from sari.mcp.stabilization.reason_codes import ReasonCode
-from sari.mcp.stabilization.session_state import record_search_metrics
-from sari.mcp.stabilization.warning_sink import warn
+from sari.mcp.stabilization.ports import StabilizationPort
+from sari.mcp.stabilization.stabilization_service import StabilizationService
 from sari.mcp.tools.pack1 import Pack1MetaDTO, pack1_error, pack1_success
 from sari.search.orchestrator import SearchOrchestrator
 
@@ -34,6 +32,7 @@ class SearchTool:
         include_info_default: bool = False,
         symbol_info_budget_sec_default: float = 10.0,
         resolve_symbols_default_provider: Callable[[], bool] | None = None,
+        stabilization_service: StabilizationPort | None = None,
     ) -> None:
         """검색 오케스트레이터를 주입한다."""
         self._orchestrator = orchestrator
@@ -41,10 +40,12 @@ class SearchTool:
         self._tool_layer_repo = tool_layer_repo
         self._metrics_provider = metrics_provider
         self._repo_registry_repo = repo_registry_repo
-        self._stabilization_enabled = stabilization_enabled
         self._include_info_default = bool(include_info_default)
         self._symbol_info_budget_sec_default = max(0.0, float(symbol_info_budget_sec_default))
         self._resolve_symbols_default_provider = resolve_symbols_default_provider
+        self._stabilization_service = (
+            stabilization_service if stabilization_service is not None else StabilizationService(enabled=stabilization_enabled)
+        )
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """도구 입력을 검증하고 pack1 결과를 반환한다."""
@@ -125,14 +126,13 @@ class SearchTool:
         except TypeError:
             # 이전 시그니처 호환 경로
             result = self._orchestrator.search(query=query, limit=limit, repo_root=repo)
-        stabilization_meta = _build_search_stabilization(
+        stabilization_meta = self._stabilization_service.build_search_success_meta(
             arguments=arguments,
             repo=repo,
             query=query,
             items=result.items,
             degraded=result.meta.degraded,
             fatal_error=result.meta.fatal_error,
-            stabilization_enabled=self._stabilization_enabled,
             errors=[error.to_dict() for error in result.meta.errors],
         )
         progress_meta = self._build_progress_meta()
@@ -305,92 +305,6 @@ class SearchTool:
             "remaining_jobs_l3": int(payload.get("remaining_jobs_l3", 0)),
             "worker_state": str(payload.get("worker_state", "unknown")),
         }
-
-
-def _build_search_stabilization(
-    arguments: dict[str, object],
-    repo: str,
-    query: str,
-    items: list[object],
-    degraded: bool,
-    fatal_error: bool,
-    stabilization_enabled: bool,
-    errors: list[dict[str, object]],
-) -> dict[str, object] | None:
-    """search 응답용 stabilization 메타를 생성한다."""
-    if not stabilization_enabled:
-        return None
-    top_paths = [str(getattr(item, "relative_path", "") or "") for item in items[:10]]
-    candidates = _candidate_mapping(query=query, items=items)
-    generated_bundle_id = _bundle_id(query=query, paths=top_paths)
-    metrics_snapshot = record_search_metrics(
-        arguments,
-        [repo],
-        preview_degraded=degraded,
-        query=query,
-        top_paths=top_paths,
-        candidates=candidates,
-        bundle_id=generated_bundle_id,
-    )
-    warnings: list[str] = []
-    reason_codes: list[str] = []
-    if degraded:
-        warnings.append("Search completed with degraded backend state; inspect meta.errors.")
-        reason_codes.append(ReasonCode.SEARCH_DEGRADED.value)
-    if fatal_error:
-        warnings.append("Search failed with fatal backend errors.")
-        reason_codes.append(ReasonCode.SEARCH_FATAL.value)
-    for error in errors:
-        message = str(error.get("message", "")).strip()
-        severity = str(error.get("severity", "")).strip().upper()
-        code = str(error.get("code", "")).strip()
-        if severity == "FATAL":
-            warn(f"[search:fatal] {code}: {message}")
-        elif message != "":
-            warn(f"[search:degraded] {code}: {message}")
-    return {
-        "budget_state": "NORMAL",
-        "suggested_next_action": "read" if len(items) > 0 else "search",
-        "warnings": warnings,
-        "reason_codes": reason_codes,
-        "bundle_id": generated_bundle_id,
-        "next_calls": _next_calls(items),
-        "metrics_snapshot": metrics_snapshot,
-        "degraded": degraded,
-        "fatal_error": fatal_error,
-    }
-
-
-def _candidate_mapping(query: str, items: list[object]) -> dict[str, str]:
-    """검색 결과에서 candidate_id 매핑을 생성한다."""
-    mapping: dict[str, str] = {}
-    for index, item in enumerate(items):
-        relative_path = str(getattr(item, "relative_path", "") or "")
-        name = str(getattr(item, "name", "") or "")
-        raw = f"{query}|{relative_path}|{name}|{index}"
-        candidate_key = "cand_" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
-        mapping[candidate_key] = relative_path
-    return mapping
-
-
-def _bundle_id(query: str, paths: list[str]) -> str:
-    """검색 응답 번들 식별자를 생성한다."""
-    merged = "\n".join([query, *paths])
-    return "bundle_" + hashlib.sha256(merged.encode("utf-8")).hexdigest()[:12]
-
-
-def _next_calls(items: list[object]) -> list[dict[str, object]]:
-    """다음 권장 호출 힌트를 생성한다."""
-    calls: list[dict[str, object]] = []
-    for item in items[:3]:
-        item_type = str(getattr(item, "item_type", "") or "")
-        relative_path = str(getattr(item, "relative_path", "") or "")
-        name = str(getattr(item, "name", "") or "")
-        if item_type == "symbol":
-            calls.append({"tool": "read", "arguments": {"mode": "symbol", "target": name, "path": relative_path}})
-        else:
-            calls.append({"tool": "read", "arguments": {"mode": "file", "target": relative_path}})
-    return calls
 
 
 def _resolve_recovery_hint(error_code: str) -> str | None:

@@ -54,6 +54,7 @@ from sari.services.language_probe_service import LanguageProbeService
 from sari.services.pipeline_lsp_matrix_service import PipelineLspMatrixService
 from sari.services.pipeline_quality_service import PipelineQualityService, SerenaGoldenBackend
 from sari.services.read_facade_service import ReadFacadeService
+from sari.mcp.stabilization.stabilization_service import StabilizationService
 from sari.mcp.server import McpServer
 
 log = logging.getLogger(__name__)
@@ -354,12 +355,14 @@ def main() -> None:
         probe_service=language_probe_service,
         run_repo=lsp_matrix_repo,
     )
+    stabilization_service = StabilizationService(enabled=config.stabilization_enabled)
     read_facade_service = ReadFacadeService(
         workspace_repo=workspace_repo,
         file_collection_service=file_collection_service,
         lsp_repo=lsp_repo,
         knowledge_repo=knowledge_repo,
         tool_layer_repo=tool_layer_repo,
+        stabilization_service=stabilization_service,
     )
 
     os.environ["SARI_MCP_FORWARD_TO_DAEMON"] = "0"
