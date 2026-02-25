@@ -6,10 +6,6 @@ from pathlib import Path
 
 from sari.core.exceptions import CollectionError
 from sari.core.models import ErrorResponseDTO
-from sari.db.repositories.knowledge_repository import KnowledgeRepository
-from sari.db.repositories.lsp_tool_data_repository import LspToolDataRepository
-from sari.db.repositories.tool_data_layer_repository import ToolDataLayerRepository
-from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.mcp.stabilization.aggregation import add_read_to_bundle
 from sari.mcp.stabilization.budget_guard import apply_soft_limits, evaluate_budget_state
 from sari.mcp.stabilization.reason_codes import ReasonCode
@@ -30,6 +26,7 @@ from sari.mcp.tools.tool_common import (
     pack1_items_success,
     resolve_source_path,
 )
+from sari.mcp.tools.read_ports import ReadKnowledgePort, ReadLayerSymbolPort, ReadSymbolPort, ReadWorkspacePort
 from sari.services.collection.ports import CollectionScanPort
 
 
@@ -38,11 +35,11 @@ class ReadTool:
 
     def __init__(
         self,
-        workspace_repo: WorkspaceRepository,
+        workspace_repo: ReadWorkspacePort,
         file_collection_service: CollectionScanPort,
-        lsp_repo: LspToolDataRepository,
-        knowledge_repo: KnowledgeRepository,
-        tool_layer_repo: ToolDataLayerRepository | None = None,
+        lsp_repo: ReadSymbolPort,
+        knowledge_repo: ReadKnowledgePort,
+        tool_layer_repo: ReadLayerSymbolPort | None = None,
         stabilization_enabled: bool = True,
     ) -> None:
         """필요 저장소/서비스 의존성을 주입한다."""
