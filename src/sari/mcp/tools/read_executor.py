@@ -9,6 +9,7 @@ from sari.core.models import ErrorResponseDTO
 from sari.mcp.stabilization.ports import StabilizationPort
 from sari.mcp.tools.pack1 import pack1_error
 from sari.mcp.tools.read_ports import ReadKnowledgePort, ReadLayerSymbolPort, ReadSymbolPort, ReadWorkspacePort
+from sari.mcp.tools.row_mapper import rows_to_items
 from sari.mcp.tools.tool_common import argument_error, normalize_source_path, resolve_source_path
 from sari.services.collection.ports import CollectionScanPort
 
@@ -152,7 +153,7 @@ class ReadExecutor:
                 )
         if len(row_items) == 0:
             rows = self._lsp_repo.search_symbols(repo_root=repo_root, query=target.strip(), limit=limit_raw, path_prefix=path_prefix)
-            row_items = [row.to_dict() for row in rows]
+            row_items = rows_to_items(rows)
         return (
             ReadExecutionResult(
                 mode="symbol",
@@ -190,7 +191,7 @@ class ReadExecutor:
         if not isinstance(constrained_limit, int) or constrained_limit <= 0:
             constrained_limit = limit_raw
         rows = self._knowledge_repo.query_snippets(repo_root=repo_root, tag=tag, query=query, limit=constrained_limit)
-        row_items = [row.to_dict() for row in rows]
+        row_items = rows_to_items(rows)
         target_value = query if query is not None else (tag if tag is not None else "")
         return (
             ReadExecutionResult(

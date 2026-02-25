@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import concurrent.futures
+import time
 from pathlib import Path
 
 from sari.core.models import WorkspaceDTO
@@ -636,3 +638,102 @@ def test_mcp_search_symbol_exposes_single_line_from_l3_snapshot(tmp_path: Path) 
     assert item["type"] == "symbol"
     assert item["line"] == 42
     assert item["end_line"] == 49
+
+
+def test_mcp_search_times_out_with_explicit_error() -> None:
+    """search 실행이 지정 시간 초과 시 ERR_TOOL_TIMEOUT을 반환해야 한다."""
+
+    class _SlowOrchestrator:
+        def search(self, query: str, limit: int, repo_root: str) -> SearchPipelineResult:
+            del query, limit, repo_root
+            time.sleep(0.2)
+            return SearchPipelineResult(
+                items=[],
+                meta=SearchMetaDTO(
+                    candidate_count=0,
+                    resolved_count=0,
+                    candidate_source="scan",
+                    errors=[],
+                    fatal_error=False,
+                    degraded=False,
+                    error_count=0,
+                ),
+            )
+
+    tool = SearchTool(orchestrator=_SlowOrchestrator(), call_timeout_sec=0.05)
+    payload = tool.call({"repo": "/repo", "query": "hello", "limit": 5})
+    assert payload["isError"] is True
+    assert payload["structuredContent"]["error"]["code"] == "ERR_TOOL_TIMEOUT"
+
+
+def test_mcp_search_returns_busy_while_timed_out_worker_still_running() -> None:
+    """타임아웃 직후 worker가 아직 실행 중이면 다음 호출은 ERR_TOOL_BUSY여야 한다."""
+
+    class _SlowOrchestrator:
+        def search(self, query: str, limit: int, repo_root: str) -> SearchPipelineResult:
+            del query, limit, repo_root
+            time.sleep(0.2)
+            return SearchPipelineResult(
+                items=[],
+                meta=SearchMetaDTO(
+                    candidate_count=0,
+                    resolved_count=0,
+                    candidate_source="scan",
+                    errors=[],
+                    fatal_error=False,
+                    degraded=False,
+                    error_count=0,
+                ),
+            )
+
+    tool = SearchTool(orchestrator=_SlowOrchestrator(), call_timeout_sec=0.05)
+    first = tool.call({"repo": "/repo", "query": "hello", "limit": 5})
+    second = tool.call({"repo": "/repo", "query": "hello", "limit": 5})
+    assert first["isError"] is True
+    assert first["structuredContent"]["error"]["code"] == "ERR_TOOL_TIMEOUT"
+    assert second["isError"] is True
+    assert second["structuredContent"]["error"]["code"] == "ERR_TOOL_BUSY"
+
+
+def test_mcp_search_releases_gate_when_timeout_cancels_before_start() -> None:
+    """timeout에서 cancel=True(미시작 취소)면 다음 호출이 busy에 빠지지 않아야 한다."""
+
+    class _CancelBeforeStartFuture:
+        def result(self, timeout: float | None = None) -> object:
+            del timeout
+            raise concurrent.futures.TimeoutError()
+
+        def cancel(self) -> bool:
+            return True
+
+    class _FakeExecutor:
+        def submit(self, fn, kwargs):  # type: ignore[no-untyped-def]
+            del fn, kwargs
+            return _CancelBeforeStartFuture()
+
+    tool = SearchTool(orchestrator=_SuccessOrchestrator(), call_timeout_sec=0.01)
+    tool._timeout_executor = _FakeExecutor()  # type: ignore[assignment]
+
+    first = tool.call({"repo": "/repo", "query": "hello", "limit": 5})
+    second = tool.call({"repo": "/repo", "query": "hello", "limit": 5})
+    assert first["isError"] is True
+    assert first["structuredContent"]["error"]["code"] == "ERR_TOOL_TIMEOUT"
+    assert second["isError"] is True
+    assert second["structuredContent"]["error"]["code"] == "ERR_TOOL_TIMEOUT"
+
+
+def test_mcp_search_does_not_map_general_runtime_error_to_busy() -> None:
+    """일반 RuntimeError는 ERR_TOOL_BUSY로 오분류되면 안 된다."""
+
+    class _RuntimeErrorOrchestrator:
+        def search(self, query: str, limit: int, repo_root: str) -> SearchPipelineResult:
+            del query, limit, repo_root
+            raise RuntimeError("unexpected backend runtime error")
+
+    tool = SearchTool(orchestrator=_RuntimeErrorOrchestrator())
+    try:
+        tool.call({"repo": "/repo", "query": "hello", "limit": 5})
+    except RuntimeError as exc:
+        assert "backend runtime error" in str(exc)
+    else:
+        raise AssertionError("RuntimeError should propagate and must not be mapped to ERR_TOOL_BUSY")

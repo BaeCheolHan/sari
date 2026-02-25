@@ -6,6 +6,7 @@ from sari.core.models import ErrorResponseDTO
 from sari.db.repositories.lsp_tool_data_repository import LspToolDataRepository
 from sari.mcp.tools.admin_tools import RepoValidationPort, validate_repo_argument
 from sari.mcp.tools.pack1 import pack1_error
+from sari.mcp.tools.row_mapper import rows_to_items
 from sari.mcp.tools.tool_common import pack1_items_success, resolve_symbol_key
 
 
@@ -29,7 +30,7 @@ class ListSymbolsTool:
         if not isinstance(limit_raw, int) or limit_raw <= 0:
             return pack1_error(ErrorResponseDTO(code="ERR_INVALID_LIMIT", message="limit must be positive integer"))
         rows = self._lsp_repo.search_symbols(repo_root=str(arguments["repo"]), query=query, limit=limit_raw, path_prefix=None)
-        return pack1_items_success([row.to_dict() for row in rows], cache_hit=True, warnings=warnings_payload)
+        return pack1_items_success(rows_to_items(rows), cache_hit=True, warnings=warnings_payload)
 
 
 class ReadSymbolTool:
@@ -60,7 +61,7 @@ class ReadSymbolTool:
             limit=limit_raw,
             path_prefix=path_prefix,
         )
-        return pack1_items_success([row.to_dict() for row in rows], cache_hit=True, warnings=warnings_payload)
+        return pack1_items_success(rows_to_items(rows), cache_hit=True, warnings=warnings_payload)
 
 
 class GetImplementationsTool:
@@ -84,7 +85,7 @@ class GetImplementationsTool:
         if not isinstance(limit_raw, int) or limit_raw <= 0:
             return pack1_error(ErrorResponseDTO(code="ERR_INVALID_LIMIT", message="limit must be positive integer"))
         rows = self._lsp_repo.find_implementations(repo_root=str(arguments["repo"]), symbol_name=symbol_key, limit=limit_raw)
-        return pack1_items_success([row.to_dict() for row in rows], cache_hit=True, warnings=warnings_payload)
+        return pack1_items_success(rows_to_items(rows), cache_hit=True, warnings=warnings_payload)
 
 
 class CallGraphTool:
@@ -108,8 +109,8 @@ class CallGraphTool:
         if not isinstance(limit_raw, int) or limit_raw <= 0:
             return pack1_error(ErrorResponseDTO(code="ERR_INVALID_LIMIT", message="limit must be positive integer"))
         repo_root = str(arguments["repo"])
-        callers = [row.to_dict() for row in self._lsp_repo.find_callers(repo_root=repo_root, symbol_name=symbol_key, limit=limit_raw)]
-        callees = [row.to_dict() for row in self._lsp_repo.find_callees(repo_root=repo_root, symbol_name=symbol_key, limit=limit_raw)]
+        callers = rows_to_items(self._lsp_repo.find_callers(repo_root=repo_root, symbol_name=symbol_key, limit=limit_raw))
+        callees = rows_to_items(self._lsp_repo.find_callees(repo_root=repo_root, symbol_name=symbol_key, limit=limit_raw))
         return pack1_items_success(
             [
                 {

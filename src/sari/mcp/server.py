@@ -316,6 +316,7 @@ class McpServer:
             stabilization_service=stabilization_service,
             include_info_default=runtime_config.lsp_include_info_default,
             symbol_info_budget_sec_default=runtime_config.lsp_symbol_info_budget_sec,
+            call_timeout_sec=runtime_config.mcp_search_call_timeout_sec,
         )
         self._doctor_tool = DoctorTool(admin_service=admin_service, workspace_repo=workspace_repo)
         self._rescan_tool = RescanTool(admin_service=admin_service, workspace_repo=workspace_repo)
@@ -345,6 +346,7 @@ class McpServer:
             tool_layer_repo=tool_layer_repo,
             stabilization_enabled=runtime_config.stabilization_enabled,
             stabilization_service=stabilization_service,
+            call_timeout_sec=runtime_config.mcp_read_call_timeout_sec,
         )
         self._dry_run_diff_tool = DryRunDiffTool(read_tool=self._read_tool)
         self._list_symbols_tool = ListSymbolsTool(workspace_repo=workspace_repo, lsp_repo=lsp_repo)

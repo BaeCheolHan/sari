@@ -185,6 +185,8 @@ class AppConfig:
     mcp_forward_to_daemon: bool = False
     mcp_daemon_autostart: bool = True
     mcp_daemon_timeout_sec: float = 2.0
+    mcp_search_call_timeout_sec: float = 0.0
+    mcp_read_call_timeout_sec: float = 0.0
     strict_protocol: bool = False
     stabilization_enabled: bool = True
     http_bg_proxy_enabled: bool = False
@@ -610,6 +612,14 @@ class AppConfig:
         mcp_forward_to_daemon_raw = os.getenv("SARI_MCP_FORWARD_TO_DAEMON", str(file_config.get("mcp_forward_to_daemon", False))).strip().lower()
         mcp_daemon_autostart_raw = os.getenv("SARI_MCP_DAEMON_AUTOSTART", str(file_config.get("mcp_daemon_autostart", True))).strip().lower()
         mcp_daemon_timeout_raw = os.getenv("SARI_MCP_DAEMON_TIMEOUT_SEC", str(file_config.get("mcp_daemon_timeout_sec", 2.0))).strip()
+        mcp_search_call_timeout_raw = os.getenv(
+            "SARI_MCP_SEARCH_CALL_TIMEOUT_SEC",
+            str(file_config.get("mcp_search_call_timeout_sec", 0.0)),
+        ).strip()
+        mcp_read_call_timeout_raw = os.getenv(
+            "SARI_MCP_READ_CALL_TIMEOUT_SEC",
+            str(file_config.get("mcp_read_call_timeout_sec", 0.0)),
+        ).strip()
         strict_protocol_raw = os.getenv("SARI_STRICT_PROTOCOL", str(file_config.get("strict_protocol", False))).strip().lower()
         stabilization_enabled_raw = os.getenv("SARI_STABILIZATION_ENABLED", str(file_config.get("stabilization_enabled", True))).strip().lower()
         http_bg_proxy_enabled_raw = os.getenv("SARI_HTTP_BG_PROXY", str(file_config.get("http_bg_proxy_enabled", False))).strip().lower()
@@ -898,6 +908,14 @@ class AppConfig:
             mcp_daemon_timeout_sec = max(0.1, float(mcp_daemon_timeout_raw))
         except ValueError:
             mcp_daemon_timeout_sec = 2.0
+        try:
+            mcp_search_call_timeout_sec = max(0.0, float(mcp_search_call_timeout_raw))
+        except ValueError:
+            mcp_search_call_timeout_sec = 0.0
+        try:
+            mcp_read_call_timeout_sec = max(0.0, float(mcp_read_call_timeout_raw))
+        except ValueError:
+            mcp_read_call_timeout_sec = 0.0
         total_weight = ranking_w_rrf + ranking_w_importance + ranking_w_vector + ranking_w_hierarchy
         if total_weight > 0.0:
             ranking_w_rrf = ranking_w_rrf / total_weight
@@ -1137,6 +1155,8 @@ class AppConfig:
             mcp_forward_to_daemon=mcp_forward_to_daemon_raw in {"1", "true", "yes", "on"},
             mcp_daemon_autostart=mcp_daemon_autostart_raw in {"1", "true", "yes", "on"},
             mcp_daemon_timeout_sec=mcp_daemon_timeout_sec,
+            mcp_search_call_timeout_sec=mcp_search_call_timeout_sec,
+            mcp_read_call_timeout_sec=mcp_read_call_timeout_sec,
             strict_protocol=strict_protocol_raw in {"1", "true", "yes", "on"},
             stabilization_enabled=stabilization_enabled_raw not in {"0", "false", "no", "off"},
             http_bg_proxy_enabled=http_bg_proxy_enabled_raw in {"1", "true", "yes", "on"},

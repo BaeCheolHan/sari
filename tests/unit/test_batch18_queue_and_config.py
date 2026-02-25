@@ -300,3 +300,16 @@ def test_app_config_parses_l5_budget_and_l3_query_budget_env(tmp_path: Path, mon
     assert config.l3_query_compile_cache_enabled is True
     assert config.l3_query_compile_ms_budget == pytest.approx(12.5)
     assert config.l3_query_budget_ms == pytest.approx(33.0)
+
+
+def test_app_config_parses_mcp_tool_call_timeout_env(tmp_path: Path, monkeypatch) -> None:
+    """MCP search/read call timeout 설정이 환경변수에서 파싱되어야 한다."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("SARI_MCP_SEARCH_CALL_TIMEOUT_SEC", "1.75")
+    monkeypatch.setenv("SARI_MCP_READ_CALL_TIMEOUT_SEC", "2.25")
+
+    config = AppConfig.default()
+
+    assert config.mcp_search_call_timeout_sec == pytest.approx(1.75)
+    assert config.mcp_read_call_timeout_sec == pytest.approx(2.25)

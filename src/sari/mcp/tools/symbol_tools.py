@@ -7,6 +7,7 @@ from sari.db.repositories.lsp_tool_data_repository import LspToolDataRepository
 from sari.mcp.tools.arg_parser import parse_non_empty_string, parse_optional_string, parse_positive_int
 from sari.mcp.tools.admin_tools import RepoValidationPort, validate_repo_argument
 from sari.mcp.tools.pack1 import Pack1MetaDTO, pack1_error, pack1_success
+from sari.mcp.tools.row_mapper import rows_to_items
 
 
 class SearchSymbolTool:
@@ -36,7 +37,7 @@ class SearchSymbolTool:
         rows = self._lsp_repo.search_symbols(repo_root=repo, query=query_raw.strip(), limit=limit_raw, path_prefix=path_prefix)
         return pack1_success(
             {
-                "items": [item.to_dict() for item in rows],
+                "items": rows_to_items(rows),
                 "meta": Pack1MetaDTO(
                     candidate_count=len(rows),
                     resolved_count=len(rows),
@@ -77,7 +78,7 @@ class GetCallersTool:
         rows = self._lsp_repo.find_callers(repo_root=repo, symbol_name=symbol_name, limit=limit_raw)
         return pack1_success(
             {
-                "items": [item.to_dict() for item in rows],
+                "items": rows_to_items(rows),
                 "meta": Pack1MetaDTO(
                     candidate_count=len(rows),
                     resolved_count=len(rows),

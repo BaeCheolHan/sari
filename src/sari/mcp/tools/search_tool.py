@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import concurrent.futures
+import inspect
 import logging
+import threading
 from collections.abc import Callable
 
 from sari.core.models import ErrorResponseDTO
@@ -18,6 +21,10 @@ from sari.search.orchestrator import SearchOrchestrator
 log = logging.getLogger(__name__)
 
 
+class _SearchToolBusyError(RuntimeError):
+    """search timeout gate가 이미 점유된 경우를 나타내는 내부 예외."""
+
+
 class SearchTool:
     """pack1 계약 기반 search 도구를 제공한다."""
 
@@ -31,6 +38,7 @@ class SearchTool:
         stabilization_enabled: bool = True,
         include_info_default: bool = False,
         symbol_info_budget_sec_default: float = 10.0,
+        call_timeout_sec: float = 0.0,
         resolve_symbols_default_provider: Callable[[], bool] | None = None,
         stabilization_service: StabilizationPort | None = None,
     ) -> None:
@@ -42,10 +50,19 @@ class SearchTool:
         self._repo_registry_repo = repo_registry_repo
         self._include_info_default = bool(include_info_default)
         self._symbol_info_budget_sec_default = max(0.0, float(symbol_info_budget_sec_default))
+        self._call_timeout_sec = max(0.0, float(call_timeout_sec))
         self._resolve_symbols_default_provider = resolve_symbols_default_provider
         self._stabilization_service = (
             stabilization_service if stabilization_service is not None else StabilizationService(enabled=stabilization_enabled)
         )
+        signature = inspect.signature(self._orchestrator.search)
+        self._search_params = set(signature.parameters.keys())
+        self._timeout_executor: concurrent.futures.ThreadPoolExecutor | None = None
+        self._timeout_semaphore: threading.BoundedSemaphore | None = None
+        if self._call_timeout_sec > 0:
+            # NOTE: timeout enforcement uses a single persistent worker to avoid per-call thread leaks.
+            self._timeout_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="search-tool")
+            self._timeout_semaphore = threading.BoundedSemaphore(value=1)
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """도구 입력을 검증하고 pack1 결과를 반환한다."""
@@ -114,18 +131,25 @@ class SearchTool:
         )
 
         try:
-            result = self._orchestrator.search(
+            result = self._run_search_with_timeout(
                 query=query,
                 limit=limit,
-                repo_root=repo,
+                repo=repo,
                 repo_id=repo_id,
                 resolve_symbols=resolve_symbols,
                 include_info=include_info,
                 symbol_info_budget_sec=symbol_info_budget_sec,
             )
-        except TypeError:
-            # 이전 시그니처 호환 경로
-            result = self._orchestrator.search(query=query, limit=limit, repo_root=repo)
+        except TimeoutError:
+            return pack1_error(
+                ErrorResponseDTO(code="ERR_TOOL_TIMEOUT", message="search timed out"),
+                recovery_hint="query 범위를 줄이거나 limit를 낮춘 뒤 재시도하세요.",
+            )
+        except _SearchToolBusyError:
+            return pack1_error(
+                ErrorResponseDTO(code="ERR_TOOL_BUSY", message="search worker busy"),
+                recovery_hint="직전 요청이 아직 처리 중입니다. 잠시 후 재시도하세요.",
+            )
         stabilization_meta = self._stabilization_service.build_search_success_meta(
             arguments=arguments,
             repo=repo,
@@ -173,6 +197,54 @@ class SearchTool:
                 "meta": meta_payload,
             }
         )
+
+    def _run_search_with_timeout(
+        self,
+        *,
+        query: str,
+        limit: int,
+        repo: str,
+        repo_id: str | None,
+        resolve_symbols: bool,
+        include_info: bool,
+        symbol_info_budget_sec: float,
+    ) -> object:
+        kwargs: dict[str, object] = {"query": query, "limit": limit, "repo_root": repo}
+        if "repo_id" in self._search_params:
+            kwargs["repo_id"] = repo_id
+        if "resolve_symbols" in self._search_params:
+            kwargs["resolve_symbols"] = resolve_symbols
+        if "include_info" in self._search_params:
+            kwargs["include_info"] = include_info
+        if "symbol_info_budget_sec" in self._search_params:
+            kwargs["symbol_info_budget_sec"] = symbol_info_budget_sec
+        if self._call_timeout_sec <= 0:
+            return self._orchestrator.search(**kwargs)
+        assert self._timeout_executor is not None
+        assert self._timeout_semaphore is not None
+        if not self._timeout_semaphore.acquire(blocking=False):
+            raise _SearchToolBusyError("search tool worker busy")
+        try:
+            future = self._timeout_executor.submit(self._run_search_task, kwargs)
+        except Exception:
+            self._timeout_semaphore.release()
+            raise
+        try:
+            return future.result(timeout=self._call_timeout_sec)
+        except concurrent.futures.TimeoutError as exc:
+            canceled = future.cancel()
+            if canceled:
+                # Task never started; release gate here to avoid permanent busy state.
+                self._timeout_semaphore.release()
+            raise TimeoutError("search tool timed out") from exc
+
+    def _run_search_task(self, kwargs: dict[str, object]) -> object:
+        """단일 worker 내 실제 search 호출을 수행한다."""
+        try:
+            return self._orchestrator.search(**kwargs)
+        finally:
+            assert self._timeout_semaphore is not None
+            self._timeout_semaphore.release()
 
     def _build_item_payload(self, *, item: object, repo_root: str) -> dict[str, object]:
         payload: dict[str, object] = {
