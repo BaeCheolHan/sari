@@ -196,726 +196,308 @@ class AppConfig:
     def default(cls) -> "AppConfig":
         """기본 설정값으로 구성 객체를 생성한다."""
         file_config = _load_user_config()
-        db_path_raw = os.getenv("SARI_DB_PATH", str(file_config.get("db_path", ""))).strip()
+        early_raw_values = _read_config_fields(
+            file_config=file_config,
+            fields=_build_early_fields(),
+        )
+        db_path_raw = early_raw_values["db_path_raw"]
         db_path = Path(db_path_raw).expanduser() if db_path_raw != "" else Path.home() / ".local" / "share" / "sari-v2" / "state.db"
-        backend = os.getenv("SARI_CANDIDATE_BACKEND", "tantivy").strip().lower()
+        backend = early_raw_values["backend_raw"]
         if backend not in {"tantivy", "scan"}:
             backend = "tantivy"
-        fallback_flag = os.getenv("SARI_CANDIDATE_FALLBACK_SCAN", "1").strip()
-        retry_max_raw = os.getenv("SARI_PIPELINE_RETRY_MAX", str(file_config.get("pipeline_retry_max", 5))).strip()
-        backoff_raw = os.getenv("SARI_PIPELINE_BACKOFF_BASE_SEC", str(file_config.get("pipeline_backoff_base_sec", 1))).strip()
-        poll_raw = os.getenv("SARI_QUEUE_POLL_INTERVAL_MS", str(file_config.get("queue_poll_interval_ms", 500))).strip()
-        debounce_raw = os.getenv("SARI_WATCHER_DEBOUNCE_MS", str(file_config.get("watcher_debounce_ms", 300))).strip()
-        worker_raw = os.getenv("SARI_PIPELINE_WORKER_COUNT", str(file_config.get("pipeline_worker_count", 4))).strip()
-        p95_raw = os.getenv("SARI_PIPELINE_L3_P95_THRESHOLD_MS", str(file_config.get("pipeline_l3_p95_threshold_ms", 180000))).strip()
-        dead_ratio_raw = os.getenv("SARI_PIPELINE_DEAD_RATIO_THRESHOLD_BPS", str(file_config.get("pipeline_dead_ratio_threshold_bps", 10))).strip()
-        alert_window_raw = os.getenv("SARI_PIPELINE_ALERT_WINDOW_SEC", str(file_config.get("pipeline_alert_window_sec", 300))).strip()
-        auto_tick_raw = os.getenv("SARI_PIPELINE_AUTO_TICK_INTERVAL_SEC", str(file_config.get("pipeline_auto_tick_interval_sec", 5))).strip()
-        l3_parallel_enabled_raw = os.getenv("SARI_L3_PARALLEL_ENABLED", str(file_config.get("l3_parallel_enabled", True))).strip().lower()
-        run_mode_raw = os.getenv("SARI_RUN_MODE", str(file_config.get("run_mode", "prod"))).strip().lower()
-        heartbeat_raw = os.getenv("SARI_DAEMON_HEARTBEAT_INTERVAL_SEC", str(file_config.get("daemon_heartbeat_interval_sec", 2))).strip()
-        stale_timeout_raw = os.getenv("SARI_DAEMON_STALE_TIMEOUT_SEC", str(file_config.get("daemon_stale_timeout_sec", 15))).strip()
-        lsp_timeout_raw = os.getenv("SARI_LSP_REQUEST_TIMEOUT_SEC", str(file_config.get("lsp_request_timeout_sec", 20.0))).strip()
-        lsp_max_per_repo_lang_raw = os.getenv(
-            "SARI_LSP_MAX_INSTANCES_PER_REPO_LANGUAGE",
-            str(file_config.get("lsp_max_instances_per_repo_language", 3)),
-        ).strip()
-        lsp_bulk_mode_enabled_raw = os.getenv(
-            "SARI_LSP_BULK_MODE_ENABLED",
-            str(file_config.get("lsp_bulk_mode_enabled", True)),
-        ).strip().lower()
-        lsp_bulk_max_per_repo_lang_raw = os.getenv(
-            "SARI_LSP_BULK_MAX_INSTANCES_PER_REPO_LANGUAGE",
-            str(file_config.get("lsp_bulk_max_instances_per_repo_language", 4)),
-        ).strip()
-        lsp_interactive_reserved_slots_raw = os.getenv(
-            "SARI_LSP_INTERACTIVE_RESERVED_SLOTS_PER_REPO_LANGUAGE",
-            str(file_config.get("lsp_interactive_reserved_slots_per_repo_language", 1)),
-        ).strip()
-        lsp_interactive_timeout_raw = os.getenv(
-            "SARI_LSP_INTERACTIVE_TIMEOUT_SEC",
-            str(file_config.get("lsp_interactive_timeout_sec", 4.0)),
-        ).strip()
-        lsp_interactive_queue_max_raw = os.getenv(
-            "SARI_LSP_INTERACTIVE_QUEUE_MAX",
-            str(file_config.get("lsp_interactive_queue_max", 256)),
-        ).strip()
-        lsp_symbol_info_budget_raw = os.getenv(
-            "SARI_LSP_SYMBOL_INFO_BUDGET_SEC",
-            str(file_config.get("lsp_symbol_info_budget_sec", 10.0)),
-        ).strip()
-        lsp_include_info_default_raw = os.getenv(
-            "SARI_LSP_INCLUDE_INFO_DEFAULT",
-            str(file_config.get("lsp_include_info_default", False)),
-        ).strip().lower()
-        lsp_global_soft_limit_raw = os.getenv(
-            "SARI_LSP_GLOBAL_SOFT_LIMIT",
-            str(file_config.get("lsp_global_soft_limit", 0)),
-        ).strip()
-        l3_executor_max_workers_raw = os.getenv(
-            "SARI_L3_EXECUTOR_MAX_WORKERS",
-            str(file_config.get("l3_executor_max_workers", 0)),
-        ).strip()
-        l3_recent_success_ttl_raw = os.getenv(
-            "SARI_L3_RECENT_SUCCESS_TTL_SEC",
-            str(file_config.get("l3_recent_success_ttl_sec", 120)),
-        ).strip()
-        l3_backpressure_on_interactive_raw = os.getenv(
-            "SARI_L3_BACKPRESSURE_ON_INTERACTIVE",
-            str(file_config.get("l3_backpressure_on_interactive", True)),
-        ).strip().lower()
-        l3_backpressure_cooldown_ms_raw = os.getenv(
-            "SARI_L3_BACKPRESSURE_COOLDOWN_MS",
-            str(file_config.get("l3_backpressure_cooldown_ms", 300)),
-        ).strip()
-        l3_supported_languages_raw = os.getenv(
-            "SARI_L3_SUPPORTED_LANGUAGES",
-            str(",".join(_read_tuple_setting(file_config, "l3_supported_languages", cls.l3_supported_languages))),
-        ).strip()
-        lsp_scale_out_hot_hits_raw = os.getenv(
-            "SARI_LSP_SCALE_OUT_HOT_HITS",
-            str(file_config.get("lsp_scale_out_hot_hits", 24)),
-        ).strip()
-        lsp_file_buffer_idle_ttl_raw = os.getenv(
-            "SARI_LSP_FILE_BUFFER_IDLE_TTL_SEC",
-            str(file_config.get("lsp_file_buffer_idle_ttl_sec", 20.0)),
-        ).strip()
-        lsp_file_buffer_max_open_raw = os.getenv(
-            "SARI_LSP_FILE_BUFFER_MAX_OPEN",
-            str(file_config.get("lsp_file_buffer_max_open", 512)),
-        ).strip()
-        lsp_java_min_major_raw = os.getenv(
-            "SARI_LSP_JAVA_MIN_MAJOR",
-            str(file_config.get("lsp_java_min_major", 17)),
-        ).strip()
-        lsp_probe_timeout_default_raw = os.getenv(
-            "SARI_LSP_PROBE_TIMEOUT_DEFAULT_SEC",
-            str(file_config.get("lsp_probe_timeout_default_sec", 20.0)),
-        ).strip()
-        lsp_probe_timeout_go_raw = os.getenv(
-            "SARI_LSP_PROBE_TIMEOUT_GO_SEC",
-            str(file_config.get("lsp_probe_timeout_go_sec", 45.0)),
-        ).strip()
-        lsp_probe_workers_raw = os.getenv(
-            "SARI_LSP_PROBE_WORKERS",
-            str(file_config.get("lsp_probe_workers", 8)),
-        ).strip()
-        lsp_probe_l1_workers_raw = os.getenv(
-            "SARI_LSP_PROBE_L1_WORKERS",
-            str(file_config.get("lsp_probe_l1_workers", 4)),
-        ).strip()
-        lsp_probe_force_join_ms_raw = os.getenv(
-            "SARI_LSP_PROBE_FORCE_JOIN_MS",
-            str(file_config.get("lsp_probe_force_join_ms", 300)),
-        ).strip()
-        lsp_probe_warming_retry_sec_raw = os.getenv(
-            "SARI_LSP_PROBE_WARMING_RETRY_SEC",
-            str(file_config.get("lsp_probe_warming_retry_sec", 5)),
-        ).strip()
-        lsp_probe_warming_threshold_raw = os.getenv(
-            "SARI_LSP_PROBE_WARMING_THRESHOLD",
-            str(file_config.get("lsp_probe_warming_threshold", 6)),
-        ).strip()
-        lsp_probe_permanent_backoff_sec_raw = os.getenv(
-            "SARI_LSP_PROBE_PERMANENT_BACKOFF_SEC",
-            str(file_config.get("lsp_probe_permanent_backoff_sec", 1800)),
-        ).strip()
-        lsp_probe_bootstrap_file_window_raw = os.getenv(
-            "SARI_LSP_PROBE_BOOTSTRAP_FILE_WINDOW",
-            str(file_config.get("lsp_probe_bootstrap_file_window", 256)),
-        ).strip()
-        lsp_probe_bootstrap_top_k_raw = os.getenv(
-            "SARI_LSP_PROBE_BOOTSTRAP_TOP_K",
-            str(file_config.get("lsp_probe_bootstrap_top_k", 3)),
-        ).strip()
-        lsp_probe_language_priority_raw = os.getenv(
-            "SARI_LSP_PROBE_LANGUAGE_PRIORITY",
-            str(",".join(_read_tuple_setting(file_config, "lsp_probe_language_priority", cls.lsp_probe_language_priority))),
-        ).strip()
-        lsp_probe_l1_languages_raw = os.getenv(
-            "SARI_LSP_PROBE_L1_LANGUAGES",
-            str(",".join(_read_tuple_setting(file_config, "lsp_probe_l1_languages", cls.lsp_probe_l1_languages))),
-        ).strip()
-        lsp_scope_planner_enabled_raw = os.getenv(
-            "SARI_LSP_SCOPE_PLANNER_ENABLED",
-            str(file_config.get("lsp_scope_planner_enabled", cls.lsp_scope_planner_enabled)),
-        ).strip().lower()
-        lsp_scope_planner_shadow_mode_raw = os.getenv(
-            "SARI_LSP_SCOPE_PLANNER_SHADOW_MODE",
-            str(file_config.get("lsp_scope_planner_shadow_mode", cls.lsp_scope_planner_shadow_mode)),
-        ).strip().lower()
-        lsp_scope_java_markers_raw = os.getenv(
-            "SARI_LSP_SCOPE_JAVA_MARKERS",
-            str(",".join(_read_tuple_setting(file_config, "lsp_scope_java_markers", cls.lsp_scope_java_markers))),
-        ).strip()
-        lsp_scope_ts_markers_raw = os.getenv(
-            "SARI_LSP_SCOPE_TS_MARKERS",
-            str(",".join(_read_tuple_setting(file_config, "lsp_scope_ts_markers", cls.lsp_scope_ts_markers))),
-        ).strip()
-        lsp_scope_vue_markers_raw = os.getenv(
-            "SARI_LSP_SCOPE_VUE_MARKERS",
-            str(",".join(_read_tuple_setting(file_config, "lsp_scope_vue_markers", cls.lsp_scope_vue_markers))),
-        ).strip()
-        lsp_scope_top_level_fallback_raw = os.getenv(
-            "SARI_LSP_SCOPE_TOP_LEVEL_FALLBACK",
-            str(file_config.get("lsp_scope_top_level_fallback", cls.lsp_scope_top_level_fallback)),
-        ).strip().lower()
-        lsp_scope_active_languages_raw = os.getenv(
-            "SARI_LSP_SCOPE_ACTIVE_LANGUAGES",
-            str(",".join(_read_tuple_setting(file_config, "lsp_scope_active_languages", cls.lsp_scope_active_languages))),
-        ).strip()
-        lsp_session_broker_enabled_raw = os.getenv(
-            "SARI_LSP_SESSION_BROKER_ENABLED",
-            str(file_config.get("lsp_session_broker_enabled", cls.lsp_session_broker_enabled)),
-        ).strip().lower()
-        lsp_session_broker_metrics_enabled_raw = os.getenv(
-            "SARI_LSP_SESSION_BROKER_METRICS_ENABLED",
-            str(file_config.get("lsp_session_broker_metrics_enabled", cls.lsp_session_broker_metrics_enabled)),
-        ).strip().lower()
-        lsp_broker_optional_scaffolding_enabled_raw = os.getenv(
-            "SARI_LSP_BROKER_OPTIONAL_SCAFFOLDING_ENABLED",
-            str(file_config.get("lsp_broker_optional_scaffolding_enabled", cls.lsp_broker_optional_scaffolding_enabled)),
-        ).strip().lower()
-        lsp_broker_batch_throughput_mode_enabled_raw = os.getenv(
-            "SARI_LSP_BROKER_BATCH_THROUGHPUT_MODE_ENABLED",
-            str(
-                file_config.get(
-                    "lsp_broker_batch_throughput_mode_enabled",
-                    cls.lsp_broker_batch_throughput_mode_enabled,
-                )
-            ),
-        ).strip().lower()
-        lsp_broker_batch_throughput_pending_threshold_raw = os.getenv(
-            "SARI_LSP_BROKER_BATCH_THROUGHPUT_PENDING_THRESHOLD",
-            str(
-                file_config.get(
-                    "lsp_broker_batch_throughput_pending_threshold",
-                    cls.lsp_broker_batch_throughput_pending_threshold,
-                )
-            ),
-        ).strip()
-        lsp_broker_batch_disable_java_probe_raw = os.getenv(
-            "SARI_LSP_BROKER_BATCH_DISABLE_JAVA_PROBE",
-            str(
-                file_config.get(
-                    "lsp_broker_batch_disable_java_probe",
-                    cls.lsp_broker_batch_disable_java_probe,
-                )
-            ),
-        ).strip().lower()
-        lsp_hotness_event_window_sec_raw = os.getenv(
-            "SARI_LSP_HOTNESS_EVENT_WINDOW_SEC",
-            str(file_config.get("lsp_hotness_event_window_sec", cls.lsp_hotness_event_window_sec)),
-        ).strip()
-        lsp_hotness_decay_window_sec_raw = os.getenv(
-            "SARI_LSP_HOTNESS_DECAY_WINDOW_SEC",
-            str(file_config.get("lsp_hotness_decay_window_sec", cls.lsp_hotness_decay_window_sec)),
-        ).strip()
-        lsp_broker_backlog_min_share_raw = os.getenv(
-            "SARI_LSP_BROKER_BACKLOG_MIN_SHARE",
-            str(file_config.get("lsp_broker_backlog_min_share", cls.lsp_broker_backlog_min_share)),
-        ).strip()
-        lsp_broker_max_standby_sessions_per_lang_raw = os.getenv(
-            "SARI_LSP_BROKER_MAX_STANDBY_SESSIONS_PER_LANG",
-            str(file_config.get("lsp_broker_max_standby_sessions_per_lang", cls.lsp_broker_max_standby_sessions_per_lang)),
-        ).strip()
-        lsp_broker_max_standby_sessions_per_budget_group_raw = os.getenv(
-            "SARI_LSP_BROKER_MAX_STANDBY_SESSIONS_PER_BUDGET_GROUP",
-            str(
-                file_config.get(
-                    "lsp_broker_max_standby_sessions_per_budget_group",
-                    cls.lsp_broker_max_standby_sessions_per_budget_group,
-                )
-            ),
-        ).strip()
-        lsp_broker_ts_vue_active_cap_raw = os.getenv(
-            "SARI_LSP_BROKER_TS_VUE_ACTIVE_CAP",
-            str(file_config.get("lsp_broker_ts_vue_active_cap", cls.lsp_broker_ts_vue_active_cap)),
-        ).strip()
-        lsp_broker_java_hot_lanes_raw = os.getenv(
-            "SARI_LSP_BROKER_JAVA_HOT_LANES",
-            str(file_config.get("lsp_broker_java_hot_lanes", cls.lsp_broker_java_hot_lanes)),
-        ).strip()
-        lsp_broker_java_backlog_lanes_raw = os.getenv(
-            "SARI_LSP_BROKER_JAVA_BACKLOG_LANES",
-            str(file_config.get("lsp_broker_java_backlog_lanes", cls.lsp_broker_java_backlog_lanes)),
-        ).strip()
-        lsp_broker_java_sticky_ttl_sec_raw = os.getenv(
-            "SARI_LSP_BROKER_JAVA_STICKY_TTL_SEC",
-            str(file_config.get("lsp_broker_java_sticky_ttl_sec", cls.lsp_broker_java_sticky_ttl_sec)),
-        ).strip()
-        lsp_broker_java_switch_cooldown_sec_raw = os.getenv(
-            "SARI_LSP_BROKER_JAVA_SWITCH_COOLDOWN_SEC",
-            str(file_config.get("lsp_broker_java_switch_cooldown_sec", cls.lsp_broker_java_switch_cooldown_sec)),
-        ).strip()
-        lsp_broker_java_min_lease_ms_raw = os.getenv(
-            "SARI_LSP_BROKER_JAVA_MIN_LEASE_MS",
-            str(file_config.get("lsp_broker_java_min_lease_ms", cls.lsp_broker_java_min_lease_ms)),
-        ).strip()
-        lsp_broker_ts_hot_lanes_raw = os.getenv(
-            "SARI_LSP_BROKER_TS_HOT_LANES",
-            str(file_config.get("lsp_broker_ts_hot_lanes", cls.lsp_broker_ts_hot_lanes)),
-        ).strip()
-        lsp_broker_ts_backlog_lanes_raw = os.getenv(
-            "SARI_LSP_BROKER_TS_BACKLOG_LANES",
-            str(file_config.get("lsp_broker_ts_backlog_lanes", cls.lsp_broker_ts_backlog_lanes)),
-        ).strip()
-        lsp_broker_ts_sticky_ttl_sec_raw = os.getenv(
-            "SARI_LSP_BROKER_TS_STICKY_TTL_SEC",
-            str(file_config.get("lsp_broker_ts_sticky_ttl_sec", cls.lsp_broker_ts_sticky_ttl_sec)),
-        ).strip()
-        lsp_broker_ts_switch_cooldown_sec_raw = os.getenv(
-            "SARI_LSP_BROKER_TS_SWITCH_COOLDOWN_SEC",
-            str(file_config.get("lsp_broker_ts_switch_cooldown_sec", cls.lsp_broker_ts_switch_cooldown_sec)),
-        ).strip()
-        lsp_broker_ts_min_lease_ms_raw = os.getenv(
-            "SARI_LSP_BROKER_TS_MIN_LEASE_MS",
-            str(file_config.get("lsp_broker_ts_min_lease_ms", cls.lsp_broker_ts_min_lease_ms)),
-        ).strip()
-        lsp_broker_vue_hot_lanes_raw = os.getenv(
-            "SARI_LSP_BROKER_VUE_HOT_LANES",
-            str(file_config.get("lsp_broker_vue_hot_lanes", cls.lsp_broker_vue_hot_lanes)),
-        ).strip()
-        lsp_broker_vue_backlog_lanes_raw = os.getenv(
-            "SARI_LSP_BROKER_VUE_BACKLOG_LANES",
-            str(file_config.get("lsp_broker_vue_backlog_lanes", cls.lsp_broker_vue_backlog_lanes)),
-        ).strip()
-        lsp_broker_vue_sticky_ttl_sec_raw = os.getenv(
-            "SARI_LSP_BROKER_VUE_STICKY_TTL_SEC",
-            str(file_config.get("lsp_broker_vue_sticky_ttl_sec", cls.lsp_broker_vue_sticky_ttl_sec)),
-        ).strip()
-        lsp_broker_vue_switch_cooldown_sec_raw = os.getenv(
-            "SARI_LSP_BROKER_VUE_SWITCH_COOLDOWN_SEC",
-            str(file_config.get("lsp_broker_vue_switch_cooldown_sec", cls.lsp_broker_vue_switch_cooldown_sec)),
-        ).strip()
-        lsp_broker_vue_min_lease_ms_raw = os.getenv(
-            "SARI_LSP_BROKER_VUE_MIN_LEASE_MS",
-            str(file_config.get("lsp_broker_vue_min_lease_ms", cls.lsp_broker_vue_min_lease_ms)),
-        ).strip()
-        lsp_max_concurrent_starts_raw = os.getenv(
-            "SARI_LSP_MAX_CONCURRENT_STARTS",
-            str(file_config.get("lsp_max_concurrent_starts", 4)),
-        ).strip()
-        lsp_max_concurrent_l1_probes_raw = os.getenv(
-            "SARI_LSP_MAX_CONCURRENT_L1_PROBES",
-            str(file_config.get("lsp_max_concurrent_l1_probes", 4)),
-        ).strip()
-        orphan_check_raw = os.getenv("SARI_ORPHAN_PPID_CHECK_INTERVAL_SEC", str(file_config.get("orphan_ppid_check_interval_sec", 1))).strip()
-        shutdown_join_raw = os.getenv("SARI_SHUTDOWN_JOIN_TIMEOUT_SEC", str(file_config.get("shutdown_join_timeout_sec", 2))).strip()
-        vector_enabled_raw = os.getenv("SARI_VECTOR_ENABLED", str(file_config.get("vector_enabled", False))).strip().lower()
+        fallback_flag = early_raw_values["fallback_flag"]
+        core_raw_values = _read_config_fields(
+            file_config=file_config,
+            fields=_build_core_fields(file_config=file_config, defaults=cls),
+        )
+        retry_max_raw = core_raw_values["retry_max_raw"]
+        backoff_raw = core_raw_values["backoff_raw"]
+        poll_raw = core_raw_values["poll_raw"]
+        debounce_raw = core_raw_values["debounce_raw"]
+        worker_raw = core_raw_values["worker_raw"]
+        p95_raw = core_raw_values["p95_raw"]
+        dead_ratio_raw = core_raw_values["dead_ratio_raw"]
+        alert_window_raw = core_raw_values["alert_window_raw"]
+        auto_tick_raw = core_raw_values["auto_tick_raw"]
+        l3_parallel_enabled_raw = core_raw_values["l3_parallel_enabled_raw"]
+        run_mode_raw = core_raw_values["run_mode_raw"]
+        heartbeat_raw = core_raw_values["heartbeat_raw"]
+        stale_timeout_raw = core_raw_values["stale_timeout_raw"]
+        lsp_timeout_raw = core_raw_values["lsp_timeout_raw"]
+        lsp_max_per_repo_lang_raw = core_raw_values["lsp_max_per_repo_lang_raw"]
+        lsp_bulk_mode_enabled_raw = core_raw_values["lsp_bulk_mode_enabled_raw"]
+        lsp_bulk_max_per_repo_lang_raw = core_raw_values["lsp_bulk_max_per_repo_lang_raw"]
+        lsp_interactive_reserved_slots_raw = core_raw_values["lsp_interactive_reserved_slots_raw"]
+        lsp_interactive_timeout_raw = core_raw_values["lsp_interactive_timeout_raw"]
+        lsp_interactive_queue_max_raw = core_raw_values["lsp_interactive_queue_max_raw"]
+        lsp_symbol_info_budget_raw = core_raw_values["lsp_symbol_info_budget_raw"]
+        lsp_include_info_default_raw = core_raw_values["lsp_include_info_default_raw"]
+        lsp_global_soft_limit_raw = core_raw_values["lsp_global_soft_limit_raw"]
+        l3_executor_max_workers_raw = core_raw_values["l3_executor_max_workers_raw"]
+        l3_recent_success_ttl_raw = core_raw_values["l3_recent_success_ttl_raw"]
+        l3_backpressure_on_interactive_raw = core_raw_values["l3_backpressure_on_interactive_raw"]
+        l3_backpressure_cooldown_ms_raw = core_raw_values["l3_backpressure_cooldown_ms_raw"]
+        l3_supported_languages_raw = core_raw_values["l3_supported_languages_raw"]
+        lsp_scale_out_hot_hits_raw = core_raw_values["lsp_scale_out_hot_hits_raw"]
+        extended_raw_values = _read_config_fields(
+            file_config=file_config,
+            fields=_build_extended_fields(file_config=file_config, defaults=cls),
+        )
+        lsp_file_buffer_idle_ttl_raw = extended_raw_values["lsp_file_buffer_idle_ttl_raw"]
+        lsp_file_buffer_max_open_raw = extended_raw_values["lsp_file_buffer_max_open_raw"]
+        lsp_java_min_major_raw = extended_raw_values["lsp_java_min_major_raw"]
+        lsp_probe_timeout_default_raw = extended_raw_values["lsp_probe_timeout_default_raw"]
+        lsp_probe_timeout_go_raw = extended_raw_values["lsp_probe_timeout_go_raw"]
+        lsp_probe_workers_raw = extended_raw_values["lsp_probe_workers_raw"]
+        lsp_probe_l1_workers_raw = extended_raw_values["lsp_probe_l1_workers_raw"]
+        lsp_probe_force_join_ms_raw = extended_raw_values["lsp_probe_force_join_ms_raw"]
+        lsp_probe_warming_retry_sec_raw = extended_raw_values["lsp_probe_warming_retry_sec_raw"]
+        lsp_probe_warming_threshold_raw = extended_raw_values["lsp_probe_warming_threshold_raw"]
+        lsp_probe_permanent_backoff_sec_raw = extended_raw_values["lsp_probe_permanent_backoff_sec_raw"]
+        lsp_probe_bootstrap_file_window_raw = extended_raw_values["lsp_probe_bootstrap_file_window_raw"]
+        lsp_probe_bootstrap_top_k_raw = extended_raw_values["lsp_probe_bootstrap_top_k_raw"]
+        lsp_probe_language_priority_raw = extended_raw_values["lsp_probe_language_priority_raw"]
+        lsp_probe_l1_languages_raw = extended_raw_values["lsp_probe_l1_languages_raw"]
+        lsp_scope_planner_enabled_raw = extended_raw_values["lsp_scope_planner_enabled_raw"]
+        lsp_scope_planner_shadow_mode_raw = extended_raw_values["lsp_scope_planner_shadow_mode_raw"]
+        lsp_scope_java_markers_raw = extended_raw_values["lsp_scope_java_markers_raw"]
+        lsp_scope_ts_markers_raw = extended_raw_values["lsp_scope_ts_markers_raw"]
+        lsp_scope_vue_markers_raw = extended_raw_values["lsp_scope_vue_markers_raw"]
+        lsp_scope_top_level_fallback_raw = extended_raw_values["lsp_scope_top_level_fallback_raw"]
+        lsp_scope_active_languages_raw = extended_raw_values["lsp_scope_active_languages_raw"]
+        lsp_session_broker_enabled_raw = extended_raw_values["lsp_session_broker_enabled_raw"]
+        lsp_session_broker_metrics_enabled_raw = extended_raw_values["lsp_session_broker_metrics_enabled_raw"]
+        lsp_broker_optional_scaffolding_enabled_raw = extended_raw_values["lsp_broker_optional_scaffolding_enabled_raw"]
+        lsp_broker_batch_throughput_mode_enabled_raw = extended_raw_values["lsp_broker_batch_throughput_mode_enabled_raw"]
+        lsp_broker_batch_throughput_pending_threshold_raw = extended_raw_values["lsp_broker_batch_throughput_pending_threshold_raw"]
+        lsp_broker_batch_disable_java_probe_raw = extended_raw_values["lsp_broker_batch_disable_java_probe_raw"]
+        lsp_hotness_event_window_sec_raw = extended_raw_values["lsp_hotness_event_window_sec_raw"]
+        lsp_hotness_decay_window_sec_raw = extended_raw_values["lsp_hotness_decay_window_sec_raw"]
+        lsp_broker_backlog_min_share_raw = extended_raw_values["lsp_broker_backlog_min_share_raw"]
+        lsp_broker_max_standby_sessions_per_lang_raw = extended_raw_values["lsp_broker_max_standby_sessions_per_lang_raw"]
+        lsp_broker_max_standby_sessions_per_budget_group_raw = extended_raw_values["lsp_broker_max_standby_sessions_per_budget_group_raw"]
+        lsp_broker_ts_vue_active_cap_raw = extended_raw_values["lsp_broker_ts_vue_active_cap_raw"]
+        lsp_broker_java_hot_lanes_raw = extended_raw_values["lsp_broker_java_hot_lanes_raw"]
+        lsp_broker_java_backlog_lanes_raw = extended_raw_values["lsp_broker_java_backlog_lanes_raw"]
+        lsp_broker_java_sticky_ttl_sec_raw = extended_raw_values["lsp_broker_java_sticky_ttl_sec_raw"]
+        lsp_broker_java_switch_cooldown_sec_raw = extended_raw_values["lsp_broker_java_switch_cooldown_sec_raw"]
+        lsp_broker_java_min_lease_ms_raw = extended_raw_values["lsp_broker_java_min_lease_ms_raw"]
+        lsp_broker_ts_hot_lanes_raw = extended_raw_values["lsp_broker_ts_hot_lanes_raw"]
+        lsp_broker_ts_backlog_lanes_raw = extended_raw_values["lsp_broker_ts_backlog_lanes_raw"]
+        lsp_broker_ts_sticky_ttl_sec_raw = extended_raw_values["lsp_broker_ts_sticky_ttl_sec_raw"]
+        lsp_broker_ts_switch_cooldown_sec_raw = extended_raw_values["lsp_broker_ts_switch_cooldown_sec_raw"]
+        lsp_broker_ts_min_lease_ms_raw = extended_raw_values["lsp_broker_ts_min_lease_ms_raw"]
+        lsp_broker_vue_hot_lanes_raw = extended_raw_values["lsp_broker_vue_hot_lanes_raw"]
+        lsp_broker_vue_backlog_lanes_raw = extended_raw_values["lsp_broker_vue_backlog_lanes_raw"]
+        lsp_broker_vue_sticky_ttl_sec_raw = extended_raw_values["lsp_broker_vue_sticky_ttl_sec_raw"]
+        lsp_broker_vue_switch_cooldown_sec_raw = extended_raw_values["lsp_broker_vue_switch_cooldown_sec_raw"]
+        lsp_broker_vue_min_lease_ms_raw = extended_raw_values["lsp_broker_vue_min_lease_ms_raw"]
+        lsp_max_concurrent_starts_raw = extended_raw_values["lsp_max_concurrent_starts_raw"]
+        lsp_max_concurrent_l1_probes_raw = extended_raw_values["lsp_max_concurrent_l1_probes_raw"]
+        orphan_check_raw = extended_raw_values["orphan_check_raw"]
+        shutdown_join_raw = extended_raw_values["shutdown_join_raw"]
+        vector_enabled_raw = extended_raw_values["vector_enabled_raw"]
         vector_model_id = str(file_config.get("vector_model_id", "hashbow-v1")).strip()
-        vector_dim_raw = os.getenv("SARI_VECTOR_DIM", str(file_config.get("vector_dim", 128))).strip()
-        vector_candidate_raw = os.getenv("SARI_VECTOR_CANDIDATE_K", str(file_config.get("vector_candidate_k", 50))).strip()
-        vector_rerank_raw = os.getenv("SARI_VECTOR_RERANK_K", str(file_config.get("vector_rerank_k", 20))).strip()
-        vector_blend_raw = os.getenv("SARI_VECTOR_BLEND_WEIGHT", str(file_config.get("vector_blend_weight", 0.2))).strip()
-        vector_min_similarity_raw = os.getenv(
-            "SARI_VECTOR_MIN_SIMILARITY_THRESHOLD",
-            str(file_config.get("vector_min_similarity_threshold", 0.15)),
-        ).strip()
-        vector_max_boost_raw = os.getenv("SARI_VECTOR_MAX_BOOST", str(file_config.get("vector_max_boost", 0.2))).strip()
-        vector_min_token_raw = os.getenv(
-            "SARI_VECTOR_MIN_TOKEN_COUNT_FOR_RERANK",
-            str(file_config.get("vector_min_token_count_for_rerank", 2)),
-        ).strip()
-        importance_normalize_mode = str(
-            os.getenv("SARI_IMPORTANCE_NORMALIZE_MODE", str(file_config.get("importance_normalize_mode", "log1p")))
-        ).strip()
-        importance_max_boost_raw = os.getenv(
-            "SARI_IMPORTANCE_MAX_BOOST",
-            str(file_config.get("importance_max_boost", 200.0)),
-        ).strip()
-        ranking_w_rrf_raw = os.getenv("SARI_RANKING_W_RRF", str(file_config.get("ranking_w_rrf", 0.55))).strip()
-        ranking_w_importance_raw = os.getenv(
-            "SARI_RANKING_W_IMPORTANCE",
-            str(file_config.get("ranking_w_importance", 0.30)),
-        ).strip()
-        ranking_w_vector_raw = os.getenv(
-            "SARI_RANKING_W_VECTOR",
-            str(file_config.get("ranking_w_vector", 0.15)),
-        ).strip()
-        ranking_w_hierarchy_raw = os.getenv(
-            "SARI_RANKING_W_HIERARCHY",
-            str(file_config.get("ranking_w_hierarchy", 0.15)),
-        ).strip()
-        search_lsp_fallback_mode_raw = os.getenv(
-            "SARI_SEARCH_LSP_FALLBACK_MODE",
-            str(file_config.get("search_lsp_fallback_mode", "normal")),
-        ).strip().lower()
-        search_lsp_pressure_guard_enabled_raw = os.getenv(
-            "SARI_SEARCH_LSP_PRESSURE_GUARD_ENABLED",
-            str(file_config.get("search_lsp_pressure_guard_enabled", True)),
-        ).strip().lower()
-        search_lsp_pressure_pending_threshold_raw = os.getenv(
-            "SARI_SEARCH_LSP_PRESSURE_PENDING_THRESHOLD",
-            str(file_config.get("search_lsp_pressure_pending_threshold", 1)),
-        ).strip()
-        search_lsp_pressure_timeout_threshold_raw = os.getenv(
-            "SARI_SEARCH_LSP_PRESSURE_TIMEOUT_THRESHOLD",
-            str(file_config.get("search_lsp_pressure_timeout_threshold", 1)),
-        ).strip()
-        search_lsp_pressure_rejected_threshold_raw = os.getenv(
-            "SARI_SEARCH_LSP_PRESSURE_REJECTED_THRESHOLD",
-            str(file_config.get("search_lsp_pressure_rejected_threshold", 1)),
-        ).strip()
-        search_lsp_recent_failure_cooldown_sec_raw = os.getenv(
-            "SARI_SEARCH_LSP_RECENT_FAILURE_COOLDOWN_SEC",
-            str(file_config.get("search_lsp_recent_failure_cooldown_sec", 5.0)),
-        ).strip()
-        l5_call_rate_total_max_raw = os.getenv(
-            "SARI_L5_CALL_RATE_TOTAL_MAX",
-            str(file_config.get("l5_call_rate_total_max", 0.05)),
-        ).strip()
-        l5_call_rate_batch_max_raw = os.getenv(
-            "SARI_L5_CALL_RATE_BATCH_MAX",
-            str(file_config.get("l5_call_rate_batch_max", 0.01)),
-        ).strip()
-        l5_calls_per_min_per_lang_max_raw = os.getenv(
-            "SARI_L5_CALLS_PER_MIN_PER_LANG_MAX",
-            str(file_config.get("l5_calls_per_min_per_lang_max", 30)),
-        ).strip()
-        l5_tokens_per_10sec_global_max_raw = os.getenv(
-            "SARI_L5_TOKENS_PER_10SEC_GLOBAL_MAX",
-            str(file_config.get("l5_tokens_per_10sec_global_max", 120)),
-        ).strip()
-        l5_tokens_per_10sec_per_lang_max_raw = os.getenv(
-            "SARI_L5_TOKENS_PER_10SEC_PER_LANG_MAX",
-            str(file_config.get("l5_tokens_per_10sec_per_lang_max", 30)),
-        ).strip()
-        l5_tokens_per_10sec_per_workspace_max_raw = os.getenv(
-            "SARI_L5_TOKENS_PER_10SEC_PER_WORKSPACE_MAX",
-            str(file_config.get("l5_tokens_per_10sec_per_workspace_max", 20)),
-        ).strip()
-        l3_query_compile_cache_enabled_raw = os.getenv(
-            "SARI_L3_QUERY_COMPILE_CACHE_ENABLED",
-            str(file_config.get("l3_query_compile_cache_enabled", True)),
-        ).strip().lower()
-        l3_query_compile_ms_budget_raw = os.getenv(
-            "SARI_L3_QUERY_COMPILE_MS_BUDGET",
-            str(file_config.get("l3_query_compile_ms_budget", 10.0)),
-        ).strip()
-        l3_query_budget_ms_raw = os.getenv(
-            "SARI_L3_QUERY_BUDGET_MS",
-            str(file_config.get("l3_query_budget_ms", 30.0)),
-        ).strip()
-        l3_asset_mode_raw = os.getenv(
-            "SARI_L3_ASSET_MODE",
-            str(file_config.get("l3_asset_mode", "shadow")),
-        ).strip().lower()
-        l3_asset_manifest_path = os.getenv(
-            "SARI_L3_ASSET_MANIFEST_PATH",
-            str(file_config.get("l3_asset_manifest_path", "src/sari/services/collection/assets/manifest.json")),
-        ).strip()
-        l3_asset_lang_allowlist_raw = os.getenv(
-            "SARI_L3_ASSET_LANG_ALLOWLIST",
-            str(file_config.get("l3_asset_lang_allowlist", "")),
-        ).strip()
-        mcp_forward_to_daemon_raw = os.getenv("SARI_MCP_FORWARD_TO_DAEMON", str(file_config.get("mcp_forward_to_daemon", False))).strip().lower()
-        mcp_daemon_autostart_raw = os.getenv("SARI_MCP_DAEMON_AUTOSTART", str(file_config.get("mcp_daemon_autostart", True))).strip().lower()
-        mcp_daemon_timeout_raw = os.getenv("SARI_MCP_DAEMON_TIMEOUT_SEC", str(file_config.get("mcp_daemon_timeout_sec", 2.0))).strip()
-        mcp_search_call_timeout_raw = os.getenv(
-            "SARI_MCP_SEARCH_CALL_TIMEOUT_SEC",
-            str(file_config.get("mcp_search_call_timeout_sec", 0.0)),
-        ).strip()
-        mcp_read_call_timeout_raw = os.getenv(
-            "SARI_MCP_READ_CALL_TIMEOUT_SEC",
-            str(file_config.get("mcp_read_call_timeout_sec", 0.0)),
-        ).strip()
-        strict_protocol_raw = os.getenv("SARI_STRICT_PROTOCOL", str(file_config.get("strict_protocol", False))).strip().lower()
-        stabilization_enabled_raw = os.getenv("SARI_STABILIZATION_ENABLED", str(file_config.get("stabilization_enabled", True))).strip().lower()
-        http_bg_proxy_enabled_raw = os.getenv("SARI_HTTP_BG_PROXY", str(file_config.get("http_bg_proxy_enabled", False))).strip().lower()
-        http_bg_proxy_target = os.getenv("SARI_HTTP_BG_PROXY_TARGET", str(file_config.get("http_bg_proxy_target", ""))).strip()
+        vector_dim_raw = extended_raw_values["vector_dim_raw"]
+        vector_candidate_raw = extended_raw_values["vector_candidate_raw"]
+        vector_rerank_raw = extended_raw_values["vector_rerank_raw"]
+        vector_blend_raw = extended_raw_values["vector_blend_raw"]
+        vector_min_similarity_raw = extended_raw_values["vector_min_similarity_raw"]
+        vector_max_boost_raw = extended_raw_values["vector_max_boost_raw"]
+        vector_min_token_raw = extended_raw_values["vector_min_token_raw"]
+        importance_normalize_mode = extended_raw_values["importance_normalize_mode"]
+        importance_max_boost_raw = extended_raw_values["importance_max_boost_raw"]
+        ranking_w_rrf_raw = extended_raw_values["ranking_w_rrf_raw"]
+        ranking_w_importance_raw = extended_raw_values["ranking_w_importance_raw"]
+        ranking_w_vector_raw = extended_raw_values["ranking_w_vector_raw"]
+        ranking_w_hierarchy_raw = extended_raw_values["ranking_w_hierarchy_raw"]
+        search_lsp_fallback_mode_raw = extended_raw_values["search_lsp_fallback_mode_raw"]
+        search_lsp_pressure_guard_enabled_raw = extended_raw_values["search_lsp_pressure_guard_enabled_raw"]
+        search_lsp_pressure_pending_threshold_raw = extended_raw_values["search_lsp_pressure_pending_threshold_raw"]
+        search_lsp_pressure_timeout_threshold_raw = extended_raw_values["search_lsp_pressure_timeout_threshold_raw"]
+        search_lsp_pressure_rejected_threshold_raw = extended_raw_values["search_lsp_pressure_rejected_threshold_raw"]
+        search_lsp_recent_failure_cooldown_sec_raw = extended_raw_values["search_lsp_recent_failure_cooldown_sec_raw"]
+        l5_call_rate_total_max_raw = extended_raw_values["l5_call_rate_total_max_raw"]
+        l5_call_rate_batch_max_raw = extended_raw_values["l5_call_rate_batch_max_raw"]
+        l5_calls_per_min_per_lang_max_raw = extended_raw_values["l5_calls_per_min_per_lang_max_raw"]
+        l5_tokens_per_10sec_global_max_raw = extended_raw_values["l5_tokens_per_10sec_global_max_raw"]
+        l5_tokens_per_10sec_per_lang_max_raw = extended_raw_values["l5_tokens_per_10sec_per_lang_max_raw"]
+        l5_tokens_per_10sec_per_workspace_max_raw = extended_raw_values["l5_tokens_per_10sec_per_workspace_max_raw"]
+        l3_query_compile_cache_enabled_raw = extended_raw_values["l3_query_compile_cache_enabled_raw"]
+        l3_query_compile_ms_budget_raw = extended_raw_values["l3_query_compile_ms_budget_raw"]
+        l3_query_budget_ms_raw = extended_raw_values["l3_query_budget_ms_raw"]
+        l3_asset_mode_raw = extended_raw_values["l3_asset_mode_raw"]
+        l3_asset_manifest_path = extended_raw_values["l3_asset_manifest_path"]
+        l3_asset_lang_allowlist_raw = extended_raw_values["l3_asset_lang_allowlist_raw"]
+        mcp_forward_to_daemon_raw = extended_raw_values["mcp_forward_to_daemon_raw"]
+        mcp_daemon_autostart_raw = extended_raw_values["mcp_daemon_autostart_raw"]
+        mcp_daemon_timeout_raw = extended_raw_values["mcp_daemon_timeout_raw"]
+        mcp_search_call_timeout_raw = extended_raw_values["mcp_search_call_timeout_raw"]
+        mcp_read_call_timeout_raw = extended_raw_values["mcp_read_call_timeout_raw"]
+        strict_protocol_raw = extended_raw_values["strict_protocol_raw"]
+        stabilization_enabled_raw = extended_raw_values["stabilization_enabled_raw"]
+        http_bg_proxy_enabled_raw = extended_raw_values["http_bg_proxy_enabled_raw"]
+        http_bg_proxy_target = extended_raw_values["http_bg_proxy_target"]
+        parser = _ConfigValueParser()
         run_mode = "prod" if run_mode_raw == "prod" else "dev"
-        try:
-            retry_max = max(1, int(retry_max_raw))
-        except ValueError:
-            retry_max = 5
-        try:
-            backoff_sec = max(1, int(backoff_raw))
-        except ValueError:
-            backoff_sec = 1
-        try:
-            poll_ms = max(100, int(poll_raw))
-        except ValueError:
-            poll_ms = 500
-        try:
-            debounce_ms = max(50, int(debounce_raw))
-        except ValueError:
-            debounce_ms = 300
-        try:
-            worker_count = max(1, int(worker_raw))
-        except ValueError:
-            worker_count = 4
-        try:
-            p95_threshold_ms = max(1, int(p95_raw))
-        except ValueError:
-            p95_threshold_ms = 180_000
-        try:
-            dead_ratio_bps = max(1, int(dead_ratio_raw))
-        except ValueError:
-            dead_ratio_bps = 10
-        try:
-            alert_window_sec = max(60, int(alert_window_raw))
-        except ValueError:
-            alert_window_sec = 300
-        try:
-            auto_tick_sec = max(1, int(auto_tick_raw))
-        except ValueError:
-            auto_tick_sec = 5
-        try:
-            heartbeat_sec = max(1, int(heartbeat_raw))
-        except ValueError:
-            heartbeat_sec = 2
-        try:
-            stale_timeout_sec = max(5, int(stale_timeout_raw))
-        except ValueError:
-            stale_timeout_sec = 15
-        try:
-            lsp_request_timeout_sec = max(0.1, float(lsp_timeout_raw))
-        except ValueError:
-            lsp_request_timeout_sec = 20.0
-        try:
-            lsp_max_instances_per_repo_language = max(1, int(lsp_max_per_repo_lang_raw))
-        except ValueError:
-            lsp_max_instances_per_repo_language = 3
-        try:
-            lsp_global_soft_limit = max(0, int(lsp_global_soft_limit_raw))
-        except ValueError:
-            lsp_global_soft_limit = 0
-        try:
-            lsp_bulk_max_instances_per_repo_language = max(1, int(lsp_bulk_max_per_repo_lang_raw))
-        except ValueError:
-            lsp_bulk_max_instances_per_repo_language = 4
-        try:
-            lsp_interactive_reserved_slots_per_repo_language = max(0, int(lsp_interactive_reserved_slots_raw))
-        except ValueError:
-            lsp_interactive_reserved_slots_per_repo_language = 1
-        try:
-            lsp_interactive_timeout_sec = max(0.1, float(lsp_interactive_timeout_raw))
-        except ValueError:
-            lsp_interactive_timeout_sec = 4.0
-        try:
-            lsp_interactive_queue_max = max(16, int(lsp_interactive_queue_max_raw))
-        except ValueError:
-            lsp_interactive_queue_max = 256
-        try:
-            lsp_symbol_info_budget_sec = max(0.0, float(lsp_symbol_info_budget_raw))
-        except ValueError:
-            lsp_symbol_info_budget_sec = 10.0
-        try:
-            l3_executor_max_workers = max(0, int(l3_executor_max_workers_raw))
-        except ValueError:
-            l3_executor_max_workers = 0
-        try:
-            l3_recent_success_ttl_sec = max(0, int(l3_recent_success_ttl_raw))
-        except ValueError:
-            l3_recent_success_ttl_sec = 120
-        try:
-            l3_backpressure_cooldown_ms = max(10, int(l3_backpressure_cooldown_ms_raw))
-        except ValueError:
-            l3_backpressure_cooldown_ms = 300
-        try:
-            lsp_scale_out_hot_hits = max(2, int(lsp_scale_out_hot_hits_raw))
-        except ValueError:
-            lsp_scale_out_hot_hits = 24
-        try:
-            lsp_file_buffer_idle_ttl_sec = max(1.0, float(lsp_file_buffer_idle_ttl_raw))
-        except ValueError:
-            lsp_file_buffer_idle_ttl_sec = 20.0
-        try:
-            lsp_file_buffer_max_open = max(16, int(lsp_file_buffer_max_open_raw))
-        except ValueError:
-            lsp_file_buffer_max_open = 512
-        try:
-            lsp_java_min_major = max(8, int(lsp_java_min_major_raw))
-        except ValueError:
-            lsp_java_min_major = 17
-        try:
-            lsp_probe_timeout_default_sec = max(0.1, float(lsp_probe_timeout_default_raw))
-        except ValueError:
-            lsp_probe_timeout_default_sec = 20.0
-        try:
-            lsp_probe_timeout_go_sec = max(0.1, float(lsp_probe_timeout_go_raw))
-        except ValueError:
-            lsp_probe_timeout_go_sec = 45.0
-        try:
-            lsp_probe_workers = max(1, int(lsp_probe_workers_raw))
-        except ValueError:
-            lsp_probe_workers = 8
-        try:
-            lsp_probe_l1_workers = max(1, int(lsp_probe_l1_workers_raw))
-        except ValueError:
-            lsp_probe_l1_workers = 4
-        try:
-            lsp_probe_force_join_ms = max(0, int(lsp_probe_force_join_ms_raw))
-        except ValueError:
-            lsp_probe_force_join_ms = 300
-        try:
-            lsp_probe_warming_retry_sec = max(1, int(lsp_probe_warming_retry_sec_raw))
-        except ValueError:
-            lsp_probe_warming_retry_sec = 5
-        try:
-            lsp_probe_warming_threshold = max(1, int(lsp_probe_warming_threshold_raw))
-        except ValueError:
-            lsp_probe_warming_threshold = 6
-        try:
-            lsp_probe_permanent_backoff_sec = max(60, int(lsp_probe_permanent_backoff_sec_raw))
-        except ValueError:
-            lsp_probe_permanent_backoff_sec = 1800
-        try:
-            lsp_probe_bootstrap_file_window = max(1, int(lsp_probe_bootstrap_file_window_raw))
-        except ValueError:
-            lsp_probe_bootstrap_file_window = 256
-        try:
-            lsp_probe_bootstrap_top_k = max(1, int(lsp_probe_bootstrap_top_k_raw))
-        except ValueError:
-            lsp_probe_bootstrap_top_k = 3
+        retry_max = parser.int_min(retry_max_raw, minimum=1, default=5)
+        backoff_sec = parser.int_min(backoff_raw, minimum=1, default=1)
+        poll_ms = parser.int_min(poll_raw, minimum=100, default=500)
+        debounce_ms = parser.int_min(debounce_raw, minimum=50, default=300)
+        worker_count = parser.int_min(worker_raw, minimum=1, default=4)
+        p95_threshold_ms = parser.int_min(p95_raw, minimum=1, default=180_000)
+        dead_ratio_bps = parser.int_min(dead_ratio_raw, minimum=1, default=10)
+        alert_window_sec = parser.int_min(alert_window_raw, minimum=60, default=300)
+        auto_tick_sec = parser.int_min(auto_tick_raw, minimum=1, default=5)
+        heartbeat_sec = parser.int_min(heartbeat_raw, minimum=1, default=2)
+        stale_timeout_sec = parser.int_min(stale_timeout_raw, minimum=5, default=15)
+        lsp_request_timeout_sec = parser.float_min(lsp_timeout_raw, minimum=0.1, default=20.0)
+        lsp_max_instances_per_repo_language = parser.int_min(lsp_max_per_repo_lang_raw, minimum=1, default=3)
+        lsp_global_soft_limit = parser.int_min(lsp_global_soft_limit_raw, minimum=0, default=0)
+        lsp_bulk_max_instances_per_repo_language = parser.int_min(lsp_bulk_max_per_repo_lang_raw, minimum=1, default=4)
+        lsp_interactive_reserved_slots_per_repo_language = parser.int_min(lsp_interactive_reserved_slots_raw, minimum=0, default=1)
+        lsp_interactive_timeout_sec = parser.float_min(lsp_interactive_timeout_raw, minimum=0.1, default=4.0)
+        lsp_interactive_queue_max = parser.int_min(lsp_interactive_queue_max_raw, minimum=16, default=256)
+        lsp_symbol_info_budget_sec = parser.float_min(lsp_symbol_info_budget_raw, minimum=0.0, default=10.0)
+        l3_executor_max_workers = parser.int_min(l3_executor_max_workers_raw, minimum=0, default=0)
+        l3_recent_success_ttl_sec = parser.int_min(l3_recent_success_ttl_raw, minimum=0, default=120)
+        l3_backpressure_cooldown_ms = parser.int_min(l3_backpressure_cooldown_ms_raw, minimum=10, default=300)
+        lsp_scale_out_hot_hits = parser.int_min(lsp_scale_out_hot_hits_raw, minimum=2, default=24)
+        lsp_file_buffer_idle_ttl_sec = parser.float_min(lsp_file_buffer_idle_ttl_raw, minimum=1.0, default=20.0)
+        lsp_file_buffer_max_open = parser.int_min(lsp_file_buffer_max_open_raw, minimum=16, default=512)
+        lsp_java_min_major = parser.int_min(lsp_java_min_major_raw, minimum=8, default=17)
+        lsp_probe_timeout_default_sec = parser.float_min(lsp_probe_timeout_default_raw, minimum=0.1, default=20.0)
+        lsp_probe_timeout_go_sec = parser.float_min(lsp_probe_timeout_go_raw, minimum=0.1, default=45.0)
+        lsp_probe_workers = parser.int_min(lsp_probe_workers_raw, minimum=1, default=8)
+        lsp_probe_l1_workers = parser.int_min(lsp_probe_l1_workers_raw, minimum=1, default=4)
+        lsp_probe_force_join_ms = parser.int_min(lsp_probe_force_join_ms_raw, minimum=0, default=300)
+        lsp_probe_warming_retry_sec = parser.int_min(lsp_probe_warming_retry_sec_raw, minimum=1, default=5)
+        lsp_probe_warming_threshold = parser.int_min(lsp_probe_warming_threshold_raw, minimum=1, default=6)
+        lsp_probe_permanent_backoff_sec = parser.int_min(lsp_probe_permanent_backoff_sec_raw, minimum=60, default=1800)
+        lsp_probe_bootstrap_file_window = parser.int_min(lsp_probe_bootstrap_file_window_raw, minimum=1, default=256)
+        lsp_probe_bootstrap_top_k = parser.int_min(lsp_probe_bootstrap_top_k_raw, minimum=1, default=3)
         lsp_probe_language_priority = _parse_csv_setting(lsp_probe_language_priority_raw, cls.lsp_probe_language_priority)
         lsp_probe_l1_languages = _parse_csv_setting(lsp_probe_l1_languages_raw, cls.lsp_probe_l1_languages)
         lsp_scope_java_markers = _parse_csv_setting(lsp_scope_java_markers_raw, cls.lsp_scope_java_markers)
         lsp_scope_ts_markers = _parse_csv_setting(lsp_scope_ts_markers_raw, cls.lsp_scope_ts_markers)
         lsp_scope_vue_markers = _parse_csv_setting(lsp_scope_vue_markers_raw, cls.lsp_scope_vue_markers)
         lsp_scope_active_languages = _parse_csv_setting(lsp_scope_active_languages_raw, cls.lsp_scope_active_languages)
-        try:
-            lsp_hotness_event_window_sec = max(1.0, float(lsp_hotness_event_window_sec_raw))
-        except ValueError:
-            lsp_hotness_event_window_sec = cls.lsp_hotness_event_window_sec
-        try:
-            lsp_hotness_decay_window_sec = max(lsp_hotness_event_window_sec, float(lsp_hotness_decay_window_sec_raw))
-        except ValueError:
-            lsp_hotness_decay_window_sec = max(lsp_hotness_event_window_sec, cls.lsp_hotness_decay_window_sec)
-        try:
-            lsp_broker_backlog_min_share = min(1.0, max(0.0, float(lsp_broker_backlog_min_share_raw)))
-        except ValueError:
-            lsp_broker_backlog_min_share = cls.lsp_broker_backlog_min_share
-        try:
-            lsp_broker_max_standby_sessions_per_lang = max(0, int(lsp_broker_max_standby_sessions_per_lang_raw))
-        except ValueError:
-            lsp_broker_max_standby_sessions_per_lang = cls.lsp_broker_max_standby_sessions_per_lang
-        try:
-            lsp_broker_max_standby_sessions_per_budget_group = max(0, int(lsp_broker_max_standby_sessions_per_budget_group_raw))
-        except ValueError:
-            lsp_broker_max_standby_sessions_per_budget_group = cls.lsp_broker_max_standby_sessions_per_budget_group
-        try:
-            lsp_broker_ts_vue_active_cap = max(0, int(lsp_broker_ts_vue_active_cap_raw))
-        except ValueError:
-            lsp_broker_ts_vue_active_cap = cls.lsp_broker_ts_vue_active_cap
-        try:
-            lsp_broker_java_hot_lanes = max(0, int(lsp_broker_java_hot_lanes_raw))
-            lsp_broker_java_backlog_lanes = max(0, int(lsp_broker_java_backlog_lanes_raw))
-            lsp_broker_java_sticky_ttl_sec = max(0.0, float(lsp_broker_java_sticky_ttl_sec_raw))
-            lsp_broker_java_switch_cooldown_sec = max(0.0, float(lsp_broker_java_switch_cooldown_sec_raw))
-            lsp_broker_java_min_lease_ms = max(0, int(lsp_broker_java_min_lease_ms_raw))
-        except ValueError:
-            lsp_broker_java_hot_lanes = cls.lsp_broker_java_hot_lanes
-            lsp_broker_java_backlog_lanes = cls.lsp_broker_java_backlog_lanes
-            lsp_broker_java_sticky_ttl_sec = cls.lsp_broker_java_sticky_ttl_sec
-            lsp_broker_java_switch_cooldown_sec = cls.lsp_broker_java_switch_cooldown_sec
-            lsp_broker_java_min_lease_ms = cls.lsp_broker_java_min_lease_ms
-        try:
-            lsp_broker_ts_hot_lanes = max(0, int(lsp_broker_ts_hot_lanes_raw))
-            lsp_broker_ts_backlog_lanes = max(0, int(lsp_broker_ts_backlog_lanes_raw))
-            lsp_broker_ts_sticky_ttl_sec = max(0.0, float(lsp_broker_ts_sticky_ttl_sec_raw))
-            lsp_broker_ts_switch_cooldown_sec = max(0.0, float(lsp_broker_ts_switch_cooldown_sec_raw))
-            lsp_broker_ts_min_lease_ms = max(0, int(lsp_broker_ts_min_lease_ms_raw))
-        except ValueError:
-            lsp_broker_ts_hot_lanes = cls.lsp_broker_ts_hot_lanes
-            lsp_broker_ts_backlog_lanes = cls.lsp_broker_ts_backlog_lanes
-            lsp_broker_ts_sticky_ttl_sec = cls.lsp_broker_ts_sticky_ttl_sec
-            lsp_broker_ts_switch_cooldown_sec = cls.lsp_broker_ts_switch_cooldown_sec
-            lsp_broker_ts_min_lease_ms = cls.lsp_broker_ts_min_lease_ms
-        try:
-            lsp_broker_vue_hot_lanes = max(0, int(lsp_broker_vue_hot_lanes_raw))
-            lsp_broker_vue_backlog_lanes = max(0, int(lsp_broker_vue_backlog_lanes_raw))
-            lsp_broker_vue_sticky_ttl_sec = max(0.0, float(lsp_broker_vue_sticky_ttl_sec_raw))
-            lsp_broker_vue_switch_cooldown_sec = max(0.0, float(lsp_broker_vue_switch_cooldown_sec_raw))
-            lsp_broker_vue_min_lease_ms = max(0, int(lsp_broker_vue_min_lease_ms_raw))
-        except ValueError:
-            lsp_broker_vue_hot_lanes = cls.lsp_broker_vue_hot_lanes
-            lsp_broker_vue_backlog_lanes = cls.lsp_broker_vue_backlog_lanes
-            lsp_broker_vue_sticky_ttl_sec = cls.lsp_broker_vue_sticky_ttl_sec
-            lsp_broker_vue_switch_cooldown_sec = cls.lsp_broker_vue_switch_cooldown_sec
-            lsp_broker_vue_min_lease_ms = cls.lsp_broker_vue_min_lease_ms
-        try:
-            lsp_broker_batch_throughput_pending_threshold = max(1, int(lsp_broker_batch_throughput_pending_threshold_raw))
-        except ValueError:
-            lsp_broker_batch_throughput_pending_threshold = cls.lsp_broker_batch_throughput_pending_threshold
+        lsp_hotness_event_window_sec = parser.float_min(
+            lsp_hotness_event_window_sec_raw,
+            minimum=1.0,
+            default=cls.lsp_hotness_event_window_sec,
+        )
+        lsp_hotness_decay_window_sec = parser.float_min(
+            lsp_hotness_decay_window_sec_raw,
+            minimum=lsp_hotness_event_window_sec,
+            default=max(lsp_hotness_event_window_sec, cls.lsp_hotness_decay_window_sec),
+        )
+        lsp_broker_backlog_min_share = parser.float_range(
+            lsp_broker_backlog_min_share_raw,
+            minimum=0.0,
+            maximum=1.0,
+            default=cls.lsp_broker_backlog_min_share,
+        )
+        lsp_broker_max_standby_sessions_per_lang = parser.int_min(
+            lsp_broker_max_standby_sessions_per_lang_raw,
+            minimum=0,
+            default=cls.lsp_broker_max_standby_sessions_per_lang,
+        )
+        lsp_broker_max_standby_sessions_per_budget_group = parser.int_min(
+            lsp_broker_max_standby_sessions_per_budget_group_raw,
+            minimum=0,
+            default=cls.lsp_broker_max_standby_sessions_per_budget_group,
+        )
+        lsp_broker_ts_vue_active_cap = parser.int_min(
+            lsp_broker_ts_vue_active_cap_raw,
+            minimum=0,
+            default=cls.lsp_broker_ts_vue_active_cap,
+        )
+        (
+            lsp_broker_java_hot_lanes,
+            lsp_broker_java_backlog_lanes,
+            lsp_broker_java_sticky_ttl_sec,
+            lsp_broker_java_switch_cooldown_sec,
+            lsp_broker_java_min_lease_ms,
+        ) = parser.parse_lane_bundle(
+            hot_raw=lsp_broker_java_hot_lanes_raw,
+            backlog_raw=lsp_broker_java_backlog_lanes_raw,
+            sticky_raw=lsp_broker_java_sticky_ttl_sec_raw,
+            switch_raw=lsp_broker_java_switch_cooldown_sec_raw,
+            min_lease_raw=lsp_broker_java_min_lease_ms_raw,
+            default=(
+                cls.lsp_broker_java_hot_lanes,
+                cls.lsp_broker_java_backlog_lanes,
+                cls.lsp_broker_java_sticky_ttl_sec,
+                cls.lsp_broker_java_switch_cooldown_sec,
+                cls.lsp_broker_java_min_lease_ms,
+            ),
+        )
+        (
+            lsp_broker_ts_hot_lanes,
+            lsp_broker_ts_backlog_lanes,
+            lsp_broker_ts_sticky_ttl_sec,
+            lsp_broker_ts_switch_cooldown_sec,
+            lsp_broker_ts_min_lease_ms,
+        ) = parser.parse_lane_bundle(
+            hot_raw=lsp_broker_ts_hot_lanes_raw,
+            backlog_raw=lsp_broker_ts_backlog_lanes_raw,
+            sticky_raw=lsp_broker_ts_sticky_ttl_sec_raw,
+            switch_raw=lsp_broker_ts_switch_cooldown_sec_raw,
+            min_lease_raw=lsp_broker_ts_min_lease_ms_raw,
+            default=(
+                cls.lsp_broker_ts_hot_lanes,
+                cls.lsp_broker_ts_backlog_lanes,
+                cls.lsp_broker_ts_sticky_ttl_sec,
+                cls.lsp_broker_ts_switch_cooldown_sec,
+                cls.lsp_broker_ts_min_lease_ms,
+            ),
+        )
+        (
+            lsp_broker_vue_hot_lanes,
+            lsp_broker_vue_backlog_lanes,
+            lsp_broker_vue_sticky_ttl_sec,
+            lsp_broker_vue_switch_cooldown_sec,
+            lsp_broker_vue_min_lease_ms,
+        ) = parser.parse_lane_bundle(
+            hot_raw=lsp_broker_vue_hot_lanes_raw,
+            backlog_raw=lsp_broker_vue_backlog_lanes_raw,
+            sticky_raw=lsp_broker_vue_sticky_ttl_sec_raw,
+            switch_raw=lsp_broker_vue_switch_cooldown_sec_raw,
+            min_lease_raw=lsp_broker_vue_min_lease_ms_raw,
+            default=(
+                cls.lsp_broker_vue_hot_lanes,
+                cls.lsp_broker_vue_backlog_lanes,
+                cls.lsp_broker_vue_sticky_ttl_sec,
+                cls.lsp_broker_vue_switch_cooldown_sec,
+                cls.lsp_broker_vue_min_lease_ms,
+            ),
+        )
+        lsp_broker_batch_throughput_pending_threshold = parser.int_min(
+            lsp_broker_batch_throughput_pending_threshold_raw,
+            minimum=1,
+            default=cls.lsp_broker_batch_throughput_pending_threshold,
+        )
         l3_supported_languages = _parse_csv_setting(l3_supported_languages_raw, cls.l3_supported_languages)
-        try:
-            lsp_max_concurrent_starts = min(4, max(1, int(lsp_max_concurrent_starts_raw)))
-        except ValueError:
-            lsp_max_concurrent_starts = 4
-        try:
-            lsp_max_concurrent_l1_probes = min(8, max(1, int(lsp_max_concurrent_l1_probes_raw)))
-        except ValueError:
-            lsp_max_concurrent_l1_probes = 4
-        try:
-            orphan_check_sec = max(1, int(orphan_check_raw))
-        except ValueError:
-            orphan_check_sec = 1
-        try:
-            shutdown_join_sec = max(1, int(shutdown_join_raw))
-        except ValueError:
-            shutdown_join_sec = 2
-        try:
-            vector_dim = max(16, int(vector_dim_raw))
-        except ValueError:
-            vector_dim = 128
-        try:
-            vector_candidate_k = max(1, int(vector_candidate_raw))
-        except ValueError:
-            vector_candidate_k = 50
-        try:
-            vector_rerank_k = max(1, int(vector_rerank_raw))
-        except ValueError:
-            vector_rerank_k = 20
-        try:
-            vector_blend_weight = max(0.0, min(1.0, float(vector_blend_raw)))
-        except ValueError:
-            vector_blend_weight = 0.2
-        try:
-            vector_min_similarity_threshold = max(0.0, min(1.0, float(vector_min_similarity_raw)))
-        except ValueError:
-            vector_min_similarity_threshold = 0.15
-        try:
-            vector_max_boost = max(0.0, min(1.0, float(vector_max_boost_raw)))
-        except ValueError:
-            vector_max_boost = 0.2
-        try:
-            vector_min_token_count_for_rerank = max(1, int(vector_min_token_raw))
-        except ValueError:
-            vector_min_token_count_for_rerank = 2
-        try:
-            importance_max_boost = max(0.0, float(importance_max_boost_raw))
-        except ValueError:
-            importance_max_boost = 200.0
-        try:
-            ranking_w_rrf = max(0.0, min(1.0, float(ranking_w_rrf_raw)))
-        except ValueError:
-            ranking_w_rrf = 0.55
-        try:
-            ranking_w_importance = max(0.0, min(1.0, float(ranking_w_importance_raw)))
-        except ValueError:
-            ranking_w_importance = 0.30
-        try:
-            ranking_w_vector = max(0.0, min(1.0, float(ranking_w_vector_raw)))
-        except ValueError:
-            ranking_w_vector = 0.15
-        try:
-            ranking_w_hierarchy = max(0.0, min(1.0, float(ranking_w_hierarchy_raw)))
-        except ValueError:
-            ranking_w_hierarchy = 0.15
-        try:
-            mcp_daemon_timeout_sec = max(0.1, float(mcp_daemon_timeout_raw))
-        except ValueError:
-            mcp_daemon_timeout_sec = 2.0
-        try:
-            mcp_search_call_timeout_sec = max(0.0, float(mcp_search_call_timeout_raw))
-        except ValueError:
-            mcp_search_call_timeout_sec = 0.0
-        try:
-            mcp_read_call_timeout_sec = max(0.0, float(mcp_read_call_timeout_raw))
-        except ValueError:
-            mcp_read_call_timeout_sec = 0.0
+        lsp_max_concurrent_starts = parser.int_range(lsp_max_concurrent_starts_raw, minimum=1, maximum=4, default=4)
+        lsp_max_concurrent_l1_probes = parser.int_range(lsp_max_concurrent_l1_probes_raw, minimum=1, maximum=8, default=4)
+        orphan_check_sec = parser.int_min(orphan_check_raw, minimum=1, default=1)
+        shutdown_join_sec = parser.int_min(shutdown_join_raw, minimum=1, default=2)
+        vector_dim = parser.int_min(vector_dim_raw, minimum=16, default=128)
+        vector_candidate_k = parser.int_min(vector_candidate_raw, minimum=1, default=50)
+        vector_rerank_k = parser.int_min(vector_rerank_raw, minimum=1, default=20)
+        vector_blend_weight = parser.float_range(vector_blend_raw, minimum=0.0, maximum=1.0, default=0.2)
+        vector_min_similarity_threshold = parser.float_range(vector_min_similarity_raw, minimum=0.0, maximum=1.0, default=0.15)
+        vector_max_boost = parser.float_range(vector_max_boost_raw, minimum=0.0, maximum=1.0, default=0.2)
+        vector_min_token_count_for_rerank = parser.int_min(vector_min_token_raw, minimum=1, default=2)
+        importance_max_boost = parser.float_min(importance_max_boost_raw, minimum=0.0, default=200.0)
+        ranking_w_rrf = parser.float_range(ranking_w_rrf_raw, minimum=0.0, maximum=1.0, default=0.55)
+        ranking_w_importance = parser.float_range(ranking_w_importance_raw, minimum=0.0, maximum=1.0, default=0.30)
+        ranking_w_vector = parser.float_range(ranking_w_vector_raw, minimum=0.0, maximum=1.0, default=0.15)
+        ranking_w_hierarchy = parser.float_range(ranking_w_hierarchy_raw, minimum=0.0, maximum=1.0, default=0.15)
+        mcp_daemon_timeout_sec = parser.float_min(mcp_daemon_timeout_raw, minimum=0.1, default=2.0)
+        mcp_search_call_timeout_sec = parser.float_min(mcp_search_call_timeout_raw, minimum=0.0, default=0.0)
+        mcp_read_call_timeout_sec = parser.float_min(mcp_read_call_timeout_raw, minimum=0.0, default=0.0)
         total_weight = ranking_w_rrf + ranking_w_importance + ranking_w_vector + ranking_w_hierarchy
         if total_weight > 0.0:
             ranking_w_rrf = ranking_w_rrf / total_weight
@@ -931,54 +513,18 @@ class AppConfig:
         if normalized_mode not in {"none", "log1p", "minmax"}:
             normalized_mode = "log1p"
         search_lsp_fallback_mode = "strict" if search_lsp_fallback_mode_raw == "strict" else "normal"
-        try:
-            search_lsp_pressure_pending_threshold = max(0, int(search_lsp_pressure_pending_threshold_raw))
-        except ValueError:
-            search_lsp_pressure_pending_threshold = 1
-        try:
-            search_lsp_pressure_timeout_threshold = max(0, int(search_lsp_pressure_timeout_threshold_raw))
-        except ValueError:
-            search_lsp_pressure_timeout_threshold = 1
-        try:
-            search_lsp_pressure_rejected_threshold = max(0, int(search_lsp_pressure_rejected_threshold_raw))
-        except ValueError:
-            search_lsp_pressure_rejected_threshold = 1
-        try:
-            search_lsp_recent_failure_cooldown_sec = max(0.0, float(search_lsp_recent_failure_cooldown_sec_raw))
-        except ValueError:
-            search_lsp_recent_failure_cooldown_sec = 5.0
-        try:
-            l5_call_rate_total_max = max(0.0, min(1.0, float(l5_call_rate_total_max_raw)))
-        except ValueError:
-            l5_call_rate_total_max = 0.05
-        try:
-            l5_call_rate_batch_max = max(0.0, min(1.0, float(l5_call_rate_batch_max_raw)))
-        except ValueError:
-            l5_call_rate_batch_max = 0.01
-        try:
-            l5_calls_per_min_per_lang_max = max(1, int(l5_calls_per_min_per_lang_max_raw))
-        except ValueError:
-            l5_calls_per_min_per_lang_max = 30
-        try:
-            l5_tokens_per_10sec_global_max = max(1, int(l5_tokens_per_10sec_global_max_raw))
-        except ValueError:
-            l5_tokens_per_10sec_global_max = 120
-        try:
-            l5_tokens_per_10sec_per_lang_max = max(1, int(l5_tokens_per_10sec_per_lang_max_raw))
-        except ValueError:
-            l5_tokens_per_10sec_per_lang_max = 30
-        try:
-            l5_tokens_per_10sec_per_workspace_max = max(1, int(l5_tokens_per_10sec_per_workspace_max_raw))
-        except ValueError:
-            l5_tokens_per_10sec_per_workspace_max = 20
-        try:
-            l3_query_compile_ms_budget = max(0.1, float(l3_query_compile_ms_budget_raw))
-        except ValueError:
-            l3_query_compile_ms_budget = 10.0
-        try:
-            l3_query_budget_ms = max(0.1, float(l3_query_budget_ms_raw))
-        except ValueError:
-            l3_query_budget_ms = 30.0
+        search_lsp_pressure_pending_threshold = parser.int_min(search_lsp_pressure_pending_threshold_raw, minimum=0, default=1)
+        search_lsp_pressure_timeout_threshold = parser.int_min(search_lsp_pressure_timeout_threshold_raw, minimum=0, default=1)
+        search_lsp_pressure_rejected_threshold = parser.int_min(search_lsp_pressure_rejected_threshold_raw, minimum=0, default=1)
+        search_lsp_recent_failure_cooldown_sec = parser.float_min(search_lsp_recent_failure_cooldown_sec_raw, minimum=0.0, default=5.0)
+        l5_call_rate_total_max = parser.float_range(l5_call_rate_total_max_raw, minimum=0.0, maximum=1.0, default=0.05)
+        l5_call_rate_batch_max = parser.float_range(l5_call_rate_batch_max_raw, minimum=0.0, maximum=1.0, default=0.01)
+        l5_calls_per_min_per_lang_max = parser.int_min(l5_calls_per_min_per_lang_max_raw, minimum=1, default=30)
+        l5_tokens_per_10sec_global_max = parser.int_min(l5_tokens_per_10sec_global_max_raw, minimum=1, default=120)
+        l5_tokens_per_10sec_per_lang_max = parser.int_min(l5_tokens_per_10sec_per_lang_max_raw, minimum=1, default=30)
+        l5_tokens_per_10sec_per_workspace_max = parser.int_min(l5_tokens_per_10sec_per_workspace_max_raw, minimum=1, default=20)
+        l3_query_compile_ms_budget = parser.float_min(l3_query_compile_ms_budget_raw, minimum=0.1, default=10.0)
+        l3_query_budget_ms = parser.float_min(l3_query_budget_ms_raw, minimum=0.1, default=30.0)
         include_ext_raw = os.getenv("SARI_COLLECTION_INCLUDE_EXT", "")
         exclude_globs_raw = os.getenv("SARI_COLLECTION_EXCLUDE_GLOBS", "")
         vector_apply_types_raw = os.getenv("SARI_VECTOR_APPLY_TO_ITEM_TYPES", "")
@@ -1037,24 +583,24 @@ class AppConfig:
             pipeline_dead_ratio_threshold_bps=dead_ratio_bps,
             pipeline_alert_window_sec=alert_window_sec,
             pipeline_auto_tick_interval_sec=auto_tick_sec,
-            l3_parallel_enabled=l3_parallel_enabled_raw in {"1", "true", "yes", "on"},
+            l3_parallel_enabled=parser.bool_true(l3_parallel_enabled_raw),
             run_mode=run_mode,
             daemon_heartbeat_interval_sec=heartbeat_sec,
             daemon_stale_timeout_sec=stale_timeout_sec,
             lsp_request_timeout_sec=lsp_request_timeout_sec,
             lsp_max_instances_per_repo_language=lsp_max_instances_per_repo_language,
-            lsp_bulk_mode_enabled=lsp_bulk_mode_enabled_raw in {"1", "true", "yes", "on"},
+            lsp_bulk_mode_enabled=parser.bool_true(lsp_bulk_mode_enabled_raw),
             lsp_bulk_max_instances_per_repo_language=lsp_bulk_max_instances_per_repo_language,
             lsp_interactive_reserved_slots_per_repo_language=lsp_interactive_reserved_slots_per_repo_language,
             lsp_interactive_timeout_sec=lsp_interactive_timeout_sec,
             lsp_interactive_queue_max=lsp_interactive_queue_max,
             lsp_symbol_info_budget_sec=lsp_symbol_info_budget_sec,
-            lsp_include_info_default=lsp_include_info_default_raw in {"1", "true", "yes", "on"},
+            lsp_include_info_default=parser.bool_true(lsp_include_info_default_raw),
             lsp_global_soft_limit=lsp_global_soft_limit,
             lsp_scale_out_hot_hits=lsp_scale_out_hot_hits,
             l3_executor_max_workers=l3_executor_max_workers,
             l3_recent_success_ttl_sec=l3_recent_success_ttl_sec,
-            l3_backpressure_on_interactive=l3_backpressure_on_interactive_raw in {"1", "true", "yes", "on"},
+            l3_backpressure_on_interactive=parser.bool_true(l3_backpressure_on_interactive_raw),
             l3_backpressure_cooldown_ms=l3_backpressure_cooldown_ms,
             l3_supported_languages=l3_supported_languages,
             lsp_file_buffer_idle_ttl_sec=lsp_file_buffer_idle_ttl_sec,
@@ -1072,19 +618,19 @@ class AppConfig:
             lsp_probe_bootstrap_top_k=lsp_probe_bootstrap_top_k,
             lsp_probe_language_priority=lsp_probe_language_priority,
             lsp_probe_l1_languages=lsp_probe_l1_languages,
-            lsp_scope_planner_enabled=lsp_scope_planner_enabled_raw in {"1", "true", "yes", "on"},
-            lsp_scope_planner_shadow_mode=lsp_scope_planner_shadow_mode_raw in {"1", "true", "yes", "on"},
+            lsp_scope_planner_enabled=parser.bool_true(lsp_scope_planner_enabled_raw),
+            lsp_scope_planner_shadow_mode=parser.bool_true(lsp_scope_planner_shadow_mode_raw),
             lsp_scope_java_markers=lsp_scope_java_markers,
             lsp_scope_ts_markers=lsp_scope_ts_markers,
             lsp_scope_vue_markers=lsp_scope_vue_markers,
-            lsp_scope_top_level_fallback=lsp_scope_top_level_fallback_raw in {"1", "true", "yes", "on"},
+            lsp_scope_top_level_fallback=parser.bool_true(lsp_scope_top_level_fallback_raw),
             lsp_scope_active_languages=lsp_scope_active_languages,
-            lsp_session_broker_enabled=lsp_session_broker_enabled_raw in {"1", "true", "yes", "on"},
-            lsp_session_broker_metrics_enabled=lsp_session_broker_metrics_enabled_raw in {"1", "true", "yes", "on"},
-            lsp_broker_optional_scaffolding_enabled=lsp_broker_optional_scaffolding_enabled_raw in {"1", "true", "yes", "on"},
-            lsp_broker_batch_throughput_mode_enabled=lsp_broker_batch_throughput_mode_enabled_raw in {"1", "true", "yes", "on"},
+            lsp_session_broker_enabled=parser.bool_true(lsp_session_broker_enabled_raw),
+            lsp_session_broker_metrics_enabled=parser.bool_true(lsp_session_broker_metrics_enabled_raw),
+            lsp_broker_optional_scaffolding_enabled=parser.bool_true(lsp_broker_optional_scaffolding_enabled_raw),
+            lsp_broker_batch_throughput_mode_enabled=parser.bool_true(lsp_broker_batch_throughput_mode_enabled_raw),
             lsp_broker_batch_throughput_pending_threshold=lsp_broker_batch_throughput_pending_threshold,
-            lsp_broker_batch_disable_java_probe=lsp_broker_batch_disable_java_probe_raw in {"1", "true", "yes", "on"},
+            lsp_broker_batch_disable_java_probe=parser.bool_true(lsp_broker_batch_disable_java_probe_raw),
             lsp_hotness_event_window_sec=lsp_hotness_event_window_sec,
             lsp_hotness_decay_window_sec=lsp_hotness_decay_window_sec,
             lsp_broker_backlog_min_share=lsp_broker_backlog_min_share,
@@ -1116,7 +662,7 @@ class AppConfig:
             importance_noisy_path_tokens=importance_noisy_path_tokens,
             importance_code_extensions=importance_code_extensions,
             importance_noisy_extensions=importance_noisy_extensions,
-            vector_enabled=vector_enabled_raw in {"1", "true", "yes", "on"},
+            vector_enabled=parser.bool_true(vector_enabled_raw),
             vector_model_id=vector_model_id if vector_model_id != "" else "hashbow-v1",
             vector_dim=vector_dim,
             vector_candidate_k=vector_candidate_k,
@@ -1131,7 +677,7 @@ class AppConfig:
             ranking_w_vector=ranking_w_vector,
             ranking_w_hierarchy=ranking_w_hierarchy,
             search_lsp_fallback_mode=search_lsp_fallback_mode,
-            search_lsp_pressure_guard_enabled=search_lsp_pressure_guard_enabled_raw in {"1", "true", "yes", "on"},
+            search_lsp_pressure_guard_enabled=parser.bool_true(search_lsp_pressure_guard_enabled_raw),
             search_lsp_pressure_pending_threshold=search_lsp_pressure_pending_threshold,
             search_lsp_pressure_timeout_threshold=search_lsp_pressure_timeout_threshold,
             search_lsp_pressure_rejected_threshold=search_lsp_pressure_rejected_threshold,
@@ -1142,7 +688,7 @@ class AppConfig:
             l5_tokens_per_10sec_global_max=l5_tokens_per_10sec_global_max,
             l5_tokens_per_10sec_per_lang_max=l5_tokens_per_10sec_per_lang_max,
             l5_tokens_per_10sec_per_workspace_max=l5_tokens_per_10sec_per_workspace_max,
-            l3_query_compile_cache_enabled=l3_query_compile_cache_enabled_raw in {"1", "true", "yes", "on"},
+            l3_query_compile_cache_enabled=parser.bool_true(l3_query_compile_cache_enabled_raw),
             l3_query_compile_ms_budget=l3_query_compile_ms_budget,
             l3_query_budget_ms=l3_query_budget_ms,
             l3_asset_mode=(
@@ -1152,14 +698,14 @@ class AppConfig:
             ),
             l3_asset_manifest_path=l3_asset_manifest_path,
             l3_asset_lang_allowlist=l3_asset_lang_allowlist,
-            mcp_forward_to_daemon=mcp_forward_to_daemon_raw in {"1", "true", "yes", "on"},
-            mcp_daemon_autostart=mcp_daemon_autostart_raw in {"1", "true", "yes", "on"},
+            mcp_forward_to_daemon=parser.bool_true(mcp_forward_to_daemon_raw),
+            mcp_daemon_autostart=parser.bool_true(mcp_daemon_autostart_raw),
             mcp_daemon_timeout_sec=mcp_daemon_timeout_sec,
             mcp_search_call_timeout_sec=mcp_search_call_timeout_sec,
             mcp_read_call_timeout_sec=mcp_read_call_timeout_sec,
-            strict_protocol=strict_protocol_raw in {"1", "true", "yes", "on"},
-            stabilization_enabled=stabilization_enabled_raw not in {"0", "false", "no", "off"},
-            http_bg_proxy_enabled=http_bg_proxy_enabled_raw in {"1", "true", "yes", "on"},
+            strict_protocol=parser.bool_true(strict_protocol_raw),
+            stabilization_enabled=parser.bool_enabled(stabilization_enabled_raw),
+            http_bg_proxy_enabled=parser.bool_true(http_bg_proxy_enabled_raw),
             http_bg_proxy_target=http_bg_proxy_target,
         )
 
@@ -1200,3 +746,277 @@ def _parse_csv_setting(raw_value: str, default_value: tuple[str, ...]) -> tuple[
     if len(parsed) == 0:
         return default_value
     return tuple(parsed)
+
+
+@dataclass(frozen=True)
+class _ConfigField:
+    """환경변수/파일 키를 묶어 raw 문자열 값을 읽기 위한 선언형 필드다."""
+
+    name: str
+    env_key: str
+    file_key: str
+    default: object
+    lower: bool = False
+
+
+def _read_config_fields(*, file_config: dict[str, object], fields: tuple[_ConfigField, ...]) -> dict[str, str]:
+    """선언된 필드 목록을 일괄 로드해 raw 문자열 맵으로 반환한다."""
+    resolved: dict[str, str] = {}
+    for field in fields:
+        raw = os.getenv(field.env_key, str(file_config.get(field.file_key, field.default))).strip()
+        resolved[field.name] = raw.lower() if field.lower else raw
+    return resolved
+
+
+def _build_early_fields() -> tuple[_ConfigField, ...]:
+    """default() 초기 부트스트랩 필드 목록."""
+    return (
+        _ConfigField("db_path_raw", "SARI_DB_PATH", "db_path", ""),
+        _ConfigField("backend_raw", "SARI_CANDIDATE_BACKEND", "candidate_backend", "tantivy", lower=True),
+        _ConfigField("fallback_flag", "SARI_CANDIDATE_FALLBACK_SCAN", "candidate_fallback_scan", 1),
+    )
+
+
+def _build_core_fields(*, file_config: dict[str, object], defaults: type[AppConfig]) -> tuple[_ConfigField, ...]:
+    """pipeline/L3/LSP 핵심 설정 필드 목록."""
+    return (
+        _ConfigField("retry_max_raw", "SARI_PIPELINE_RETRY_MAX", "pipeline_retry_max", 5),
+        _ConfigField("backoff_raw", "SARI_PIPELINE_BACKOFF_BASE_SEC", "pipeline_backoff_base_sec", 1),
+        _ConfigField("poll_raw", "SARI_QUEUE_POLL_INTERVAL_MS", "queue_poll_interval_ms", 500),
+        _ConfigField("debounce_raw", "SARI_WATCHER_DEBOUNCE_MS", "watcher_debounce_ms", 300),
+        _ConfigField("worker_raw", "SARI_PIPELINE_WORKER_COUNT", "pipeline_worker_count", 4),
+        _ConfigField("p95_raw", "SARI_PIPELINE_L3_P95_THRESHOLD_MS", "pipeline_l3_p95_threshold_ms", 180000),
+        _ConfigField("dead_ratio_raw", "SARI_PIPELINE_DEAD_RATIO_THRESHOLD_BPS", "pipeline_dead_ratio_threshold_bps", 10),
+        _ConfigField("alert_window_raw", "SARI_PIPELINE_ALERT_WINDOW_SEC", "pipeline_alert_window_sec", 300),
+        _ConfigField("auto_tick_raw", "SARI_PIPELINE_AUTO_TICK_INTERVAL_SEC", "pipeline_auto_tick_interval_sec", 5),
+        _ConfigField("l3_parallel_enabled_raw", "SARI_L3_PARALLEL_ENABLED", "l3_parallel_enabled", True, lower=True),
+        _ConfigField("run_mode_raw", "SARI_RUN_MODE", "run_mode", "prod", lower=True),
+        _ConfigField("heartbeat_raw", "SARI_DAEMON_HEARTBEAT_INTERVAL_SEC", "daemon_heartbeat_interval_sec", 2),
+        _ConfigField("stale_timeout_raw", "SARI_DAEMON_STALE_TIMEOUT_SEC", "daemon_stale_timeout_sec", 15),
+        _ConfigField("lsp_timeout_raw", "SARI_LSP_REQUEST_TIMEOUT_SEC", "lsp_request_timeout_sec", 20.0),
+        _ConfigField("lsp_max_per_repo_lang_raw", "SARI_LSP_MAX_INSTANCES_PER_REPO_LANGUAGE", "lsp_max_instances_per_repo_language", 3),
+        _ConfigField("lsp_bulk_mode_enabled_raw", "SARI_LSP_BULK_MODE_ENABLED", "lsp_bulk_mode_enabled", True, lower=True),
+        _ConfigField("lsp_bulk_max_per_repo_lang_raw", "SARI_LSP_BULK_MAX_INSTANCES_PER_REPO_LANGUAGE", "lsp_bulk_max_instances_per_repo_language", 4),
+        _ConfigField("lsp_interactive_reserved_slots_raw", "SARI_LSP_INTERACTIVE_RESERVED_SLOTS_PER_REPO_LANGUAGE", "lsp_interactive_reserved_slots_per_repo_language", 1),
+        _ConfigField("lsp_interactive_timeout_raw", "SARI_LSP_INTERACTIVE_TIMEOUT_SEC", "lsp_interactive_timeout_sec", 4.0),
+        _ConfigField("lsp_interactive_queue_max_raw", "SARI_LSP_INTERACTIVE_QUEUE_MAX", "lsp_interactive_queue_max", 256),
+        _ConfigField("lsp_symbol_info_budget_raw", "SARI_LSP_SYMBOL_INFO_BUDGET_SEC", "lsp_symbol_info_budget_sec", 10.0),
+        _ConfigField("lsp_include_info_default_raw", "SARI_LSP_INCLUDE_INFO_DEFAULT", "lsp_include_info_default", False, lower=True),
+        _ConfigField("lsp_global_soft_limit_raw", "SARI_LSP_GLOBAL_SOFT_LIMIT", "lsp_global_soft_limit", 0),
+        _ConfigField("l3_executor_max_workers_raw", "SARI_L3_EXECUTOR_MAX_WORKERS", "l3_executor_max_workers", 0),
+        _ConfigField("l3_recent_success_ttl_raw", "SARI_L3_RECENT_SUCCESS_TTL_SEC", "l3_recent_success_ttl_sec", 120),
+        _ConfigField("l3_backpressure_on_interactive_raw", "SARI_L3_BACKPRESSURE_ON_INTERACTIVE", "l3_backpressure_on_interactive", True, lower=True),
+        _ConfigField("l3_backpressure_cooldown_ms_raw", "SARI_L3_BACKPRESSURE_COOLDOWN_MS", "l3_backpressure_cooldown_ms", 300),
+        _ConfigField(
+            "l3_supported_languages_raw",
+            "SARI_L3_SUPPORTED_LANGUAGES",
+            "l3_supported_languages",
+            ",".join(_read_tuple_setting(file_config, "l3_supported_languages", defaults.l3_supported_languages)),
+        ),
+        _ConfigField("lsp_scale_out_hot_hits_raw", "SARI_LSP_SCALE_OUT_HOT_HITS", "lsp_scale_out_hot_hits", 24),
+    )
+
+
+def _build_extended_fields(*, file_config: dict[str, object], defaults: type[AppConfig]) -> tuple[_ConfigField, ...]:
+    """broker/vector/search/L5/MCP 확장 설정 필드 목록."""
+    return (
+        _ConfigField("lsp_file_buffer_idle_ttl_raw", "SARI_LSP_FILE_BUFFER_IDLE_TTL_SEC", "lsp_file_buffer_idle_ttl_sec", 20.0),
+        _ConfigField("lsp_file_buffer_max_open_raw", "SARI_LSP_FILE_BUFFER_MAX_OPEN", "lsp_file_buffer_max_open", 512),
+        _ConfigField("lsp_java_min_major_raw", "SARI_LSP_JAVA_MIN_MAJOR", "lsp_java_min_major", 17),
+        _ConfigField("lsp_probe_timeout_default_raw", "SARI_LSP_PROBE_TIMEOUT_DEFAULT_SEC", "lsp_probe_timeout_default_sec", 20.0),
+        _ConfigField("lsp_probe_timeout_go_raw", "SARI_LSP_PROBE_TIMEOUT_GO_SEC", "lsp_probe_timeout_go_sec", 45.0),
+        _ConfigField("lsp_probe_workers_raw", "SARI_LSP_PROBE_WORKERS", "lsp_probe_workers", 8),
+        _ConfigField("lsp_probe_l1_workers_raw", "SARI_LSP_PROBE_L1_WORKERS", "lsp_probe_l1_workers", 4),
+        _ConfigField("lsp_probe_force_join_ms_raw", "SARI_LSP_PROBE_FORCE_JOIN_MS", "lsp_probe_force_join_ms", 300),
+        _ConfigField("lsp_probe_warming_retry_sec_raw", "SARI_LSP_PROBE_WARMING_RETRY_SEC", "lsp_probe_warming_retry_sec", 5),
+        _ConfigField("lsp_probe_warming_threshold_raw", "SARI_LSP_PROBE_WARMING_THRESHOLD", "lsp_probe_warming_threshold", 6),
+        _ConfigField("lsp_probe_permanent_backoff_sec_raw", "SARI_LSP_PROBE_PERMANENT_BACKOFF_SEC", "lsp_probe_permanent_backoff_sec", 1800),
+        _ConfigField("lsp_probe_bootstrap_file_window_raw", "SARI_LSP_PROBE_BOOTSTRAP_FILE_WINDOW", "lsp_probe_bootstrap_file_window", 256),
+        _ConfigField("lsp_probe_bootstrap_top_k_raw", "SARI_LSP_PROBE_BOOTSTRAP_TOP_K", "lsp_probe_bootstrap_top_k", 3),
+        _ConfigField(
+            "lsp_probe_language_priority_raw",
+            "SARI_LSP_PROBE_LANGUAGE_PRIORITY",
+            "lsp_probe_language_priority",
+            ",".join(_read_tuple_setting(file_config, "lsp_probe_language_priority", defaults.lsp_probe_language_priority)),
+        ),
+        _ConfigField(
+            "lsp_probe_l1_languages_raw",
+            "SARI_LSP_PROBE_L1_LANGUAGES",
+            "lsp_probe_l1_languages",
+            ",".join(_read_tuple_setting(file_config, "lsp_probe_l1_languages", defaults.lsp_probe_l1_languages)),
+        ),
+        _ConfigField("lsp_scope_planner_enabled_raw", "SARI_LSP_SCOPE_PLANNER_ENABLED", "lsp_scope_planner_enabled", defaults.lsp_scope_planner_enabled, lower=True),
+        _ConfigField("lsp_scope_planner_shadow_mode_raw", "SARI_LSP_SCOPE_PLANNER_SHADOW_MODE", "lsp_scope_planner_shadow_mode", defaults.lsp_scope_planner_shadow_mode, lower=True),
+        _ConfigField(
+            "lsp_scope_java_markers_raw",
+            "SARI_LSP_SCOPE_JAVA_MARKERS",
+            "lsp_scope_java_markers",
+            ",".join(_read_tuple_setting(file_config, "lsp_scope_java_markers", defaults.lsp_scope_java_markers)),
+        ),
+        _ConfigField(
+            "lsp_scope_ts_markers_raw",
+            "SARI_LSP_SCOPE_TS_MARKERS",
+            "lsp_scope_ts_markers",
+            ",".join(_read_tuple_setting(file_config, "lsp_scope_ts_markers", defaults.lsp_scope_ts_markers)),
+        ),
+        _ConfigField(
+            "lsp_scope_vue_markers_raw",
+            "SARI_LSP_SCOPE_VUE_MARKERS",
+            "lsp_scope_vue_markers",
+            ",".join(_read_tuple_setting(file_config, "lsp_scope_vue_markers", defaults.lsp_scope_vue_markers)),
+        ),
+        _ConfigField("lsp_scope_top_level_fallback_raw", "SARI_LSP_SCOPE_TOP_LEVEL_FALLBACK", "lsp_scope_top_level_fallback", defaults.lsp_scope_top_level_fallback, lower=True),
+        _ConfigField(
+            "lsp_scope_active_languages_raw",
+            "SARI_LSP_SCOPE_ACTIVE_LANGUAGES",
+            "lsp_scope_active_languages",
+            ",".join(_read_tuple_setting(file_config, "lsp_scope_active_languages", defaults.lsp_scope_active_languages)),
+        ),
+        _ConfigField("lsp_session_broker_enabled_raw", "SARI_LSP_SESSION_BROKER_ENABLED", "lsp_session_broker_enabled", defaults.lsp_session_broker_enabled, lower=True),
+        _ConfigField("lsp_session_broker_metrics_enabled_raw", "SARI_LSP_SESSION_BROKER_METRICS_ENABLED", "lsp_session_broker_metrics_enabled", defaults.lsp_session_broker_metrics_enabled, lower=True),
+        _ConfigField("lsp_broker_optional_scaffolding_enabled_raw", "SARI_LSP_BROKER_OPTIONAL_SCAFFOLDING_ENABLED", "lsp_broker_optional_scaffolding_enabled", defaults.lsp_broker_optional_scaffolding_enabled, lower=True),
+        _ConfigField("lsp_broker_batch_throughput_mode_enabled_raw", "SARI_LSP_BROKER_BATCH_THROUGHPUT_MODE_ENABLED", "lsp_broker_batch_throughput_mode_enabled", defaults.lsp_broker_batch_throughput_mode_enabled, lower=True),
+        _ConfigField(
+            "lsp_broker_batch_throughput_pending_threshold_raw",
+            "SARI_LSP_BROKER_BATCH_THROUGHPUT_PENDING_THRESHOLD",
+            "lsp_broker_batch_throughput_pending_threshold",
+            defaults.lsp_broker_batch_throughput_pending_threshold,
+        ),
+        _ConfigField("lsp_broker_batch_disable_java_probe_raw", "SARI_LSP_BROKER_BATCH_DISABLE_JAVA_PROBE", "lsp_broker_batch_disable_java_probe", defaults.lsp_broker_batch_disable_java_probe, lower=True),
+        _ConfigField("lsp_hotness_event_window_sec_raw", "SARI_LSP_HOTNESS_EVENT_WINDOW_SEC", "lsp_hotness_event_window_sec", defaults.lsp_hotness_event_window_sec),
+        _ConfigField("lsp_hotness_decay_window_sec_raw", "SARI_LSP_HOTNESS_DECAY_WINDOW_SEC", "lsp_hotness_decay_window_sec", defaults.lsp_hotness_decay_window_sec),
+        _ConfigField("lsp_broker_backlog_min_share_raw", "SARI_LSP_BROKER_BACKLOG_MIN_SHARE", "lsp_broker_backlog_min_share", defaults.lsp_broker_backlog_min_share),
+        _ConfigField("lsp_broker_max_standby_sessions_per_lang_raw", "SARI_LSP_BROKER_MAX_STANDBY_SESSIONS_PER_LANG", "lsp_broker_max_standby_sessions_per_lang", defaults.lsp_broker_max_standby_sessions_per_lang),
+        _ConfigField("lsp_broker_max_standby_sessions_per_budget_group_raw", "SARI_LSP_BROKER_MAX_STANDBY_SESSIONS_PER_BUDGET_GROUP", "lsp_broker_max_standby_sessions_per_budget_group", defaults.lsp_broker_max_standby_sessions_per_budget_group),
+        _ConfigField("lsp_broker_ts_vue_active_cap_raw", "SARI_LSP_BROKER_TS_VUE_ACTIVE_CAP", "lsp_broker_ts_vue_active_cap", defaults.lsp_broker_ts_vue_active_cap),
+        _ConfigField("lsp_broker_java_hot_lanes_raw", "SARI_LSP_BROKER_JAVA_HOT_LANES", "lsp_broker_java_hot_lanes", defaults.lsp_broker_java_hot_lanes),
+        _ConfigField("lsp_broker_java_backlog_lanes_raw", "SARI_LSP_BROKER_JAVA_BACKLOG_LANES", "lsp_broker_java_backlog_lanes", defaults.lsp_broker_java_backlog_lanes),
+        _ConfigField("lsp_broker_java_sticky_ttl_sec_raw", "SARI_LSP_BROKER_JAVA_STICKY_TTL_SEC", "lsp_broker_java_sticky_ttl_sec", defaults.lsp_broker_java_sticky_ttl_sec),
+        _ConfigField("lsp_broker_java_switch_cooldown_sec_raw", "SARI_LSP_BROKER_JAVA_SWITCH_COOLDOWN_SEC", "lsp_broker_java_switch_cooldown_sec", defaults.lsp_broker_java_switch_cooldown_sec),
+        _ConfigField("lsp_broker_java_min_lease_ms_raw", "SARI_LSP_BROKER_JAVA_MIN_LEASE_MS", "lsp_broker_java_min_lease_ms", defaults.lsp_broker_java_min_lease_ms),
+        _ConfigField("lsp_broker_ts_hot_lanes_raw", "SARI_LSP_BROKER_TS_HOT_LANES", "lsp_broker_ts_hot_lanes", defaults.lsp_broker_ts_hot_lanes),
+        _ConfigField("lsp_broker_ts_backlog_lanes_raw", "SARI_LSP_BROKER_TS_BACKLOG_LANES", "lsp_broker_ts_backlog_lanes", defaults.lsp_broker_ts_backlog_lanes),
+        _ConfigField("lsp_broker_ts_sticky_ttl_sec_raw", "SARI_LSP_BROKER_TS_STICKY_TTL_SEC", "lsp_broker_ts_sticky_ttl_sec", defaults.lsp_broker_ts_sticky_ttl_sec),
+        _ConfigField("lsp_broker_ts_switch_cooldown_sec_raw", "SARI_LSP_BROKER_TS_SWITCH_COOLDOWN_SEC", "lsp_broker_ts_switch_cooldown_sec", defaults.lsp_broker_ts_switch_cooldown_sec),
+        _ConfigField("lsp_broker_ts_min_lease_ms_raw", "SARI_LSP_BROKER_TS_MIN_LEASE_MS", "lsp_broker_ts_min_lease_ms", defaults.lsp_broker_ts_min_lease_ms),
+        _ConfigField("lsp_broker_vue_hot_lanes_raw", "SARI_LSP_BROKER_VUE_HOT_LANES", "lsp_broker_vue_hot_lanes", defaults.lsp_broker_vue_hot_lanes),
+        _ConfigField("lsp_broker_vue_backlog_lanes_raw", "SARI_LSP_BROKER_VUE_BACKLOG_LANES", "lsp_broker_vue_backlog_lanes", defaults.lsp_broker_vue_backlog_lanes),
+        _ConfigField("lsp_broker_vue_sticky_ttl_sec_raw", "SARI_LSP_BROKER_VUE_STICKY_TTL_SEC", "lsp_broker_vue_sticky_ttl_sec", defaults.lsp_broker_vue_sticky_ttl_sec),
+        _ConfigField("lsp_broker_vue_switch_cooldown_sec_raw", "SARI_LSP_BROKER_VUE_SWITCH_COOLDOWN_SEC", "lsp_broker_vue_switch_cooldown_sec", defaults.lsp_broker_vue_switch_cooldown_sec),
+        _ConfigField("lsp_broker_vue_min_lease_ms_raw", "SARI_LSP_BROKER_VUE_MIN_LEASE_MS", "lsp_broker_vue_min_lease_ms", defaults.lsp_broker_vue_min_lease_ms),
+        _ConfigField("lsp_max_concurrent_starts_raw", "SARI_LSP_MAX_CONCURRENT_STARTS", "lsp_max_concurrent_starts", 4),
+        _ConfigField("lsp_max_concurrent_l1_probes_raw", "SARI_LSP_MAX_CONCURRENT_L1_PROBES", "lsp_max_concurrent_l1_probes", 4),
+        _ConfigField("orphan_check_raw", "SARI_ORPHAN_PPID_CHECK_INTERVAL_SEC", "orphan_ppid_check_interval_sec", 1),
+        _ConfigField("shutdown_join_raw", "SARI_SHUTDOWN_JOIN_TIMEOUT_SEC", "shutdown_join_timeout_sec", 2),
+        _ConfigField("vector_enabled_raw", "SARI_VECTOR_ENABLED", "vector_enabled", False, lower=True),
+        _ConfigField("vector_dim_raw", "SARI_VECTOR_DIM", "vector_dim", 128),
+        _ConfigField("vector_candidate_raw", "SARI_VECTOR_CANDIDATE_K", "vector_candidate_k", 50),
+        _ConfigField("vector_rerank_raw", "SARI_VECTOR_RERANK_K", "vector_rerank_k", 20),
+        _ConfigField("vector_blend_raw", "SARI_VECTOR_BLEND_WEIGHT", "vector_blend_weight", 0.2),
+        _ConfigField("vector_min_similarity_raw", "SARI_VECTOR_MIN_SIMILARITY_THRESHOLD", "vector_min_similarity_threshold", 0.15),
+        _ConfigField("vector_max_boost_raw", "SARI_VECTOR_MAX_BOOST", "vector_max_boost", 0.2),
+        _ConfigField("vector_min_token_raw", "SARI_VECTOR_MIN_TOKEN_COUNT_FOR_RERANK", "vector_min_token_count_for_rerank", 2),
+        _ConfigField("importance_normalize_mode", "SARI_IMPORTANCE_NORMALIZE_MODE", "importance_normalize_mode", "log1p"),
+        _ConfigField("importance_max_boost_raw", "SARI_IMPORTANCE_MAX_BOOST", "importance_max_boost", 200.0),
+        _ConfigField("ranking_w_rrf_raw", "SARI_RANKING_W_RRF", "ranking_w_rrf", 0.55),
+        _ConfigField("ranking_w_importance_raw", "SARI_RANKING_W_IMPORTANCE", "ranking_w_importance", 0.30),
+        _ConfigField("ranking_w_vector_raw", "SARI_RANKING_W_VECTOR", "ranking_w_vector", 0.15),
+        _ConfigField("ranking_w_hierarchy_raw", "SARI_RANKING_W_HIERARCHY", "ranking_w_hierarchy", 0.15),
+        _ConfigField("search_lsp_fallback_mode_raw", "SARI_SEARCH_LSP_FALLBACK_MODE", "search_lsp_fallback_mode", "normal", lower=True),
+        _ConfigField("search_lsp_pressure_guard_enabled_raw", "SARI_SEARCH_LSP_PRESSURE_GUARD_ENABLED", "search_lsp_pressure_guard_enabled", True, lower=True),
+        _ConfigField("search_lsp_pressure_pending_threshold_raw", "SARI_SEARCH_LSP_PRESSURE_PENDING_THRESHOLD", "search_lsp_pressure_pending_threshold", 1),
+        _ConfigField("search_lsp_pressure_timeout_threshold_raw", "SARI_SEARCH_LSP_PRESSURE_TIMEOUT_THRESHOLD", "search_lsp_pressure_timeout_threshold", 1),
+        _ConfigField("search_lsp_pressure_rejected_threshold_raw", "SARI_SEARCH_LSP_PRESSURE_REJECTED_THRESHOLD", "search_lsp_pressure_rejected_threshold", 1),
+        _ConfigField("search_lsp_recent_failure_cooldown_sec_raw", "SARI_SEARCH_LSP_RECENT_FAILURE_COOLDOWN_SEC", "search_lsp_recent_failure_cooldown_sec", 5.0),
+        _ConfigField("l5_call_rate_total_max_raw", "SARI_L5_CALL_RATE_TOTAL_MAX", "l5_call_rate_total_max", 0.05),
+        _ConfigField("l5_call_rate_batch_max_raw", "SARI_L5_CALL_RATE_BATCH_MAX", "l5_call_rate_batch_max", 0.01),
+        _ConfigField("l5_calls_per_min_per_lang_max_raw", "SARI_L5_CALLS_PER_MIN_PER_LANG_MAX", "l5_calls_per_min_per_lang_max", 30),
+        _ConfigField("l5_tokens_per_10sec_global_max_raw", "SARI_L5_TOKENS_PER_10SEC_GLOBAL_MAX", "l5_tokens_per_10sec_global_max", 120),
+        _ConfigField("l5_tokens_per_10sec_per_lang_max_raw", "SARI_L5_TOKENS_PER_10SEC_PER_LANG_MAX", "l5_tokens_per_10sec_per_lang_max", 30),
+        _ConfigField("l5_tokens_per_10sec_per_workspace_max_raw", "SARI_L5_TOKENS_PER_10SEC_PER_WORKSPACE_MAX", "l5_tokens_per_10sec_per_workspace_max", 20),
+        _ConfigField("l3_query_compile_cache_enabled_raw", "SARI_L3_QUERY_COMPILE_CACHE_ENABLED", "l3_query_compile_cache_enabled", True, lower=True),
+        _ConfigField("l3_query_compile_ms_budget_raw", "SARI_L3_QUERY_COMPILE_MS_BUDGET", "l3_query_compile_ms_budget", 10.0),
+        _ConfigField("l3_query_budget_ms_raw", "SARI_L3_QUERY_BUDGET_MS", "l3_query_budget_ms", 30.0),
+        _ConfigField("l3_asset_mode_raw", "SARI_L3_ASSET_MODE", "l3_asset_mode", "shadow", lower=True),
+        _ConfigField("l3_asset_manifest_path", "SARI_L3_ASSET_MANIFEST_PATH", "l3_asset_manifest_path", "src/sari/services/collection/assets/manifest.json"),
+        _ConfigField("l3_asset_lang_allowlist_raw", "SARI_L3_ASSET_LANG_ALLOWLIST", "l3_asset_lang_allowlist", ""),
+        _ConfigField("mcp_forward_to_daemon_raw", "SARI_MCP_FORWARD_TO_DAEMON", "mcp_forward_to_daemon", False, lower=True),
+        _ConfigField("mcp_daemon_autostart_raw", "SARI_MCP_DAEMON_AUTOSTART", "mcp_daemon_autostart", True, lower=True),
+        _ConfigField("mcp_daemon_timeout_raw", "SARI_MCP_DAEMON_TIMEOUT_SEC", "mcp_daemon_timeout_sec", 2.0),
+        _ConfigField("mcp_search_call_timeout_raw", "SARI_MCP_SEARCH_CALL_TIMEOUT_SEC", "mcp_search_call_timeout_sec", 0.0),
+        _ConfigField("mcp_read_call_timeout_raw", "SARI_MCP_READ_CALL_TIMEOUT_SEC", "mcp_read_call_timeout_sec", 0.0),
+        _ConfigField("strict_protocol_raw", "SARI_STRICT_PROTOCOL", "strict_protocol", False, lower=True),
+        _ConfigField("stabilization_enabled_raw", "SARI_STABILIZATION_ENABLED", "stabilization_enabled", True, lower=True),
+        _ConfigField("http_bg_proxy_enabled_raw", "SARI_HTTP_BG_PROXY", "http_bg_proxy_enabled", False, lower=True),
+        _ConfigField("http_bg_proxy_target", "SARI_HTTP_BG_PROXY_TARGET", "http_bg_proxy_target", ""),
+    )
+
+
+class _ConfigValueParser:
+    """문자열 환경변수 값을 숫자 설정으로 안전하게 변환한다."""
+
+    _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
+    _FALSE_VALUES = frozenset({"0", "false", "no", "off"})
+
+    def int_min(self, raw: str, *, minimum: int, default: int) -> int:
+        """정수 변환 후 하한(minimum)을 적용한다."""
+        try:
+            return max(minimum, int(raw))
+        except ValueError:
+            return default
+
+    def int_range(self, raw: str, *, minimum: int, maximum: int, default: int) -> int:
+        """정수 변환 후 [minimum, maximum] 범위를 적용한다."""
+        try:
+            value = int(raw)
+        except ValueError:
+            return default
+        return min(maximum, max(minimum, value))
+
+    def float_min(self, raw: str, *, minimum: float, default: float) -> float:
+        """실수 변환 후 하한(minimum)을 적용한다."""
+        try:
+            return max(minimum, float(raw))
+        except ValueError:
+            return default
+
+    def float_range(self, raw: str, *, minimum: float, maximum: float, default: float) -> float:
+        """실수 변환 후 [minimum, maximum] 범위를 적용한다."""
+        try:
+            value = float(raw)
+        except ValueError:
+            return default
+        return min(maximum, max(minimum, value))
+
+    def parse_lane_bundle(
+        self,
+        *,
+        hot_raw: str,
+        backlog_raw: str,
+        sticky_raw: str,
+        switch_raw: str,
+        min_lease_raw: str,
+        default: tuple[int, int, float, float, int],
+    ) -> tuple[int, int, float, float, int]:
+        """lane 5개 값을 묶어서 파싱한다.
+
+        기존 동작 호환:
+        - 묶음 내 하나라도 파싱 실패하면 전체를 default로 되돌린다.
+        """
+        try:
+            hot = max(0, int(hot_raw))
+            backlog = max(0, int(backlog_raw))
+            sticky = max(0.0, float(sticky_raw))
+            switch = max(0.0, float(switch_raw))
+            min_lease = max(0, int(min_lease_raw))
+        except ValueError:
+            return default
+        return (hot, backlog, sticky, switch, min_lease)
+
+    def bool_true(self, raw: str) -> bool:
+        """전통적인 truthy 집합으로 불리언을 판정한다."""
+        return raw in self._TRUE_VALUES
+
+    def bool_enabled(self, raw: str) -> bool:
+        """disable 집합에 포함되지 않으면 활성으로 본다."""
+        return raw not in self._FALSE_VALUES

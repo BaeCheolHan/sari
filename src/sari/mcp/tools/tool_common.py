@@ -7,7 +7,8 @@ from pathlib import Path
 
 from sari.core.models import ErrorResponseDTO
 from sari.mcp.tools.arg_normalizer import ARG_META_KEY
-from sari.mcp.tools.pack1 import Pack1MetaDTO, pack1_error, pack1_success
+from sari.mcp.tools.pack1 import pack1_error
+from sari.mcp.tools.pack1_builder import Pack1EnvelopeBuilder
 
 
 def pack1_items_success(
@@ -18,18 +19,14 @@ def pack1_items_success(
     warnings: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     """표준 pack1 성공 응답을 생성한다."""
-    return pack1_success(
-        {
-            "items": items,
-            "meta": Pack1MetaDTO(
-                candidate_count=len(items),
-                resolved_count=len(items),
-                cache_hit=cache_hit,
-                errors=[],
-                stabilization=stabilization,
-                warnings=warnings,
-            ).to_dict(),
-        }
+    return Pack1EnvelopeBuilder().build_success(
+        items=items,
+        candidate_count=len(items),
+        resolved_count=len(items),
+        cache_hit=cache_hit,
+        errors=[],
+        stabilization=stabilization,
+        warnings=warnings,
     )
 
 

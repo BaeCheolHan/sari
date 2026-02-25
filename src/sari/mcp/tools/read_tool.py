@@ -9,7 +9,7 @@ from sari.core.models import ErrorResponseDTO
 from sari.mcp.stabilization.ports import StabilizationPort
 from sari.mcp.stabilization.stabilization_service import StabilizationService
 from sari.mcp.tools.admin_tools import validate_repo_argument
-from sari.mcp.tools.pack1 import pack1_error
+from sari.mcp.tools.pack1_builder import Pack1EnvelopeBuilder
 from sari.mcp.tools.read_executor import ReadExecutionResult, ReadExecutor
 from sari.mcp.tools.read_ports import ReadKnowledgePort, ReadLayerSymbolPort, ReadSymbolPort, ReadWorkspacePort
 from sari.mcp.tools.read_request_parser import ReadRequestParser
@@ -40,6 +40,7 @@ class ReadTool:
         self._stabilization_service = (
             stabilization_service if stabilization_service is not None else StabilizationService(enabled=stabilization_enabled)
         )
+        self._envelope_builder = Pack1EnvelopeBuilder()
         self._call_timeout_sec = max(0.0, float(call_timeout_sec))
         self._timeout_executor: concurrent.futures.ThreadPoolExecutor | None = None
         self._timeout_semaphore: threading.BoundedSemaphore | None = None
@@ -56,19 +57,19 @@ class ReadTool:
             tool_layer_repo=tool_layer_repo,
             stabilization_service=self._stabilization_service,
         )
-        self._response_builder = ReadResponseBuilder()
+        self._response_builder = ReadResponseBuilder(envelope_builder=self._envelope_builder)
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """모드별 read 응답을 반환한다."""
         validation = validate_repo_argument(arguments=arguments, workspace_repo=self._workspace_repo)
         if validation.error is not None:
-            return pack1_error(validation.error)
+            return self._envelope_builder.build_error(error=validation.error)
         warnings_payload = [warning.to_dict() for warning in validation.warnings]
         repo_root = str(arguments["repo"])
         precheck = self._stabilization_service.precheck_read_call(arguments=arguments, repo_root=repo_root)
         if precheck.blocked:
-            return pack1_error(
-                ErrorResponseDTO(code=str(precheck.error_code), message=str(precheck.error_message)),
+            return self._envelope_builder.build_error(
+                error=ErrorResponseDTO(code=str(precheck.error_code), message=str(precheck.error_message)),
                 stabilization=precheck.meta,
             )
         parsed, parse_error = self._request_parser.parse(arguments=arguments, repo_root=repo_root)
@@ -82,13 +83,13 @@ class ReadTool:
                 arguments=arguments,
             )
         except TimeoutError:
-            return pack1_error(
-                ErrorResponseDTO(code="ERR_TOOL_TIMEOUT", message="read timed out"),
+            return self._envelope_builder.build_error(
+                error=ErrorResponseDTO(code="ERR_TOOL_TIMEOUT", message="read timed out"),
                 recovery_hint="요청 범위를 줄이거나 limit를 낮춘 뒤 재시도하세요.",
             )
         except _ReadToolBusyError:
-            return pack1_error(
-                ErrorResponseDTO(code="ERR_TOOL_BUSY", message="read worker busy"),
+            return self._envelope_builder.build_error(
+                error=ErrorResponseDTO(code="ERR_TOOL_BUSY", message="read worker busy"),
                 recovery_hint="직전 요청이 아직 처리 중입니다. 잠시 후 재시도하세요.",
             )
         if execution_error is not None:

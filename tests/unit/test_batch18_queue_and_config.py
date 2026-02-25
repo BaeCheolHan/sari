@@ -313,3 +313,39 @@ def test_app_config_parses_mcp_tool_call_timeout_env(tmp_path: Path, monkeypatch
 
     assert config.mcp_search_call_timeout_sec == pytest.approx(1.75)
     assert config.mcp_read_call_timeout_sec == pytest.approx(2.25)
+
+
+def test_app_config_candidate_backend_and_fallback_source_priority(tmp_path: Path, monkeypatch) -> None:
+    """backend/fallback/db_path는 file 기본 + env override 규칙을 지켜야 한다."""
+    home = tmp_path / "home"
+    config_dir = home / ".sari"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "candidate_backend": "scan",
+                "candidate_fallback_scan": 0,
+                "db_path": str(home / "from-file.db"),
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("SARI_CANDIDATE_BACKEND", raising=False)
+    monkeypatch.delenv("SARI_CANDIDATE_FALLBACK_SCAN", raising=False)
+    monkeypatch.delenv("SARI_DB_PATH", raising=False)
+
+    config = AppConfig.default()
+    assert config.candidate_backend == "scan"
+    assert config.candidate_fallback_scan is False
+    assert str(config.db_path).endswith("from-file.db")
+
+    # env override + invalid backend fallback
+    monkeypatch.setenv("SARI_CANDIDATE_BACKEND", "invalid")
+    monkeypatch.setenv("SARI_CANDIDATE_FALLBACK_SCAN", "1")
+    monkeypatch.setenv("SARI_DB_PATH", str(home / "from-env.db"))
+
+    overridden = AppConfig.default()
+    assert overridden.candidate_backend == "tantivy"
+    assert overridden.candidate_fallback_scan is True
+    assert str(overridden.db_path).endswith("from-env.db")

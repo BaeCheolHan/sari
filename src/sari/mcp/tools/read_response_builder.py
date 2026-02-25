@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from sari.mcp.tools.pack1_builder import Pack1EnvelopeBuilder
 from sari.mcp.tools.read_executor import ReadExecutionResult
-from sari.mcp.tools.tool_common import pack1_items_success
 
 
 class ReadResponseBuilder:
     """read 실행 결과를 pack1 응답으로 변환한다."""
+
+    def __init__(self, envelope_builder: Pack1EnvelopeBuilder | None = None) -> None:
+        self._envelope_builder = envelope_builder if envelope_builder is not None else Pack1EnvelopeBuilder()
 
     def build_success(
         self,
@@ -17,10 +20,12 @@ class ReadResponseBuilder:
         stabilization: dict[str, object] | None,
     ) -> dict[str, object]:
         """성공 응답을 pack1 형식으로 생성한다."""
-        return pack1_items_success(
-            execution.items,
+        return self._envelope_builder.build_success(
+            items=execution.items,
+            candidate_count=len(execution.items),
+            resolved_count=len(execution.items),
             cache_hit=execution.cache_hit,
+            errors=[],
             stabilization=stabilization,
             warnings=warnings_payload,
         )
-
