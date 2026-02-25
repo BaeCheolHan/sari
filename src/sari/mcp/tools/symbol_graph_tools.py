@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from sari.core.models import ErrorResponseDTO
 from sari.db.repositories.lsp_tool_data_repository import LspToolDataRepository
-from sari.db.repositories.workspace_repository import WorkspaceRepository
-from sari.mcp.tools.admin_tools import validate_repo_argument
+from sari.mcp.tools.admin_tools import RepoValidationPort, validate_repo_argument
 from sari.mcp.tools.pack1 import pack1_error
 from sari.mcp.tools.tool_common import pack1_items_success, resolve_symbol_key
 
@@ -13,7 +12,7 @@ from sari.mcp.tools.tool_common import pack1_items_success, resolve_symbol_key
 class ListSymbolsTool:
     """list_symbols MCP 도구를 처리한다."""
 
-    def __init__(self, workspace_repo: WorkspaceRepository, lsp_repo: LspToolDataRepository) -> None:
+    def __init__(self, workspace_repo: RepoValidationPort, lsp_repo: LspToolDataRepository) -> None:
         """필요 저장소 의존성을 주입한다."""
         self._workspace_repo = workspace_repo
         self._lsp_repo = lsp_repo
@@ -36,7 +35,7 @@ class ListSymbolsTool:
 class ReadSymbolTool:
     """read_symbol MCP 도구를 처리한다."""
 
-    def __init__(self, workspace_repo: WorkspaceRepository, lsp_repo: LspToolDataRepository) -> None:
+    def __init__(self, workspace_repo: RepoValidationPort, lsp_repo: LspToolDataRepository) -> None:
         """필요 저장소 의존성을 주입한다."""
         self._workspace_repo = workspace_repo
         self._lsp_repo = lsp_repo
@@ -67,7 +66,7 @@ class ReadSymbolTool:
 class GetImplementationsTool:
     """get_implementations MCP 도구를 처리한다."""
 
-    def __init__(self, workspace_repo: WorkspaceRepository, lsp_repo: LspToolDataRepository) -> None:
+    def __init__(self, workspace_repo: RepoValidationPort, lsp_repo: LspToolDataRepository) -> None:
         """필요 저장소 의존성을 주입한다."""
         self._workspace_repo = workspace_repo
         self._lsp_repo = lsp_repo
@@ -91,7 +90,7 @@ class GetImplementationsTool:
 class CallGraphTool:
     """call_graph MCP 도구를 처리한다."""
 
-    def __init__(self, workspace_repo: WorkspaceRepository, lsp_repo: LspToolDataRepository) -> None:
+    def __init__(self, workspace_repo: RepoValidationPort, lsp_repo: LspToolDataRepository) -> None:
         """필요 저장소 의존성을 주입한다."""
         self._workspace_repo = workspace_repo
         self._lsp_repo = lsp_repo
@@ -129,7 +128,7 @@ class CallGraphTool:
 class CallGraphHealthTool:
     """call_graph_health MCP 도구를 처리한다."""
 
-    def __init__(self, workspace_repo: WorkspaceRepository, lsp_repo: LspToolDataRepository) -> None:
+    def __init__(self, workspace_repo: RepoValidationPort, lsp_repo: LspToolDataRepository) -> None:
         """필요 저장소 의존성을 주입한다."""
         self._workspace_repo = workspace_repo
         self._lsp_repo = lsp_repo

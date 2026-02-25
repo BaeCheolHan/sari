@@ -4,9 +4,8 @@ from __future__ import annotations
 
 from sari.core.exceptions import CollectionError
 from sari.core.models import ErrorResponseDTO
-from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.mcp.tools.arg_parser import parse_non_empty_string, parse_non_negative_int, parse_optional_int, parse_optional_string, parse_positive_int
-from sari.mcp.tools.admin_tools import validate_repo_argument
+from sari.mcp.tools.admin_tools import RepoValidationPort, validate_repo_argument
 from sari.mcp.tools.pack1 import Pack1MetaDTO, pack1_error, pack1_success
 from sari.services.collection.ports import CollectionScanPort
 
@@ -19,7 +18,7 @@ def _collection_error_response(exc: CollectionError) -> dict[str, object]:
 class ScanOnceTool:
     """scan_once MCP 도구를 처리한다."""
 
-    def __init__(self, workspace_repo: WorkspaceRepository, collection_service: CollectionScanPort) -> None:
+    def __init__(self, workspace_repo: RepoValidationPort, collection_service: CollectionScanPort) -> None:
         """필요 의존성을 주입한다."""
         self._workspace_repo = workspace_repo
         self._collection_service = collection_service
@@ -76,7 +75,7 @@ class ScanOnceTool:
 class ListFilesTool:
     """list_files MCP 도구를 처리한다."""
 
-    def __init__(self, workspace_repo: WorkspaceRepository, collection_service: CollectionScanPort) -> None:
+    def __init__(self, workspace_repo: RepoValidationPort, collection_service: CollectionScanPort) -> None:
         """필요 의존성을 주입한다."""
         self._workspace_repo = workspace_repo
         self._collection_service = collection_service
@@ -116,7 +115,7 @@ class ListFilesTool:
 class ReadFileTool:
     """read_file MCP 도구를 처리한다."""
 
-    def __init__(self, workspace_repo: WorkspaceRepository, collection_service: CollectionScanPort) -> None:
+    def __init__(self, workspace_repo: RepoValidationPort, collection_service: CollectionScanPort) -> None:
         """필요 의존성을 주입한다."""
         self._workspace_repo = workspace_repo
         self._collection_service = collection_service
@@ -176,7 +175,7 @@ class ReadFileTool:
 class IndexFileTool:
     """index_file MCP 도구를 처리한다."""
 
-    def __init__(self, workspace_repo: WorkspaceRepository, collection_service: CollectionScanPort) -> None:
+    def __init__(self, workspace_repo: RepoValidationPort, collection_service: CollectionScanPort) -> None:
         """필요 의존성을 주입한다."""
         self._workspace_repo = workspace_repo
         self._collection_service = collection_service

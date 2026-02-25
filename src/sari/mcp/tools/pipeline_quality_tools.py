@@ -4,9 +4,8 @@ from __future__ import annotations
 
 from sari.core.exceptions import QualityError
 from sari.core.models import ErrorResponseDTO
-from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.mcp.tools.arg_parser import parse_string_list
-from sari.mcp.tools.admin_tools import validate_repo_argument
+from sari.mcp.tools.admin_tools import RepoValidationPort, validate_repo_argument
 from sari.mcp.tools.pack1 import Pack1MetaDTO, pack1_error, pack1_success
 from sari.services.pipeline_quality_service import PipelineQualityService
 
@@ -24,7 +23,7 @@ def _quality_error(exc: QualityError) -> dict[str, object]:
 class PipelineQualityRunTool:
     """pipeline_quality_run MCP 도구를 처리한다."""
 
-    def __init__(self, workspace_repo: WorkspaceRepository, quality_service: PipelineQualityService) -> None:
+    def __init__(self, workspace_repo: RepoValidationPort, quality_service: PipelineQualityService) -> None:
         """필요 의존성을 주입한다."""
         self._workspace_repo = workspace_repo
         self._quality_service = quality_service
@@ -71,7 +70,7 @@ class PipelineQualityRunTool:
 class PipelineQualityReportTool:
     """pipeline_quality_report MCP 도구를 처리한다."""
 
-    def __init__(self, workspace_repo: WorkspaceRepository, quality_service: PipelineQualityService) -> None:
+    def __init__(self, workspace_repo: RepoValidationPort, quality_service: PipelineQualityService) -> None:
         """필요 의존성을 주입한다."""
         self._workspace_repo = workspace_repo
         self._quality_service = quality_service

@@ -10,8 +10,7 @@ from sari.db.repositories.file_collection_repository import FileCollectionReposi
 from sari.db.repositories.language_probe_repository import LanguageProbeRepository
 from sari.db.repositories.lsp_tool_data_repository import LspToolDataRepository
 from sari.db.repositories.runtime_repository import RuntimeRepository
-from sari.db.repositories.workspace_repository import WorkspaceRepository
-from sari.mcp.tools.admin_tools import validate_repo_argument
+from sari.mcp.tools.admin_tools import RepoValidationPort, validate_repo_argument
 from sari.mcp.tools.pack1 import Pack1MetaDTO, pack1_error, pack1_success
 from sari.services.pipeline_control_service import PipelineControlService
 
@@ -90,7 +89,7 @@ class StatusTool:
 
     def __init__(
         self,
-        workspace_repo: WorkspaceRepository,
+        workspace_repo: RepoValidationPort,
         runtime_repo: RuntimeRepository,
         file_repo: FileCollectionRepository,
         lsp_repo: LspToolDataRepository,

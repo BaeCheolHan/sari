@@ -9,7 +9,7 @@ from sari.core.models import ErrorResponseDTO
 from sari.core.repo_context_resolver import resolve_repo_context
 from sari.db.repositories.repo_registry_repository import RepoRegistryRepository
 from sari.db.repositories.tool_data_layer_repository import ToolDataLayerRepository
-from sari.db.repositories.workspace_repository import WorkspaceRepository
+from sari.mcp.tools.admin_tools import RepoValidationPort
 from sari.mcp.stabilization.ports import StabilizationPort
 from sari.mcp.stabilization.stabilization_service import StabilizationService
 from sari.mcp.tools.pack1 import Pack1MetaDTO, pack1_error, pack1_success
@@ -24,7 +24,7 @@ class SearchTool:
     def __init__(
         self,
         orchestrator: SearchOrchestrator,
-        workspace_repo: WorkspaceRepository | None = None,
+        workspace_repo: RepoValidationPort | None = None,
         tool_layer_repo: ToolDataLayerRepository | None = None,
         metrics_provider: Callable[[], object] | None = None,
         repo_registry_repo: RepoRegistryRepository | None = None,

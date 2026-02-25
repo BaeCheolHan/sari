@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Protocol
 
-from sari.core.models import ErrorResponseDTO, RepoValidationResultDTO, WarningDTO
+from sari.core.models import ErrorResponseDTO, RepoValidationResultDTO, WarningDTO, WorkspaceDTO
 from sari.core.repo_context_resolver import (
     ERR_WORKSPACE_INACTIVE,
     RepoContextDTO,
@@ -12,7 +13,6 @@ from sari.core.repo_context_resolver import (
     resolve_repo_context,
 )
 from sari.core.repo_resolver import resolve_repo_key
-from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.mcp.tools.pack1 import Pack1MetaDTO, pack1_error, pack1_success
 from sari.services.admin_service import AdminService
 
@@ -22,7 +22,14 @@ WARN_REPO_ARG_PARTIAL_FALLBACK = "WARN_REPO_ARG_PARTIAL_FALLBACK"
 REPO_ARG_PARTIAL_FALLBACK_MESSAGE = "repo/repo_key mismatch or invalid input; resolved by fallback"
 
 
-def validate_repo_argument(arguments: dict[str, object], workspace_repo: WorkspaceRepository) -> RepoValidationResultDTO:
+class RepoValidationPort(Protocol):
+    """repo 인자 검증에 필요한 워크스페이스 조회 포트."""
+
+    def get_by_path(self, path: str) -> WorkspaceDTO | None: ...
+    def list_all(self) -> list[WorkspaceDTO]: ...
+
+
+def validate_repo_argument(arguments: dict[str, object], workspace_repo: RepoValidationPort) -> RepoValidationResultDTO:
     """repo 인자를 검증하고 정규화 결과 DTO를 반환한다."""
     repo = arguments.get("repo")
     if (not isinstance(repo, str) or repo.strip() == "") and isinstance(arguments.get("repo_id"), str):
@@ -91,7 +98,7 @@ def validate_repo_argument(arguments: dict[str, object], workspace_repo: Workspa
 def _resolve_context_with_workspace_fallback(
     *,
     raw_repo: str,
-    workspace_repo: WorkspaceRepository,
+    workspace_repo: RepoValidationPort,
 ) -> tuple[RepoContextDTO | None, ErrorResponseDTO | None]:
     """repo_context 해석 후 absolute path 입력에 대해 workspace fallback을 적용한다."""
     resolved_context, context_error = resolve_repo_context(
@@ -132,7 +139,7 @@ class DoctorItemDTO:
 class DoctorTool:
     """doctor MCP 도구를 처리한다."""
 
-    def __init__(self, admin_service: AdminService, workspace_repo: WorkspaceRepository) -> None:
+    def __init__(self, admin_service: AdminService, workspace_repo: RepoValidationPort) -> None:
         """필요 의존성을 주입한다."""
         self._admin_service = admin_service
         self._workspace_repo = workspace_repo
@@ -166,7 +173,7 @@ class DoctorTool:
 class RescanTool:
     """rescan MCP 도구를 처리한다."""
 
-    def __init__(self, admin_service: AdminService, workspace_repo: WorkspaceRepository) -> None:
+    def __init__(self, admin_service: AdminService, workspace_repo: RepoValidationPort) -> None:
         """필요 의존성을 주입한다."""
         self._admin_service = admin_service
         self._workspace_repo = workspace_repo
@@ -198,7 +205,7 @@ class RescanTool:
 class RepoCandidatesTool:
     """repo_candidates MCP 도구를 처리한다."""
 
-    def __init__(self, admin_service: AdminService, workspace_repo: WorkspaceRepository) -> None:
+    def __init__(self, admin_service: AdminService, workspace_repo: RepoValidationPort) -> None:
         """필요 의존성을 주입한다."""
         self._admin_service = admin_service
         self._workspace_repo = workspace_repo
