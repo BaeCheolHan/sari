@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from solidlsp.ls_config import Language
 
-from sari.core.language_registry import resolve_language_from_path
+from sari.core.language.registry import resolve_language_from_path
 
 
 class L3ScopeResolutionService:

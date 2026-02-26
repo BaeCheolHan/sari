@@ -64,6 +64,8 @@ export SARI_DB_PATH="${DB_PATH}"
 export PYTHONPATH="${ROOT_DIR}/src"
 rm -f "${DB_PATH}"
 
+python3 "${ROOT_DIR}/tools/ci/check_no_legacy_shim_imports.py" "${ROOT_DIR}/src" "${ROOT_DIR}/tests"
+
 set +e
 python3 -m sari.cli.main roots add "${REPO_FIXTURE}" >>"${LOG_FILE}" 2>&1
 ROOTS_ADD_EXIT=$?

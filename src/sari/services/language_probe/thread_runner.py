@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 from typing import Callable
 
-from sari.core.lsp_provision_policy import get_lsp_provision_policy
+from sari.core.language.provision_policy import get_lsp_provision_policy
 from sari.core.models import LanguageProbeStatusDTO
 from sari.services.language_probe.error_classifier import (
     classify_lsp_error_code,

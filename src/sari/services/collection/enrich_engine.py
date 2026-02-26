@@ -10,7 +10,7 @@ from typing import Callable
 from solidlsp.ls_config import Language
 
 from sari.core.models import L4AdmissionDecisionDTO, L5ReasonCode, L5RejectReason
-from sari.core.language_registry import get_enabled_language_names, resolve_language_from_path
+from sari.core.language.registry import get_enabled_language_names, resolve_language_from_path
 from sari.core.models import (
     CollectedFileBodyDTO,
     FileEnrichJobDTO,

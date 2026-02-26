@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from sari.core.models import L5ReasonCode, L5RequestMode
-from sari.services.collection.l5_default_policy_builder import build_default_language_policy_map
+from sari.services.collection.l5.l5_default_policy_builder import build_default_language_policy_map
 
 
 def test_build_default_language_policy_map_contains_expected_modes() -> None:

@@ -11,7 +11,7 @@ from solidlsp.ls_config import Language
 from solidlsp.ls_exceptions import SolidLSPException
 
 from sari.core.exceptions import DaemonError
-from sari.core.language_registry import resolve_language_from_path
+from sari.core.language.registry import resolve_language_from_path
 from sari.lsp.document_symbols import request_document_symbols_with_optional_sync
 from sari.lsp.path_normalizer import normalize_repo_relative_path
 

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from sari.core.language_registry import get_enabled_language_names
-from sari.core.lsp_provision_policy import get_lsp_provision_policy
+from sari.core.language.registry import get_enabled_language_names
+from sari.core.language.provision_policy import get_lsp_provision_policy
 
 
 def test_lsp_provision_policy_covers_enabled_languages() -> None:

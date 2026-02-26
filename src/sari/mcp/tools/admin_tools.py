@@ -6,13 +6,13 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from sari.core.models import ErrorResponseDTO, RepoValidationResultDTO, WarningDTO, WorkspaceDTO
-from sari.core.repo_context_resolver import (
+from sari.core.repo.context_resolver import (
     ERR_WORKSPACE_INACTIVE,
     RepoContextDTO,
     WORKSPACE_INACTIVE_MESSAGE,
     resolve_repo_context,
 )
-from sari.core.repo_resolver import resolve_repo_key
+from sari.core.repo.resolver import resolve_repo_key
 from sari.mcp.tools.pack1 import Pack1MetaDTO, pack1_error, pack1_success
 from sari.services.admin import AdminService
 

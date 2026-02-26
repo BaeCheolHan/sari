@@ -12,7 +12,7 @@ import threading
 import time
 from typing import Callable
 
-from sari.core.language_registry import resolve_language_from_path
+from sari.core.language.registry import resolve_language_from_path
 from sari.core.exceptions import DaemonError, ErrorContext
 from sari.lsp.runtime_broker import LspRuntimeBroker
 from sari.services.collection.perf_trace import PerfTracer

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from solidlsp.ls_exceptions import SolidLSPException
 
-from sari.services.collection.lsp_extract_error_mapper import LspExtractErrorMapper
+from sari.services.collection.l5.lsp.extract_error_mapper import LspExtractErrorMapper
 
 
 def test_maps_workspace_mismatch_error() -> None:

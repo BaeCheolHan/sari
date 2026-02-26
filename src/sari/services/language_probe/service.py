@@ -7,7 +7,7 @@ import uuid
 from typing import Callable
 
 from sari.core.exceptions import DaemonError, ErrorContext
-from sari.core.language_registry import LanguageSupportEntry, iter_language_support_entries
+from sari.core.language.registry import LanguageSupportEntry, iter_language_support_entries
 from sari.core.models import LanguageProbeStatusDTO, now_iso8601_utc
 from sari.db.repositories.language_probe_repository import LanguageProbeRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sari.services.collection.lsp_symbol_normalizer_service import LspSymbolNormalizerService
+from sari.services.collection.l5.lsp.symbol_normalizer_service import LspSymbolNormalizerService
 
 
 def test_normalize_symbols_maps_location_and_keys() -> None:

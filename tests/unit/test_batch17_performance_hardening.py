@@ -28,19 +28,19 @@ from sari.search.candidate_search import CandidateBackendError, CandidateSearchC
 from sari.search.orchestrator import SearchOrchestrator
 from sari.services.collection.enrich_engine import EnrichEngine
 from sari.services.collection.enrich_result_dto import _L3JobResultDTO
-from sari.services.collection.l3_failure_classifier import classify_l3_extract_failure_kind
-from sari.services.collection.l3_orchestrator import L3Orchestrator
-from sari.services.collection.l3_treesitter_preprocess_service import (
+from sari.services.collection.l3.l3_failure_classifier import classify_l3_extract_failure_kind
+from sari.services.collection.l3.l3_orchestrator import L3Orchestrator
+from sari.services.collection.l3.l3_treesitter_preprocess_service import (
     L3PreprocessDecision,
     L3PreprocessResultDTO,
     L3TreeSitterPreprocessService,
 )
-from sari.services.collection.lsp_session_broker import LspBrokerLanguageProfile, LspSessionBroker
+from sari.services.collection.l5.lsp.session_broker import LspBrokerLanguageProfile, LspSessionBroker
 from sari.services.collection.perf_trace import PerfTracer
 from sari.services.collection.testing.enrich_engine_test_factory import (
     build_min_enrich_engine_for_l3_test,
 )
-from sari.services.collection.watcher_hotness_tracker import WatcherHotnessTracker
+from sari.services.collection.l1.watcher_hotness_tracker import WatcherHotnessTracker
 from sari.services.collection.enrich_flush_coordinator import EnrichFlushCoordinator
 from sari.services.collection.service import FileCollectionService, LspExtractionBackend, LspExtractionResultDTO, SolidLspExtractionBackend
 import sari.services.collection.service as file_collection_service_module
@@ -639,7 +639,7 @@ def test_l3_preprocess_query_budget_exceeded_routes_to_needs_l5(monkeypatch: pyt
     """query budget 초과 시 degraded + NEEDS_L5로 분기해야 한다."""
     service = L3TreeSitterPreprocessService(query_budget_ms=1.0, tree_sitter_enabled=False)
     ticks = iter([0.0, 0.0, 0.0, 2.0])
-    monkeypatch.setattr("sari.services.collection.l3_treesitter_preprocess_service.time.perf_counter", lambda: next(ticks))
+    monkeypatch.setattr("sari.services.collection.l3.l3_treesitter_preprocess_service.time.perf_counter", lambda: next(ticks))
     result = service.preprocess(relative_path="repo_a/src/a.py", content_text="def alpha():\n    return 1\n", max_bytes=1024)
     assert result.decision is L3PreprocessDecision.NEEDS_L5
     assert result.degraded is True
@@ -650,7 +650,7 @@ def test_l3_preprocess_compile_budget_exceeded_routes_to_needs_l5(monkeypatch: p
     """compile budget 초과 시 degraded + NEEDS_L5로 분기해야 한다."""
     service = L3TreeSitterPreprocessService(query_compile_ms_budget=1.0, tree_sitter_enabled=False)
     ticks = iter([0.0, 0.0, 2.0])
-    monkeypatch.setattr("sari.services.collection.l3_treesitter_preprocess_service.time.perf_counter", lambda: next(ticks))
+    monkeypatch.setattr("sari.services.collection.l3.l3_treesitter_preprocess_service.time.perf_counter", lambda: next(ticks))
     result = service.preprocess(relative_path="repo_a/src/a.py", content_text="def alpha():\n    return 1\n", max_bytes=1024)
     assert result.decision is L3PreprocessDecision.NEEDS_L5
     assert result.degraded is True

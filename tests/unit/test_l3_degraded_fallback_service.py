@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import builtins
 
-from sari.services.collection.l3_degraded_fallback_service import L3DegradedFallbackService
-from sari.services.collection.l3_treesitter_preprocess_service import L3PreprocessDecision
+from sari.services.collection.l3.l3_degraded_fallback_service import L3DegradedFallbackService
+from sari.services.collection.l3.l3_treesitter_preprocess_service import L3PreprocessDecision
 
 
 def test_degraded_fallback_extracts_header_level_symbols_with_regex_only() -> None:

@@ -6,7 +6,7 @@ from collections.abc import Iterable
 
 from solidlsp.ls_config import Language
 
-from sari.core.language_registry import get_enabled_language_names, resolve_language_from_path
+from sari.core.language.registry import get_enabled_language_names, resolve_language_from_path
 
 
 def parse_lsp_probe_l1_languages(items: Iterable[str]) -> set[Language]:

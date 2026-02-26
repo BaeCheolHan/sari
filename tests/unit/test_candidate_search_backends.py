@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from sari.core.models import CandidateFileDTO, WorkspaceDTO
-from sari.core.language_registry import get_default_collection_extensions
+from sari.core.language.registry import get_default_collection_extensions
 import pytest
 
 from sari.search.candidate_search import (

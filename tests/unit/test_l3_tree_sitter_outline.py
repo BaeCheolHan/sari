@@ -3,9 +3,9 @@ from __future__ import annotations
 import types
 from pathlib import Path
 
-from sari.services.collection.l3_asset_loader import L3AssetLoader
-from sari.services.collection.l3_tree_sitter_outline import TreeSitterOutlineExtractor
-from sari.services.collection.l3_tree_sitter_outline import TreeSitterOutlineResult
+from sari.services.collection.l3.l3_asset_loader import L3AssetLoader
+from sari.services.collection.l3.l3_tree_sitter_outline import TreeSitterOutlineExtractor
+from sari.services.collection.l3.l3_tree_sitter_outline import TreeSitterOutlineResult
 
 
 def test_load_language_uses_fallback_module_loader(monkeypatch) -> None:
@@ -15,7 +15,7 @@ def test_load_language_uses_fallback_module_loader(monkeypatch) -> None:
 
     fake_module = types.SimpleNamespace(language=lambda: "capsule:python")
     monkeypatch.setattr(
-        "sari.services.collection.l3_tree_sitter_outline.importlib.import_module",
+        "sari.services.collection.l3.l3_tree_sitter_outline.importlib.import_module",
         lambda name: fake_module if name == "tree_sitter_python" else None,
     )
 
@@ -272,7 +272,7 @@ def test_query_source_prefers_packaged_tags_scm(monkeypatch, tmp_path: Path) -> 
 
     fake_mod = types.SimpleNamespace(__file__=str((tmp_path / "tree_sitter_java" / "__init__.py")))
     monkeypatch.setattr(
-        "sari.services.collection.l3_tree_sitter_outline.importlib.import_module",
+        "sari.services.collection.l3.l3_tree_sitter_outline.importlib.import_module",
         lambda name: fake_mod if name == "tree_sitter_java" else (_ for _ in ()).throw(ImportError(name)),
     )
 
@@ -285,7 +285,7 @@ def test_query_source_prefers_packaged_tags_scm(monkeypatch, tmp_path: Path) -> 
 def test_query_source_falls_back_to_builtin_when_packaged_tags_missing(monkeypatch) -> None:
     extractor = TreeSitterOutlineExtractor()
     monkeypatch.setattr(
-        "sari.services.collection.l3_tree_sitter_outline.importlib.import_module",
+        "sari.services.collection.l3.l3_tree_sitter_outline.importlib.import_module",
         lambda name: (_ for _ in ()).throw(ImportError(name)),
     )
 

@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from sari.core.exceptions import ValidationError
-from sari.core.repo_resolver import resolve_repo_root
+from sari.core.repo.resolver import resolve_repo_root
 
 
 def test_repo_resolver_prefers_git_root_when_registered(tmp_path: Path) -> None:

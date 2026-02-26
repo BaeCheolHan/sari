@@ -13,7 +13,7 @@
 : `l5/lsp/`에 LSP 보조 서비스(브로커/정규화/parallelism) 포함
 - `enrich_*`: EnrichEngine 런타임 조합/플러시/DTO(레이어 오케스트레이션)
 - `service.py`: 수집 서비스 엔트리
-- `solid_lsp_extraction_backend.py`: 하위 호환 shim (실체는 `l5/`)
+- `l5/solid_lsp_extraction_backend.py`: L5 추출 백엔드 구현
 
 ## root file ownership guide
 
@@ -22,8 +22,7 @@
   - `enrich_engine.py`, `enrich_engine_wiring.py`, `enrich_runtime_service_registry.py`
 - 공통 런타임 유틸:
   - `error_policy.py`, `metrics_service.py`, `layer_upsert_builder.py`, `repo_support.py`
-- 하위 호환 shim(신규 코드 추가 금지):
-  - 패턴: `l3_*.py`, `l4_*.py`, `l5_*.py`, `lsp_*.py`, `l2_job_processor.py`, `event_watcher.py`, `scanner.py`
+- 레이어 구현 위치:
   - 실체 구현은 `l1/`, `l2/`, `l3/`, `l4/`, `l5/` 내부 파일에만 둔다.
 
 ## rules
@@ -31,4 +30,5 @@
 - L1~L5 신규 구현은 각 레이어 폴더에만 추가
 - LSP 보조 로직은 `collection/l5/lsp/`에 추가
 - L3 stage는 `collection/l3/stages/`에 추가
-- root의 `l3_*.py`, `l4_*.py`, `l5_*.py`, `lsp_*.py`는 하위 호환 shim입니다
+- root shim(`l3_*.py`, `l4_*.py`, `l5_*.py`, `lsp_*.py`, `event_watcher.py`, `scanner.py`, `l2_job_processor.py`)은 제거 완료
+- 구형 경로 import는 금지하며 canonical path만 사용

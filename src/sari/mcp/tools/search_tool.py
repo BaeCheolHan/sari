@@ -9,7 +9,7 @@ import threading
 from collections.abc import Callable
 
 from sari.core.models import ErrorResponseDTO
-from sari.core.repo_context_resolver import resolve_repo_context
+from sari.core.repo.context_resolver import resolve_repo_context
 from sari.db.repositories.repo_registry_repository import RepoRegistryRepository
 from sari.db.repositories.tool_data_layer_repository import ToolDataLayerRepository
 from sari.mcp.tools.admin_tools import RepoValidationPort

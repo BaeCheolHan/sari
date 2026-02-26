@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from solidlsp.ls_config import Language
 
-from sari.services.collection.lsp_parallelism_service import LspParallelismService
+from sari.services.collection.l5.lsp.parallelism_service import LspParallelismService
 
 
 class _Hub:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from solidlsp.ls_config import Language
 
-from sari.services.collection.lsp_standby_retention_service import LspStandbyRetentionService
+from sari.services.collection.l5.lsp.standby_retention_service import LspStandbyRetentionService
 
 
 class _Broker:

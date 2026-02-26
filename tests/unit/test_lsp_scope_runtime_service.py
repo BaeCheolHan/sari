@@ -5,7 +5,7 @@ from contextlib import contextmanager
 
 from solidlsp.ls_config import Language
 
-from sari.services.collection.lsp_scope_runtime_service import LspScopeRuntimeService
+from sari.services.collection.l5.lsp.scope_runtime_service import LspScopeRuntimeService
 
 
 class _Planner:

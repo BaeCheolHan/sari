@@ -7,7 +7,7 @@ import subprocess
 import pytest
 
 from sari.core.exceptions import DaemonError
-from sari.core.language_registry import get_enabled_languages
+from sari.core.language.registry import get_enabled_languages
 from sari.lsp.hub import LspHub, LspRuntimeEntry, LspRuntimeKey
 from sari.lsp.runtime_broker import RuntimeLaunchContextDTO, RuntimeRequirementDTO
 from solidlsp.ls_config import Language

@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from sari.core.models import FileEnrichJobDTO
-from sari.services.collection.l3_job_context import L3JobContext
-from sari.services.collection.l3_stages.exception_stage import L3ExceptionStage
+from sari.services.collection.l3.l3_job_context import L3JobContext
+from sari.services.collection.l3.stages.exception_stage import L3ExceptionStage
 
 
 def _job() -> FileEnrichJobDTO:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from sari.core.language_registry import get_enabled_language_names
+from sari.core.language.registry import get_enabled_language_names
 from sari.core.models import LanguageProbeStatusDTO
 from sari.db.repositories.file_collection_repository import FileCollectionRepository
 from sari.db.repositories.language_probe_repository import LanguageProbeRepository

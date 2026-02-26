@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from sari.core.exceptions import DaemonError, ErrorContext
-from sari.core.lsp_provision_policy import get_lsp_provision_policy
+from sari.core.language.provision_policy import get_lsp_provision_policy
 
 
 class LspMatrixDiagnoseService:

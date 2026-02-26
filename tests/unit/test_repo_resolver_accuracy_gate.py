@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from sari.core.exceptions import ValidationError
-from sari.core.repo_resolver import resolve_repo_root
+from sari.core.repo.resolver import resolve_repo_root
 
 
 @dataclass(frozen=True)

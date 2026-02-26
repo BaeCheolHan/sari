@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from sari.core.language_registry import resolve_language_from_path
+from sari.core.language.registry import resolve_language_from_path
 from sari.core.models import EnrichStateUpdateDTO, FileEnrichFailureUpdateDTO, FileEnrichJobDTO
 from sari.services.collection.enrich_result_dto import _L3JobResultDTO
 

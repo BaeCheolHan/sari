@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from sari.core.language_registry import get_enabled_language_names
+from sari.core.language.registry import get_enabled_language_names
 from sari.core.config import AppConfig
 from sari.db.repositories.runtime_repository import RuntimeRepository
 from sari.db.schema import init_schema

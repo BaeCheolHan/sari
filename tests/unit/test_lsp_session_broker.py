@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from solidlsp.ls_config import Language
 
-from sari.services.collection.lsp_session_broker import (
+from sari.services.collection.l5.lsp.session_broker import (
     LspBrokerLanguageProfile,
     LspSessionBroker,
 )

@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from sari.core.models import FileEnrichJobDTO
-from sari.services.collection.l3_stages.preprocess_io_stage import L3PreprocessIoStage
-from sari.services.collection.l3_treesitter_preprocess_service import (
+from sari.services.collection.l3.stages.preprocess_io_stage import L3PreprocessIoStage
+from sari.services.collection.l3.l3_treesitter_preprocess_service import (
     L3PreprocessDecision,
     L3PreprocessResultDTO,
 )

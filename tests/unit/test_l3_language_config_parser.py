@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from solidlsp.ls_config import Language
 
-from sari.services.collection.l3_language_config_parser import (
+from sari.services.collection.l3.l3_language_config_parser import (
     parse_l3_supported_languages,
     parse_lsp_probe_l1_languages,
 )

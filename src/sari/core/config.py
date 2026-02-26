@@ -5,7 +5,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from sari.core.language_registry import get_default_collection_extensions, get_enabled_language_names
+from sari.core.language.registry import get_default_collection_extensions, get_enabled_language_names
 
 DEFAULT_COLLECTION_EXCLUDE_GLOBS: tuple[str, ...] = (
     "**/.git/**",

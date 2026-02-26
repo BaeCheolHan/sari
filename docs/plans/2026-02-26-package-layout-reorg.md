@@ -2,9 +2,9 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Improve navigability by grouping core and collection modules into role-based subpackages while preserving backward compatibility.
+**Goal:** Improve navigability by grouping core and collection modules into role-based subpackages.
 
-**Architecture:** Introduce domain subpackages (`core/repo`, `core/language`, `services/collection/lsp`) and move concrete modules there. Keep thin compatibility shims at old module paths so runtime behavior and imports remain stable.
+**Architecture:** Introduce domain subpackages (`core/repo`, `core/language`, `services/collection/l5/lsp`) and move concrete modules there. Legacy compatibility shims were used during migration, then removed after call-site cutover and tests stabilized.
 
 **Tech Stack:** Python 3.11, pytest, package-relative imports
 
@@ -67,3 +67,20 @@ Commands:
 - `pytest -q tests/unit/services/collection/test_package_layout_reorg.py`
 - `pytest -q tests/unit/test_pipeline_perf_service.py tests/unit/test_batch17_performance_hardening.py`
 
+---
+
+## Completion Update (2026-02-26)
+
+- `core` legacy shim modules removed:
+  - `sari/core/language_registry.py`
+  - `sari/core/lsp_provision_policy.py`
+  - `sari/core/repo_context_resolver.py`
+  - `sari/core/repo_identity.py`
+  - `sari/core/repo_resolver.py`
+- `services/collection` legacy shim modules removed:
+  - root shim files (`l3_*.py`, `l4_*.py`, `l5_*.py`, `lsp_*.py`)
+  - root legacy files (`event_watcher.py`, `scanner.py`, `l2_job_processor.py`)
+  - shim packages (`lsp/`, `l3_stages/`, `l3_language_processors/`)
+- Canonical import rules now enforced by tests:
+  - no legacy shim imports in `src`
+  - no legacy shim imports in `tests` (except explicit contract-file string literals)

@@ -14,4 +14,10 @@
 
 - 새 repo 관련 유틸은 `core/repo/`에 추가
 - 새 언어 정책/레지스트리는 `core/language/`에 추가
-- 기존 flat 경로(`core/repo_resolver.py` 등)는 하위 호환 shim입니다
+- 기존 flat 경로 shim은 제거 완료
+- canonical import만 사용:
+  - `sari.core.repo.context_resolver`
+  - `sari.core.repo.identity`
+  - `sari.core.repo.resolver`
+  - `sari.core.language.registry`
+  - `sari.core.language.provision_policy`

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sari.services.collection.l3_bootstrap_mode_service import L3BootstrapModeService
+from sari.services.collection.l3.l3_bootstrap_mode_service import L3BootstrapModeService
 
 
 @dataclass

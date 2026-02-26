@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from sari.core.models import L5RejectReason
-from sari.services.collection.l5_runtime_stats_service import L5RuntimeStatsService
+from sari.services.collection.l5.l5_runtime_stats_service import L5RuntimeStatsService
 
 
 def test_build_metrics_includes_rates_and_breakdowns() -> None:

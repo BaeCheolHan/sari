@@ -11,10 +11,10 @@ from pathspec import PathSpec
 from pathspec.patterns import GitWildMatchPattern
 from solidlsp.ls_config import Language
 
-from sari.core.language_registry import resolve_language_from_path
+from sari.core.language.registry import resolve_language_from_path
 from sari.core.models import CollectionPolicyDTO, RepoIdentityDTO, now_iso8601_utc
-from sari.core.repo_identity import compute_repo_id, resolve_workspace_root
-from sari.core.repo_resolver import resolve_repo_key
+from sari.core.repo.identity import compute_repo_id, resolve_workspace_root
+from sari.core.repo.resolver import resolve_repo_key
 from sari.db.repositories.pipeline_policy_repository import PipelinePolicyRepository
 from sari.db.repositories.repo_registry_repository import RepoRegistryRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository

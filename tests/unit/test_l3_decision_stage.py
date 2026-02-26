@@ -3,9 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from sari.core.models import FileEnrichJobDTO, L4AdmissionDecisionDTO, L5ReasonCode, L5RejectReason
-from sari.services.collection.l3_job_context import L3JobContext
-from sari.services.collection.l3_stages.decision_stage import L3DecisionStage
-from sari.services.collection.l3_treesitter_preprocess_service import (
+from sari.services.collection.l3.l3_job_context import L3JobContext
+from sari.services.collection.l3.stages.decision_stage import L3DecisionStage
+from sari.services.collection.l3.l3_treesitter_preprocess_service import (
     L3PreprocessDecision,
     L3PreprocessResultDTO,
 )

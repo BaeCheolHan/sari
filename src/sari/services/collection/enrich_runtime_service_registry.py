@@ -6,7 +6,7 @@ import queue
 import time
 from typing import TYPE_CHECKING
 
-from sari.core.language_registry import resolve_language_from_path
+from sari.core.language.registry import resolve_language_from_path
 from sari.core.models import now_iso8601_utc
 from sari.services.collection.l3.l3_bootstrap_mode_service import L3BootstrapModeService
 from sari.services.collection.l3.l3_error_handling_service import L3ErrorHandlingService

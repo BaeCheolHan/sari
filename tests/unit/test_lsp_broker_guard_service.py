@@ -4,7 +4,7 @@ from contextlib import contextmanager
 
 from solidlsp.ls_config import Language
 
-from sari.services.collection.lsp_broker_guard_service import LspBrokerGuardService
+from sari.services.collection.l5.lsp.broker_guard_service import LspBrokerGuardService
 
 
 class _Lease:

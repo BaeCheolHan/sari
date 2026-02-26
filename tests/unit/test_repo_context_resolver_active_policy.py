@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from sari.core.models import WorkspaceDTO
-from sari.core.repo_context_resolver import (
+from sari.core.repo.context_resolver import (
     ERR_WORKSPACE_INACTIVE,
     WORKSPACE_INACTIVE_MESSAGE,
     resolve_repo_context,

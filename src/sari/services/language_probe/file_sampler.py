@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from sari.core.language_registry import LanguageSupportEntry
+from sari.core.language.registry import LanguageSupportEntry
 from solidlsp.ls_config import Language
 
 

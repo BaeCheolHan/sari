@@ -8,12 +8,12 @@ from sari.core.models import (
     L5ReasonCode,
     L5RejectReason,
 )
-from sari.services.collection.l3_orchestrator import L3Orchestrator
-from sari.services.collection.l3_persist_service import L3PersistService
-from sari.services.collection.l3_queue_transition_service import L3QueueTransitionService
-from sari.services.collection.l3_scope_resolution_service import L3ScopeResolutionService
-from sari.services.collection.l3_skip_eligibility_service import L3SkipEligibilityService
-from sari.services.collection.l3_treesitter_preprocess_service import L3PreprocessDecision, L3PreprocessResultDTO
+from sari.services.collection.l3.l3_orchestrator import L3Orchestrator
+from sari.services.collection.l3.l3_persist_service import L3PersistService
+from sari.services.collection.l3.l3_queue_transition_service import L3QueueTransitionService
+from sari.services.collection.l3.l3_scope_resolution_service import L3ScopeResolutionService
+from sari.services.collection.l3.l3_skip_eligibility_service import L3SkipEligibilityService
+from sari.services.collection.l3.l3_treesitter_preprocess_service import L3PreprocessDecision, L3PreprocessResultDTO
 
 
 class _StubFileRow:

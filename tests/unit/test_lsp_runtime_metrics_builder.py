@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sari.services.collection.lsp_runtime_metrics_builder import build_runtime_metrics
+from sari.services.collection.l5.lsp.runtime_metrics_builder import build_runtime_metrics
 
 
 def test_build_runtime_metrics_includes_core_and_placeholder_fields() -> None:

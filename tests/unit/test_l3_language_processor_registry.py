@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from sari.services.collection.l3_language_processor_registry import L3LanguageProcessorRegistry
-from sari.services.collection.l3_language_processor import L3LowConfidenceContext
+from sari.services.collection.l3.l3_language_processor_registry import L3LanguageProcessorRegistry
+from sari.services.collection.l3.l3_language_processor import L3LowConfidenceContext
 
 
 def _ctx(path: str, count: int = 2) -> L3LowConfidenceContext:

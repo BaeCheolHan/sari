@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from solidlsp.ls_config import Language
 
 from sari.core.models import FileEnrichJobDTO
-from sari.services.collection.l3_runtime_coordination_service import L3RuntimeCoordinationService
+from sari.services.collection.l3.l3_runtime_coordination_service import L3RuntimeCoordinationService
 
 
 def _job(job_id: str = "j1") -> FileEnrichJobDTO:

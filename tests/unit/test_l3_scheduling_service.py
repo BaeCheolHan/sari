@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from sari.core.models import FileEnrichJobDTO
-from sari.services.collection.l3_scheduling_service import L3SchedulingService
+from sari.services.collection.l3.l3_scheduling_service import L3SchedulingService
 
 
 def _job(path: str, repo_root: str = "/r") -> FileEnrichJobDTO:

@@ -4,7 +4,7 @@ from collections import deque
 from dataclasses import dataclass
 
 from sari.core.models import FileEnrichJobDTO, L4AdmissionDecisionDTO, L5ReasonCode, L5RejectReason, L5RequestMode
-from sari.services.collection.l5_admission_runtime_service import L5AdmissionRuntimeService, L5AdmissionRuntimeState
+from sari.services.collection.l5.l5_admission_runtime_service import L5AdmissionRuntimeService, L5AdmissionRuntimeState
 
 
 @dataclass

@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from sari.core.models import FileEnrichJobDTO, L4AdmissionDecisionDTO, L5ReasonCode
-from sari.services.collection.l3_job_context import L3JobContext
-from sari.services.collection.l3_stages.extract_success_stage import L3ExtractSuccessStage
+from sari.services.collection.l3.l3_job_context import L3JobContext
+from sari.services.collection.l3.stages.extract_success_stage import L3ExtractSuccessStage
 
 
 def _job() -> FileEnrichJobDTO:

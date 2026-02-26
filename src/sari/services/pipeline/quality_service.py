@@ -9,7 +9,7 @@ from pathlib import Path
 
 from sari.core.config import DEFAULT_COLLECTION_EXCLUDE_GLOBS
 from sari.core.exceptions import DaemonError, ErrorContext, QualityError
-from sari.core.language_registry import get_default_collection_extensions, normalize_language_filter, resolve_language_from_path
+from sari.core.language.registry import get_default_collection_extensions, normalize_language_filter, resolve_language_from_path
 from sari.core.models import CollectionPolicyDTO, L3DiffResultDTO, L3ReferenceDataDTO, now_iso8601_utc
 from sari.db.repositories.file_collection_repository import FileCollectionRepository
 from sari.db.repositories.lsp_tool_data_repository import LspToolDataRepository

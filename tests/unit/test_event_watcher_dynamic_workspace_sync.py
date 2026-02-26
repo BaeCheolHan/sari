@@ -7,7 +7,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from sari.services.collection.event_watcher import EventWatcher
+from sari.services.collection.l1.event_watcher import EventWatcher
 
 
 @dataclass(frozen=True)

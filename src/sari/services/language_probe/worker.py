@@ -6,8 +6,8 @@ import logging
 import threading
 
 from sari.core.exceptions import DaemonError
-from sari.core.language_registry import LanguageSupportEntry
-from sari.core.lsp_provision_policy import get_lsp_provision_policy
+from sari.core.language.registry import LanguageSupportEntry
+from sari.core.language.provision_policy import get_lsp_provision_policy
 from sari.core.models import LanguageProbeStatusDTO
 from sari.lsp.document_symbols import request_document_symbols_with_optional_sync
 from sari.lsp.hub import LspHub

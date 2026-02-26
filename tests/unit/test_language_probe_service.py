@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 import time
 
-from sari.core.language_registry import LanguageSupportEntry
+from sari.core.language.registry import LanguageSupportEntry
 from sari.core.models import WorkspaceDTO
 from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.db.schema import init_schema

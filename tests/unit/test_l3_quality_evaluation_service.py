@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from sari.services.collection.l3_asset_loader import L3AssetLoader
-from sari.services.collection.l3_quality_evaluation_service import (
+from sari.services.collection.l3.l3_asset_loader import L3AssetLoader
+from sari.services.collection.l3.l3_quality_evaluation_service import (
     L3QualityEvaluationService,
 )
 

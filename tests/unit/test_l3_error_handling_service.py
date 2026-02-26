@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from sari.core.models import FileEnrichJobDTO
-from sari.services.collection.l3_error_handling_service import L3ErrorHandlingService
+from sari.services.collection.l3.l3_error_handling_service import L3ErrorHandlingService
 
 
 def _job(*, scope_level: str | None = "module", scope_attempts: int = 0) -> FileEnrichJobDTO:

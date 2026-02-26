@@ -15,9 +15,9 @@ from typing import Callable, Protocol
 import tantivy
 from tantivy import Document
 
-from sari.core.language_registry import get_default_collection_extensions
+from sari.core.language.registry import get_default_collection_extensions
 from sari.core.text_decode import decode_bytes_with_policy
-from sari.core.repo_identity import compute_repo_id
+from sari.core.repo.identity import compute_repo_id
 from sari.core.models import CandidateFileDTO, CandidateIndexChangeDTO, SearchErrorDTO, WorkspaceDTO, now_iso8601_utc
 from sari.db.repositories.candidate_index_change_repository import CandidateIndexChangeRepository
 from sari.search.error_policy import classify_search_error

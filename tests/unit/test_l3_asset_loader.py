@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sari.services.collection.l3_asset_loader import L3AssetLoader
+from sari.services.collection.l3.l3_asset_loader import L3AssetLoader
 
 
 def test_asset_loader_loads_manifest_and_language_bundle() -> None:

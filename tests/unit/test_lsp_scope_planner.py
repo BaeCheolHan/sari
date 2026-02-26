@@ -6,7 +6,7 @@ import os as _os
 
 from solidlsp.ls_config import Language
 
-from sari.services.collection.lsp_scope_planner import LspScopePlanner
+from sari.services.collection.l5.lsp.scope_planner import LspScopePlanner
 
 
 def test_scope_planner_java_prefers_nearest_build_marker(tmp_path: Path) -> None:
@@ -233,7 +233,7 @@ def test_scope_planner_marker_index_prunes_ignored_dirs_during_walk(tmp_path: Pa
             visited_roots.append(str(root))
             yield root, dirs, files
 
-    monkeypatch.setattr("sari.services.collection.lsp_scope_planner.os.walk", _recording_walk)
+    monkeypatch.setattr("sari.services.collection.l5.lsp.scope_planner.os.walk", _recording_walk)
 
     planner = LspScopePlanner()
     index = planner._build_marker_index(repo_path=repo_root.resolve(), language=Language.TYPESCRIPT)  # type: ignore[attr-defined]

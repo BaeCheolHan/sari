@@ -1,6 +1,6 @@
 """운영 언어 레지스트리 정책을 검증한다."""
 
-from sari.core.language_registry import (
+from sari.core.language.registry import (
     get_default_collection_extensions,
     get_enabled_language_names,
     resolve_language_from_path,

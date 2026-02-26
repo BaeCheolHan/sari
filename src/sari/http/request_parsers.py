@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from sari.core.repo_context_resolver import resolve_repo_context
+from sari.core.repo.context_resolver import resolve_repo_context
 from sari.core.models import ErrorResponseDTO
 from sari.http.context import HttpContext
 

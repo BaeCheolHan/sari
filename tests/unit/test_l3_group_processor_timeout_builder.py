@@ -5,7 +5,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 
 from sari.core.models import FileEnrichJobDTO
-from sari.services.collection.l3_group_processor import L3GroupProcessor
+from sari.services.collection.l3.l3_group_processor import L3GroupProcessor
 from sari.services.collection.perf_trace import PerfTracer
 
 

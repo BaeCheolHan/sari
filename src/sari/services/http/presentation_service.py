@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sari.core.language_registry import get_enabled_language_names
+from sari.core.language.registry import get_enabled_language_names
 from sari.core.models import LanguageProbeStatusDTO
 from sari.db.repositories.language_probe_repository import LanguageProbeRepository
 from sari.db.repositories.tool_data_layer_repository import ToolDataLayerRepository

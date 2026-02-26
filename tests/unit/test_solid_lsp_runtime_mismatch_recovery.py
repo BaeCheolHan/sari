@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sari.services.collection.solid_lsp_extraction_backend import SolidLspExtractionBackend
+from sari.services.collection.l5.solid_lsp_extraction_backend import SolidLspExtractionBackend
 from sari.services.lsp_extraction_contracts import LspExtractionResultDTO
 
 

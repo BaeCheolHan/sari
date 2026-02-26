@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from solidlsp.ls_config import Language
 
-from sari.services.collection.watcher_hotness_tracker import WatcherHotnessTracker
+from sari.services.collection.l1.watcher_hotness_tracker import WatcherHotnessTracker
 
 
 def test_hotness_tracker_records_modified_burst_and_decays() -> None:

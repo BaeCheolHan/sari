@@ -4,7 +4,7 @@ from contextlib import contextmanager
 
 from solidlsp.ls_config import Language
 
-from sari.services.collection.lsp_extract_request_runner_service import LspExtractRequestRunnerService
+from sari.services.collection.l5.lsp.extract_request_runner_service import LspExtractRequestRunnerService
 
 
 class _DocSymbols:

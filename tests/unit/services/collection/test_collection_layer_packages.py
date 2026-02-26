@@ -47,14 +47,6 @@ def test_l5_package_imports() -> None:
     assert LspSessionBrokerFromInit is LspSessionBroker
 
 
-def test_legacy_import_shims_still_work() -> None:
-    from sari.services.collection.l3_orchestrator import L3Orchestrator
-    from sari.services.collection.lsp_session_broker import LspSessionBroker
-
-    assert L3Orchestrator is not None
-    assert LspSessionBroker is not None
-
-
 def test_collection_entrypoints_prefer_canonical_layer_imports() -> None:
     root = Path(__file__).resolve().parents[4] / "src" / "sari" / "services" / "collection"
     service_source = (root / "service.py").read_text(encoding="utf-8")

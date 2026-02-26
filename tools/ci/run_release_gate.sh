@@ -73,6 +73,8 @@ export PYTHONPATH="${ROOT_DIR}/src"
 export SARI_DB_PATH="${DB_PATH}"
 prepare_critical_fixture
 
+python3 "${ROOT_DIR}/tools/ci/check_no_legacy_shim_imports.py" "${ROOT_DIR}/src" "${ROOT_DIR}/tests"
+
 run_cmd() {
   local label="$1"
   local log_file="$2"

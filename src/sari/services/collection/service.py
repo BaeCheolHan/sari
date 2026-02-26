@@ -15,7 +15,7 @@ from typing import Callable, Protocol
 from solidlsp.ls_config import Language
 from sari.core.exceptions import CollectionError, DaemonError, ErrorContext, ValidationError
 from sari.core.config import DEFAULT_COLLECTION_EXCLUDE_GLOBS
-from sari.core.language_registry import get_default_collection_extensions, get_enabled_language_names, resolve_language_from_path
+from sari.core.language.registry import get_default_collection_extensions, get_enabled_language_names, resolve_language_from_path
 from sari.core.text_decode import decode_bytes_with_policy
 from sari.core.models import CandidateIndexChangeDTO, CollectionPolicyDTO, CollectionScanRepoResultDTO, CollectionScanResultDTO, CollectedFileL1DTO, FileReadResultDTO, PipelineMetricsDTO, now_iso8601_utc
 from sari.db.repositories.file_body_repository import FileBodyDecodeError, FileBodyRepository

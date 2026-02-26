@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from solidlsp.ls_config import Language
 
-from sari.services.collection.lsp_runtime_mismatch_recovery_service import LspRuntimeMismatchRecoveryService
-from sari.services.collection.solid_lsp_probe_mixin import _ProbeStateRecord
+from sari.services.collection.l5.lsp.runtime_mismatch_recovery_service import LspRuntimeMismatchRecoveryService
+from sari.services.collection.l5.solid_lsp_probe_mixin import _ProbeStateRecord
 
 
 def _resolver(path: str):

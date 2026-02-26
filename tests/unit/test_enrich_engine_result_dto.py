@@ -13,10 +13,10 @@ from sari.services.collection.enrich_engine import (
     _LayerUpsertBucketsDTO,
     _LayerUpsertsDTO,
 )
-from sari.services.collection.l2_job_processor import L2JobProcessor
-from sari.services.collection.l3_flush_coordinator import L3FlushCoordinator
-from sari.services.collection.l3_result_merger import L3ResultMerger
-from sari.services.collection.l3_timeout_failure_builder import L3TimeoutFailureBuilder
+from sari.services.collection.l2.l2_job_processor import L2JobProcessor
+from sari.services.collection.l3.l3_flush_coordinator import L3FlushCoordinator
+from sari.services.collection.l3.l3_result_merger import L3ResultMerger
+from sari.services.collection.l3.l3_timeout_failure_builder import L3TimeoutFailureBuilder
 from sari.services.collection.enrich_flush_coordinator import EnrichFlushCoordinator
 from sari.services.collection.enrich_jobs_processor import EnrichJobsProcessor
 
@@ -156,7 +156,6 @@ def test_l3_group_processor_is_split_out_of_enrich_engine_module() -> None:
     _assert_any_import_path(
         source,
         (
-            "from sari.services.collection.l3_group_processor import",
             "from sari.services.collection.l3.l3_group_processor import",
         ),
     )

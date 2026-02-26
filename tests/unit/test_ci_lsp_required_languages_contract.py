@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sari.core.language_registry import get_enabled_language_names
+from sari.core.language.registry import get_enabled_language_names
 
 
 def _read_required_languages(file_path: Path) -> tuple[str, ...]:

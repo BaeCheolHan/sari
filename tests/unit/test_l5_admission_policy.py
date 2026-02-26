@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from sari.core.models import L5ReasonCode, L5RejectReason, L5RequestMode
-from sari.services.collection.l5_admission_policy import (
+from sari.services.collection.l5.l5_admission_policy import (
     L5AdmissionInput,
     L5AdmissionPolicy,
     L5AdmissionPolicyConfig,
