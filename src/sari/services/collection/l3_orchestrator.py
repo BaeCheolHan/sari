@@ -32,6 +32,7 @@ from .l3_treesitter_preprocess_service import (
     L3PreprocessResultDTO,
 )
 from .l3_quality_evaluation_service import L3QualityEvaluationService
+from .layer_upsert_builder import LayerUpsertBuilder
 from .l3_stages.admission_stage import L3AdmissionStage
 from .l3_stages.file_guard_stage import L3FileGuardStage
 from .l3_stages.extract_stage import L3ExtractStage
@@ -109,6 +110,7 @@ class L3Orchestrator:
         self._quality_shadow_accumulators: dict[str, dict[str, float]] = {}
         self._quality_shadow_flag_counts: dict[str, int] = {}
         self._quality_shadow_missing_pattern_counts: dict[str, dict[str, int]] = {}
+        self._layer_upsert_builder = LayerUpsertBuilder()
         self._preprocess_stage = L3PreprocessStage(run_preprocess=self._run_preprocess)
         self._file_guard_stage = L3FileGuardStage(get_file=self._file_repo.get_file)
         self._admission_stage = L3AdmissionStage(
@@ -566,10 +568,6 @@ class L3Orchestrator:
                 reason=f"l3_preprocess_exception:{type(exc).__name__}",
             )
 
-    def _normalize_workspace_uid(self, repo_root: str) -> str:
-        # tool_data.workspace_id는 조회 경로(read/search)와 동일하게 workspace path를 사용한다.
-        return repo_root.strip()
-
     def _build_l3_layer_upsert(
         self,
         *,
@@ -579,23 +577,13 @@ class L3Orchestrator:
         preprocess_result: L3PreprocessResultDTO | None,
         now_iso: str,
     ) -> dict[str, object]:
-        symbols: list[dict[str, object]] = []
-        degraded = False
-        skipped_large_file = False
-        if preprocess_result is not None:
-            symbols = list(preprocess_result.symbols)
-            degraded = bool(preprocess_result.degraded)
-            skipped_large_file = preprocess_result.decision is L3PreprocessDecision.DEFERRED_HEAVY
-        return {
-            "workspace_id": self._normalize_workspace_uid(repo_root),
-            "repo_root": repo_root,
-            "relative_path": relative_path,
-            "content_hash": content_hash,
-            "symbols": symbols,
-            "degraded": degraded,
-            "l3_skipped_large_file": skipped_large_file,
-            "updated_at": now_iso,
-        }
+        return self._layer_upsert_builder.build_l3(
+            repo_root=repo_root,
+            relative_path=relative_path,
+            content_hash=content_hash,
+            preprocess_result=preprocess_result,
+            now_iso=now_iso,
+        )
 
     def _build_l4_layer_upsert(
         self,
@@ -607,43 +595,14 @@ class L3Orchestrator:
         admission_decision: L4AdmissionDecisionDTO | None,
         now_iso: str,
     ) -> dict[str, object]:
-        if preprocess_result is None:
-            decision_name = "needs_l5"
-            source = "none"
-            reason = "l3_preprocess_missing"
-            symbol_count = 0
-            degraded = True
-            needs_l5 = True
-        else:
-            decision_name = preprocess_result.decision.value
-            source = preprocess_result.source
-            reason = preprocess_result.reason
-            symbol_count = len(preprocess_result.symbols)
-            degraded = bool(preprocess_result.degraded)
-            needs_l5 = preprocess_result.decision is not L3PreprocessDecision.L3_ONLY
-        confidence = 0.9 if not needs_l5 and not degraded else 0.35
-        coverage = 0.0 if preprocess_result is not None and preprocess_result.decision is L3PreprocessDecision.DEFERRED_HEAVY else (0.6 if degraded else 1.0)
-        ambiguity = max(0.0, min(1.0, 1.0 - confidence))
-        normalized: dict[str, object] = {
-            "decision": decision_name,
-            "source": source,
-            "reason": reason,
-            "symbol_count": symbol_count,
-            "admit_l5": bool(admission_decision.admit_l5) if admission_decision is not None else None,
-            "reject_reason": admission_decision.reject_reason.value if admission_decision is not None and admission_decision.reject_reason is not None else None,
-        }
-        return {
-            "workspace_id": self._normalize_workspace_uid(repo_root),
-            "repo_root": repo_root,
-            "relative_path": relative_path,
-            "content_hash": content_hash,
-            "normalized": normalized,
-            "confidence": confidence,
-            "ambiguity": ambiguity,
-            "coverage": coverage,
-            "needs_l5": needs_l5,
-            "updated_at": now_iso,
-        }
+        return self._layer_upsert_builder.build_l4(
+            repo_root=repo_root,
+            relative_path=relative_path,
+            content_hash=content_hash,
+            preprocess_result=preprocess_result,
+            admission_decision=admission_decision,
+            now_iso=now_iso,
+        )
 
     def _build_l5_layer_upsert(
         self,
@@ -656,16 +615,12 @@ class L3Orchestrator:
         relations: list[dict[str, object]],
         now_iso: str,
     ) -> dict[str, object]:
-        return {
-            "workspace_id": self._normalize_workspace_uid(repo_root),
-            "repo_root": repo_root,
-            "relative_path": relative_path,
-            "content_hash": content_hash,
-            "reason_code": reason_code.value,
-            "semantics": {
-                "source": "lsp",
-                "symbols_count": len(symbols),
-                "relations_count": len(relations),
-            },
-            "updated_at": now_iso,
-        }
+        return self._layer_upsert_builder.build_l5(
+            repo_root=repo_root,
+            relative_path=relative_path,
+            content_hash=content_hash,
+            reason_code=reason_code,
+            symbols=symbols,
+            relations=relations,
+            now_iso=now_iso,
+        )

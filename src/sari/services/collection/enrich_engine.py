@@ -4,12 +4,10 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 import os
-from datetime import datetime, timedelta, timezone
 import queue
 import time
 import logging
 from collections import deque
-from pathlib import Path
 from typing import Callable
 
 from solidlsp.ls_config import Language
@@ -33,6 +31,10 @@ from sari.services.collection.l5_admission_policy import (
     LanguageL5Policy,
     TokenBucket,
 )
+from sari.services.collection.l5_admission_runtime_service import (
+    L5AdmissionRuntimeService,
+    L5AdmissionRuntimeState,
+)
 from sari.db.repositories.tool_data_layer_repository import ToolDataLayerRepository
 from sari.services.collection.error_policy import CollectionErrorPolicy
 from sari.services.collection.l3_broker_admission_service import L3BrokerAdmissionService
@@ -45,6 +47,25 @@ from sari.services.collection.l3_quality_evaluation_service import L3QualityEval
 from sari.services.collection.l3_queue_transition_service import L3QueueTransitionService
 from sari.services.collection.l3_scope_resolution_service import L3ScopeResolutionService
 from sari.services.collection.l3_skip_eligibility_service import L3SkipEligibilityService
+from sari.services.collection.l3_skip_runtime_service import L3SkipRuntimeService
+from sari.services.collection.l3_runtime_coordination_service import L3RuntimeCoordinationService
+from sari.services.collection.l3_scheduling_service import L3SchedulingService
+from sari.services.collection.l3_error_handling_service import L3ErrorHandlingService
+from sari.services.collection.l3_language_config_parser import (
+    parse_l3_supported_languages as _parse_l3_supported_languages_shared,
+    parse_lsp_probe_l1_languages as _parse_lsp_probe_l1_languages_shared,
+)
+from sari.services.collection.l3_failure_classifier import (
+    broker_defer_delay_seconds_for_reason as _shared_broker_defer_delay_seconds_for_reason,
+    classify_l3_extract_failure_kind as _shared_classify_l3_extract_failure_kind,
+    extract_broker_lease_reason_from_l3_error as _shared_extract_broker_lease_reason_from_l3_error,
+    extract_error_code_from_lsp_error_message as _shared_extract_error_code_from_lsp_error_message,
+    is_scope_escalation_trigger_error_for_l3 as _shared_is_scope_escalation_trigger_error_for_l3,
+    map_broker_lease_reason_to_defer_reason as _shared_map_broker_lease_reason_to_defer_reason,
+    next_scope_level_for_l3_escalation as _shared_next_scope_level_for_l3_escalation,
+)
+from sari.services.collection.enrich_engine_wiring import wire_engine_services, wire_runtime_processors
+from sari.services.collection.layer_upsert_builder import LayerUpsertBuilder
 from sari.services.collection.l3_group_processor import L3GroupProcessor as _L3GroupProcessor
 from sari.services.collection.l2_job_processor import L2JobProcessor as _L2JobProcessor
 from sari.services.collection.l3_flush_coordinator import L3FlushCoordinator as _L3FlushCoordinator
@@ -143,8 +164,6 @@ class EnrichEngine:
         self._l3_recent_success_ttl_sec = max(0, int(l3_recent_success_ttl_sec))
         self._l3_backpressure_on_interactive = bool(l3_backpressure_on_interactive)
         self._l3_backpressure_cooldown_sec = max(0.01, float(max(10, int(l3_backpressure_cooldown_ms))) / 1000.0)
-        self._l3_backpressure_until = 0.0
-        self._last_interactive_timeout_count = 0
         self._l3_executor = ThreadPoolExecutor(max_workers=self._l3_executor_max_workers, thread_name_prefix="enrich-l3")
         self._l3_executor_closed = False
         self._indexing_mode = "steady"
@@ -158,225 +177,32 @@ class EnrichEngine:
         self._l5_total_admitted = 0
         self._l5_batch_decisions = 0
         self._l5_batch_admitted = 0
-        self._l5_reject_counts_by_reason: dict[L5RejectReason, int] = {
-            reason: 0 for reason in L5RejectReason
-        }
-        self._l5_cost_units_by_reason: dict[str, float] = {}
-        self._l5_cost_units_by_language: dict[str, float] = {}
-        self._l5_cost_units_by_workspace: dict[str, float] = {}
         self._l5_calls_per_min_per_lang_max = max(1, int(l5_calls_per_min_per_lang_max))
-        self._l5_admitted_timestamps_by_lang: dict[str, deque[float]] = {}
-        self._l5_lang_buckets: dict[str, TokenBucket] = {}
-        self._l5_workspace_buckets: dict[str, TokenBucket] = {}
-        self._l5_cooldown_until_by_scope_file: dict[str, float] = {}
+        self._l5_call_rate_total_max = max(0.0, min(1.0, float(l5_call_rate_total_max)))
+        self._l5_call_rate_batch_max = max(0.0, min(1.0, float(l5_call_rate_batch_max)))
+        self._l5_tokens_per_10sec_global_max = max(1, int(l5_tokens_per_10sec_global_max))
         self._l5_tokens_per_10sec_per_lang_max = max(1, int(l5_tokens_per_10sec_per_lang_max))
         self._l5_tokens_per_10sec_per_workspace_max = max(1, int(l5_tokens_per_10sec_per_workspace_max))
-        self._l5_admission_policy = L5AdmissionPolicy(
-            config=L5AdmissionPolicyConfig(
-                l5_call_rate_total_max=max(0.0, min(1.0, float(l5_call_rate_total_max))),
-                l5_call_rate_batch_max=max(0.0, min(1.0, float(l5_call_rate_batch_max))),
-                language_policy_map=self._build_default_language_policy_map(),
-            ),
-            global_bucket=TokenBucket(
-                capacity=float(max(1, int(l5_tokens_per_10sec_global_max))),
-                refill_per_sec=float(max(1, int(l5_tokens_per_10sec_global_max))) / 10.0,
-                tokens=float(max(1, int(l5_tokens_per_10sec_global_max))),
-                last_ts=time.monotonic(),
-            ),
-            lang_bucket_provider=self._get_l5_lang_bucket,
-            workspace_bucket_provider=self._get_l5_workspace_bucket,
-        )
-        self._l4_admission_service = L4AdmissionService(
-            policy=self._l5_admission_policy,
-        )
         self._l3_asset_loader = L3AssetLoader()
-        configured_l3_asset_mode = os.getenv("SARI_L3_ASSET_MODE", l3_asset_mode).strip().lower()
-        if configured_l3_asset_mode not in {"shadow", "gate", "apply"}:
-            configured_l3_asset_mode = "shadow"
-        self._l3_asset_mode = configured_l3_asset_mode
-        self._l3_asset_lang_allowlist = tuple(
-            item.strip().lower() for item in l3_asset_lang_allowlist if item.strip() != ""
+        self._extract_error_code_fn = _extract_error_code_from_lsp_error_message
+        self._is_scope_escalation_trigger_fn = (
+            lambda code, message: _is_scope_escalation_trigger_error_for_l3(code=code, message=message)
         )
-        self._l3_preprocess_service = L3TreeSitterPreprocessService(
-            query_compile_cache_enabled=l3_query_compile_cache_enabled,
-            query_compile_ms_budget=l3_query_compile_ms_budget,
-            query_budget_ms=l3_query_budget_ms,
-            asset_loader=self._l3_asset_loader,
-            asset_mode=self._l3_asset_mode,
-            asset_lang_allowlist=self._l3_asset_lang_allowlist,
-        )
-        self._l3_degraded_fallback_service = L3DegradedFallbackService()
-        self._l3_preprocess_max_bytes = 262_144
-        self._l3_scope_resolution_service = L3ScopeResolutionService()
-        self._l3_broker_admission_service = L3BrokerAdmissionService()
-        self._l3_skip_eligibility_service = L3SkipEligibilityService(
-            is_recent_tool_ready=self._is_recent_tool_ready,
-            resolve_l3_skip_reason=self._resolve_l3_skip_reason,
-            build_l3_skipped_readiness=lambda job, reason, now_iso: self._build_l3_skipped_readiness(
-                job=job,
-                reason=reason,
-                now_iso=now_iso,
-            ),
-        )
-        self._l3_queue_transition_service = L3QueueTransitionService(
-            queue_repo=self._enrich_queue_repo,
-            error_policy=self._error_policy,
-            now_iso_supplier=now_iso8601_utc,
-            broker_admission=self._l3_broker_admission_service,
-            extract_error_code=_extract_error_code_from_lsp_error_message,
-            is_scope_escalation_trigger=lambda code, message: _is_scope_escalation_trigger_error_for_l3(
-                code=code,
-                message=message,
-            ),
-            next_scope_level_for_escalation=_next_scope_level_for_l3_escalation,
-        )
-        self._l3_persist_service = L3PersistService(
-            record_scope_learning=lambda job: self._record_scope_learning_after_l3_success(job=job),
-        )
-        self._l3_quality_eval_service = L3QualityEvaluationService(asset_loader=self._l3_asset_loader)
-        self._l3_orchestrator = L3Orchestrator(
-            file_repo=self._file_repo,
-            lsp_backend=self._lsp_backend,
-            policy=self._policy,
-            error_policy=self._error_policy,
-            run_mode=self._run_mode,
-            event_repo=self._event_repo,
-            deletion_hold_enabled=self._is_deletion_hold_enabled,
-            now_iso_supplier=now_iso8601_utc,
-            record_enrich_latency=self._record_enrich_latency,
-            result_builder=lambda **kwargs: _L3JobResultDTO(**kwargs),
-            classify_failure_kind=_classify_l3_extract_failure_kind,
-            schedule_l1_probe_after_l3_fallback=lambda job: self._schedule_l1_probe_after_l3_fallback(job=job),
-            scope_resolution=self._l3_scope_resolution_service,
-            queue_transition=self._l3_queue_transition_service,
-            skip_eligibility=self._l3_skip_eligibility_service,
-            persist_service=self._l3_persist_service,
-            preprocess_service=self._l3_preprocess_service,
-            degraded_fallback_service=self._l3_degraded_fallback_service,
-            preprocess_max_bytes=self._l3_preprocess_max_bytes,
-            evaluate_l5_admission=self._evaluate_l5_admission_for_job if self._l5_admission_shadow_enabled else None,
-            l5_admission_enforced=self._l5_admission_enforced,
-            quality_eval_service=self._l3_quality_eval_service,
-            quality_shadow_enabled=False,
-            quality_shadow_sample_rate=0.0,
-            quality_shadow_max_files=0,
-            quality_shadow_lang_allowlist=(),
+        self._next_scope_level_for_escalation_fn = _next_scope_level_for_l3_escalation
+        self._classify_failure_kind_fn = _classify_l3_extract_failure_kind
+        wire_engine_services(
+            self,
+            l3_query_compile_cache_enabled=l3_query_compile_cache_enabled,
+            l3_query_compile_ms_budget=l3_query_compile_ms_budget,
+            l3_query_budget_ms=l3_query_budget_ms,
+            l3_asset_mode=l3_asset_mode,
+            l3_asset_lang_allowlist=l3_asset_lang_allowlist,
         )
         self._initialize_runtime_processors()
 
     def _initialize_runtime_processors(self) -> None:
         """런타임 processor/coordinator wiring을 구성한다."""
-        self._enrich_flush_coordinator = _EnrichFlushCoordinator(
-            body_repo=self._body_repo,
-            lsp_repo=self._lsp_repo,
-            readiness_repo=self._readiness_repo,
-            file_repo=self._file_repo,
-            enrich_queue_repo=self._enrich_queue_repo,
-            tool_layer_repo=self._tool_layer_repo,
-        )
-        self._l3_flush_coordinator = _L3FlushCoordinator(
-            flush_enrich_buffers=self._enrich_flush_coordinator.flush,
-        )
-        self._l3_result_merger = _L3ResultMerger()
-        self._l3_timeout_failure_builder = _L3TimeoutFailureBuilder(
-            retry_max_attempts=self._policy.retry_max_attempts,
-            retry_backoff_base_sec=self._policy.retry_backoff_base_sec,
-            record_error_event=self._error_policy.record_error_event,
-        )
-        self._l3_group_processor = _L3GroupProcessor(
-            lsp_backend=self._lsp_backend,
-            l3_executor=self._l3_executor,
-            perf_tracer=self._perf_tracer,
-            resolve_lsp_language=self._resolve_lsp_language,
-            set_group_bulk_mode=self._set_group_bulk_mode,
-            resolve_l3_parallelism=self._resolve_l3_parallelism,
-            process_single_l3_job=self._process_single_l3_job,
-            merge_l3_result=lambda result, buffers: self._l3_result_merger.merge(
-                result=result,
-                buffers=buffers,
-            ),
-            flush_l3_buffers=lambda buffers, body_upserts: self._l3_flush_coordinator.flush(
-                buffers=buffers,
-                body_upserts=body_upserts,
-            ),
-            group_wait_timeout_sec=self._l3_group_wait_timeout_sec,
-            now_iso_supplier=now_iso8601_utc,
-            build_timeout_failure_result=lambda **kwargs: self._l3_timeout_failure_builder.build(**kwargs),
-        )
-        self._l2_job_processor = _L2JobProcessor(
-            assert_parent_alive=self._assert_parent_alive,
-            acquire_pending_for_l2=lambda limit, now_iso: self._enrich_queue_repo.acquire_pending_for_l2(
-                limit=limit,
-                now_iso=now_iso,
-            ),
-            rebalance_jobs_by_language=self._rebalance_jobs_by_language,
-            flush_batch_size=self._flush_batch_size,
-            flush_interval_sec=self._flush_interval_sec,
-            flush_max_body_bytes=self._flush_max_body_bytes,
-            flush_enrich_buffers=self._enrich_flush_coordinator.flush,
-            run_mode=self._run_mode,
-            file_repo_get_file=self._file_repo.get_file,
-            retry_max_attempts=self._policy.retry_max_attempts,
-            retry_backoff_base_sec=self._policy.retry_backoff_base_sec,
-            persist_body_for_read=self._persist_body_for_read,
-            vector_index_sink=self._vector_index_sink,
-            is_deletion_hold_enabled=self._is_deletion_hold_enabled,
-            resolve_l3_skip_reason=lambda job: self._resolve_l3_skip_reason(job=job),
-            build_l3_skipped_readiness=lambda job, reason, now_iso: self._build_l3_skipped_readiness(
-                job=job,
-                reason=reason,
-                now_iso=now_iso,
-            ),
-            l3_ready_queue_put=self._l3_ready_queue.put,
-            record_error_event=self._error_policy.record_error_event,
-            record_enrich_latency=self._record_enrich_latency,
-            record_event=(
-                None
-                if self._event_repo is None
-                else lambda job_id, status, latency_ms, created_at: self._event_repo.record_event(
-                    job_id=job_id,
-                    status=status,
-                    latency_ms=latency_ms,
-                    created_at=created_at,
-                )
-            ),
-        )
-        self._enrich_jobs_processor = _EnrichJobsProcessor(
-            assert_parent_alive=self._assert_parent_alive,
-            acquire_pending=lambda limit, now_iso: self._enrich_queue_repo.acquire_pending(limit=limit, now_iso=now_iso),
-            rebalance_jobs_by_language=self._rebalance_jobs_by_language,
-            file_repo_get_file=self._file_repo.get_file,
-            retry_max_attempts=self._policy.retry_max_attempts,
-            retry_backoff_base_sec=self._policy.retry_backoff_base_sec,
-            persist_body_for_read=self._persist_body_for_read,
-            vector_index_sink=self._vector_index_sink,
-            is_deletion_hold_enabled=self._is_deletion_hold_enabled,
-            resolve_l3_skip_reason=lambda job: self._resolve_l3_skip_reason(job=job),
-            build_l3_skipped_readiness=lambda job, reason, now_iso: self._build_l3_skipped_readiness(
-                job=job,
-                reason=reason,
-                now_iso=now_iso,
-            ),
-            lsp_extract=self._lsp_backend.extract,
-            schedule_l1_probe_after_l3_fallback=lambda job: self._schedule_l1_probe_after_l3_fallback(job=job),
-            record_error_event=self._error_policy.record_error_event,
-            run_mode=self._run_mode,
-            flush_batch_size=self._flush_batch_size,
-            flush_interval_sec=self._flush_interval_sec,
-            flush_max_body_bytes=self._flush_max_body_bytes,
-            flush_enrich=self._enrich_flush_coordinator.flush,
-            record_enrich_latency=self._record_enrich_latency,
-            record_event=(
-                None
-                if self._event_repo is None
-                else lambda job_id, status, latency_ms, created_at: self._event_repo.record_event(
-                    job_id=job_id,
-                    status=status,
-                    latency_ms=latency_ms,
-                    created_at=created_at,
-                )
-            ),
-        )
+        wire_runtime_processors(self)
 
     def _build_default_language_policy_map(self) -> dict[str, LanguageL5Policy]:
         """전 언어를 열어두고 예산으로 조이는 기본 L5 정책을 생성한다."""
@@ -620,113 +446,33 @@ class EnrichEngine:
         return resolve_language_from_path(file_path=relative_path)
 
     def _rebalance_jobs_by_language(self, jobs: list[FileEnrichJobDTO]) -> list[FileEnrichJobDTO]:
-        if len(jobs) <= 1:
-            return jobs
-        buckets: dict[str, deque[FileEnrichJobDTO]] = {}
-        order: list[str] = []
-        for job in jobs:
-            language = self._resolve_lsp_language(job.relative_path)
-            key = "other" if language is None else language.value
-            if key not in buckets:
-                buckets[key] = deque()
-                order.append(key)
-            buckets[key].append(job)
-        rebalanced: list[FileEnrichJobDTO] = []
-        while len(order) > 0:
-            next_order: list[str] = []
-            for key in order:
-                bucket = buckets[key]
-                if len(bucket) == 0:
-                    continue
-                rebalanced.append(bucket.popleft())
-                if len(bucket) > 0:
-                    next_order.append(key)
-            order = next_order
-        return rebalanced
+        return self._get_or_init_l3_scheduling_service().rebalance_jobs_by_language(jobs)
 
     def _group_jobs_by_repo_and_language(self, jobs: list[FileEnrichJobDTO]) -> list[list[FileEnrichJobDTO]]:
-        grouped: dict[tuple[str, str], list[FileEnrichJobDTO]] = {}
-        ordered_keys: list[tuple[str, str]] = []
-        for job in jobs:
-            language = self._resolve_lsp_language(job.relative_path)
-            language_key = "other" if language is None else language.value
-            key = (job.repo_root, language_key)
-            if key not in grouped:
-                grouped[key] = []
-                ordered_keys.append(key)
-            grouped[key].append(job)
-        return [grouped[key] for key in ordered_keys]
+        return self._get_or_init_l3_scheduling_service().group_jobs_by_repo_and_language(jobs)
 
     def _order_l3_groups_for_scheduling(self, groups: list[list[FileEnrichJobDTO]]) -> list[list[FileEnrichJobDTO]]:
         """PR3 baseline: backend가 제공하는 lane-aware 정렬 힌트로 L3 그룹 순서를 조정한다."""
-        if len(groups) <= 1:
-            return groups
-        sorter = getattr(self._lsp_backend, "get_l3_group_sort_key", None)
-        if not callable(sorter):
-            return groups
-        keyed: list[tuple[tuple[object, ...], int, list[FileEnrichJobDTO]]] = []
-        for idx, group in enumerate(groups):
-            if len(group) == 0:
-                keyed.append(((99, 99, 0.0, f"empty:{idx}"), idx, group))
-                continue
-            job0 = group[0]
-            try:
-                key = sorter(
-                    repo_root=job0.repo_root,
-                    sample_relative_path=job0.relative_path,
-                    group_size=len(group),
-                )
-            except (RuntimeError, OSError, ValueError, TypeError):
-                key = (9, 9, 0.0, f"{job0.repo_root}:{job0.relative_path}")
-            keyed.append((tuple(key), idx, group))
-        keyed.sort(key=lambda item: (item[0], item[1]))
-        return [group for _key, _idx, group in keyed]
+        return self._get_or_init_l3_scheduling_service().order_l3_groups_for_scheduling(groups)
 
     def _resolve_l3_parallelism(self, jobs: list[FileEnrichJobDTO]) -> int:
-        if len(jobs) <= 1:
-            return 1
-        if not self._l3_parallel_enabled:
-            return 1
-        language = self._resolve_lsp_language(jobs[0].relative_path)
-        if language is None:
-            return 1
-        backend_parallelism = 1
-        executor_cap = int(getattr(self, "_l3_executor_max_workers", len(jobs)))
-        requested_parallelism = min(len(jobs), max(1, executor_cap))
-        if requested_parallelism <= 1:
-            return 1
-        now = time.monotonic()
-        if self._l3_backpressure_on_interactive:
-            pressure_getter = getattr(self._lsp_backend, "get_interactive_pressure", None)
-            if callable(pressure_getter):
-                try:
-                    pressure = pressure_getter()
-                except (RuntimeError, OSError, ValueError, TypeError):
-                    pressure = None
-                if isinstance(pressure, dict):
-                    pending_interactive = int(pressure.get("pending_interactive", 0))
-                    timeout_count = int(pressure.get("interactive_timeout_count", 0))
-                    if timeout_count > self._last_interactive_timeout_count:
-                        self._l3_backpressure_until = now + self._l3_backpressure_cooldown_sec
-                    self._last_interactive_timeout_count = max(self._last_interactive_timeout_count, timeout_count)
-                    if pending_interactive > 0:
-                        return 1
-            if now < self._l3_backpressure_until:
-                requested_parallelism = max(1, requested_parallelism // 2)
-        getter = getattr(self._lsp_backend, "get_parallelism", None)
-        batch_getter = getattr(self._lsp_backend, "get_parallelism_for_batch", None)
-        if callable(batch_getter):
-            try:
-                backend_parallelism = int(batch_getter(jobs[0].repo_root, language, requested_parallelism))
-            except (RuntimeError, OSError, ValueError, TypeError):
-                backend_parallelism = 1
-            return max(1, min(len(jobs), requested_parallelism, backend_parallelism))
-        if callable(getter):
-            try:
-                backend_parallelism = int(getter(jobs[0].repo_root, language))
-            except (RuntimeError, OSError, ValueError, TypeError):
-                backend_parallelism = 1
-        return max(1, min(len(jobs), requested_parallelism, backend_parallelism))
+        return self._get_or_init_l3_scheduling_service().resolve_l3_parallelism(jobs)
+
+    def _get_or_init_l3_scheduling_service(self) -> L3SchedulingService:
+        service = getattr(self, "_l3_scheduling_service", None)
+        if service is not None:
+            return service
+        service = L3SchedulingService(
+            resolve_lsp_language=lambda relative_path: self._resolve_lsp_language(relative_path),
+            lsp_backend=getattr(self, "_lsp_backend", object()),
+            l3_parallel_enabled=bool(getattr(self, "_l3_parallel_enabled", True)),
+            executor_max_workers=max(1, int(getattr(self, "_l3_executor_max_workers", 32))),
+            backpressure_on_interactive=bool(getattr(self, "_l3_backpressure_on_interactive", True)),
+            backpressure_cooldown_sec=float(getattr(self, "_l3_backpressure_cooldown_sec", 0.3)),
+            monotonic_now=time.monotonic,
+        )
+        self._l3_scheduling_service = service
+        return service
 
     def _set_group_bulk_mode(self, group: list[FileEnrichJobDTO], enabled: bool) -> None:
         """LSP 백엔드에 그룹 단위 bulk 모드를 전달한다."""
@@ -792,177 +538,74 @@ class EnrichEngine:
 
     def _schedule_l1_probe_after_l3_fallback(self, job: FileEnrichJobDTO) -> None:
         """L3 fail-open 시 백그라운드 L1 probe를 조건부로 예약한다."""
-        language = resolve_language_from_path(file_path=job.relative_path)
-        if language is None or language not in self._lsp_probe_l1_languages:
-            return
-        inflight_checker = getattr(self._lsp_backend, "is_probe_inflight_for_file", None)
-        if callable(inflight_checker):
-            try:
-                if bool(inflight_checker(repo_root=job.repo_root, relative_path=job.relative_path)):
-                    return
-            except (RuntimeError, OSError, ValueError, TypeError):
-                return
-        scheduler = getattr(self._lsp_backend, "schedule_probe_for_file", None)
-        if not callable(scheduler):
-            return
-        try:
-            scheduler(
-                repo_root=job.repo_root,
-                relative_path=job.relative_path,
-                force=False,
-                trigger="l3_fallback",
-            )
-        except (RuntimeError, OSError, ValueError, TypeError):
-            log.warning(
-                "Failed to schedule l3_fallback probe (repo=%s, path=%s)",
-                job.repo_root,
-                job.relative_path,
-                exc_info=True,
-            )
-            return
+        self._get_or_init_l3_runtime_coordination_service().schedule_l1_probe_after_l3_fallback(job)
 
     def _try_escalate_scope_after_l3_extract_error(self, *, job: FileEnrichJobDTO, error_message: str) -> bool:
         """L3 extract 실패가 scope 문제라면 same-row scope escalation을 시도한다."""
-        queue_repo = self._enrich_queue_repo
-        escalator = getattr(queue_repo, "escalate_scope_on_same_job", None)
-        if not callable(escalator):
-            return False
-        error_code = _extract_error_code_from_lsp_error_message(error_message)
-        if not _is_scope_escalation_trigger_error_for_l3(code=error_code, message=error_message):
-            return False
-        current_attempts = max(0, int(getattr(job, "scope_attempts", 0)))
-        if current_attempts >= 2:
-            return False
-        next_scope_level = _next_scope_level_for_l3_escalation(getattr(job, "scope_level", None))
-        if next_scope_level is None:
-            return False
-        next_scope_root = self._resolve_next_scope_root_for_escalation(job=job, next_scope_level=next_scope_level)
-        now_iso = now_iso8601_utc()
-        try:
-            updated = bool(
-                escalator(
-                    job_id=job.job_id,
-                    next_scope_level=next_scope_level,
-                    next_scope_root=next_scope_root,
-                    next_retry_at=now_iso,
-                    now_iso=now_iso,
-                )
-            )
-        except (RuntimeError, OSError, ValueError, TypeError):
-            log.warning(
-                "Failed to escalate scope after L3 extract error (repo=%s, path=%s)",
-                job.repo_root,
-                job.relative_path,
-                exc_info=True,
-            )
-            return False
-        if not updated:
-            return False
-        self._error_policy.record_error_event(
-            component="file_collection_service",
-            phase="enrich_l3_extract_scope_escalation",
-            severity="warning",
-            error_code="ERR_L3_SCOPE_ESCALATED",
+        return self._get_or_init_l3_error_handling_service().try_escalate_scope_after_l3_extract_error(
+            job=job,
             error_message=error_message,
-            error_type="LspExtractionError",
-            repo_root=job.repo_root,
-            relative_path=job.relative_path,
-            job_id=job.job_id,
-            attempt_count=job.attempt_count,
-            context_data={
-                "l3_error_code": error_code,
-                "prev_scope_level": getattr(job, "scope_level", None) or "module",
-                "next_scope_level": next_scope_level,
-                "next_scope_root": next_scope_root,
-                "scope_attempts_before": current_attempts,
-                "scope_attempts_after": current_attempts + 1,
-            },
         )
-        return True
 
     def _try_defer_after_broker_lease_denial(self, *, job: FileEnrichJobDTO, error_message: str) -> bool:
         """broker lease 거부 오류는 실패가 아니라 queue defer로 되돌린다."""
-        if "ERR_LSP_BROKER_LEASE_REQUIRED" not in error_message:
-            return False
-        defer_writer = getattr(self._enrich_queue_repo, "defer_jobs_to_pending", None)
-        if not callable(defer_writer):
-            return False
-        now_dt = datetime.now(timezone.utc)
-        lease_reason = _extract_broker_lease_reason_from_l3_error(error_message)
-        defer_reason = _map_broker_lease_reason_to_defer_reason(lease_reason)
-        defer_delay_sec = _broker_defer_delay_seconds_for_reason(lease_reason)
-        next_retry_at = (now_dt + timedelta(seconds=defer_delay_sec)).isoformat()
-        now_iso = now_dt.isoformat()
-        try:
-            updated = int(
-                defer_writer(
-                    job_ids=[job.job_id],
-                    next_retry_at=next_retry_at,
-                    defer_reason=defer_reason,
-                    now_iso=now_iso,
-                )
-            )
-        except (RuntimeError, OSError, ValueError, TypeError):
-            log.warning(
-                "Failed to defer broker lease denied job (repo=%s, path=%s)",
-                job.repo_root,
-                job.relative_path,
-                exc_info=True,
-            )
-            return False
-        if updated <= 0:
-            return False
-        self._error_policy.record_error_event(
-            component="file_collection_service",
-            phase="enrich_l3_broker_defer",
-            severity="warning",
-            error_code="ERR_L3_DEFERRED_BY_BROKER",
+        return self._get_or_init_l3_error_handling_service().try_defer_after_broker_lease_denial(
+            job=job,
             error_message=error_message,
-            error_type="LspBrokerLeaseDenied",
-            repo_root=job.repo_root,
-            relative_path=job.relative_path,
-            job_id=job.job_id,
-            attempt_count=job.attempt_count,
-            context_data={
-                "defer_reason": defer_reason,
-                "lease_reason": lease_reason,
-                "next_retry_at": next_retry_at,
-            },
         )
-        return True
 
     def _resolve_next_scope_root_for_escalation(self, *, job: FileEnrichJobDTO, next_scope_level: str) -> str:
         """PR-B baseline scope root fallback 계산 (실제 planner 연계는 PR1에서 강화)."""
-        if next_scope_level == "workspace":
-            return job.repo_root
-        if next_scope_level == "repo":
-            parts = Path(job.relative_path).parts
-            if len(parts) >= 2 and parts[0] not in ("", ".", ".."):
-                return str(Path(job.repo_root) / parts[0])
-        return job.repo_root
+        return self._get_or_init_l3_error_handling_service().resolve_next_scope_root_for_escalation(
+            job=job,
+            next_scope_level=next_scope_level,
+        )
+
+    def _get_or_init_l3_error_handling_service(self) -> L3ErrorHandlingService:
+        service = getattr(self, "_l3_error_handling_service", None)
+        if service is not None:
+            return service
+        service = L3ErrorHandlingService(
+            queue_repo=getattr(self, "_enrich_queue_repo", object()),
+            error_policy=getattr(self, "_error_policy", object()),
+            now_iso_supplier=now_iso8601_utc,
+        )
+        self._l3_error_handling_service = service
+        return service
+
+    def _get_or_init_l3_skip_runtime_service(self) -> L3SkipRuntimeService:
+        service = getattr(self, "_l3_skip_runtime_service", None)
+        if service is not None:
+            return service
+        service = L3SkipRuntimeService(
+            l3_supported_languages=getattr(self, "_l3_supported_languages", set()),
+            l3_recent_success_ttl_sec=int(getattr(self, "_l3_recent_success_ttl_sec", 0)),
+            readiness_repo=getattr(self, "_readiness_repo", object()),
+            lsp_backend=getattr(self, "_lsp_backend", object()),
+            resolve_language_from_path_fn=lambda relative_path: resolve_language_from_path(file_path=relative_path),
+        )
+        self._l3_skip_runtime_service = service
+        return service
+
+    def _get_or_init_l3_runtime_coordination_service(self) -> L3RuntimeCoordinationService:
+        service = getattr(self, "_l3_runtime_coordination_service", None)
+        if service is not None:
+            return service
+        service = L3RuntimeCoordinationService(
+            lsp_backend=getattr(self, "_lsp_backend", object()),
+            lsp_probe_l1_languages=getattr(self, "_lsp_probe_l1_languages", set()),
+            resolve_language_from_path_fn=lambda relative_path: resolve_language_from_path(file_path=relative_path),
+            l3_ready_queue=getattr(self, "_l3_ready_queue", queue.Queue()),
+            enrich_queue_repo=getattr(self, "_enrich_queue_repo", object()),
+            now_iso_supplier=now_iso8601_utc,
+            policy_repo=getattr(self, "_policy_repo", None),
+        )
+        self._l3_runtime_coordination_service = service
+        return service
 
     def _record_scope_learning_after_l3_success(self, *, job: FileEnrichJobDTO) -> None:
         """성공한 scope 시도를 backend 학습 캐시에 기록한다 (Phase1 baseline)."""
-        recorder = getattr(self._lsp_backend, "record_scope_override_success", None)
-        if not callable(recorder):
-            return
-        scope_level = (getattr(job, "scope_level", None) or "module").strip().lower()
-        scope_root = getattr(job, "scope_root", None) or job.repo_root
-        try:
-            recorder(
-                repo_root=job.repo_root,
-                relative_path=job.relative_path,
-                scope_root=scope_root,
-                scope_level=scope_level,
-            )
-        except (RuntimeError, OSError, ValueError, TypeError):
-            log.debug(
-                "Failed to record scope learning after L3 success (repo=%s, path=%s)",
-                job.repo_root,
-                job.relative_path,
-                exc_info=True,
-            )
-            return
+        self._get_or_init_l3_runtime_coordination_service().record_scope_learning_after_l3_success(job=job)
 
     def _should_perf_trace_tick(self) -> bool:
         """테스트용 래퍼: 트레이스 샘플링 틱을 반환한다."""
@@ -974,147 +617,52 @@ class EnrichEngine:
 
     def _parse_lsp_probe_l1_languages(self, items: tuple[str, ...]) -> set[Language]:
         """lsp_probe_l1_languages 설정을 Language 집합으로 변환한다."""
-        parsed: set[Language] = set()
-        for item in items:
-            raw = item.strip().lower()
-            if raw == "":
-                continue
-            language = resolve_language_from_path(file_path=f"file.{raw}")
-            if language is not None:
-                parsed.add(language)
-        return parsed
+        return _parse_lsp_probe_l1_languages_shared(items)
 
     def _parse_l3_supported_languages(self, items: tuple[str, ...]) -> set[Language]:
         """l3_supported_languages 설정을 Language 집합으로 변환한다."""
-        parsed: set[Language] = set()
-        aliases = {
-            "py": Language.PYTHON,
-            "js": Language.TYPESCRIPT,
-            "ts": Language.TYPESCRIPT,
-            "kt": Language.KOTLIN,
-            "rs": Language.RUST,
-            "cs": Language.CSHARP,
-            "rb": Language.RUBY,
-        }
-        for item in items:
-            raw = item.strip().lower()
-            if raw == "":
-                continue
-            if raw in aliases:
-                parsed.add(aliases[raw])
-                continue
-            try:
-                parsed.add(Language(raw))
-                continue
-            except ValueError:
-                ...
-            language = resolve_language_from_path(file_path=f"file.{raw}")
-            if language is not None:
-                parsed.add(language)
-        if len(parsed) > 0:
-            return parsed
-        # 잘못된 설정으로 전체가 비활성화되지 않도록 기본값으로 복구한다.
-        return {Language(name) for name in get_enabled_language_names()}
+        return _parse_l3_supported_languages_shared(items)
 
     def _evaluate_l5_admission_for_job(self, job: FileEnrichJobDTO, language: str) -> L4AdmissionDecisionDTO | None:
-        lang_key = str(language or "").strip().lower()
-        if lang_key == "":
-            return None
-        now_mono = time.monotonic()
-        if not hasattr(self, "_l5_cooldown_until_by_scope_file"):
-            self._l5_cooldown_until_by_scope_file = {}
-        cooldown_key = self._build_l5_cooldown_key(job=job)
-        cooldown_until = float(self._l5_cooldown_until_by_scope_file.get(cooldown_key, 0.0))
-        cooldown_active = now_mono < cooldown_until
-        recent_lang_calls = self._count_recent_l5_admitted(lang_key=lang_key, now_mono=now_mono)
-        if recent_lang_calls >= self._l5_calls_per_min_per_lang_max:
-            workspace_uid = self._normalize_workspace_uid(job.repo_root)
-            self._l5_total_decisions += 1
-            self._l5_batch_decisions += 1
-            decision = L4AdmissionDecisionDTO(
-                admit_l5=False,
-                reason_code=L5ReasonCode.GOLDENSET_COVERAGE,
-                reject_reason=L5RejectReason.PRESSURE_RATE_EXCEEDED,
-                mode=L5RequestMode.BATCH,
-                workspace_uid=workspace_uid,
-                budget_cost=1,
-                cooldown_until=self._upsert_l5_cooldown_for_decision(cooldown_key=cooldown_key, now_mono=now_mono, reject_reason=L5RejectReason.PRESSURE_RATE_EXCEEDED),
+        runtime_service = getattr(self, "_l5_admission_runtime_service", None)
+        if runtime_service is None:
+            runtime_service = L5AdmissionRuntimeService(
+                l4_admission_service=self._l4_admission_service,
+                lsp_backend=getattr(self, "_lsp_backend", object()),
+                monotonic_now=time.monotonic,
             )
-            self._record_l5_reject(decision=decision)
-            self._record_l5_cost_units(decision=decision, language_key=lang_key, workspace_uid=workspace_uid)
-            return decision
-        self._l5_total_decisions += 1
-        self._l5_batch_decisions += 1
-        total_rate = 0.0 if self._l5_total_decisions <= 0 else float(self._l5_total_admitted) / float(self._l5_total_decisions)
-        batch_rate = 0.0 if self._l5_batch_decisions <= 0 else float(self._l5_batch_admitted) / float(self._l5_batch_decisions)
-        try:
-            decision = self._l4_admission_service.evaluate_batch(
-                repo_root=job.repo_root,
-                language_key=lang_key,
-                total_rate=total_rate,
-                batch_rate=batch_rate,
-                cooldown_active=cooldown_active,
-                reason_code=L5ReasonCode.GOLDENSET_COVERAGE,
-            )
-        except TypeError:
-            decision = self._l4_admission_service.evaluate_batch(
-                repo_root=job.repo_root,
-                language_key=lang_key,
-                total_rate=total_rate,
-                batch_rate=batch_rate,
-                reason_code=L5ReasonCode.GOLDENSET_COVERAGE,
-            )
-        if decision.admit_l5:
-            self._l5_total_admitted += 1
-            self._l5_batch_admitted += 1
-            self._record_l5_admitted(lang_key=lang_key, now_mono=now_mono)
-            self._schedule_l4_admission_probe(job=job)
-            self._l5_cooldown_until_by_scope_file.pop(cooldown_key, None)
-        else:
-            reject_reason = decision.reject_reason
-            if reject_reason is not None:
-                updated_until = self._upsert_l5_cooldown_for_decision(
-                    cooldown_key=cooldown_key,
-                    now_mono=now_mono,
-                    reject_reason=reject_reason,
-                )
-                decision = L4AdmissionDecisionDTO(
-                    admit_l5=decision.admit_l5,
-                    reason_code=decision.reason_code,
-                    reject_reason=decision.reject_reason,
-                    mode=decision.mode,
-                    workspace_uid=decision.workspace_uid,
-                    budget_cost=decision.budget_cost,
-                    cooldown_until=updated_until,
-                    primary_cause=decision.primary_cause,
-                    reject_stage=decision.reject_stage,
-                    policy_version=decision.policy_version,
-                )
-            self._record_l5_reject(decision=decision)
-        self._record_l5_cost_units(
-            decision=decision,
-            language_key=lang_key,
-            workspace_uid=self._normalize_workspace_uid(job.repo_root),
+            self._l5_admission_runtime_service = runtime_service
+        state = L5AdmissionRuntimeState(
+            total_decisions=int(getattr(self, "_l5_total_decisions", 0)),
+            total_admitted=int(getattr(self, "_l5_total_admitted", 0)),
+            batch_decisions=int(getattr(self, "_l5_batch_decisions", 0)),
+            batch_admitted=int(getattr(self, "_l5_batch_admitted", 0)),
+            calls_per_min_per_lang_max=int(getattr(self, "_l5_calls_per_min_per_lang_max", 1)),
+            admitted_timestamps_by_lang=getattr(self, "_l5_admitted_timestamps_by_lang", {}),
+            cooldown_until_by_scope_file=getattr(self, "_l5_cooldown_until_by_scope_file", {}),
+            reject_counts_by_reason=self._get_or_init_l5_reject_counts(),
+            cost_units_by_reason=self._get_or_init_l5_cost_units_by_reason(),
+            cost_units_by_language=self._get_or_init_l5_cost_units_by_language(),
+            cost_units_by_workspace=self._get_or_init_l5_cost_units_by_workspace(),
         )
+        decision = runtime_service.evaluate_batch_for_job(
+            state=state,
+            job=job,
+            language=language,
+        )
+        self._l5_total_decisions = state.total_decisions
+        self._l5_total_admitted = state.total_admitted
+        self._l5_batch_decisions = state.batch_decisions
+        self._l5_batch_admitted = state.batch_admitted
         return decision
 
-    def _record_l5_cost_units(self, *, decision: L4AdmissionDecisionDTO, language_key: str, workspace_uid: str) -> None:
-        cost_units = float(max(0, int(decision.budget_cost)))
-        if cost_units <= 0.0:
-            return
-        cost_by_reason = self._get_or_init_l5_cost_units_by_reason()
-        cost_by_language = self._get_or_init_l5_cost_units_by_language()
-        cost_by_workspace = self._get_or_init_l5_cost_units_by_workspace()
-        reason = "none"
-        if decision.reason_code is not None:
-            reason = decision.reason_code.value
-        cost_by_reason[reason] = cost_by_reason.get(reason, 0.0) + cost_units
-        normalized_language = str(language_key or "").strip().lower()
-        if normalized_language != "":
-            cost_by_language[normalized_language] = cost_by_language.get(normalized_language, 0.0) + cost_units
-        normalized_workspace = str(workspace_uid or "").strip()
-        if normalized_workspace != "":
-            cost_by_workspace[normalized_workspace] = cost_by_workspace.get(normalized_workspace, 0.0) + cost_units
+    def _get_or_init_l5_reject_counts(self) -> dict[L5RejectReason, int]:
+        existing = getattr(self, "_l5_reject_counts_by_reason", None)
+        if isinstance(existing, dict) and len(existing) > 0:
+            return existing
+        initialized: dict[L5RejectReason, int] = {reason: 0 for reason in L5RejectReason}
+        setattr(self, "_l5_reject_counts_by_reason", initialized)
+        return initialized
 
     def _get_or_init_l5_cost_units_by_reason(self) -> dict[str, float]:
         existing = getattr(self, "_l5_cost_units_by_reason", None)
@@ -1139,83 +687,6 @@ class EnrichEngine:
         initialized: dict[str, float] = {}
         setattr(self, "_l5_cost_units_by_workspace", initialized)
         return initialized
-
-    def _build_l5_cooldown_key(self, *, job: FileEnrichJobDTO) -> str:
-        workspace_uid = self._normalize_workspace_uid(job.repo_root)
-        file_fingerprint = self._file_fingerprint_from_content_hash(job.content_hash)
-        return f"{workspace_uid}:{file_fingerprint}"
-
-    def _normalize_workspace_uid(self, repo_root: str) -> str:
-        # tool_data.workspace_id는 조회 경로(read/search)와 동일하게 workspace path를 사용한다.
-        return repo_root.strip()
-
-    def _file_fingerprint_from_content_hash(self, content_hash: str) -> str:
-        normalized = str(content_hash or "").strip()
-        if normalized != "":
-            return normalized
-        return "missing-content-hash"
-
-    def _upsert_l5_cooldown_for_decision(
-        self,
-        *,
-        cooldown_key: str,
-        now_mono: float,
-        reject_reason: L5RejectReason,
-    ) -> float:
-        duration_sec_by_reason: dict[L5RejectReason, float] = {
-            L5RejectReason.PRESSURE_RATE_EXCEEDED: 30.0,
-            L5RejectReason.PRESSURE_BURST_EXCEEDED: 10.0,
-            L5RejectReason.PRESSURE_WORKSPACE_EXCEEDED: 20.0,
-            L5RejectReason.COOLDOWN_ACTIVE: 15.0,
-        }
-        duration = float(duration_sec_by_reason.get(reject_reason, 10.0))
-        until = max(float(now_mono), float(self._l5_cooldown_until_by_scope_file.get(cooldown_key, 0.0))) + duration
-        self._l5_cooldown_until_by_scope_file[cooldown_key] = until
-        return until
-
-    def _record_l5_reject(self, *, decision: L4AdmissionDecisionDTO) -> None:
-        reject_counts = self._get_or_init_l5_reject_counts()
-        reject_reason = decision.reject_reason
-        if reject_reason is None:
-            return
-        current = int(reject_counts.get(reject_reason, 0))
-        reject_counts[reject_reason] = current + 1
-
-    def _get_or_init_l5_reject_counts(self) -> dict[L5RejectReason, int]:
-        existing = getattr(self, "_l5_reject_counts_by_reason", None)
-        if isinstance(existing, dict) and len(existing) > 0:
-            return existing
-        initialized: dict[L5RejectReason, int] = {reason: 0 for reason in L5RejectReason}
-        setattr(self, "_l5_reject_counts_by_reason", initialized)
-        return initialized
-
-    def _count_recent_l5_admitted(self, *, lang_key: str, now_mono: float) -> int:
-        window_start = float(now_mono) - 60.0
-        bucket = self._l5_admitted_timestamps_by_lang.get(lang_key)
-        if bucket is None:
-            return 0
-        while bucket and bucket[0] < window_start:
-            bucket.popleft()
-        return len(bucket)
-
-    def _record_l5_admitted(self, *, lang_key: str, now_mono: float) -> None:
-        bucket = self._l5_admitted_timestamps_by_lang.setdefault(lang_key, deque())
-        bucket.append(float(now_mono))
-
-    def _schedule_l4_admission_probe(self, *, job: FileEnrichJobDTO) -> None:
-        """L4 admission 승인 시점에만 force probe를 스케줄한다."""
-        scheduler = getattr(self._lsp_backend, "schedule_probe_for_file", None)
-        if not callable(scheduler):
-            return
-        try:
-            scheduler(
-                repo_root=job.repo_root,
-                relative_path=job.relative_path,
-                force=True,
-                trigger="l4_admission",
-            )
-        except (RuntimeError, OSError, ValueError, TypeError):
-            return
 
     def _get_l5_lang_bucket(self, language_key: str) -> TokenBucket:
         existing = self._l5_lang_buckets.get(language_key)
@@ -1252,23 +723,13 @@ class EnrichEngine:
         preprocess_result: L3PreprocessResultDTO | None,
         now_iso: str,
     ) -> dict[str, object]:
-        symbols: list[dict[str, object]] = []
-        degraded = False
-        skipped_large_file = False
-        if preprocess_result is not None:
-            symbols = list(preprocess_result.symbols)
-            degraded = bool(preprocess_result.degraded)
-            skipped_large_file = preprocess_result.decision is L3PreprocessDecision.DEFERRED_HEAVY
-        return {
-            "workspace_id": self._normalize_workspace_uid(job.repo_root),
-            "repo_root": job.repo_root,
-            "relative_path": job.relative_path,
-            "content_hash": job.content_hash,
-            "symbols": symbols,
-            "degraded": degraded,
-            "l3_skipped_large_file": skipped_large_file,
-            "updated_at": now_iso,
-        }
+        return self._layer_upsert_builder.build_l3(
+            repo_root=job.repo_root,
+            relative_path=job.relative_path,
+            content_hash=job.content_hash,
+            preprocess_result=preprocess_result,
+            now_iso=now_iso,
+        )
 
     def _build_l4_layer_upsert(
         self,
@@ -1278,43 +739,14 @@ class EnrichEngine:
         admission_decision: L4AdmissionDecisionDTO | None,
         now_iso: str,
     ) -> dict[str, object]:
-        if preprocess_result is None:
-            decision_name = "needs_l5"
-            source = "none"
-            reason = "l3_preprocess_missing"
-            symbol_count = 0
-            degraded = True
-            needs_l5 = True
-        else:
-            decision_name = preprocess_result.decision.value
-            source = preprocess_result.source
-            reason = preprocess_result.reason
-            symbol_count = len(preprocess_result.symbols)
-            degraded = bool(preprocess_result.degraded)
-            needs_l5 = preprocess_result.decision is not L3PreprocessDecision.L3_ONLY
-        confidence = 0.9 if not needs_l5 and not degraded else 0.35
-        coverage = 0.0 if preprocess_result is not None and preprocess_result.decision is L3PreprocessDecision.DEFERRED_HEAVY else (0.6 if degraded else 1.0)
-        ambiguity = max(0.0, min(1.0, 1.0 - confidence))
-        normalized: dict[str, object] = {
-            "decision": decision_name,
-            "source": source,
-            "reason": reason,
-            "symbol_count": symbol_count,
-            "admit_l5": bool(admission_decision.admit_l5) if admission_decision is not None else None,
-            "reject_reason": admission_decision.reject_reason.value if admission_decision is not None and admission_decision.reject_reason is not None else None,
-        }
-        return {
-            "workspace_id": self._normalize_workspace_uid(job.repo_root),
-            "repo_root": job.repo_root,
-            "relative_path": job.relative_path,
-            "content_hash": job.content_hash,
-            "normalized": normalized,
-            "confidence": confidence,
-            "ambiguity": ambiguity,
-            "coverage": coverage,
-            "needs_l5": needs_l5,
-            "updated_at": now_iso,
-        }
+        return self._layer_upsert_builder.build_l4(
+            repo_root=job.repo_root,
+            relative_path=job.relative_path,
+            content_hash=job.content_hash,
+            preprocess_result=preprocess_result,
+            admission_decision=admission_decision,
+            now_iso=now_iso,
+        )
 
     def _build_l5_layer_upsert(
         self,
@@ -1325,42 +757,19 @@ class EnrichEngine:
         relations: list[dict[str, object]],
         now_iso: str,
     ) -> dict[str, object]:
-        semantics: dict[str, object] = {
-            "source": "lsp",
-            "symbols_count": len(symbols),
-            "relations_count": len(relations),
-        }
-        return {
-            "workspace_id": self._normalize_workspace_uid(job.repo_root),
-            "repo_root": job.repo_root,
-            "relative_path": job.relative_path,
-            "content_hash": job.content_hash,
-            "reason_code": reason_code.value,
-            "semantics": semantics,
-            "updated_at": now_iso,
-        }
+        return self._layer_upsert_builder.build_l5(
+            repo_root=job.repo_root,
+            relative_path=job.relative_path,
+            content_hash=job.content_hash,
+            reason_code=reason_code,
+            symbols=symbols,
+            relations=relations,
+            now_iso=now_iso,
+        )
 
     def _resolve_l3_skip_reason(self, job: FileEnrichJobDTO) -> str | None:
         """job이 L3 추출을 건너뛰어야 하는 사유를 반환한다."""
-        language = resolve_language_from_path(file_path=job.relative_path)
-        if language is None:
-            return "skip_unsupported_extension"
-        if language not in self._l3_supported_languages:
-            return "skip_unsupported_language"
-        checker = getattr(self._lsp_backend, "is_l3_permanently_unavailable_for_file", None)
-        if callable(checker):
-            try:
-                if bool(checker(repo_root=job.repo_root, relative_path=job.relative_path)):
-                    return "skip_probe_unavailable"
-            except (RuntimeError, OSError, ValueError, TypeError):
-                log.warning(
-                    "Failed to evaluate L3 permanent-unavailable probe guard (repo=%s, path=%s)",
-                    job.repo_root,
-                    job.relative_path,
-                    exc_info=True,
-                )
-                return "skip_probe_check_error"
-        return None
+        return self._get_or_init_l3_skip_runtime_service().resolve_skip_reason(job)
 
     def _build_l3_skipped_readiness(
         self,
@@ -1370,159 +779,52 @@ class EnrichEngine:
         now_iso: str,
     ) -> ToolReadinessStateDTO:
         """L3 스킵 상태의 readiness 레코드를 생성한다."""
-        return ToolReadinessStateDTO(
-            repo_root=job.repo_root,
-            relative_path=job.relative_path,
-            content_hash=job.content_hash,
-            list_files_ready=True,
-            read_file_ready=True,
-            search_symbol_ready=False,
-            get_callers_ready=False,
-            consistency_ready=False,
-            quality_ready=False,
-            tool_ready=False,
-            last_reason=reason,
-            updated_at=now_iso,
+        return self._get_or_init_l3_skip_runtime_service().build_l3_skipped_readiness(
+            job=job,
+            reason=reason,
+            now_iso=now_iso,
         )
 
     def _is_recent_tool_ready(self, job: FileEnrichJobDTO) -> bool:
         """최근 성공 상태면 L3 재추출을 건너뛸지 판단한다."""
-        if self._l3_recent_success_ttl_sec <= 0:
-            return False
-        state = self._readiness_repo.get_state(job.repo_root, job.relative_path)
-        if state is None:
-            return False
-        if not state.tool_ready:
-            return False
-        if state.content_hash != job.content_hash:
-            return False
-        try:
-            updated_at = datetime.fromisoformat(state.updated_at)
-        except ValueError:
-            log.debug(
-                "Invalid readiness updated_at; treating as not recent (repo=%s, path=%s, updated_at=%s)",
-                job.repo_root,
-                job.relative_path,
-                state.updated_at,
-            )
-            return False
-        if updated_at.tzinfo is None:
-            updated_at = updated_at.replace(tzinfo=timezone.utc)
-        age_sec = (datetime.now(timezone.utc) - updated_at).total_seconds()
-        return age_sec <= float(self._l3_recent_success_ttl_sec)
+        return self._get_or_init_l3_skip_runtime_service().is_recent_tool_ready(job)
 
     def _acquire_l3_jobs(self, limit: int) -> list[FileEnrichJobDTO]:
-        jobs: list[FileEnrichJobDTO] = []
-        while len(jobs) < limit:
-            try:
-                jobs.append(self._l3_ready_queue.get_nowait())
-            except queue.Empty:
-                break
-        if len(jobs) < limit:
-            now_iso = now_iso8601_utc()
-            jobs.extend(self._enrich_queue_repo.acquire_pending_for_l3(limit=limit - len(jobs), now_iso=now_iso))
-        return jobs
+        return self._get_or_init_l3_runtime_coordination_service().acquire_l3_jobs(limit)
 
     def _is_deletion_hold_enabled(self) -> bool:
-        if self._policy_repo is None:
-            return False
-        return bool(self._policy_repo.get_policy().deletion_hold)
+        return self._get_or_init_l3_runtime_coordination_service().is_deletion_hold_enabled()
 
 def _extract_error_code_from_lsp_error_message(message: str) -> str:
-    """LSP 에러 메시지에서 에러 코드를 추출한다 (prefix 우선)."""
-    trimmed = message.strip()
-    if trimmed.startswith("ERR_"):
-        return trimmed.split(":", 1)[0].strip()
-    lowered = trimmed.lower()
-    if "workspace contains" in lowered and "no " in lowered and "contains" in lowered:
-        return "ERR_LSP_WORKSPACE_MISMATCH"
-    if "project model missing" in lowered:
-        return "ERR_CONFIG_INVALID"
-    if "project not found" in lowered or "no workspace contains" in lowered:
-        return "ERR_LSP_DOCUMENT_SYMBOL_FAILED"
-    return "ERR_LSP_EXTRACT_FAILED"
+    """호환성 래퍼: 공용 L3 실패 분류 모듈 함수로 위임."""
+    return _shared_extract_error_code_from_lsp_error_message(message)
 
 
 def _is_scope_escalation_trigger_error_for_l3(*, code: str, message: str) -> bool:
-    """Phase1 baseline taxonomy에 해당하는 L3 extract 오류만 escalation trigger로 본다."""
-    normalized_code = code.strip().upper()
-    lowered = message.strip().lower()
-    if normalized_code == "ERR_LSP_WORKSPACE_MISMATCH":
-        return True
-    if normalized_code == "ERR_CONFIG_INVALID":
-        return True
-    if normalized_code == "ERR_LSP_DOCUMENT_SYMBOL_FAILED":
-        project_missing_patterns = (
-            "no workspace contains",
-            "project not found",
-            "project model missing",
-            "workspace contains",
-        )
-        return any(pattern in lowered for pattern in project_missing_patterns)
-    return False
+    """호환성 래퍼: 공용 L3 실패 분류 모듈 함수로 위임."""
+    return _shared_is_scope_escalation_trigger_error_for_l3(code=code, message=message)
 
 
 def _next_scope_level_for_l3_escalation(current_scope_level: str | None) -> str | None:
-    """module -> repo -> workspace 순으로 다음 escalation 단계를 반환한다."""
-    level = (current_scope_level or "module").strip().lower()
-    if level == "module":
-        return "repo"
-    if level == "repo":
-        return "workspace"
-    return None
+    """호환성 래퍼: 공용 L3 실패 분류 모듈 함수로 위임."""
+    return _shared_next_scope_level_for_l3_escalation(current_scope_level)
 
 
 def _classify_l3_extract_failure_kind(message: str) -> str:
-    """L3 extract 오류를 Phase1 3종 분류로 정규화한다."""
-    code = _extract_error_code_from_lsp_error_message(message)
-    if code in {
-        "ERR_LSP_SERVER_MISSING",
-        "ERR_LSP_SERVER_SPAWN_FAILED",
-        "ERR_RUNTIME_MISMATCH",
-        "ERR_CONFIG_INVALID",
-        "ERR_LSP_WORKSPACE_MISMATCH",
-    }:
-        return "PERMANENT_UNAVAILABLE"
-    if code in {
-        "ERR_RPC_TIMEOUT",
-        "ERR_BROKEN_PIPE",
-        "ERR_SERVER_EXITED",
-        "ERR_LSP_START_TIMEOUT",
-        "ERR_LSP_DOCUMENT_SYMBOL_FAILED",
-        "ERR_LSP_EXTRACT_FAILED",
-    }:
-        return "TRANSIENT_FAIL"
-    return "TRANSIENT_FAIL"
+    """호환성 래퍼: 공용 L3 실패 분류 모듈 함수로 위임."""
+    return _shared_classify_l3_extract_failure_kind(message)
 
 
 def _extract_broker_lease_reason_from_l3_error(message: str) -> str:
-    """ERR_LSP_BROKER_LEASE_REQUIRED 메시지에서 lease reason을 추출한다."""
-    lowered = message.strip()
-    marker = "reason="
-    idx = lowered.find(marker)
-    if idx < 0:
-        return "budget_blocked"
-    value = lowered[idx + len(marker) :].strip()
-    if "," in value:
-        value = value.split(",", 1)[0].strip()
-    return value or "budget_blocked"
+    """호환성 래퍼: 공용 L3 실패 분류 모듈 함수로 위임."""
+    return _shared_extract_broker_lease_reason_from_l3_error(message)
 
 
 def _map_broker_lease_reason_to_defer_reason(lease_reason: str) -> str:
-    """broker lease 거부 이유를 Phase1 defer_reason prefix로 정규화한다."""
-    reason = lease_reason.strip().lower()
-    if reason in {"cooldown", "min_lease"}:
-        return "broker_defer:cooldown"
-    if reason == "starvation_guard":
-        return "broker_defer:starvation_guard"
-    return "broker_defer:budget"
+    """호환성 래퍼: 공용 L3 실패 분류 모듈 함수로 위임."""
+    return _shared_map_broker_lease_reason_to_defer_reason(lease_reason)
 
 
 def _broker_defer_delay_seconds_for_reason(lease_reason: str) -> float:
-    """broker defer reason별 기본 재평가 지연값 (Phase1 baseline)."""
-    reason = lease_reason.strip().lower()
-    if reason in {"cooldown", "min_lease"}:
-        return 1.0
-    if reason == "starvation_guard":
-        return 0.2
-    return 0.5
+    """호환성 래퍼: 공용 L3 실패 분류 모듈 함수로 위임."""
+    return _shared_broker_defer_delay_seconds_for_reason(lease_reason)
