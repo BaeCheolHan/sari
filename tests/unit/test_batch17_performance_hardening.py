@@ -28,6 +28,8 @@ from sari.search.candidate_search import CandidateBackendError, CandidateSearchC
 from sari.search.orchestrator import SearchOrchestrator
 from sari.services.collection.enrich_engine import EnrichEngine
 import sari.services.collection.enrich_engine as enrich_engine_module
+from sari.services.collection.l3_failure_classifier import classify_l3_extract_failure_kind
+from sari.services.collection.l3_orchestrator import L3Orchestrator
 from sari.services.collection.l3_treesitter_preprocess_service import (
     L3PreprocessDecision,
     L3PreprocessResultDTO,
@@ -286,7 +288,7 @@ def _build_min_enrich_engine_for_l3_test(*, lsp_backend: object, queue_repo: obj
 
     class _DelegatingOrchestrator:
         def process_job(self, job: FileEnrichJobDTO):  # noqa: ANN001
-            orchestrator = enrich_engine_module.L3Orchestrator(
+            orchestrator = L3Orchestrator(
                 file_repo=engine._file_repo,
                 lsp_backend=engine._lsp_backend,
                 policy=engine._policy,
@@ -297,7 +299,7 @@ def _build_min_enrich_engine_for_l3_test(*, lsp_backend: object, queue_repo: obj
                 now_iso_supplier=enrich_engine_module.now_iso8601_utc,
                 record_enrich_latency=engine._record_enrich_latency,
                 result_builder=lambda **kwargs: enrich_engine_module._L3JobResultDTO(**kwargs),
-                classify_failure_kind=enrich_engine_module._classify_l3_extract_failure_kind,
+                classify_failure_kind=classify_l3_extract_failure_kind,
                 schedule_l1_probe_after_l3_fallback=lambda j: engine._schedule_l1_probe_after_l3_fallback(job=j),
                 scope_resolution=_ScopeResolutionAdapter(),
                 queue_transition=engine._l3_queue_transition_service,
@@ -372,7 +374,7 @@ def test_enrich_engine_l3_refactored_orchestrator_flag_routes_single_job() -> No
 
 
 def test_l3_orchestrator_quality_shadow_records_sampled_result() -> None:
-    orchestrator = object.__new__(enrich_engine_module.L3Orchestrator)
+    orchestrator = object.__new__(L3Orchestrator)
     orchestrator._quality_shadow_enabled = True
     orchestrator._quality_shadow_sample_rate = 1.0
     orchestrator._quality_shadow_max_files = 10
@@ -455,7 +457,7 @@ def test_l3_orchestrator_quality_shadow_records_sampled_result() -> None:
 
 
 def test_l3_orchestrator_quality_shadow_swallows_eval_errors() -> None:
-    orchestrator = object.__new__(enrich_engine_module.L3Orchestrator)
+    orchestrator = object.__new__(L3Orchestrator)
     orchestrator._quality_shadow_enabled = True
     orchestrator._quality_shadow_sample_rate = 1.0
     orchestrator._quality_shadow_max_files = 10
@@ -1641,7 +1643,7 @@ def test_scope_escalation_next_level_ladder() -> None:
 
 def test_l3_extract_failure_kind_classification_phase1() -> None:
     """PR-B baseline 3종 분류는 L3 extract 오류 메시지를 안정적으로 분류해야 한다."""
-    fn = getattr(enrich_engine_module, "_classify_l3_extract_failure_kind")
+    fn = classify_l3_extract_failure_kind
     assert fn("ERR_LSP_SERVER_MISSING: command not found") == "PERMANENT_UNAVAILABLE"
     assert fn("ERR_CONFIG_INVALID: project model missing") == "PERMANENT_UNAVAILABLE"
     assert fn("ERR_LSP_WORKSPACE_MISMATCH: no workspace contains /x") == "PERMANENT_UNAVAILABLE"

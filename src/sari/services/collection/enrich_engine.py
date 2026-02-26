@@ -37,13 +37,10 @@ from sari.services.collection.l3_language_config_parser import (
     parse_lsp_probe_l1_languages as _parse_lsp_probe_l1_languages_shared,
 )
 from sari.services.collection.l3_failure_classifier import (
-    broker_defer_delay_seconds_for_reason as _shared_broker_defer_delay_seconds_for_reason,
-    classify_l3_extract_failure_kind as _shared_classify_l3_extract_failure_kind,
-    extract_broker_lease_reason_from_l3_error as _shared_extract_broker_lease_reason_from_l3_error,
-    extract_error_code_from_lsp_error_message as _shared_extract_error_code_from_lsp_error_message,
-    is_scope_escalation_trigger_error_for_l3 as _shared_is_scope_escalation_trigger_error_for_l3,
-    map_broker_lease_reason_to_defer_reason as _shared_map_broker_lease_reason_to_defer_reason,
-    next_scope_level_for_l3_escalation as _shared_next_scope_level_for_l3_escalation,
+    classify_l3_extract_failure_kind,
+    extract_error_code_from_lsp_error_message,
+    is_scope_escalation_trigger_error_for_l3,
+    next_scope_level_for_l3_escalation,
 )
 from sari.services.collection.enrich_engine_wiring import wire_engine_services, wire_runtime_processors
 from sari.services.collection.enrich_result_dto import (
@@ -153,12 +150,12 @@ class EnrichEngine:
         self._l5_tokens_per_10sec_per_lang_max = max(1, int(l5_tokens_per_10sec_per_lang_max))
         self._l5_tokens_per_10sec_per_workspace_max = max(1, int(l5_tokens_per_10sec_per_workspace_max))
         self._l3_asset_loader = L3AssetLoader()
-        self._extract_error_code_fn = _extract_error_code_from_lsp_error_message
+        self._extract_error_code_fn = extract_error_code_from_lsp_error_message
         self._is_scope_escalation_trigger_fn = (
-            lambda code, message: _is_scope_escalation_trigger_error_for_l3(code=code, message=message)
+            lambda code, message: is_scope_escalation_trigger_error_for_l3(code=code, message=message)
         )
-        self._next_scope_level_for_escalation_fn = _next_scope_level_for_l3_escalation
-        self._classify_failure_kind_fn = _classify_l3_extract_failure_kind
+        self._next_scope_level_for_escalation_fn = next_scope_level_for_l3_escalation
+        self._classify_failure_kind_fn = classify_l3_extract_failure_kind
         wire_engine_services(
             self,
             l3_query_compile_cache_enabled=l3_query_compile_cache_enabled,
@@ -737,37 +734,3 @@ class EnrichEngine:
 
     def _is_deletion_hold_enabled(self) -> bool:
         return self._get_or_init_l3_runtime_coordination_service().is_deletion_hold_enabled()
-
-def _extract_error_code_from_lsp_error_message(message: str) -> str:
-    """호환성 래퍼: 공용 L3 실패 분류 모듈 함수로 위임."""
-    return _shared_extract_error_code_from_lsp_error_message(message)
-
-
-def _is_scope_escalation_trigger_error_for_l3(*, code: str, message: str) -> bool:
-    """호환성 래퍼: 공용 L3 실패 분류 모듈 함수로 위임."""
-    return _shared_is_scope_escalation_trigger_error_for_l3(code=code, message=message)
-
-
-def _next_scope_level_for_l3_escalation(current_scope_level: str | None) -> str | None:
-    """호환성 래퍼: 공용 L3 실패 분류 모듈 함수로 위임."""
-    return _shared_next_scope_level_for_l3_escalation(current_scope_level)
-
-
-def _classify_l3_extract_failure_kind(message: str) -> str:
-    """호환성 래퍼: 공용 L3 실패 분류 모듈 함수로 위임."""
-    return _shared_classify_l3_extract_failure_kind(message)
-
-
-def _extract_broker_lease_reason_from_l3_error(message: str) -> str:
-    """호환성 래퍼: 공용 L3 실패 분류 모듈 함수로 위임."""
-    return _shared_extract_broker_lease_reason_from_l3_error(message)
-
-
-def _map_broker_lease_reason_to_defer_reason(lease_reason: str) -> str:
-    """호환성 래퍼: 공용 L3 실패 분류 모듈 함수로 위임."""
-    return _shared_map_broker_lease_reason_to_defer_reason(lease_reason)
-
-
-def _broker_defer_delay_seconds_for_reason(lease_reason: str) -> float:
-    """호환성 래퍼: 공용 L3 실패 분류 모듈 함수로 위임."""
-    return _shared_broker_defer_delay_seconds_for_reason(lease_reason)
