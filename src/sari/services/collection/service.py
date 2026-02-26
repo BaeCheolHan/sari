@@ -381,6 +381,14 @@ class FileCollectionService:
         scanned_total = 0
         indexed_total = 0
         deleted_total = 0
+        # fan-out 모드에서는 workspace-root 행이 legacy/stale 상태로 남을 수 있으므로 먼저 비활성화한다.
+        legacy_deleted = self._file_repo.mark_all_active_as_deleted(
+            repo_root=str(root_path),
+            updated_at=now_iso8601_utc(),
+        )
+        deleted_total += legacy_deleted
+        if legacy_deleted > 0 and self._candidate_index_sink is not None:
+            self._candidate_index_sink.mark_repo_dirty(str(root_path))
         succeeded = 0
         failed = 0
         results: list[CollectionScanRepoResultDTO] = []

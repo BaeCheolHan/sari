@@ -117,6 +117,23 @@ class FileCollectionRepository:
             conn.commit()
             return int(cur.rowcount if cur.rowcount is not None else 0)
 
+    def mark_all_active_as_deleted(self, repo_root: str, updated_at: str) -> int:
+        """특정 repo_root의 활성 행 전체를 삭제 상태로 전환한다."""
+        with connect(self._db_path) as conn:
+            cur = conn.execute(
+                """
+                UPDATE collected_files_l1
+                SET is_deleted = 1,
+                    updated_at = :updated_at,
+                    enrich_state = 'DELETED'
+                WHERE repo_root = :repo_root
+                  AND is_deleted = 0
+                """,
+                {"repo_root": repo_root, "updated_at": updated_at},
+            )
+            conn.commit()
+            return int(cur.rowcount if cur.rowcount is not None else 0)
+
     def list_files(self, repo_root: str, limit: int, prefix: str | None = None) -> list[FileListItemDTO]:
         """활성 파일 목록을 조회한다."""
         where_prefix = ""

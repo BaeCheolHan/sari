@@ -35,6 +35,17 @@ class _ScannerStub:
         return CollectionScanResultDTO(scanned_count=11, indexed_count=7, deleted_count=3)
 
 
+class _FanoutResolverStub:
+    """fanout 대상 경로를 고정 반환하는 테스트 더블이다."""
+
+    def __init__(self, targets: list[Path]) -> None:
+        self._targets = targets
+
+    def resolve_targets(self, root_path: Path) -> list[Path]:
+        del root_path
+        return self._targets
+
+
 class _WorkerStub:
     """파이프라인 워커 위임 호출을 검증하기 위한 테스트 더블이다."""
 
@@ -355,3 +366,88 @@ def test_file_collection_service_read_file_falls_back_to_repo_root_after_fanout_
     result = service.read_file(repo_root=module_root, relative_path="alpha.py", offset=0, limit=None)
     assert result.source == "l2"
     assert result.content == content.rstrip("\n")
+
+
+def test_file_collection_service_fanout_scan_marks_legacy_workspace_root_rows_deleted(tmp_path: Path) -> None:
+    """fanout 스캔 시 workspace root legacy row는 stale 노출 방지를 위해 삭제 처리되어야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    workspace_root = (tmp_path / "workspace").resolve()
+    module_root = (workspace_root / "mod-a").resolve()
+    module_root.mkdir(parents=True)
+
+    class _CandidateSinkStub:
+        def __init__(self) -> None:
+            self.dirty_repo_roots: list[str] = []
+
+        def mark_repo_dirty(self, repo_root: str) -> None:
+            self.dirty_repo_roots.append(repo_root)
+
+        def mark_file_dirty(self, repo_root: str, relative_path: str) -> None:
+            del repo_root, relative_path
+
+        def record_upsert(self, change) -> None:  # noqa: ANN001
+            del change
+
+        def record_delete(self, repo_root: str, relative_path: str, reason: str) -> None:
+            del repo_root, relative_path, reason
+
+    candidate_sink = _CandidateSinkStub()
+
+    service = FileCollectionService(
+        workspace_repo=WorkspaceRepository(db_path),
+        file_repo=FileCollectionRepository(db_path),
+        enrich_queue_repo=FileEnrichQueueRepository(db_path),
+        body_repo=FileBodyRepository(db_path),
+        lsp_repo=LspToolDataRepository(db_path),
+        readiness_repo=ToolReadinessRepository(db_path),
+        policy=_policy(),
+        lsp_backend=_NoopLspBackend(),
+        policy_repo=None,
+        event_repo=None,
+        candidate_index_sink=candidate_sink,
+    )
+    class _FanoutScanScannerStub:
+        def scan_once(self, repo_root: str, scope_repo_root: str | None = None) -> CollectionScanResultDTO:
+            del scope_repo_root
+            assert repo_root == str(module_root)
+            return CollectionScanResultDTO(scanned_count=1, indexed_count=1, deleted_count=0)
+
+    service._fanout_resolver = _FanoutResolverStub([module_root])  # type: ignore[attr-defined]
+    service._scanner = _FanoutScanScannerStub()  # type: ignore[attr-defined]
+
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO collected_files_l1(
+                repo_id, repo_root, scope_repo_root, relative_path, absolute_path, repo_label,
+                mtime_ns, size_bytes, content_hash, is_deleted, last_seen_at, updated_at, enrich_state
+            ) VALUES(
+                '', :repo_root, :scope_repo_root, 'sari/src/sari/services/file_collection_service.py', :absolute_path, '.',
+                1, 1, 'legacy', 0, '2026-02-20T00:00:00+00:00', '2026-02-20T00:00:00+00:00', 'DONE'
+            )
+            """,
+            {
+                "repo_root": str(workspace_root),
+                "scope_repo_root": str(workspace_root),
+                "absolute_path": str((workspace_root / "sari/src/sari/services/file_collection_service.py").resolve()),
+            },
+        )
+        conn.commit()
+
+    _ = service.scan_once(str(workspace_root))
+
+    with connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT is_deleted, enrich_state
+            FROM collected_files_l1
+            WHERE repo_root = :repo_root
+              AND relative_path = 'sari/src/sari/services/file_collection_service.py'
+            """,
+            {"repo_root": str(workspace_root)},
+        ).fetchone()
+    assert row is not None
+    assert int(row["is_deleted"]) == 1
+    assert str(row["enrich_state"]) == "DELETED"
+    assert candidate_sink.dirty_repo_roots == [str(workspace_root)]
