@@ -32,6 +32,7 @@ from sari.services.collection.l3_skip_runtime_service import L3SkipRuntimeServic
 from sari.services.collection.l3_runtime_coordination_service import L3RuntimeCoordinationService
 from sari.services.collection.l3_scheduling_service import L3SchedulingService
 from sari.services.collection.l3_error_handling_service import L3ErrorHandlingService
+from sari.services.collection.l3_bootstrap_mode_service import L3BootstrapModeService
 from sari.services.collection.l3_language_config_parser import (
     parse_l3_supported_languages as _parse_l3_supported_languages_shared,
     parse_lsp_probe_l1_languages as _parse_lsp_probe_l1_languages_shared,
@@ -148,6 +149,10 @@ class EnrichEngine:
         self._l5_tokens_per_10sec_per_lang_max = max(1, int(l5_tokens_per_10sec_per_lang_max))
         self._l5_tokens_per_10sec_per_workspace_max = max(1, int(l5_tokens_per_10sec_per_workspace_max))
         self._l3_asset_loader = L3AssetLoader()
+        self._l3_bootstrap_mode_service = L3BootstrapModeService(
+            file_repo=self._file_repo,
+            policy_repo=self._policy_repo,
+        )
         self._extract_error_code_fn = extract_error_code_from_lsp_error_message
         self._is_scope_escalation_trigger_fn = (
             lambda code, message: is_scope_escalation_trigger_error_for_l3(code=code, message=message)
@@ -315,54 +320,18 @@ class EnrichEngine:
 
     def compute_coverage_bps(self) -> tuple[int, int]:
         """L2/L3 커버리지를 bps 단위로 계산한다."""
-        state_counts = self._file_repo.get_enrich_state_counts()
-        total = int(sum(state_counts.values()))
-        if total <= 0:
-            return (0, 0)
-        l3_skipped = int(state_counts.get("L3_SKIPPED", 0))
-        l2_ready = int(state_counts.get("BODY_READY", 0)) + int(state_counts.get("LSP_READY", 0)) + int(state_counts.get("TOOL_READY", 0)) + l3_skipped
-        l3_ready = int(state_counts.get("LSP_READY", 0)) + int(state_counts.get("TOOL_READY", 0))
-        l3_total = max(0, total - l3_skipped)
-        l2_bps = int(l2_ready * 10000 / total)
-        l3_bps = 10000 if l3_total <= 0 else int(l3_ready * 10000 / l3_total)
-        return (l2_bps, l3_bps)
+        return self._get_or_init_l3_bootstrap_mode_service().compute_coverage_bps()
 
     def refresh_indexing_mode(self) -> None:
         """bootstrap 전환 정책을 갱신한다."""
-        bootstrap_enabled, _, bootstrap_exit_l2_bps, bootstrap_exit_max_sec = self._resolve_bootstrap_policy()
-        if not bootstrap_enabled:
-            self._indexing_mode = "steady"
-            return
-        elapsed_sec = time.monotonic() - self._bootstrap_started_at
-        l2_bps, l3_bps = self.compute_coverage_bps()
-        reenter_l2_bps = max(1, bootstrap_exit_l2_bps - 700)
-        if elapsed_sec >= float(bootstrap_exit_max_sec):
-            self._indexing_mode = "steady"
-            return
-        if self._indexing_mode == "steady" and l2_bps < bootstrap_exit_l2_bps:
-            self._indexing_mode = "bootstrap_l2_priority"
-            return
-        if self._indexing_mode == "steady":
-            return
-        if self._indexing_mode == "bootstrap_balanced" and l2_bps < reenter_l2_bps:
-            self._indexing_mode = "bootstrap_l2_priority"
-            return
-        if self._indexing_mode == "bootstrap_l2_priority" and l2_bps >= bootstrap_exit_l2_bps:
-            self._indexing_mode = "bootstrap_balanced"
-            return
-        if self._indexing_mode == "bootstrap_balanced" and l3_bps >= 9990:
-            self._indexing_mode = "steady"
+        self._indexing_mode = self._get_or_init_l3_bootstrap_mode_service().refresh_indexing_mode(
+            current_mode=self._indexing_mode,
+            bootstrap_started_at=self._bootstrap_started_at,
+            monotonic_now=time.monotonic(),
+        )
 
     def _resolve_bootstrap_policy(self) -> tuple[bool, int, int, int]:
-        if self._policy_repo is None:
-            return (False, 1, 9500, 1800)
-        policy = self._policy_repo.get_policy()
-        return (
-            bool(policy.bootstrap_mode_enabled),
-            max(1, int(policy.bootstrap_l3_worker_count)),
-            max(1, min(10000, int(policy.bootstrap_exit_min_l2_coverage_bps))),
-            max(60, int(policy.bootstrap_exit_max_sec)),
-        )
+        return self._get_or_init_l3_bootstrap_mode_service().resolve_bootstrap_policy()
 
     def _resolve_lsp_language(self, relative_path: str) -> Language | None:
         return resolve_language_from_path(file_path=relative_path)
@@ -627,6 +596,17 @@ class EnrichEngine:
             return existing
         created = L5RuntimeStatsService()
         self._l5_runtime_stats_service = created
+        return created
+
+    def _get_or_init_l3_bootstrap_mode_service(self) -> L3BootstrapModeService:
+        existing = getattr(self, "_l3_bootstrap_mode_service", None)
+        if isinstance(existing, L3BootstrapModeService):
+            return existing
+        created = L3BootstrapModeService(
+            file_repo=getattr(self, "_file_repo", object()),
+            policy_repo=getattr(self, "_policy_repo", None),
+        )
+        self._l3_bootstrap_mode_service = created
         return created
 
     def _resolve_l3_skip_reason(self, job: FileEnrichJobDTO) -> str | None:
