@@ -405,6 +405,146 @@ def test_enqueue_many_supersede_clears_defer_fields(tmp_path: Path) -> None:
     assert row["next_retry_at"] == "2026-02-16T00:00:02+00:00"
 
 
+def test_enqueue_many_duplicate_hash_oscillation_clears_defer_fields(tmp_path: Path) -> None:
+    """동일 key 배치가 A->B->A로 흔들려도 supersede 이력 기준으로 defer를 리셋해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = FileEnrichQueueRepository(db_path)
+    now_iso = "2026-02-16T00:00:00+00:00"
+    job_id = repo.enqueue(
+        repo_root="/repo",
+        relative_path="oscillate.py",
+        content_hash="h-a",
+        priority=10,
+        enqueue_source="scan",
+        now_iso=now_iso,
+    )
+    repo.defer_pending_jobs(
+        job_ids=[job_id],
+        next_retry_at="2026-02-16T00:10:00+00:00",
+        defer_reason="broker_defer:budget",
+        now_iso="2026-02-16T00:00:01+00:00",
+    )
+
+    _ = repo.enqueue_many(
+        [
+            EnqueueRequestDTO(
+                repo_id="",
+                repo_root="/repo",
+                relative_path="oscillate.py",
+                content_hash="h-a",
+                priority=20,
+                enqueue_source="scan",
+                now_iso="2026-02-16T00:00:02+00:00",
+            ),
+            EnqueueRequestDTO(
+                repo_id="",
+                repo_root="/repo",
+                relative_path="oscillate.py",
+                content_hash="h-b",
+                priority=20,
+                enqueue_source="scan",
+                now_iso="2026-02-16T00:00:03+00:00",
+            ),
+            EnqueueRequestDTO(
+                repo_id="",
+                repo_root="/repo",
+                relative_path="oscillate.py",
+                content_hash="h-a",
+                priority=20,
+                enqueue_source="scan",
+                now_iso="2026-02-16T00:00:04+00:00",
+            ),
+        ]
+    )
+
+    row = _read_queue_row(db_path, job_id)
+    assert row["content_hash"] == "h-a"
+    assert row["defer_reason"] is None
+    assert row["next_retry_at"] == "2026-02-16T00:00:04+00:00"
+
+
+def test_enqueue_many_preserves_input_order_and_merges_duplicate_requests(tmp_path: Path) -> None:
+    """반환 job_id는 입력 순서를 보존하고 동일 key 요청은 하나의 job으로 병합해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = FileEnrichQueueRepository(db_path)
+    existing_id = repo.enqueue(
+        repo_root="/repo",
+        relative_path="a.py",
+        content_hash="h-old",
+        priority=5,
+        enqueue_source="scan",
+        now_iso="2026-02-16T00:00:00+00:00",
+    )
+
+    ids = repo.enqueue_many(
+        [
+            EnqueueRequestDTO(
+                repo_id="",
+                repo_root="/repo",
+                relative_path="b.py",
+                content_hash="h-b1",
+                priority=10,
+                enqueue_source="scan",
+                now_iso="2026-02-16T00:00:01+00:00",
+            ),
+            EnqueueRequestDTO(
+                repo_id="",
+                repo_root="/repo",
+                relative_path="a.py",
+                content_hash="h-a1",
+                priority=20,
+                enqueue_source="scan",
+                now_iso="2026-02-16T00:00:02+00:00",
+            ),
+            EnqueueRequestDTO(
+                repo_id="",
+                repo_root="/repo",
+                relative_path="b.py",
+                content_hash="h-b2",
+                priority=40,
+                enqueue_source="l3",
+                now_iso="2026-02-16T00:00:03+00:00",
+            ),
+            EnqueueRequestDTO(
+                repo_id="",
+                repo_root="/repo",
+                relative_path="a.py",
+                content_hash="h-a2",
+                priority=30,
+                enqueue_source="scan",
+                now_iso="2026-02-16T00:00:04+00:00",
+            ),
+        ]
+    )
+
+    assert len(ids) == 4
+    assert ids[1] == existing_id
+    assert ids[3] == existing_id
+    assert ids[0] == ids[2]
+    assert ids[0] != existing_id
+
+    row_a = _read_queue_row(db_path, existing_id)
+    assert row_a["content_hash"] == "h-a2"
+    assert row_a["next_retry_at"] == "2026-02-16T00:00:04+00:00"
+
+    row_b = _read_queue_row(db_path, ids[0])
+    assert row_b["content_hash"] == "h-b2"
+    with connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT priority, enqueue_source
+            FROM file_enrich_queue
+            WHERE job_id = :job_id
+            """,
+            {"job_id": ids[0]},
+        ).fetchone()
+    assert row is not None
+    assert int(row["priority"]) == 40
+    assert str(row["enqueue_source"]) == "l3"
+
+
 def test_mark_failed_with_backoff_updates_attempt_and_delay(tmp_path: Path) -> None:
     """백오프 실패 처리 시 시도횟수/재시도 시각/상태가 갱신되어야 한다."""
     db_path = tmp_path / "state.db"

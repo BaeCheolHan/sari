@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import click
 
@@ -36,20 +37,44 @@ from sari.db.repositories.tool_data_layer_repository import ToolDataLayerReposit
 from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.db.migration import ensure_migrated
 from sari.db.schema import init_schema
-from sari.mcp.proxy import run_stdio_proxy
-from sari.mcp.server import run_stdio
-from sari.services.admin import AdminService
-from sari.services.collection.service import build_default_file_collection_service
-from sari.services.daemon import DaemonService
-from sari.services.pipeline.perf_service import PipelinePerfService
-from sari.services.pipeline.quality_service import PipelineQualityService, SerenaGoldenBackend
-from sari.services.pipeline.control_service import PipelineControlService
-from sari.services.language_probe.service import LanguageProbeService
-from sari.services.lsp_matrix.diagnose_service import LspMatrixDiagnoseService
-from sari.services.pipeline.lsp_matrix_ports import LanguageProbePort, PipelineLspMatrixPort
-from sari.services.pipeline.lsp_matrix_service import PipelineLspMatrixService
-from sari.services.workspace import WorkspaceService
-from sari.lsp.hub import LspHub
+
+if TYPE_CHECKING:
+    from sari.services.admin import AdminService
+    from sari.services.daemon import DaemonService
+    from sari.services.language_probe.service import LanguageProbeService
+    from sari.services.lsp_matrix.diagnose_service import LspMatrixDiagnoseService
+    from sari.services.pipeline.control_service import PipelineControlService
+    from sari.services.pipeline.lsp_matrix_ports import LanguageProbePort, PipelineLspMatrixPort
+    from sari.services.pipeline.perf_service import PipelinePerfService
+    from sari.services.pipeline.quality_service import PipelineQualityService
+    from sari.services.workspace import WorkspaceService
+
+
+def run_stdio_proxy(
+    *,
+    db_path: Path,
+    workspace_root: str | None = None,
+    host_override: str | None = None,
+    port_override: int | None = None,
+    timeout_sec: float = 2.0,
+) -> int:
+    """MCP proxy 실행기를 lazy import로 호출한다."""
+    from sari.mcp.proxy import run_stdio_proxy as _run_stdio_proxy
+
+    return _run_stdio_proxy(
+        db_path=db_path,
+        workspace_root=workspace_root,
+        host_override=host_override,
+        port_override=port_override,
+        timeout_sec=timeout_sec,
+    )
+
+
+def run_stdio(db_path: Path) -> int:
+    """MCP stdio 서버 실행기를 lazy import로 호출한다."""
+    from sari.mcp.server import run_stdio as _run_stdio
+
+    return _run_stdio(db_path)
 
 
 @click.group(invoke_without_command=True)
@@ -96,6 +121,18 @@ class CliServiceBundle:
 
 def _build_services() -> CliServiceBundle:
     """CLI에서 공통으로 사용할 서비스를 생성한다."""
+    from sari.lsp.hub import LspHub
+    from sari.services.admin import AdminService
+    from sari.services.collection.service import build_default_file_collection_service
+    from sari.services.daemon import DaemonService
+    from sari.services.language_probe.service import LanguageProbeService
+    from sari.services.lsp_matrix.diagnose_service import LspMatrixDiagnoseService
+    from sari.services.pipeline.control_service import PipelineControlService
+    from sari.services.pipeline.lsp_matrix_service import PipelineLspMatrixService
+    from sari.services.pipeline.perf_service import PipelinePerfService
+    from sari.services.pipeline.quality_service import PipelineQualityService, SerenaGoldenBackend
+    from sari.services.workspace import WorkspaceService
+
     config = AppConfig.default()
     init_schema(config.db_path)
     ensure_migrated(config.db_path)

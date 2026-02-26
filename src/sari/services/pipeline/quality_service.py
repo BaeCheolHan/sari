@@ -18,7 +18,7 @@ from sari.db.repositories.tool_data_layer_repository import ToolDataLayerReposit
 from sari.lsp.hub import LspHub
 from sari.lsp.path_normalizer import normalize_repo_relative_path
 from sari.services.collection.l3.l3_quality_evaluation_service import L3QualityEvaluationService
-from sari.services.collection.service import LspExtractionBackend, LspExtractionResultDTO
+from sari.services.lsp_extraction_contracts import LspExtractionBackend, LspExtractionResultDTO
 from solidlsp.ls_exceptions import SolidLSPException
 
 QUALITY_EXCLUDE_GLOBS: tuple[str, ...] = (

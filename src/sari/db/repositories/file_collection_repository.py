@@ -56,32 +56,31 @@ class FileCollectionRepository:
         if len(file_rows) == 0:
             return
         with connect(self._db_path) as conn:
-            for file_row in file_rows:
-                conn.execute(
-                    """
-                    INSERT INTO collected_files_l1(
-                        repo_id, repo_root, scope_repo_root, relative_path, absolute_path, repo_label, mtime_ns, size_bytes,
-                        content_hash, is_deleted, last_seen_at, updated_at, enrich_state
-                    )
-                    VALUES(
-                        :repo_id, :repo_root, :scope_repo_root, :relative_path, :absolute_path, :repo_label, :mtime_ns, :size_bytes,
-                        :content_hash, :is_deleted, :last_seen_at, :updated_at, :enrich_state
-                    )
-                    ON CONFLICT(repo_root, relative_path) DO UPDATE SET
-                        repo_id = excluded.repo_id,
-                        scope_repo_root = excluded.scope_repo_root,
-                        absolute_path = excluded.absolute_path,
-                        repo_label = excluded.repo_label,
-                        mtime_ns = excluded.mtime_ns,
-                        size_bytes = excluded.size_bytes,
-                        content_hash = excluded.content_hash,
-                        is_deleted = excluded.is_deleted,
-                        last_seen_at = excluded.last_seen_at,
-                        updated_at = excluded.updated_at,
-                        enrich_state = excluded.enrich_state
-                    """,
-                    file_row.to_sql_params(),
+            conn.executemany(
+                """
+                INSERT INTO collected_files_l1(
+                    repo_id, repo_root, scope_repo_root, relative_path, absolute_path, repo_label, mtime_ns, size_bytes,
+                    content_hash, is_deleted, last_seen_at, updated_at, enrich_state
                 )
+                VALUES(
+                    :repo_id, :repo_root, :scope_repo_root, :relative_path, :absolute_path, :repo_label, :mtime_ns, :size_bytes,
+                    :content_hash, :is_deleted, :last_seen_at, :updated_at, :enrich_state
+                )
+                ON CONFLICT(repo_root, relative_path) DO UPDATE SET
+                    repo_id = excluded.repo_id,
+                    scope_repo_root = excluded.scope_repo_root,
+                    absolute_path = excluded.absolute_path,
+                    repo_label = excluded.repo_label,
+                    mtime_ns = excluded.mtime_ns,
+                    size_bytes = excluded.size_bytes,
+                    content_hash = excluded.content_hash,
+                    is_deleted = excluded.is_deleted,
+                    last_seen_at = excluded.last_seen_at,
+                    updated_at = excluded.updated_at,
+                    enrich_state = excluded.enrich_state
+                """,
+                [file_row.to_sql_params() for file_row in file_rows],
+            )
             conn.commit()
 
     def sync_repo_label(self, repo_root: str, repo_label: str) -> int:

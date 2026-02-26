@@ -17,7 +17,8 @@ from sari.db.repositories.tool_data_layer_repository import ToolDataLayerReposit
 from sari.db.repositories.tool_readiness_repository import ToolReadinessRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.db.schema import connect, init_schema
-from sari.services.collection.service import FileCollectionService, LspExtractionBackend, LspExtractionResultDTO
+from sari.services.collection.service import FileCollectionService
+from sari.services.lsp_extraction_contracts import LspExtractionBackend, LspExtractionResultDTO
 from sari.services.pipeline.quality_service import (
     PipelineQualityService,
     SerenaGoldenBackend,

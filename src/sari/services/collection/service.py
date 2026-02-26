@@ -45,7 +45,8 @@ from sari.services.collection.runtime_manager import RuntimeManager
 log = logging.getLogger(__name__)
 
 from sari.services.collection.l5.solid_lsp_extraction_backend import SolidLspExtractionBackend
-from sari.services.lsp_extraction_contracts import LspExtractionBackend
+from sari.services.lsp_extraction_contracts import LspExtractionBackend, LspExtractionResultDTO
+from sari.services.collection.l5.solid_lsp_probe_mixin import _ProbeStateRecord
 
 class CandidateIndexSink(Protocol):
 

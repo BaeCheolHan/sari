@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import time
 from typing import Any
+import warnings
 
 from .l3_asset_loader import L3AssetLoader
 from .l3_language_processor_registry import L3LanguageProcessorRegistry
@@ -675,7 +676,15 @@ class TreeSitterOutlineExtractor:
     def _load_language(self, normalized_lang: str):
         if callable(self._get_language):
             try:
-                return self._get_language(normalized_lang)
+                # tree_sitter_languages 내부가 구형 Language(path, name) 경로를
+                # 사용할 때 FutureWarning을 발생시키므로 로컬 범위에서만 억제한다.
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore",
+                        message=r"Language\(path, name\) is deprecated\..*",
+                        category=FutureWarning,
+                    )
+                    return self._get_language(normalized_lang)
             except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
                 ...
         fallback = self._FALLBACK_LANGUAGE_LOADERS.get(normalized_lang)

@@ -42,7 +42,8 @@ from sari.services.collection.testing.enrich_engine_test_factory import (
 )
 from sari.services.collection.l1.watcher_hotness_tracker import WatcherHotnessTracker
 from sari.services.collection.enrich_flush_coordinator import EnrichFlushCoordinator
-from sari.services.collection.service import FileCollectionService, LspExtractionBackend, LspExtractionResultDTO, SolidLspExtractionBackend
+from sari.services.collection.service import FileCollectionService, SolidLspExtractionBackend
+from sari.services.lsp_extraction_contracts import LspExtractionBackend, LspExtractionResultDTO
 import sari.services.collection.service as file_collection_service_module
 import sari.db.repositories.file_collection_repository as file_collection_repository_module
 

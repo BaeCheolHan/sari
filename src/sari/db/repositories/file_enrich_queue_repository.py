@@ -120,130 +120,239 @@ class FileEnrichQueueRepository:
         """L2 본문 보강 큐 작업을 배치 적재한다."""
         if len(requests) == 0:
             return []
-        enqueued_ids: list[str] = []
+        grouped_rows: list[dict[str, object]] = []
+        stage_id_by_key: dict[tuple[str, str, str], int] = {}
+        input_stage_ids: list[int] = []
+
+        for request in requests:
+            resolved_repo_id = request.repo_id if request.repo_id.strip() != "" else f"r_{uuid.uuid5(uuid.NAMESPACE_URL, request.repo_root).hex[:20]}"
+            resolved_scope_repo_root = request.scope_repo_root if request.scope_repo_root is not None and request.scope_repo_root.strip() != "" else request.repo_root
+            key = (resolved_repo_id, request.repo_root, request.relative_path)
+            existing_stage_id = stage_id_by_key.get(key)
+            if existing_stage_id is None:
+                stage_id = len(grouped_rows) + 1
+                stage_id_by_key[key] = stage_id
+                grouped_rows.append(
+                    {
+                        "stage_id": stage_id,
+                        "repo_id": resolved_repo_id,
+                        "repo_root": request.repo_root,
+                        "scope_repo_root": resolved_scope_repo_root,
+                        "relative_path": request.relative_path,
+                        "content_hash": request.content_hash,
+                        "priority": request.priority,
+                        "enqueue_source": request.enqueue_source,
+                        "defer_reason": request.defer_reason,
+                        "now_iso": request.now_iso,
+                        "new_job_id": str(uuid.uuid4()),
+                        "had_hash_transition": 0,
+                    }
+                )
+                input_stage_ids.append(stage_id)
+                continue
+            stage_row = grouped_rows[existing_stage_id - 1]
+            previous_hash = str(stage_row["content_hash"])
+            if previous_hash != request.content_hash:
+                stage_row["had_hash_transition"] = 1
+            stage_row["scope_repo_root"] = resolved_scope_repo_root
+            stage_row["content_hash"] = request.content_hash
+            stage_row["enqueue_source"] = request.enqueue_source
+            stage_row["defer_reason"] = request.defer_reason
+            stage_row["now_iso"] = request.now_iso
+            stage_row["priority"] = max(int(stage_row["priority"]), request.priority)
+            input_stage_ids.append(existing_stage_id)
+
         with connect(self._db_path) as conn:
-            for request in requests:
-                resolved_repo_id = (
-                    request.repo_id
-                    if request.repo_id.strip() != ""
-                    else f"r_{uuid.uuid5(uuid.NAMESPACE_URL, request.repo_root).hex[:20]}"
+            conn.execute("DROP TABLE IF EXISTS temp_enqueue_stage")
+            conn.execute("DROP TABLE IF EXISTS temp_enqueue_existing")
+            conn.execute("DROP TABLE IF EXISTS temp_enqueue_result")
+            conn.execute(
+                """
+                CREATE TEMP TABLE temp_enqueue_stage (
+                    stage_id INTEGER PRIMARY KEY,
+                    repo_id TEXT NOT NULL,
+                    repo_root TEXT NOT NULL,
+                    scope_repo_root TEXT NOT NULL,
+                    relative_path TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    priority INTEGER NOT NULL,
+                    enqueue_source TEXT NOT NULL,
+                    defer_reason TEXT NULL,
+                    now_iso TEXT NOT NULL,
+                    new_job_id TEXT NOT NULL,
+                    had_hash_transition INTEGER NOT NULL
                 )
-                job_id = str(uuid.uuid4())
-                job = FileEnrichJobDTO(
-                    job_id=job_id,
-                    repo_id=resolved_repo_id,
-                    repo_root=request.repo_root,
-                    scope_repo_root=request.scope_repo_root,
-                    relative_path=request.relative_path,
-                    content_hash=request.content_hash,
-                    priority=request.priority,
-                    enqueue_source=request.enqueue_source,
-                    status="PENDING",
-                    attempt_count=0,
-                    last_error=None,
-                    defer_reason=request.defer_reason,
-                    next_retry_at=request.now_iso,
-                    created_at=request.now_iso,
-                    updated_at=request.now_iso,
+                """
+            )
+            conn.executemany(
+                """
+                INSERT INTO temp_enqueue_stage(
+                    stage_id, repo_id, repo_root, scope_repo_root, relative_path,
+                    content_hash, priority, enqueue_source, defer_reason, now_iso, new_job_id, had_hash_transition
+                ) VALUES (
+                    :stage_id, :repo_id, :repo_root, :scope_repo_root, :relative_path,
+                    :content_hash, :priority, :enqueue_source, :defer_reason, :now_iso, :new_job_id, :had_hash_transition
                 )
-                existing = conn.execute(
-                    """
-                    SELECT job_id, priority, content_hash
-                    FROM file_enrich_queue
-                    WHERE repo_id = :repo_id
-                      AND repo_root = :repo_root
-                      AND relative_path = :relative_path
-                      AND status IN ('PENDING', 'FAILED')
-                    ORDER BY updated_at DESC
-                    LIMIT 1
-                    """,
-                    {"repo_id": resolved_repo_id, "repo_root": request.repo_root, "relative_path": request.relative_path},
-                ).fetchone()
-                if existing is not None:
-                    existing_job_id = row_str(existing, "job_id")
-                    merged_priority = max(row_int(existing, "priority"), request.priority)
-                    existing_content_hash = row_str(existing, "content_hash")
-                    is_supersede = existing_content_hash != request.content_hash
-                    conn.execute(
-                        """
-                        UPDATE file_enrich_queue
-                        SET content_hash = :content_hash,
-                            priority = :priority,
-                            enqueue_source = :enqueue_source,
-                            status = 'PENDING',
-                            updated_at = :updated_at,
-                            next_retry_at = CASE
-                                WHEN :is_supersede = 1 THEN :next_retry_at
-                                ELSE next_retry_at
-                            END,
-                            defer_reason = CASE
-                                WHEN :is_supersede = 1 THEN NULL
-                                ELSE defer_reason
-                            END,
-                            deferred_state = CASE
-                                WHEN :is_supersede = 1 THEN NULL
-                                ELSE deferred_state
-                            END,
-                            deferred_count = CASE
-                                WHEN :is_supersede = 1 THEN 0
-                                ELSE deferred_count
-                            END,
-                            first_deferred_at = CASE
-                                WHEN :is_supersede = 1 THEN NULL
-                                ELSE first_deferred_at
-                            END,
-                            last_deferred_at = CASE
-                                WHEN :is_supersede = 1 THEN NULL
-                                ELSE last_deferred_at
-                            END,
-                            last_error = CASE
-                                WHEN :is_supersede = 1 THEN NULL
-                                ELSE last_error
-                            END,
-                            scope_level = CASE
-                                WHEN :is_supersede = 1 THEN NULL
-                                ELSE scope_level
-                            END,
-                            scope_root = CASE
-                                WHEN :is_supersede = 1 THEN NULL
-                                ELSE scope_root
-                            END,
-                            scope_attempts = CASE
-                                WHEN :is_supersede = 1 THEN 0
-                                ELSE scope_attempts
-                            END
-                        WHERE job_id = :job_id
-                        """,
-                        {
-                            "job_id": existing_job_id,
-                            "content_hash": request.content_hash,
-                            "priority": merged_priority,
-                            "enqueue_source": request.enqueue_source,
-                            "next_retry_at": request.now_iso,
-                            "updated_at": request.now_iso,
-                            "is_supersede": 1 if is_supersede else 0,
-                        },
-                    )
-                    enqueued_ids.append(existing_job_id)
-                    continue
-                conn.execute(
-                    """
-                    INSERT INTO file_enrich_queue(
-                        job_id, repo_id, repo_root, scope_repo_root, relative_path, content_hash, content_raw, content_encoding,
-                        priority, enqueue_source, status, attempt_count, last_error, defer_reason,
-                        scope_level, scope_root, scope_attempts, next_retry_at, created_at, updated_at
-                    )
-                    VALUES(
-                        :job_id, :repo_id, :repo_root, :scope_repo_root, :relative_path, :content_hash, '', 'utf-8',
-                        :priority, :enqueue_source, :status, :attempt_count, :last_error, :defer_reason,
-                        :scope_level, :scope_root, :scope_attempts, :next_retry_at, :created_at, :updated_at
-                    )
-                    """,
-                    job.to_sql_params(),
+                """,
+                grouped_rows,
+            )
+            conn.execute(
+                """
+                CREATE TEMP TABLE temp_enqueue_existing (
+                    stage_id INTEGER PRIMARY KEY,
+                    job_id TEXT NOT NULL,
+                    priority INTEGER NOT NULL,
+                    content_hash TEXT NOT NULL
                 )
-                enqueued_ids.append(job_id)
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO temp_enqueue_existing(stage_id, job_id, priority, content_hash)
+                WITH candidate AS (
+                    SELECT
+                        s.stage_id AS stage_id,
+                        q.job_id AS job_id,
+                        q.priority AS priority,
+                        q.content_hash AS content_hash,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY s.stage_id
+                            ORDER BY q.updated_at DESC, q.job_id DESC
+                        ) AS rn
+                    FROM temp_enqueue_stage AS s
+                    JOIN file_enrich_queue AS q
+                      ON q.repo_id = s.repo_id
+                     AND q.repo_root = s.repo_root
+                     AND q.relative_path = s.relative_path
+                     AND q.status IN ('PENDING', 'FAILED')
+                )
+                SELECT stage_id, job_id, priority, content_hash
+                FROM candidate
+                WHERE rn = 1
+                """
+            )
+            conn.execute(
+                """
+                UPDATE file_enrich_queue AS q
+                SET content_hash = s.content_hash,
+                    priority = MAX(e.priority, s.priority),
+                    enqueue_source = s.enqueue_source,
+                    status = 'PENDING',
+                    updated_at = s.now_iso,
+                    next_retry_at = CASE
+                        WHEN (e.content_hash <> s.content_hash OR s.had_hash_transition = 1) THEN s.now_iso
+                        ELSE q.next_retry_at
+                    END,
+                    defer_reason = CASE
+                        WHEN (e.content_hash <> s.content_hash OR s.had_hash_transition = 1) THEN NULL
+                        ELSE q.defer_reason
+                    END,
+                    deferred_state = CASE
+                        WHEN (e.content_hash <> s.content_hash OR s.had_hash_transition = 1) THEN NULL
+                        ELSE q.deferred_state
+                    END,
+                    deferred_count = CASE
+                        WHEN (e.content_hash <> s.content_hash OR s.had_hash_transition = 1) THEN 0
+                        ELSE q.deferred_count
+                    END,
+                    first_deferred_at = CASE
+                        WHEN (e.content_hash <> s.content_hash OR s.had_hash_transition = 1) THEN NULL
+                        ELSE q.first_deferred_at
+                    END,
+                    last_deferred_at = CASE
+                        WHEN (e.content_hash <> s.content_hash OR s.had_hash_transition = 1) THEN NULL
+                        ELSE q.last_deferred_at
+                    END,
+                    last_error = CASE
+                        WHEN (e.content_hash <> s.content_hash OR s.had_hash_transition = 1) THEN NULL
+                        ELSE q.last_error
+                    END,
+                    scope_level = CASE
+                        WHEN (e.content_hash <> s.content_hash OR s.had_hash_transition = 1) THEN NULL
+                        ELSE q.scope_level
+                    END,
+                    scope_root = CASE
+                        WHEN (e.content_hash <> s.content_hash OR s.had_hash_transition = 1) THEN NULL
+                        ELSE q.scope_root
+                    END,
+                    scope_attempts = CASE
+                        WHEN (e.content_hash <> s.content_hash OR s.had_hash_transition = 1) THEN 0
+                        ELSE q.scope_attempts
+                    END
+                FROM temp_enqueue_stage AS s
+                JOIN temp_enqueue_existing AS e
+                  ON e.stage_id = s.stage_id
+                WHERE q.job_id = e.job_id
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO file_enrich_queue(
+                    job_id, repo_id, repo_root, scope_repo_root, relative_path, content_hash, content_raw, content_encoding,
+                    priority, enqueue_source, status, attempt_count, last_error, defer_reason,
+                    scope_level, scope_root, scope_attempts, next_retry_at, created_at, updated_at
+                )
+                SELECT
+                    s.new_job_id,
+                    s.repo_id,
+                    s.repo_root,
+                    s.scope_repo_root,
+                    s.relative_path,
+                    s.content_hash,
+                    '',
+                    'utf-8',
+                    s.priority,
+                    s.enqueue_source,
+                    'PENDING',
+                    0,
+                    NULL,
+                    s.defer_reason,
+                    NULL,
+                    NULL,
+                    0,
+                    s.now_iso,
+                    s.now_iso,
+                    s.now_iso
+                FROM temp_enqueue_stage AS s
+                LEFT JOIN temp_enqueue_existing AS e
+                  ON e.stage_id = s.stage_id
+                WHERE e.stage_id IS NULL
+                """
+            )
+            conn.execute(
+                """
+                CREATE TEMP TABLE temp_enqueue_result (
+                    stage_id INTEGER PRIMARY KEY,
+                    job_id TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO temp_enqueue_result(stage_id, job_id)
+                SELECT stage_id, job_id
+                FROM temp_enqueue_existing
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO temp_enqueue_result(stage_id, job_id)
+                SELECT s.stage_id, s.new_job_id
+                FROM temp_enqueue_stage AS s
+                LEFT JOIN temp_enqueue_existing AS e
+                  ON e.stage_id = s.stage_id
+                WHERE e.stage_id IS NULL
+                """
+            )
+            rows = conn.execute(
+                """
+                SELECT stage_id, job_id
+                FROM temp_enqueue_result
+                """
+            ).fetchall()
+            stage_to_job_id = {int(row["stage_id"]): row_str(row, "job_id") for row in rows}
             conn.commit()
-        return enqueued_ids
+        return [stage_to_job_id[stage_id] for stage_id in input_stage_ids]
 
     def acquire_pending(self, limit: int, now_iso: str) -> list[FileEnrichJobDTO]:
         """처리 가능한 보강 작업을 RUNNING으로 전환하고 반환한다."""
