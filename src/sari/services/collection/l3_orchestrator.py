@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import time
 from typing import Callable
 
@@ -25,7 +24,6 @@ from .l3_persist_service import L3PersistService
 from .l3_degraded_fallback_service import L3DegradedFallbackService
 from .l3_treesitter_preprocess_service import (
     L3TreeSitterPreprocessService,
-    L3PreprocessDecision,
     L3PreprocessResultDTO,
 )
 from .l3_quality_evaluation_service import L3QualityEvaluationService
@@ -41,8 +39,7 @@ from .l3_stages.exception_stage import L3ExceptionStage
 from .l3_stages.finalize_stage import L3FinalizeStage
 from .l3_stages.persist_stage import L3PersistStage
 from .l3_stages.preprocess_stage import L3PreprocessStage
-
-log = logging.getLogger(__name__)
+from .l3_stages.preprocess_io_stage import L3PreprocessIoStage
 
 
 class L3Orchestrator:
@@ -114,6 +111,11 @@ class L3Orchestrator:
         self._quality_shadow_missing_pattern_counts: dict[str, dict[str, int]] = {}
         self._quality_shadow_tracker = L3QualityShadowTracker(self)
         self._layer_upsert_builder = LayerUpsertBuilder()
+        self._preprocess_io_stage = L3PreprocessIoStage(
+            preprocess_service=self._preprocess_service,
+            degraded_fallback_service=self._degraded_fallback_service,
+            preprocess_max_bytes=self._preprocess_max_bytes,
+        )
         self._preprocess_stage = L3PreprocessStage(run_preprocess=self._run_preprocess)
         self._file_guard_stage = L3FileGuardStage(get_file=self._file_repo.get_file)
         self._admission_stage = L3AdmissionStage(
@@ -274,45 +276,7 @@ class L3Orchestrator:
         )
 
     def _run_preprocess(self, *, job: FileEnrichJobDTO, file_row: object) -> L3PreprocessResultDTO | None:
-        preprocess_service = self._preprocess_service
-        if preprocess_service is None:
-            return None
-        absolute_path = getattr(file_row, "absolute_path", None)
-        try:
-            if isinstance(absolute_path, str) and absolute_path.strip() != "":
-                with open(absolute_path, "r", encoding="utf-8", errors="ignore") as handle:
-                    content_text = handle.read()
-            else:
-                content_text = ""
-            result = preprocess_service.preprocess(
-                relative_path=job.relative_path,
-                content_text=content_text,
-                max_bytes=self._preprocess_max_bytes,
-            )
-            if (
-                len(result.symbols) == 0
-                and result.decision is not L3PreprocessDecision.DEFERRED_HEAVY
-                and self._degraded_fallback_service is not None
-            ):
-                return self._degraded_fallback_service.fallback(
-                    relative_path=job.relative_path,
-                    content_text=content_text,
-                )
-            return result
-        except (OSError, UnicodeError, ValueError, TypeError) as exc:
-            log.warning(
-                "L3 preprocess failed, returning explicit degraded NEEDS_L5 result (repo=%s, path=%s)",
-                job.repo_root,
-                job.relative_path,
-                exc_info=True,
-            )
-            return L3PreprocessResultDTO(
-                symbols=[],
-                degraded=True,
-                decision=L3PreprocessDecision.NEEDS_L5,
-                source="none",
-                reason=f"l3_preprocess_exception:{type(exc).__name__}",
-            )
+        return self._preprocess_io_stage.run(job=job, file_row=file_row)
 
     def _build_l3_layer_upsert(
         self,
