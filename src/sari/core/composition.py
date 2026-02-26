@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sari.core.config import AppConfig
 from sari.db.migration import ensure_migrated
@@ -119,11 +119,12 @@ def build_repository_bundle(db_path: Path) -> RepositoryBundle:
     )
 
 
-def build_lsp_hub(config: AppConfig) -> LspHub:
+def build_lsp_hub(config: AppConfig, hub_cls: type[Any] | None = None) -> LspHub:
     """AppConfig 기반 기본 LspHub를 생성한다."""
     from sari.lsp.hub import LspHub
 
-    return LspHub(
+    resolved_hub_cls = LspHub if hub_cls is None else hub_cls
+    return resolved_hub_cls(
         request_timeout_sec=config.lsp_request_timeout_sec,
         max_instances_per_repo_language=config.lsp_max_instances_per_repo_language,
         bulk_mode_enabled=config.lsp_bulk_mode_enabled,

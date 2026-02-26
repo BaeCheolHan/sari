@@ -1,5 +1,7 @@
 """백그라운드 데몬 프로세스를 실행한다."""
 
+from __future__ import annotations
+
 import argparse
 import logging
 import os
@@ -9,6 +11,7 @@ import threading
 
 import uvicorn
 
+from sari.db.repositories.daemon_registry_repository import DaemonRegistryRepository
 from sari.http.app import HttpContext, create_app
 from sari.core.config import AppConfig
 from sari.core.composition import build_lsp_hub, build_repository_bundle, build_search_stack
@@ -24,6 +27,7 @@ from sari.services.pipeline.quality_service import PipelineQualityService, Seren
 from sari.services.read.facade_service import ReadFacadeService
 from sari.mcp.stabilization.stabilization_service import StabilizationService
 from sari.mcp.server import McpServer
+from sari.lsp.hub import LspHub as LspHub  # test monkeypatch compatibility
 
 log = logging.getLogger(__name__)
 _FATAL_DB_PATTERNS: tuple[str, ...] = (
@@ -85,7 +89,7 @@ def main() -> None:
     this_pid = os.getpid()
     launch_parent_pid = os.getppid()
 
-    lsp_hub = build_lsp_hub(config)
+    lsp_hub = build_lsp_hub(config, hub_cls=LspHub)
     search_stack = build_search_stack(
         config=config,
         repos=repos,
