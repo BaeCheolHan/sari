@@ -14,29 +14,8 @@ from typing import TYPE_CHECKING
 import click
 
 from sari.core.config import AppConfig
+from sari.core.composition import build_lsp_hub, build_repository_bundle
 from sari.core.exceptions import DaemonError, PerfError, QualityError, SariBaseError, WorkspaceError
-from sari.db.repositories.file_body_repository import FileBodyRepository
-from sari.db.repositories.file_collection_repository import FileCollectionRepository
-from sari.db.repositories.runtime_repository import RuntimeRepository
-from sari.db.repositories.symbol_cache_repository import SymbolCacheRepository
-from sari.db.repositories.file_enrich_queue_repository import FileEnrichQueueRepository
-from sari.db.repositories.daemon_registry_repository import DaemonRegistryRepository
-from sari.db.repositories.lsp_tool_data_repository import LspToolDataRepository
-from sari.db.repositories.pipeline_perf_repository import PipelinePerfRepository
-from sari.db.repositories.pipeline_stage_baseline_repository import PipelineStageBaselineRepository
-from sari.db.repositories.pipeline_quality_repository import PipelineQualityRepository
-from sari.db.repositories.pipeline_control_state_repository import PipelineControlStateRepository
-from sari.db.repositories.pipeline_job_event_repository import PipelineJobEventRepository
-from sari.db.repositories.pipeline_error_event_repository import PipelineErrorEventRepository
-from sari.db.repositories.pipeline_policy_repository import PipelinePolicyRepository
-from sari.db.repositories.tool_data_layer_repository import ToolDataLayerRepository
-from sari.db.repositories.tool_readiness_repository import ToolReadinessRepository
-from sari.db.repositories.language_probe_repository import LanguageProbeRepository
-from sari.db.repositories.pipeline_lsp_matrix_repository import PipelineLspMatrixRepository
-from sari.db.repositories.tool_data_layer_repository import ToolDataLayerRepository
-from sari.db.repositories.workspace_repository import WorkspaceRepository
-from sari.db.migration import ensure_migrated
-from sari.db.schema import init_schema
 
 if TYPE_CHECKING:
     from sari.services.admin import AdminService
@@ -121,7 +100,6 @@ class CliServiceBundle:
 
 def _build_services() -> CliServiceBundle:
     """CLI에서 공통으로 사용할 서비스를 생성한다."""
-    from sari.lsp.hub import LspHub
     from sari.services.admin import AdminService
     from sari.services.collection.service import build_default_file_collection_service
     from sari.services.daemon import DaemonService
@@ -134,22 +112,21 @@ def _build_services() -> CliServiceBundle:
     from sari.services.workspace import WorkspaceService
 
     config = AppConfig.default()
-    init_schema(config.db_path)
-    ensure_migrated(config.db_path)
-    workspace_repo = WorkspaceRepository(config.db_path)
-    runtime_repo = RuntimeRepository(config.db_path)
-    daemon_registry_repo = DaemonRegistryRepository(config.db_path)
-    symbol_cache_repo = SymbolCacheRepository(config.db_path)
-    queue_repo = FileEnrichQueueRepository(config.db_path)
-    policy_repo = PipelinePolicyRepository(config.db_path)
-    control_state_repo = PipelineControlStateRepository(config.db_path)
-    event_repo = PipelineJobEventRepository(config.db_path)
-    error_event_repo = PipelineErrorEventRepository(config.db_path)
-    file_repo = FileCollectionRepository(config.db_path)
-    body_repo = FileBodyRepository(config.db_path)
-    lsp_repo = LspToolDataRepository(config.db_path)
-    tool_layer_repo = ToolDataLayerRepository(config.db_path)
-    readiness_repo = ToolReadinessRepository(config.db_path)
+    repos = build_repository_bundle(config.db_path)
+    workspace_repo = repos.workspace_repo
+    runtime_repo = repos.runtime_repo
+    daemon_registry_repo = repos.daemon_registry_repo
+    symbol_cache_repo = repos.symbol_cache_repo
+    queue_repo = repos.enrich_queue_repo
+    policy_repo = repos.policy_repo
+    control_state_repo = repos.control_state_repo
+    event_repo = repos.event_repo
+    error_event_repo = repos.error_event_repo
+    file_repo = repos.file_repo
+    body_repo = repos.body_repo
+    lsp_repo = repos.lsp_repo
+    tool_layer_repo = repos.tool_layer_repo
+    readiness_repo = repos.readiness_repo
     perf_file_collection_service = build_default_file_collection_service(
         workspace_repo=workspace_repo,
         file_repo=file_repo,
@@ -211,41 +188,13 @@ def _build_services() -> CliServiceBundle:
         l5_db_short_circuit_log_miss_reason=config.l5_db_short_circuit_log_miss_reason,
         tool_layer_repo=tool_layer_repo,
     )
-    perf_repo = PipelinePerfRepository(config.db_path)
-    stage_baseline_repo = PipelineStageBaselineRepository(config.db_path)
-    quality_repo = PipelineQualityRepository(config.db_path)
-    language_probe_repo = LanguageProbeRepository(config.db_path)
-    lsp_matrix_repo = PipelineLspMatrixRepository(config.db_path)
-    quality_hub = LspHub(
-        request_timeout_sec=config.lsp_request_timeout_sec,
-        max_instances_per_repo_language=config.lsp_max_instances_per_repo_language,
-        bulk_mode_enabled=config.lsp_bulk_mode_enabled,
-        bulk_max_instances_per_repo_language=config.lsp_bulk_max_instances_per_repo_language,
-        interactive_reserved_slots_per_repo_language=config.lsp_interactive_reserved_slots_per_repo_language,
-        interactive_timeout_sec=config.lsp_interactive_timeout_sec,
-        lsp_global_soft_limit=config.lsp_global_soft_limit,
-        scale_out_hot_hits=config.lsp_scale_out_hot_hits,
-        file_buffer_idle_ttl_sec=config.lsp_file_buffer_idle_ttl_sec,
-        file_buffer_max_open=config.lsp_file_buffer_max_open,
-        java_min_major=config.lsp_java_min_major,
-        max_concurrent_starts=config.lsp_max_concurrent_starts,
-        max_concurrent_l1_probes=config.lsp_max_concurrent_l1_probes,
-    )
-    probe_hub = LspHub(
-        request_timeout_sec=config.lsp_request_timeout_sec,
-        max_instances_per_repo_language=config.lsp_max_instances_per_repo_language,
-        bulk_mode_enabled=config.lsp_bulk_mode_enabled,
-        bulk_max_instances_per_repo_language=config.lsp_bulk_max_instances_per_repo_language,
-        interactive_reserved_slots_per_repo_language=config.lsp_interactive_reserved_slots_per_repo_language,
-        interactive_timeout_sec=config.lsp_interactive_timeout_sec,
-        lsp_global_soft_limit=config.lsp_global_soft_limit,
-        scale_out_hot_hits=config.lsp_scale_out_hot_hits,
-        file_buffer_idle_ttl_sec=config.lsp_file_buffer_idle_ttl_sec,
-        file_buffer_max_open=config.lsp_file_buffer_max_open,
-        java_min_major=config.lsp_java_min_major,
-        max_concurrent_starts=config.lsp_max_concurrent_starts,
-        max_concurrent_l1_probes=config.lsp_max_concurrent_l1_probes,
-    )
+    perf_repo = repos.perf_repo
+    stage_baseline_repo = repos.stage_baseline_repo
+    quality_repo = repos.quality_repo
+    language_probe_repo = repos.language_probe_repo
+    lsp_matrix_repo = repos.lsp_matrix_repo
+    quality_hub = build_lsp_hub(config)
+    probe_hub = build_lsp_hub(config)
     language_probe_service = LanguageProbeService(
         workspace_repo=workspace_repo,
         lsp_hub=probe_hub,

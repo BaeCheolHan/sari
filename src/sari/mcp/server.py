@@ -5,33 +5,9 @@ from pathlib import Path
 from typing import BinaryIO
 from sari import __version__ as SARI_VERSION
 from sari.core.config import AppConfig
+from sari.core.composition import build_lsp_hub, build_repository_bundle, build_search_stack
 from sari.core.exceptions import DaemonError, ErrorContext, ValidationError
 from sari.core.models import ErrorResponseDTO
-from sari.db.repositories.runtime_repository import RuntimeRepository
-from sari.db.repositories.candidate_index_change_repository import CandidateIndexChangeRepository
-from sari.db.repositories.symbol_cache_repository import SymbolCacheRepository
-from sari.db.repositories.symbol_importance_repository import SymbolImportanceRepository
-from sari.db.repositories.workspace_repository import WorkspaceRepository
-from sari.db.repositories.file_body_repository import FileBodyRepository
-from sari.db.repositories.file_collection_repository import FileCollectionRepository
-from sari.db.repositories.file_enrich_queue_repository import FileEnrichQueueRepository
-from sari.db.repositories.lsp_tool_data_repository import LspToolDataRepository
-from sari.db.repositories.tool_data_layer_repository import ToolDataLayerRepository
-from sari.db.repositories.knowledge_repository import KnowledgeRepository
-from sari.db.repositories.vector_embedding_repository import VectorEmbeddingRepository
-from sari.db.repositories.pipeline_perf_repository import PipelinePerfRepository
-from sari.db.repositories.pipeline_stage_baseline_repository import PipelineStageBaselineRepository
-from sari.db.repositories.pipeline_quality_repository import PipelineQualityRepository
-from sari.db.repositories.language_probe_repository import LanguageProbeRepository
-from sari.db.repositories.pipeline_lsp_matrix_repository import PipelineLspMatrixRepository
-from sari.db.repositories.pipeline_control_state_repository import PipelineControlStateRepository
-from sari.db.repositories.pipeline_job_event_repository import PipelineJobEventRepository
-from sari.db.repositories.pipeline_error_event_repository import PipelineErrorEventRepository
-from sari.db.repositories.pipeline_policy_repository import PipelinePolicyRepository
-from sari.db.repositories.tool_readiness_repository import ToolReadinessRepository
-from sari.db.repositories.repo_registry_repository import RepoRegistryRepository
-from sari.db.migration import ensure_migrated
-from sari.db.schema import init_schema
 from sari.lsp.hub import LspHub
 from sari.mcp.contracts import McpError, McpResponse
 from sari.mcp.daemon_forward_policy import (
@@ -60,12 +36,7 @@ from sari.mcp.tools.read_tool import DryRunDiffTool, ReadTool
 from sari.mcp.tools.sari_guide_tool import SariGuideTool
 from sari.mcp.tools.status_tool import StatusTool
 from sari.mcp.tools.symbol_graph_tools import CallGraphHealthTool, CallGraphTool, GetImplementationsTool, ListSymbolsTool, ReadSymbolTool
-from sari.search.candidate_search import CandidateSearchService
-from sari.search.hierarchy_scorer import HierarchyScorer
-from sari.search.importance_scorer import ImportanceScorePolicyDTO, ImportanceScorer, ImportanceWeightsDTO
 from sari.search.orchestrator import RankingBlendConfigDTO, SearchOrchestrator
-from sari.search.symbol_resolve import SymbolResolveService
-from sari.search.vector_reranker import VectorConfigDTO, VectorIndexSink, VectorReranker
 from sari.services.admin import AdminService
 from sari.services.collection.service import SolidLspExtractionBackend, build_default_file_collection_service
 from sari.services.pipeline.perf_service import PipelinePerfService
@@ -87,9 +58,8 @@ class McpServer:
     )
 
     def __init__(self, db_path: Path) -> None:
-        init_schema(db_path)
-        ensure_migrated(db_path)
         runtime_config = AppConfig.default()
+        repos = build_repository_bundle(db_path)
         self._runtime_config = runtime_config
         self._db_path = db_path
         self._proxy_to_daemon = runtime_config.mcp_forward_to_daemon
@@ -109,60 +79,41 @@ class McpServer:
         )
         self._closed = False
         self._managed_lsp_hubs: list[LspHub] = []
-        workspace_repo = WorkspaceRepository(db_path)
+        workspace_repo = repos.workspace_repo
         self._workspace_repo = workspace_repo
-        runtime_repo = RuntimeRepository(db_path)
+        runtime_repo = repos.runtime_repo
         self._runtime_repo = runtime_repo
-        symbol_cache_repo = SymbolCacheRepository(db_path)
-        symbol_importance_repo = SymbolImportanceRepository(db_path)
-        file_repo = FileCollectionRepository(db_path)
-        enrich_queue_repo = FileEnrichQueueRepository(db_path)
-        body_repo = FileBodyRepository(db_path)
-        lsp_repo = LspToolDataRepository(db_path)
-        tool_layer_repo = ToolDataLayerRepository(db_path)
-        knowledge_repo = KnowledgeRepository(db_path)
-        readiness_repo = ToolReadinessRepository(db_path)
-        policy_repo = PipelinePolicyRepository(db_path)
-        control_state_repo = PipelineControlStateRepository(db_path)
-        event_repo = PipelineJobEventRepository(db_path)
-        error_event_repo = PipelineErrorEventRepository(db_path)
-        perf_repo = PipelinePerfRepository(db_path)
-        stage_baseline_repo = PipelineStageBaselineRepository(db_path)
-        quality_repo = PipelineQualityRepository(db_path)
-        language_probe_repo = LanguageProbeRepository(db_path)
-        lsp_matrix_repo = PipelineLspMatrixRepository(db_path)
-        vector_repo = VectorEmbeddingRepository(db_path)
-        candidate_change_repo = CandidateIndexChangeRepository(db_path)
-        repo_registry_repo = RepoRegistryRepository(db_path)
-        importance_scorer = ImportanceScorer(file_repo=file_repo, lsp_repo=lsp_repo, cache_repo=symbol_importance_repo, weights=ImportanceWeightsDTO(kind_class=runtime_config.importance_kind_class, kind_function=runtime_config.importance_kind_function, kind_interface=runtime_config.importance_kind_interface, kind_method=runtime_config.importance_kind_method, fan_in_weight=runtime_config.importance_fan_in_weight, filename_exact_bonus=runtime_config.importance_filename_exact_bonus, core_path_bonus=runtime_config.importance_core_path_bonus, noisy_path_penalty=runtime_config.importance_noisy_path_penalty, code_ext_bonus=runtime_config.importance_code_ext_bonus, noisy_ext_penalty=runtime_config.importance_noisy_ext_penalty, recency_24h_multiplier=runtime_config.importance_recency_24h_multiplier, recency_7d_multiplier=runtime_config.importance_recency_7d_multiplier, recency_30d_multiplier=runtime_config.importance_recency_30d_multiplier), policy=ImportanceScorePolicyDTO(normalize_mode=runtime_config.importance_normalize_mode, max_importance_boost=runtime_config.importance_max_boost), core_path_tokens=runtime_config.importance_core_path_tokens, noisy_path_tokens=runtime_config.importance_noisy_path_tokens, code_extensions=runtime_config.importance_code_extensions, noisy_extensions=runtime_config.importance_noisy_extensions)
-        vector_config = VectorConfigDTO(enabled=runtime_config.vector_enabled, model_id=runtime_config.vector_model_id, dim=runtime_config.vector_dim, candidate_k=runtime_config.vector_candidate_k, rerank_k=runtime_config.vector_rerank_k, blend_weight=runtime_config.vector_blend_weight, min_similarity_threshold=runtime_config.vector_min_similarity_threshold, max_vector_boost=runtime_config.vector_max_boost, min_token_count_for_rerank=runtime_config.vector_min_token_count_for_rerank, apply_to_item_types=runtime_config.vector_apply_to_item_types)
-        vector_sink = VectorIndexSink(repository=vector_repo, config=vector_config)
-        vector_reranker = VectorReranker(repository=vector_repo, config=vector_config)
-        hierarchy_scorer = HierarchyScorer()
-        candidate_service = CandidateSearchService.build_default(
-            max_file_size_bytes=512 * 1024,
-            index_root=db_path.parent / 'candidate_index',
-            backend_mode='tantivy',
-            enable_scan_fallback=True,
-            change_repo=candidate_change_repo,
-            allowed_suffixes=runtime_config.collection_include_ext,
-        )
-        shared_hub = LspHub(
-            request_timeout_sec=runtime_config.lsp_request_timeout_sec,
-            max_instances_per_repo_language=runtime_config.lsp_max_instances_per_repo_language,
-            bulk_mode_enabled=runtime_config.lsp_bulk_mode_enabled,
-            bulk_max_instances_per_repo_language=runtime_config.lsp_bulk_max_instances_per_repo_language,
-            interactive_reserved_slots_per_repo_language=runtime_config.lsp_interactive_reserved_slots_per_repo_language,
-            interactive_timeout_sec=runtime_config.lsp_interactive_timeout_sec,
-            lsp_global_soft_limit=runtime_config.lsp_global_soft_limit,
-            scale_out_hot_hits=runtime_config.lsp_scale_out_hot_hits,
-            file_buffer_idle_ttl_sec=runtime_config.lsp_file_buffer_idle_ttl_sec,
-            file_buffer_max_open=runtime_config.lsp_file_buffer_max_open,
-            java_min_major=runtime_config.lsp_java_min_major,
-            max_concurrent_starts=runtime_config.lsp_max_concurrent_starts,
-            max_concurrent_l1_probes=runtime_config.lsp_max_concurrent_l1_probes,
-        )
+        symbol_cache_repo = repos.symbol_cache_repo
+        file_repo = repos.file_repo
+        enrich_queue_repo = repos.enrich_queue_repo
+        body_repo = repos.body_repo
+        lsp_repo = repos.lsp_repo
+        tool_layer_repo = repos.tool_layer_repo
+        knowledge_repo = repos.knowledge_repo
+        readiness_repo = repos.readiness_repo
+        policy_repo = repos.policy_repo
+        control_state_repo = repos.control_state_repo
+        event_repo = repos.event_repo
+        error_event_repo = repos.error_event_repo
+        perf_repo = repos.perf_repo
+        stage_baseline_repo = repos.stage_baseline_repo
+        quality_repo = repos.quality_repo
+        language_probe_repo = repos.language_probe_repo
+        lsp_matrix_repo = repos.lsp_matrix_repo
+        repo_registry_repo = repos.repo_registry_repo
+        shared_hub = build_lsp_hub(runtime_config)
         self._managed_lsp_hubs.append(shared_hub)
+        search_stack = build_search_stack(
+            config=runtime_config,
+            repos=repos,
+            lsp_hub=shared_hub,
+            candidate_backend="tantivy",
+            candidate_fallback_scan=True,
+            candidate_allowed_suffixes=runtime_config.collection_include_ext,
+            blend_config_version="v2-config",
+        )
+        candidate_service = search_stack.candidate_service
+        vector_sink = search_stack.vector_sink
         file_collection_service = build_default_file_collection_service(
             workspace_repo=workspace_repo,
             file_repo=file_repo,
@@ -278,34 +229,7 @@ class McpServer:
             queue_repo=enrich_queue_repo,
             lsp_reconciler=shared_hub.reconcile_runtime,
         )
-        symbol_service = SymbolResolveService(
-            hub=shared_hub,
-            cache_repo=symbol_cache_repo,
-            lsp_fallback_mode=runtime_config.search_lsp_fallback_mode,
-            include_info_default=runtime_config.lsp_include_info_default,
-            symbol_info_budget_sec=runtime_config.lsp_symbol_info_budget_sec,
-            lsp_pressure_guard_enabled=runtime_config.search_lsp_pressure_guard_enabled,
-            lsp_pressure_pending_threshold=runtime_config.search_lsp_pressure_pending_threshold,
-            lsp_pressure_timeout_threshold=runtime_config.search_lsp_pressure_timeout_threshold,
-            lsp_pressure_rejected_threshold=runtime_config.search_lsp_pressure_rejected_threshold,
-            lsp_recent_failure_cooldown_sec=runtime_config.search_lsp_recent_failure_cooldown_sec,
-        )
-        orchestrator = SearchOrchestrator(
-            workspace_repo=workspace_repo,
-            candidate_service=candidate_service,
-            symbol_service=symbol_service,
-            importance_scorer=importance_scorer,
-            hierarchy_scorer=hierarchy_scorer,
-            vector_reranker=vector_reranker,
-            blend_config=RankingBlendConfigDTO(
-                w_rrf=runtime_config.ranking_w_rrf,
-                w_importance=runtime_config.ranking_w_importance,
-                w_vector=runtime_config.ranking_w_vector,
-                w_hierarchy=runtime_config.ranking_w_hierarchy,
-                version="v2-config",
-            ),
-            repo_registry_repo=repo_registry_repo,
-        )
+        orchestrator = search_stack.orchestrator
         stabilization_service = StabilizationService(enabled=runtime_config.stabilization_enabled)
         self._file_collection_service = file_collection_service
         self._search_tool = SearchTool(
