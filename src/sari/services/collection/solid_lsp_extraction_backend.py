@@ -24,6 +24,7 @@ from sari.services.collection.lsp_runtime_metrics_builder import build_runtime_m
 from sari.services.collection.lsp_probe_state_update_service import LspProbeStateUpdateService
 from sari.services.collection.lsp_broker_guard_service import LspBrokerGuardService
 from sari.services.collection.lsp_runtime_mismatch_recovery_service import LspRuntimeMismatchRecoveryService
+from sari.services.collection.lsp_scope_runtime_service import LspScopeRuntimeService
 from sari.services.collection.lsp_session_broker import LspSessionBroker
 from sari.services.collection.perf_trace import PerfTracer
 from sari.services.collection.watcher_hotness_tracker import WatcherHotnessTracker
@@ -170,6 +171,37 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
         self._l3_scope_pending_hint_lock = threading.Lock()
         self._l3_scope_pending_hints: dict[tuple[str, str], int] = {}
         self._scope_active_languages: set[str] | None = None
+        self._scope_runtime_service = LspScopeRuntimeService(
+            get_scope_override=lambda repo_root, relative_path: self.get_scope_override(
+                repo_root=repo_root,
+                relative_path=relative_path,
+            ),
+            to_scope_relative_path_or_fallback=lambda **kwargs: self._to_scope_relative_path_or_fallback(**kwargs),
+            get_lsp_scope_planner=lambda: self._lsp_scope_planner,
+            is_lsp_scope_planner_enabled=lambda: bool(self._lsp_scope_planner_enabled),
+            is_lsp_scope_planner_shadow_mode=lambda: bool(self._lsp_scope_planner_shadow_mode),
+            get_scope_active_languages=lambda: self._scope_active_languages,
+            perf_tracer=self._perf_tracer,
+            on_scope_override_hit=lambda: setattr(self, "_scope_override_hit_count", int(self._scope_override_hit_count) + 1),
+            on_scope_planner_shadow=lambda: setattr(
+                self,
+                "_lsp_scope_planner_shadow_count",
+                int(self._lsp_scope_planner_shadow_count) + 1,
+            ),
+            on_scope_planner_applied=lambda: setattr(
+                self,
+                "_lsp_scope_planner_applied_count",
+                int(self._lsp_scope_planner_applied_count) + 1,
+            ),
+            on_scope_planner_fallback_index_building=lambda: setattr(
+                self,
+                "_lsp_scope_planner_fallback_index_building_count",
+                int(self._lsp_scope_planner_fallback_index_building_count) + 1,
+            ),
+            l3_scope_pending_hints=self._l3_scope_pending_hints,
+            l3_scope_pending_hint_lock=self._l3_scope_pending_hint_lock,
+            normalize_repo_relative_path=normalize_repo_relative_path,
+        )
 
     def extract(self, repo_root: str, relative_path: str, content_hash: str) -> LspExtractionResultDTO:
         normalized_relative_path = normalize_repo_relative_path(relative_path)
@@ -390,58 +422,11 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
         return candidate.is_relative_to(target) or target.is_relative_to(candidate)
 
     def _resolve_lsp_runtime_scope(self, *, repo_root: str, normalized_relative_path: str, language: Language) -> tuple[str, str]:
-        override = self.get_scope_override(repo_root=repo_root, relative_path=normalized_relative_path)
-        if override is not None and not self._lsp_scope_planner_shadow_mode:
-            override_scope_root, _override_scope_level = override
-            self._scope_override_hit_count += 1
-            runtime_relative_path = self._to_scope_relative_path_or_fallback(
-                repo_root=repo_root,
-                normalized_relative_path=normalized_relative_path,
-                runtime_root=override_scope_root,
-            )
-            return (override_scope_root, runtime_relative_path)
-        planner = self._lsp_scope_planner
-        if planner is None or not self._lsp_scope_planner_enabled:
-            return (repo_root, normalized_relative_path)
-        if self._scope_active_languages is not None and language.value.lower() not in self._scope_active_languages:
-            return (repo_root, normalized_relative_path)
-        try:
-            with self._perf_tracer.span(
-                "scope_planner.resolve",
-                phase="l3_extract",
-                repo_root=repo_root,
-                language=language.value,
-                shadow_mode=self._lsp_scope_planner_shadow_mode,
-            ):
-                resolution = planner.resolve(
-                    workspace_repo_root=repo_root,
-                    relative_path=normalized_relative_path,
-                    language=language,
-                )
-        except (RuntimeError, OSError, ValueError, TypeError):
-            log.debug(
-                "scope planner resolve failed, fallback to workspace scope (repo=%s, path=%s, lang=%s)",
-                repo_root,
-                normalized_relative_path,
-                language.value,
-                exc_info=True,
-            )
-            return (repo_root, normalized_relative_path)
-        if getattr(resolution, "strategy", "") == "FALLBACK_INDEX_BUILDING":
-            self._lsp_scope_planner_fallback_index_building_count += 1
-        if self._lsp_scope_planner_shadow_mode:
-            self._lsp_scope_planner_shadow_count += 1
-            return (repo_root, normalized_relative_path)
-        self._lsp_scope_planner_applied_count += 1
-        runtime_root_path = Path(resolution.lsp_scope_root).resolve()
-        runtime_root = str(runtime_root_path)
-        runtime_relative_path = self._to_scope_relative_path_or_fallback(
+        return self._scope_runtime_service.resolve_lsp_runtime_scope(
             repo_root=repo_root,
             normalized_relative_path=normalized_relative_path,
-            runtime_root=runtime_root,
-            planner=planner,
+            language=language,
         )
-        return (runtime_root, runtime_relative_path)
 
     def _to_scope_relative_path_or_fallback(
         self,
@@ -483,9 +468,9 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
         sample_relative_path: str,
         language: Language,
     ) -> tuple[str, str]:
-        return self._resolve_lsp_runtime_scope(
+        return self._scope_runtime_service.resolve_probe_runtime_scope(
             repo_root=repo_root,
-            normalized_relative_path=normalize_repo_relative_path(sample_relative_path),
+            sample_relative_path=sample_relative_path,
             language=language,
         )
 
@@ -638,14 +623,10 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
                 self._l3_scope_pending_hints[key] = max(int(count), int(self._l3_scope_pending_hints.get(key, 0)))
 
     def _consume_l3_scope_pending_hint(self, *, language: Language, runtime_scope_root: str) -> int:
-        key = (language.value, runtime_scope_root)
-        with self._l3_scope_pending_hint_lock:
-            current = int(self._l3_scope_pending_hints.get(key, 0))
-            if current <= 1:
-                self._l3_scope_pending_hints.pop(key, None)
-                return max(current, 0)
-            self._l3_scope_pending_hints[key] = current - 1
-            return current
+        return self._scope_runtime_service.consume_l3_scope_pending_hint(
+            language=language,
+            runtime_scope_root=runtime_scope_root,
+        )
 
     def _extract_once(self, repo_root: str, normalized_relative_path: str) -> LspExtractionResultDTO:
         try:
