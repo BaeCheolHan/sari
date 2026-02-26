@@ -574,6 +574,38 @@ class LspToolDataRepository:
             for row in rows
         ]
 
+    def list_file_symbols_full(self, repo_root: str, relative_path: str, content_hash: str) -> list[dict[str, object]]:
+        """파일 단위 심볼 집합(확장 메타 포함)을 반환한다."""
+        with connect(self._db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT name, kind, line, end_line, symbol_key, parent_symbol_key, depth, container_name
+                FROM lsp_symbols
+                WHERE repo_root = :repo_root
+                  AND relative_path = :relative_path
+                  AND content_hash = :content_hash
+                ORDER BY line ASC, name ASC
+                """,
+                {
+                    "repo_root": repo_root,
+                    "relative_path": relative_path,
+                    "content_hash": content_hash,
+                },
+            ).fetchall()
+        return [
+            {
+                "name": row_str(row, "name"),
+                "kind": row_str(row, "kind"),
+                "line": row_int(row, "line"),
+                "end_line": row_int(row, "end_line"),
+                "symbol_key": row_str(row, "symbol_key") or None,
+                "parent_symbol_key": row_str(row, "parent_symbol_key") or None,
+                "depth": row_int(row, "depth"),
+                "container_name": row_str(row, "container_name") or None,
+            }
+            for row in rows
+        ]
+
     def list_file_symbols_latest(self, repo_root: str, relative_path: str) -> list[dict[str, object]]:
         """content_hash 불일치 상황에서도 파일 최신 심볼 집합을 반환한다.
 

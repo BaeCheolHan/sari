@@ -182,6 +182,8 @@ class AppConfig:
     l3_asset_mode: str = "shadow"
     l3_asset_manifest_path: str = "src/sari/services/collection/assets/manifest.json"
     l3_asset_lang_allowlist: tuple[str, ...] = ()
+    l5_db_short_circuit_enabled: bool = True
+    l5_db_short_circuit_log_miss_reason: bool = True
     mcp_forward_to_daemon: bool = False
     mcp_daemon_autostart: bool = True
     mcp_daemon_timeout_sec: float = 2.0
@@ -329,6 +331,8 @@ class AppConfig:
         l3_asset_mode_raw = extended_raw_values["l3_asset_mode_raw"]
         l3_asset_manifest_path = extended_raw_values["l3_asset_manifest_path"]
         l3_asset_lang_allowlist_raw = extended_raw_values["l3_asset_lang_allowlist_raw"]
+        l5_db_short_circuit_enabled_raw = extended_raw_values["l5_db_short_circuit_enabled_raw"]
+        l5_db_short_circuit_log_miss_reason_raw = extended_raw_values["l5_db_short_circuit_log_miss_reason_raw"]
         mcp_forward_to_daemon_raw = extended_raw_values["mcp_forward_to_daemon_raw"]
         mcp_daemon_autostart_raw = extended_raw_values["mcp_daemon_autostart_raw"]
         mcp_daemon_timeout_raw = extended_raw_values["mcp_daemon_timeout_raw"]
@@ -698,6 +702,8 @@ class AppConfig:
             ),
             l3_asset_manifest_path=l3_asset_manifest_path,
             l3_asset_lang_allowlist=l3_asset_lang_allowlist,
+            l5_db_short_circuit_enabled=parser.bool_true(l5_db_short_circuit_enabled_raw),
+            l5_db_short_circuit_log_miss_reason=parser.bool_true(l5_db_short_circuit_log_miss_reason_raw),
             mcp_forward_to_daemon=parser.bool_true(mcp_forward_to_daemon_raw),
             mcp_daemon_autostart=parser.bool_true(mcp_daemon_autostart_raw),
             mcp_daemon_timeout_sec=mcp_daemon_timeout_sec,
@@ -940,6 +946,8 @@ def _build_extended_fields(*, file_config: dict[str, object], defaults: type[App
         _ConfigField("l3_asset_mode_raw", "SARI_L3_ASSET_MODE", "l3_asset_mode", "shadow", lower=True),
         _ConfigField("l3_asset_manifest_path", "SARI_L3_ASSET_MANIFEST_PATH", "l3_asset_manifest_path", "src/sari/services/collection/assets/manifest.json"),
         _ConfigField("l3_asset_lang_allowlist_raw", "SARI_L3_ASSET_LANG_ALLOWLIST", "l3_asset_lang_allowlist", ""),
+        _ConfigField("l5_db_short_circuit_enabled_raw", "SARI_L5_DB_SHORT_CIRCUIT_ENABLED", "l5_db_short_circuit_enabled", True, lower=True),
+        _ConfigField("l5_db_short_circuit_log_miss_reason_raw", "SARI_L5_DB_SHORT_CIRCUIT_LOG_MISS_REASON", "l5_db_short_circuit_log_miss_reason", True, lower=True),
         _ConfigField("mcp_forward_to_daemon_raw", "SARI_MCP_FORWARD_TO_DAEMON", "mcp_forward_to_daemon", False, lower=True),
         _ConfigField("mcp_daemon_autostart_raw", "SARI_MCP_DAEMON_AUTOSTART", "mcp_daemon_autostart", True, lower=True),
         _ConfigField("mcp_daemon_timeout_raw", "SARI_MCP_DAEMON_TIMEOUT_SEC", "mcp_daemon_timeout_sec", 2.0),

@@ -33,6 +33,7 @@ from sari.services.collection.l3.l3_treesitter_preprocess_service import L3TreeS
 from sari.services.collection.l4.l4_admission_service import L4AdmissionService
 from sari.services.collection.l5.l5_admission_policy import L5AdmissionPolicy, L5AdmissionPolicyConfig, TokenBucket
 from sari.services.collection.l5.l5_admission_runtime_service import L5AdmissionRuntimeService
+from sari.services.collection.l5.l5_cached_extract_service import L5CachedExtractService
 from sari.services.collection.l5.l5_runtime_stats_service import L5RuntimeStatsService
 from sari.services.collection.layer_upsert_builder import LayerUpsertBuilder
 
@@ -112,6 +113,13 @@ def wire_engine_services(
         monotonic_now=time.monotonic,
     )
     engine._l5_runtime_stats_service = L5RuntimeStatsService()
+    engine._l5_cached_extract_service = L5CachedExtractService(
+        tool_layer_repo=getattr(engine, "_tool_layer_repo", None),
+        lsp_repo=getattr(engine, "_lsp_repo", None),
+        delegate_extract=engine._lsp_backend.extract,
+        enabled=bool(getattr(engine, "_l5_db_short_circuit_enabled", True)),
+        log_miss_reason=bool(getattr(engine, "_l5_db_short_circuit_log_miss_reason", True)),
+    )
     configured_l3_asset_mode = os.getenv("SARI_L3_ASSET_MODE", l3_asset_mode).strip().lower()
     if configured_l3_asset_mode not in {"shadow", "gate", "apply"}:
         configured_l3_asset_mode = "shadow"
@@ -199,6 +207,7 @@ def wire_engine_services(
         result_builder=lambda **kwargs: _L3JobResultDTO(**kwargs),
         classify_failure_kind=engine._classify_failure_kind_fn,
         schedule_l1_probe_after_l3_fallback=lambda job: engine._schedule_l1_probe_after_l3_fallback(job=job),
+        extract_fn=engine._l5_cached_extract_service.extract,
         scope_resolution=engine._l3_scope_resolution_service,
         queue_transition=engine._l3_queue_transition_service,
         skip_eligibility=engine._l3_skip_eligibility_service,
@@ -287,7 +296,7 @@ def wire_runtime_processors(engine: "EnrichEngine") -> None:
         is_deletion_hold_enabled=deps.is_deletion_hold_enabled,
         resolve_l3_skip_reason=deps.resolve_l3_skip_reason,
         build_l3_skipped_readiness=deps.build_l3_skipped_readiness,
-        lsp_extract=engine._lsp_backend.extract,
+        lsp_extract=engine._l5_cached_extract_service.extract,
         schedule_l1_probe_after_l3_fallback=lambda job: engine._schedule_l1_probe_after_l3_fallback(job=job),
         record_error_event=deps.record_error_event,
         run_mode=deps.run_mode,

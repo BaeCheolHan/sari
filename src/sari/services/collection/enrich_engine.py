@@ -106,6 +106,8 @@ class EnrichEngine:
         l3_query_budget_ms: float = 30.0,
         l3_asset_mode: str = "shadow",
         l3_asset_lang_allowlist: tuple[str, ...] = (),
+        l5_db_short_circuit_enabled: bool = True,
+        l5_db_short_circuit_log_miss_reason: bool = True,
     ) -> None:
         """엔진 실행에 필요한 의존성을 주입받는다."""
         self._file_repo = file_repo
@@ -153,6 +155,8 @@ class EnrichEngine:
         self._l5_tokens_per_10sec_global_max = max(1, int(l5_tokens_per_10sec_global_max))
         self._l5_tokens_per_10sec_per_lang_max = max(1, int(l5_tokens_per_10sec_per_lang_max))
         self._l5_tokens_per_10sec_per_workspace_max = max(1, int(l5_tokens_per_10sec_per_workspace_max))
+        self._l5_db_short_circuit_enabled = bool(l5_db_short_circuit_enabled)
+        self._l5_db_short_circuit_log_miss_reason = bool(l5_db_short_circuit_log_miss_reason)
         self._l3_asset_loader = L3AssetLoader()
         self._runtime_services = EnrichRuntimeServiceRegistry(self)
         self._l3_bootstrap_mode_service = L3BootstrapModeService(
@@ -213,7 +217,7 @@ class EnrichEngine:
         cost_by_reason = self._get_or_init_l5_cost_units_by_reason()
         cost_by_language = self._get_or_init_l5_cost_units_by_language()
         cost_by_workspace = self._get_or_init_l5_cost_units_by_workspace()
-        return self._get_or_init_l5_runtime_stats_service().build_metrics(
+        metrics = self._get_or_init_l5_runtime_stats_service().build_metrics(
             total_decisions=int(self._l5_total_decisions),
             total_admitted=int(self._l5_total_admitted),
             batch_decisions=int(self._l5_batch_decisions),
@@ -223,6 +227,15 @@ class EnrichEngine:
             cost_units_by_language=cost_by_language,
             cost_units_by_workspace=cost_by_workspace,
         )
+        cache_service = getattr(self, "_l5_cached_extract_service", None)
+        if cache_service is not None and hasattr(cache_service, "get_metrics"):
+            try:
+                cache_metrics = cache_service.get_metrics()
+            except (RuntimeError, OSError, ValueError, TypeError):
+                cache_metrics = {}
+            if isinstance(cache_metrics, dict):
+                metrics.update({str(k): float(v) for k, v in cache_metrics.items()})
+        return metrics
 
     def get_l3_quality_shadow_summary(self) -> dict[str, object]:
         """L3 AST 품질 shadow 비교 요약을 반환한다 (Phase A, metrics-only)."""

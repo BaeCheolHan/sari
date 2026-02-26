@@ -309,6 +309,8 @@ def main() -> None:
         l3_query_budget_ms=config.l3_query_budget_ms,
         l3_asset_mode=config.l3_asset_mode,
         l3_asset_lang_allowlist=config.l3_asset_lang_allowlist,
+        l5_db_short_circuit_enabled=config.l5_db_short_circuit_enabled,
+        l5_db_short_circuit_log_miss_reason=config.l5_db_short_circuit_log_miss_reason,
         tool_layer_repo=tool_layer_repo,
     )
     runtime_search_defaults: dict[str, bool] = {"resolve_symbols_default": False}

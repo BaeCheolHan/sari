@@ -4,7 +4,6 @@ import concurrent.futures
 import hashlib
 import logging
 import os
-import queue
 import threading
 import time
 from contextlib import contextmanager
@@ -38,7 +37,6 @@ from sari.services.collection.l5.solid_lsp_probe_mixin import (
     _ProbeStateRecord,
     _extract_error_code_from_message,
     _is_unavailable_probe_error,
-    _is_warming_probe_error,
     _next_transient_backoff_sec,
 )
 from sari.services.lsp_extraction_contracts import LspExtractionBackend, LspExtractionResultDTO

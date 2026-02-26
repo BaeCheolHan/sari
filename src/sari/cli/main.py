@@ -170,6 +170,8 @@ def _build_services() -> CliServiceBundle:
         lsp_broker_vue_sticky_ttl_sec=config.lsp_broker_vue_sticky_ttl_sec,
         lsp_broker_vue_switch_cooldown_sec=config.lsp_broker_vue_switch_cooldown_sec,
         lsp_broker_vue_min_lease_ms=config.lsp_broker_vue_min_lease_ms,
+        l5_db_short_circuit_enabled=config.l5_db_short_circuit_enabled,
+        l5_db_short_circuit_log_miss_reason=config.l5_db_short_circuit_log_miss_reason,
         tool_layer_repo=tool_layer_repo,
     )
     perf_repo = PipelinePerfRepository(config.db_path)

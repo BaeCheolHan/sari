@@ -241,6 +241,8 @@ class McpServer:
             l3_query_compile_cache_enabled=runtime_config.l3_query_compile_cache_enabled,
             l3_query_compile_ms_budget=runtime_config.l3_query_compile_ms_budget,
             l3_query_budget_ms=runtime_config.l3_query_budget_ms,
+            l5_db_short_circuit_enabled=runtime_config.l5_db_short_circuit_enabled,
+            l5_db_short_circuit_log_miss_reason=runtime_config.l5_db_short_circuit_log_miss_reason,
         )
         perf_service = PipelinePerfService(
             file_collection_service=file_collection_service,

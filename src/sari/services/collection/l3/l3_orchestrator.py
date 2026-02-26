@@ -7,11 +7,7 @@ from typing import Callable
 
 from sari.core.exceptions import CollectionError
 from sari.core.models import (
-    FileBodyDeleteTargetDTO,
-    FileEnrichFailureUpdateDTO,
     FileEnrichJobDTO,
-    LspExtractPersistDTO,
-    ToolReadinessStateDTO,
     L4AdmissionDecisionDTO,
 )
 from sari.services.collection.perf_trace import PerfTracer
@@ -64,6 +60,7 @@ class L3Orchestrator:
         queue_transition: L3QueueTransitionService,
         skip_eligibility: L3SkipEligibilityService,
         persist_service: L3PersistService,
+        extract_fn: Callable[[str, str, str], object] | None = None,
         preprocess_service: L3TreeSitterPreprocessService | None = None,
         degraded_fallback_service: L3DegradedFallbackService | None = None,
         preprocess_max_bytes: int = 262_144,
@@ -122,7 +119,8 @@ class L3Orchestrator:
             evaluate_l5_admission=self._evaluate_l5_admission,
             enforced=self._l5_admission_enforced,
         )
-        self._extract_stage = L3ExtractStage(extract_fn=self._lsp_backend.extract)
+        resolved_extract_fn = extract_fn if extract_fn is not None else self._lsp_backend.extract
+        self._extract_stage = L3ExtractStage(extract_fn=resolved_extract_fn)
         self._finalize_stage = L3FinalizeStage(
             result_builder=self._result_builder,
             event_repo=self._event_repo,

@@ -534,6 +534,22 @@ class ToolDataLayerRepository:
             return next(iter(scoped_roots))
         return None
 
+    def resolve_effective_repo_root(
+        self,
+        *,
+        repo_root: str,
+        relative_path: str,
+        content_hash: str,
+    ) -> str | None:
+        """repo/scope 혼합 저장 상태에서 effective repo_root를 계산해 반환한다."""
+        with connect(self._db_path) as conn:
+            return self._resolve_effective_repo_root(
+                conn=conn,
+                repo_root=repo_root,
+                relative_path=relative_path,
+                content_hash=content_hash,
+            )
+
     def _workspace_id_candidates(self, *, workspace_id: str, repo_root: str) -> tuple[str, str]:
         primary = str(workspace_id or "").strip()
         if primary == "":
