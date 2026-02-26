@@ -5,7 +5,6 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 import queue
 import time
-import logging
 from typing import Callable
 
 from solidlsp.ls_config import Language
@@ -52,8 +51,6 @@ from sari.services.collection.l3_treesitter_preprocess_service import (
     L3PreprocessResultDTO,
 )
 from sari.services.collection.perf_trace import PerfTracer
-
-log = logging.getLogger(__name__)
 
 
 class EnrichEngine:
@@ -441,40 +438,23 @@ class EnrichEngine:
 
 
     def _run_l3_preprocess(self, *, job: FileEnrichJobDTO, file_row: object) -> L3PreprocessResultDTO | None:
-        preprocess_service = getattr(self, "_l3_preprocess_service", None)
-        if preprocess_service is None:
-            return None
-        absolute_path = getattr(file_row, "absolute_path", None)
-        try:
-            if isinstance(absolute_path, str) and absolute_path.strip() != "":
-                with open(absolute_path, "r", encoding="utf-8", errors="ignore") as handle:
-                    content_text = handle.read()
-            else:
-                content_text = ""
-            result = preprocess_service.preprocess(
-                relative_path=job.relative_path,
-                content_text=content_text,
-                max_bytes=int(getattr(self, "_l3_preprocess_max_bytes", 262_144)),
+        preprocess_io = getattr(self, "_l3_preprocess_io_service", None)
+        if preprocess_io is None:
+            preprocess_service = getattr(self, "_l3_preprocess_service", None)
+            if preprocess_service is None:
+                return None
+            from sari.services.collection.l3_preprocess_io_service import L3PreprocessIoService
+
+            preprocess_io = L3PreprocessIoService(
+                preprocess_service=preprocess_service,
+                fallback_service=getattr(self, "_l3_degraded_fallback_service", None),
             )
-            if len(result.symbols) == 0 and result.decision is not L3PreprocessDecision.DEFERRED_HEAVY:
-                fallback = getattr(self, "_l3_degraded_fallback_service", None)
-                if fallback is not None:
-                    return fallback.fallback(relative_path=job.relative_path, content_text=content_text)
-            return result
-        except (OSError, UnicodeError, ValueError, TypeError) as exc:
-            log.warning(
-                "EnrichEngine L3 preprocess failed, returning explicit degraded NEEDS_L5 result (repo=%s, path=%s)",
-                job.repo_root,
-                job.relative_path,
-                exc_info=True,
-            )
-            return L3PreprocessResultDTO(
-                symbols=[],
-                degraded=True,
-                decision=L3PreprocessDecision.NEEDS_L5,
-                source="none",
-                reason=f"l3_preprocess_exception:{type(exc).__name__}",
-            )
+            self._l3_preprocess_io_service = preprocess_io
+        return preprocess_io.run(
+            job=job,
+            file_row=file_row,
+            max_bytes=int(getattr(self, "_l3_preprocess_max_bytes", 262_144)),
+        )
 
     def _schedule_l1_probe_after_l3_fallback(self, job: FileEnrichJobDTO) -> None:
         """L3 fail-open 시 백그라운드 L1 probe를 조건부로 예약한다."""

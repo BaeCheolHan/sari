@@ -23,6 +23,7 @@ from sari.services.collection.l3_queue_transition_service import L3QueueTransiti
 from sari.services.collection.l3_result_merger import L3ResultMerger as _L3ResultMerger
 from sari.services.collection.l3_runtime_coordination_service import L3RuntimeCoordinationService
 from sari.services.collection.l3_scheduling_service import L3SchedulingService
+from sari.services.collection.l3_preprocess_io_service import L3PreprocessIoService
 from sari.services.collection.l3_scope_resolution_service import L3ScopeResolutionService
 from sari.services.collection.l3_skip_eligibility_service import L3SkipEligibilityService
 from sari.services.collection.l3_skip_runtime_service import L3SkipRuntimeService
@@ -89,6 +90,10 @@ def wire_engine_services(
         asset_lang_allowlist=engine._l3_asset_lang_allowlist,
     )
     engine._l3_degraded_fallback_service = L3DegradedFallbackService()
+    engine._l3_preprocess_io_service = L3PreprocessIoService(
+        preprocess_service=engine._l3_preprocess_service,
+        fallback_service=engine._l3_degraded_fallback_service,
+    )
     engine._l3_preprocess_max_bytes = 262_144
     engine._l3_scope_resolution_service = L3ScopeResolutionService()
     engine._l3_broker_admission_service = L3BrokerAdmissionService()
