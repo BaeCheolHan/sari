@@ -29,6 +29,7 @@ from sari.services.collection.lsp_extract_error_mapper import LspExtractErrorMap
 from sari.services.collection.lsp_symbol_normalizer_service import LspSymbolNormalizerService
 from sari.services.collection.lsp_extract_request_runner_service import LspExtractRequestRunnerService
 from sari.services.collection.lsp_standby_retention_service import LspStandbyRetentionService
+from sari.services.collection.lsp_parallelism_service import LspParallelismService
 from sari.services.collection.lsp_session_broker import LspSessionBroker
 from sari.services.collection.perf_trace import PerfTracer
 from sari.services.collection.watcher_hotness_tracker import WatcherHotnessTracker
@@ -242,6 +243,16 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
             ),
         )
         self._standby_retention_service = LspStandbyRetentionService(get_hub=lambda: self._hub)
+        self._parallelism_service = LspParallelismService(
+            hub=self._hub,
+            is_profiled_language=lambda language: self._is_profiled_broker_language(language),
+            ensure_prewarm=lambda **kwargs: self._ensure_prewarm(**kwargs),
+            increment_broker_parallelism_guard_skip=lambda: setattr(
+                self,
+                "_broker_parallelism_guard_skip_count",
+                int(self._broker_parallelism_guard_skip_count) + 1,
+            ),
+        )
 
     def extract(self, repo_root: str, relative_path: str, content_hash: str) -> LspExtractionResultDTO:
         normalized_relative_path = normalize_repo_relative_path(relative_path)
@@ -686,30 +697,19 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
 
     def get_parallelism(self, repo_root: str, language: Language) -> int:
         """현재 언어/레포 풀의 병렬 처리 가능 슬롯 수를 반환한다."""
-        if self._is_profiled_broker_language(language):
-            self._broker_parallelism_guard_skip_count += 1
-            return 1
-        running = self._hub.get_running_instance_count(language=language, repo_root=repo_root)
-        if running > 0:
-            return running
-        self._ensure_prewarm(language=language, repo_root=repo_root)
-        return max(1, self._hub.get_running_instance_count(language=language, repo_root=repo_root))
+        return self._parallelism_service.get_parallelism(repo_root=repo_root, language=language)
 
     def get_parallelism_for_batch(self, repo_root: str, language: Language, batch_size: int) -> int:
         """배치 크기를 반영해 풀 인스턴스를 확보하고 병렬도를 반환한다."""
-        if self._is_profiled_broker_language(language):
-            self._broker_parallelism_guard_skip_count += 1
-            return 1
-        desired = max(1, int(batch_size))
-        servers = self._hub.acquire_pool(language=language, repo_root=repo_root, desired=desired, request_kind="indexing")
-        return max(1, len(servers))
+        return self._parallelism_service.get_parallelism_for_batch(
+            repo_root=repo_root,
+            language=language,
+            batch_size=batch_size,
+        )
 
     def set_bulk_mode(self, repo_root: str, language: Language, enabled: bool) -> None:
         """bulk 인덱싱 모드를 LSP 허브에 전달한다."""
-        if self._is_profiled_broker_language(language):
-            self._broker_parallelism_guard_skip_count += 1
-            return
-        self._hub.set_bulk_mode(language=language, repo_root=repo_root, enabled=enabled)
+        self._parallelism_service.set_bulk_mode(repo_root=repo_root, language=language, enabled=enabled)
 
     def _resolve_symbol_depth(self, symbol: dict[str, object]) -> int:
         """심볼 parent 체인을 따라 depth를 계산한다."""
