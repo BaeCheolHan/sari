@@ -21,6 +21,7 @@ from sari.lsp.hub import LspHub
 from sari.lsp.path_normalizer import normalize_location_to_repo_relative, normalize_repo_relative_path
 from sari.services.collection.lsp_scope_planner import LspScopePlanner
 from sari.services.collection.lsp_runtime_metrics_builder import build_runtime_metrics
+from sari.services.collection.lsp_probe_state_update_service import LspProbeStateUpdateService
 from sari.services.collection.lsp_session_broker import LspSessionBroker
 from sari.services.collection.perf_trace import PerfTracer
 from sari.services.collection.watcher_hotness_tracker import WatcherHotnessTracker
@@ -106,6 +107,18 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
         self._probe_timeout_backoff_cap_sec = 120.0
         self._probe_timeout_window_sec = 30.0
         self._probe_trigger_counts: dict[str, int] = {}
+        self._probe_state_update_service = LspProbeStateUpdateService(
+            resolve_language=lambda relative_path: resolve_language_from_path(file_path=relative_path),
+            is_unavailable_probe_error=_is_unavailable_probe_error,
+            next_transient_backoff_sec=_next_transient_backoff_sec,
+            monotonic_now=time.monotonic,
+            probe_unavailable_backoff_initial_sec=self._probe_unavailable_backoff_initial_sec,
+            probe_unavailable_backoff_mid_sec=self._probe_unavailable_backoff_mid_sec,
+            probe_unavailable_backoff_cap_sec=self._probe_unavailable_backoff_cap_sec,
+            probe_timeout_backoff_initial_sec=self._probe_timeout_backoff_initial_sec,
+            probe_timeout_backoff_mid_sec=self._probe_timeout_backoff_mid_sec,
+            probe_timeout_backoff_cap_sec=self._probe_timeout_backoff_cap_sec,
+        )
         self._scope_override_lock = threading.Lock()
         self._scope_override_ttl_sec = 24 * 60 * 60.0
         self._scope_override_cache: dict[tuple[str, str, str], _ScopeOverrideRecord] = {}
@@ -941,42 +954,18 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
 
     def _record_probe_state_from_extract_error(self, *, repo_root: str, relative_path: str, error_code: str, error_message: str) -> None:
         """L3 extract 실패를 probe 상태에 반영해 반복 startup/요청 폭주를 완화한다."""
-        language = resolve_language_from_path(file_path=relative_path)
-        if language is None:
-            return
-        key = (repo_root, language)
-        now = time.monotonic()
         with self._probe_lock:
-            state = self._probe_state.get(key)
-            if state is None:
-                state = _ProbeStateRecord(status="IDLE", last_seen_monotonic=now)
-                self._probe_state[key] = state
-            state.last_seen_monotonic = now
-            state.last_error_code = error_code
-            state.last_error_message = error_message
-            state.last_error_time_monotonic = now
-            if error_code == "ERR_LSP_WORKSPACE_MISMATCH":
-                state.status = "WORKSPACE_MISMATCH"
-                state.next_retry_monotonic = float("inf")
-                return
-            if not _is_unavailable_probe_error(error_code):
-                return
-            state.status = "UNAVAILABLE_COOLDOWN"
-            state.fail_count += 1
-            state.next_retry_monotonic = now + self._next_probe_retry_backoff_sec(error_code=error_code, fail_count=state.fail_count)
+            self._probe_state_update_service.record_extract_error(
+                probe_state=self._probe_state,
+                repo_root=repo_root,
+                relative_path=relative_path,
+                error_code=error_code,
+                error_message=error_message,
+            )
 
     def _next_probe_retry_backoff_sec(self, *, error_code: str, fail_count: int) -> float:
         """오류 코드/누적 실패 횟수에 따라 probe 재시도 백오프를 계산한다."""
-        if error_code in {"ERR_LSP_SERVER_MISSING", "ERR_LSP_SERVER_SPAWN_FAILED", "ERR_RUNTIME_MISMATCH", "ERR_CONFIG_INVALID"}:
-            if fail_count <= 2:
-                return self._probe_unavailable_backoff_initial_sec
-            if fail_count <= 4:
-                return self._probe_unavailable_backoff_mid_sec
-            return self._probe_unavailable_backoff_cap_sec
-        if error_code in {"ERR_LSP_START_TIMEOUT", "ERR_RPC_TIMEOUT", "ERR_LSP_INTERACTIVE_TIMEOUT"}:
-            if fail_count <= 1:
-                return self._probe_timeout_backoff_initial_sec
-            if fail_count == 2:
-                return self._probe_timeout_backoff_mid_sec
-            return self._probe_timeout_backoff_cap_sec
-        return _next_transient_backoff_sec(fail_count)
+        return self._probe_state_update_service.next_probe_retry_backoff_sec(
+            error_code=error_code,
+            fail_count=fail_count,
+        )
