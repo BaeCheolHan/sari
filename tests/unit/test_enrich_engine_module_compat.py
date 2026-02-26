@@ -11,3 +11,9 @@ def test_enrich_engine_module_keeps_l3_orchestrator_symbol_for_test_compat() -> 
 
 def test_enrich_engine_module_exports_engine_class() -> None:
     assert EnrichEngine is enrich_engine_module.EnrichEngine
+
+
+def test_enrich_engine_class_does_not_keep_layer_upsert_wrapper_methods() -> None:
+    assert not hasattr(EnrichEngine, "_build_l3_layer_upsert")
+    assert not hasattr(EnrichEngine, "_build_l4_layer_upsert")
+    assert not hasattr(EnrichEngine, "_build_l5_layer_upsert")

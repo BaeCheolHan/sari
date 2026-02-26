@@ -629,57 +629,6 @@ class EnrichEngine:
         self._l5_runtime_stats_service = created
         return created
 
-    def _build_l3_layer_upsert(
-        self,
-        *,
-        job: FileEnrichJobDTO,
-        preprocess_result: L3PreprocessResultDTO | None,
-        now_iso: str,
-    ) -> dict[str, object]:
-        return self._layer_upsert_builder.build_l3(
-            repo_root=job.repo_root,
-            relative_path=job.relative_path,
-            content_hash=job.content_hash,
-            preprocess_result=preprocess_result,
-            now_iso=now_iso,
-        )
-
-    def _build_l4_layer_upsert(
-        self,
-        *,
-        job: FileEnrichJobDTO,
-        preprocess_result: L3PreprocessResultDTO | None,
-        admission_decision: L4AdmissionDecisionDTO | None,
-        now_iso: str,
-    ) -> dict[str, object]:
-        return self._layer_upsert_builder.build_l4(
-            repo_root=job.repo_root,
-            relative_path=job.relative_path,
-            content_hash=job.content_hash,
-            preprocess_result=preprocess_result,
-            admission_decision=admission_decision,
-            now_iso=now_iso,
-        )
-
-    def _build_l5_layer_upsert(
-        self,
-        *,
-        job: FileEnrichJobDTO,
-        reason_code: L5ReasonCode,
-        symbols: list[dict[str, object]],
-        relations: list[dict[str, object]],
-        now_iso: str,
-    ) -> dict[str, object]:
-        return self._layer_upsert_builder.build_l5(
-            repo_root=job.repo_root,
-            relative_path=job.relative_path,
-            content_hash=job.content_hash,
-            reason_code=reason_code,
-            symbols=symbols,
-            relations=relations,
-            now_iso=now_iso,
-        )
-
     def _resolve_l3_skip_reason(self, job: FileEnrichJobDTO) -> str | None:
         """job이 L3 추출을 건너뛰어야 하는 사유를 반환한다."""
         return self._get_or_init_l3_skip_runtime_service().resolve_skip_reason(job)
