@@ -36,6 +36,7 @@ from .layer_upsert_builder import LayerUpsertBuilder
 from .l3_stages.admission_stage import L3AdmissionStage
 from .l3_stages.file_guard_stage import L3FileGuardStage
 from .l3_stages.extract_stage import L3ExtractStage
+from .l3_stages.extract_failure_stage import L3ExtractFailureStage
 from .l3_stages.finalize_stage import L3FinalizeStage
 from .l3_stages.persist_stage import L3PersistStage
 from .l3_stages.preprocess_stage import L3PreprocessStage
@@ -128,6 +129,14 @@ class L3Orchestrator:
             build_l4_layer_upsert=self._build_l4_layer_upsert,
             build_l5_layer_upsert=self._build_l5_layer_upsert,
             deletion_hold_enabled=self._deletion_hold_enabled,
+        )
+        self._extract_failure_stage = L3ExtractFailureStage(
+            queue_transition=self._queue_transition,
+            persist_stage=self._persist_stage,
+            now_iso_supplier=self._now_iso_supplier,
+            record_error_event=getattr(self._error_policy, "record_error_event", None),
+            retry_max_attempts=int(self._policy.retry_max_attempts),
+            retry_backoff_base_sec=int(self._policy.retry_backoff_base_sec),
         )
 
     def process_job(self, job: FileEnrichJobDTO) -> object:
@@ -273,46 +282,11 @@ class L3Orchestrator:
                                             content_hash=job.content_hash,
                                         )
                                         if extraction.error_message is not None:
-                                            deferred = self._queue_transition.defer_after_broker_lease_denial(
+                                            finished_status = self._extract_failure_stage.handle_extract_error(
+                                                context=context,
                                                 job=job,
                                                 error_message=extraction.error_message,
                                             )
-                                            if deferred:
-                                                finished_status = "PENDING"
-                                            else:
-                                                escalated = self._queue_transition.escalate_scope_after_l3_extract_error(
-                                                    job=job,
-                                                    error_message=extraction.error_message,
-                                                )
-                                                if escalated:
-                                                    finished_status = "PENDING"
-                                                else:
-                                                    failure_now = self._now_iso_supplier()
-                                                    self._persist_stage.mark_failure(
-                                                        context=context,
-                                                        job_id=job.job_id,
-                                                        repo_root=job.repo_root,
-                                                        relative_path=job.relative_path,
-                                                        now_iso=failure_now,
-                                                        error_message=extraction.error_message,
-                                                        dead_threshold=int(self._policy.retry_max_attempts),
-                                                        backoff_base_sec=int(self._policy.retry_backoff_base_sec),
-                                                    )
-                                                    record_error_event = getattr(self._error_policy, "record_error_event", None)
-                                                    if callable(record_error_event):
-                                                        record_error_event(
-                                                            component="file_collection_service",
-                                                            phase="enrich_l3_extract",
-                                                            severity="error",
-                                                            error_code="ERR_LSP_EXTRACT_FAILED",
-                                                            error_message=extraction.error_message,
-                                                            error_type="LspExtractionError",
-                                                            repo_root=job.repo_root,
-                                                            relative_path=job.relative_path,
-                                                            job_id=job.job_id,
-                                                            attempt_count=job.attempt_count,
-                                                            context_data={"content_hash": job.content_hash},
-                                                        )
                                         else:
                                             self._record_quality_shadow_compare(
                                                 job=job,
