@@ -6,7 +6,7 @@ import logging
 import time
 from typing import Callable
 
-from sari.core.exceptions import CollectionError, ErrorContext
+from sari.core.exceptions import CollectionError
 from sari.core.models import (
     EnrichStateUpdateDTO,
     FileBodyDeleteTargetDTO,
@@ -37,6 +37,7 @@ from .l3_stages.admission_stage import L3AdmissionStage
 from .l3_stages.file_guard_stage import L3FileGuardStage
 from .l3_stages.extract_stage import L3ExtractStage
 from .l3_stages.extract_failure_stage import L3ExtractFailureStage
+from .l3_stages.exception_stage import L3ExceptionStage
 from .l3_stages.finalize_stage import L3FinalizeStage
 from .l3_stages.persist_stage import L3PersistStage
 from .l3_stages.preprocess_stage import L3PreprocessStage
@@ -137,6 +138,14 @@ class L3Orchestrator:
             record_error_event=getattr(self._error_policy, "record_error_event", None),
             retry_max_attempts=int(self._policy.retry_max_attempts),
             retry_backoff_base_sec=int(self._policy.retry_backoff_base_sec),
+        )
+        self._exception_stage = L3ExceptionStage(
+            persist_stage=self._persist_stage,
+            now_iso_supplier=self._now_iso_supplier,
+            record_error_event=getattr(self._error_policy, "record_error_event", None),
+            retry_max_attempts=int(self._policy.retry_max_attempts),
+            retry_backoff_base_sec=int(self._policy.retry_backoff_base_sec),
+            run_mode=self._run_mode,
         )
 
     def process_job(self, job: FileEnrichJobDTO) -> object:
@@ -332,34 +341,11 @@ class L3Orchestrator:
                                         context.done_id = job.job_id
                                         finished_status = "DONE"
             except (CollectionError, RuntimeError, OSError, ValueError) as exc:
-                failure_now = self._now_iso_supplier()
-                self._persist_stage.mark_failure(
+                dev_error = self._exception_stage.handle_exception(
                     context=context,
-                    job_id=job.job_id,
-                    repo_root=job.repo_root,
-                    relative_path=job.relative_path,
-                    now_iso=failure_now,
-                    error_message=f"L3 처리 실패: {exc}",
-                    dead_threshold=int(self._policy.retry_max_attempts),
-                    backoff_base_sec=int(self._policy.retry_backoff_base_sec),
+                    job=job,
+                    exc=exc,
                 )
-                record_error_event = getattr(self._error_policy, "record_error_event", None)
-                if callable(record_error_event):
-                    record_error_event(
-                        component="file_collection_service",
-                        phase="enrich_l3",
-                        severity="critical" if self._run_mode == "dev" else "error",
-                        error_code="ERR_ENRICH_L3_FAILED",
-                        error_message=f"L3 처리 실패: {exc}",
-                        error_type=type(exc).__name__,
-                        repo_root=job.repo_root,
-                        relative_path=job.relative_path,
-                        job_id=job.job_id,
-                        attempt_count=job.attempt_count,
-                        context_data={"content_hash": job.content_hash},
-                    )
-                if self._run_mode == "dev":
-                    dev_error = CollectionError(ErrorContext(code="ERR_ENRICH_L3_FAILED", message=f"L3 처리 실패: {exc}"))
         elapsed_ms = (time.perf_counter() - started_at) * 1000.0
         self._record_enrich_latency(elapsed_ms)
         return self._finalize_stage.execute(
