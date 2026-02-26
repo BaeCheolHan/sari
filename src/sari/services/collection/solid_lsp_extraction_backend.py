@@ -20,6 +20,7 @@ from sari.lsp.document_symbols import request_document_symbols_with_optional_syn
 from sari.lsp.hub import LspHub
 from sari.lsp.path_normalizer import normalize_location_to_repo_relative, normalize_repo_relative_path
 from sari.services.collection.lsp_scope_planner import LspScopePlanner
+from sari.services.collection.lsp_runtime_metrics_builder import build_runtime_metrics
 from sari.services.collection.lsp_session_broker import LspSessionBroker
 from sari.services.collection.perf_trace import PerfTracer
 from sari.services.collection.watcher_hotness_tracker import WatcherHotnessTracker
@@ -852,33 +853,25 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
 
     def get_runtime_metrics(self) -> dict[str, int]:
         """LSP 허브 런타임 메트릭을 반환한다."""
-        metrics = dict(self._hub.get_metrics())
         with self._probe_lock:
-            for trigger, count in self._probe_trigger_counts.items():
-                metrics[f"probe_trigger_{trigger}_count"] = int(count)
-        metrics["scope_planner_shadow_count"] = int(self._lsp_scope_planner_shadow_count)
-        metrics["scope_planner_applied_count"] = int(self._lsp_scope_planner_applied_count)
-        metrics["scope_planner_fallback_index_building_count"] = int(
-            self._lsp_scope_planner_fallback_index_building_count
+            probe_counts = dict(self._probe_trigger_counts)
+        return build_runtime_metrics(
+            hub_metrics=dict(self._hub.get_metrics()),
+            probe_trigger_counts=probe_counts,
+            scope_planner_shadow_count=self._lsp_scope_planner_shadow_count,
+            scope_planner_applied_count=self._lsp_scope_planner_applied_count,
+            scope_planner_fallback_index_building_count=self._lsp_scope_planner_fallback_index_building_count,
+            scope_override_hit_count=self._scope_override_hit_count,
+            runtime_mismatch_auto_recovered_count=self._runtime_mismatch_auto_recovered_count,
+            runtime_mismatch_auto_recover_failed_count=self._runtime_mismatch_auto_recover_failed_count,
+            broker_guard_reject_count=self._broker_guard_reject_count,
+            broker_parallelism_guard_skip_count=self._broker_parallelism_guard_skip_count,
+            document_symbol_sync_skip_requested_count=self._document_symbol_sync_skip_requested_count,
+            document_symbol_sync_skip_accepted_count=self._document_symbol_sync_skip_accepted_count,
+            document_symbol_sync_skip_legacy_fallback_count=self._document_symbol_sync_skip_legacy_fallback_count,
+            probe_l1_skipped_batch_count=self._probe_l1_skipped_batch_count,
+            probe_schedule_skipped_batch_count=self._probe_schedule_skipped_batch_count,
         )
-        metrics["scope_override_hit_count"] = int(self._scope_override_hit_count)
-        metrics["runtime_mismatch_auto_recovered_count"] = int(self._runtime_mismatch_auto_recovered_count)
-        metrics["runtime_mismatch_auto_recover_failed_count"] = int(self._runtime_mismatch_auto_recover_failed_count)
-        metrics["broker_guard_reject_count"] = int(self._broker_guard_reject_count)
-        metrics["broker_parallelism_guard_skip_count"] = int(self._broker_parallelism_guard_skip_count)
-        metrics["document_symbol_sync_skip_requested_count"] = int(self._document_symbol_sync_skip_requested_count)
-        metrics["document_symbol_sync_skip_accepted_count"] = int(self._document_symbol_sync_skip_accepted_count)
-        metrics["document_symbol_sync_skip_legacy_fallback_count"] = int(
-            self._document_symbol_sync_skip_legacy_fallback_count
-        )
-        metrics["probe_l1_skipped_batch_count"] = int(self._probe_l1_skipped_batch_count)
-        metrics["probe_schedule_skipped_batch_count"] = int(self._probe_schedule_skipped_batch_count)
-        # PR4 baseline placeholders (metrics-only; behavior change 금지)
-        metrics.setdefault("session_cache_hit_by_tier_single", 0)
-        metrics.setdefault("session_eviction_churn_count", 0)
-        metrics.setdefault("lsp_memory_total_rss_mb", 0)
-        metrics.setdefault("lsp_memory_pressure_state", 0)
-        return metrics
 
     def _recover_from_runtime_mismatch(self, *, repo_root: str, relative_path: str) -> bool:
         """ERR_RUNTIME_MISMATCH 발생 시 repo/language LSP 런타임을 강제 재시작한다."""
