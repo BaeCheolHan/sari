@@ -14,7 +14,7 @@ import math
 import hashlib
 import pytest
 
-from sari.core.models import CandidateIndexChangeDTO, CollectedFileL1DTO, CollectionPolicyDTO, FileEnrichJobDTO, L5RejectReason, ToolReadinessStateDTO, WorkspaceDTO
+from sari.core.models import CandidateIndexChangeDTO, CollectedFileL1DTO, CollectionPolicyDTO, FileEnrichJobDTO, L4AdmissionDecisionDTO, L5ReasonCode, L5RejectReason, ToolReadinessStateDTO, WorkspaceDTO, now_iso8601_utc
 from sari.db.repositories.candidate_index_change_repository import CandidateIndexChangeRepository
 from sari.db.repositories.file_body_repository import FileBodyRepository
 from sari.db.repositories.file_collection_repository import FileCollectionRepository
@@ -27,7 +27,7 @@ from solidlsp.ls_config import Language
 from sari.search.candidate_search import CandidateBackendError, CandidateSearchConfig, CandidateSearchResultDTO, TantivyCandidateBackend
 from sari.search.orchestrator import SearchOrchestrator
 from sari.services.collection.enrich_engine import EnrichEngine
-import sari.services.collection.enrich_engine as enrich_engine_module
+from sari.services.collection.enrich_result_dto import _L3JobResultDTO
 from sari.services.collection.l3_failure_classifier import classify_l3_extract_failure_kind
 from sari.services.collection.l3_orchestrator import L3Orchestrator
 from sari.services.collection.l3_treesitter_preprocess_service import (
@@ -296,9 +296,9 @@ def _build_min_enrich_engine_for_l3_test(*, lsp_backend: object, queue_repo: obj
                 run_mode=engine._run_mode,
                 event_repo=engine._event_repo,
                 deletion_hold_enabled=lambda: bool(getattr(engine, "_deletion_hold_enabled", False)),
-                now_iso_supplier=enrich_engine_module.now_iso8601_utc,
+                now_iso_supplier=now_iso8601_utc,
                 record_enrich_latency=engine._record_enrich_latency,
-                result_builder=lambda **kwargs: enrich_engine_module._L3JobResultDTO(**kwargs),
+                result_builder=lambda **kwargs: _L3JobResultDTO(**kwargs),
                 classify_failure_kind=classify_l3_extract_failure_kind,
                 schedule_l1_probe_after_l3_fallback=lambda j: engine._schedule_l1_probe_after_l3_fallback(job=j),
                 scope_resolution=_ScopeResolutionAdapter(),
@@ -330,7 +330,7 @@ def test_enrich_engine_l3_refactored_orchestrator_flag_routes_single_job() -> No
 
         def process_job(self, job: FileEnrichJobDTO):  # noqa: ANN001
             self.calls.append(job)
-            return enrich_engine_module._L3JobResultDTO(
+            return _L3JobResultDTO(
                 job_id=job.job_id,
                 finished_status="DONE",
                 elapsed_ms=1.0,
@@ -424,10 +424,10 @@ def test_l3_orchestrator_quality_shadow_records_sampled_result() -> None:
         created_at="2026-01-01T00:00:00+00:00",
         updated_at="2026-01-01T00:00:00+00:00",
     )
-    preprocess_result = enrich_engine_module.L3PreprocessResultDTO(
+    preprocess_result = L3PreprocessResultDTO(
         symbols=[{"name": "A", "kind": "class", "line": 1, "end_line": 10}],
         degraded=False,
-        decision=enrich_engine_module.L3PreprocessDecision.L3_ONLY,
+        decision=L3PreprocessDecision.L3_ONLY,
         source="tree_sitter",
         reason="ok",
     )
@@ -488,10 +488,10 @@ def test_l3_orchestrator_quality_shadow_swallows_eval_errors() -> None:
         created_at="2026-01-01T00:00:00+00:00",
         updated_at="2026-01-01T00:00:00+00:00",
     )
-    preprocess_result = enrich_engine_module.L3PreprocessResultDTO(
+    preprocess_result = L3PreprocessResultDTO(
         symbols=[{"name": "B", "kind": "class", "line": 1, "end_line": 10}],
         degraded=False,
-        decision=enrich_engine_module.L3PreprocessDecision.L3_ONLY,
+        decision=L3PreprocessDecision.L3_ONLY,
         source="tree_sitter",
         reason="ok",
     )
@@ -519,15 +519,15 @@ def test_enrich_engine_evaluate_l5_admission_applies_workspace_content_hash_cool
             self.calls.append(dict(kwargs))
             cooldown_active = bool(kwargs.get("cooldown_active", False))
             if cooldown_active:
-                return enrich_engine_module.L4AdmissionDecisionDTO(
+                return L4AdmissionDecisionDTO(
                     admit_l5=False,
-                    reason_code=enrich_engine_module.L5ReasonCode.GOLDENSET_COVERAGE,
-                    reject_reason=enrich_engine_module.L5RejectReason.COOLDOWN_ACTIVE,
+                    reason_code=L5ReasonCode.GOLDENSET_COVERAGE,
+                    reject_reason=L5RejectReason.COOLDOWN_ACTIVE,
                 )
-            return enrich_engine_module.L4AdmissionDecisionDTO(
+            return L4AdmissionDecisionDTO(
                 admit_l5=False,
-                reason_code=enrich_engine_module.L5ReasonCode.GOLDENSET_COVERAGE,
-                reject_reason=enrich_engine_module.L5RejectReason.PRESSURE_RATE_EXCEEDED,
+                reason_code=L5ReasonCode.GOLDENSET_COVERAGE,
+                reject_reason=L5RejectReason.PRESSURE_RATE_EXCEEDED,
             )
 
     engine = object.__new__(EnrichEngine)
@@ -538,7 +538,7 @@ def test_enrich_engine_evaluate_l5_admission_applies_workspace_content_hash_cool
     engine._l5_batch_admitted = 0
     engine._l5_calls_per_min_per_lang_max = 999
     engine._l5_admitted_timestamps_by_lang = {}
-    engine._l5_reject_counts_by_reason = {reason: 0 for reason in enrich_engine_module.L5RejectReason}
+    engine._l5_reject_counts_by_reason = {reason: 0 for reason in L5RejectReason}
     engine._l5_cooldown_until_by_scope_file = {}
     engine._schedule_l4_admission_probe = lambda job: None
 
@@ -562,9 +562,9 @@ def test_enrich_engine_evaluate_l5_admission_applies_workspace_content_hash_cool
     second = engine._evaluate_l5_admission_for_job(job, "python")
 
     assert first is not None
-    assert first.reject_reason == enrich_engine_module.L5RejectReason.PRESSURE_RATE_EXCEEDED
+    assert first.reject_reason == L5RejectReason.PRESSURE_RATE_EXCEEDED
     assert second is not None
-    assert second.reject_reason == enrich_engine_module.L5RejectReason.COOLDOWN_ACTIVE
+    assert second.reject_reason == L5RejectReason.COOLDOWN_ACTIVE
     assert len(engine._l4_admission_service.calls) == 2
     assert bool(engine._l4_admission_service.calls[1].get("cooldown_active", False)) is True
 
@@ -1138,7 +1138,7 @@ def test_enrich_engine_l5_calls_per_min_per_lang_cap_rejects_second_call(monkeyp
 
     engine._l4_admission_service = _AdmitAllL4Service()
     times = iter([100.0, 100.0, 100.0, 100.0])
-    monkeypatch.setattr(enrich_engine_module.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr("sari.services.collection.enrich_engine.time.monotonic", lambda: next(times))
     job = FileEnrichJobDTO(
         job_id="j-admit-cap",
         repo_id="r1",
