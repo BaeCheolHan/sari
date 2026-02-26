@@ -28,6 +28,7 @@ from sari.services.collection.lsp_scope_runtime_service import LspScopeRuntimeSe
 from sari.services.collection.lsp_extract_error_mapper import LspExtractErrorMapper
 from sari.services.collection.lsp_symbol_normalizer_service import LspSymbolNormalizerService
 from sari.services.collection.lsp_extract_request_runner_service import LspExtractRequestRunnerService
+from sari.services.collection.lsp_standby_retention_service import LspStandbyRetentionService
 from sari.services.collection.lsp_session_broker import LspSessionBroker
 from sari.services.collection.perf_trace import PerfTracer
 from sari.services.collection.watcher_hotness_tracker import WatcherHotnessTracker
@@ -240,6 +241,7 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
                 int(self._document_symbol_sync_skip_legacy_fallback_count) + 1,
             ),
         )
+        self._standby_retention_service = LspStandbyRetentionService(get_hub=lambda: self._hub)
 
     def extract(self, repo_root: str, relative_path: str, content_hash: str) -> LspExtractionResultDTO:
         normalized_relative_path = normalize_repo_relative_path(relative_path)
@@ -542,33 +544,14 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
         hotness_score: float,
     ) -> None:
         """Phase 1 baseline: topK/cap 기반 warm retention touch/prune를 best-effort로 적용한다."""
-        if lane != "hot":
-            return
-        broker = self._session_broker
-        if not self._session_broker_enabled or broker is None or not broker.is_profiled_language(language):
-            return
-        plan_fn = getattr(broker, "get_standby_retention_plan", None)
-        touch_fn = getattr(self._hub, "touch", None)
-        prune_fn = getattr(self._hub, "prune_retention", None)
-        if not callable(plan_fn) or not callable(touch_fn):
-            return
-        try:
-            ttl_override_sec, keep_scopes = plan_fn(
-                language=language,
-                requested_ttl_sec=60.0,
-            )
-            if runtime_scope_root in keep_scopes and float(ttl_override_sec) > 0.0:
-                touch_fn(
-                    language=language,
-                    repo_root=runtime_scope_root,
-                    ttl_override_sec=float(ttl_override_sec),
-                    retention_tier="standby",
-                    hotness_score=float(hotness_score),
-                )
-            if callable(prune_fn):
-                prune_fn(language=language, keep_repo_roots=set(keep_scopes), retention_tier="standby")
-        except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
-            return
+        self._standby_retention_service.apply(
+            language=language,
+            runtime_scope_root=runtime_scope_root,
+            lane=lane,
+            hotness_score=hotness_score,
+            session_broker=self._session_broker,
+            session_broker_enabled=bool(self._session_broker_enabled),
+        )
 
     def _is_profiled_broker_language(self, language: Language) -> bool:
         try:
