@@ -26,6 +26,7 @@ from sari.services.collection.lsp_broker_guard_service import LspBrokerGuardServ
 from sari.services.collection.lsp_runtime_mismatch_recovery_service import LspRuntimeMismatchRecoveryService
 from sari.services.collection.lsp_scope_runtime_service import LspScopeRuntimeService
 from sari.services.collection.lsp_extract_error_mapper import LspExtractErrorMapper
+from sari.services.collection.lsp_symbol_normalizer_service import LspSymbolNormalizerService
 from sari.services.collection.lsp_session_broker import LspSessionBroker
 from sari.services.collection.perf_trace import PerfTracer
 from sari.services.collection.watcher_hotness_tracker import WatcherHotnessTracker
@@ -203,6 +204,12 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
             normalize_repo_relative_path=normalize_repo_relative_path,
         )
         self._extract_error_mapper = LspExtractErrorMapper()
+        self._symbol_normalizer_service = LspSymbolNormalizerService(
+            normalize_location=lambda **kwargs: normalize_location_to_repo_relative(**kwargs),
+            build_symbol_key=lambda **kwargs: self._build_symbol_key(**kwargs),
+            resolve_symbol_depth=lambda symbol: self._resolve_symbol_depth(symbol),
+            resolve_container_name=lambda symbol: self._resolve_container_name(symbol),
+        )
 
     def extract(self, repo_root: str, relative_path: str, content_hash: str) -> LspExtractionResultDTO:
         normalized_relative_path = normalize_repo_relative_path(relative_path)
@@ -687,58 +694,11 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
             repo_root=repo_root,
             language=(language.value if "language" in locals() else "unknown"),
         ):
-            symbols: list[dict[str, object]] = []
-            for raw in raw_symbols:
-                if not isinstance(raw, dict):
-                    continue
-                location = raw.get('location')
-                resolved_relative_path = normalized_relative_path
-                if isinstance(location, dict):
-                    resolved_relative_path = normalize_location_to_repo_relative(
-                        location=location,
-                        fallback_relative_path=normalized_relative_path,
-                        repo_root=repo_root,
-                    )
-                location = raw.get('location')
-                if not isinstance(location, dict):
-                    location = {}
-                range_data = location.get('range')
-                line = 0
-                end_line = 0
-                if isinstance(range_data, dict):
-                    start_data = range_data.get('start')
-                    end_data = range_data.get('end')
-                    if isinstance(start_data, dict):
-                        line = int(start_data.get('line', 0))
-                    if isinstance(end_data, dict):
-                        end_line = int(end_data.get('line', line))
-                symbol_name = str(raw.get('name', ''))
-                symbol_kind = str(raw.get('kind', ''))
-                parent_symbol = raw.get('parent')
-                parent_symbol_key = self._build_symbol_key(
-                    repo_root=repo_root,
-                    relative_path=resolved_relative_path,
-                    symbol=parent_symbol,
-                    fallback_parent_key=None,
-                )
-                symbol_key = self._build_symbol_key(
-                    repo_root=repo_root,
-                    relative_path=resolved_relative_path,
-                    symbol=raw,
-                    fallback_parent_key=parent_symbol_key,
-                )
-                symbols.append(
-                    {
-                        'name': symbol_name,
-                        'kind': symbol_kind,
-                        'line': line,
-                        'end_line': end_line,
-                        'symbol_key': symbol_key,
-                        'parent_symbol_key': parent_symbol_key,
-                        'depth': self._resolve_symbol_depth(raw),
-                        'container_name': self._resolve_container_name(raw),
-                    }
-                )
+            symbols = self._symbol_normalizer_service.normalize_symbols(
+                repo_root=repo_root,
+                normalized_relative_path=normalized_relative_path,
+                raw_symbols=raw_symbols,
+            )
         return LspExtractionResultDTO(symbols=symbols, relations=[], error_message=None)
 
     def get_parallelism(self, repo_root: str, language: Language) -> int:
