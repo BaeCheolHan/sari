@@ -25,6 +25,7 @@ from sari.services.collection.lsp_probe_state_update_service import LspProbeStat
 from sari.services.collection.lsp_broker_guard_service import LspBrokerGuardService
 from sari.services.collection.lsp_runtime_mismatch_recovery_service import LspRuntimeMismatchRecoveryService
 from sari.services.collection.lsp_scope_runtime_service import LspScopeRuntimeService
+from sari.services.collection.lsp_extract_error_mapper import LspExtractErrorMapper
 from sari.services.collection.lsp_session_broker import LspSessionBroker
 from sari.services.collection.perf_trace import PerfTracer
 from sari.services.collection.watcher_hotness_tracker import WatcherHotnessTracker
@@ -34,7 +35,6 @@ from sari.services.collection.solid_lsp_probe_mixin import (
     _extract_error_code_from_message,
     _is_unavailable_probe_error,
     _is_warming_probe_error,
-    _is_workspace_mismatch_error,
     _next_transient_backoff_sec,
 )
 from sari.services.lsp_extraction_contracts import LspExtractionBackend, LspExtractionResultDTO
@@ -202,6 +202,7 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
             l3_scope_pending_hint_lock=self._l3_scope_pending_hint_lock,
             normalize_repo_relative_path=normalize_repo_relative_path,
         )
+        self._extract_error_mapper = LspExtractErrorMapper()
 
     def extract(self, repo_root: str, relative_path: str, content_hash: str) -> LspExtractionResultDTO:
         normalized_relative_path = normalize_repo_relative_path(relative_path)
@@ -665,20 +666,21 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
                     document_symbols = document_symbols_result.iter_symbols()
                     raw_symbols = list(document_symbols)
         except SolidLSPException as exc:
-            message = str(exc)
-            if _is_workspace_mismatch_error(message):
-                return LspExtractionResultDTO(
-                    symbols=[],
-                    relations=[],
-                    error_message=f'ERR_LSP_WORKSPACE_MISMATCH: repo={repo_root}, path={normalized_relative_path}, reason={message}',
-                )
-            if 'ERR_LSP_SYNC_OPEN_FAILED' in message:
-                return LspExtractionResultDTO(symbols=[], relations=[], error_message=f'ERR_LSP_SYNC_OPEN_FAILED: repo={repo_root}, path={normalized_relative_path}, reason={message}')
-            if 'ERR_LSP_SYNC_CHANGE_FAILED' in message:
-                return LspExtractionResultDTO(symbols=[], relations=[], error_message=f'ERR_LSP_SYNC_CHANGE_FAILED: repo={repo_root}, path={normalized_relative_path}, reason={message}')
-            return LspExtractionResultDTO(symbols=[], relations=[], error_message=f'ERR_LSP_DOCUMENT_SYMBOL_FAILED: repo={repo_root}, path={normalized_relative_path}, reason={message}')
+            return LspExtractionResultDTO(
+                symbols=[],
+                relations=[],
+                error_message=self._extract_error_mapper.map_solid_exception(
+                    repo_root=repo_root,
+                    normalized_relative_path=normalized_relative_path,
+                    exc=exc,
+                ),
+            )
         except (DaemonError, RuntimeError, OSError, ValueError, TypeError, concurrent.futures.TimeoutError) as exc:
-            return LspExtractionResultDTO(symbols=[], relations=[], error_message=f'LSP 추출 실패: {exc}')
+            return LspExtractionResultDTO(
+                symbols=[],
+                relations=[],
+                error_message=self._extract_error_mapper.map_generic_exception(exc),
+            )
         with self._perf_tracer.span(
             "extract_once.normalize_symbols",
             phase="l3_extract",
