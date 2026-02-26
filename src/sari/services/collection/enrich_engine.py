@@ -3,50 +3,31 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-import os
 import queue
 import time
 import logging
-from collections import deque
 from typing import Callable
 
 from solidlsp.ls_config import Language
 
-from sari.core.exceptions import CollectionError, ErrorContext
-from sari.core.models import L4AdmissionDecisionDTO, L5ReasonCode, L5RejectReason, L5RequestMode
+from sari.core.models import L4AdmissionDecisionDTO, L5ReasonCode, L5RejectReason
 from sari.core.language_registry import get_enabled_language_names, resolve_language_from_path
 from sari.core.models import (
     CollectedFileBodyDTO,
-    EnrichStateUpdateDTO,
-    FileBodyDeleteTargetDTO,
-    FileEnrichFailureUpdateDTO,
     FileEnrichJobDTO,
-    LspExtractPersistDTO,
     ToolReadinessStateDTO,
     now_iso8601_utc,
 )
-from sari.services.collection.l5_admission_policy import (
-    L5AdmissionPolicy,
-    L5AdmissionPolicyConfig,
-    LanguageL5Policy,
-    TokenBucket,
-)
+from sari.services.collection.l5_admission_policy import LanguageL5Policy, TokenBucket
 from sari.services.collection.l5_admission_runtime_service import (
     L5AdmissionRuntimeService,
     L5AdmissionRuntimeState,
 )
+from sari.services.collection.l5_default_policy_builder import build_default_language_policy_map
 from sari.db.repositories.tool_data_layer_repository import ToolDataLayerRepository
 from sari.services.collection.error_policy import CollectionErrorPolicy
-from sari.services.collection.l3_broker_admission_service import L3BrokerAdmissionService
 from sari.services.collection.l3_asset_loader import L3AssetLoader
-from sari.services.collection.l3_degraded_fallback_service import L3DegradedFallbackService
-from sari.services.collection.l4_admission_service import L4AdmissionService
 from sari.services.collection.l3_orchestrator import L3Orchestrator
-from sari.services.collection.l3_persist_service import L3PersistService
-from sari.services.collection.l3_quality_evaluation_service import L3QualityEvaluationService
-from sari.services.collection.l3_queue_transition_service import L3QueueTransitionService
-from sari.services.collection.l3_scope_resolution_service import L3ScopeResolutionService
-from sari.services.collection.l3_skip_eligibility_service import L3SkipEligibilityService
 from sari.services.collection.l3_skip_runtime_service import L3SkipRuntimeService
 from sari.services.collection.l3_runtime_coordination_service import L3RuntimeCoordinationService
 from sari.services.collection.l3_scheduling_service import L3SchedulingService
@@ -65,23 +46,11 @@ from sari.services.collection.l3_failure_classifier import (
     next_scope_level_for_l3_escalation as _shared_next_scope_level_for_l3_escalation,
 )
 from sari.services.collection.enrich_engine_wiring import wire_engine_services, wire_runtime_processors
-from sari.services.collection.layer_upsert_builder import LayerUpsertBuilder
-from sari.services.collection.l3_group_processor import L3GroupProcessor as _L3GroupProcessor
-from sari.services.collection.l2_job_processor import L2JobProcessor as _L2JobProcessor
-from sari.services.collection.l3_flush_coordinator import L3FlushCoordinator as _L3FlushCoordinator
-from sari.services.collection.l3_result_merger import L3ResultMerger as _L3ResultMerger
-from sari.services.collection.l3_timeout_failure_builder import L3TimeoutFailureBuilder as _L3TimeoutFailureBuilder
-from sari.services.collection.enrich_flush_coordinator import EnrichFlushCoordinator as _EnrichFlushCoordinator
-from sari.services.collection.enrich_jobs_processor import EnrichJobsProcessor as _EnrichJobsProcessor
 from sari.services.collection.enrich_result_dto import (
-    _L2ResultBuffersDTO,
     _L3JobResultDTO,
     _L3ResultBuffersDTO,
-    _LayerUpsertBucketsDTO,
-    _LayerUpsertsDTO,
 )
 from sari.services.collection.l3_treesitter_preprocess_service import (
-    L3TreeSitterPreprocessService,
     L3PreprocessDecision,
     L3PreprocessResultDTO,
 )
@@ -206,33 +175,7 @@ class EnrichEngine:
 
     def _build_default_language_policy_map(self) -> dict[str, LanguageL5Policy]:
         """전 언어를 열어두고 예산으로 조이는 기본 L5 정책을 생성한다."""
-        policy = LanguageL5Policy(
-            enabled=True,
-            mode_allow={
-                L5RequestMode.INTERACTIVE: (
-                    L5ReasonCode.USER_INTERACTIVE,
-                    L5ReasonCode.UNRESOLVED_SYMBOL,
-                    L5ReasonCode.CROSS_FILE_REFERENCE_REQUIRED,
-                    L5ReasonCode.RENAME_DEFINITION_PRECISION,
-                    L5ReasonCode.USER_INTERACTIVE_UNKNOWN,
-                ),
-                L5RequestMode.BATCH: (
-                    L5ReasonCode.GOLDENSET_COVERAGE,
-                    L5ReasonCode.REGRESSION_SAMPLING,
-                    L5ReasonCode.UNRESOLVED_SYMBOL,
-                ),
-            },
-            cost_multiplier=1.0,
-            default_reason_weight=1.0,
-            reason_weight_map={
-                L5ReasonCode.RENAME_DEFINITION_PRECISION: 2.0,
-                L5ReasonCode.GOLDENSET_COVERAGE: 1.5,
-            },
-        )
-        out: dict[str, LanguageL5Policy] = {}
-        for language in get_enabled_language_names():
-            out[str(language).strip().lower()] = policy
-        return out
+        return build_default_language_policy_map(get_enabled_language_names())
 
     def shutdown(self) -> None:
         """L3 전역 executor를 종료한다."""
