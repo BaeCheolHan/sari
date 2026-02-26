@@ -37,6 +37,7 @@ from .l3_stages.admission_stage import L3AdmissionStage
 from .l3_stages.file_guard_stage import L3FileGuardStage
 from .l3_stages.extract_stage import L3ExtractStage
 from .l3_stages.extract_failure_stage import L3ExtractFailureStage
+from .l3_stages.extract_success_stage import L3ExtractSuccessStage
 from .l3_stages.exception_stage import L3ExceptionStage
 from .l3_stages.finalize_stage import L3FinalizeStage
 from .l3_stages.persist_stage import L3PersistStage
@@ -138,6 +139,10 @@ class L3Orchestrator:
             record_error_event=getattr(self._error_policy, "record_error_event", None),
             retry_max_attempts=int(self._policy.retry_max_attempts),
             retry_backoff_base_sec=int(self._policy.retry_backoff_base_sec),
+        )
+        self._extract_success_stage = L3ExtractSuccessStage(
+            persist_stage=self._persist_stage,
+            record_quality_shadow_compare=self._record_quality_shadow_compare,
         )
         self._exception_stage = L3ExceptionStage(
             persist_stage=self._persist_stage,
@@ -297,46 +302,15 @@ class L3Orchestrator:
                                                 error_message=extraction.error_message,
                                             )
                                         else:
-                                            self._record_quality_shadow_compare(
+                                            finished_status = self._extract_success_stage.handle_success(
+                                                context=context,
                                                 job=job,
                                                 language=language,
                                                 preprocess_result=preprocess_result,
-                                                lsp_symbols=list(extraction.symbols),
-                                            )
-                                            context.l3_layer_upsert = self._build_l3_layer_upsert(
-                                                repo_root=job.repo_root,
-                                                relative_path=job.relative_path,
-                                                content_hash=job.content_hash,
-                                                preprocess_result=preprocess_result,
-                                                now_iso=now_iso,
-                                            )
-                                            context.l4_layer_upsert = self._build_l4_layer_upsert(
-                                                repo_root=job.repo_root,
-                                                relative_path=job.relative_path,
-                                                content_hash=job.content_hash,
-                                                preprocess_result=preprocess_result,
                                                 admission_decision=admission_decision,
+                                                extraction=extraction,
                                                 now_iso=now_iso,
                                             )
-                                            reason_code = (
-                                                admission_decision.reason_code
-                                                if admission_decision is not None and admission_decision.reason_code is not None
-                                                else L5ReasonCode.GOLDENSET_COVERAGE
-                                            )
-                                            self._persist_stage.apply_l5_success(
-                                                context=context,
-                                                repo_root=job.repo_root,
-                                                relative_path=job.relative_path,
-                                                content_hash=job.content_hash,
-                                                preprocess_result=preprocess_result,
-                                                admission_decision=admission_decision,
-                                                reason_code=reason_code,
-                                                lsp_symbols=extraction.symbols,
-                                                lsp_relations=extraction.relations,
-                                                now_iso=now_iso,
-                                            )
-                                            context.done_id = job.job_id
-                                            finished_status = "DONE"
                                     if finished_status not in {"PENDING", "DONE"} and context.failure_update is None:
                                         context.done_id = job.job_id
                                         finished_status = "DONE"
