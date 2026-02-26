@@ -128,9 +128,7 @@ class L3Orchestrator:
             event_repo=self._event_repo,
         )
         self._persist_stage = L3PersistStage(
-            build_l3_layer_upsert=self._build_l3_layer_upsert,
-            build_l4_layer_upsert=self._build_l4_layer_upsert,
-            build_l5_layer_upsert=self._build_l5_layer_upsert,
+            layer_upsert_builder=self._layer_upsert_builder,
             deletion_hold_enabled=self._deletion_hold_enabled,
         )
         self._decision_stage = L3DecisionStage(
@@ -277,60 +275,3 @@ class L3Orchestrator:
 
     def _run_preprocess(self, *, job: FileEnrichJobDTO, file_row: object) -> L3PreprocessResultDTO | None:
         return self._preprocess_io_stage.run(job=job, file_row=file_row)
-
-    def _build_l3_layer_upsert(
-        self,
-        *,
-        repo_root: str,
-        relative_path: str,
-        content_hash: str,
-        preprocess_result: L3PreprocessResultDTO | None,
-        now_iso: str,
-    ) -> dict[str, object]:
-        return self._layer_upsert_builder.build_l3(
-            repo_root=repo_root,
-            relative_path=relative_path,
-            content_hash=content_hash,
-            preprocess_result=preprocess_result,
-            now_iso=now_iso,
-        )
-
-    def _build_l4_layer_upsert(
-        self,
-        *,
-        repo_root: str,
-        relative_path: str,
-        content_hash: str,
-        preprocess_result: L3PreprocessResultDTO | None,
-        admission_decision: L4AdmissionDecisionDTO | None,
-        now_iso: str,
-    ) -> dict[str, object]:
-        return self._layer_upsert_builder.build_l4(
-            repo_root=repo_root,
-            relative_path=relative_path,
-            content_hash=content_hash,
-            preprocess_result=preprocess_result,
-            admission_decision=admission_decision,
-            now_iso=now_iso,
-        )
-
-    def _build_l5_layer_upsert(
-        self,
-        *,
-        repo_root: str,
-        relative_path: str,
-        content_hash: str,
-        reason_code: L5ReasonCode,
-        symbols: list[dict[str, object]],
-        relations: list[dict[str, object]],
-        now_iso: str,
-    ) -> dict[str, object]:
-        return self._layer_upsert_builder.build_l5(
-            repo_root=repo_root,
-            relative_path=relative_path,
-            content_hash=content_hash,
-            reason_code=reason_code,
-            symbols=symbols,
-            relations=relations,
-            now_iso=now_iso,
-        )

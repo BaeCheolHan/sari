@@ -1,7 +1,6 @@
 """Persistence-oriented state composition stage for L3 orchestration."""
 
 from __future__ import annotations
-
 from typing import Callable
 
 from sari.core.models import (
@@ -24,14 +23,10 @@ class L3PersistStage:
     def __init__(
         self,
         *,
-        build_l3_layer_upsert: Callable[..., dict[str, object]],
-        build_l4_layer_upsert: Callable[..., dict[str, object]],
-        build_l5_layer_upsert: Callable[..., dict[str, object]],
+        layer_upsert_builder: object,
         deletion_hold_enabled: Callable[[], bool],
     ) -> None:
-        self._build_l3_layer_upsert = build_l3_layer_upsert
-        self._build_l4_layer_upsert = build_l4_layer_upsert
-        self._build_l5_layer_upsert = build_l5_layer_upsert
+        self._layer_upsert_builder = layer_upsert_builder
         self._deletion_hold_enabled = deletion_hold_enabled
 
     def mark_recent_ready(
@@ -113,14 +108,14 @@ class L3PersistStage:
         admission_decision: L4AdmissionDecisionDTO | None,
         now_iso: str,
     ) -> None:
-        context.l3_layer_upsert = self._build_l3_layer_upsert(
+        context.l3_layer_upsert = self._layer_upsert_builder.build_l3(
             repo_root=repo_root,
             relative_path=relative_path,
             content_hash=content_hash,
             preprocess_result=preprocess_result,
             now_iso=now_iso,
         )
-        context.l4_layer_upsert = self._build_l4_layer_upsert(
+        context.l4_layer_upsert = self._layer_upsert_builder.build_l4(
             repo_root=repo_root,
             relative_path=relative_path,
             content_hash=content_hash,
@@ -171,14 +166,14 @@ class L3PersistStage:
         lsp_relations: list[dict[str, object]],
         now_iso: str,
     ) -> None:
-        context.l3_layer_upsert = self._build_l3_layer_upsert(
+        context.l3_layer_upsert = self._layer_upsert_builder.build_l3(
             repo_root=repo_root,
             relative_path=relative_path,
             content_hash=content_hash,
             preprocess_result=preprocess_result,
             now_iso=now_iso,
         )
-        context.l4_layer_upsert = self._build_l4_layer_upsert(
+        context.l4_layer_upsert = self._layer_upsert_builder.build_l4(
             repo_root=repo_root,
             relative_path=relative_path,
             content_hash=content_hash,
@@ -186,7 +181,7 @@ class L3PersistStage:
             admission_decision=admission_decision,
             now_iso=now_iso,
         )
-        context.l5_layer_upsert = self._build_l5_layer_upsert(
+        context.l5_layer_upsert = self._layer_upsert_builder.build_l5(
             repo_root=repo_root,
             relative_path=relative_path,
             content_hash=content_hash,
@@ -237,4 +232,3 @@ class L3PersistStage:
             dead_threshold=dead_threshold,
             backoff_base_sec=backoff_base_sec,
         )
-
