@@ -112,6 +112,7 @@ def _build_services() -> CliServiceBundle:
     from sari.services.workspace import WorkspaceService
 
     config = AppConfig.default()
+    lsp_hub_config = config.lsp_hub_config()
     repos = build_repository_bundle(config.db_path)
     workspace_repo = repos.workspace_repo
     runtime_repo = repos.runtime_repo
@@ -193,8 +194,8 @@ def _build_services() -> CliServiceBundle:
     quality_repo = repos.quality_repo
     language_probe_repo = repos.language_probe_repo
     lsp_matrix_repo = repos.lsp_matrix_repo
-    quality_hub = build_lsp_hub(config)
-    probe_hub = build_lsp_hub(config)
+    quality_hub = build_lsp_hub(lsp_hub_config)
+    probe_hub = build_lsp_hub(lsp_hub_config)
     language_probe_service = LanguageProbeService(
         workspace_repo=workspace_repo,
         lsp_hub=probe_hub,

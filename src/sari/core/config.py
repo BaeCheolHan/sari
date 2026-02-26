@@ -31,6 +31,86 @@ DEFAULT_COLLECTION_EXCLUDE_GLOBS: tuple[str, ...] = (
 
 
 @dataclass(frozen=True)
+class CollectionRuntimeConfigDTO:
+    """collection/service wiring에 필요한 설정 묶음."""
+
+    pipeline_retry_max: int
+    pipeline_backoff_base_sec: int
+    queue_poll_interval_ms: int
+    watcher_debounce_ms: int
+    include_ext: tuple[str, ...]
+    exclude_globs: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class LspHubRuntimeConfigDTO:
+    """LspHub 생성에 필요한 설정 묶음."""
+
+    request_timeout_sec: float
+    max_instances_per_repo_language: int
+    bulk_mode_enabled: bool
+    bulk_max_instances_per_repo_language: int
+    interactive_reserved_slots_per_repo_language: int
+    interactive_timeout_sec: float
+    lsp_global_soft_limit: int
+    scale_out_hot_hits: int
+    file_buffer_idle_ttl_sec: float
+    file_buffer_max_open: int
+    java_min_major: int
+    max_concurrent_starts: int
+    max_concurrent_l1_probes: int
+
+
+@dataclass(frozen=True)
+class SearchRuntimeConfigDTO:
+    """search stack 생성에 필요한 설정 묶음."""
+
+    candidate_backend: str
+    candidate_fallback_scan: bool
+    importance_kind_class: float
+    importance_kind_function: float
+    importance_kind_interface: float
+    importance_kind_method: float
+    importance_fan_in_weight: float
+    importance_filename_exact_bonus: float
+    importance_core_path_bonus: float
+    importance_noisy_path_penalty: float
+    importance_code_ext_bonus: float
+    importance_noisy_ext_penalty: float
+    importance_recency_24h_multiplier: float
+    importance_recency_7d_multiplier: float
+    importance_recency_30d_multiplier: float
+    importance_normalize_mode: str
+    importance_max_boost: float
+    importance_core_path_tokens: tuple[str, ...]
+    importance_noisy_path_tokens: tuple[str, ...]
+    importance_code_extensions: tuple[str, ...]
+    importance_noisy_extensions: tuple[str, ...]
+    vector_enabled: bool
+    vector_model_id: str
+    vector_dim: int
+    vector_candidate_k: int
+    vector_rerank_k: int
+    vector_blend_weight: float
+    vector_min_similarity_threshold: float
+    vector_max_boost: float
+    vector_min_token_count_for_rerank: int
+    vector_apply_to_item_types: tuple[str, ...]
+    ranking_w_rrf: float
+    ranking_w_importance: float
+    ranking_w_vector: float
+    ranking_w_hierarchy: float
+    search_lsp_fallback_mode: str
+    search_lsp_pressure_guard_enabled: bool
+    search_lsp_pressure_pending_threshold: int
+    search_lsp_pressure_timeout_threshold: int
+    search_lsp_pressure_rejected_threshold: int
+    search_lsp_recent_failure_cooldown_sec: float
+    lsp_include_info_default: bool
+    lsp_symbol_info_budget_sec: float
+
+
+@dataclass(frozen=True)
 class AppConfig:
     """애플리케이션 전역 설정 DTO다."""
 
@@ -193,6 +273,83 @@ class AppConfig:
     stabilization_enabled: bool = True
     http_bg_proxy_enabled: bool = False
     http_bg_proxy_target: str = ""
+
+    def collection_config(self) -> CollectionRuntimeConfigDTO:
+        """collection/service wiring에 사용할 설정 DTO를 반환한다."""
+        return CollectionRuntimeConfigDTO(
+            pipeline_retry_max=self.pipeline_retry_max,
+            pipeline_backoff_base_sec=self.pipeline_backoff_base_sec,
+            queue_poll_interval_ms=self.queue_poll_interval_ms,
+            watcher_debounce_ms=self.watcher_debounce_ms,
+            include_ext=self.collection_include_ext,
+            exclude_globs=self.collection_exclude_globs,
+        )
+
+    def lsp_hub_config(self) -> LspHubRuntimeConfigDTO:
+        """LspHub 생성용 설정 DTO를 반환한다."""
+        return LspHubRuntimeConfigDTO(
+            request_timeout_sec=self.lsp_request_timeout_sec,
+            max_instances_per_repo_language=self.lsp_max_instances_per_repo_language,
+            bulk_mode_enabled=self.lsp_bulk_mode_enabled,
+            bulk_max_instances_per_repo_language=self.lsp_bulk_max_instances_per_repo_language,
+            interactive_reserved_slots_per_repo_language=self.lsp_interactive_reserved_slots_per_repo_language,
+            interactive_timeout_sec=self.lsp_interactive_timeout_sec,
+            lsp_global_soft_limit=self.lsp_global_soft_limit,
+            scale_out_hot_hits=self.lsp_scale_out_hot_hits,
+            file_buffer_idle_ttl_sec=self.lsp_file_buffer_idle_ttl_sec,
+            file_buffer_max_open=self.lsp_file_buffer_max_open,
+            java_min_major=self.lsp_java_min_major,
+            max_concurrent_starts=self.lsp_max_concurrent_starts,
+            max_concurrent_l1_probes=self.lsp_max_concurrent_l1_probes,
+        )
+
+    def search_config(self) -> SearchRuntimeConfigDTO:
+        """search stack 생성용 설정 DTO를 반환한다."""
+        return SearchRuntimeConfigDTO(
+            candidate_backend=self.candidate_backend,
+            candidate_fallback_scan=self.candidate_fallback_scan,
+            importance_kind_class=self.importance_kind_class,
+            importance_kind_function=self.importance_kind_function,
+            importance_kind_interface=self.importance_kind_interface,
+            importance_kind_method=self.importance_kind_method,
+            importance_fan_in_weight=self.importance_fan_in_weight,
+            importance_filename_exact_bonus=self.importance_filename_exact_bonus,
+            importance_core_path_bonus=self.importance_core_path_bonus,
+            importance_noisy_path_penalty=self.importance_noisy_path_penalty,
+            importance_code_ext_bonus=self.importance_code_ext_bonus,
+            importance_noisy_ext_penalty=self.importance_noisy_ext_penalty,
+            importance_recency_24h_multiplier=self.importance_recency_24h_multiplier,
+            importance_recency_7d_multiplier=self.importance_recency_7d_multiplier,
+            importance_recency_30d_multiplier=self.importance_recency_30d_multiplier,
+            importance_normalize_mode=self.importance_normalize_mode,
+            importance_max_boost=self.importance_max_boost,
+            importance_core_path_tokens=self.importance_core_path_tokens,
+            importance_noisy_path_tokens=self.importance_noisy_path_tokens,
+            importance_code_extensions=self.importance_code_extensions,
+            importance_noisy_extensions=self.importance_noisy_extensions,
+            vector_enabled=self.vector_enabled,
+            vector_model_id=self.vector_model_id,
+            vector_dim=self.vector_dim,
+            vector_candidate_k=self.vector_candidate_k,
+            vector_rerank_k=self.vector_rerank_k,
+            vector_blend_weight=self.vector_blend_weight,
+            vector_min_similarity_threshold=self.vector_min_similarity_threshold,
+            vector_max_boost=self.vector_max_boost,
+            vector_min_token_count_for_rerank=self.vector_min_token_count_for_rerank,
+            vector_apply_to_item_types=self.vector_apply_to_item_types,
+            ranking_w_rrf=self.ranking_w_rrf,
+            ranking_w_importance=self.ranking_w_importance,
+            ranking_w_vector=self.ranking_w_vector,
+            ranking_w_hierarchy=self.ranking_w_hierarchy,
+            search_lsp_fallback_mode=self.search_lsp_fallback_mode,
+            search_lsp_pressure_guard_enabled=self.search_lsp_pressure_guard_enabled,
+            search_lsp_pressure_pending_threshold=self.search_lsp_pressure_pending_threshold,
+            search_lsp_pressure_timeout_threshold=self.search_lsp_pressure_timeout_threshold,
+            search_lsp_pressure_rejected_threshold=self.search_lsp_pressure_rejected_threshold,
+            search_lsp_recent_failure_cooldown_sec=self.search_lsp_recent_failure_cooldown_sec,
+            lsp_include_info_default=self.lsp_include_info_default,
+            lsp_symbol_info_budget_sec=self.lsp_symbol_info_budget_sec,
+        )
 
     @classmethod
     def default(cls) -> "AppConfig":

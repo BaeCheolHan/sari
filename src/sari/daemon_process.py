@@ -86,14 +86,20 @@ def main() -> None:
         stop_grace_sec=10,
         run_mode=str(args.run_mode),
     )
+    lsp_hub_config = config.lsp_hub_config()
+    search_config = config.search_config()
+    collection_config = config.collection_config()
     this_pid = os.getpid()
     launch_parent_pid = os.getppid()
 
-    lsp_hub = build_lsp_hub(config, hub_cls=LspHub)
+    lsp_hub = build_lsp_hub(lsp_hub_config, hub_cls=LspHub)
     search_stack = build_search_stack(
-        config=config,
+        search_config=search_config,
         repos=repos,
         lsp_hub=lsp_hub,
+        candidate_backend=search_config.candidate_backend,
+        candidate_fallback_scan=search_config.candidate_fallback_scan,
+        candidate_allowed_suffixes=collection_config.include_ext,
         blend_config_version="v2-config",
     )
     candidate_service = search_stack.candidate_service
@@ -122,12 +128,12 @@ def main() -> None:
         error_event_repo=error_event_repo,
         candidate_index_sink=candidate_service,
         vector_index_sink=vector_sink,
-        retry_max_attempts=config.pipeline_retry_max,
-        retry_backoff_base_sec=config.pipeline_backoff_base_sec,
-        queue_poll_interval_ms=config.queue_poll_interval_ms,
-        include_ext=config.collection_include_ext,
-        exclude_globs=config.collection_exclude_globs,
-        watcher_debounce_ms=config.watcher_debounce_ms,
+        retry_max_attempts=collection_config.pipeline_retry_max,
+        retry_backoff_base_sec=collection_config.pipeline_backoff_base_sec,
+        queue_poll_interval_ms=collection_config.queue_poll_interval_ms,
+        include_ext=collection_config.include_ext,
+        exclude_globs=collection_config.exclude_globs,
+        watcher_debounce_ms=collection_config.watcher_debounce_ms,
         run_mode=config.run_mode,
         parent_alive_probe=(lambda: _is_parent_alive(launch_parent_pid, detached_mode=detached_mode)),
         lsp_backend=SolidLspExtractionBackend(
