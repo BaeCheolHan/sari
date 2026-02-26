@@ -37,6 +37,9 @@ from sari.services.collection.l3_treesitter_preprocess_service import (
 )
 from sari.services.collection.lsp_session_broker import LspBrokerLanguageProfile, LspSessionBroker
 from sari.services.collection.perf_trace import PerfTracer
+from sari.services.collection.testing.enrich_engine_test_factory import (
+    build_min_enrich_engine_for_l3_test,
+)
 from sari.services.collection.watcher_hotness_tracker import WatcherHotnessTracker
 from sari.services.collection.enrich_flush_coordinator import EnrichFlushCoordinator
 from sari.services.collection.service import FileCollectionService, LspExtractionBackend, LspExtractionResultDTO, SolidLspExtractionBackend
@@ -68,27 +71,6 @@ class _ProbeCountingBackend(_NoopLspBackend):
     ) -> str:
         self.calls.append((repo_root, relative_path, bool(force), str(trigger)))
         return "scheduled"
-
-
-class _StubFileRow:
-    def __init__(self, *, content_hash: str) -> None:
-        self.is_deleted = False
-        self.content_hash = content_hash
-
-
-class _StubFileRepo:
-    def __init__(self, *, content_hash: str) -> None:
-        self._row = _StubFileRow(content_hash=content_hash)
-
-    def get_file(self, repo_root: str, relative_path: str):  # noqa: ANN001
-        _ = (repo_root, relative_path)
-        return self._row
-
-
-class _StubReadinessRepo:
-    def get_state(self, repo_root: str, relative_path: str):  # noqa: ANN001
-        _ = (repo_root, relative_path)
-        return None
 
 
 class _StubErrorPolicy:
@@ -178,147 +160,6 @@ class _CaptureToolLayerRepo:
     def upsert_l5_semantics_many(self, upserts: list[dict[str, object]]) -> None:
         self.l5_many_calls.append([dict(item) for item in upserts])
 
-
-def _build_min_enrich_engine_for_l3_test(*, lsp_backend: object, queue_repo: object, error_policy: _StubErrorPolicy) -> EnrichEngine:
-    engine = object.__new__(EnrichEngine)
-    engine._perf_tracer = PerfTracer(component="test_enrich_engine")
-    engine._file_repo = _StubFileRepo(content_hash="h1")
-    engine._enrich_queue_repo = queue_repo
-    engine._readiness_repo = _StubReadinessRepo()
-    engine._lsp_backend = lsp_backend
-    engine._policy = type("P", (), {"retry_max_attempts": 5, "retry_backoff_base_sec": 1})()
-    engine._run_mode = "prod"
-    engine._policy_repo = None
-    engine._event_repo = None
-    engine._error_policy = error_policy
-    engine._record_enrich_latency = lambda ms: None
-    engine._l3_recent_success_ttl_sec = 0
-    engine._lsp_probe_l1_languages = set()
-    engine._l3_supported_languages = {Language.PYTHON}
-    engine._schedule_l1_probe_after_l3_fallback_called = 0
-    engine._l5_total_decisions = 0
-    engine._l5_total_admitted = 0
-    engine._l5_batch_decisions = 0
-    engine._l5_batch_admitted = 0
-    engine._l5_admission_shadow_enabled = False
-    engine._l5_admission_enforced = False
-    engine._l5_calls_per_min_per_lang_max = 30
-    engine._l5_admitted_timestamps_by_lang = {}
-    class _StubQueueTransitionService:
-        def defer_after_l5_admission_rejection(self, *, job: FileEnrichJobDTO, admission) -> bool:  # noqa: ANN001
-            _ = admission
-            if hasattr(queue_repo, "defer_jobs_to_pending"):
-                changed = queue_repo.defer_jobs_to_pending(
-                    job_ids=[job.job_id],
-                    next_retry_at="2026-01-01T00:00:30+00:00",
-                    defer_reason="l5_defer:pressure_rate_exceeded",
-                    now_iso="2026-01-01T00:00:00+00:00",
-                )
-                return int(changed) > 0
-            return False
-
-        def defer_after_preprocess_heavy(self, *, job: FileEnrichJobDTO, reason: str) -> bool:
-            _ = reason
-            if hasattr(queue_repo, "defer_jobs_to_pending"):
-                changed = queue_repo.defer_jobs_to_pending(
-                    job_ids=[job.job_id],
-                    next_retry_at="2026-01-01T00:01:00+00:00",
-                    defer_reason="l5_defer:deferred_heavy:test",
-                    now_iso="2026-01-01T00:00:00+00:00",
-                )
-                return int(changed) > 0
-            return False
-
-        def defer_after_broker_lease_denial(self, *, job: FileEnrichJobDTO, error_message: str) -> bool:
-            if "ERR_LSP_BROKER_LEASE_REQUIRED" not in str(error_message):
-                return False
-            if hasattr(queue_repo, "defer_jobs_to_pending"):
-                changed = queue_repo.defer_jobs_to_pending(
-                    job_ids=[job.job_id],
-                    next_retry_at="2026-01-01T00:00:20+00:00",
-                    defer_reason="l5_defer:pressure_burst_exceeded",
-                    now_iso="2026-01-01T00:00:00+00:00",
-                )
-                return int(changed) > 0
-            return False
-
-        def escalate_scope_after_l3_extract_error(self, *, job: FileEnrichJobDTO, error_message: str) -> bool:
-            message = str(error_message).lower()
-            trigger = ("no workspace contains" in message) or ("workspace_mismatch" in message)
-            if not trigger:
-                return False
-            if int(getattr(job, "scope_attempts", 0)) >= 2:
-                return False
-            if hasattr(queue_repo, "escalate_scope_on_same_job"):
-                return bool(
-                    queue_repo.escalate_scope_on_same_job(
-                        job_id=job.job_id,
-                        next_scope_level="repo",
-                        next_scope_root=job.repo_root,
-                        next_retry_at="2026-01-01T00:00:00+00:00",
-                        now_iso="2026-01-01T00:00:00+00:00",
-                    )
-                )
-            return False
-
-    engine._l3_queue_transition_service = _StubQueueTransitionService()
-
-    def _fallback_probe(*, job):  # noqa: ANN002, ANN003
-        _ = job
-        engine._schedule_l1_probe_after_l3_fallback_called += 1
-
-    engine._schedule_l1_probe_after_l3_fallback = _fallback_probe
-
-    class _SkipEligibilityAdapter:
-        def is_recent_tool_ready(self, job: FileEnrichJobDTO) -> bool:
-            return bool(engine._is_recent_tool_ready(job=job))
-
-        def resolve_skip_reason(self, job: FileEnrichJobDTO) -> str | None:
-            return engine._resolve_l3_skip_reason(job=job)
-
-        def build_skipped_readiness(self, *, job: FileEnrichJobDTO, reason: str, now_iso: str):
-            return engine._build_l3_skipped_readiness(job=job, reason=reason, now_iso=now_iso)
-
-    class _ScopeResolutionAdapter:
-        def resolve_language(self, relative_path: str):
-            return engine._resolve_lsp_language(relative_path)
-
-    class _PersistServiceStub:
-        pass
-
-    class _DelegatingOrchestrator:
-        def process_job(self, job: FileEnrichJobDTO):  # noqa: ANN001
-            orchestrator = L3Orchestrator(
-                file_repo=engine._file_repo,
-                lsp_backend=engine._lsp_backend,
-                policy=engine._policy,
-                error_policy=engine._error_policy,
-                run_mode=engine._run_mode,
-                event_repo=engine._event_repo,
-                deletion_hold_enabled=lambda: bool(getattr(engine, "_deletion_hold_enabled", False)),
-                now_iso_supplier=now_iso8601_utc,
-                record_enrich_latency=engine._record_enrich_latency,
-                result_builder=lambda **kwargs: _L3JobResultDTO(**kwargs),
-                classify_failure_kind=classify_l3_extract_failure_kind,
-                schedule_l1_probe_after_l3_fallback=lambda j: engine._schedule_l1_probe_after_l3_fallback(job=j),
-                scope_resolution=_ScopeResolutionAdapter(),
-                queue_transition=engine._l3_queue_transition_service,
-                skip_eligibility=_SkipEligibilityAdapter(),
-                persist_service=_PersistServiceStub(),
-                preprocess_service=getattr(engine, "_l3_preprocess_service", None),
-                degraded_fallback_service=getattr(engine, "_l3_degraded_fallback_service", None),
-                preprocess_max_bytes=int(getattr(engine, "_l3_preprocess_max_bytes", 262_144)),
-                evaluate_l5_admission=(
-                    (lambda job_arg, language_key: engine._evaluate_l5_admission_for_job(job_arg, language_key))
-                    if bool(getattr(engine, "_l5_admission_shadow_enabled", False))
-                    else None
-                ),
-                l5_admission_enforced=bool(getattr(engine, "_l5_admission_enforced", False)),
-            )
-            return orchestrator.process_job(job)
-
-    engine._l3_orchestrator = _DelegatingOrchestrator()
-    return engine
 
 
 def test_enrich_engine_l3_refactored_orchestrator_flag_routes_single_job() -> None:
@@ -652,7 +493,7 @@ def test_enrich_engine_l3_needs_l5_does_not_escalate_scope_in_l3() -> None:
     """NEEDS_L5 + scope trigger 오류는 L5 실행 후 scope escalation defer로 전환되어야 한다."""
     queue_repo = _CaptureEscalateQueueRepo()
     error_policy = _StubErrorPolicy()
-    engine = _build_min_enrich_engine_for_l3_test(
+    engine = build_min_enrich_engine_for_l3_test(
         lsp_backend=_StubExtractBackend("ERR_LSP_DOCUMENT_SYMBOL_FAILED: reason=No workspace contains /repo/a.py"),
         queue_repo=queue_repo,
         error_policy=error_policy,
@@ -690,7 +531,7 @@ def test_enrich_engine_l3_preprocess_can_skip_lsp_extract() -> None:
     """전처리 결과가 충분하면 LSP extract 없이 TOOL_READY로 완료해야 한다."""
     queue_repo = _CaptureEscalateQueueRepo()
     error_policy = _StubErrorPolicy()
-    engine = _build_min_enrich_engine_for_l3_test(
+    engine = build_min_enrich_engine_for_l3_test(
         lsp_backend=_StubExtractBackendShouldNotBeCalled(),
         queue_repo=queue_repo,
         error_policy=error_policy,
@@ -958,7 +799,7 @@ def test_enrich_engine_run_l3_preprocess_returns_explicit_exception_result_on_re
     """파일 읽기 실패 시 None 대신 명시적 예외 reason을 가진 NEEDS_L5 결과를 반환해야 한다."""
     queue_repo = _CaptureEscalateQueueRepo()
     error_policy = _StubErrorPolicy()
-    engine = _build_min_enrich_engine_for_l3_test(
+    engine = build_min_enrich_engine_for_l3_test(
         lsp_backend=_StubExtractBackendShouldNotBeCalled(),
         queue_repo=queue_repo,
         error_policy=error_policy,
@@ -996,7 +837,7 @@ def test_enrich_engine_l3_preprocess_deferred_heavy_finishes_without_lsp() -> No
     """DEFERRED_HEAVY 결정은 배치 L3에서 LSP를 호출하지 않고 defer queue로 보내야 한다."""
     queue_repo = _CaptureEscalateQueueRepo()
     error_policy = _StubErrorPolicy()
-    engine = _build_min_enrich_engine_for_l3_test(
+    engine = build_min_enrich_engine_for_l3_test(
         lsp_backend=_StubExtractBackendShouldNotBeCalled(),
         queue_repo=queue_repo,
         error_policy=error_policy,
@@ -1061,7 +902,7 @@ def test_enrich_engine_admission_admit_triggers_force_probe() -> None:
             return "scheduled"
 
     backend = _ProbeCaptureBackend()
-    engine = _build_min_enrich_engine_for_l3_test(
+    engine = build_min_enrich_engine_for_l3_test(
         lsp_backend=backend,
         queue_repo=queue_repo,
         error_policy=error_policy,
@@ -1114,7 +955,7 @@ def test_enrich_engine_l5_calls_per_min_per_lang_cap_rejects_second_call(monkeyp
     """언어별 분당 상한 도달 시 두 번째 admit 시도는 즉시 거절되어야 한다."""
     queue_repo = _CaptureEscalateQueueRepo()
     error_policy = _StubErrorPolicy()
-    engine = _build_min_enrich_engine_for_l3_test(
+    engine = build_min_enrich_engine_for_l3_test(
         lsp_backend=_NoopLspBackend(),
         queue_repo=queue_repo,
         error_policy=error_policy,
@@ -1167,7 +1008,7 @@ def test_enrich_engine_runtime_metrics_records_mode_not_allowed_reject() -> None
     """L4 정책 거절 사유는 reject_reason별 런타임 메트릭으로 집계되어야 한다."""
     queue_repo = _CaptureEscalateQueueRepo()
     error_policy = _StubErrorPolicy()
-    engine = _build_min_enrich_engine_for_l3_test(
+    engine = build_min_enrich_engine_for_l3_test(
         lsp_backend=_NoopLspBackend(),
         queue_repo=queue_repo,
         error_policy=error_policy,
@@ -1216,7 +1057,7 @@ def test_enrich_engine_runtime_metrics_include_l5_cost_units_dimensions() -> Non
     """L5 decision budget_cost는 reason/language/workspace 축으로 누적되어야 한다."""
     queue_repo = _CaptureEscalateQueueRepo()
     error_policy = _StubErrorPolicy()
-    engine = _build_min_enrich_engine_for_l3_test(
+    engine = build_min_enrich_engine_for_l3_test(
         lsp_backend=_NoopLspBackend(),
         queue_repo=queue_repo,
         error_policy=error_policy,
@@ -1267,7 +1108,7 @@ def test_enrich_engine_l3_needs_l5_finishes_without_extract_failure() -> None:
     """NEEDS_L5에서 LSP 추출 오류가 나면 FAILED로 처리되어야 한다."""
     queue_repo = _CaptureEscalateQueueRepo()
     error_policy = _StubErrorPolicy()
-    engine = _build_min_enrich_engine_for_l3_test(
+    engine = build_min_enrich_engine_for_l3_test(
         lsp_backend=_StubExtractBackend("ERR_RPC_TIMEOUT: request timeout"),
         queue_repo=queue_repo,
         error_policy=error_policy,
@@ -1306,7 +1147,7 @@ def test_enrich_engine_l3_broker_error_string_does_not_trigger_l3_defer() -> Non
     """broker lease 오류 문자열은 L3에서 defer로 전환되어야 한다."""
     queue_repo = _CaptureEscalateQueueRepo()
     error_policy = _StubErrorPolicy()
-    engine = _build_min_enrich_engine_for_l3_test(
+    engine = build_min_enrich_engine_for_l3_test(
         lsp_backend=_StubExtractBackend(
             "ERR_LSP_BROKER_LEASE_REQUIRED: lang=java, scope=/workspace/repo_a, lane=backlog, reason=budget_blocked"
         ),
@@ -1347,7 +1188,7 @@ def test_enrich_engine_l3_wrapped_broker_error_also_skips_to_l5_candidate() -> N
     """래핑된 broker 오류 문자열도 L3에서 defer 처리되어야 한다."""
     queue_repo = _CaptureEscalateQueueRepo()
     error_policy = _StubErrorPolicy()
-    engine = _build_min_enrich_engine_for_l3_test(
+    engine = build_min_enrich_engine_for_l3_test(
         lsp_backend=_StubExtractBackend(
             "LSP 추출 실패: ERR_LSP_BROKER_LEASE_REQUIRED: "
             "lang=java, scope=/workspace/repo_a, lane=backlog, reason=cooldown"
@@ -1387,7 +1228,7 @@ def test_enrich_engine_l3_scope_trigger_message_does_not_fail_when_extract_remov
     """scope trigger라도 escalation 한도 소진 시 FAILED 처리한다."""
     queue_repo = _CaptureEscalateQueueRepo()
     error_policy = _StubErrorPolicy()
-    engine = _build_min_enrich_engine_for_l3_test(
+    engine = build_min_enrich_engine_for_l3_test(
         lsp_backend=_StubExtractBackend("ERR_LSP_WORKSPACE_MISMATCH: No workspace contains /repo/a.py"),
         queue_repo=queue_repo,
         error_policy=error_policy,
@@ -1433,7 +1274,7 @@ def test_enrich_engine_records_scope_learning_after_l3_success() -> None:
 
     backend = _CaptureScopeLearningBackend()
     error_policy = _StubErrorPolicy()
-    engine = _build_min_enrich_engine_for_l3_test(lsp_backend=backend, queue_repo=_CaptureEscalateQueueRepo(), error_policy=error_policy)
+    engine = build_min_enrich_engine_for_l3_test(lsp_backend=backend, queue_repo=_CaptureEscalateQueueRepo(), error_policy=error_policy)
     job = FileEnrichJobDTO(
         job_id="j4",
         repo_id="r1",
@@ -2693,7 +2534,7 @@ def test_enrich_engine_resolve_l3_skip_reason_reports_probe_check_error_explicit
 
     queue_repo = _CaptureEscalateQueueRepo()
     error_policy = _StubErrorPolicy()
-    engine = _build_min_enrich_engine_for_l3_test(
+    engine = build_min_enrich_engine_for_l3_test(
         lsp_backend=_ProbeCheckErrorBackend(),
         queue_repo=queue_repo,
         error_policy=error_policy,
