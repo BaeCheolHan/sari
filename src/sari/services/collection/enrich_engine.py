@@ -33,6 +33,7 @@ from sari.services.collection.l3_runtime_coordination_service import L3RuntimeCo
 from sari.services.collection.l3_scheduling_service import L3SchedulingService
 from sari.services.collection.l3_error_handling_service import L3ErrorHandlingService
 from sari.services.collection.l3_bootstrap_mode_service import L3BootstrapModeService
+from sari.services.collection.enrich_runtime_service_registry import EnrichRuntimeServiceRegistry
 from sari.services.collection.l3_language_config_parser import (
     parse_l3_supported_languages as _parse_l3_supported_languages_shared,
     parse_lsp_probe_l1_languages as _parse_lsp_probe_l1_languages_shared,
@@ -149,6 +150,7 @@ class EnrichEngine:
         self._l5_tokens_per_10sec_per_lang_max = max(1, int(l5_tokens_per_10sec_per_lang_max))
         self._l5_tokens_per_10sec_per_workspace_max = max(1, int(l5_tokens_per_10sec_per_workspace_max))
         self._l3_asset_loader = L3AssetLoader()
+        self._runtime_services = EnrichRuntimeServiceRegistry(self)
         self._l3_bootstrap_mode_service = L3BootstrapModeService(
             file_repo=self._file_repo,
             policy_repo=self._policy_repo,
@@ -350,20 +352,7 @@ class EnrichEngine:
         return self._get_or_init_l3_scheduling_service().resolve_l3_parallelism(jobs)
 
     def _get_or_init_l3_scheduling_service(self) -> L3SchedulingService:
-        service = getattr(self, "_l3_scheduling_service", None)
-        if service is not None:
-            return service
-        service = L3SchedulingService(
-            resolve_lsp_language=lambda relative_path: self._resolve_lsp_language(relative_path),
-            lsp_backend=getattr(self, "_lsp_backend", object()),
-            l3_parallel_enabled=bool(getattr(self, "_l3_parallel_enabled", True)),
-            executor_max_workers=max(1, int(getattr(self, "_l3_executor_max_workers", 32))),
-            backpressure_on_interactive=bool(getattr(self, "_l3_backpressure_on_interactive", True)),
-            backpressure_cooldown_sec=float(getattr(self, "_l3_backpressure_cooldown_sec", 0.3)),
-            monotonic_now=time.monotonic,
-        )
-        self._l3_scheduling_service = service
-        return service
+        return self._get_or_init_runtime_service_registry().l3_scheduling_service()
 
     def _set_group_bulk_mode(self, group: list[FileEnrichJobDTO], enabled: bool) -> None:
         """LSP 백엔드에 그룹 단위 bulk 모드를 전달한다."""
@@ -436,46 +425,13 @@ class EnrichEngine:
         )
 
     def _get_or_init_l3_error_handling_service(self) -> L3ErrorHandlingService:
-        service = getattr(self, "_l3_error_handling_service", None)
-        if service is not None:
-            return service
-        service = L3ErrorHandlingService(
-            queue_repo=getattr(self, "_enrich_queue_repo", object()),
-            error_policy=getattr(self, "_error_policy", object()),
-            now_iso_supplier=now_iso8601_utc,
-        )
-        self._l3_error_handling_service = service
-        return service
+        return self._get_or_init_runtime_service_registry().l3_error_handling_service()
 
     def _get_or_init_l3_skip_runtime_service(self) -> L3SkipRuntimeService:
-        service = getattr(self, "_l3_skip_runtime_service", None)
-        if service is not None:
-            return service
-        service = L3SkipRuntimeService(
-            l3_supported_languages=getattr(self, "_l3_supported_languages", set()),
-            l3_recent_success_ttl_sec=int(getattr(self, "_l3_recent_success_ttl_sec", 0)),
-            readiness_repo=getattr(self, "_readiness_repo", object()),
-            lsp_backend=getattr(self, "_lsp_backend", object()),
-            resolve_language_from_path_fn=lambda relative_path: resolve_language_from_path(file_path=relative_path),
-        )
-        self._l3_skip_runtime_service = service
-        return service
+        return self._get_or_init_runtime_service_registry().l3_skip_runtime_service()
 
     def _get_or_init_l3_runtime_coordination_service(self) -> L3RuntimeCoordinationService:
-        service = getattr(self, "_l3_runtime_coordination_service", None)
-        if service is not None:
-            return service
-        service = L3RuntimeCoordinationService(
-            lsp_backend=getattr(self, "_lsp_backend", object()),
-            lsp_probe_l1_languages=getattr(self, "_lsp_probe_l1_languages", set()),
-            resolve_language_from_path_fn=lambda relative_path: resolve_language_from_path(file_path=relative_path),
-            l3_ready_queue=getattr(self, "_l3_ready_queue", queue.Queue()),
-            enrich_queue_repo=getattr(self, "_enrich_queue_repo", object()),
-            now_iso_supplier=now_iso8601_utc,
-            policy_repo=getattr(self, "_policy_repo", None),
-        )
-        self._l3_runtime_coordination_service = service
-        return service
+        return self._get_or_init_runtime_service_registry().l3_runtime_coordination_service()
 
     def _record_scope_learning_after_l3_success(self, *, job: FileEnrichJobDTO) -> None:
         """성공한 scope 시도를 backend 학습 캐시에 기록한다 (Phase1 baseline)."""
@@ -591,22 +547,17 @@ class EnrichEngine:
         return created
 
     def _get_or_init_l5_runtime_stats_service(self) -> L5RuntimeStatsService:
-        existing = getattr(self, "_l5_runtime_stats_service", None)
-        if isinstance(existing, L5RuntimeStatsService):
-            return existing
-        created = L5RuntimeStatsService()
-        self._l5_runtime_stats_service = created
-        return created
+        return self._get_or_init_runtime_service_registry().l5_runtime_stats_service()
 
     def _get_or_init_l3_bootstrap_mode_service(self) -> L3BootstrapModeService:
-        existing = getattr(self, "_l3_bootstrap_mode_service", None)
-        if isinstance(existing, L3BootstrapModeService):
+        return self._get_or_init_runtime_service_registry().l3_bootstrap_mode_service()
+
+    def _get_or_init_runtime_service_registry(self) -> EnrichRuntimeServiceRegistry:
+        existing = getattr(self, "_runtime_services", None)
+        if isinstance(existing, EnrichRuntimeServiceRegistry):
             return existing
-        created = L3BootstrapModeService(
-            file_repo=getattr(self, "_file_repo", object()),
-            policy_repo=getattr(self, "_policy_repo", None),
-        )
-        self._l3_bootstrap_mode_service = created
+        created = EnrichRuntimeServiceRegistry(self)
+        self._runtime_services = created
         return created
 
     def _resolve_l3_skip_reason(self, job: FileEnrichJobDTO) -> str | None:
