@@ -5,13 +5,17 @@ import subprocess
 
 from overrides import override
 
-from solidlsp.ls import SolidLanguageServer
+from solidlsp.ls import SolidLanguageServer, get_current_process_env_snapshot
 from solidlsp.ls_config import LanguageServerConfig
 from solidlsp.lsp_protocol_handler.lsp_types import InitializeParams
 from solidlsp.lsp_protocol_handler.server import ProcessLaunchInfo
 from solidlsp.settings import SolidLSPSettings
 
 log = logging.getLogger(__name__)
+
+
+def _env_snapshot() -> dict[str, str]:
+    return get_current_process_env_snapshot()
 
 
 class RLanguageServer(SolidLanguageServer):
@@ -36,7 +40,7 @@ class RLanguageServer(SolidLanguageServer):
         """Check if R and languageserver are available."""
         try:
             # Check R installation
-            result = subprocess.run(["R", "--version"], capture_output=True, text=True, check=False)
+            result = subprocess.run(["R", "--version"], capture_output=True, text=True, check=False, env=_env_snapshot())
             if result.returncode != 0:
                 raise RuntimeError("R is not installed or not in PATH")
 
@@ -46,6 +50,7 @@ class RLanguageServer(SolidLanguageServer):
                 capture_output=True,
                 text=True,
                 check=False,
+                env=_env_snapshot(),
             )
 
             if result.returncode != 0:

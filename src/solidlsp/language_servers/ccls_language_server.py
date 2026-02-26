@@ -79,8 +79,9 @@ class CclsLanguageServer(SolidLanguageServer):
             Allows override via ls_specific_settings[language].ls_path.
             """
             import shutil
+            from solidlsp.ls import get_current_process_env_snapshot
 
-            ccls_path = shutil.which("ccls")
+            ccls_path = shutil.which("ccls", path=get_current_process_env_snapshot().get("PATH"))
             if not ccls_path:
                 raise FileNotFoundError(
                     "ccls is not installed on your system.\n"

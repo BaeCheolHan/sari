@@ -15,16 +15,4 @@ class L3FlushCoordinator:
         self._flush_enrich_buffers = flush_enrich_buffers
 
     def flush(self, *, buffers: _L3ResultBuffersDTO, body_upserts: list[CollectedFileBodyDTO]) -> None:
-        self._flush_enrich_buffers(
-            done_ids=buffers.done_ids,
-            failed_updates=buffers.failed_updates,
-            state_updates=buffers.state_updates,
-            body_upserts=body_upserts,
-            body_deletes=buffers.body_deletes,
-            lsp_updates=buffers.lsp_updates,
-            readiness_updates=buffers.readiness_updates,
-            l3_layer_upserts=buffers.layer_upsert_buckets.l3_layer_upserts,
-            l4_layer_upserts=buffers.layer_upsert_buckets.l4_layer_upserts,
-            l5_layer_upserts=buffers.layer_upsert_buckets.l5_layer_upserts,
-        )
-
+        self._flush_enrich_buffers(buffers=buffers, body_upserts=body_upserts)

@@ -151,6 +151,10 @@ class FileCollectionService:
         self._watcher_drop_count = 0
         self._watcher_overflow_count = 0
         self._watcher_last_overflow_at: str | None = None
+        self._watcher_rescan_queue: queue.Queue[str] = queue.Queue()
+        self._watcher_rescan_pending_roots: set[str] = set()
+        self._watcher_rescan_lock = threading.Lock()
+        self._watcher_rescan_thread: threading.Thread | None = None
         self._enrich_latency_samples_ms: list[float] = []
         self._throughput_samples_jobs_per_sec: list[float] = []
         self._throughput_ema_jobs_per_sec = 0.0
@@ -653,8 +657,58 @@ class FileCollectionService:
         )
 
     def _schedule_rescan_from_watcher(self, repo_root: str) -> None:
-        """watcher overflow 복구를 위해 단일 repo 재스캔을 실행한다."""
-        _ = self._scanner.scan_once(repo_root)
+        """watcher overflow 복구 재스캔을 비동기로 예약한다."""
+        self._ensure_watcher_rescan_worker_started()
+        with self._watcher_rescan_lock:
+            if repo_root in self._watcher_rescan_pending_roots:
+                return
+            self._watcher_rescan_pending_roots.add(repo_root)
+        self._watcher_rescan_queue.put_nowait(repo_root)
+
+    def _ensure_watcher_rescan_worker_started(self) -> None:
+        """watcher overflow rescan 전용 워커를 필요 시 시작한다."""
+        with self._watcher_rescan_lock:
+            if self._watcher_rescan_thread is not None and self._watcher_rescan_thread.is_alive():
+                return
+            self._watcher_rescan_thread = threading.Thread(
+                target=self._watcher_overflow_rescan_loop,
+                daemon=True,
+                name="watcher-overflow-rescan",
+            )
+            self._watcher_rescan_thread.start()
+
+    def _watcher_overflow_rescan_loop(self) -> None:
+        """watcher overflow로 예약된 repo 재스캔을 순차 처리한다."""
+        while not self._stop_event.is_set():
+            try:
+                repo_root = self._watcher_rescan_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            try:
+                _ = self._scanner.scan_once(repo_root)
+            except CollectionError as exc:
+                if self._handle_background_collection_error_proxy(
+                    exc=exc,
+                    phase="watcher_overflow_rescan",
+                    worker_name="watcher_rescan",
+                ):
+                    return
+            except (sqlite3.Error, RuntimeError, OSError, ValueError, TypeError) as exc:
+                wrapped = CollectionError(
+                    ErrorContext(
+                        code="ERR_WATCHER_RESCAN_FAILED",
+                        message=f"watcher overflow rescan 실패: {exc}",
+                    )
+                )
+                if self._handle_background_collection_error_proxy(
+                    exc=wrapped,
+                    phase="watcher_overflow_rescan",
+                    worker_name="watcher_rescan",
+                ):
+                    return
+            finally:
+                with self._watcher_rescan_lock:
+                    self._watcher_rescan_pending_roots.discard(repo_root)
 
     def _record_watcher_file_race(self, repo_root: str, relative_path: str, reason: str) -> None:
         """watcher 경합성 파일 누락 이벤트를 저심각도 경고로 기록한다."""
@@ -741,9 +795,24 @@ class FileCollectionService:
         self._enrich_engine.reset_runtime_state()
         self._worker_state = 'running'
         self._runtime_manager.start_background()
+        self._ensure_watcher_rescan_worker_started()
 
     def stop_background(self) -> None:
         self._runtime_manager.stop_background()
+        watcher_rescan_thread = self._watcher_rescan_thread
+        if watcher_rescan_thread is not None:
+            # watcher overflow rescan은 대형 repo에서 오래 걸릴 수 있다.
+            # 중간에 반환하면 pending/queue 상태를 지운 뒤 재시작 시 동일 repo 중복 rescan이
+            # 재예약될 수 있으므로, 현재 in-flight 작업이 끝나 worker가 종료될 때까지 대기한다.
+            while watcher_rescan_thread.is_alive():
+                watcher_rescan_thread.join(timeout=0.5)
+        with self._watcher_rescan_lock:
+            self._watcher_rescan_pending_roots.clear()
+        while True:
+            try:
+                self._watcher_rescan_queue.get_nowait()
+            except queue.Empty:
+                break
         self._enrich_engine.shutdown()
         self._repo_support.shutdown_probe_executor()
 

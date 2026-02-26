@@ -14,12 +14,25 @@ from typing import cast
 from overrides import override
 
 from solidlsp.language_servers._adapter_common import first_executable_path
-from solidlsp.ls import LanguageServerDependencyProvider, LanguageServerDependencyProviderSinglePath, SolidLanguageServer
+from solidlsp.ls import (
+    LanguageServerDependencyProvider,
+    LanguageServerDependencyProviderSinglePath,
+    SolidLanguageServer,
+    get_current_process_env_snapshot,
+)
 from solidlsp.ls_config import LanguageServerConfig
 from solidlsp.lsp_protocol_handler.lsp_types import InitializeParams
 from solidlsp.settings import SolidLSPSettings
 
 log = logging.getLogger(__name__)
+
+
+def _env_snapshot() -> dict[str, str]:
+    return get_current_process_env_snapshot()
+
+
+def _which_in_snapshot(executable_name: str) -> str | None:
+    return shutil.which(executable_name, path=_env_snapshot().get("PATH"))
 
 
 class RustAnalyzer(SolidLanguageServer):
@@ -48,7 +61,7 @@ class RustAnalyzer(SolidLanguageServer):
         def _get_rustup_version() -> str | None:
             """Get installed rustup version or None if not found."""
             try:
-                result = subprocess.run(["rustup", "--version"], capture_output=True, text=True, check=False)
+                result = subprocess.run(["rustup", "--version"], capture_output=True, text=True, check=False, env=_env_snapshot())
                 if result.returncode == 0:
                     return result.stdout.strip()
             except FileNotFoundError:
@@ -59,7 +72,9 @@ class RustAnalyzer(SolidLanguageServer):
         def _get_rust_analyzer_via_rustup() -> str | None:
             """Get rust-analyzer path via rustup. Returns None if not found."""
             try:
-                result = subprocess.run(["rustup", "which", "rust-analyzer"], capture_output=True, text=True, check=False)
+                result = subprocess.run(
+                    ["rustup", "which", "rust-analyzer"], capture_output=True, text=True, check=False, env=_env_snapshot()
+                )
                 if result.returncode == 0:
                     return result.stdout.strip()
             except FileNotFoundError as exc:
@@ -87,7 +102,9 @@ class RustAnalyzer(SolidLanguageServer):
             # If rustup is available but rust-analyzer not installed, auto-install it BEFORE
             # checking common paths. This ensures we get the correct version matching the toolchain.
             if RustAnalyzer.DependencyProvider._get_rustup_version():
-                result = subprocess.run(["rustup", "component", "add", "rust-analyzer"], check=False, capture_output=True, text=True)
+                result = subprocess.run(
+                    ["rustup", "component", "add", "rust-analyzer"], check=False, capture_output=True, text=True, env=_env_snapshot()
+                )
                 if result.returncode == 0:
                     # Verify installation worked
                     rustup_path = RustAnalyzer.DependencyProvider._get_rust_analyzer_via_rustup()
@@ -111,7 +128,7 @@ class RustAnalyzer(SolidLanguageServer):
                         str(home / "scoop" / "shims" / binary_name),  # Scoop package manager
                         str(home / "scoop" / "apps" / "rust-analyzer" / "current" / binary_name),  # Scoop direct
                         str(
-                            pathlib.Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "rust-analyzer" / binary_name
+                            pathlib.Path(_env_snapshot().get("LOCALAPPDATA", "")) / "Programs" / "rust-analyzer" / binary_name
                         ),  # Standalone install
                     ]
                 )
@@ -131,7 +148,7 @@ class RustAnalyzer(SolidLanguageServer):
                 return resolved
 
             # Last resort: check system PATH (can pick up incorrect aliases, hence checked last)
-            path_result = shutil.which("rust-analyzer")
+            path_result = _which_in_snapshot("rust-analyzer")
             if path_result and os.path.isfile(path_result) and os.access(path_result, os.X_OK):
                 return path_result
 

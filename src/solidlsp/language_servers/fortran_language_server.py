@@ -11,7 +11,7 @@ import shutil
 from overrides import override
 
 from solidlsp import ls_types
-from solidlsp.ls import DocumentSymbols, LSPFileBuffer, SolidLanguageServer
+from solidlsp.ls import DocumentSymbols, LSPFileBuffer, SolidLanguageServer, get_current_process_env_snapshot
 from solidlsp.ls_config import LanguageServerConfig
 from solidlsp.lsp_protocol_handler.lsp_types import InitializeParams
 from solidlsp.lsp_protocol_handler.server import ProcessLaunchInfo
@@ -183,7 +183,7 @@ class FortranLanguageServer(SolidLanguageServer):
     @staticmethod
     def _check_fortls_installation() -> str:
         """Check if fortls is available."""
-        fortls_path = shutil.which("fortls")
+        fortls_path = shutil.which("fortls", path=get_current_process_env_snapshot().get("PATH"))
         if fortls_path is None:
             raise RuntimeError("fortls is not installed or not in PATH.\nInstall it with: pip install fortls")
         return fortls_path

@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
+import types
 from pathlib import Path
+
+import solidlsp.ls as ls_module
+from solidlsp.ls import SolidLanguageServer, _describe_process_launch_info, process_env_context
+from solidlsp.ls_config import Language, LanguageServerConfig
+from solidlsp.lsp_protocol_handler.server import ProcessLaunchInfo
+from solidlsp.settings import SolidLSPSettings
 
 
 def _read(path: Path) -> str:
@@ -44,3 +51,66 @@ def test_document_symbols_overrides_keep_sync_hint_contract() -> None:
     ):
         content = _read(root / rel)
         assert "sync_with_ls: bool = True" in content
+
+
+class _ExplicitLaunchInfoTestServer(SolidLanguageServer):
+    @classmethod
+    def get_language_enum_instance(cls) -> Language:
+        return Language.PYTHON
+
+    def __init__(self, config: LanguageServerConfig, repository_root_path: str, solidlsp_settings: SolidLSPSettings) -> None:
+        super().__init__(
+            config=config,
+            repository_root_path=repository_root_path,
+            process_launch_info=ProcessLaunchInfo(
+                cmd=["dummy-ls"],
+                cwd=repository_root_path,
+                env={"PATH": "/explicit/bin", "PERL5LIB": "/explicit/perl"},
+            ),
+            language_id="python",
+            solidlsp_settings=solidlsp_settings,
+        )
+
+    def _start_server(self) -> None:
+        raise NotImplementedError
+
+
+def test_explicit_process_launch_info_inherits_process_env_snapshot(monkeypatch, tmp_path: Path) -> None:
+    """명시적 ProcessLaunchInfo 경로도 create snapshot env를 하위 프로세스로 전달해야 한다."""
+    captured: list[ProcessLaunchInfo] = []
+
+    class _DummyHandler:
+        def __init__(self, process_launch_info: ProcessLaunchInfo, *args, **kwargs) -> None:
+            del args, kwargs
+            captured.append(process_launch_info)
+            self.process_launch_info = process_launch_info
+            self.notify = types.SimpleNamespace()
+            self.send = types.SimpleNamespace()
+
+    monkeypatch.setattr(ls_module, "SolidLanguageServerHandler", _DummyHandler)
+    settings = SolidLSPSettings(solidlsp_dir=str(tmp_path / ".solidlsp-global"))
+    config = LanguageServerConfig(code_language=Language.PYTHON)
+
+    with process_env_context({"JAVA_HOME": "/tmp/jdk-21", "PATH": "/snapshot/bin"}):
+        _ = _ExplicitLaunchInfoTestServer(config, str(tmp_path / "repo"), settings)
+
+    assert len(captured) == 1
+    env = captured[0].env
+    assert env["JAVA_HOME"] == "/tmp/jdk-21"
+    assert env["PERL5LIB"] == "/explicit/perl"
+    assert env["PATH"] == "/explicit/bin"
+
+
+def test_process_launch_info_debug_summary_redacts_env_values() -> None:
+    """디버그 요약 문자열은 env 값/전체 argv를 그대로 노출하지 않아야 한다."""
+    info = ProcessLaunchInfo(
+        cmd=["java", "-Dtoken=secret-value", "-jar", "server.jar"],
+        cwd="/tmp/repo",
+        env={"API_TOKEN": "secret-value", "PATH": "/bin"},
+    )
+
+    summary = _describe_process_launch_info(info)
+
+    assert "secret-value" not in summary
+    assert "-Dtoken=secret-value" not in summary
+    assert "env_keys=2" in summary

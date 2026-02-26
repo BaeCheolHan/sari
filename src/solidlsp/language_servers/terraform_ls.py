@@ -5,7 +5,7 @@ from typing import cast
 
 from overrides import override
 
-from solidlsp.ls import SolidLanguageServer
+from solidlsp.ls import SolidLanguageServer, get_current_process_env_snapshot
 from solidlsp.ls_config import LanguageServerConfig
 from solidlsp.ls_utils import PathUtils, PlatformUtils
 from solidlsp.lsp_protocol_handler.lsp_types import InitializeParams
@@ -15,6 +15,14 @@ from solidlsp.settings import SolidLSPSettings
 from .common import RuntimeDependency, RuntimeDependencyCollection
 
 log = logging.getLogger(__name__)
+
+
+def _env_snapshot() -> dict[str, str]:
+    return get_current_process_env_snapshot()
+
+
+def _which_in_snapshot(executable_name: str) -> str | None:
+    return shutil.which(executable_name, path=_env_snapshot().get("PATH"))
 
 
 class TerraformLS(SolidLanguageServer):
@@ -59,7 +67,7 @@ class TerraformLS(SolidLanguageServer):
         log.debug("Starting terraform version detection...")
 
         # 1. Try to find terraform using shutil.which
-        terraform_cmd = shutil.which("terraform")
+        terraform_cmd = _which_in_snapshot("terraform")
         if terraform_cmd is not None:
             log.debug(f"Found terraform via shutil.which: {terraform_cmd}")
             return
@@ -67,7 +75,7 @@ class TerraformLS(SolidLanguageServer):
         # 참고: CI 환경 변수 기반 fallback 경로 처리
         # 2. Fallback to TERRAFORM_CLI_PATH (set by hashicorp/setup-terraform action)
         if not terraform_cmd:
-            terraform_cli_path = os.environ.get("TERRAFORM_CLI_PATH")
+            terraform_cli_path = _env_snapshot().get("TERRAFORM_CLI_PATH")
             if terraform_cli_path:
                 log.debug(f"Trying TERRAFORM_CLI_PATH: {terraform_cli_path}")
                 # 참고: 필요 시 런타임 의존성 정의의 binary_name과 통합 가능

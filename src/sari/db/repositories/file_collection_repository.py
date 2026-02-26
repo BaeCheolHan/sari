@@ -391,11 +391,16 @@ class FileCollectionRepository:
             )
             conn.commit()
 
-    def update_enrich_state_many(self, updates: list[EnrichStateUpdateDTO]) -> None:
+    def update_enrich_state_many(self, updates: list[EnrichStateUpdateDTO], *, conn=None) -> None:
         """파일 보강 상태를 배치로 갱신한다."""
         if len(updates) == 0:
             return
-        with connect(self._db_path) as conn:
+        owned_conn = conn is None
+        if owned_conn:
+            conn = connect(self._db_path)
+        if conn is None:
+            raise RuntimeError("conn must not be None when owned_conn is False")
+        try:
             for item in updates:
                 conn.execute(
                     """
@@ -407,7 +412,11 @@ class FileCollectionRepository:
                     """,
                     item.to_sql_params(),
                 )
-            conn.commit()
+            if owned_conn:
+                conn.commit()
+        finally:
+            if owned_conn:
+                conn.close()
 
     def mark_deleted(self, repo_root: str, relative_path: str, updated_at: str) -> None:
         """특정 파일을 삭제 상태로 전환한다."""

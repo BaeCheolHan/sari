@@ -6,6 +6,7 @@ from datetime import timezone, datetime
 from typing import Callable
 
 from ..l3_job_context import L3JobContext
+from sari.services.collection.enrich_result_dto import _LayerUpsertsDTO
 
 
 class L3FinalizeStage:
@@ -46,8 +47,10 @@ class L3FinalizeStage:
             body_delete=context.body_delete,
             lsp_update=context.lsp_update,
             readiness_update=context.readiness_update,
-            l3_layer_upsert=context.l3_layer_upsert,
-            l4_layer_upsert=context.l4_layer_upsert,
-            l5_layer_upsert=context.l5_layer_upsert,
+            layer_upserts=_LayerUpsertsDTO(
+                l3_layer_upsert=context.l3_layer_upsert,
+                l4_layer_upsert=context.l4_layer_upsert,
+                l5_layer_upsert=context.l5_layer_upsert,
+            ),
             dev_error=dev_error,
         )

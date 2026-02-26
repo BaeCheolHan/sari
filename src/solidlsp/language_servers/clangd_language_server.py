@@ -8,7 +8,12 @@ import pathlib
 import threading
 from typing import cast
 
-from solidlsp.ls import LanguageServerDependencyProvider, LanguageServerDependencyProviderSinglePath, SolidLanguageServer
+from solidlsp.ls import (
+    LanguageServerDependencyProvider,
+    LanguageServerDependencyProviderSinglePath,
+    SolidLanguageServer,
+    get_current_process_env_snapshot,
+)
 from solidlsp.ls_config import LanguageServerConfig
 from solidlsp.lsp_protocol_handler.lsp_types import InitializeParams
 from solidlsp.settings import SolidLSPSettings
@@ -91,7 +96,7 @@ class ClangdLanguageServer(SolidLanguageServer):
 
             if dep is None:
                 # No prebuilt binary available, look for system-installed clangd
-                clangd_executable_path = shutil.which("clangd")
+                clangd_executable_path = shutil.which("clangd", path=get_current_process_env_snapshot().get("PATH"))
                 if not clangd_executable_path:
                     raise FileNotFoundError(
                         "Clangd is not installed on your system.\n"

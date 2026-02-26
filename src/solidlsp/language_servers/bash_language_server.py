@@ -10,7 +10,7 @@ import shutil
 import threading
 
 from solidlsp.language_servers.common import RuntimeDependency, RuntimeDependencyCollection
-from solidlsp.ls import DocumentSymbols, LSPFileBuffer, SolidLanguageServer
+from solidlsp.ls import DocumentSymbols, LSPFileBuffer, SolidLanguageServer, get_current_process_env_snapshot
 from solidlsp.ls_config import LanguageServerConfig
 from solidlsp.lsp_protocol_handler.lsp_types import InitializeParams
 from solidlsp.lsp_protocol_handler.server import ProcessLaunchInfo
@@ -47,9 +47,10 @@ class BashLanguageServer(SolidLanguageServer):
         Setup runtime dependencies for Bash Language Server and return the command to start the server.
         """
         # Verify both node and npm are installed
-        is_node_installed = shutil.which("node") is not None
+        env_path = get_current_process_env_snapshot().get("PATH")
+        is_node_installed = shutil.which("node", path=env_path) is not None
         assert is_node_installed, "node is not installed or isn't in PATH. Please install NodeJS and try again."
-        is_npm_installed = shutil.which("npm") is not None
+        is_npm_installed = shutil.which("npm", path=env_path) is not None
         assert is_npm_installed, "npm is not installed or isn't in PATH. Please install npm and try again."
 
         deps = RuntimeDependencyCollection(

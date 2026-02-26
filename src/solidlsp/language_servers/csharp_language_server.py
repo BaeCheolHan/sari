@@ -13,7 +13,7 @@ from typing import cast
 
 from overrides import override
 
-from solidlsp.ls import DocumentSymbols, LanguageServerDependencyProvider, SolidLanguageServer
+from solidlsp.ls import DocumentSymbols, LanguageServerDependencyProvider, SolidLanguageServer, get_current_process_env_snapshot
 from solidlsp.ls_config import LanguageServerConfig
 from solidlsp.ls_exceptions import SolidLSPException
 from solidlsp.ls_types import Hover, UnifiedSymbolInformation
@@ -26,6 +26,14 @@ from ._adapter_common import ensure_paths_exist
 from .common import RuntimeDependency, RuntimeDependencyCollection
 
 log = logging.getLogger(__name__)
+
+
+def _env_snapshot() -> dict[str, str]:
+    return get_current_process_env_snapshot()
+
+
+def _which_in_snapshot(executable_name: str) -> str | None:
+    return shutil.which(executable_name, path=_env_snapshot().get("PATH"))
 
 _RUNTIME_DEPENDENCIES = [
     RuntimeDependency(
@@ -350,10 +358,10 @@ class CSharpLanguageServer(SolidLanguageServer):
 
         def _ensure_dotnet_runtime(self) -> str:
             """Ensure .NET runtime is available and return the dotnet executable path."""
-            system_dotnet = shutil.which("dotnet")
+            system_dotnet = _which_in_snapshot("dotnet")
             if system_dotnet:
                 try:
-                    result = subprocess.run([system_dotnet, "--list-runtimes"], capture_output=True, text=True, check=True)
+                    result = subprocess.run([system_dotnet, "--list-runtimes"], capture_output=True, text=True, check=True, env=_env_snapshot())
                     if any(f"Microsoft.NETCore.App {v}." in result.stdout for v in range(10, 20)):
                         log.info("Found system .NET 10+ runtime")
                         return system_dotnet
@@ -503,7 +511,7 @@ class CSharpLanguageServer(SolidLanguageServer):
                         "--no-path",
                     ]
 
-                result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+                result = subprocess.run(cmd, capture_output=True, text=True, check=True, env=_env_snapshot())
                 log.debug(f"Install script output: {result.stdout}")
 
                 if not dotnet_exe.exists():

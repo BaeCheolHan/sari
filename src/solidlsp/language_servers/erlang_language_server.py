@@ -9,12 +9,20 @@ import time
 
 from overrides import override
 
-from solidlsp.ls import SolidLanguageServer
+from solidlsp.ls import SolidLanguageServer, get_current_process_env_snapshot
 from solidlsp.ls_config import LanguageServerConfig
 from solidlsp.lsp_protocol_handler.server import ProcessLaunchInfo
 from solidlsp.settings import SolidLSPSettings
 
 log = logging.getLogger(__name__)
+
+
+def _env_snapshot() -> dict[str, str]:
+    return get_current_process_env_snapshot()
+
+
+def _which_in_snapshot(executable_name: str) -> str | None:
+    return shutil.which(executable_name, path=_env_snapshot().get("PATH"))
 
 
 class ErlangLanguageServer(SolidLanguageServer):
@@ -25,7 +33,7 @@ class ErlangLanguageServer(SolidLanguageServer):
         Creates an ErlangLanguageServer instance. This class is not meant to be instantiated directly.
         Use LanguageServer.create() instead.
         """
-        self.erlang_ls_path = shutil.which("erlang_ls")
+        self.erlang_ls_path = _which_in_snapshot("erlang_ls")
         if not self.erlang_ls_path:
             raise RuntimeError("Erlang LS not found. Install from: https://github.com/erlang-ls/erlang_ls")
 
@@ -49,7 +57,7 @@ class ErlangLanguageServer(SolidLanguageServer):
     def _check_erlang_installation(self) -> bool:
         """Check if Erlang/OTP is available."""
         try:
-            result = subprocess.run(["erl", "-version"], check=False, capture_output=True, text=True, timeout=10)
+            result = subprocess.run(["erl", "-version"], check=False, capture_output=True, text=True, timeout=10, env=_env_snapshot())
             return result.returncode == 0
         except (subprocess.SubprocessError, FileNotFoundError):
             return False
@@ -58,7 +66,7 @@ class ErlangLanguageServer(SolidLanguageServer):
     def _get_erlang_version(cls) -> str | None:
         """Get the installed Erlang/OTP version or None if not found."""
         try:
-            result = subprocess.run(["erl", "-version"], check=False, capture_output=True, text=True, timeout=10)
+            result = subprocess.run(["erl", "-version"], check=False, capture_output=True, text=True, timeout=10, env=_env_snapshot())
             if result.returncode == 0:
                 return result.stderr.strip()  # erl -version outputs to stderr
         except (subprocess.SubprocessError, FileNotFoundError):
@@ -69,7 +77,7 @@ class ErlangLanguageServer(SolidLanguageServer):
     def _check_rebar3_available(cls) -> bool:
         """Check if rebar3 build tool is available."""
         try:
-            result = subprocess.run(["rebar3", "version"], check=False, capture_output=True, text=True, timeout=10)
+            result = subprocess.run(["rebar3", "version"], check=False, capture_output=True, text=True, timeout=10, env=_env_snapshot())
             return result.returncode == 0
         except (subprocess.SubprocessError, FileNotFoundError):
             return False
@@ -157,7 +165,8 @@ class ErlangLanguageServer(SolidLanguageServer):
         self.server.notify.initialized({})
 
         # Wait for Erlang LS to be ready - adjust timeout based on environment
-        is_ci = os.getenv("CI") == "true" or os.getenv("GITHUB_ACTIONS") == "true"
+        env_snapshot = _env_snapshot()
+        is_ci = env_snapshot.get("CI") == "true" or env_snapshot.get("GITHUB_ACTIONS") == "true"
         is_macos = os.uname().sysname == "Darwin" if hasattr(os, "uname") else False
 
         # macOS in CI can be particularly slow for language server startup

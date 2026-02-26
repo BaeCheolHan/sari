@@ -48,8 +48,8 @@ async def search_endpoint(request) -> JSONResponse:
     repo_id, repo, _repo_key, error_response = resolve_repo_from_query(context, request)
     if error_response is not None:
         return error_response
-    assert repo_id is not None
-    assert repo is not None
+    if repo_id is None or repo is None:
+        raise ValueError("resolve_repo_from_query returned no error but repo_id/repo is None")
     query = str(request.query_params.get("q", "")).strip()
     limit_raw = str(request.query_params.get("limit", "20"))
     if query == "":

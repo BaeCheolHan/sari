@@ -11,13 +11,17 @@ import requests
 from overrides import override
 from solidlsp import ls_types
 from solidlsp.language_servers.common import quote_windows_path
-from solidlsp.ls import DocumentSymbols, LSPFileBuffer, SolidLanguageServer
+from solidlsp.ls import DocumentSymbols, LSPFileBuffer, SolidLanguageServer, get_current_process_env_snapshot
 from solidlsp.ls_config import LanguageServerConfig
 from solidlsp.ls_types import SymbolKind, UnifiedSymbolInformation
 from solidlsp.lsp_protocol_handler.lsp_types import Definition, DefinitionParams, LocationLink
 from solidlsp.lsp_protocol_handler.server import ProcessLaunchInfo
 from solidlsp.settings import SolidLSPSettings
 log = logging.getLogger(__name__)
+
+
+def _env_snapshot() -> dict[str, str]:
+    return get_current_process_env_snapshot()
 class ALLanguageServer(SolidLanguageServer):
     _AL_OBJECT_NAME_PATTERN = re.compile(
         r"^(?:Table|Page|Codeunit|Enum|Interface|Report|Query|XMLPort|PermissionSet|"
@@ -98,7 +102,7 @@ class ALLanguageServer(SolidLanguageServer):
         return cls._prepare_executable(executable_path, system)
     @classmethod
     def _find_al_extension(cls, solidlsp_settings: SolidLSPSettings) -> str | None:
-        env_path = os.environ.get("AL_EXTENSION_PATH")
+        env_path = _env_snapshot().get("AL_EXTENSION_PATH")
         if env_path and os.path.exists(env_path):
             log.debug(f"Found AL extension via AL_EXTENSION_PATH: {env_path}")
             return env_path
@@ -150,7 +154,7 @@ class ALLanguageServer(SolidLanguageServer):
         return quote_windows_path(executable_path)
     @classmethod
     def _get_language_server_command_fallback(cls) -> str:
-        al_extension_path = os.environ.get("AL_EXTENSION_PATH")
+        al_extension_path = _env_snapshot().get("AL_EXTENSION_PATH")
         if not al_extension_path:
             cwd_path = Path.cwd()
             potential_extension = None
@@ -197,8 +201,8 @@ class ALLanguageServer(SolidLanguageServer):
                 [
                     home / ".vscode" / "extensions",
                     home / ".vscode-insiders" / "extensions",
-                    Path(os.environ.get("APPDATA", "")) / "Code" / "User" / "extensions",
-                    Path(os.environ.get("APPDATA", "")) / "Code - Insiders" / "User" / "extensions",
+                    Path(_env_snapshot().get("APPDATA", "")) / "Code" / "User" / "extensions",
+                    Path(_env_snapshot().get("APPDATA", "")) / "Code - Insiders" / "User" / "extensions",
                 ]
             )
         else:

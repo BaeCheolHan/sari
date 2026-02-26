@@ -75,7 +75,9 @@ def validate_repo_argument(arguments: dict[str, object], workspace_repo: RepoVal
         else:
             context_error = context_error if context_error is not None else repo_error
     if resolved_context is None:
-        assert context_error is not None
+        if context_error is None:
+            raise ValueError("resolve_repo_context returned None for both resolved and error")
+        # context_error is guaranteed non-None here
         return RepoValidationResultDTO(repo_root=None, repo_key=None, error=context_error)
     if repo_key_value is not None:
         repo_context, repo_error = _resolve_context_with_workspace_fallback(raw_repo=repo_value, workspace_repo=workspace_repo)

@@ -42,7 +42,7 @@ from typing import Union, cast
 
 import requests
 
-from solidlsp.ls import LanguageServerDependencyProvider, LSPFileBuffer, SolidLanguageServer
+from solidlsp.ls import LanguageServerDependencyProvider, LSPFileBuffer, SolidLanguageServer, get_current_process_env_snapshot
 from solidlsp.ls_config import LanguageServerConfig
 from solidlsp.lsp_protocol_handler.lsp_types import DocumentSymbol, InitializeParams, SymbolInformation
 from solidlsp.settings import SolidLSPSettings
@@ -56,6 +56,14 @@ MATLAB_PATH_ENV_VAR = "MATLAB_PATH"
 MATLAB_EXTENSION_URL = (
     "https://marketplace.visualstudio.com/_apis/public/gallery/publishers/MathWorks/vsextensions/language-matlab/latest/vspackage"
 )
+
+
+def _env_snapshot() -> dict[str, str]:
+    return get_current_process_env_snapshot()
+
+
+def _which_in_snapshot(executable_name: str) -> str | None:
+    return shutil.which(executable_name, path=_env_snapshot().get("PATH"))
 
 
 class MatlabLanguageServer(SolidLanguageServer):
@@ -178,7 +186,7 @@ class MatlabLanguageServer(SolidLanguageServer):
 
             """
             # Check environment variable
-            env_path = os.environ.get("MATLAB_EXTENSION_PATH")
+            env_path = _env_snapshot().get("MATLAB_EXTENSION_PATH")
             if env_path and os.path.exists(env_path):
                 log.debug(f"Found MATLAB extension via MATLAB_EXTENSION_PATH: {env_path}")
                 return env_path
@@ -266,7 +274,7 @@ class MatlabLanguageServer(SolidLanguageServer):
 
             """
             # Check environment variable first
-            matlab_path = os.environ.get(MATLAB_PATH_ENV_VAR)
+            matlab_path = _env_snapshot().get(MATLAB_PATH_ENV_VAR)
             if matlab_path and os.path.isdir(matlab_path):
                 log.info(f"Using MATLAB from environment variable {MATLAB_PATH_ENV_VAR}: {matlab_path}")
                 return matlab_path
@@ -341,7 +349,7 @@ class MatlabLanguageServer(SolidLanguageServer):
 
         def create_launch_command(self) -> Union[str, list[str]]:
             # Verify node is installed
-            node_path = shutil.which("node")
+            node_path = _which_in_snapshot("node")
             if node_path is None:
                 raise RuntimeError("Node.js is not installed or isn't in PATH. Please install Node.js and try again.")
 

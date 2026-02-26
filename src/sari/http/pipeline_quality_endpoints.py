@@ -19,7 +19,8 @@ async def pipeline_quality_run_api_endpoint(request) -> JSONResponse:
     _repo_id, repo, _repo_key, repo_error = resolve_repo_from_query(context, request)
     if repo_error is not None:
         return repo_error
-    assert repo is not None
+    if repo is None:
+        raise ValueError("resolve_repo_from_query returned no error but repo is None")
     limit_files_raw = str(request.query_params.get("limit_files", "2000")).strip()
     profile = str(request.query_params.get("profile", "default")).strip()
     try:
@@ -46,7 +47,8 @@ async def pipeline_quality_report_api_endpoint(request) -> JSONResponse:
     _repo_id, repo, _repo_key, repo_error = resolve_repo_from_query(context, request)
     if repo_error is not None:
         return repo_error
-    assert repo is not None
+    if repo is None:
+        raise ValueError("resolve_repo_from_query returned no error but repo is None")
     try:
         summary = service.get_latest_report(repo_root=repo)
     except QualityError as exc:

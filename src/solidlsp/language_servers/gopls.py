@@ -6,13 +6,17 @@ from typing import cast
 
 from overrides import override
 
-from solidlsp.ls import SolidLanguageServer
+from solidlsp.ls import SolidLanguageServer, get_current_process_env_snapshot
 from solidlsp.ls_config import LanguageServerConfig
 from solidlsp.lsp_protocol_handler.lsp_types import InitializeParams
 from solidlsp.lsp_protocol_handler.server import ProcessLaunchInfo
 from solidlsp.settings import SolidLSPSettings
 
 log = logging.getLogger(__name__)
+
+
+def _env_snapshot() -> dict[str, str]:
+    return get_current_process_env_snapshot()
 
 
 class Gopls(SolidLanguageServer):
@@ -50,7 +54,7 @@ class Gopls(SolidLanguageServer):
     def _get_go_version() -> str | None:
         """Get the installed Go version or None if not found."""
         try:
-            result = subprocess.run(["go", "version"], capture_output=True, text=True, check=False)
+            result = subprocess.run(["go", "version"], capture_output=True, text=True, check=False, env=_env_snapshot())
             if result.returncode == 0:
                 return result.stdout.strip()
         except FileNotFoundError:
@@ -61,7 +65,7 @@ class Gopls(SolidLanguageServer):
     def _get_gopls_version() -> str | None:
         """Get the installed gopls version or None if not found."""
         try:
-            result = subprocess.run(["gopls", "version"], capture_output=True, text=True, check=False)
+            result = subprocess.run(["gopls", "version"], capture_output=True, text=True, check=False, env=_env_snapshot())
             if result.returncode == 0:
                 return result.stdout.strip()
         except FileNotFoundError:
@@ -188,7 +192,7 @@ class Gopls(SolidLanguageServer):
         # Only include env vars that are set to a non-empty value.
         env_subset: dict[str, str] = {}
         for key in self._CACHE_CONTEXT_ENV_KEYS:
-            value = os.environ.get(key)
+            value = self._process_env.get(key)
             if value:
                 env_subset[key] = value
 

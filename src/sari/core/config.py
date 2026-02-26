@@ -1,5 +1,6 @@
 """런타임 설정을 정의한다."""
 
+import logging
 import os
 import json
 from dataclasses import dataclass
@@ -948,7 +949,11 @@ def _load_user_config() -> dict[str, object]:
         return {}
     try:
         loaded = json.loads(config_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except OSError as exc:
+        logging.getLogger(__name__).warning("사용자 설정 파일을 읽는 데 실패했습니다(path=%s): %s", config_path, exc)
+        return {}
+    except ValueError as exc:
+        logging.getLogger(__name__).warning("사용자 설정 파일의 JSON이 잘못되었습니다(path=%s): %s", config_path, exc)
         return {}
     if not isinstance(loaded, dict):
         return {}

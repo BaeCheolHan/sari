@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from pathlib import Path
 import zlib
 
@@ -89,6 +91,22 @@ class _MetricsStub:
     def record_enrich_latency(self, latency_ms: float) -> None:
         """지연시간 기록 파라미터를 보관한다."""
         self.recorded.append(latency_ms)
+
+
+class _BlockingScannerStub:
+    """watcher overflow rescan 비동기화를 검증하기 위한 블로킹 스캐너."""
+
+    def __init__(self, *, release_wait_timeout_sec: float = 2.0) -> None:
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.calls: list[str] = []
+        self._release_wait_timeout_sec = release_wait_timeout_sec
+
+    def scan_once(self, repo_root: str) -> CollectionScanResultDTO:
+        self.calls.append(repo_root)
+        self.started.set()
+        self.release.wait(timeout=self._release_wait_timeout_sec)
+        return CollectionScanResultDTO(scanned_count=0, indexed_count=0, deleted_count=0)
 
 
 
@@ -257,6 +275,95 @@ def test_file_collection_service_watcher_signal_updates_hotness_and_broker_can_g
     assert lease.granted is True
     assert lease.lane == "hot"
     service._lsp_session_broker.release_lease(lease)  # noqa: SLF001
+
+
+def test_file_collection_service_watcher_overflow_rescan_is_async(tmp_path: Path) -> None:
+    """watcher overflow rescan 예약은 watcher 루프를 블로킹하지 않아야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+
+    repo_dir = tmp_path / "repo-overflow"
+    repo_dir.mkdir()
+
+    service = FileCollectionService(
+        workspace_repo=WorkspaceRepository(db_path),
+        file_repo=FileCollectionRepository(db_path),
+        enrich_queue_repo=FileEnrichQueueRepository(db_path),
+        body_repo=FileBodyRepository(db_path),
+        lsp_repo=LspToolDataRepository(db_path),
+        readiness_repo=ToolReadinessRepository(db_path),
+        policy=_policy(),
+        lsp_backend=_NoopLspBackend(),
+        policy_repo=None,
+        event_repo=None,
+    )
+    scanner_stub = _BlockingScannerStub()
+    service._scanner = scanner_stub  # type: ignore[attr-defined]
+
+    invoke_thread = threading.Thread(
+        target=service._schedule_rescan_from_watcher,  # noqa: SLF001
+        args=(str(repo_dir.resolve()),),
+        daemon=True,
+    )
+    started_at = time.perf_counter()
+    invoke_thread.start()
+    invoke_thread.join(timeout=0.2)
+    elapsed = time.perf_counter() - started_at
+
+    assert invoke_thread.is_alive() is False
+    assert elapsed < 0.2
+    assert scanner_stub.started.wait(timeout=0.5) is True
+    assert scanner_stub.calls == [str(repo_dir.resolve())]
+
+    scanner_stub.release.set()
+    service._stop_event.set()  # noqa: SLF001
+
+
+def test_file_collection_service_stop_background_waits_for_watcher_rescan_worker(tmp_path: Path) -> None:
+    """장기 watcher rescan 중에는 stop_background가 worker 종료 전 반환하면 안 된다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+
+    repo_dir = tmp_path / "repo-stop-race"
+    repo_dir.mkdir()
+    repo_root = str(repo_dir.resolve())
+
+    service = FileCollectionService(
+        workspace_repo=WorkspaceRepository(db_path),
+        file_repo=FileCollectionRepository(db_path),
+        enrich_queue_repo=FileEnrichQueueRepository(db_path),
+        body_repo=FileBodyRepository(db_path),
+        lsp_repo=LspToolDataRepository(db_path),
+        readiness_repo=ToolReadinessRepository(db_path),
+        policy=_policy(),
+        lsp_backend=_NoopLspBackend(),
+        policy_repo=None,
+        event_repo=None,
+    )
+    scanner_stub = _BlockingScannerStub(release_wait_timeout_sec=10.0)
+    service._scanner = scanner_stub  # type: ignore[attr-defined]
+
+    service._runtime_manager.stop_background = lambda: service._stop_event.set()  # type: ignore[attr-defined]
+    service._enrich_engine.shutdown = lambda: None  # type: ignore[attr-defined]
+    service._repo_support.shutdown_probe_executor = lambda: None  # type: ignore[attr-defined]
+
+    service._schedule_rescan_from_watcher(repo_root)  # noqa: SLF001
+    assert scanner_stub.started.wait(timeout=0.5) is True
+    with service._watcher_rescan_lock:  # noqa: SLF001
+        assert repo_root in service._watcher_rescan_pending_roots  # noqa: SLF001
+
+    stop_thread = threading.Thread(target=service.stop_background, daemon=True)
+    stop_thread.start()
+
+    # 기존 구현은 join(timeout=2.0) 이후 바로 반환하여 여기서 stop_thread가 종료된다.
+    time.sleep(2.2)
+    assert stop_thread.is_alive() is True
+    with service._watcher_rescan_lock:  # noqa: SLF001
+        assert repo_root in service._watcher_rescan_pending_roots  # noqa: SLF001
+
+    scanner_stub.release.set()
+    stop_thread.join(timeout=1.5)
+    assert stop_thread.is_alive() is False
 
 
 def test_file_collection_service_list_files_falls_back_to_repo_root_after_fanout_shape(tmp_path: Path) -> None:

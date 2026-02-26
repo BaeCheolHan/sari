@@ -75,7 +75,8 @@ class ReadTool:
         parsed, parse_error = self._request_parser.parse(arguments=arguments, repo_root=repo_root)
         if parse_error is not None:
             return parse_error
-        assert parsed is not None
+        if parsed is None:
+            raise ValueError("request_parser returned no error but parsed is None")
         try:
             execution, execution_error = self._run_with_timeout(
                 repo_root=parsed.repo_root,
@@ -94,7 +95,8 @@ class ReadTool:
             )
         if execution_error is not None:
             return execution_error
-        assert execution is not None
+        if execution is None:
+            raise ValueError("executor returned no error but execution is None")
         stabilization = self._build_stabilization_meta(
             arguments=arguments,
             repo_root=parsed.repo_root,
@@ -115,8 +117,8 @@ class ReadTool:
     ) -> tuple[ReadExecutionResult | None, dict[str, object] | None]:
         if self._call_timeout_sec <= 0:
             return self._executor.execute(repo_root=repo_root, mode=mode, arguments=arguments)
-        assert self._timeout_executor is not None
-        assert self._timeout_semaphore is not None
+        if self._timeout_executor is None or self._timeout_semaphore is None:
+            raise RuntimeError("timeout enabled but executor/semaphore is not initialized")
         if not self._timeout_semaphore.acquire(blocking=False):
             raise _ReadToolBusyError("read tool worker busy")
         try:
@@ -144,7 +146,8 @@ class ReadTool:
         try:
             return self._executor.execute(repo_root=repo_root, mode=mode, arguments=arguments)
         finally:
-            assert self._timeout_semaphore is not None
+            if self._timeout_semaphore is None:
+                raise RuntimeError("timeout_semaphore is None in _run_read_task")
             self._timeout_semaphore.release()
 
     def _build_stabilization_meta(

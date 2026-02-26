@@ -10,6 +10,7 @@ from sari.core.exceptions import DaemonError
 from sari.core.language.registry import get_enabled_languages
 from sari.lsp.hub import LspHub, LspRuntimeEntry, LspRuntimeKey
 from sari.lsp.runtime_broker import RuntimeLaunchContextDTO, RuntimeRequirementDTO
+from solidlsp.ls import get_current_process_env_snapshot
 from solidlsp.ls_config import Language
 
 
@@ -35,6 +36,30 @@ def test_lsp_hub_resolve_language_unsupported() -> None:
     hub = LspHub()
     with pytest.raises(DaemonError, match="지원하지 않는 언어 확장자입니다"):
         hub.resolve_language("a.unknown")
+
+
+def test_lsp_hub_restores_global_ssl_cert_file_default_for_python_downloads(monkeypatch) -> None:
+    """in-process HTTPS downloader를 위해 전역 SSL_CERT_FILE 기본값을 복원해야 한다."""
+    monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+
+    class _CertifiStub:
+        @staticmethod
+        def where() -> str:
+            return "/tmp/certifi-ca.pem"
+
+    monkeypatch.setattr("sari.lsp.hub.certifi", _CertifiStub)
+
+    hub = LspHub()
+    hub._ensure_global_ssl_cert_file_default()  # noqa: SLF001
+    assert os.environ["SSL_CERT_FILE"] == "/tmp/certifi-ca.pem"
+
+    monkeypatch.setenv("SSL_CERT_FILE", "/custom/ca.pem")
+    hub._ensure_global_ssl_cert_file_default()  # noqa: SLF001
+    assert os.environ["SSL_CERT_FILE"] == "/custom/ca.pem"
+
+    monkeypatch.setenv("SSL_CERT_FILE", "")
+    hub._ensure_global_ssl_cert_file_default()  # noqa: SLF001
+    assert os.environ["SSL_CERT_FILE"] == "/tmp/certifi-ca.pem"
 
 
 def test_language_registry_supports_many_languages() -> None:
@@ -655,11 +680,12 @@ def test_lsp_hub_java_auto_fallback_retries_with_bundled_gradle(monkeypatch, tmp
             return True
 
     class _FakeServer:
-        def __init__(self) -> None:
+        def __init__(self, process_env: dict[str, str]) -> None:
             self.server = _Runtime()
+            self._process_env = process_env
 
         def start(self) -> None:
-            if os.getenv("SARI_JDTLS_GRADLE_WRAPPER_FIRST", "") != "0":
+            if self._process_env.get("SARI_JDTLS_GRADLE_WRAPPER_FIRST", "") != "0":
                 raise RuntimeError("simulated jdtls wrapper-first failure")
 
         def stop(self) -> None:
@@ -668,9 +694,11 @@ def test_lsp_hub_java_auto_fallback_retries_with_bundled_gradle(monkeypatch, tmp
     create_calls: list[str] = []
 
     def _fake_create(*args, **kwargs):  # noqa: ANN001, ANN201
-        del args, kwargs
-        create_calls.append(os.getenv("SARI_JDTLS_GRADLE_WRAPPER_FIRST", ""))
-        return _FakeServer()
+        del args
+        process_env = kwargs.get("process_env")
+        assert isinstance(process_env, dict)
+        create_calls.append(process_env.get("SARI_JDTLS_GRADLE_WRAPPER_FIRST", ""))
+        return _FakeServer(process_env=process_env)
 
     monkeypatch.delenv("SARI_JDTLS_GRADLE_WRAPPER_FIRST", raising=False)
     monkeypatch.setattr("sari.lsp.hub.SolidLanguageServer.create", _fake_create)
@@ -819,7 +847,7 @@ def test_lsp_hub_cleans_up_not_running_entry_before_reuse(monkeypatch) -> None:
 
 
 def test_lsp_hub_applies_runtime_overrides_only_during_server_boot(monkeypatch) -> None:
-    """런타임 오버라이드는 서버 시작 구간에만 적용되고 이후 원복되어야 한다."""
+    """런타임 오버라이드는 process_env snapshot으로 전달되고 전역 env는 오염되지 않아야 한다."""
 
     class _FakeRuntimeServer:
         def is_running(self) -> bool:
@@ -849,9 +877,15 @@ def test_lsp_hub_applies_runtime_overrides_only_during_server_boot(monkeypatch) 
 
     original_java_home = os.environ.get("JAVA_HOME")
 
+    captured_process_env: dict[str, str] = {}
+
     def _fake_create(*args, **kwargs) -> _FakeLanguageServer:
-        del args, kwargs
-        assert os.environ.get("JAVA_HOME") == "/tmp/jdk-21"
+        del args
+        process_env = kwargs.get("process_env")
+        assert isinstance(process_env, dict)
+        captured_process_env.update(process_env)
+        assert process_env.get("JAVA_HOME") == "/tmp/jdk-21"
+        assert os.environ.get("JAVA_HOME") == original_java_home
         return _FakeLanguageServer()
 
     monkeypatch.setattr("sari.lsp.hub.SolidLanguageServer.create", _fake_create)
@@ -860,6 +894,8 @@ def test_lsp_hub_applies_runtime_overrides_only_during_server_boot(monkeypatch) 
     hub.stop_all()
 
     assert os.environ.get("JAVA_HOME") == original_java_home
+    assert captured_process_env["JAVA_HOME"] == "/tmp/jdk-21"
+    assert captured_process_env["PATH"] == "/tmp/jdk-21/bin:/usr/bin"
 
 
 def test_lsp_hub_max_instances_per_repo_language_not_clamped_to_two() -> None:
@@ -955,3 +991,132 @@ def test_lsp_hub_passes_file_buffer_settings_to_solidlsp(monkeypatch) -> None:
     assert language_settings["open_file_buffer_idle_ttl_sec"] == pytest.approx(31.0)
     assert language_settings["open_file_buffer_max_open"] == 777
     hub.stop_all()
+
+
+def test_lsp_hub_parallel_starts_use_isolated_process_env_snapshots(monkeypatch) -> None:
+    """동시 기동 시에도 process_env snapshot이 섞이지 않고 전역 env는 유지되어야 한다."""
+
+    class _FakeRuntimeServer:
+        def is_running(self) -> bool:
+            return True
+
+    class _FakeLanguageServer:
+        def __init__(self) -> None:
+            self.server = _FakeRuntimeServer()
+
+        def start(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+    class _BrokerA:
+        def resolve(self, language: Language) -> RuntimeLaunchContextDTO:
+            assert language == Language.JAVA
+            return RuntimeLaunchContextDTO(
+                requirement=RuntimeRequirementDTO(language=Language.JAVA, runtime_name="java", minimum_major=17),
+                env_overrides={"JAVA_HOME": "/tmp/jdk-a", "PATH": "/tmp/jdk-a/bin:/usr/bin"},
+                selected_executable="/tmp/jdk-a/bin/java",
+                selected_major=21,
+                selected_source="mock-a",
+                auto_provision_expected=False,
+            )
+
+    class _BrokerB:
+        def resolve(self, language: Language) -> RuntimeLaunchContextDTO:
+            assert language == Language.JAVA
+            return RuntimeLaunchContextDTO(
+                requirement=RuntimeRequirementDTO(language=Language.JAVA, runtime_name="java", minimum_major=17),
+                env_overrides={"JAVA_HOME": "/tmp/jdk-b", "PATH": "/tmp/jdk-b/bin:/usr/bin"},
+                selected_executable="/tmp/jdk-b/bin/java",
+                selected_major=21,
+                selected_source="mock-b",
+                auto_provision_expected=False,
+            )
+
+    original_java_home = os.environ.get("JAVA_HOME")
+    barrier = threading.Barrier(2)
+    seen_java_homes: list[str] = []
+    seen_globals: list[str | None] = []
+    seen_lock = threading.Lock()
+
+    def _fake_create(*args, **kwargs):  # noqa: ANN001, ANN201
+        del args
+        process_env = kwargs.get("process_env")
+        assert isinstance(process_env, dict)
+        barrier.wait(timeout=1.0)
+        with seen_lock:
+            seen_java_homes.append(str(process_env.get("JAVA_HOME")))
+            seen_globals.append(os.environ.get("JAVA_HOME"))
+        return _FakeLanguageServer()
+
+    monkeypatch.setattr("sari.lsp.hub.SolidLanguageServer.create", _fake_create)
+
+    hub_a = LspHub(runtime_broker=_BrokerA())
+    hub_b = LspHub(runtime_broker=_BrokerB())
+    errors: list[BaseException] = []
+
+    def _run(hub: LspHub, repo_root: str) -> None:
+        try:
+            _ = hub.get_or_start(language=Language.JAVA, repo_root=repo_root)
+        except BaseException as exc:  # pragma: no cover - 동시성 방어 경계
+            errors.append(exc)
+
+    t1 = threading.Thread(target=_run, args=(hub_a, "/repo-a"), daemon=True)
+    t2 = threading.Thread(target=_run, args=(hub_b, "/repo-b"), daemon=True)
+    t1.start()
+    t2.start()
+    t1.join(timeout=2.0)
+    t2.join(timeout=2.0)
+    hub_a.stop_all()
+    hub_b.stop_all()
+
+    assert errors == []
+    assert sorted(seen_java_homes) == ["/tmp/jdk-a", "/tmp/jdk-b"]
+    assert seen_globals == [original_java_home, original_java_home]
+
+
+def test_lsp_hub_applies_attempt_process_env_during_start_call(monkeypatch, tmp_path) -> None:
+    """fallback 재시도 플래그가 ls.start() 실행 중에도 process_env snapshot으로 보장되어야 한다."""
+    repo = tmp_path / "repo-java"
+    wrapper_dir = repo / "gradle" / "wrapper"
+    wrapper_dir.mkdir(parents=True)
+    (wrapper_dir / "gradle-wrapper.properties").write_text(
+        "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.7-bin.zip\n",
+        encoding="utf-8",
+    )
+
+    class _Runtime:
+        def is_running(self) -> bool:
+            return True
+
+    class _FakeServer:
+        def __init__(self) -> None:
+            self.server = _Runtime()
+
+        def start(self) -> None:
+            env = get_current_process_env_snapshot()
+            if env.get("SARI_JDTLS_GRADLE_WRAPPER_FIRST", "") != "0":
+                raise RuntimeError("simulated wrapper-first failure")
+
+        def stop(self) -> None:
+            return None
+
+    create_calls: list[str] = []
+
+    def _fake_create(*args, **kwargs):  # noqa: ANN001, ANN201
+        del args
+        process_env = kwargs.get("process_env")
+        assert isinstance(process_env, dict)
+        create_calls.append(process_env.get("SARI_JDTLS_GRADLE_WRAPPER_FIRST", ""))
+        return _FakeServer()
+
+    monkeypatch.delenv("SARI_JDTLS_GRADLE_WRAPPER_FIRST", raising=False)
+    monkeypatch.setattr("sari.lsp.hub.SolidLanguageServer.create", _fake_create)
+
+    hub = LspHub()
+    server = hub.get_or_start(language=Language.JAVA, repo_root=str(repo))
+    hub.stop_all()
+
+    assert server is not None
+    assert create_calls == ["", "0"]

@@ -25,7 +25,8 @@ def resolve_repo_from_query(context: HttpContext, request: Request) -> tuple[str
     )
     if error is not None:
         return (None, None, None, JSONResponse({"error": {"code": error.code, "message": error.message}}, status_code=400))
-    assert resolved is not None
+    if resolved is None:
+        raise ValueError("resolve_repo_context returned no error but resolved is None")
     return (resolved.repo_id, resolved.repo_root, resolved.repo_key, None)
 
 
@@ -40,7 +41,8 @@ def resolve_repo_from_value(context: HttpContext, raw_repo: object) -> tuple[str
     )
     if error is not None:
         return (None, None, None, JSONResponse({"error": {"code": error.code, "message": error.message}}, status_code=400))
-    assert resolved is not None
+    if resolved is None:
+        raise ValueError("resolve_repo_context returned no error but resolved is None")
     return (resolved.repo_id, resolved.repo_root, resolved.repo_key, None)
 
 

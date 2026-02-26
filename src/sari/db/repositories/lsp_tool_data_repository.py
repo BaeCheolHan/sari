@@ -112,11 +112,16 @@ class LspToolDataRepository:
             )
             conn.commit()
 
-    def replace_file_data_many(self, items: list[LspExtractPersistDTO]) -> None:
+    def replace_file_data_many(self, items: list[LspExtractPersistDTO], *, conn=None) -> None:
         """파일 단위 심볼/관계 데이터를 배치 교체 저장한다."""
         if len(items) == 0:
             return
-        with connect(self._db_path) as conn:
+        owned_conn = conn is None
+        if owned_conn:
+            conn = connect(self._db_path)
+        if conn is None:
+            raise RuntimeError("conn must not be None when owned_conn is False")
+        try:
             for item in items:
                 conn.execute(
                     """
@@ -192,7 +197,11 @@ class LspToolDataRepository:
                         """,
                         relation_rows,
                     )
-            conn.commit()
+            if owned_conn:
+                conn.commit()
+        finally:
+            if owned_conn:
+                conn.close()
 
     def _dedupe_symbols(self, symbols: list[dict[str, object]]) -> list[dict[str, object]]:
         """심볼 고유키 기준으로 중복 항목을 제거한다."""

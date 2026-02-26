@@ -8,7 +8,7 @@ from typing import cast
 
 from overrides import override
 
-from solidlsp.ls import SolidLanguageServer
+from solidlsp.ls import SolidLanguageServer, get_current_process_env_snapshot
 from solidlsp.ls_config import LanguageServerConfig
 from solidlsp.ls_utils import FileUtils, PlatformId, PlatformUtils
 from solidlsp.lsp_protocol_handler.lsp_types import InitializeParams
@@ -18,6 +18,10 @@ from solidlsp.settings import SolidLSPSettings
 from ..common import RuntimeDependency
 
 log = logging.getLogger(__name__)
+
+
+def _env_snapshot() -> dict[str, str]:
+    return get_current_process_env_snapshot()
 
 
 class ElixirTools(SolidLanguageServer):
@@ -53,7 +57,7 @@ class ElixirTools(SolidLanguageServer):
     def _get_elixir_version(cls) -> str | None:
         """Get the installed Elixir version or None if not found."""
         try:
-            result = subprocess.run(["elixir", "--version"], capture_output=True, text=True, check=False)
+            result = subprocess.run(["elixir", "--version"], capture_output=True, text=True, check=False, env=_env_snapshot())
             if result.returncode == 0:
                 return result.stdout.strip()
         except FileNotFoundError:
@@ -78,7 +82,7 @@ class ElixirTools(SolidLanguageServer):
         # First, check if expert is already in PATH (user may have installed it manually)
         import shutil
 
-        expert_in_path = shutil.which("expert")
+        expert_in_path = shutil.which("expert", path=_env_snapshot().get("PATH"))
         if expert_in_path:
             log.info(f"Found Expert in PATH: {expert_in_path}")
             return expert_in_path

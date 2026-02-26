@@ -6,7 +6,7 @@ import shutil
 
 from overrides import override
 
-from solidlsp.ls import SolidLanguageServer
+from solidlsp.ls import SolidLanguageServer, get_current_process_env_snapshot
 from solidlsp.ls_config import LanguageServerConfig
 from solidlsp.ls_utils import PathUtils
 from solidlsp.lsp_protocol_handler.lsp_types import InitializeParams
@@ -39,7 +39,7 @@ class RegalLanguageServer(SolidLanguageServer):
         :param solidlsp_settings: Settings for solidlsp
         """
         # Regal should be installed system-wide (via CI or user installation)
-        regal_executable_path = shutil.which("regal")
+        regal_executable_path = shutil.which("regal", path=get_current_process_env_snapshot().get("PATH"))
         if not regal_executable_path:
             raise RuntimeError(
                 "Regal language server not found. Please install it from https://github.com/StyraInc/regal or via your package manager."

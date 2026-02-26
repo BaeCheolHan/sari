@@ -25,7 +25,8 @@ async def pipeline_lsp_matrix_run_api_endpoint(request) -> JSONResponse:
     _repo_id, repo, _repo_key, repo_error = resolve_repo_from_query(context, request)
     if repo_error is not None:
         return repo_error
-    assert repo is not None
+    if repo is None:
+        raise ValueError("resolve_repo_from_query returned no error but repo is None")
     required_languages, required_error = read_required_languages_from_query(request)
     if required_error is not None:
         return JSONResponse({"error": {"code": required_error.code, "message": required_error.message}}, status_code=400)
@@ -60,7 +61,8 @@ async def pipeline_lsp_matrix_report_api_endpoint(request) -> JSONResponse:
     _repo_id, repo, _repo_key, repo_error = resolve_repo_from_query(context, request)
     if repo_error is not None:
         return repo_error
-    assert repo is not None
+    if repo is None:
+        raise ValueError("resolve_repo_from_query returned no error but repo is None")
     try:
         summary = service.get_latest_report(repo_root=repo)
     except DaemonError as exc:

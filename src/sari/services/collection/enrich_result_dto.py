@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import dataclass, field
 
 from sari.core.exceptions import CollectionError
@@ -44,36 +45,40 @@ class _LayerUpsertBucketsDTO:
         if result.l5_layer_upsert is not None:
             self.l5_layer_upserts.append(result.l5_layer_upsert)
 
-    def flush(self, tool_layer_repo: ToolDataLayerRepository | None) -> None:
+    def flush(
+        self,
+        tool_layer_repo: ToolDataLayerRepository | None,
+        *,
+        conn: sqlite3.Connection | None = None,
+        clear_after_flush: bool = True,
+    ) -> None:
         if tool_layer_repo is None:
-            self.l3_layer_upserts.clear()
-            self.l4_layer_upserts.clear()
-            self.l5_layer_upserts.clear()
+            if clear_after_flush:
+                self.l3_layer_upserts.clear()
+                self.l4_layer_upserts.clear()
+                self.l5_layer_upserts.clear()
             return
-        if len(self.l3_layer_upserts) > 0:
-            upsert_many = getattr(tool_layer_repo, "upsert_l3_symbols_many", None)
-            if callable(upsert_many):
-                upsert_many(self.l3_layer_upserts)
+        if self.l3_layer_upserts:
+            if conn is None:
+                tool_layer_repo.upsert_l3_symbols_many(self.l3_layer_upserts)
             else:
-                for upsert in self.l3_layer_upserts:
-                    tool_layer_repo.upsert_l3_symbols(**upsert)
-            self.l3_layer_upserts.clear()
-        if len(self.l4_layer_upserts) > 0:
-            upsert_many = getattr(tool_layer_repo, "upsert_l4_normalized_symbols_many", None)
-            if callable(upsert_many):
-                upsert_many(self.l4_layer_upserts)
+                tool_layer_repo.upsert_l3_symbols_many(self.l3_layer_upserts, conn=conn)
+            if clear_after_flush:
+                self.l3_layer_upserts.clear()
+        if self.l4_layer_upserts:
+            if conn is None:
+                tool_layer_repo.upsert_l4_normalized_symbols_many(self.l4_layer_upserts)
             else:
-                for upsert in self.l4_layer_upserts:
-                    tool_layer_repo.upsert_l4_normalized_symbols(**upsert)
-            self.l4_layer_upserts.clear()
-        if len(self.l5_layer_upserts) > 0:
-            upsert_many = getattr(tool_layer_repo, "upsert_l5_semantics_many", None)
-            if callable(upsert_many):
-                upsert_many(self.l5_layer_upserts)
+                tool_layer_repo.upsert_l4_normalized_symbols_many(self.l4_layer_upserts, conn=conn)
+            if clear_after_flush:
+                self.l4_layer_upserts.clear()
+        if self.l5_layer_upserts:
+            if conn is None:
+                tool_layer_repo.upsert_l5_semantics_many(self.l5_layer_upserts)
             else:
-                for upsert in self.l5_layer_upserts:
-                    tool_layer_repo.upsert_l5_semantics(**upsert)
-            self.l5_layer_upserts.clear()
+                tool_layer_repo.upsert_l5_semantics_many(self.l5_layer_upserts, conn=conn)
+            if clear_after_flush:
+                self.l5_layer_upserts.clear()
 
 
 @dataclass
@@ -124,12 +129,9 @@ class _L2ResultBuffersDTO:
         return cls()
 
 
-@dataclass(frozen=True, init=False)
+@dataclass(frozen=True)
 class _L3JobResultDTO:
-    """L3 작업 결과를 표현한다.
-
-    기존 생성자(l3/l4/l5 개별 필드)와 신규 bundle 입력(layer_upserts)을 모두 지원한다.
-    """
+    """L3 작업 결과를 표현한다."""
 
     job_id: str
     finished_status: str
@@ -140,56 +142,8 @@ class _L3JobResultDTO:
     body_delete: FileBodyDeleteTargetDTO | None
     lsp_update: LspExtractPersistDTO | None
     readiness_update: ToolReadinessStateDTO | None
-    layer_upserts: _LayerUpsertsDTO
-    dev_error: CollectionError | None
-
-    def __init__(
-        self,
-        *,
-        job_id: str,
-        finished_status: str,
-        elapsed_ms: float,
-        done_id: str | None,
-        failure_update: FileEnrichFailureUpdateDTO | None,
-        state_update: EnrichStateUpdateDTO | None,
-        body_delete: FileBodyDeleteTargetDTO | None,
-        lsp_update: LspExtractPersistDTO | None,
-        readiness_update: ToolReadinessStateDTO | None,
-        layer_upserts: _LayerUpsertsDTO | None = None,
-        l3_layer_upsert: dict[str, object] | None = None,
-        l4_layer_upsert: dict[str, object] | None = None,
-        l5_layer_upsert: dict[str, object] | None = None,
-        dev_error: CollectionError | None = None,
-    ) -> None:
-        if layer_upserts is None:
-            resolved_layer_upserts = _LayerUpsertsDTO(
-                l3_layer_upsert=l3_layer_upsert,
-                l4_layer_upsert=l4_layer_upsert,
-                l5_layer_upsert=l5_layer_upsert,
-            )
-        else:
-            resolved_layer_upserts = _LayerUpsertsDTO(
-                l3_layer_upsert=(
-                    layer_upserts.l3_layer_upsert if l3_layer_upsert is None else l3_layer_upsert
-                ),
-                l4_layer_upsert=(
-                    layer_upserts.l4_layer_upsert if l4_layer_upsert is None else l4_layer_upsert
-                ),
-                l5_layer_upsert=(
-                    layer_upserts.l5_layer_upsert if l5_layer_upsert is None else l5_layer_upsert
-                ),
-            )
-        object.__setattr__(self, "job_id", job_id)
-        object.__setattr__(self, "finished_status", finished_status)
-        object.__setattr__(self, "elapsed_ms", elapsed_ms)
-        object.__setattr__(self, "done_id", done_id)
-        object.__setattr__(self, "failure_update", failure_update)
-        object.__setattr__(self, "state_update", state_update)
-        object.__setattr__(self, "body_delete", body_delete)
-        object.__setattr__(self, "lsp_update", lsp_update)
-        object.__setattr__(self, "readiness_update", readiness_update)
-        object.__setattr__(self, "layer_upserts", resolved_layer_upserts)
-        object.__setattr__(self, "dev_error", dev_error)
+    layer_upserts: _LayerUpsertsDTO = field(default_factory=_LayerUpsertsDTO)
+    dev_error: CollectionError | None = None
 
     @property
     def l3_layer_upsert(self) -> dict[str, object] | None:
@@ -202,4 +156,3 @@ class _L3JobResultDTO:
     @property
     def l5_layer_upsert(self) -> dict[str, object] | None:
         return self.layer_upserts.l5_layer_upsert
-

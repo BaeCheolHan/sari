@@ -113,18 +113,8 @@ class L2JobProcessor:
 
     def _flush_l2_buffers(self, *, buffers: _L2ResultBuffersDTO, body_upserts: list[CollectedFileBodyDTO]) -> None:
         """L2 누적 버퍼를 저장소에 flush한다."""
-        self._flush_enrich_buffers(
-            done_ids=buffers.done_ids,
-            failed_updates=buffers.failed_updates,
-            state_updates=buffers.state_updates,
-            body_upserts=body_upserts,
-            body_deletes=buffers.body_deletes,
-            lsp_updates=buffers.lsp_updates,
-            readiness_updates=buffers.readiness_updates,
-            l3_layer_upserts=[],
-            l4_layer_upserts=[],
-            l5_layer_upserts=[],
-        )
+        self._flush_enrich_buffers(buffers=buffers, body_upserts=body_upserts)
+
 
     def _process_single_l2_job(
         self,

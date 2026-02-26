@@ -13,7 +13,7 @@ from typing import cast
 
 from overrides import override
 
-from solidlsp.ls import SolidLanguageServer
+from solidlsp.ls import SolidLanguageServer, get_current_process_env_snapshot
 from solidlsp.ls_config import LanguageServerConfig
 from solidlsp.ls_utils import PlatformId, PlatformUtils
 from solidlsp.lsp_protocol_handler.lsp_types import InitializeParams
@@ -87,9 +87,10 @@ class VtsLanguageServer(SolidLanguageServer):
         vts_executable_path = os.path.join(vts_ls_dir, "vtsls")
 
         # Verify both node and npm are installed
-        is_node_installed = shutil.which("node") is not None
+        env_path = get_current_process_env_snapshot().get("PATH")
+        is_node_installed = shutil.which("node", path=env_path) is not None
         assert is_node_installed, "node is not installed or isn't in PATH. Please install NodeJS and try again."
-        is_npm_installed = shutil.which("npm") is not None
+        is_npm_installed = shutil.which("npm", path=env_path) is not None
         assert is_npm_installed, "npm is not installed or isn't in PATH. Please install npm and try again."
 
         # Install vtsls if not already installed

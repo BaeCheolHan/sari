@@ -5,12 +5,16 @@ from __future__ import annotations
 import os
 import shutil
 
+from solidlsp.ls import get_current_process_env_snapshot
+
 
 def ensure_commands_available(commands: list[str]) -> None:
     """필수 명령 존재 여부를 검사하고 누락 시 명시 오류를 발생시킨다."""
     missing: list[str] = []
+    env_snapshot = get_current_process_env_snapshot()
+    path_value = env_snapshot.get("PATH")
     for command in commands:
-        if shutil.which(command) is None:
+        if shutil.which(command, path=path_value) is None:
             missing.append(command)
     if len(missing) > 0:
         raise RuntimeError(f"missing required commands: {', '.join(missing)}")

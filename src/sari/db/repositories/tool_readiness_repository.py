@@ -48,11 +48,16 @@ class ToolReadinessRepository:
             )
             conn.commit()
 
-    def upsert_state_many(self, states: list[ToolReadinessStateDTO]) -> None:
+    def upsert_state_many(self, states: list[ToolReadinessStateDTO], *, conn=None) -> None:
         """도구 준비 상태를 배치 업서트한다."""
         if len(states) == 0:
             return
-        with connect(self._db_path) as conn:
+        owned_conn = conn is None
+        if owned_conn:
+            conn = connect(self._db_path)
+        if conn is None:
+            raise RuntimeError("conn must not be None when owned_conn is False")
+        try:
             for state in states:
                 conn.execute(
                     """
@@ -81,7 +86,11 @@ class ToolReadinessRepository:
                     """,
                     state.to_sql_params(),
                 )
-            conn.commit()
+            if owned_conn:
+                conn.commit()
+        finally:
+            if owned_conn:
+                conn.close()
 
     def get_state(self, repo_root: str, relative_path: str) -> ToolReadinessStateDTO | None:
         """도구 준비 상태를 조회한다."""

@@ -98,7 +98,8 @@ async def pipeline_dead_list_endpoint(request) -> JSONResponse:
     _repo_id, repo, _repo_key, repo_error = resolve_repo_from_query(context, request)
     if repo_error is not None:
         return repo_error
-    assert repo is not None
+    if repo is None:
+        raise ValueError("resolve_repo_from_query returned no error but repo is None")
     limit, limit_error = parse_limit_or_error(request)
     if limit_error is not None:
         return limit_error
@@ -127,7 +128,8 @@ async def pipeline_dead_requeue_endpoint(request) -> JSONResponse:
     _repo_id, repo, _repo_key, repo_error = resolve_repo_from_query(context, request)
     if repo_error is not None:
         return repo_error
-    assert repo is not None
+    if repo is None:
+        raise ValueError("resolve_repo_from_query returned no error but repo is None")
     limit, limit_error = parse_limit_or_error(request)
     if limit_error is not None:
         return limit_error
@@ -150,7 +152,8 @@ async def pipeline_dead_purge_endpoint(request) -> JSONResponse:
     _repo_id, repo, _repo_key, repo_error = resolve_repo_from_query(context, request)
     if repo_error is not None:
         return repo_error
-    assert repo is not None
+    if repo is None:
+        raise ValueError("resolve_repo_from_query returned no error but repo is None")
     limit, limit_error = parse_limit_or_error(request)
     if limit_error is not None:
         return limit_error

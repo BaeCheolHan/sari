@@ -14,6 +14,7 @@ from overrides import override
 from solidlsp.language_servers._adapter_common import ensure_paths_exist
 from solidlsp import ls_types
 from solidlsp.ls import LanguageServerDependencyProvider, LSPFileBuffer, SolidLanguageServer
+from solidlsp.ls import get_current_process_env_snapshot
 from solidlsp.ls_config import LanguageServerConfig
 from solidlsp.ls_types import UnifiedSymbolInformation
 from solidlsp.ls_utils import FileUtils, PlatformUtils
@@ -22,8 +23,12 @@ from solidlsp.settings import SolidLSPSettings
 log = logging.getLogger(__name__)
 
 
+def _env_get(key: str, default: str = "") -> str:
+    return str(get_current_process_env_snapshot().get(key, default))
+
+
 def _project_ready_timeout_seconds() -> int:
-    raw = os.getenv("SARI_JDTLS_PROJECT_READY_TIMEOUT_SEC", "").strip()
+    raw = _env_get("SARI_JDTLS_PROJECT_READY_TIMEOUT_SEC", "").strip()
     if raw == "":
         return 20
     try:
@@ -33,7 +38,7 @@ def _project_ready_timeout_seconds() -> int:
 
 
 def _gradle_wrapper_first_enabled() -> bool:
-    raw = os.getenv("SARI_JDTLS_GRADLE_WRAPPER_FIRST", "").strip().lower()
+    raw = _env_get("SARI_JDTLS_GRADLE_WRAPPER_FIRST", "").strip().lower()
     if raw in {"1", "true", "yes", "on"}:
         return True
     if raw in {"0", "false", "no", "off"}:
@@ -86,7 +91,7 @@ def _auto_wrapper_first_enabled(repository_root_path: str) -> bool:
 
 
 def _resolve_gradle_wrapper_first(repository_root_path: str) -> bool:
-    raw = os.getenv("SARI_JDTLS_GRADLE_WRAPPER_FIRST", "").strip().lower()
+    raw = _env_get("SARI_JDTLS_GRADLE_WRAPPER_FIRST", "").strip().lower()
     if raw in {"1", "true", "yes", "on"}:
         return True
     if raw in {"0", "false", "no", "off"}:
@@ -95,17 +100,17 @@ def _resolve_gradle_wrapper_first(repository_root_path: str) -> bool:
 
 
 def _gradle_user_home_isolated_enabled() -> bool:
-    raw = os.getenv("SARI_JDTLS_GRADLE_USER_HOME_ISOLATED", "1").strip().lower()
+    raw = _env_get("SARI_JDTLS_GRADLE_USER_HOME_ISOLATED", "1").strip().lower()
     return raw not in {"0", "false", "no", "off"}
 
 
 def _project_ready_required() -> bool:
-    raw = os.getenv("SARI_JDTLS_REQUIRE_PROJECT_READY", "0").strip().lower()
+    raw = _env_get("SARI_JDTLS_REQUIRE_PROJECT_READY", "0").strip().lower()
     return raw not in {"0", "false", "no", "off"}
 
 
 def _set_java_home_env_for_ls_enabled() -> bool:
-    raw = os.getenv("SARI_JDTLS_SET_JAVA_HOME_FOR_LS", "0").strip().lower()
+    raw = _env_get("SARI_JDTLS_SET_JAVA_HOME_FOR_LS", "0").strip().lower()
     return raw in {"1", "true", "yes", "on"}
 
 

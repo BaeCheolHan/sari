@@ -95,7 +95,8 @@ class SearchTool:
             )
             if context_error is not None:
                 return self._envelope_builder.build_error(error=context_error)
-            assert context is not None
+            if context is None:
+                raise ValueError("resolve_repo_context returned no error but context is None")
             repo = context.repo_root
             repo_id = context.repo_id
         if not isinstance(query, str) or query.strip() == "":
@@ -205,8 +206,8 @@ class SearchTool:
             kwargs["symbol_info_budget_sec"] = symbol_info_budget_sec
         if self._call_timeout_sec <= 0:
             return self._orchestrator.search(**kwargs)
-        assert self._timeout_executor is not None
-        assert self._timeout_semaphore is not None
+        if self._timeout_executor is None or self._timeout_semaphore is None:
+            raise RuntimeError("timeout enabled but executor/semaphore is not initialized")
         if not self._timeout_semaphore.acquire(blocking=False):
             raise _SearchToolBusyError("search tool worker busy")
         try:
@@ -228,7 +229,8 @@ class SearchTool:
         try:
             return self._orchestrator.search(**kwargs)
         finally:
-            assert self._timeout_semaphore is not None
+            if self._timeout_semaphore is None:
+                raise RuntimeError("timeout_semaphore is None in _run_search_task")
             self._timeout_semaphore.release()
 
     def _build_progress_meta(self) -> dict[str, object] | None:

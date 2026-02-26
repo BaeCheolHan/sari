@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import time
 from collections import defaultdict
@@ -131,8 +132,12 @@ class FileScanner:
                 try:
                     self._schedule_lsp_probe_for_file(str(root), relative_path)
                 except (RuntimeError, ValueError, OSError) as exc:
-                    # probe 스케줄 실패가 L1 스캔을 중단시키지 않도록 격리한다.
-                    _ = exc
+                    logging.getLogger(__name__).debug(
+                        "lsp_probe 스케줄 실패 - L1 스캔은 계속됩니다(repo=%s, path=%s): %s",
+                        root,
+                        relative_path,
+                        exc,
+                    )
             seen_paths.append(relative_path)
             stat = file_path.stat()
             existing = self._file_repo.get_file(str(root), relative_path)
@@ -291,7 +296,13 @@ class FileScanner:
                 continue
             try:
                 self._schedule_lsp_probe_for_file(str(root), relative_path)
-            except (RuntimeError, ValueError, OSError):
+            except (RuntimeError, ValueError, OSError) as exc:
+                logging.getLogger(__name__).debug(
+                    "bootstrap probe 스케줄 실패 - 건너뜁니다(repo=%s, path=%s): %s",
+                    root,
+                    relative_path,
+                    exc,
+                )
                 continue
 
     def index_file(self, repo_root: str, relative_path: str, *, scope_repo_root: str | None = None) -> CollectionScanResultDTO:

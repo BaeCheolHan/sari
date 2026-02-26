@@ -19,8 +19,8 @@ async def read_endpoint(request) -> JSONResponse:
     repo_id, repo, repo_key, error_response = resolve_repo_from_query(context, request)
     if error_response is not None:
         return error_response
-    assert repo_id is not None
-    assert repo is not None
+    if repo_id is None or repo is None:
+        raise ValueError("resolve_repo_from_query returned no error but repo_id/repo is None")
     mode_raw = str(request.query_params.get("mode", "")).strip().lower()
     if mode_raw == "":
         error = ErrorResponseDTO(code="ERR_MODE_REQUIRED", message="mode is required")
@@ -32,7 +32,8 @@ async def read_endpoint(request) -> JSONResponse:
     arguments, arg_error = build_read_arguments(repo_root=repo, repo_key=repo_key, mode=mode_raw, source=source)
     if arg_error is not None:
         return arg_error
-    assert arguments is not None
+    if arguments is None:
+        raise ValueError("build_read_arguments returned no error but arguments is None")
     arguments["repo_id"] = repo_id
     payload = context.read_facade_service.read(arguments=arguments)
     return read_response(payload=payload, output_format=output_format)
@@ -79,15 +80,16 @@ async def read_diff_preview_endpoint(request) -> JSONResponse:
     repo_id, repo, repo_key, error_response = resolve_repo_from_value(context, body_raw.get("repo"))
     if error_response is not None:
         return error_response
-    assert repo_id is not None
-    assert repo is not None
+    if repo_id is None or repo is None:
+        raise ValueError("resolve_repo_from_value returned no error but repo_id/repo is None")
     output_format, format_error = resolve_format(body_raw.get("format"))
     if format_error is not None:
         return format_error
     arguments, arg_error = build_read_arguments(repo_root=repo, repo_key=repo_key, mode="diff_preview", source=body_raw)
     if arg_error is not None:
         return arg_error
-    assert arguments is not None
+    if arguments is None:
+        raise ValueError("build_read_arguments returned no error but arguments is None")
     arguments["repo_id"] = repo_id
     payload = context.read_facade_service.read(arguments=arguments)
     return read_response(payload=payload, output_format=output_format)

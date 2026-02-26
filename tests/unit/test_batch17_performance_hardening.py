@@ -432,52 +432,48 @@ def test_enrich_engine_flush_persists_tool_layer_buffers() -> None:
         tool_layer_repo=tool_layer_repo,
     )
 
-    coordinator.flush(
-        done_ids=[],
-        failed_updates=[],
-        state_updates=[],
-        body_upserts=[],
-        body_deletes=[],
-        lsp_updates=[],
-        readiness_updates=[],
-        l3_layer_upserts=[
-            {
-                "workspace_id": "ws",
-                "repo_root": "/workspace",
-                "relative_path": "a.py",
-                "content_hash": "h1",
-                "symbols": [{"name": "A", "kind": "class", "line": 1, "end_line": 1}],
-                "degraded": False,
-                "l3_skipped_large_file": False,
-                "updated_at": "2026-02-23T00:00:00+00:00",
-            }
-        ],
-        l4_layer_upserts=[
-            {
-                "workspace_id": "ws",
-                "repo_root": "/workspace",
-                "relative_path": "a.py",
-                "content_hash": "h1",
-                "normalized": {"decision": "l3_only"},
-                "confidence": 0.9,
-                "ambiguity": 0.1,
-                "coverage": 1.0,
-                "needs_l5": False,
-                "updated_at": "2026-02-23T00:00:00+00:00",
-            }
-        ],
-        l5_layer_upserts=[
-            {
-                "workspace_id": "ws",
-                "repo_root": "/workspace",
-                "relative_path": "a.py",
-                "content_hash": "h1",
-                "reason_code": "L5_REASON_GOLDENSET_COVERAGE",
-                "semantics": {"relations_count": 1},
-                "updated_at": "2026-02-23T00:00:00+00:00",
-            }
-        ],
+    from sari.services.collection.enrich_result_dto import _L3ResultBuffersDTO as _L3Buf, _LayerUpsertBucketsDTO
+
+    l3_upsert = {
+        "workspace_id": "ws",
+        "repo_root": "/workspace",
+        "relative_path": "a.py",
+        "content_hash": "h1",
+        "symbols": [{"name": "A", "kind": "class", "line": 1, "end_line": 1}],
+        "degraded": False,
+        "l3_skipped_large_file": False,
+        "updated_at": "2026-02-23T00:00:00+00:00",
+    }
+    l4_upsert = {
+        "workspace_id": "ws",
+        "repo_root": "/workspace",
+        "relative_path": "a.py",
+        "content_hash": "h1",
+        "normalized": {"decision": "l3_only"},
+        "confidence": 0.9,
+        "ambiguity": 0.1,
+        "coverage": 1.0,
+        "needs_l5": False,
+        "updated_at": "2026-02-23T00:00:00+00:00",
+    }
+    l5_upsert = {
+        "workspace_id": "ws",
+        "repo_root": "/workspace",
+        "relative_path": "a.py",
+        "content_hash": "h1",
+        "reason_code": "L5_REASON_GOLDENSET_COVERAGE",
+        "semantics": {"relations_count": 1},
+        "updated_at": "2026-02-23T00:00:00+00:00",
+    }
+    buffers = _L3Buf(
+        layer_upsert_buckets=_LayerUpsertBucketsDTO(
+            l3_layer_upserts=[l3_upsert],
+            l4_layer_upserts=[l4_upsert],
+            l5_layer_upserts=[l5_upsert],
+        )
     )
+    coordinator.flush(buffers=buffers, body_upserts=[])
+
 
     assert len(tool_layer_repo.l3_many_calls) == 1
     assert len(tool_layer_repo.l4_many_calls) == 1

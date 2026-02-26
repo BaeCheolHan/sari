@@ -44,7 +44,7 @@ class ToolDataLayerRepository:
             ]
         )
 
-    def upsert_l3_symbols_many(self, upserts: list[dict[str, object]]) -> None:
+    def upsert_l3_symbols_many(self, upserts: list[dict[str, object]], *, conn=None) -> None:
         if len(upserts) == 0:
             return
         params = [
@@ -61,7 +61,12 @@ class ToolDataLayerRepository:
             }
             for item in upserts
         ]
-        with connect(self._db_path) as conn:
+        owned_conn = conn is None
+        if owned_conn:
+            conn = connect(self._db_path)
+        if conn is None:
+            raise RuntimeError("conn must not be None when owned_conn is False")
+        try:
             conn.executemany(
                 """
                 INSERT INTO tool_data_l3_symbols(
@@ -81,7 +86,11 @@ class ToolDataLayerRepository:
                 """,
                 params,
             )
-            conn.commit()
+            if owned_conn:
+                conn.commit()
+        finally:
+            if owned_conn:
+                conn.close()
 
     def upsert_l4_normalized_symbols(
         self,
@@ -116,7 +125,7 @@ class ToolDataLayerRepository:
             ]
         )
 
-    def upsert_l4_normalized_symbols_many(self, upserts: list[dict[str, object]]) -> None:
+    def upsert_l4_normalized_symbols_many(self, upserts: list[dict[str, object]], *, conn=None) -> None:
         if len(upserts) == 0:
             return
         params = [
@@ -135,7 +144,12 @@ class ToolDataLayerRepository:
             }
             for item in upserts
         ]
-        with connect(self._db_path) as conn:
+        owned_conn = conn is None
+        if owned_conn:
+            conn = connect(self._db_path)
+        if conn is None:
+            raise RuntimeError("conn must not be None when owned_conn is False")
+        try:
             conn.executemany(
                 """
                 INSERT INTO tool_data_l4_normalized_symbols(
@@ -157,7 +171,11 @@ class ToolDataLayerRepository:
                 """,
                 params,
             )
-            conn.commit()
+            if owned_conn:
+                conn.commit()
+        finally:
+            if owned_conn:
+                conn.close()
 
     def upsert_l5_semantics(
         self,
@@ -186,7 +204,7 @@ class ToolDataLayerRepository:
             ]
         )
 
-    def upsert_l5_semantics_many(self, upserts: list[dict[str, object]]) -> None:
+    def upsert_l5_semantics_many(self, upserts: list[dict[str, object]], *, conn=None) -> None:
         if len(upserts) == 0:
             return
         params = [
@@ -202,7 +220,12 @@ class ToolDataLayerRepository:
             }
             for item in upserts
         ]
-        with connect(self._db_path) as conn:
+        owned_conn = conn is None
+        if owned_conn:
+            conn = connect(self._db_path)
+        if conn is None:
+            raise RuntimeError("conn must not be None when owned_conn is False")
+        try:
             conn.executemany(
                 """
                 INSERT INTO tool_data_l5_semantics(
@@ -233,7 +256,11 @@ class ToolDataLayerRepository:
                 """,
                 params,
             )
-            conn.commit()
+            if owned_conn:
+                conn.commit()
+        finally:
+            if owned_conn:
+                conn.close()
 
     def load_effective_snapshot(
         self,

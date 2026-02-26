@@ -54,11 +54,16 @@ class FileBodyRepository:
             )
             conn.commit()
 
-    def upsert_body_many(self, body_rows: list[CollectedFileBodyDTO]) -> None:
+    def upsert_body_many(self, body_rows: list[CollectedFileBodyDTO], *, conn=None) -> None:
         """L2 압축 본문 레코드를 배치 업서트한다."""
         if len(body_rows) == 0:
             return
-        with connect(self._db_path) as conn:
+        owned_conn = conn is None
+        if owned_conn:
+            conn = connect(self._db_path)
+        if conn is None:
+            raise RuntimeError("conn must not be None when owned_conn is False")
+        try:
             for body_row in body_rows:
                 conn.execute(
                     """
@@ -79,7 +84,11 @@ class FileBodyRepository:
                     """,
                     body_row.to_sql_params(),
                 )
-            conn.commit()
+            if owned_conn:
+                conn.commit()
+        finally:
+            if owned_conn:
+                conn.close()
 
     def read_body_text(self, repo_root: str, relative_path: str, content_hash: str) -> str | None:
         """압축 본문을 복원하여 텍스트를 반환한다."""
@@ -138,11 +147,16 @@ class FileBodyRepository:
             )
             conn.commit()
 
-    def delete_body_many(self, targets: list[FileBodyDeleteTargetDTO]) -> None:
+    def delete_body_many(self, targets: list[FileBodyDeleteTargetDTO], *, conn=None) -> None:
         """L2 압축 본문 레코드를 배치 삭제한다."""
         if len(targets) == 0:
             return
-        with connect(self._db_path) as conn:
+        owned_conn = conn is None
+        if owned_conn:
+            conn = connect(self._db_path)
+        if conn is None:
+            raise RuntimeError("conn must not be None when owned_conn is False")
+        try:
             for target in targets:
                 conn.execute(
                     """
@@ -153,4 +167,8 @@ class FileBodyRepository:
                     """,
                     target.to_sql_params(),
                 )
-            conn.commit()
+            if owned_conn:
+                conn.commit()
+        finally:
+            if owned_conn:
+                conn.close()

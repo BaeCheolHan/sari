@@ -13,13 +13,21 @@ import threading
 
 from overrides import override
 
-from solidlsp.ls import SolidLanguageServer
+from solidlsp.ls import SolidLanguageServer, get_current_process_env_snapshot
 from solidlsp.ls_config import LanguageServerConfig
 from solidlsp.lsp_protocol_handler.lsp_types import InitializeParams, InitializeResult
 from solidlsp.lsp_protocol_handler.server import ProcessLaunchInfo
 from solidlsp.settings import SolidLSPSettings
 
 log = logging.getLogger(__name__)
+
+
+def _env_snapshot() -> dict[str, str]:
+    return get_current_process_env_snapshot()
+
+
+def _which_in_snapshot(executable_name: str) -> str | None:
+    return shutil.which(executable_name, path=_env_snapshot().get("PATH"))
 
 
 class RubyLsp(SolidLanguageServer):
@@ -82,14 +90,14 @@ class RubyLsp(SolidLanguageServer):
         if platform.system() == "Windows":
             # Try Windows-specific extensions first
             for ext in [".bat", ".cmd", ".exe"]:
-                path = shutil.which(f"{executable_name}{ext}")
+                path = _which_in_snapshot(f"{executable_name}{ext}")
                 if path:
                     return path
             # Fall back to default search
-            return shutil.which(executable_name)
+            return _which_in_snapshot(executable_name)
         else:
             # Unix systems
-            return shutil.which(executable_name)
+            return _which_in_snapshot(executable_name)
 
     @staticmethod
     def _setup_runtime_dependencies(config: LanguageServerConfig, repository_root_path: str) -> list[str]:
@@ -114,7 +122,7 @@ class RubyLsp(SolidLanguageServer):
         # - System bundler version is incompatible with Gemfile.lock
         # - Project gems aren't installed in system Ruby
         ruby_version_file = os.path.join(repository_root_path, ".ruby-version")
-        use_rbenv = os.path.exists(ruby_version_file) and shutil.which("rbenv") is not None
+        use_rbenv = os.path.exists(ruby_version_file) and _which_in_snapshot("rbenv") is not None
 
         if use_rbenv:
             ruby_cmd = ["rbenv", "exec", "ruby"]
@@ -133,7 +141,14 @@ class RubyLsp(SolidLanguageServer):
 
         # Check if Ruby is installed
         try:
-            result = subprocess.run(ruby_cmd + ["--version"], check=True, capture_output=True, cwd=repository_root_path, text=True)
+            result = subprocess.run(
+                ruby_cmd + ["--version"],
+                check=True,
+                capture_output=True,
+                cwd=repository_root_path,
+                text=True,
+                env=_env_snapshot(),
+            )
             ruby_version = result.stdout.strip()
             log.info(f"Ruby version: {ruby_version}")
 
@@ -215,7 +230,13 @@ class RubyLsp(SolidLanguageServer):
         # Try to install ruby-lsp globally
         log.info("ruby-lsp not found, attempting to install globally...")
         try:
-            subprocess.run(["gem", "install", "ruby-lsp"], check=True, capture_output=True, cwd=repository_root_path)
+            subprocess.run(
+                ["gem", "install", "ruby-lsp"],
+                check=True,
+                capture_output=True,
+                cwd=repository_root_path,
+                env=_env_snapshot(),
+            )
             log.info("Successfully installed ruby-lsp globally")
             # Find the newly installed ruby-lsp executable
             ruby_lsp_path = RubyLsp._find_executable_with_extensions("ruby-lsp")

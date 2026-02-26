@@ -467,14 +467,23 @@ class FileEnrichQueueRepository:
             conn.execute("UPDATE file_enrich_queue SET status = 'DONE' WHERE job_id = :job_id", {"job_id": job_id})
             conn.commit()
 
-    def mark_done_many(self, job_ids: list[str]) -> None:
+    def mark_done_many(self, job_ids: list[str], *, conn=None) -> None:
         """보강 작업 완료 상태를 배치로 갱신한다."""
         if len(job_ids) == 0:
             return
-        with connect(self._db_path) as conn:
+        owned_conn = conn is None
+        if owned_conn:
+            conn = connect(self._db_path)
+        if conn is None:
+            raise RuntimeError("conn must not be None when owned_conn is False")
+        try:
             for job_id in job_ids:
                 conn.execute("UPDATE file_enrich_queue SET status = 'DONE' WHERE job_id = :job_id", {"job_id": job_id})
-            conn.commit()
+            if owned_conn:
+                conn.commit()
+        finally:
+            if owned_conn:
+                conn.close()
 
     def defer_pending_jobs(self, job_ids: list[str], next_retry_at: str, defer_reason: str, now_iso: str) -> int:
         """broker defer를 PENDING + next_retry_at + defer_reason로 기록한다."""
@@ -733,11 +742,16 @@ class FileEnrichQueueRepository:
             )
             conn.commit()
 
-    def mark_failed_with_backoff_many(self, updates: list[FileEnrichFailureUpdateDTO]) -> None:
+    def mark_failed_with_backoff_many(self, updates: list[FileEnrichFailureUpdateDTO], *, conn=None) -> None:
         """보강 작업 실패 상태를 배치 백오프로 갱신한다."""
         if len(updates) == 0:
             return
-        with connect(self._db_path) as conn:
+        owned_conn = conn is None
+        if owned_conn:
+            conn = connect(self._db_path)
+        if conn is None:
+            raise RuntimeError("conn must not be None when owned_conn is False")
+        try:
             for update in updates:
                 row = conn.execute(
                     "SELECT attempt_count FROM file_enrich_queue WHERE job_id = :job_id",
@@ -771,7 +785,11 @@ class FileEnrichQueueRepository:
                         "updated_at": next_retry_at,
                     },
                 )
-            conn.commit()
+            if owned_conn:
+                conn.commit()
+        finally:
+            if owned_conn:
+                conn.close()
 
     def get_status_counts(self) -> dict[str, int]:
         """큐 상태별 개수를 반환한다."""

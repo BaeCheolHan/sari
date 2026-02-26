@@ -14,13 +14,21 @@ import threading
 
 from overrides import override
 
-from solidlsp.ls import SolidLanguageServer
+from solidlsp.ls import SolidLanguageServer, get_current_process_env_snapshot
 from solidlsp.ls_config import LanguageServerConfig
 from solidlsp.lsp_protocol_handler.lsp_types import InitializeParams
 from solidlsp.lsp_protocol_handler.server import ProcessLaunchInfo
 from solidlsp.settings import SolidLSPSettings
 
 log = logging.getLogger(__name__)
+
+
+def _env_snapshot() -> dict[str, str]:
+    return get_current_process_env_snapshot()
+
+
+def _which_in_snapshot(executable_name: str) -> str | None:
+    return shutil.which(executable_name, path=_env_snapshot().get("PATH"))
 
 
 class Solargraph(SolidLanguageServer):
@@ -77,7 +85,14 @@ class Solargraph(SolidLanguageServer):
         """
         # Check if Ruby is installed
         try:
-            result = subprocess.run(["ruby", "--version"], check=True, capture_output=True, cwd=repository_root_path, text=True)
+            result = subprocess.run(
+                ["ruby", "--version"],
+                check=True,
+                capture_output=True,
+                cwd=repository_root_path,
+                text=True,
+                env=_env_snapshot(),
+            )
             ruby_version = result.stdout.strip()
             log.info(f"Ruby version: {ruby_version}")
 
@@ -109,12 +124,12 @@ class Solargraph(SolidLanguageServer):
 
             if platform.system() == "Windows":
                 for ext in [".bat", ".cmd", ".exe"]:
-                    path = shutil.which(f"{executable_name}{ext}")
+                    path = _which_in_snapshot(f"{executable_name}{ext}")
                     if path:
                         return path
-                return shutil.which(executable_name)
+                return _which_in_snapshot(executable_name)
             else:
-                return shutil.which(executable_name)
+                return _which_in_snapshot(executable_name)
 
         # Check for Bundler project (Gemfile exists)
         gemfile_path = os.path.join(repository_root_path, "Gemfile")
@@ -185,11 +200,22 @@ class Solargraph(SolidLanguageServer):
             dependency = runtime_dependencies[0]
             try:
                 result = subprocess.run(
-                    ["gem", "list", "^solargraph$", "-i"], check=False, capture_output=True, text=True, cwd=repository_root_path
+                    ["gem", "list", "^solargraph$", "-i"],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    cwd=repository_root_path,
+                    env=_env_snapshot(),
                 )
                 if result.stdout.strip() == "false":
                     log.info("Installing Solargraph...")
-                    subprocess.run(dependency["installCommand"].split(), check=True, capture_output=True, cwd=repository_root_path)
+                    subprocess.run(
+                        dependency["installCommand"].split(),
+                        check=True,
+                        capture_output=True,
+                        cwd=repository_root_path,
+                        env=_env_snapshot(),
+                    )
 
                 return "gem exec solargraph"
             except subprocess.CalledProcessError as e:

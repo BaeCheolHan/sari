@@ -16,7 +16,7 @@ from sari.core.language.registry import resolve_language_from_path
 from sari.core.exceptions import DaemonError, ErrorContext
 from sari.lsp.runtime_broker import LspRuntimeBroker
 from sari.services.collection.perf_trace import PerfTracer
-from solidlsp.ls import SolidLanguageServer
+from solidlsp.ls import SolidLanguageServer, process_env_context
 from solidlsp.ls_config import Language, LanguageServerConfig
 from solidlsp.settings import SolidLSPSettings
 
@@ -104,7 +104,6 @@ class LspHub:
         self._interactive_timeout_count = 0
         self._interactive_rejected_count = 0
         self._runtime_broker = runtime_broker if runtime_broker is not None else LspRuntimeBroker(java_min_major=java_min_major)
-        self._environment_patch_lock = threading.RLock()
         self._start_semaphore = threading.Semaphore(max(1, int(max_concurrent_starts)))
         self._l1_probe_semaphore = threading.Semaphore(max(1, int(max_concurrent_l1_probes)))
         self._start_semaphore_wait_ms_total = 0.0
@@ -809,9 +808,7 @@ class LspHub:
 
     def _create_and_start_server(self, language: Language, repo_root: str) -> SolidLanguageServer:
         """락 밖에서 단일 LSP 서버를 생성/시작한다."""
-        # NuGet/HTTPS 다운로드가 필요한 LSP가 인증서 검증 실패로 중단되지 않도록 기본 CA 번들을 주입한다.
-        if certifi is not None:
-            os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+        self._ensure_global_ssl_cert_file_default()
         with self._perf_tracer.span(
             "create_and_start.resolve_runtime_context",
             phase="lsp_hub",
@@ -828,43 +825,45 @@ class LspHub:
         for attempt_index, attempt_env in enumerate(attempts):
             ls: SolidLanguageServer | None = None
             try:
-                with self._temporary_process_env(attempt_env):
-                    config = LanguageServerConfig(code_language=language)
-                    settings = SolidLSPSettings()
-                    settings.ls_specific_settings[language] = {
-                        "open_file_buffer_idle_ttl_sec": self._file_buffer_idle_ttl_sec,
-                        "open_file_buffer_max_open": self._file_buffer_max_open,
-                    }
-                    with self._perf_tracer.span(
-                        "create_and_start.server_create",
-                        phase="lsp_hub",
-                        language=language.value,
-                        repo_root=repo_root,
-                    ):
-                        ls = SolidLanguageServer.create(
-                            config=config,
-                            repository_root_path=repo_root,
-                            timeout=self._request_timeout_sec,
-                            solidlsp_settings=settings,
-                        )
-                    with self._perf_tracer.span(
-                        "create_and_start.server_start",
-                        phase="lsp_hub",
-                        language=language.value,
-                        repo_root=repo_root,
-                    ):
+                process_env = self._build_attempt_process_env(attempt_env)
+                config = LanguageServerConfig(code_language=language)
+                settings = SolidLSPSettings()
+                settings.ls_specific_settings[language] = {
+                    "open_file_buffer_idle_ttl_sec": self._file_buffer_idle_ttl_sec,
+                    "open_file_buffer_max_open": self._file_buffer_max_open,
+                }
+                with self._perf_tracer.span(
+                    "create_and_start.server_create",
+                    phase="lsp_hub",
+                    language=language.value,
+                    repo_root=repo_root,
+                ):
+                    ls = SolidLanguageServer.create(
+                        config=config,
+                        repository_root_path=repo_root,
+                        timeout=self._request_timeout_sec,
+                        solidlsp_settings=settings,
+                        process_env=process_env,
+                    )
+                with self._perf_tracer.span(
+                    "create_and_start.server_start",
+                    phase="lsp_hub",
+                    language=language.value,
+                    repo_root=repo_root,
+                ):
+                    with process_env_context(process_env):
                         ls.start()
-                    if not hasattr(ls, "started"):
-                        setattr(ls, "started", True)
-                    if attempt_index > 0:
-                        log.warning(
-                            "LSP auto-fallback success (language=%s, repo=%s, attempt=%d/%d)",
-                            language.value,
-                            repo_root,
-                            attempt_index + 1,
-                            len(attempts),
-                        )
-                    return ls
+                if not hasattr(ls, "started"):
+                    setattr(ls, "started", True)
+                if attempt_index > 0:
+                    log.warning(
+                        "LSP auto-fallback success (language=%s, repo=%s, attempt=%d/%d)",
+                        language.value,
+                        repo_root,
+                        attempt_index + 1,
+                        len(attempts),
+                    )
+                return ls
             except (ImportError, RuntimeError, OSError, ValueError, TypeError, AssertionError) as exc:
                 last_exc = exc
                 if ls is not None:
@@ -892,6 +891,22 @@ class LspHub:
         err_code, err_message = _classify_lsp_start_exception(exc=last_exc, language=language, repo_root=repo_root)
         raise DaemonError(ErrorContext(code=err_code, message=err_message)) from last_exc
 
+    def _ensure_global_ssl_cert_file_default(self) -> None:
+        """Python in-process HTTPS 다운로드 경로를 위해 전역 SSL_CERT_FILE 기본값을 보장한다."""
+        if certifi is None:
+            return
+        if os.environ.get("SSL_CERT_FILE", "").strip() != "":
+            return
+        os.environ["SSL_CERT_FILE"] = certifi.where()
+
+    def _build_attempt_process_env(self, env_overrides: dict[str, str]) -> dict[str, str]:
+        """LSP create/start 시도용 환경 스냅샷을 구성한다."""
+        process_env = dict(os.environ)
+        if certifi is not None and process_env.get("SSL_CERT_FILE", "").strip() == "":
+            process_env["SSL_CERT_FILE"] = certifi.where()
+        process_env.update(env_overrides)
+        return process_env
+
     def _resolve_start_attempt_envs(
         self,
         *,
@@ -913,26 +928,6 @@ class LspHub:
         retry_env["SARI_JDTLS_GRADLE_WRAPPER_FIRST"] = "0"
         attempts.append(retry_env)
         return attempts
-
-    @contextmanager
-    def _temporary_process_env(self, env_overrides: dict[str, str]):
-        """LSP 시작 구간에만 프로세스 환경을 임시 주입한다."""
-        if len(env_overrides) == 0:
-            yield
-            return
-        with self._environment_patch_lock:
-            backup: dict[str, str | None] = {}
-            for key, value in env_overrides.items():
-                backup[key] = os.environ.get(key)
-                os.environ[key] = value
-            try:
-                yield
-            finally:
-                for key, previous in backup.items():
-                    if previous is None:
-                        os.environ.pop(key, None)
-                    else:
-                        os.environ[key] = previous
 
     def _idle_cleanup_loop(self) -> None:
         """유휴 인스턴스를 주기적으로 정리한다."""
