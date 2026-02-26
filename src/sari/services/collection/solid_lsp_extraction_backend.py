@@ -22,6 +22,7 @@ from sari.lsp.path_normalizer import normalize_location_to_repo_relative, normal
 from sari.services.collection.lsp_scope_planner import LspScopePlanner
 from sari.services.collection.lsp_runtime_metrics_builder import build_runtime_metrics
 from sari.services.collection.lsp_probe_state_update_service import LspProbeStateUpdateService
+from sari.services.collection.lsp_broker_guard_service import LspBrokerGuardService
 from sari.services.collection.lsp_session_broker import LspSessionBroker
 from sari.services.collection.perf_trace import PerfTracer
 from sari.services.collection.watcher_hotness_tracker import WatcherHotnessTracker
@@ -118,6 +119,21 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
             probe_timeout_backoff_initial_sec=self._probe_timeout_backoff_initial_sec,
             probe_timeout_backoff_mid_sec=self._probe_timeout_backoff_mid_sec,
             probe_timeout_backoff_cap_sec=self._probe_timeout_backoff_cap_sec,
+        )
+        self._broker_guard_service = LspBrokerGuardService(
+            hub=self._hub,
+            perf_tracer=self._perf_tracer,
+            get_session_broker=lambda: self._session_broker,
+            is_session_broker_enabled=lambda: bool(self._session_broker_enabled),
+            get_watcher_hotness_tracker=lambda: self._watcher_hotness_tracker,
+            is_batch_broker_throughput_mode_enabled=lambda: bool(self._batch_broker_throughput_mode_enabled),
+            get_batch_broker_pending_threshold=lambda: int(self._batch_broker_pending_threshold),
+            increment_broker_guard_reject=lambda: setattr(
+                self,
+                "_broker_guard_reject_count",
+                int(getattr(self, "_broker_guard_reject_count", 0)) + 1,
+            ),
+            apply_standby_retention_touch=lambda **kwargs: self._apply_standby_retention_touch(**kwargs),
         )
         self._scope_override_lock = threading.Lock()
         self._scope_override_ttl_sec = 24 * 60 * 60.0
@@ -479,60 +495,15 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
         trace_name: str = "extract_once.get_or_start",
         trace_phase: str = "l3_extract",
     ):
-        broker = self._session_broker
-        if self._session_broker_enabled and broker is not None and self._is_profiled_broker_language(language):
-            hotness = 0.0
-            tracker = self._watcher_hotness_tracker
-            if tracker is not None:
-                try:
-                    hotness = tracker.get_scope_hotness(language=language, lsp_scope_root=runtime_scope_root)
-                except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
-                    hotness = 0.0
-            throughput_mode = (
-                self._batch_broker_throughput_mode_enabled
-                and lane.lower() == "backlog"
-                and int(pending_jobs_in_scope) >= self._batch_broker_pending_threshold
-            )
-            with broker.lease(
-                language=language,
-                lsp_scope_root=runtime_scope_root,
-                lane=lane,
-                hotness_score=hotness,
-                pending_jobs_in_scope=max(0, int(pending_jobs_in_scope)),
-                throughput_mode=throughput_mode,
-            ) as lease:
-                if not lease.granted:
-                    self._broker_guard_reject_count += 1
-                    raise RuntimeError(
-                        "ERR_LSP_BROKER_LEASE_REQUIRED: "
-                        f"lang={language.value}, scope={runtime_scope_root}, lane={lane}, reason={lease.reason}"
-                    )
-                with self._perf_tracer.span(
-                    trace_name,
-                    phase=trace_phase,
-                    repo_root=runtime_scope_root,
-                    language=language.value,
-                    request_kind=request_kind,
-                    lane=lane,
-                ):
-                    lsp = self._hub.get_or_start(language=language, repo_root=runtime_scope_root, request_kind=request_kind)
-                self._apply_standby_retention_touch(
-                    language=language,
-                    runtime_scope_root=runtime_scope_root,
-                    lane=lane_key if (lane_key := lane.lower()) else lane,
-                    hotness_score=hotness,
-                )
-                return lsp
-        with self._perf_tracer.span(
-            trace_name,
-            phase=trace_phase,
-            repo_root=runtime_scope_root,
-            language=language.value,
-            request_kind=request_kind,
+        return self._broker_guard_service.get_or_start_with_broker_guard(
+            language=language,
+            runtime_scope_root=runtime_scope_root,
             lane=lane,
-        ):
-            lsp = self._hub.get_or_start(language=language, repo_root=runtime_scope_root, request_kind=request_kind)
-        return lsp
+            pending_jobs_in_scope=pending_jobs_in_scope,
+            request_kind=request_kind,
+            trace_name=trace_name,
+            trace_phase=trace_phase,
+        )
 
     def _apply_standby_retention_touch(
         self,
@@ -572,14 +543,8 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
             return
 
     def _is_profiled_broker_language(self, language: Language) -> bool:
-        broker = self._session_broker
-        if not self._session_broker_enabled or broker is None:
-            return False
-        is_profiled = getattr(broker, "is_profiled_language", None)
-        if not callable(is_profiled):
-            return False
         try:
-            return bool(is_profiled(language))
+            return self._broker_guard_service.is_profiled_broker_language(language)
         except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
             log.debug("is_profiled_language failed for lang=%s", language.value, exc_info=True)
             return False
