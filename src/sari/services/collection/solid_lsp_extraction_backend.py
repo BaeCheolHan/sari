@@ -27,6 +27,7 @@ from sari.services.collection.lsp_runtime_mismatch_recovery_service import LspRu
 from sari.services.collection.lsp_scope_runtime_service import LspScopeRuntimeService
 from sari.services.collection.lsp_extract_error_mapper import LspExtractErrorMapper
 from sari.services.collection.lsp_symbol_normalizer_service import LspSymbolNormalizerService
+from sari.services.collection.lsp_extract_request_runner_service import LspExtractRequestRunnerService
 from sari.services.collection.lsp_session_broker import LspSessionBroker
 from sari.services.collection.perf_trace import PerfTracer
 from sari.services.collection.watcher_hotness_tracker import WatcherHotnessTracker
@@ -209,6 +210,35 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
             build_symbol_key=lambda **kwargs: self._build_symbol_key(**kwargs),
             resolve_symbol_depth=lambda symbol: self._resolve_symbol_depth(symbol),
             resolve_container_name=lambda symbol: self._resolve_container_name(symbol),
+        )
+        self._extract_request_runner_service = LspExtractRequestRunnerService(
+            resolve_language=lambda relative_path: self._hub.resolve_language(relative_path),
+            resolve_lsp_runtime_scope=lambda **kwargs: self._resolve_lsp_runtime_scope(**kwargs),
+            ensure_prewarm=lambda **kwargs: self._ensure_prewarm(**kwargs),
+            get_or_start_with_broker_guard=lambda **kwargs: self._get_or_start_with_broker_guard(**kwargs),
+            consume_l3_scope_pending_hint=lambda **kwargs: self._consume_l3_scope_pending_hint(**kwargs),
+            acquire_l1_probe_slot=lambda: self._acquire_l1_probe_slot(),
+            request_document_symbols=lambda lsp, relative_path, sync_with_ls=False: request_document_symbols_with_optional_sync(
+                lsp,
+                relative_path,
+                sync_with_ls=sync_with_ls,
+            ),
+            perf_tracer=self._perf_tracer,
+            increment_doc_sync_requested=lambda: setattr(
+                self,
+                "_document_symbol_sync_skip_requested_count",
+                int(self._document_symbol_sync_skip_requested_count) + 1,
+            ),
+            increment_doc_sync_accepted=lambda: setattr(
+                self,
+                "_document_symbol_sync_skip_accepted_count",
+                int(self._document_symbol_sync_skip_accepted_count) + 1,
+            ),
+            increment_doc_sync_legacy_fallback=lambda: setattr(
+                self,
+                "_document_symbol_sync_skip_legacy_fallback_count",
+                int(self._document_symbol_sync_skip_legacy_fallback_count) + 1,
+            ),
         )
 
     def extract(self, repo_root: str, relative_path: str, content_hash: str) -> LspExtractionResultDTO:
@@ -638,40 +668,10 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
 
     def _extract_once(self, repo_root: str, normalized_relative_path: str) -> LspExtractionResultDTO:
         try:
-            language = self._hub.resolve_language(normalized_relative_path)
-            runtime_scope_root, runtime_relative_path = self._resolve_lsp_runtime_scope(
+            language, raw_symbols = self._extract_request_runner_service.run_request(
                 repo_root=repo_root,
                 normalized_relative_path=normalized_relative_path,
-                language=language,
             )
-            with self._perf_tracer.span("extract_once.ensure_prewarm", phase="l3_extract", repo_root=runtime_scope_root, language=language.value):
-                self._ensure_prewarm(language=language, repo_root=runtime_scope_root)
-            lsp = self._get_or_start_with_broker_guard(
-                language=language,
-                runtime_scope_root=runtime_scope_root,
-                lane="backlog",
-                pending_jobs_in_scope=max(
-                    1,
-                    self._consume_l3_scope_pending_hint(language=language, runtime_scope_root=runtime_scope_root),
-                ),
-                request_kind="indexing",
-                trace_name="extract_once.get_or_start",
-                trace_phase="l3_extract",
-            )
-            with self._acquire_l1_probe_slot():
-                with self._perf_tracer.span("extract_once.document_symbol_request", phase="l3_extract", repo_root=repo_root, language=language.value):
-                    self._document_symbol_sync_skip_requested_count += 1
-                    document_symbols_result, sync_hint_accepted = request_document_symbols_with_optional_sync(
-                        lsp,
-                        runtime_relative_path,
-                        sync_with_ls=False,
-                    )
-                    if sync_hint_accepted:
-                        self._document_symbol_sync_skip_accepted_count += 1
-                    else:
-                        self._document_symbol_sync_skip_legacy_fallback_count += 1
-                    document_symbols = document_symbols_result.iter_symbols()
-                    raw_symbols = list(document_symbols)
         except SolidLSPException as exc:
             return LspExtractionResultDTO(
                 symbols=[],
