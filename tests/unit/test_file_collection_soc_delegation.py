@@ -154,6 +154,29 @@ def test_file_collection_service_delegates_to_scanner_and_worker(tmp_path: Path)
     assert processed == 5
 
 
+def test_file_collection_service_enables_l5_admission_shadow_by_default_in_release_mode(tmp_path: Path) -> None:
+    """release 모드 기본값에서는 L5 admission shadow가 켜져야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+
+    service = FileCollectionService(
+        workspace_repo=WorkspaceRepository(db_path),
+        file_repo=FileCollectionRepository(db_path),
+        enrich_queue_repo=FileEnrichQueueRepository(db_path),
+        body_repo=FileBodyRepository(db_path),
+        lsp_repo=LspToolDataRepository(db_path),
+        readiness_repo=ToolReadinessRepository(db_path),
+        policy=_policy(),
+        lsp_backend=_NoopLspBackend(),
+        run_mode="release",
+    )
+
+    status = service.get_l5_admission_status()
+
+    assert status["shadow_enabled"] is True
+    assert status["enforced"] is False
+
+
 def test_file_collection_service_delegates_watcher_and_metrics(tmp_path: Path) -> None:
     """watcher/metrics 관련 호출도 전용 컴포넌트로 위임되어야 한다."""
     db_path = tmp_path / "state.db"

@@ -192,32 +192,6 @@ class L3DecisionStage:
                 admission_decision=admission_decision,
             )
 
-        if admission_decision is not None and not admission_decision.admit_l5:
-            rejection = (
-                admission_decision.reject_reason.value
-                if admission_decision.reject_reason is not None
-                else "unknown"
-            )
-            context.state_update = EnrichStateUpdateDTO(
-                repo_root=job.repo_root,
-                relative_path=job.relative_path,
-                enrich_state="L3_SKIPPED",
-                updated_at=now_iso,
-            )
-            context.readiness_update = self._skip_eligibility.build_skipped_readiness(
-                job=job,
-                reason=f"l5_reject:{rejection}",
-                now_iso=now_iso,
-            )
-            context.done_id = job.job_id
-            return L3DecisionStageResult(
-                finished_status="DONE",
-                should_extract=False,
-                now_iso=now_iso,
-                language=language,
-                admission_decision=admission_decision,
-            )
-
         return L3DecisionStageResult(
             finished_status=None,
             should_extract=True,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from sari.core.exceptions import ValidationError
 from sari.db.repositories.file_enrich_queue_repository import FileEnrichQueueRepository
 from sari.db.repositories.pipeline_control_state_repository import PipelineControlStateRepository
 from sari.db.repositories.pipeline_job_event_repository import PipelineJobEventRepository
@@ -89,6 +90,64 @@ def test_pipeline_stage_rollout_applies_runtime_toggles(tmp_path: Path) -> None:
     assert l5_calls[-1] == (True, True)
     assert resolve_calls[-1] is False
     assert "stage_rollout:rollout_applied" in service.get_auto_control_state().last_action
+
+
+def test_pipeline_control_allows_manual_l5_admission_toggle(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    l5_calls: list[tuple[bool, bool]] = []
+    service = PipelineControlService(
+        policy_repo=PipelinePolicyRepository(db_path),
+        event_repo=PipelineJobEventRepository(db_path),
+        queue_repo=FileEnrichQueueRepository(db_path),
+        control_state_repo=PipelineControlStateRepository(db_path),
+        set_l5_admission_mode=lambda shadow_enabled, enforced: l5_calls.append((shadow_enabled, enforced)),
+    )
+
+    result = service.set_l5_admission_mode(shadow_enabled=True, enforced=False)
+
+    assert result == {"shadow_enabled": True, "enforced": False}
+    assert l5_calls == [(True, False)]
+    assert "l5_admission:set:shadow=1:enforced=0" in service.get_auto_control_state().last_action
+
+
+def test_pipeline_control_manual_l5_admission_toggle_requires_callback(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    service = PipelineControlService(
+        policy_repo=PipelinePolicyRepository(db_path),
+        event_repo=PipelineJobEventRepository(db_path),
+        queue_repo=FileEnrichQueueRepository(db_path),
+        control_state_repo=PipelineControlStateRepository(db_path),
+    )
+
+    try:
+        service.set_l5_admission_mode(shadow_enabled=True, enforced=True)
+    except ValidationError as exc:
+        assert exc.context.code == "ERR_L5_ADMISSION_CONTROL_UNAVAILABLE"
+    else:
+        raise AssertionError("expected ValidationError")
+
+
+def test_pipeline_control_manual_l5_admission_toggle_supports_keyword_only_callback(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    calls: list[tuple[bool, bool]] = []
+
+    def _keyword_only(*, shadow_enabled: bool, enforced: bool) -> None:
+        calls.append((shadow_enabled, enforced))
+
+    service = PipelineControlService(
+        policy_repo=PipelinePolicyRepository(db_path),
+        event_repo=PipelineJobEventRepository(db_path),
+        queue_repo=FileEnrichQueueRepository(db_path),
+        control_state_repo=PipelineControlStateRepository(db_path),
+        set_l5_admission_mode=_keyword_only,
+    )
+
+    service.set_l5_admission_mode(shadow_enabled=True, enforced=True)
+
+    assert calls == [(True, True)]
 
 
 def test_pipeline_stage_rollout_handles_missing_report_gracefully(tmp_path: Path) -> None:

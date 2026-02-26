@@ -16,6 +16,8 @@ from sari.http.pipeline_policy_endpoints import (
     pipeline_dead_list_endpoint,
     pipeline_dead_purge_endpoint,
     pipeline_dead_requeue_endpoint,
+    pipeline_l5_admission_get_endpoint,
+    pipeline_l5_admission_set_endpoint,
     pipeline_policy_get_endpoint,
     pipeline_policy_set_endpoint,
 )
@@ -32,6 +34,8 @@ __all__ = [
     "pipeline_dead_list_endpoint",
     "pipeline_dead_purge_endpoint",
     "pipeline_dead_requeue_endpoint",
+    "pipeline_l5_admission_get_endpoint",
+    "pipeline_l5_admission_set_endpoint",
     "pipeline_lsp_matrix_report_api_endpoint",
     "pipeline_lsp_matrix_run_api_endpoint",
     "pipeline_perf_report_api_endpoint",

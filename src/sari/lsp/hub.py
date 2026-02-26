@@ -798,7 +798,8 @@ class LspHub:
             if self._is_slot_allowed_for_kind(base_key=base_key, slot=slot, request_kind=request_kind):
                 return slot
         if request_kind == "interactive":
-            self._interactive_rejected_count += 1
+            with self._lock:
+                self._interactive_rejected_count += 1
         raise DaemonError(
             ErrorContext(
                 code="ERR_LSP_ACQUIRE_REJECTED",
@@ -887,7 +888,8 @@ class LspHub:
                     )
                     continue
                 break
-        assert last_exc is not None
+        if last_exc is None:
+            raise RuntimeError("LSP 시작 시도 목록이 비어있거나 모든 시도가 예외 없이 종료되었습니다")
         err_code, err_message = _classify_lsp_start_exception(exc=last_exc, language=language, repo_root=repo_root)
         raise DaemonError(ErrorContext(code=err_code, message=err_message)) from last_exc
 

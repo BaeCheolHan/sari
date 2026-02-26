@@ -123,7 +123,7 @@ class EnrichJobsProcessor:
                 if stat_now.st_mtime_ns != file_row.mtime_ns or stat_now.st_size != file_row.size_bytes:
                     file_hash_now = hashlib.sha256(raw_bytes).hexdigest()
                 if file_hash_now != job.content_hash:
-                    done_ids.append(job.job_id)
+                    buffers.done_ids.append(job.job_id)
                     finished_status = "DONE"
                     continue
                 decoded = decode_bytes_with_policy(raw_bytes)

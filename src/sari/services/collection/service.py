@@ -114,7 +114,8 @@ class FileCollectionService:
         self._candidate_index_sink = candidate_index_sink
         self._vector_index_sink = vector_index_sink
         self._repo_registry_repo = repo_registry_repo
-        self._run_mode = 'prod' if run_mode == 'prod' else 'dev'
+        normalized_run_mode = str(run_mode or "").strip().lower()
+        self._run_mode = "prod" if normalized_run_mode in {"prod", "production", "release"} else "dev"
         self._parent_alive_probe = parent_alive_probe
         self._persist_body_for_read = persist_body_for_read
         self._l3_parallel_enabled = bool(l3_parallel_enabled)
@@ -299,6 +300,8 @@ class FileCollectionService:
             l5_tokens_per_10sec_global_max=l5_tokens_per_10sec_global_max,
             l5_tokens_per_10sec_per_lang_max=l5_tokens_per_10sec_per_lang_max,
             l5_tokens_per_10sec_per_workspace_max=l5_tokens_per_10sec_per_workspace_max,
+            l5_admission_shadow_enabled=(self._run_mode == "prod"),
+            l5_admission_enforced=False,
             l3_query_compile_cache_enabled=l3_query_compile_cache_enabled,
             l3_query_compile_ms_budget=l3_query_compile_ms_budget,
             l3_query_budget_ms=l3_query_budget_ms,
@@ -579,6 +582,49 @@ class FileCollectionService:
             except (RuntimeError, OSError, ValueError, TypeError):
                 ...
         return merged
+
+    def get_l5_admission_status(self) -> dict[str, object]:
+        """L5 admission 모드/요약 메트릭을 반환한다."""
+        enrich_engine = getattr(self, "_enrich_engine", None)
+        if enrich_engine is None:
+            return {}
+        status: dict[str, object] = {
+            "shadow_enabled": bool(getattr(enrich_engine, "_l5_admission_shadow_enabled", False)),
+            "enforced": bool(getattr(enrich_engine, "_l5_admission_enforced", False)),
+            "limits": {
+                "call_rate_total_max": float(getattr(enrich_engine, "_l5_call_rate_total_max", 0.0)),
+                "call_rate_batch_max": float(getattr(enrich_engine, "_l5_call_rate_batch_max", 0.0)),
+                "calls_per_min_per_lang_max": int(getattr(enrich_engine, "_l5_calls_per_min_per_lang_max", 0)),
+                "tokens_per_10sec_global_max": int(getattr(enrich_engine, "_l5_tokens_per_10sec_global_max", 0)),
+                "tokens_per_10sec_per_lang_max": int(getattr(enrich_engine, "_l5_tokens_per_10sec_per_lang_max", 0)),
+                "tokens_per_10sec_per_workspace_max": int(getattr(enrich_engine, "_l5_tokens_per_10sec_per_workspace_max", 0)),
+            },
+        }
+        metrics_getter = getattr(enrich_engine, "get_runtime_metrics", None)
+        if not callable(metrics_getter):
+            status["metrics"] = {}
+            return status
+        try:
+            raw_metrics = metrics_getter()
+        except (RuntimeError, OSError, ValueError, TypeError):
+            status["metrics"] = {}
+            return status
+        metrics: dict[str, float] = {}
+        if isinstance(raw_metrics, dict):
+            allowed_prefixes = (
+                "l5_total_",
+                "l5_batch_",
+                "l5_call_rate_",
+                "l5_reject_count_by_reject_reason_",
+            )
+            for key, value in raw_metrics.items():
+                key_str = str(key)
+                if not key_str.startswith(allowed_prefixes):
+                    continue
+                if isinstance(value, (int, float)):
+                    metrics[key_str] = float(value)
+        status["metrics"] = metrics
+        return status
 
     def _l3_quality_shadow_summary_snapshot(self) -> dict[str, object]:
         """L3 AST 품질 shadow 요약 스냅샷을 반환한다 (best-effort)."""

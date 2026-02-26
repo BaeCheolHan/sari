@@ -14,11 +14,11 @@ import uvicorn
 from sari.db.repositories.daemon_registry_repository import DaemonRegistryRepository
 from sari.http.app import HttpContext, create_app
 from sari.core.config import AppConfig
-from sari.core.composition import build_lsp_hub, build_repository_bundle, build_search_stack
+from sari.core.composition import build_file_collection_service_from_config, build_lsp_hub, build_repository_bundle, build_search_stack
 from sari.core.exceptions import DaemonError, ErrorContext, PerfError, ValidationError
 from sari.core.models import now_iso8601_utc
 from sari.services.admin import AdminService
-from sari.services.collection.service import SolidLspExtractionBackend, build_default_file_collection_service
+from sari.services.collection.service import SolidLspExtractionBackend
 from sari.services.pipeline.control_service import PipelineControlService
 from sari.services.pipeline.perf_service import PipelinePerfService
 from sari.services.language_probe.service import LanguageProbeService
@@ -116,26 +116,9 @@ def main() -> None:
     )
     detached_mode = os.getenv("SARI_DAEMON_DETACHED", "").strip().lower() in {"1", "true", "yes", "on"}
 
-    file_collection_service = build_default_file_collection_service(
-        workspace_repo=workspace_repo,
-        file_repo=file_repo,
-        enrich_queue_repo=enrich_queue_repo,
-        body_repo=body_repo,
-        lsp_repo=lsp_repo,
-        readiness_repo=readiness_repo,
-        policy_repo=policy_repo,
-        event_repo=event_repo,
-        error_event_repo=error_event_repo,
-        candidate_index_sink=candidate_service,
-        vector_index_sink=vector_sink,
-        retry_max_attempts=collection_config.pipeline_retry_max,
-        retry_backoff_base_sec=collection_config.pipeline_backoff_base_sec,
-        queue_poll_interval_ms=collection_config.queue_poll_interval_ms,
-        include_ext=collection_config.include_ext,
-        exclude_globs=collection_config.exclude_globs,
-        watcher_debounce_ms=collection_config.watcher_debounce_ms,
-        run_mode=config.run_mode,
-        parent_alive_probe=(lambda: _is_parent_alive(launch_parent_pid, detached_mode=detached_mode)),
+    file_collection_service = build_file_collection_service_from_config(
+        config=config,
+        repos=repos,
         lsp_backend=SolidLspExtractionBackend(
             lsp_hub,
             probe_workers=config.lsp_probe_workers,
@@ -145,65 +128,12 @@ def main() -> None:
             warming_threshold=config.lsp_probe_warming_threshold,
             permanent_backoff_sec=config.lsp_probe_permanent_backoff_sec,
         ),
-        l3_parallel_enabled=config.l3_parallel_enabled,
-        l3_executor_max_workers=config.l3_executor_max_workers,
-        l3_recent_success_ttl_sec=config.l3_recent_success_ttl_sec,
-        l3_backpressure_on_interactive=config.l3_backpressure_on_interactive,
-        l3_backpressure_cooldown_ms=config.l3_backpressure_cooldown_ms,
-        l3_supported_languages=config.l3_supported_languages,
-        lsp_probe_bootstrap_file_window=config.lsp_probe_bootstrap_file_window,
-        lsp_probe_bootstrap_top_k=config.lsp_probe_bootstrap_top_k,
-        lsp_probe_language_priority=config.lsp_probe_language_priority,
-        lsp_probe_l1_languages=config.lsp_probe_l1_languages,
-        lsp_scope_planner_enabled=config.lsp_scope_planner_enabled,
-        lsp_scope_planner_shadow_mode=config.lsp_scope_planner_shadow_mode,
-        lsp_scope_java_markers=config.lsp_scope_java_markers,
-        lsp_scope_ts_markers=config.lsp_scope_ts_markers,
-        lsp_scope_vue_markers=config.lsp_scope_vue_markers,
-        lsp_scope_top_level_fallback=config.lsp_scope_top_level_fallback,
-        lsp_scope_active_languages=config.lsp_scope_active_languages,
-        lsp_session_broker_enabled=config.lsp_session_broker_enabled,
-        lsp_session_broker_metrics_enabled=config.lsp_session_broker_metrics_enabled,
-        lsp_broker_optional_scaffolding_enabled=config.lsp_broker_optional_scaffolding_enabled,
-        lsp_broker_batch_throughput_mode_enabled=config.lsp_broker_batch_throughput_mode_enabled,
-        lsp_broker_batch_throughput_pending_threshold=config.lsp_broker_batch_throughput_pending_threshold,
-        lsp_broker_batch_disable_java_probe=config.lsp_broker_batch_disable_java_probe,
-        lsp_hotness_event_window_sec=config.lsp_hotness_event_window_sec,
-        lsp_hotness_decay_window_sec=config.lsp_hotness_decay_window_sec,
-        lsp_broker_backlog_min_share=config.lsp_broker_backlog_min_share,
-        lsp_broker_max_standby_sessions_per_lang=config.lsp_broker_max_standby_sessions_per_lang,
-        lsp_broker_max_standby_sessions_per_budget_group=config.lsp_broker_max_standby_sessions_per_budget_group,
-        lsp_broker_ts_vue_active_cap=config.lsp_broker_ts_vue_active_cap,
-        lsp_broker_java_hot_lanes=config.lsp_broker_java_hot_lanes,
-        lsp_broker_java_backlog_lanes=config.lsp_broker_java_backlog_lanes,
-        lsp_broker_java_sticky_ttl_sec=config.lsp_broker_java_sticky_ttl_sec,
-        lsp_broker_java_switch_cooldown_sec=config.lsp_broker_java_switch_cooldown_sec,
-        lsp_broker_java_min_lease_ms=config.lsp_broker_java_min_lease_ms,
-        lsp_broker_ts_hot_lanes=config.lsp_broker_ts_hot_lanes,
-        lsp_broker_ts_backlog_lanes=config.lsp_broker_ts_backlog_lanes,
-        lsp_broker_ts_sticky_ttl_sec=config.lsp_broker_ts_sticky_ttl_sec,
-        lsp_broker_ts_switch_cooldown_sec=config.lsp_broker_ts_switch_cooldown_sec,
-        lsp_broker_ts_min_lease_ms=config.lsp_broker_ts_min_lease_ms,
-        lsp_broker_vue_hot_lanes=config.lsp_broker_vue_hot_lanes,
-        lsp_broker_vue_backlog_lanes=config.lsp_broker_vue_backlog_lanes,
-        lsp_broker_vue_sticky_ttl_sec=config.lsp_broker_vue_sticky_ttl_sec,
-        lsp_broker_vue_switch_cooldown_sec=config.lsp_broker_vue_switch_cooldown_sec,
-        lsp_broker_vue_min_lease_ms=config.lsp_broker_vue_min_lease_ms,
-        l5_call_rate_total_max=config.l5_call_rate_total_max,
-        l5_call_rate_batch_max=config.l5_call_rate_batch_max,
-        l5_calls_per_min_per_lang_max=config.l5_calls_per_min_per_lang_max,
-        l5_tokens_per_10sec_global_max=config.l5_tokens_per_10sec_global_max,
-        l5_tokens_per_10sec_per_lang_max=config.l5_tokens_per_10sec_per_lang_max,
-        l5_tokens_per_10sec_per_workspace_max=config.l5_tokens_per_10sec_per_workspace_max,
-        l3_query_compile_cache_enabled=config.l3_query_compile_cache_enabled,
-        l3_query_compile_ms_budget=config.l3_query_compile_ms_budget,
-        l3_query_budget_ms=config.l3_query_budget_ms,
-        l3_asset_mode=config.l3_asset_mode,
-        l3_asset_lang_allowlist=config.l3_asset_lang_allowlist,
-        l5_db_short_circuit_enabled=config.l5_db_short_circuit_enabled,
-        l5_db_short_circuit_log_miss_reason=config.l5_db_short_circuit_log_miss_reason,
-        tool_layer_repo=tool_layer_repo,
+        run_mode=config.run_mode,
+        parent_alive_probe=(lambda: _is_parent_alive(launch_parent_pid, detached_mode=detached_mode)),
+        candidate_index_sink=candidate_service,
+        vector_index_sink=vector_sink,
     )
+
     runtime_search_defaults: dict[str, bool] = {"resolve_symbols_default": False}
 
     def _set_search_resolve_symbols_default(enabled: bool) -> None:

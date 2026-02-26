@@ -209,6 +209,19 @@ class PipelineControlService:
         action = "auto_enabled" if enabled else "auto_disabled"
         return self._control_state_repo.update_state(auto_hold_enabled=enabled, last_action=action)
 
+    def set_l5_admission_mode(self, *, shadow_enabled: bool, enforced: bool) -> dict[str, bool]:
+        """L5 admission 런타임 모드를 수동으로 설정한다."""
+        if self._set_l5_admission_mode is None:
+            raise ValidationError(
+                ErrorContext(code="ERR_L5_ADMISSION_CONTROL_UNAVAILABLE", message="l5 admission runtime control is unavailable")
+            )
+        self._set_l5_admission_mode(shadow_enabled=bool(shadow_enabled), enforced=bool(enforced))
+        self._last_l5_admission_enforced = bool(enforced)
+        self._control_state_repo.update_state(
+            last_action=f"l5_admission:set:shadow={int(bool(shadow_enabled))}:enforced={int(bool(enforced))}"
+        )
+        return {"shadow_enabled": bool(shadow_enabled), "enforced": bool(enforced)}
+
     def evaluate_auto_hold(self, now_iso: str | None = None) -> dict[str, object]:
         """알람 상태를 기반으로 hold 자동 제어를 수행한다."""
         state = self._control_state_repo.get_state()

@@ -13,6 +13,7 @@ from sari.db.repositories.file_collection_repository import FileCollectionReposi
 from sari.db.repositories.lsp_tool_data_repository import LspToolDataRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.core.models import WorkspaceDTO
+from sari.core.models import PipelineMetricsDTO
 from sari.db.schema import init_schema
 from sari.db.schema import connect
 from sari.http.app import HttpContext, status_endpoint
@@ -34,6 +35,25 @@ class _AdminServiceStub:
     def get_runtime_reconcile_state(self) -> dict[str, object]:
         """마지막 reconcile 상태를 반환한다."""
         return {"reconcile_last_run_ts": None, "reconcile_last_result": None}
+
+
+class _FileCollectionServiceStub:
+    def get_pipeline_metrics(self) -> PipelineMetricsDTO:
+        return PipelineMetricsDTO(queue_depth=0, running_jobs=0, failed_jobs=0, dead_jobs=0, done_jobs=0, avg_enrich_latency_ms=0.0)
+
+    def get_l5_admission_status(self) -> dict[str, object]:
+        return {
+            "shadow_enabled": True,
+            "enforced": False,
+            "limits": {"call_rate_total_max": 0.05, "call_rate_batch_max": 0.01},
+            "metrics": {
+                "l5_total_decisions": 100.0,
+                "l5_total_admitted": 4.0,
+                "l5_batch_decisions": 80.0,
+                "l5_batch_admitted": 1.0,
+                "l5_reject_count_by_reject_reason_mode_not_allowed": 70.0,
+            },
+        }
 
 
 def _build_pipeline_control_service(db_path: Path) -> PipelineControlService:
@@ -64,6 +84,7 @@ def test_http_status_exposes_language_readiness_snapshot(tmp_path: Path) -> None
         workspace_repo=WorkspaceRepository(db_path),
         search_orchestrator=SimpleNamespace(),
         admin_service=_AdminServiceStub(),
+        file_collection_service=_FileCollectionServiceStub(),
         pipeline_control_service=_build_pipeline_control_service(db_path),
         language_probe_repo=probe_repo,
     )
@@ -86,6 +107,9 @@ def test_http_status_exposes_language_readiness_snapshot(tmp_path: Path) -> None
     assert first["last_error_message"] == "pyright not installed"
     assert "stage_rollout" in payload
     assert isinstance(payload["stage_rollout"], dict)
+    assert payload["l5_admission"]["shadow_enabled"] is True
+    assert payload["l5_admission"]["enforced"] is False
+    assert payload["l5_admission"]["metrics"]["l5_total_admitted"] == 4.0
 
 
 def test_mcp_status_exposes_language_readiness_snapshot(tmp_path: Path) -> None:

@@ -26,9 +26,19 @@ async def status_endpoint(request) -> JSONResponse:
     reconcile_state = context.admin_service.get_runtime_reconcile_state()
     auto_control = None
     stage_rollout = None
+    l5_admission = None
     if context.pipeline_control_service is not None:
         auto_control = context.pipeline_control_service.get_auto_control_state().to_dict()
         stage_rollout = context.pipeline_control_service.get_stage_rollout_state()
+    if context.file_collection_service is not None:
+        l5_status_getter = getattr(context.file_collection_service, "get_l5_admission_status", None)
+        if callable(l5_status_getter):
+            try:
+                payload = l5_status_getter()
+                if isinstance(payload, dict):
+                    l5_admission = payload
+            except (RuntimeError, OSError, ValueError, TypeError):
+                l5_admission = None
     if runtime is None:
         metrics = None
         if context.file_collection_service is not None:
@@ -46,6 +56,7 @@ async def status_endpoint(request) -> JSONResponse:
                 "reconcile_state": reconcile_state,
                 "auto_control": auto_control,
                 "stage_rollout": stage_rollout,
+                "l5_admission": l5_admission,
             }
         )
     metrics = None
@@ -77,6 +88,7 @@ async def status_endpoint(request) -> JSONResponse:
             "reconcile_state": reconcile_state,
             "auto_control": auto_control,
             "stage_rollout": stage_rollout,
+            "l5_admission": l5_admission,
         }
     )
 

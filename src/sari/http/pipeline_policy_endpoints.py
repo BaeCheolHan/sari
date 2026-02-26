@@ -181,6 +181,64 @@ async def pipeline_auto_status_endpoint(request) -> JSONResponse:
     )
 
 
+async def pipeline_l5_admission_get_endpoint(request) -> JSONResponse:
+    context: HttpContext = request.app.state.context
+    service, error = pipeline_control_or_error(context)
+    if error is not None:
+        return error
+    payload = None
+    if context.file_collection_service is not None:
+        getter = getattr(context.file_collection_service, "get_l5_admission_status", None)
+        if callable(getter):
+            try:
+                raw = getter()
+                if isinstance(raw, dict):
+                    payload = raw
+            except (RuntimeError, OSError, ValueError, TypeError):
+                payload = None
+    return JSONResponse({"l5_admission": payload, "stage_rollout": service.get_stage_rollout_state()})
+
+
+async def pipeline_l5_admission_set_endpoint(request) -> JSONResponse:
+    context: HttpContext = request.app.state.context
+    service, error = pipeline_control_or_error(context)
+    if error is not None:
+        return error
+    shadow_enabled, shadow_error = parse_optional_onoff_bool(
+        raw_value=str(request.query_params.get("shadow_enabled", "")),
+        field_name="shadow_enabled",
+    )
+    if shadow_error is not None:
+        return shadow_error
+    enforced, enforced_error = parse_optional_onoff_bool(
+        raw_value=str(request.query_params.get("enforced", "")),
+        field_name="enforced",
+    )
+    if enforced_error is not None:
+        return enforced_error
+    if shadow_enabled is None or enforced is None:
+        return error_response(
+            code="ERR_POLICY_INVALID",
+            message="shadow_enabled와 enforced는 on/off로 모두 지정해야 합니다",
+            status_code=400,
+        )
+    try:
+        result = service.set_l5_admission_mode(shadow_enabled=shadow_enabled, enforced=enforced)
+    except ValidationError as exc:
+        return validation_error_response(exc)
+    payload = None
+    if context.file_collection_service is not None:
+        getter = getattr(context.file_collection_service, "get_l5_admission_status", None)
+        if callable(getter):
+            try:
+                raw = getter()
+                if isinstance(raw, dict):
+                    payload = raw
+            except (RuntimeError, OSError, ValueError, TypeError):
+                payload = None
+    return JSONResponse({"result": result, "l5_admission": payload})
+
+
 async def pipeline_auto_set_endpoint(request) -> JSONResponse:
     context: HttpContext = request.app.state.context
     service, error = pipeline_control_or_error(context)

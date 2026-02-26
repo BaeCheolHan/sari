@@ -148,7 +148,7 @@ def test_decision_stage_allows_extract_when_admitted_and_not_l3_only() -> None:
     assert out.should_extract is True
 
 
-def test_decision_stage_reject_without_enforce_marks_done_skip() -> None:
+def test_decision_stage_reject_without_enforce_keeps_extract_path_for_shadow_mode() -> None:
     decision = L4AdmissionDecisionDTO(
         admit_l5=False,
         reason_code=None,
@@ -165,7 +165,20 @@ def test_decision_stage_reject_without_enforce_marks_done_skip() -> None:
         now_iso_supplier=lambda: "2026-01-01T00:00:00Z",
         admission_enforced=False,
     )
-    out = stage.evaluate(context=context, job=_job(), preprocess_result=None)
-    assert out.finished_status == "DONE"
-    assert out.should_extract is False
-    assert context.done_id == "j1"
+    out = stage.evaluate(
+        context=context,
+        job=_job(),
+        preprocess_result=L3PreprocessResultDTO(
+            symbols=[],
+            degraded=False,
+            decision=L3PreprocessDecision.NEEDS_L5,
+            source="tree_sitter",
+            reason="needs_l5",
+        ),
+    )
+
+    # Shadow mode should record the admission decision but must not block extraction.
+    assert out.finished_status is None
+    assert out.should_extract is True
+    assert out.admission_decision is decision
+    assert context.done_id is None
