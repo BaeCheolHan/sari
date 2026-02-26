@@ -32,6 +32,7 @@ from sari.services.collection.l3_treesitter_preprocess_service import L3TreeSitt
 from sari.services.collection.l4_admission_service import L4AdmissionService
 from sari.services.collection.l5_admission_policy import L5AdmissionPolicy, L5AdmissionPolicyConfig, TokenBucket
 from sari.services.collection.l5_admission_runtime_service import L5AdmissionRuntimeService
+from sari.services.collection.l5_runtime_stats_service import L5RuntimeStatsService
 from sari.services.collection.layer_upsert_builder import LayerUpsertBuilder
 
 if TYPE_CHECKING:
@@ -76,6 +77,7 @@ def wire_engine_services(
         lsp_backend=engine._lsp_backend,
         monotonic_now=time.monotonic,
     )
+    engine._l5_runtime_stats_service = L5RuntimeStatsService()
     configured_l3_asset_mode = os.getenv("SARI_L3_ASSET_MODE", l3_asset_mode).strip().lower()
     if configured_l3_asset_mode not in {"shadow", "gate", "apply"}:
         configured_l3_asset_mode = "shadow"

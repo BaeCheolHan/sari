@@ -23,6 +23,7 @@ from sari.services.collection.l5_admission_runtime_service import (
     L5AdmissionRuntimeState,
 )
 from sari.services.collection.l5_default_policy_builder import build_default_language_policy_map
+from sari.services.collection.l5_runtime_stats_service import L5RuntimeStatsService
 from sari.db.repositories.tool_data_layer_repository import ToolDataLayerRepository
 from sari.services.collection.error_policy import CollectionErrorPolicy
 from sari.services.collection.l3_asset_loader import L3AssetLoader
@@ -182,17 +183,18 @@ class EnrichEngine:
         """백그라운드 시작 시 엔진 상태를 초기화한다."""
         self._bootstrap_started_at = time.monotonic()
         self._indexing_mode = "steady"
-        self._l5_total_decisions = 0
-        self._l5_total_admitted = 0
-        self._l5_batch_decisions = 0
-        self._l5_batch_admitted = 0
-        for reason in self._l5_reject_counts_by_reason:
-            self._l5_reject_counts_by_reason[reason] = 0
-        self._l5_cost_units_by_reason.clear()
-        self._l5_cost_units_by_language.clear()
-        self._l5_cost_units_by_workspace.clear()
-        self._l5_admitted_timestamps_by_lang.clear()
-        self._l5_cooldown_until_by_scope_file.clear()
+        reset = self._get_or_init_l5_runtime_stats_service().reset_runtime_state(
+            reject_counts=self._l5_reject_counts_by_reason,
+            cost_units_by_reason=self._l5_cost_units_by_reason,
+            cost_units_by_language=self._l5_cost_units_by_language,
+            cost_units_by_workspace=self._l5_cost_units_by_workspace,
+            admitted_timestamps_by_lang=self._l5_admitted_timestamps_by_lang,
+            cooldown_until_by_scope_file=self._l5_cooldown_until_by_scope_file,
+        )
+        self._l5_total_decisions = int(reset["l5_total_decisions"])
+        self._l5_total_admitted = int(reset["l5_total_admitted"])
+        self._l5_batch_decisions = int(reset["l5_batch_decisions"])
+        self._l5_batch_admitted = int(reset["l5_batch_admitted"])
 
     def get_runtime_metrics(self) -> dict[str, float]:
         """L4/L5 admission 관련 런타임 메트릭을 반환한다."""
@@ -200,33 +202,16 @@ class EnrichEngine:
         cost_by_reason = self._get_or_init_l5_cost_units_by_reason()
         cost_by_language = self._get_or_init_l5_cost_units_by_language()
         cost_by_workspace = self._get_or_init_l5_cost_units_by_workspace()
-        total_rate = (
-            0.0
-            if self._l5_total_decisions <= 0
-            else float(self._l5_total_admitted) / float(self._l5_total_decisions)
+        return self._get_or_init_l5_runtime_stats_service().build_metrics(
+            total_decisions=int(self._l5_total_decisions),
+            total_admitted=int(self._l5_total_admitted),
+            batch_decisions=int(self._l5_batch_decisions),
+            batch_admitted=int(self._l5_batch_admitted),
+            reject_counts=reject_counts,
+            cost_units_by_reason=cost_by_reason,
+            cost_units_by_language=cost_by_language,
+            cost_units_by_workspace=cost_by_workspace,
         )
-        batch_rate = (
-            0.0
-            if self._l5_batch_decisions <= 0
-            else float(self._l5_batch_admitted) / float(self._l5_batch_decisions)
-        )
-        metrics = {
-            "l5_total_decisions": float(self._l5_total_decisions),
-            "l5_total_admitted": float(self._l5_total_admitted),
-            "l5_batch_decisions": float(self._l5_batch_decisions),
-            "l5_batch_admitted": float(self._l5_batch_admitted),
-            "l5_call_rate_total_pct": total_rate * 100.0,
-            "l5_call_rate_batch_pct": batch_rate * 100.0,
-        }
-        for reason, count in reject_counts.items():
-            metrics[f"l5_reject_count_by_reject_reason_{reason.value}"] = float(count)
-        for reason_key, cost_units in cost_by_reason.items():
-            metrics[f"l5_cost_units_total_by_reason_{reason_key}"] = float(cost_units)
-        for language_key, cost_units in cost_by_language.items():
-            metrics[f"l5_cost_units_total_by_language_{language_key}"] = float(cost_units)
-        for workspace_key, cost_units in cost_by_workspace.items():
-            metrics[f"l5_cost_units_total_by_workspace_{workspace_key}"] = float(cost_units)
-        return metrics
 
     def get_l3_quality_shadow_summary(self) -> dict[str, object]:
         """L3 AST 품질 shadow 비교 요약을 반환한다 (Phase A, metrics-only)."""
@@ -634,6 +619,14 @@ class EnrichEngine:
             last_ts=time.monotonic(),
         )
         self._l5_workspace_buckets[workspace_uid] = created
+        return created
+
+    def _get_or_init_l5_runtime_stats_service(self) -> L5RuntimeStatsService:
+        existing = getattr(self, "_l5_runtime_stats_service", None)
+        if isinstance(existing, L5RuntimeStatsService):
+            return existing
+        created = L5RuntimeStatsService()
+        self._l5_runtime_stats_service = created
         return created
 
     def _build_l3_layer_upsert(
