@@ -123,8 +123,20 @@ class TreeSitterOutlineExtractor:
             (class_declaration name: (identifier) @name) @symbol.class
             (function_declaration name: (identifier) @name) @symbol.function
             (method_definition name: (property_identifier) @name) @symbol.method
-            (lexical_declaration (variable_declarator name: (identifier) @name) @symbol.field)
-            (variable_declaration (variable_declarator name: (identifier) @name) @symbol.field)
+            (lexical_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)])) @definition.function
+            (variable_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)])) @definition.function
+            (assignment_expression left: (identifier) @definition.function right: [(arrow_function) (function_expression)])
+            (assignment_expression left: (member_expression property: (property_identifier) @definition.function) right: [(arrow_function) (function_expression)])
+            (pair key: (property_identifier) @name value: [(arrow_function) (function_expression)]) @definition.function
+            (call_expression function: (identifier) @definition.function arguments: (arguments [(arrow_function) (function_expression)]))
+            (call_expression function: (member_expression property: (property_identifier) @definition.function) arguments: (arguments [(arrow_function) (function_expression)]))
+            (pair key: (property_identifier) @symbol.field)
+            (pair key: (string) @symbol.field)
+            (pair key: (computed_property_name) @symbol.field)
+            (shorthand_property_identifier) @symbol.field
+            (shorthand_property_identifier_pattern) @symbol.field
+            (variable_declarator name: (identifier) @name) @symbol.field
+            (catch_clause parameter: (identifier) @symbol.variable)
         """,
         "java": """
             (package_declaration (scoped_identifier) @name) @symbol.module
@@ -140,15 +152,12 @@ class TreeSitterOutlineExtractor:
             (enum_constant name: (identifier) @name) @symbol.enum_constant
         """,
         "kotlin": """
-            (class_declaration name: (type_identifier) @name) @symbol.class
-            (object_declaration name: (type_identifier) @name) @symbol.class
-            (type_alias name: (type_identifier) @name) @symbol.class
-            (class_declaration (primary_constructor (class_parameter (simple_identifier) @name) @symbol.field))
-            (source_file (function_declaration name: (simple_identifier) @name) @symbol.function)
-            (source_file (property_declaration (variable_declaration (simple_identifier) @name)) @symbol.field)
-            (class_body (function_declaration name: (simple_identifier) @name) @symbol.method)
-            (class_body (secondary_constructor) @symbol.method)
-            (class_body (property_declaration (variable_declaration (simple_identifier) @name)) @symbol.field)
+            (class_declaration (identifier) @name) @symbol.class
+            (class_parameter (identifier) @name) @symbol.field
+            (source_file (function_declaration name: (identifier) @name) @symbol.function)
+            (source_file (property_declaration (variable_declaration (identifier) @name) @symbol.field))
+            (class_body (function_declaration name: (identifier) @name) @symbol.method)
+            (class_body (property_declaration (variable_declaration (identifier) @name) @symbol.field))
         """,
         "scala": """
             (package_clause (package_identifier) @name) @symbol.module

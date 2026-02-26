@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from sari.core.models import L5ReasonCode, L5RequestMode
-from sari.services.collection.l5_admission_policy import LanguageL5Policy
+from sari.services.collection.l5.l5_admission_policy import LanguageL5Policy
 
 
 def build_default_language_policy_map(enabled_language_names: Iterable[str]) -> dict[str, LanguageL5Policy]:

@@ -7,7 +7,7 @@ import logging
 from solidlsp.ls_config import Language
 
 from sari.core.exceptions import DaemonError
-from sari.services.collection.solid_lsp_probe_mixin import _ProbeStateRecord
+from sari.services.collection.l5.solid_lsp_probe_mixin import _ProbeStateRecord
 
 log = logging.getLogger(__name__)
 

@@ -19,21 +19,21 @@ from sari.core.language_registry import resolve_language_from_path
 from sari.lsp.document_symbols import request_document_symbols_with_optional_sync
 from sari.lsp.hub import LspHub
 from sari.lsp.path_normalizer import normalize_location_to_repo_relative, normalize_repo_relative_path
-from sari.services.collection.lsp_scope_planner import LspScopePlanner
-from sari.services.collection.lsp_runtime_metrics_builder import build_runtime_metrics
-from sari.services.collection.lsp_probe_state_update_service import LspProbeStateUpdateService
-from sari.services.collection.lsp_broker_guard_service import LspBrokerGuardService
-from sari.services.collection.lsp_runtime_mismatch_recovery_service import LspRuntimeMismatchRecoveryService
-from sari.services.collection.lsp_scope_runtime_service import LspScopeRuntimeService
-from sari.services.collection.lsp_extract_error_mapper import LspExtractErrorMapper
-from sari.services.collection.lsp_symbol_normalizer_service import LspSymbolNormalizerService
-from sari.services.collection.lsp_extract_request_runner_service import LspExtractRequestRunnerService
-from sari.services.collection.lsp_standby_retention_service import LspStandbyRetentionService
-from sari.services.collection.lsp_parallelism_service import LspParallelismService
-from sari.services.collection.lsp_session_broker import LspSessionBroker
+from sari.services.collection.l5.lsp.scope_planner import LspScopePlanner
+from sari.services.collection.l5.lsp.runtime_metrics_builder import build_runtime_metrics
+from sari.services.collection.l5.lsp.probe_state_update_service import LspProbeStateUpdateService
+from sari.services.collection.l5.lsp.broker_guard_service import LspBrokerGuardService
+from sari.services.collection.l5.lsp.runtime_mismatch_recovery_service import LspRuntimeMismatchRecoveryService
+from sari.services.collection.l5.lsp.scope_runtime_service import LspScopeRuntimeService
+from sari.services.collection.l5.lsp.extract_error_mapper import LspExtractErrorMapper
+from sari.services.collection.l5.lsp.symbol_normalizer_service import LspSymbolNormalizerService
+from sari.services.collection.l5.lsp.extract_request_runner_service import LspExtractRequestRunnerService
+from sari.services.collection.l5.lsp.standby_retention_service import LspStandbyRetentionService
+from sari.services.collection.l5.lsp.parallelism_service import LspParallelismService
+from sari.services.collection.l5.lsp.session_broker import LspSessionBroker
 from sari.services.collection.perf_trace import PerfTracer
-from sari.services.collection.watcher_hotness_tracker import WatcherHotnessTracker
-from sari.services.collection.solid_lsp_probe_mixin import (
+from sari.services.collection.l1.watcher_hotness_tracker import WatcherHotnessTracker
+from sari.services.collection.l5.solid_lsp_probe_mixin import (
     SolidLspProbeMixin,
     _ProbeStateRecord,
     _extract_error_code_from_message,

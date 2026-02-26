@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from sari.core.models import FileEnrichJobDTO
-from sari.services.collection.l3_failure_classifier import (
+from sari.services.collection.l3.l3_failure_classifier import (
     broker_defer_delay_seconds_for_reason,
     extract_broker_lease_reason_from_l3_error,
     extract_error_code_from_lsp_error_message,

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from sari.core.models import L4AdmissionDecisionDTO, L5ReasonCode
-from sari.services.collection.l3_treesitter_preprocess_service import L3PreprocessDecision, L3PreprocessResultDTO
+from sari.services.collection.l3.l3_treesitter_preprocess_service import L3PreprocessDecision, L3PreprocessResultDTO
 
 
 class LayerUpsertBuilder:

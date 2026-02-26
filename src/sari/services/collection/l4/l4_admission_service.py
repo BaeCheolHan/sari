@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 
 from sari.core.models import L4AdmissionDecisionDTO, L5ReasonCode, L5RequestMode
-from sari.services.collection.l5_admission_policy import L5AdmissionInput, L5AdmissionPolicy, normalize_workspace_uid
+from sari.services.collection.l5.l5_admission_policy import L5AdmissionInput, L5AdmissionPolicy, normalize_workspace_uid
 
 
 class L4AdmissionService:

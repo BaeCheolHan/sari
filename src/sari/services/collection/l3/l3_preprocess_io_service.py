@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 from sari.core.models import FileEnrichJobDTO
-from sari.services.collection.l3_treesitter_preprocess_service import (
+from sari.services.collection.l3.l3_treesitter_preprocess_service import (
     L3PreprocessDecision,
     L3PreprocessResultDTO,
 )

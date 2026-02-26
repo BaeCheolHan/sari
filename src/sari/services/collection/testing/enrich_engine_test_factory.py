@@ -7,8 +7,8 @@ from solidlsp.ls_config import Language
 from sari.core.models import FileEnrichJobDTO, now_iso8601_utc
 from sari.services.collection.enrich_engine import EnrichEngine
 from sari.services.collection.enrich_result_dto import _L3JobResultDTO
-from sari.services.collection.l3_failure_classifier import classify_l3_extract_failure_kind
-from sari.services.collection.l3_orchestrator import L3Orchestrator
+from sari.services.collection.l3.l3_failure_classifier import classify_l3_extract_failure_kind
+from sari.services.collection.l3.l3_orchestrator import L3Orchestrator
 from sari.services.collection.perf_trace import PerfTracer
 
 

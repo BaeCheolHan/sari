@@ -11,29 +11,29 @@ from sari.services.collection.enrich_flush_coordinator import EnrichFlushCoordin
 from sari.services.collection.enrich_jobs_processor import EnrichJobsProcessor as _EnrichJobsProcessor
 from sari.services.collection.enrich_processor_deps import EnrichProcessorDeps
 from sari.services.collection.enrich_result_dto import _L3JobResultDTO
-from sari.services.collection.l2_job_processor import L2JobProcessor as _L2JobProcessor
-from sari.services.collection.l3_broker_admission_service import L3BrokerAdmissionService
-from sari.services.collection.l3_degraded_fallback_service import L3DegradedFallbackService
-from sari.services.collection.l3_error_handling_service import L3ErrorHandlingService
-from sari.services.collection.l3_flush_coordinator import L3FlushCoordinator as _L3FlushCoordinator
-from sari.services.collection.l3_group_processor import L3GroupProcessor as _L3GroupProcessor
-from sari.services.collection.l3_orchestrator import L3Orchestrator
-from sari.services.collection.l3_persist_service import L3PersistService
-from sari.services.collection.l3_quality_evaluation_service import L3QualityEvaluationService
-from sari.services.collection.l3_queue_transition_service import L3QueueTransitionService
-from sari.services.collection.l3_result_merger import L3ResultMerger as _L3ResultMerger
-from sari.services.collection.l3_runtime_coordination_service import L3RuntimeCoordinationService
-from sari.services.collection.l3_scheduling_service import L3SchedulingService
-from sari.services.collection.l3_preprocess_io_service import L3PreprocessIoService
-from sari.services.collection.l3_scope_resolution_service import L3ScopeResolutionService
-from sari.services.collection.l3_skip_eligibility_service import L3SkipEligibilityService
-from sari.services.collection.l3_skip_runtime_service import L3SkipRuntimeService
-from sari.services.collection.l3_timeout_failure_builder import L3TimeoutFailureBuilder as _L3TimeoutFailureBuilder
-from sari.services.collection.l3_treesitter_preprocess_service import L3TreeSitterPreprocessService
-from sari.services.collection.l4_admission_service import L4AdmissionService
-from sari.services.collection.l5_admission_policy import L5AdmissionPolicy, L5AdmissionPolicyConfig, TokenBucket
-from sari.services.collection.l5_admission_runtime_service import L5AdmissionRuntimeService
-from sari.services.collection.l5_runtime_stats_service import L5RuntimeStatsService
+from sari.services.collection.l2.l2_job_processor import L2JobProcessor as _L2JobProcessor
+from sari.services.collection.l3.l3_broker_admission_service import L3BrokerAdmissionService
+from sari.services.collection.l3.l3_degraded_fallback_service import L3DegradedFallbackService
+from sari.services.collection.l3.l3_error_handling_service import L3ErrorHandlingService
+from sari.services.collection.l3.l3_flush_coordinator import L3FlushCoordinator as _L3FlushCoordinator
+from sari.services.collection.l3.l3_group_processor import L3GroupProcessor as _L3GroupProcessor
+from sari.services.collection.l3.l3_orchestrator import L3Orchestrator
+from sari.services.collection.l3.l3_persist_service import L3PersistService
+from sari.services.collection.l3.l3_quality_evaluation_service import L3QualityEvaluationService
+from sari.services.collection.l3.l3_queue_transition_service import L3QueueTransitionService
+from sari.services.collection.l3.l3_result_merger import L3ResultMerger as _L3ResultMerger
+from sari.services.collection.l3.l3_runtime_coordination_service import L3RuntimeCoordinationService
+from sari.services.collection.l3.l3_scheduling_service import L3SchedulingService
+from sari.services.collection.l3.l3_preprocess_io_service import L3PreprocessIoService
+from sari.services.collection.l3.l3_scope_resolution_service import L3ScopeResolutionService
+from sari.services.collection.l3.l3_skip_eligibility_service import L3SkipEligibilityService
+from sari.services.collection.l3.l3_skip_runtime_service import L3SkipRuntimeService
+from sari.services.collection.l3.l3_timeout_failure_builder import L3TimeoutFailureBuilder as _L3TimeoutFailureBuilder
+from sari.services.collection.l3.l3_treesitter_preprocess_service import L3TreeSitterPreprocessService
+from sari.services.collection.l4.l4_admission_service import L4AdmissionService
+from sari.services.collection.l5.l5_admission_policy import L5AdmissionPolicy, L5AdmissionPolicyConfig, TokenBucket
+from sari.services.collection.l5.l5_admission_runtime_service import L5AdmissionRuntimeService
+from sari.services.collection.l5.l5_runtime_stats_service import L5RuntimeStatsService
 from sari.services.collection.layer_upsert_builder import LayerUpsertBuilder
 
 if TYPE_CHECKING:

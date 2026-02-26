@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from solidlsp.ls_config import Language
 
-from sari.services.collection.solid_lsp_probe_mixin import _ProbeStateRecord
+from sari.services.collection.l5.solid_lsp_probe_mixin import _ProbeStateRecord
 
 
 class LspProbeStateUpdateService:

@@ -31,16 +31,23 @@ from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.db.repositories.repo_registry_repository import RepoRegistryRepository
 from sari.lsp.hub import LspHub
 from sari.lsp.path_normalizer import normalize_location_to_repo_relative, normalize_repo_relative_path
-from sari.services.collection import CollectionErrorPolicy, CollectionRuntimePort, EnrichEngine, EventWatcher, FileScanner, PipelineMetricsService, PipelineWorker, RuntimeManager
-from sari.services.collection.lsp_session_broker import LspBrokerLanguageProfile, LspSessionBroker
-from sari.services.collection.lsp_scope_planner import LspScopePlanner
+from sari.services.collection.enrich_engine import EnrichEngine
+from sari.services.collection.error_policy import CollectionErrorPolicy
+from sari.services.collection.l1.event_watcher import EventWatcher
+from sari.services.collection.l1.scanner import FileScanner
+from sari.services.collection.l1.watcher_hotness_tracker import WatcherHotnessTracker
+from sari.services.collection.l5.lsp.scope_planner import LspScopePlanner
+from sari.services.collection.l5.lsp.session_broker import LspBrokerLanguageProfile, LspSessionBroker
+from sari.services.collection.metrics_service import PipelineMetricsService
+from sari.services.collection.pipeline_worker import PipelineWorker
+from sari.services.collection.ports import CollectionRuntimePort
 from sari.services.collection.perf_trace import PerfTracer
 from sari.services.collection.repo_support import CollectionRepoSupport, WorkspaceFanoutResolver
-from sari.services.collection.watcher_hotness_tracker import WatcherHotnessTracker
+from sari.services.collection.runtime_manager import RuntimeManager
 from solidlsp.ls_exceptions import SolidLSPException
 log = logging.getLogger(__name__)
 
-from sari.services.collection.solid_lsp_extraction_backend import SolidLspExtractionBackend, _ProbeStateRecord
+from sari.services.collection.l5.solid_lsp_extraction_backend import SolidLspExtractionBackend, _ProbeStateRecord
 from sari.services.lsp_extraction_contracts import LspExtractionBackend, LspExtractionResultDTO
 
 class CandidateIndexSink(Protocol):

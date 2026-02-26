@@ -43,7 +43,8 @@ def parse_l3_supported_languages(items: Iterable[str]) -> set[Language]:
             parsed.add(Language(raw))
             continue
         except ValueError:
-            pass
+            # enum 변환 실패는 확장자 기반 판별로 fallback한다.
+            ...
         language = resolve_language_from_path(file_path=f"file.{raw}")
         if language is not None:
             parsed.add(language)

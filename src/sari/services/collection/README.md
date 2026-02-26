@@ -15,6 +15,17 @@
 - `service.py`: 수집 서비스 엔트리
 - `solid_lsp_extraction_backend.py`: 하위 호환 shim (실체는 `l5/`)
 
+## root file ownership guide
+
+- 엔트리/오케스트레이션:
+  - `service.py`, `runtime_manager.py`, `pipeline_worker.py`
+  - `enrich_engine.py`, `enrich_engine_wiring.py`, `enrich_runtime_service_registry.py`
+- 공통 런타임 유틸:
+  - `error_policy.py`, `metrics_service.py`, `layer_upsert_builder.py`, `repo_support.py`
+- 하위 호환 shim(신규 코드 추가 금지):
+  - 패턴: `l3_*.py`, `l4_*.py`, `l5_*.py`, `lsp_*.py`, `l2_job_processor.py`, `event_watcher.py`, `scanner.py`
+  - 실체 구현은 `l1/`, `l2/`, `l3/`, `l4/`, `l5/` 내부 파일에만 둔다.
+
 ## rules
 
 - L1~L5 신규 구현은 각 레이어 폴더에만 추가

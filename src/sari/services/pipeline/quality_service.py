@@ -17,7 +17,7 @@ from sari.db.repositories.pipeline_quality_repository import PipelineQualityRepo
 from sari.db.repositories.tool_data_layer_repository import ToolDataLayerRepository
 from sari.lsp.hub import LspHub
 from sari.lsp.path_normalizer import normalize_repo_relative_path
-from sari.services.collection.l3_quality_evaluation_service import L3QualityEvaluationService
+from sari.services.collection.l3.l3_quality_evaluation_service import L3QualityEvaluationService
 from sari.services.collection.service import LspExtractionBackend, LspExtractionResultDTO
 from solidlsp.ls_exceptions import SolidLSPException
 

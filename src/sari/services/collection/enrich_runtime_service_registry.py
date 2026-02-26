@@ -8,12 +8,12 @@ from typing import TYPE_CHECKING
 
 from sari.core.language_registry import resolve_language_from_path
 from sari.core.models import now_iso8601_utc
-from sari.services.collection.l3_bootstrap_mode_service import L3BootstrapModeService
-from sari.services.collection.l3_error_handling_service import L3ErrorHandlingService
-from sari.services.collection.l3_runtime_coordination_service import L3RuntimeCoordinationService
-from sari.services.collection.l3_scheduling_service import L3SchedulingService
-from sari.services.collection.l3_skip_runtime_service import L3SkipRuntimeService
-from sari.services.collection.l5_runtime_stats_service import L5RuntimeStatsService
+from sari.services.collection.l3.l3_bootstrap_mode_service import L3BootstrapModeService
+from sari.services.collection.l3.l3_error_handling_service import L3ErrorHandlingService
+from sari.services.collection.l3.l3_runtime_coordination_service import L3RuntimeCoordinationService
+from sari.services.collection.l3.l3_scheduling_service import L3SchedulingService
+from sari.services.collection.l3.l3_skip_runtime_service import L3SkipRuntimeService
+from sari.services.collection.l5.l5_runtime_stats_service import L5RuntimeStatsService
 
 if TYPE_CHECKING:
     from sari.services.collection.enrich_engine import EnrichEngine

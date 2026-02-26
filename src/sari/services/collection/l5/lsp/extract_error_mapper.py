@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from solidlsp.ls_exceptions import SolidLSPException
 
-from sari.services.collection.solid_lsp_probe_mixin import _is_workspace_mismatch_error
+from sari.services.collection.l5.solid_lsp_probe_mixin import _is_workspace_mismatch_error
 
 
 class LspExtractErrorMapper:

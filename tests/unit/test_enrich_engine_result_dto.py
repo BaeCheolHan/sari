@@ -38,6 +38,10 @@ def _build_result(**kwargs: object) -> _L3JobResultDTO:
     return _L3JobResultDTO(**defaults)
 
 
+def _assert_any_import_path(source: str, candidates: tuple[str, ...]) -> None:
+    assert any(candidate in source for candidate in candidates)
+
+
 def test_l3_job_result_dto_accepts_layer_upserts_bundle() -> None:
     """단계별 upsert bundle을 직접 주입할 수 있어야 한다."""
     bundle = _LayerUpsertsDTO(
@@ -149,7 +153,13 @@ def test_l3_group_processor_is_split_out_of_enrich_engine_module() -> None:
     source = (
         Path(__file__).resolve().parents[2] / "src" / "sari" / "services" / "collection" / "enrich_engine.py"
     ).read_text(encoding="utf-8")
-    assert "from sari.services.collection.l3_group_processor import" in source
+    _assert_any_import_path(
+        source,
+        (
+            "from sari.services.collection.l3_group_processor import",
+            "from sari.services.collection.l3.l3_group_processor import",
+        ),
+    )
     assert "class _L3GroupProcessor" not in source
 
 
@@ -171,7 +181,7 @@ def test_l2_job_processor_is_split_out_of_enrich_engine_module() -> None:
     source = (
         Path(__file__).resolve().parents[2] / "src" / "sari" / "services" / "collection" / "enrich_engine.py"
     ).read_text(encoding="utf-8")
-    assert "from sari.services.collection.l2_job_processor import" in source
+    # 구현 상세 import 경로보다, 런타임에서 L2 processor 위임이 유지되는지가 중요하다.
     assert "self._l2_job_processor.process_jobs(" in source
     assert "def _flush_l2_buffers(" not in source
     assert "def _process_single_l2_job(" not in source
@@ -182,7 +192,6 @@ def test_l3_flush_coordinator_is_split_out_of_enrich_engine_module() -> None:
     source = (
         Path(__file__).resolve().parents[2] / "src" / "sari" / "services" / "collection" / "enrich_engine.py"
     ).read_text(encoding="utf-8")
-    assert "from sari.services.collection.l3_flush_coordinator import" in source
     assert "self._l3_flush_coordinator.flush(" in source
     assert "def _flush_l3_buffers(" not in source
     assert hasattr(L3FlushCoordinator, "flush")
@@ -193,8 +202,9 @@ def test_l3_result_merger_is_split_out_of_enrich_engine_module() -> None:
     source = (
         Path(__file__).resolve().parents[2] / "src" / "sari" / "services" / "collection" / "enrich_engine.py"
     ).read_text(encoding="utf-8")
-    assert "from sari.services.collection.l3_result_merger import" in source
-    assert "self._l3_result_merger.merge(" in source
+    assert "merge_l3_result=lambda result, buffers: engine._l3_result_merger.merge(" in (
+        Path(__file__).resolve().parents[2] / "src" / "sari" / "services" / "collection" / "enrich_engine_wiring.py"
+    ).read_text(encoding="utf-8")
     assert "def _merge_l3_result(" not in source
     assert hasattr(L3ResultMerger, "merge")
 
@@ -204,10 +214,12 @@ def test_l3_timeout_failure_builder_is_split_out_of_enrich_engine_module() -> No
     source = (
         Path(__file__).resolve().parents[2] / "src" / "sari" / "services" / "collection" / "enrich_engine.py"
     ).read_text(encoding="utf-8")
-    assert "from sari.services.collection.l3_timeout_failure_builder import" in source
     assert "def _build_l3_timeout_failure_result(" not in source
     assert hasattr(L3TimeoutFailureBuilder, "build")
-    assert "build_timeout_failure_result=" in source
+    wiring_source = (
+        Path(__file__).resolve().parents[2] / "src" / "sari" / "services" / "collection" / "enrich_engine_wiring.py"
+    ).read_text(encoding="utf-8")
+    assert "build_timeout_failure_result=lambda **kwargs: engine._l3_timeout_failure_builder.build(**kwargs)" in wiring_source
 
 
 def test_enrich_flush_coordinator_is_split_out_of_enrich_engine_module() -> None:
@@ -215,8 +227,10 @@ def test_enrich_flush_coordinator_is_split_out_of_enrich_engine_module() -> None
     source = (
         Path(__file__).resolve().parents[2] / "src" / "sari" / "services" / "collection" / "enrich_engine.py"
     ).read_text(encoding="utf-8")
-    assert "from sari.services.collection.enrich_flush_coordinator import" in source
-    assert "flush_enrich=self._enrich_flush_coordinator.flush" in source
+    wiring_source = (
+        Path(__file__).resolve().parents[2] / "src" / "sari" / "services" / "collection" / "enrich_engine_wiring.py"
+    ).read_text(encoding="utf-8")
+    assert "flush_enrich=engine._enrich_flush_coordinator.flush" in wiring_source
     assert "def _flush_enrich_buffers(" not in source
     assert hasattr(EnrichFlushCoordinator, "flush")
 
@@ -226,7 +240,6 @@ def test_enrich_jobs_processor_is_split_out_of_enrich_engine_module() -> None:
     source = (
         Path(__file__).resolve().parents[2] / "src" / "sari" / "services" / "collection" / "enrich_engine.py"
     ).read_text(encoding="utf-8")
-    assert "from sari.services.collection.enrich_jobs_processor import" in source
     assert "self._enrich_jobs_processor.process_jobs(" in source
     assert hasattr(EnrichJobsProcessor, "process_jobs")
 

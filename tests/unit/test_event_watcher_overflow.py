@@ -101,7 +101,7 @@ def test_event_watcher_loop_skips_inactive_workspace_paths(tmp_path: Path, monke
         def start(self) -> None:
             return None
 
-    monkeypatch.setattr("sari.services.collection.event_watcher.Observer", _ObserverStub)
+    monkeypatch.setattr("sari.services.collection.l1.event_watcher.Observer", _ObserverStub)
 
     stop_event = threading.Event()
     stop_event.set()

@@ -17,28 +17,28 @@ from sari.core.models import (
     ToolReadinessStateDTO,
     now_iso8601_utc,
 )
-from sari.services.collection.l5_admission_policy import LanguageL5Policy, TokenBucket
-from sari.services.collection.l5_admission_runtime_service import (
+from sari.services.collection.l5.l5_admission_policy import LanguageL5Policy, TokenBucket
+from sari.services.collection.l5.l5_admission_runtime_service import (
     L5AdmissionRuntimeService,
     L5AdmissionRuntimeState,
 )
-from sari.services.collection.l5_default_policy_builder import build_default_language_policy_map
-from sari.services.collection.l5_runtime_stats_service import L5RuntimeStatsService
+from sari.services.collection.l5.l5_default_policy_builder import build_default_language_policy_map
+from sari.services.collection.l5.l5_runtime_stats_service import L5RuntimeStatsService
 from sari.db.repositories.tool_data_layer_repository import ToolDataLayerRepository
 from sari.services.collection.error_policy import CollectionErrorPolicy
-from sari.services.collection.l3_asset_loader import L3AssetLoader
-from sari.services.collection.l3_orchestrator import L3Orchestrator
-from sari.services.collection.l3_skip_runtime_service import L3SkipRuntimeService
-from sari.services.collection.l3_runtime_coordination_service import L3RuntimeCoordinationService
-from sari.services.collection.l3_scheduling_service import L3SchedulingService
-from sari.services.collection.l3_error_handling_service import L3ErrorHandlingService
-from sari.services.collection.l3_bootstrap_mode_service import L3BootstrapModeService
+from sari.services.collection.l3.l3_asset_loader import L3AssetLoader
+from sari.services.collection.l3.l3_orchestrator import L3Orchestrator
+from sari.services.collection.l3.l3_skip_runtime_service import L3SkipRuntimeService
+from sari.services.collection.l3.l3_runtime_coordination_service import L3RuntimeCoordinationService
+from sari.services.collection.l3.l3_scheduling_service import L3SchedulingService
+from sari.services.collection.l3.l3_error_handling_service import L3ErrorHandlingService
+from sari.services.collection.l3.l3_bootstrap_mode_service import L3BootstrapModeService
 from sari.services.collection.enrich_runtime_service_registry import EnrichRuntimeServiceRegistry
-from sari.services.collection.l3_language_config_parser import (
+from sari.services.collection.l3.l3_language_config_parser import (
     parse_l3_supported_languages as _parse_l3_supported_languages_shared,
     parse_lsp_probe_l1_languages as _parse_lsp_probe_l1_languages_shared,
 )
-from sari.services.collection.l3_failure_classifier import (
+from sari.services.collection.l3.l3_failure_classifier import (
     classify_l3_extract_failure_kind,
     extract_error_code_from_lsp_error_message,
     is_scope_escalation_trigger_error_for_l3,
@@ -46,10 +46,14 @@ from sari.services.collection.l3_failure_classifier import (
 )
 from sari.services.collection.enrich_engine_wiring import wire_engine_services, wire_runtime_processors
 from sari.services.collection.enrich_result_dto import (
+    _L2ResultBuffersDTO,
     _L3JobResultDTO,
     _L3ResultBuffersDTO,
+    _LayerUpsertBucketsDTO,
+    _LayerUpsertsDTO,
 )
-from sari.services.collection.l3_treesitter_preprocess_service import (
+from sari.services.collection.l3.l3_group_processor import L3GroupProcessor as _L3GroupProcessor
+from sari.services.collection.l3.l3_treesitter_preprocess_service import (
     L3PreprocessDecision,
     L3PreprocessResultDTO,
 )
@@ -386,7 +390,7 @@ class EnrichEngine:
             preprocess_service = getattr(self, "_l3_preprocess_service", None)
             if preprocess_service is None:
                 return None
-            from sari.services.collection.l3_preprocess_io_service import L3PreprocessIoService
+            from sari.services.collection.l3.l3_preprocess_io_service import L3PreprocessIoService
 
             preprocess_io = L3PreprocessIoService(
                 preprocess_service=preprocess_service,
