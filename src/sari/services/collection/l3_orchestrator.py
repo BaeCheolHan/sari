@@ -8,14 +8,12 @@ from typing import Callable
 
 from sari.core.exceptions import CollectionError
 from sari.core.models import (
-    EnrichStateUpdateDTO,
     FileBodyDeleteTargetDTO,
     FileEnrichFailureUpdateDTO,
     FileEnrichJobDTO,
     LspExtractPersistDTO,
     ToolReadinessStateDTO,
     L4AdmissionDecisionDTO,
-    L5ReasonCode,
 )
 from sari.services.collection.perf_trace import PerfTracer
 
@@ -34,6 +32,7 @@ from .l3_quality_evaluation_service import L3QualityEvaluationService
 from .l3_quality_shadow_tracker import L3QualityShadowTracker
 from .layer_upsert_builder import LayerUpsertBuilder
 from .l3_stages.admission_stage import L3AdmissionStage
+from .l3_stages.decision_stage import L3DecisionStage
 from .l3_stages.file_guard_stage import L3FileGuardStage
 from .l3_stages.extract_stage import L3ExtractStage
 from .l3_stages.extract_failure_stage import L3ExtractFailureStage
@@ -132,6 +131,15 @@ class L3Orchestrator:
             build_l5_layer_upsert=self._build_l5_layer_upsert,
             deletion_hold_enabled=self._deletion_hold_enabled,
         )
+        self._decision_stage = L3DecisionStage(
+            skip_eligibility=self._skip_eligibility,
+            scope_resolution=self._scope_resolution,
+            admission_stage=self._admission_stage,
+            queue_transition=self._queue_transition,
+            persist_stage=self._persist_stage,
+            now_iso_supplier=self._now_iso_supplier,
+            admission_enforced=self._l5_admission_enforced,
+        )
         self._extract_failure_stage = L3ExtractFailureStage(
             queue_transition=self._queue_transition,
             persist_stage=self._persist_stage,
@@ -173,147 +181,41 @@ class L3Orchestrator:
                     finished_status = "DONE"
                 else:
                     preprocess_result = self._preprocess_stage.execute(job=job, file_row=file_row)
-                    with self._perf_tracer.span("l3.skip_recent_check", phase="skip_check"):
-                        recent_ready = self._skip_eligibility.is_recent_tool_ready(job)
-                    if recent_ready:
-                        now_iso = self._now_iso_supplier()
-                        self._persist_stage.mark_recent_ready(
+                    with self._perf_tracer.span("l3.decision", phase="decision"):
+                        decision = self._decision_stage.evaluate(
                             context=context,
+                            job=job,
+                            preprocess_result=preprocess_result,
+                        )
+                    language = decision.language
+                    admission_decision = decision.admission_decision
+                    if decision.finished_status is not None:
+                        finished_status = decision.finished_status
+                    elif decision.should_extract:
+                        extraction = self._extract_stage.execute(
                             repo_root=job.repo_root,
                             relative_path=job.relative_path,
                             content_hash=job.content_hash,
-                            now_iso=now_iso,
-                            reason="skip_recent_success",
                         )
+                        if extraction.error_message is not None:
+                            finished_status = self._extract_failure_stage.handle_extract_error(
+                                context=context,
+                                job=job,
+                                error_message=extraction.error_message,
+                            )
+                        else:
+                            finished_status = self._extract_success_stage.handle_success(
+                                context=context,
+                                job=job,
+                                language=language,
+                                preprocess_result=preprocess_result,
+                                admission_decision=admission_decision,
+                                extraction=extraction,
+                                now_iso=decision.now_iso,
+                            )
+                    if finished_status not in {"PENDING", "DONE"} and context.failure_update is None:
                         context.done_id = job.job_id
                         finished_status = "DONE"
-                    else:
-                        now_iso = self._now_iso_supplier()
-                        with self._perf_tracer.span("l3.skip_reason_check", phase="skip_check"):
-                            skip_reason = self._skip_eligibility.resolve_skip_reason(job)
-                        if skip_reason is not None:
-                            context.state_update = EnrichStateUpdateDTO(
-                                repo_root=job.repo_root,
-                                relative_path=job.relative_path,
-                                enrich_state="L3_SKIPPED",
-                                updated_at=now_iso,
-                            )
-                            context.readiness_update = self._skip_eligibility.build_skipped_readiness(job=job, reason=skip_reason, now_iso=now_iso)
-                            context.done_id = job.job_id
-                            finished_status = "DONE"
-                        else:
-                            language = self._scope_resolution.resolve_language(job.relative_path)
-                            admission_decision = self._admission_stage.evaluate(job=job, language=language)
-                            if admission_decision is not None and not admission_decision.admit_l5 and self._admission_stage.enforced:
-                                deferred = self._queue_transition.defer_after_l5_admission_rejection(
-                                    job=job,
-                                    admission=admission_decision,
-                                )
-                                if deferred:
-                                    finished_status = "PENDING"
-                                else:
-                                    rejection = (
-                                        admission_decision.reject_reason.value
-                                        if admission_decision.reject_reason is not None
-                                        else "unknown"
-                                    )
-                                    context.state_update = EnrichStateUpdateDTO(
-                                        repo_root=job.repo_root,
-                                        relative_path=job.relative_path,
-                                        enrich_state="L3_SKIPPED",
-                                        updated_at=now_iso,
-                                    )
-                                    context.readiness_update = self._skip_eligibility.build_skipped_readiness(
-                                        job=job,
-                                        reason=f"l5_reject:{rejection}",
-                                        now_iso=now_iso,
-                                    )
-                                    context.done_id = job.job_id
-                                    finished_status = "DONE"
-                            else:
-                                if (
-                                    preprocess_result is not None
-                                    and preprocess_result.decision is L3PreprocessDecision.DEFERRED_HEAVY
-                                ):
-                                    deferred = self._queue_transition.defer_after_preprocess_heavy(
-                                        job=job,
-                                        reason=preprocess_result.reason,
-                                    )
-                                    if deferred:
-                                        finished_status = "PENDING"
-                                    else:
-                                        context.state_update = EnrichStateUpdateDTO(
-                                            repo_root=job.repo_root,
-                                            relative_path=job.relative_path,
-                                            enrich_state="L3_SKIPPED",
-                                            updated_at=now_iso,
-                                        )
-                                        context.readiness_update = self._skip_eligibility.build_skipped_readiness(
-                                            job=job,
-                                            reason=preprocess_result.reason,
-                                            now_iso=now_iso,
-                                        )
-                                        context.done_id = job.job_id
-                                        finished_status = "DONE"
-                                elif (
-                                    preprocess_result is not None
-                                    and preprocess_result.decision is L3PreprocessDecision.L3_ONLY
-                                    and len(preprocess_result.symbols) > 0
-                                ):
-                                    self._persist_stage.apply_l3_only_success(
-                                        context=context,
-                                        repo_root=job.repo_root,
-                                        relative_path=job.relative_path,
-                                        content_hash=job.content_hash,
-                                        preprocess_result=preprocess_result,
-                                        admission_decision=admission_decision,
-                                        now_iso=now_iso,
-                                    )
-                                    context.done_id = job.job_id
-                                    finished_status = "DONE"
-                                else:
-                                    if admission_decision is not None and not admission_decision.admit_l5:
-                                        rejection = (
-                                            admission_decision.reject_reason.value
-                                            if admission_decision.reject_reason is not None
-                                            else "unknown"
-                                        )
-                                        context.state_update = EnrichStateUpdateDTO(
-                                            repo_root=job.repo_root,
-                                            relative_path=job.relative_path,
-                                            enrich_state="L3_SKIPPED",
-                                            updated_at=now_iso,
-                                        )
-                                        context.readiness_update = self._skip_eligibility.build_skipped_readiness(
-                                            job=job,
-                                            reason=f"l5_reject:{rejection}",
-                                            now_iso=now_iso,
-                                        )
-                                    else:
-                                        extraction = self._extract_stage.execute(
-                                            repo_root=job.repo_root,
-                                            relative_path=job.relative_path,
-                                            content_hash=job.content_hash,
-                                        )
-                                        if extraction.error_message is not None:
-                                            finished_status = self._extract_failure_stage.handle_extract_error(
-                                                context=context,
-                                                job=job,
-                                                error_message=extraction.error_message,
-                                            )
-                                        else:
-                                            finished_status = self._extract_success_stage.handle_success(
-                                                context=context,
-                                                job=job,
-                                                language=language,
-                                                preprocess_result=preprocess_result,
-                                                admission_decision=admission_decision,
-                                                extraction=extraction,
-                                                now_iso=now_iso,
-                                            )
-                                    if finished_status not in {"PENDING", "DONE"} and context.failure_update is None:
-                                        context.done_id = job.job_id
-                                        finished_status = "DONE"
             except (CollectionError, RuntimeError, OSError, ValueError) as exc:
                 dev_error = self._exception_stage.handle_exception(
                     context=context,
