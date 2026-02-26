@@ -23,6 +23,7 @@ from sari.services.collection.lsp_scope_planner import LspScopePlanner
 from sari.services.collection.lsp_runtime_metrics_builder import build_runtime_metrics
 from sari.services.collection.lsp_probe_state_update_service import LspProbeStateUpdateService
 from sari.services.collection.lsp_broker_guard_service import LspBrokerGuardService
+from sari.services.collection.lsp_runtime_mismatch_recovery_service import LspRuntimeMismatchRecoveryService
 from sari.services.collection.lsp_session_broker import LspSessionBroker
 from sari.services.collection.perf_trace import PerfTracer
 from sari.services.collection.watcher_hotness_tracker import WatcherHotnessTracker
@@ -134,6 +135,10 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
                 int(getattr(self, "_broker_guard_reject_count", 0)) + 1,
             ),
             apply_standby_retention_touch=lambda **kwargs: self._apply_standby_retention_touch(**kwargs),
+        )
+        self._runtime_mismatch_recovery_service = LspRuntimeMismatchRecoveryService(
+            resolve_language=lambda relative_path: resolve_language_from_path(file_path=relative_path),
+            monotonic_now=time.monotonic,
         )
         self._scope_override_lock = threading.Lock()
         self._scope_override_ttl_sec = 24 * 60 * 60.0
@@ -853,30 +858,13 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
 
     def _recover_from_runtime_mismatch(self, *, repo_root: str, relative_path: str) -> bool:
         """ERR_RUNTIME_MISMATCH 발생 시 repo/language LSP 런타임을 강제 재시작한다."""
-        language = resolve_language_from_path(file_path=relative_path)
-        if language is None:
-            return False
-        key = (repo_root, language.value)
-        now = time.monotonic()
-        last_restart = self._runtime_mismatch_last_restart_at.get(key)
-        if last_restart is not None and (now - last_restart) < self._runtime_mismatch_restart_cooldown_sec:
-            return False
-        force_restart = getattr(self._hub, "force_restart", None)
-        if not callable(force_restart):
-            return False
-        try:
-            force_restart(language=language, repo_root=repo_root, request_kind="indexing")
-            self._runtime_mismatch_last_restart_at[key] = now
-            return True
-        except (DaemonError, RuntimeError, OSError, ValueError, TypeError):
-            log.warning(
-                "runtime mismatch auto-restart failed(repo=%s, path=%s, language=%s)",
-                repo_root,
-                relative_path,
-                language.value,
-                exc_info=True,
-            )
-            return False
+        return self._runtime_mismatch_recovery_service.recover_from_runtime_mismatch(
+            hub=self._hub,
+            runtime_mismatch_last_restart_at=self._runtime_mismatch_last_restart_at,
+            runtime_mismatch_restart_cooldown_sec=self._runtime_mismatch_restart_cooldown_sec,
+            repo_root=repo_root,
+            relative_path=relative_path,
+        )
 
     def get_interactive_pressure(self) -> dict[str, int]:
         """인터랙티브 요청 압력 지표를 반환한다."""
@@ -897,25 +885,14 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
 
     def _should_force_recover_from_extract_error(self, repo_root: str, relative_path: str, error_code: str) -> bool:
         """실사용 오류 코드에 따라 READY/WARMING 무효화 여부를 판단한다."""
-        language = resolve_language_from_path(file_path=relative_path)
-        if language is None:
-            return False
-        key = (repo_root, language)
-        now = time.monotonic()
         with self._probe_lock:
-            state = self._probe_state.get(key)
-            if state is None:
-                return False
-            if error_code in {"ERR_BROKEN_PIPE", "ERR_SERVER_EXITED", "ERR_INIT_FAILED"}:
-                return state.status in {"READY_L0", "WARMING"}
-            if error_code != "ERR_RPC_TIMEOUT":
-                return False
-            if state.last_error_code == "ERR_RPC_TIMEOUT" and state.last_error_time_monotonic is not None:
-                if (now - state.last_error_time_monotonic) <= self._probe_timeout_window_sec:
-                    return state.status in {"READY_L0", "WARMING"}
-            state.last_error_code = "ERR_RPC_TIMEOUT"
-            state.last_error_time_monotonic = now
-            return False
+            return self._runtime_mismatch_recovery_service.should_force_recover_from_extract_error(
+                probe_state=self._probe_state,
+                repo_root=repo_root,
+                relative_path=relative_path,
+                error_code=error_code,
+                probe_timeout_window_sec=self._probe_timeout_window_sec,
+            )
 
     def _record_probe_state_from_extract_error(self, *, repo_root: str, relative_path: str, error_code: str, error_message: str) -> None:
         """L3 extract 실패를 probe 상태에 반영해 반복 startup/요청 폭주를 완화한다."""
