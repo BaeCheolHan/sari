@@ -1,27 +1,3 @@
-"""Shared mutable context for L3 orchestration stages."""
+"""Backward-compatible import shim."""
 
-from __future__ import annotations
-
-from dataclasses import dataclass
-
-from sari.core.models import (
-    EnrichStateUpdateDTO,
-    FileBodyDeleteTargetDTO,
-    FileEnrichFailureUpdateDTO,
-    LspExtractPersistDTO,
-    ToolReadinessStateDTO,
-)
-
-
-@dataclass
-class L3JobContext:
-    done_id: str | None = None
-    failure_update: FileEnrichFailureUpdateDTO | None = None
-    state_update: EnrichStateUpdateDTO | None = None
-    body_delete: FileBodyDeleteTargetDTO | None = None
-    lsp_update: LspExtractPersistDTO | None = None
-    readiness_update: ToolReadinessStateDTO | None = None
-    l3_layer_upsert: dict[str, object] | None = None
-    l4_layer_upsert: dict[str, object] | None = None
-    l5_layer_upsert: dict[str, object] | None = None
-
+from sari.services.collection.l3.l3_job_context import *  # noqa: F401,F403
