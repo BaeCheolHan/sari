@@ -34,6 +34,7 @@ from sari.services.collection.l4.l4_admission_service import L4AdmissionService
 from sari.services.collection.l5.l5_admission_policy import L5AdmissionPolicy, L5AdmissionPolicyConfig, TokenBucket
 from sari.services.collection.l5.l5_admission_runtime_service import L5AdmissionRuntimeService
 from sari.services.collection.l5.l5_cached_extract_service import L5CachedExtractService
+from sari.services.collection.l5.l5_queue_defer_service import L5QueueDeferService
 from sari.services.collection.l5.l5_runtime_stats_service import L5RuntimeStatsService
 from sari.services.collection.layer_upsert_builder import LayerUpsertBuilder
 
@@ -175,6 +176,11 @@ def wire_engine_services(
         is_scope_escalation_trigger=engine._is_scope_escalation_trigger_fn,
         next_scope_level_for_escalation=engine._next_scope_level_for_escalation_fn,
     )
+    engine._l5_queue_defer_service = L5QueueDeferService(
+        queue_repo=engine._enrich_queue_repo,
+        error_policy=engine._error_policy,
+        now_iso_supplier=now_iso8601_utc,
+    )
     engine._l3_scheduling_service = L3SchedulingService(
         resolve_lsp_language=lambda relative_path: engine._resolve_lsp_language(relative_path),
         lsp_backend=engine._lsp_backend,
@@ -210,6 +216,7 @@ def wire_engine_services(
         extract_fn=engine._l5_cached_extract_service.extract,
         scope_resolution=engine._l3_scope_resolution_service,
         queue_transition=engine._l3_queue_transition_service,
+        l5_queue_transition=engine._l5_queue_defer_service,
         skip_eligibility=engine._l3_skip_eligibility_service,
         persist_service=engine._l3_persist_service,
         preprocess_service=engine._l3_preprocess_service,

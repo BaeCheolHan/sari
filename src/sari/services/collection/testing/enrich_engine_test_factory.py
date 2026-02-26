@@ -61,30 +61,6 @@ def build_min_enrich_engine_for_l3_test(*, lsp_backend: object, queue_repo: obje
     engine._l5_admitted_timestamps_by_lang = {}
 
     class _StubQueueTransitionService:
-        def defer_after_l5_admission_rejection(self, *, job: FileEnrichJobDTO, admission) -> bool:  # noqa: ANN001
-            _ = admission
-            if hasattr(queue_repo, "defer_jobs_to_pending"):
-                changed = queue_repo.defer_jobs_to_pending(
-                    job_ids=[job.job_id],
-                    next_retry_at="2026-01-01T00:00:30+00:00",
-                    defer_reason="l5_defer:pressure_rate_exceeded",
-                    now_iso="2026-01-01T00:00:00+00:00",
-                )
-                return int(changed) > 0
-            return False
-
-        def defer_after_preprocess_heavy(self, *, job: FileEnrichJobDTO, reason: str) -> bool:
-            _ = reason
-            if hasattr(queue_repo, "defer_jobs_to_pending"):
-                changed = queue_repo.defer_jobs_to_pending(
-                    job_ids=[job.job_id],
-                    next_retry_at="2026-01-01T00:01:00+00:00",
-                    defer_reason="l5_defer:deferred_heavy:test",
-                    now_iso="2026-01-01T00:00:00+00:00",
-                )
-                return int(changed) > 0
-            return False
-
         def defer_after_broker_lease_denial(self, *, job: FileEnrichJobDTO, error_message: str) -> bool:
             if "ERR_LSP_BROKER_LEASE_REQUIRED" not in str(error_message):
                 return False
@@ -117,7 +93,33 @@ def build_min_enrich_engine_for_l3_test(*, lsp_backend: object, queue_repo: obje
                 )
             return False
 
+    class _StubL5QueueDeferService:
+        def defer_after_l5_admission_rejection(self, *, job: FileEnrichJobDTO, admission) -> bool:  # noqa: ANN001
+            _ = admission
+            if hasattr(queue_repo, "defer_jobs_to_pending"):
+                changed = queue_repo.defer_jobs_to_pending(
+                    job_ids=[job.job_id],
+                    next_retry_at="2026-01-01T00:00:30+00:00",
+                    defer_reason="l5_defer:pressure_rate_exceeded",
+                    now_iso="2026-01-01T00:00:00+00:00",
+                )
+                return int(changed) > 0
+            return False
+
+        def defer_after_preprocess_heavy(self, *, job: FileEnrichJobDTO, reason: str) -> bool:
+            _ = reason
+            if hasattr(queue_repo, "defer_jobs_to_pending"):
+                changed = queue_repo.defer_jobs_to_pending(
+                    job_ids=[job.job_id],
+                    next_retry_at="2026-01-01T00:01:00+00:00",
+                    defer_reason="l5_defer:deferred_heavy:test",
+                    now_iso="2026-01-01T00:00:00+00:00",
+                )
+                return int(changed) > 0
+            return False
+
     engine._l3_queue_transition_service = _StubQueueTransitionService()
+    engine._l5_queue_defer_service = _StubL5QueueDeferService()
 
     def _fallback_probe(*, job):  # noqa: ANN002, ANN003
         _ = job
@@ -159,6 +161,7 @@ def build_min_enrich_engine_for_l3_test(*, lsp_backend: object, queue_repo: obje
                 schedule_l1_probe_after_l3_fallback=lambda j: engine._schedule_l1_probe_after_l3_fallback(job=j),
                 scope_resolution=_ScopeResolutionAdapter(),
                 queue_transition=engine._l3_queue_transition_service,
+                l5_queue_transition=engine._l5_queue_defer_service,
                 skip_eligibility=_SkipEligibilityAdapter(),
                 persist_service=_PersistServiceStub(),
                 preprocess_service=getattr(engine, "_l3_preprocess_service", None),
@@ -175,4 +178,3 @@ def build_min_enrich_engine_for_l3_test(*, lsp_backend: object, queue_repo: obje
 
     engine._l3_orchestrator = _DelegatingOrchestrator()
     return engine
-

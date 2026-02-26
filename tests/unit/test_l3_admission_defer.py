@@ -10,10 +10,10 @@ from sari.core.models import (
 )
 from sari.services.collection.l3.l3_orchestrator import L3Orchestrator
 from sari.services.collection.l3.l3_persist_service import L3PersistService
-from sari.services.collection.l3.l3_queue_transition_service import L3QueueTransitionService
 from sari.services.collection.l3.l3_scope_resolution_service import L3ScopeResolutionService
 from sari.services.collection.l3.l3_skip_eligibility_service import L3SkipEligibilityService
 from sari.services.collection.l3.l3_treesitter_preprocess_service import L3PreprocessDecision, L3PreprocessResultDTO
+from sari.services.collection.l5.l5_queue_defer_service import L5QueueDeferService
 
 
 class _StubFileRow:
@@ -120,14 +120,10 @@ def test_l3_queue_transition_defers_on_pressure_reject_reason() -> None:
     """pressure 계열 reject는 DONE이 아니라 queue defer로 전환되어야 한다."""
     queue_repo = _StubQueueRepo()
     error_policy = _StubErrorPolicy()
-    service = L3QueueTransitionService(
+    service = L5QueueDeferService(
         queue_repo=queue_repo,
         error_policy=error_policy,
         now_iso_supplier=lambda: "2026-02-23T00:00:00+00:00",
-        broker_admission=_StubL3BrokerAdmission(),
-        extract_error_code=lambda _message: "ERR_X",
-        is_scope_escalation_trigger=lambda _code, _message: False,
-        next_scope_level_for_escalation=lambda _scope: None,
     )
     decision = L4AdmissionDecisionDTO(
         admit_l5=False,
@@ -146,14 +142,10 @@ def test_l3_queue_transition_tsls_fast_reject_uses_tsls_reason_and_short_delay()
     """TSLS 그룹은 reject defer를 tsls_fast reason + 짧은 delay로 기록해야 한다."""
     queue_repo = _StubQueueRepo()
     error_policy = _StubErrorPolicy()
-    service = L3QueueTransitionService(
+    service = L5QueueDeferService(
         queue_repo=queue_repo,
         error_policy=error_policy,
         now_iso_supplier=lambda: "2026-02-23T00:00:00+00:00",
-        broker_admission=_StubL3BrokerAdmission(),
-        extract_error_code=lambda _message: "ERR_X",
-        is_scope_escalation_trigger=lambda _code, _message: False,
-        next_scope_level_for_escalation=lambda _scope: None,
     )
     decision = L4AdmissionDecisionDTO(
         admit_l5=False,
@@ -177,14 +169,10 @@ def test_l3_queue_transition_defers_on_preprocess_deferred_heavy() -> None:
     """DEFERRED_HEAVY 전처리는 queue defer로 전환되어야 한다."""
     queue_repo = _StubQueueRepo()
     error_policy = _StubErrorPolicy()
-    service = L3QueueTransitionService(
+    service = L5QueueDeferService(
         queue_repo=queue_repo,
         error_policy=error_policy,
         now_iso_supplier=lambda: "2026-02-23T00:00:00+00:00",
-        broker_admission=_StubL3BrokerAdmission(),
-        extract_error_code=lambda _message: "ERR_X",
-        is_scope_escalation_trigger=lambda _code, _message: False,
-        next_scope_level_for_escalation=lambda _scope: None,
     )
 
     changed = service.defer_after_preprocess_heavy(job=_job(), reason="l3_preprocess_large_file")
@@ -197,6 +185,7 @@ def test_l3_queue_transition_defers_on_preprocess_deferred_heavy() -> None:
 def test_l3_orchestrator_marks_pending_when_admission_reject_is_deferred() -> None:
     """L3 admission reject(defer 대상)는 DONE이 아니라 PENDING으로 반환되어야 한다."""
     queue_transition = _NoopQueueTransition()
+    l5_queue_transition = _NoopQueueTransition()
     skip = L3SkipEligibilityService(
         is_recent_tool_ready=lambda _job: False,
         resolve_l3_skip_reason=lambda _job: None,
@@ -217,6 +206,7 @@ def test_l3_orchestrator_marks_pending_when_admission_reject_is_deferred() -> No
         schedule_l1_probe_after_l3_fallback=lambda _job: None,
         scope_resolution=L3ScopeResolutionService(),
         queue_transition=queue_transition,
+        l5_queue_transition=l5_queue_transition,
         skip_eligibility=skip,
         persist_service=L3PersistService(record_scope_learning=lambda _job: None),
         evaluate_l5_admission=lambda _job, _lang: L4AdmissionDecisionDTO(
@@ -231,7 +221,7 @@ def test_l3_orchestrator_marks_pending_when_admission_reject_is_deferred() -> No
 
     assert result["finished_status"] == "PENDING"
     assert result["done_id"] is None
-    assert len(queue_transition.defer_calls) == 1
+    assert len(l5_queue_transition.defer_calls) == 1
 
 
 def test_l3_orchestrator_preprocess_skip_finishes_without_lsp() -> None:
@@ -268,6 +258,7 @@ def test_l3_orchestrator_preprocess_skip_finishes_without_lsp() -> None:
         schedule_l1_probe_after_l3_fallback=lambda _job: None,
         scope_resolution=L3ScopeResolutionService(),
         queue_transition=_NoopQueueTransition(),
+        l5_queue_transition=_NoopQueueTransition(),
         skip_eligibility=skip,
         persist_service=L3PersistService(record_scope_learning=lambda _job: None),
         preprocess_service=_StubPreprocess(),

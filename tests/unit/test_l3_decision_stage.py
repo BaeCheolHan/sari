@@ -64,6 +64,17 @@ class _Admission:
 
 @dataclass
 class _QueueTransition:
+    def defer_after_broker_lease_denial(self, *, job: FileEnrichJobDTO, error_message: str) -> bool:
+        _ = (job, error_message)
+        return False
+
+    def escalate_scope_after_l3_extract_error(self, *, job: FileEnrichJobDTO, error_message: str) -> bool:
+        _ = (job, error_message)
+        return False
+
+
+@dataclass
+class _L5QueueTransition:
     defer_l5: bool = False
     defer_heavy: bool = False
 
@@ -96,6 +107,7 @@ def test_decision_stage_recent_ready_short_circuits_done() -> None:
         scope_resolution=_Scope(),
         admission_stage=_Admission(None),
         queue_transition=_QueueTransition(),
+        l5_queue_transition=_L5QueueTransition(),
         persist_stage=_Persist(),
         now_iso_supplier=lambda: "2026-01-01T00:00:00Z",
         admission_enforced=False,
@@ -116,6 +128,7 @@ def test_decision_stage_allows_extract_when_admitted_and_not_l3_only() -> None:
         scope_resolution=_Scope(),
         admission_stage=_Admission(decision),
         queue_transition=_QueueTransition(),
+        l5_queue_transition=_L5QueueTransition(),
         persist_stage=_Persist(),
         now_iso_supplier=lambda: "2026-01-01T00:00:00Z",
         admission_enforced=True,
@@ -147,6 +160,7 @@ def test_decision_stage_reject_without_enforce_marks_done_skip() -> None:
         scope_resolution=_Scope(),
         admission_stage=_Admission(decision),
         queue_transition=_QueueTransition(),
+        l5_queue_transition=_L5QueueTransition(),
         persist_stage=_Persist(),
         now_iso_supplier=lambda: "2026-01-01T00:00:00Z",
         admission_enforced=False,

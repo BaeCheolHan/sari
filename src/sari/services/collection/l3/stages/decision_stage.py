@@ -29,6 +29,7 @@ class L3DecisionStage:
         scope_resolution: object,
         admission_stage: object,
         queue_transition: object,
+        l5_queue_transition: object,
         persist_stage: object,
         now_iso_supplier: object,
         admission_enforced: bool,
@@ -37,6 +38,7 @@ class L3DecisionStage:
         self._scope_resolution = scope_resolution
         self._admission_stage = admission_stage
         self._queue_transition = queue_transition
+        self._l5_queue_transition = l5_queue_transition
         self._persist_stage = persist_stage
         self._now_iso_supplier = now_iso_supplier
         self._admission_enforced = bool(admission_enforced)
@@ -94,7 +96,7 @@ class L3DecisionStage:
 
         if admission_decision is not None and not admission_decision.admit_l5 and self._admission_enforced:
             deferred = bool(
-                self._queue_transition.defer_after_l5_admission_rejection(
+                self._l5_queue_transition.defer_after_l5_admission_rejection(
                     job=job,
                     admission=admission_decision,
                 )
@@ -134,7 +136,7 @@ class L3DecisionStage:
 
         if preprocess_result is not None and preprocess_result.decision is L3PreprocessDecision.DEFERRED_HEAVY:
             deferred = bool(
-                self._queue_transition.defer_after_preprocess_heavy(
+                self._l5_queue_transition.defer_after_preprocess_heavy(
                     job=job,
                     reason=preprocess_result.reason,
                 )
