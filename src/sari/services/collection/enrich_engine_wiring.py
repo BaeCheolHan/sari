@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from sari.core.models import L5RejectReason, L5ReasonCode, L5RequestMode, now_iso8601_utc
 from sari.services.collection.enrich_flush_coordinator import EnrichFlushCoordinator as _EnrichFlushCoordinator
 from sari.services.collection.enrich_jobs_processor import EnrichJobsProcessor as _EnrichJobsProcessor
+from sari.services.collection.enrich_processor_deps import EnrichProcessorDeps
 from sari.services.collection.enrich_result_dto import _L3JobResultDTO
 from sari.services.collection.l2_job_processor import L2JobProcessor as _L2JobProcessor
 from sari.services.collection.l3_broker_admission_service import L3BrokerAdmissionService
@@ -37,6 +38,39 @@ from sari.services.collection.layer_upsert_builder import LayerUpsertBuilder
 
 if TYPE_CHECKING:
     from sari.services.collection.enrich_engine import EnrichEngine
+
+
+def build_enrich_processor_deps(engine: "EnrichEngine") -> EnrichProcessorDeps:
+    """L2/Enrich processor 공통 의존성을 DTO로 묶어 반환한다."""
+    return EnrichProcessorDeps(
+        assert_parent_alive=engine._assert_parent_alive,
+        rebalance_jobs_by_language=engine._rebalance_jobs_by_language,
+        file_repo_get_file=engine._file_repo.get_file,
+        retry_max_attempts=engine._policy.retry_max_attempts,
+        retry_backoff_base_sec=engine._policy.retry_backoff_base_sec,
+        persist_body_for_read=engine._persist_body_for_read,
+        vector_index_sink=engine._vector_index_sink,
+        is_deletion_hold_enabled=engine._is_deletion_hold_enabled,
+        resolve_l3_skip_reason=lambda job: engine._resolve_l3_skip_reason(job=job),
+        build_l3_skipped_readiness=lambda job, reason, now_iso: engine._build_l3_skipped_readiness(
+            job=job,
+            reason=reason,
+            now_iso=now_iso,
+        ),
+        record_error_event=engine._error_policy.record_error_event,
+        record_enrich_latency=engine._record_enrich_latency,
+        run_mode=engine._run_mode,
+        record_event=(
+            None
+            if engine._event_repo is None
+            else lambda job_id, status, latency_ms, created_at: engine._event_repo.record_event(
+                job_id=job_id,
+                status=status,
+                latency_ms=latency_ms,
+                created_at=created_at,
+            )
+        ),
+    )
 
 
 def wire_engine_services(
@@ -183,6 +217,7 @@ def wire_engine_services(
 
 
 def wire_runtime_processors(engine: "EnrichEngine") -> None:
+    deps = build_enrich_processor_deps(engine)
     engine._enrich_flush_coordinator = _EnrichFlushCoordinator(
         body_repo=engine._body_repo,
         lsp_repo=engine._lsp_repo,
@@ -216,76 +251,50 @@ def wire_runtime_processors(engine: "EnrichEngine") -> None:
         build_timeout_failure_result=lambda **kwargs: engine._l3_timeout_failure_builder.build(**kwargs),
     )
     engine._l2_job_processor = _L2JobProcessor(
-        assert_parent_alive=engine._assert_parent_alive,
+        assert_parent_alive=deps.assert_parent_alive,
         acquire_pending_for_l2=lambda limit, now_iso: engine._enrich_queue_repo.acquire_pending_for_l2(
             limit=limit,
             now_iso=now_iso,
         ),
-        rebalance_jobs_by_language=engine._rebalance_jobs_by_language,
+        rebalance_jobs_by_language=deps.rebalance_jobs_by_language,
         flush_batch_size=engine._flush_batch_size,
         flush_interval_sec=engine._flush_interval_sec,
         flush_max_body_bytes=engine._flush_max_body_bytes,
         flush_enrich_buffers=engine._enrich_flush_coordinator.flush,
-        run_mode=engine._run_mode,
-        file_repo_get_file=engine._file_repo.get_file,
-        retry_max_attempts=engine._policy.retry_max_attempts,
-        retry_backoff_base_sec=engine._policy.retry_backoff_base_sec,
-        persist_body_for_read=engine._persist_body_for_read,
-        vector_index_sink=engine._vector_index_sink,
-        is_deletion_hold_enabled=engine._is_deletion_hold_enabled,
-        resolve_l3_skip_reason=lambda job: engine._resolve_l3_skip_reason(job=job),
-        build_l3_skipped_readiness=lambda job, reason, now_iso: engine._build_l3_skipped_readiness(
-            job=job,
-            reason=reason,
-            now_iso=now_iso,
-        ),
+        run_mode=deps.run_mode,
+        file_repo_get_file=deps.file_repo_get_file,
+        retry_max_attempts=deps.retry_max_attempts,
+        retry_backoff_base_sec=deps.retry_backoff_base_sec,
+        persist_body_for_read=deps.persist_body_for_read,
+        vector_index_sink=deps.vector_index_sink,
+        is_deletion_hold_enabled=deps.is_deletion_hold_enabled,
+        resolve_l3_skip_reason=deps.resolve_l3_skip_reason,
+        build_l3_skipped_readiness=deps.build_l3_skipped_readiness,
         l3_ready_queue_put=engine._l3_ready_queue.put,
-        record_error_event=engine._error_policy.record_error_event,
-        record_enrich_latency=engine._record_enrich_latency,
-        record_event=(
-            None
-            if engine._event_repo is None
-            else lambda job_id, status, latency_ms, created_at: engine._event_repo.record_event(
-                job_id=job_id,
-                status=status,
-                latency_ms=latency_ms,
-                created_at=created_at,
-            )
-        ),
+        record_error_event=deps.record_error_event,
+        record_enrich_latency=deps.record_enrich_latency,
+        record_event=deps.record_event,
     )
     engine._enrich_jobs_processor = _EnrichJobsProcessor(
-        assert_parent_alive=engine._assert_parent_alive,
+        assert_parent_alive=deps.assert_parent_alive,
         acquire_pending=lambda limit, now_iso: engine._enrich_queue_repo.acquire_pending(limit=limit, now_iso=now_iso),
-        rebalance_jobs_by_language=engine._rebalance_jobs_by_language,
-        file_repo_get_file=engine._file_repo.get_file,
-        retry_max_attempts=engine._policy.retry_max_attempts,
-        retry_backoff_base_sec=engine._policy.retry_backoff_base_sec,
-        persist_body_for_read=engine._persist_body_for_read,
-        vector_index_sink=engine._vector_index_sink,
-        is_deletion_hold_enabled=engine._is_deletion_hold_enabled,
-        resolve_l3_skip_reason=lambda job: engine._resolve_l3_skip_reason(job=job),
-        build_l3_skipped_readiness=lambda job, reason, now_iso: engine._build_l3_skipped_readiness(
-            job=job,
-            reason=reason,
-            now_iso=now_iso,
-        ),
+        rebalance_jobs_by_language=deps.rebalance_jobs_by_language,
+        file_repo_get_file=deps.file_repo_get_file,
+        retry_max_attempts=deps.retry_max_attempts,
+        retry_backoff_base_sec=deps.retry_backoff_base_sec,
+        persist_body_for_read=deps.persist_body_for_read,
+        vector_index_sink=deps.vector_index_sink,
+        is_deletion_hold_enabled=deps.is_deletion_hold_enabled,
+        resolve_l3_skip_reason=deps.resolve_l3_skip_reason,
+        build_l3_skipped_readiness=deps.build_l3_skipped_readiness,
         lsp_extract=engine._lsp_backend.extract,
         schedule_l1_probe_after_l3_fallback=lambda job: engine._schedule_l1_probe_after_l3_fallback(job=job),
-        record_error_event=engine._error_policy.record_error_event,
-        run_mode=engine._run_mode,
+        record_error_event=deps.record_error_event,
+        run_mode=deps.run_mode,
         flush_batch_size=engine._flush_batch_size,
         flush_interval_sec=engine._flush_interval_sec,
         flush_max_body_bytes=engine._flush_max_body_bytes,
         flush_enrich=engine._enrich_flush_coordinator.flush,
-        record_enrich_latency=engine._record_enrich_latency,
-        record_event=(
-            None
-            if engine._event_repo is None
-            else lambda job_id, status, latency_ms, created_at: engine._event_repo.record_event(
-                job_id=job_id,
-                status=status,
-                latency_ms=latency_ms,
-                created_at=created_at,
-            )
-        ),
+        record_enrich_latency=deps.record_enrich_latency,
+        record_event=deps.record_event,
     )
