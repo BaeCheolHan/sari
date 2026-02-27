@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import time
 from typing import TYPE_CHECKING
 
@@ -124,7 +123,7 @@ def wire_engine_services(
         enabled=bool(getattr(engine, "_l5_db_short_circuit_enabled", True)),
         log_miss_reason=bool(getattr(engine, "_l5_db_short_circuit_log_miss_reason", True)),
     )
-    configured_l3_asset_mode = os.getenv("SARI_L3_ASSET_MODE", l3_asset_mode).strip().lower()
+    configured_l3_asset_mode = str(l3_asset_mode).strip().lower()
     if configured_l3_asset_mode not in {"shadow", "gate", "apply"}:
         configured_l3_asset_mode = "shadow"
     engine._l3_asset_mode = configured_l3_asset_mode

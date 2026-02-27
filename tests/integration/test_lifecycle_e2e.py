@@ -216,19 +216,3 @@ def test_force_kill_fallback_records_force_killed(tmp_path: Path) -> None:
     assert latest is not None
     assert latest["exit_reason"] == "FORCE_KILLED"
 
-
-def test_auto_loop_failure_stops_daemon_in_dev_mode(tmp_path: Path) -> None:
-    """auto-loop 실패를 유도하면 dev 모드 데몬이 종료되어야 한다."""
-    db_path = tmp_path / "state.db"
-    init_schema(db_path)
-    daemon_service, runtime_repo = _build_daemon_service(db_path=db_path, preferred_port=_pick_free_port())
-
-    os.environ["SARI_TEST_AUTO_LOOP_FAIL"] = "1"
-    try:
-        runtime = daemon_service.start(run_mode="dev")
-        _wait_pid_exit(runtime.pid, timeout_sec=10.0)
-        row = runtime_repo.get_runtime()
-        assert row is not None
-        assert row.last_exit_reason == "AUTO_LOOP_FAILURE"
-    finally:
-        os.environ.pop("SARI_TEST_AUTO_LOOP_FAIL", None)

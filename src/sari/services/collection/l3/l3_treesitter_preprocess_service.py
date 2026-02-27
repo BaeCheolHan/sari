@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import os
 import re
 import time
 from concurrent.futures import Executor
@@ -107,16 +106,13 @@ class L3TreeSitterPreprocessService:
         self._language_registry = language_registry or L3LanguageProcessorRegistry()
         self._asset_mode = asset_mode
         self._asset_lang_allowlist = tuple(item.strip().lower() for item in asset_lang_allowlist if item.strip() != "")
-        configured_mode = normalize_executor_mode(
-            os.getenv("SARI_L3_TREE_SITTER_EXECUTOR_MODE", tree_sitter_executor_mode),
-            default="inline",
-        )
+        configured_mode = normalize_executor_mode(tree_sitter_executor_mode, default="inline")
         configured_workers = parse_positive_int(
-            os.getenv("SARI_L3_TREE_SITTER_SUBINTERP_WORKERS", str(tree_sitter_subinterp_workers)),
+            str(tree_sitter_subinterp_workers),
             default=max(1, int(tree_sitter_subinterp_workers)),
         )
         configured_min_bytes = parse_non_negative_int(
-            os.getenv("SARI_L3_TREE_SITTER_SUBINTERP_MIN_BYTES", str(tree_sitter_subinterp_min_bytes)),
+            str(tree_sitter_subinterp_min_bytes),
             default=max(0, int(tree_sitter_subinterp_min_bytes)),
         )
         self._tree_sitter_executor_mode = configured_mode

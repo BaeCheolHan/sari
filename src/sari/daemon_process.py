@@ -251,8 +251,6 @@ def main() -> None:
         while not stop_event.is_set():
             tick_wait = min(float(config.pipeline_auto_tick_interval_sec), float(config.orphan_ppid_check_interval_sec))
             try:
-                if os.getenv("SARI_TEST_AUTO_LOOP_FAIL", "").strip() == "1":
-                    raise RuntimeError("auto loop failpoint")
                 if not _is_parent_alive(launch_parent_pid, detached_mode=detached_mode):
                     shutdown_reason["value"] = "ORPHAN_SELF_TERMINATE"
                     runtime_repo.mark_exit_reason(this_pid, "ORPHAN_SELF_TERMINATE", now_iso8601_utc())

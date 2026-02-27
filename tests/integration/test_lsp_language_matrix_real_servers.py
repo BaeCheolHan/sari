@@ -32,9 +32,6 @@ def _parse_json_from_mixed_output(raw_output: str) -> dict[str, object]:
 
 def test_real_lsp_matrix_reports_missing_server_consistently(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """실서버 실행에서 ERR_LSP_SERVER_MISSING 집계와 summary가 일치해야 한다."""
-    if os.getenv("SARI_E2E_REAL_LSP", "").strip() != "1":
-        pytest.skip("real lsp e2e is disabled")
-
     repo_root = os.getenv("SARI_E2E_REAL_LSP_REPO", "").strip()
     if repo_root == "":
         pytest.skip("SARI_E2E_REAL_LSP_REPO is required for real e2e")

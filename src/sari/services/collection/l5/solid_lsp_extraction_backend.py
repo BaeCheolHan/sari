@@ -220,22 +220,13 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
             resolve_symbol_depth=lambda symbol: self._resolve_symbol_depth(symbol),
             resolve_container_name=lambda symbol: self._resolve_container_name(symbol),
         )
-        configured_mode = normalize_executor_mode(
-            os.getenv("SARI_L5_SYMBOL_NORMALIZER_EXECUTOR_MODE", str(symbol_normalizer_executor_mode)),
-            default="inline",
-        )
+        configured_mode = normalize_executor_mode(str(symbol_normalizer_executor_mode), default="inline")
         configured_workers = parse_positive_int(
-            os.getenv(
-                "SARI_L5_SYMBOL_NORMALIZER_SUBINTERP_WORKERS",
-                str(max(1, int(symbol_normalizer_subinterp_workers))),
-            ),
+            str(max(1, int(symbol_normalizer_subinterp_workers))),
             default=max(1, int(symbol_normalizer_subinterp_workers)),
         )
         configured_min_symbols = parse_non_negative_int(
-            os.getenv(
-                "SARI_L5_SYMBOL_NORMALIZER_SUBINTERP_MIN_SYMBOLS",
-                str(max(0, int(symbol_normalizer_subinterp_min_symbols))),
-            ),
+            str(max(0, int(symbol_normalizer_subinterp_min_symbols))),
             default=max(0, int(symbol_normalizer_subinterp_min_symbols)),
         )
         self._symbol_normalizer_executor_mode = configured_mode

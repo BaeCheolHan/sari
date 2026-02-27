@@ -15,14 +15,10 @@ def _is_virtual_environment() -> bool:
 
 
 def pytest_sessionstart(session: pytest.Session) -> None:  # noqa: ARG001
-    if os.environ.get("SARI_SKIP_PYTEST_ENV_GUARD") == "1":
-        return
     if _is_virtual_environment():
         return
     raise pytest.UsageError(
         "This test suite must run in a virtual environment with project dependencies.\n"
         f"Current interpreter: {sys.executable}\n"
-        "Run tests with: uv run pytest -q .\n"
-        "If you intentionally need to bypass this guard, set "
-        "SARI_SKIP_PYTEST_ENV_GUARD=1."
+        "Run tests with: uv run pytest -q ."
     )

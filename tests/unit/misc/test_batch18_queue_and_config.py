@@ -361,3 +361,56 @@ def test_app_config_candidate_backend_and_fallback_source_priority(tmp_path: Pat
     assert overridden.candidate_backend == "tantivy"
     assert overridden.candidate_fallback_scan is True
     assert str(overridden.db_path).endswith("from-env.db")
+
+
+def test_app_config_release_mode_limits_env_surface(tmp_path: Path, monkeypatch) -> None:
+    """release 모드는 allowlist 밖 env를 무시하고 file/default를 사용해야 한다."""
+    home = tmp_path / "home"
+    config_dir = home / ".sari"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "run_mode": "release",
+                "lsp_probe_workers": 3,
+                "collection_include_ext": [".py", ".kt"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("SARI_RUN_MODE", "release")
+    # allowlist 밖 설정: release에서는 무시되어야 한다.
+    monkeypatch.setenv("SARI_LSP_PROBE_WORKERS", "99")
+    # allowlist 안 설정: release에서도 override 허용된다.
+    monkeypatch.setenv("SARI_COLLECTION_INCLUDE_EXT", ".py,.java")
+
+    config = AppConfig.default()
+
+    assert config.run_mode == "prod"
+    assert config.lsp_probe_workers == 3
+    assert config.collection_include_ext == (".py", ".java")
+
+
+def test_app_config_test_mode_allows_env_override(tmp_path: Path, monkeypatch) -> None:
+    """test 모드는 기존처럼 env override를 허용해야 한다."""
+    home = tmp_path / "home"
+    config_dir = home / ".sari"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "run_mode": "test",
+                "lsp_probe_workers": 3,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("SARI_RUN_MODE", "test")
+    monkeypatch.setenv("SARI_LSP_PROBE_WORKERS", "77")
+
+    config = AppConfig.default()
+
+    assert config.run_mode == "dev"
+    assert config.lsp_probe_workers == 77
