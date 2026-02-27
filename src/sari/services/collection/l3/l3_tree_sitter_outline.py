@@ -153,12 +153,12 @@ class TreeSitterOutlineExtractor:
             (enum_constant name: (identifier) @name) @symbol.enum_constant
         """,
         "kotlin": """
-            (class_declaration (identifier) @name) @symbol.class
-            (class_parameter (identifier) @name) @symbol.field
-            (source_file (function_declaration name: (identifier) @name) @symbol.function)
-            (source_file (property_declaration (variable_declaration (identifier) @name) @symbol.field))
-            (class_body (function_declaration name: (identifier) @name) @symbol.method)
-            (class_body (property_declaration (variable_declaration (identifier) @name) @symbol.field))
+            (class_declaration (type_identifier) @name) @symbol.class
+            (class_parameter (simple_identifier) @name) @symbol.field
+            (source_file (function_declaration (simple_identifier) @name) @symbol.function)
+            (source_file (property_declaration (variable_declaration (simple_identifier) @name) @symbol.field))
+            (class_body (function_declaration (simple_identifier) @name) @symbol.method)
+            (class_body (property_declaration (variable_declaration (simple_identifier) @name) @symbol.field))
         """,
         "scala": """
             (package_clause (package_identifier) @name) @symbol.module
@@ -224,13 +224,26 @@ class TreeSitterOutlineExtractor:
             self._query_cursor_cls = QueryCursor
         except (ImportError, RuntimeError, OSError, ValueError, TypeError):
             self._query_cursor_cls = None
-        try:
-            from tree_sitter_languages import get_language  # type: ignore
-            self._get_language = get_language
-        except (ImportError, RuntimeError, OSError, ValueError, TypeError):
-            self._get_language = None
+        self._get_language = self._resolve_get_language_loader()
         self._available = True
         self._logger = logging.getLogger(__name__)
+
+    def _resolve_get_language_loader(self):
+        """tree-sitter language loader를 우선순위에 따라 해석한다.
+
+        우선순위:
+        1) tree_sitter_language_pack.get_language (신규 경로)
+        2) tree_sitter_languages.get_language (레거시 폴백)
+        """
+        for module_name in ("tree_sitter_language_pack", "tree_sitter_languages"):
+            try:
+                module = importlib.import_module(module_name)
+            except (ImportError, RuntimeError, OSError, ValueError, TypeError):
+                continue
+            get_language = getattr(module, "get_language", None)
+            if callable(get_language):
+                return get_language
+        return None
 
     def is_available_for(self, lang_key: str) -> bool:
         if not self._available:
@@ -331,7 +344,11 @@ class TreeSitterOutlineExtractor:
             return None
         query = self._compiled_queries.get(normalized)
         if query is None:
-            query = self._compile_query(language=language, source=query_source)
+            query = self._compile_query_candidates(
+                language=language,
+                normalized=normalized,
+                primary_source=query_source,
+            )
             if query is None:
                 return None
             self._compiled_queries[normalized] = query
@@ -422,6 +439,20 @@ class TreeSitterOutlineExtractor:
             return None
         symbols = self._postprocess_symbols(normalized=normalized, symbols=symbols, content_text=content_text)
         return TreeSitterOutlineResult(symbols=symbols, degraded=False)
+
+    def _compile_query_candidates(self, *, language, normalized: str, primary_source: str):
+        """자산/패키지 쿼리가 깨진 경우 builtin 쿼리까지 순차 컴파일한다."""
+        candidates: list[str] = []
+        if isinstance(primary_source, str) and primary_source.strip() != "":
+            candidates.append(primary_source)
+        builtin = self._QUERY_SOURCES.get(normalized)
+        if isinstance(builtin, str) and builtin.strip() != "" and builtin not in candidates:
+            candidates.append(builtin)
+        for source in candidates:
+            compiled = self._compile_query(language=language, source=source)
+            if compiled is not None:
+                return compiled
+        return None
 
     def _postprocess_symbols(
         self,
@@ -685,7 +716,7 @@ class TreeSitterOutlineExtractor:
                         category=FutureWarning,
                     )
                     return self._get_language(normalized_lang)
-            except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
+            except (LookupError, RuntimeError, OSError, ValueError, TypeError, AttributeError):
                 ...
         fallback = self._FALLBACK_LANGUAGE_LOADERS.get(normalized_lang)
         if fallback is None:

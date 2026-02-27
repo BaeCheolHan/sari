@@ -24,6 +24,52 @@ def test_load_language_uses_fallback_module_loader(monkeypatch) -> None:
     assert loaded == ("wrapped", "capsule:python")
 
 
+def test_resolve_get_language_prefers_language_pack(monkeypatch) -> None:
+    extractor = TreeSitterOutlineExtractor()
+
+    class _PackModule:
+        @staticmethod
+        def get_language(name: str):
+            return f"pack:{name}"
+
+    def _import_module(name: str):
+        if name == "tree_sitter_language_pack":
+            return _PackModule()
+        raise ImportError(name)
+
+    monkeypatch.setattr(
+        "sari.services.collection.l3.l3_tree_sitter_outline.importlib.import_module",
+        _import_module,
+    )
+    loader = extractor._resolve_get_language_loader()
+    assert callable(loader)
+    assert loader("python") == "pack:python"
+
+
+def test_resolve_get_language_falls_back_to_tree_sitter_languages(monkeypatch) -> None:
+    extractor = TreeSitterOutlineExtractor()
+
+    class _LegacyModule:
+        @staticmethod
+        def get_language(name: str):
+            return f"legacy:{name}"
+
+    def _import_module(name: str):
+        if name == "tree_sitter_language_pack":
+            raise ImportError(name)
+        if name == "tree_sitter_languages":
+            return _LegacyModule()
+        raise ImportError(name)
+
+    monkeypatch.setattr(
+        "sari.services.collection.l3.l3_tree_sitter_outline.importlib.import_module",
+        _import_module,
+    )
+    loader = extractor._resolve_get_language_loader()
+    assert callable(loader)
+    assert loader("java") == "legacy:java"
+
+
 def test_load_language_returns_none_for_unknown_language() -> None:
     extractor = TreeSitterOutlineExtractor()
 
