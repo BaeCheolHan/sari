@@ -31,21 +31,22 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install Gate Dependencies
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Sync Environment
         run: |
-          python3 -m pip install --upgrade pip
-          python3 -m pip install -e .
-          python3 -m pip install pytest
+          uv sync --frozen --group dev
 
       - name: Release hard gate
         run: |
           chmod +x tools/ci/run_release_gate.sh
-          tools/ci/run_release_gate.sh
+          uv run tools/ci/run_release_gate.sh
 
       - name: Verify tag version matches pyproject
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
-          python3 - <<'PY'
+          uv run python - <<'PY'
           import pathlib
           import re
           import tomllib
@@ -61,7 +62,7 @@ jobs:
           PY
 
       - name: Build and twine check
-        run: tools/ci/release_pypi.sh
+        run: uv run tools/ci/release_pypi.sh
 
       - name: Upload dist artifact
         uses: actions/upload-artifact@v4

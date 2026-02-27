@@ -120,7 +120,7 @@ sari install --host codex
 ## 개발 검증
 
 ```bash
-pytest -q
+uv run pytest -q .
 tools/ci/run_release_gate.sh
 tools/manual/test_mcp_call_flow.sh /absolute/path/to/repo
 ```
@@ -147,7 +147,7 @@ Release 워크플로우 파일: `.github/workflows/release-pypi.yml`
 로컬 빌드 산출물 검증은 `uv tool install dist/*.whl` 대신 아래 스크립트를 사용한다.
 
 ```bash
-python3 -m build
+uv run --with build python -m build
 tools/manual/test_local_wheel_ephemeral.sh
 ```
 

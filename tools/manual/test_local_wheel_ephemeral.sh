@@ -11,7 +11,7 @@ else
 fi
 
 if [[ -z "${WHEEL_PATH}" || ! -f "${WHEEL_PATH}" ]]; then
-  echo "wheel 파일을 찾지 못했습니다. 먼저 python3 -m build 를 실행하세요." >&2
+  echo "wheel 파일을 찾지 못했습니다. 먼저 uv run --with build python -m build 를 실행하세요." >&2
   exit 1
 fi
 
