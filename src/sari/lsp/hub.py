@@ -59,7 +59,7 @@ class LspHub:
         bulk_max_instances_per_repo_language: int = 4,
         lsp_global_soft_limit: int = 0,
         hot_acquire_window_sec: float = 1.0,
-        scale_out_hot_hits: int = 24,
+        scale_out_hot_hits: int = 8,
         idle_cleanup_interval_sec: float = 5.0,
         stop_timeout_sec: float = 3.0,
         request_timeout_sec: float = 20.0,

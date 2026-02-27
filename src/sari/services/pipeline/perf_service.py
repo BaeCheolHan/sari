@@ -722,7 +722,7 @@ class PipelinePerfService:
         # 기본 profile (기존 동작 유지)
         default_threshold = {
             "profile_name": profile_name,
-            "min_l3_jobs_per_sec": 220.0,
+            "min_l3_jobs_per_sec": 300.0,
             "max_wall_time_sec": 13.0,
             "max_error_rate_pct": 0.5,
         }
@@ -739,13 +739,13 @@ class PipelinePerfService:
         if profile_name == "py314_subinterp_v1":
             return {
                 "profile_name": "py314_subinterp_v1",
-                "min_l3_jobs_per_sec": 45.0,
+                "min_l3_jobs_per_sec": 70.0,
                 "max_wall_time_sec": 55.0,
                 "max_error_rate_pct": 0.5,
             }
         return {
             "profile_name": profile_name,
-            "min_l3_jobs_per_sec": 40.0,
+            "min_l3_jobs_per_sec": 60.0,
             "max_wall_time_sec": 60.0,
             "max_error_rate_pct": 0.5,
         }

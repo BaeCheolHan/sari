@@ -38,6 +38,8 @@ def _cached_engine(db_path_text: str) -> Engine:
         cursor.execute("PRAGMA journal_mode=WAL")
         cursor.execute("PRAGMA synchronous=NORMAL")
         cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute("PRAGMA mmap_size=268435456")
+        cursor.execute("PRAGMA cache_size=-64000")
         cursor.close()
 
     return engine

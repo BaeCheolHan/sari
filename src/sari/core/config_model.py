@@ -144,8 +144,8 @@ class AppConfig:
     # Pipeline worker runtime
     pipeline_retry_max: int = 5
     pipeline_backoff_base_sec: int = 1
-    queue_poll_interval_ms: int = 500
-    watcher_debounce_ms: int = 300
+    queue_poll_interval_ms: int = 100
+    watcher_debounce_ms: int = 150
     collection_include_ext: tuple[str, ...] = get_default_collection_extensions()
     collection_exclude_globs: tuple[str, ...] = DEFAULT_COLLECTION_EXCLUDE_GLOBS
     pipeline_worker_count: int = 4
@@ -165,11 +165,10 @@ class AppConfig:
     lsp_bulk_max_instances_per_repo_language: int = 4
     lsp_interactive_reserved_slots_per_repo_language: int = 1
     lsp_interactive_timeout_sec: float = 4.0
-    lsp_interactive_queue_max: int = 256
     lsp_symbol_info_budget_sec: float = 10.0
     lsp_include_info_default: bool = False
     lsp_global_soft_limit: int = 0
-    lsp_scale_out_hot_hits: int = 24
+    lsp_scale_out_hot_hits: int = 8
     l3_executor_max_workers: int = 0
     l3_recent_success_ttl_sec: int = 120
     l3_backpressure_on_interactive: bool = True
@@ -289,28 +288,27 @@ class AppConfig:
     search_lsp_recent_failure_cooldown_sec: float = 5.0
 
     # L5 admission/token budget
-    l5_call_rate_total_max: float = 0.05
-    l5_call_rate_batch_max: float = 0.01
-    l5_calls_per_min_per_lang_max: int = 30
-    l5_tokens_per_10sec_global_max: int = 120
-    l5_tokens_per_10sec_per_lang_max: int = 30
+    l5_call_rate_total_max: float = 0.10
+    l5_call_rate_batch_max: float = 0.05
+    l5_calls_per_min_per_lang_max: int = 60
+    l5_tokens_per_10sec_global_max: int = 240
+    l5_tokens_per_10sec_per_lang_max: int = 60
     l5_tokens_per_10sec_per_workspace_max: int = 20
 
     # L3/L5 subinterpreter execution knobs
     l3_query_compile_cache_enabled: bool = True
     l3_query_compile_ms_budget: float = 10.0
     l3_query_budget_ms: float = 30.0
-    l3_tree_sitter_executor_mode: str = "inline"
+    l3_tree_sitter_executor_mode: str = "subinterp"
     l3_tree_sitter_subinterp_workers: int = 4
-    l3_tree_sitter_subinterp_min_bytes: int = 4096
+    l3_tree_sitter_subinterp_min_bytes: int = 2048
     l3_asset_mode: str = "shadow"
-    l3_asset_manifest_path: str = "src/sari/services/collection/assets/manifest.json"
     l3_asset_lang_allowlist: tuple[str, ...] = ()
     l5_db_short_circuit_enabled: bool = True
     l5_db_short_circuit_log_miss_reason: bool = True
-    l5_symbol_normalizer_executor_mode: str = "inline"
+    l5_symbol_normalizer_executor_mode: str = "subinterp"
     l5_symbol_normalizer_subinterp_workers: int = 2
-    l5_symbol_normalizer_subinterp_min_symbols: int = 200
+    l5_symbol_normalizer_subinterp_min_symbols: int = 100
 
     # MCP serving/runtime behavior
     mcp_forward_to_daemon: bool = False

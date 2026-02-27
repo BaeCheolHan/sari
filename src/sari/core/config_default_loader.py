@@ -70,7 +70,6 @@ def build_default_config(cls):
     lsp_bulk_max_per_repo_lang_raw = core_raw_values["lsp_bulk_max_per_repo_lang_raw"]
     lsp_interactive_reserved_slots_raw = core_raw_values["lsp_interactive_reserved_slots_raw"]
     lsp_interactive_timeout_raw = core_raw_values["lsp_interactive_timeout_raw"]
-    lsp_interactive_queue_max_raw = core_raw_values["lsp_interactive_queue_max_raw"]
     lsp_symbol_info_budget_raw = core_raw_values["lsp_symbol_info_budget_raw"]
     lsp_include_info_default_raw = core_raw_values["lsp_include_info_default_raw"]
     lsp_global_soft_limit_raw = core_raw_values["lsp_global_soft_limit_raw"]
@@ -169,7 +168,6 @@ def build_default_config(cls):
     l3_query_compile_ms_budget_raw = extended_raw_values["l3_query_compile_ms_budget_raw"]
     l3_query_budget_ms_raw = extended_raw_values["l3_query_budget_ms_raw"]
     l3_asset_mode_raw = extended_raw_values["l3_asset_mode_raw"]
-    l3_asset_manifest_path = extended_raw_values["l3_asset_manifest_path"]
     l3_asset_lang_allowlist_raw = extended_raw_values["l3_asset_lang_allowlist_raw"]
     l5_db_short_circuit_enabled_raw = extended_raw_values["l5_db_short_circuit_enabled_raw"]
     l5_db_short_circuit_log_miss_reason_raw = extended_raw_values["l5_db_short_circuit_log_miss_reason_raw"]
@@ -193,8 +191,8 @@ def build_default_config(cls):
     run_mode = "prod" if normalized_run_mode in {"prod", "release"} else "dev"
     retry_max = parser.int_min(retry_max_raw, minimum=1, default=5)
     backoff_sec = parser.int_min(backoff_raw, minimum=1, default=1)
-    poll_ms = parser.int_min(poll_raw, minimum=100, default=500)
-    debounce_ms = parser.int_min(debounce_raw, minimum=50, default=300)
+    poll_ms = parser.int_min(poll_raw, minimum=100, default=100)
+    debounce_ms = parser.int_min(debounce_raw, minimum=50, default=150)
     worker_count = parser.int_min(worker_raw, minimum=1, default=4)
     p95_threshold_ms = parser.int_min(p95_raw, minimum=1, default=180_000)
     dead_ratio_bps = parser.int_min(dead_ratio_raw, minimum=1, default=10)
@@ -208,12 +206,11 @@ def build_default_config(cls):
     lsp_bulk_max_instances_per_repo_language = parser.int_min(lsp_bulk_max_per_repo_lang_raw, minimum=1, default=4)
     lsp_interactive_reserved_slots_per_repo_language = parser.int_min(lsp_interactive_reserved_slots_raw, minimum=0, default=1)
     lsp_interactive_timeout_sec = parser.float_min(lsp_interactive_timeout_raw, minimum=0.1, default=4.0)
-    lsp_interactive_queue_max = parser.int_min(lsp_interactive_queue_max_raw, minimum=16, default=256)
     lsp_symbol_info_budget_sec = parser.float_min(lsp_symbol_info_budget_raw, minimum=0.0, default=10.0)
     l3_executor_max_workers = parser.int_min(l3_executor_max_workers_raw, minimum=0, default=0)
     l3_recent_success_ttl_sec = parser.int_min(l3_recent_success_ttl_raw, minimum=0, default=120)
     l3_backpressure_cooldown_ms = parser.int_min(l3_backpressure_cooldown_ms_raw, minimum=10, default=300)
-    lsp_scale_out_hot_hits = parser.int_min(lsp_scale_out_hot_hits_raw, minimum=2, default=24)
+    lsp_scale_out_hot_hits = parser.int_min(lsp_scale_out_hot_hits_raw, minimum=2, default=8)
     lsp_file_buffer_idle_ttl_sec = parser.float_min(lsp_file_buffer_idle_ttl_raw, minimum=1.0, default=20.0)
     lsp_file_buffer_max_open = parser.int_min(lsp_file_buffer_max_open_raw, minimum=16, default=512)
     lsp_java_min_major = parser.int_min(lsp_java_min_major_raw, minimum=8, default=17)
@@ -368,11 +365,11 @@ def build_default_config(cls):
     search_lsp_pressure_timeout_threshold = parser.int_min(search_lsp_pressure_timeout_threshold_raw, minimum=0, default=1)
     search_lsp_pressure_rejected_threshold = parser.int_min(search_lsp_pressure_rejected_threshold_raw, minimum=0, default=1)
     search_lsp_recent_failure_cooldown_sec = parser.float_min(search_lsp_recent_failure_cooldown_sec_raw, minimum=0.0, default=5.0)
-    l5_call_rate_total_max = parser.float_range(l5_call_rate_total_max_raw, minimum=0.0, maximum=1.0, default=0.05)
-    l5_call_rate_batch_max = parser.float_range(l5_call_rate_batch_max_raw, minimum=0.0, maximum=1.0, default=0.01)
-    l5_calls_per_min_per_lang_max = parser.int_min(l5_calls_per_min_per_lang_max_raw, minimum=1, default=30)
-    l5_tokens_per_10sec_global_max = parser.int_min(l5_tokens_per_10sec_global_max_raw, minimum=1, default=120)
-    l5_tokens_per_10sec_per_lang_max = parser.int_min(l5_tokens_per_10sec_per_lang_max_raw, minimum=1, default=30)
+    l5_call_rate_total_max = parser.float_range(l5_call_rate_total_max_raw, minimum=0.0, maximum=1.0, default=0.10)
+    l5_call_rate_batch_max = parser.float_range(l5_call_rate_batch_max_raw, minimum=0.0, maximum=1.0, default=0.05)
+    l5_calls_per_min_per_lang_max = parser.int_min(l5_calls_per_min_per_lang_max_raw, minimum=1, default=60)
+    l5_tokens_per_10sec_global_max = parser.int_min(l5_tokens_per_10sec_global_max_raw, minimum=1, default=240)
+    l5_tokens_per_10sec_per_lang_max = parser.int_min(l5_tokens_per_10sec_per_lang_max_raw, minimum=1, default=60)
     l5_tokens_per_10sec_per_workspace_max = parser.int_min(l5_tokens_per_10sec_per_workspace_max_raw, minimum=1, default=20)
     l3_query_compile_ms_budget = parser.float_min(l3_query_compile_ms_budget_raw, minimum=0.1, default=10.0)
     l3_query_budget_ms = parser.float_min(l3_query_budget_ms_raw, minimum=0.1, default=30.0)
@@ -384,7 +381,7 @@ def build_default_config(cls):
     l3_tree_sitter_subinterp_min_bytes = parser.int_min(
         l3_tree_sitter_subinterp_min_bytes_raw,
         minimum=0,
-        default=4096,
+        default=2048,
     )
     l5_symbol_normalizer_subinterp_workers = parser.int_min(
         l5_symbol_normalizer_subinterp_workers_raw,
@@ -394,7 +391,7 @@ def build_default_config(cls):
     l5_symbol_normalizer_subinterp_min_symbols = parser.int_min(
         l5_symbol_normalizer_subinterp_min_symbols_raw,
         minimum=0,
-        default=200,
+        default=100,
     )
     include_ext_raw = _read_env_or_default(
         env_key="SARI_COLLECTION_INCLUDE_EXT",
@@ -560,7 +557,6 @@ def build_default_config(cls):
         lsp_bulk_max_instances_per_repo_language=lsp_hub_runtime.bulk_max_instances_per_repo_language,
         lsp_interactive_reserved_slots_per_repo_language=lsp_hub_runtime.interactive_reserved_slots_per_repo_language,
         lsp_interactive_timeout_sec=lsp_hub_runtime.interactive_timeout_sec,
-        lsp_interactive_queue_max=lsp_interactive_queue_max,
         lsp_symbol_info_budget_sec=lsp_symbol_info_budget_sec,
         lsp_include_info_default=search_runtime.lsp_include_info_default,
         lsp_global_soft_limit=lsp_hub_runtime.lsp_global_soft_limit,
@@ -661,7 +657,7 @@ def build_default_config(cls):
         l3_tree_sitter_executor_mode=(
             l3_tree_sitter_executor_mode_raw
             if l3_tree_sitter_executor_mode_raw in {"inline", "subinterp"}
-            else "inline"
+            else "subinterp"
         ),
         l3_tree_sitter_subinterp_workers=l3_tree_sitter_subinterp_workers,
         l3_tree_sitter_subinterp_min_bytes=l3_tree_sitter_subinterp_min_bytes,
@@ -670,14 +666,13 @@ def build_default_config(cls):
             if l3_asset_mode_raw in {"shadow", "gate", "apply"}
             else "shadow"
         ),
-        l3_asset_manifest_path=l3_asset_manifest_path,
         l3_asset_lang_allowlist=l3_asset_lang_allowlist,
         l5_db_short_circuit_enabled=parser.bool_true(l5_db_short_circuit_enabled_raw),
         l5_db_short_circuit_log_miss_reason=parser.bool_true(l5_db_short_circuit_log_miss_reason_raw),
         l5_symbol_normalizer_executor_mode=(
             l5_symbol_normalizer_executor_mode_raw
             if l5_symbol_normalizer_executor_mode_raw in {"inline", "subinterp"}
-            else "inline"
+            else "subinterp"
         ),
         l5_symbol_normalizer_subinterp_workers=l5_symbol_normalizer_subinterp_workers,
         l5_symbol_normalizer_subinterp_min_symbols=l5_symbol_normalizer_subinterp_min_symbols,

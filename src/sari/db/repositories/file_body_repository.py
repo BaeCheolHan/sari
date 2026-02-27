@@ -64,26 +64,25 @@ class FileBodyRepository:
         if conn is None:
             raise RuntimeError("conn must not be None when owned_conn is False")
         try:
-            for body_row in body_rows:
-                conn.execute(
-                    """
-                    INSERT INTO collected_file_bodies_l2(
-                        repo_root, scope_repo_root, relative_path, content_hash, content_zlib, content_len,
-                        normalized_text, created_at, updated_at
-                    )
-                    VALUES(
-                        :repo_root, :scope_repo_root, :relative_path, :content_hash, :content_zlib, :content_len,
-                        :normalized_text, :created_at, :updated_at
-                    )
-                    ON CONFLICT(repo_root, relative_path, content_hash) DO UPDATE SET
-                        scope_repo_root = excluded.scope_repo_root,
-                        content_zlib = excluded.content_zlib,
-                        content_len = excluded.content_len,
-                        normalized_text = excluded.normalized_text,
-                        updated_at = excluded.updated_at
-                    """,
-                    body_row.to_sql_params(),
+            conn.executemany(
+                """
+                INSERT INTO collected_file_bodies_l2(
+                    repo_root, scope_repo_root, relative_path, content_hash, content_zlib, content_len,
+                    normalized_text, created_at, updated_at
                 )
+                VALUES(
+                    :repo_root, :scope_repo_root, :relative_path, :content_hash, :content_zlib, :content_len,
+                    :normalized_text, :created_at, :updated_at
+                )
+                ON CONFLICT(repo_root, relative_path, content_hash) DO UPDATE SET
+                    scope_repo_root = excluded.scope_repo_root,
+                    content_zlib = excluded.content_zlib,
+                    content_len = excluded.content_len,
+                    normalized_text = excluded.normalized_text,
+                    updated_at = excluded.updated_at
+                """,
+                [body_row.to_sql_params() for body_row in body_rows],
+            )
             if owned_conn:
                 conn.commit()
         finally:
