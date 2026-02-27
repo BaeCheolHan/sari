@@ -99,6 +99,63 @@ def test_build_parser_supports_legacy_set_language_path() -> None:
     assert parser.language == "lang:python"
 
 
+def test_parse_tree_uses_incremental_old_tree_when_parse_key_repeats() -> None:
+    extractor = TreeSitterOutlineExtractor()
+
+    class _Parser:
+        def __init__(self) -> None:
+            self.calls: list[object | None] = []
+
+        def parse(self, data, old_tree=None):  # noqa: ANN001
+            self.calls.append(old_tree)
+            return object()
+
+    parser = _Parser()
+    _ = extractor._parse_tree(  # noqa: SLF001
+        normalized="python",
+        parser=parser,
+        content_bytes=b"class A:\n  pass\n",
+        parse_key="/repo::a.py",
+    )
+    _ = extractor._parse_tree(  # noqa: SLF001
+        normalized="python",
+        parser=parser,
+        content_bytes=b"class A:\n  pass\nclass B:\n  pass\n",
+        parse_key="/repo::a.py",
+    )
+
+    assert len(parser.calls) == 2
+    assert parser.calls[0] is None
+    assert parser.calls[1] is not None
+
+
+def test_parse_tree_falls_back_when_parser_has_no_old_tree_signature() -> None:
+    extractor = TreeSitterOutlineExtractor()
+
+    class _LegacyParser:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def parse(self, data):  # noqa: ANN001
+            self.calls += 1
+            return object()
+
+    parser = _LegacyParser()
+    _ = extractor._parse_tree(  # noqa: SLF001
+        normalized="python",
+        parser=parser,
+        content_bytes=b"def a():\n  return 1\n",
+        parse_key="/repo::a.py",
+    )
+    _ = extractor._parse_tree(  # noqa: SLF001
+        normalized="python",
+        parser=parser,
+        content_bytes=b"def a():\n  return 2\n",
+        parse_key="/repo::a.py",
+    )
+    assert parser.calls == 2
+
+
 def test_extract_outline_prefers_query_strategy(monkeypatch) -> None:
     extractor = TreeSitterOutlineExtractor()
     extractor._available = True

@@ -121,7 +121,7 @@ sari install --host codex
 
 ```bash
 uv run pytest -q .
-tools/ci/run_release_gate.sh
+uv run tools/ci/run_release_gate.sh
 tools/manual/test_mcp_call_flow.sh /absolute/path/to/repo
 ```
 

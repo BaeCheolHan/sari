@@ -94,7 +94,14 @@ class L3TreeSitterPreprocessService:
         )
         self._language_registry = language_registry or L3LanguageProcessorRegistry()
 
-    def preprocess(self, *, relative_path: str, content_text: str, max_bytes: int = 262_144) -> L3PreprocessResultDTO:
+    def preprocess(
+        self,
+        *,
+        relative_path: str,
+        content_text: str,
+        max_bytes: int = 262_144,
+        repo_root: str | None = None,
+    ) -> L3PreprocessResultDTO:
         started_at = time.perf_counter()
         if self._is_tsls_fast_path(relative_path=relative_path):
             return L3PreprocessResultDTO(
@@ -116,7 +123,16 @@ class L3TreeSitterPreprocessService:
         language_processor = self._language_registry.resolve(relative_path=relative_path)
         pattern_key = language_processor.pattern_key(relative_path=relative_path)
 
-        tree_sitter_result = self._try_tree_sitter_outline(pattern_key=pattern_key, content_text=content_text) if pattern_key else None
+        tree_sitter_result = (
+            self._try_tree_sitter_outline(
+                pattern_key=pattern_key,
+                content_text=content_text,
+                relative_path=relative_path,
+                repo_root=repo_root,
+            )
+            if pattern_key
+            else None
+        )
         tree_sitter_degraded_reason: str | None = None
         if tree_sitter_result is not None:
             if tree_sitter_result.degraded:
@@ -198,7 +214,14 @@ class L3TreeSitterPreprocessService:
             reason=tree_sitter_degraded_reason or "l3_preprocess_only",
         )
 
-    def _try_tree_sitter_outline(self, *, pattern_key: str, content_text: str):
+    def _try_tree_sitter_outline(
+        self,
+        *,
+        pattern_key: str,
+        content_text: str,
+        relative_path: str,
+        repo_root: str | None = None,
+    ):
         if not self._tree_sitter_enabled:
             return None
         extractor = self._tree_sitter_outline_extractor
@@ -208,12 +231,24 @@ class L3TreeSitterPreprocessService:
         extract = getattr(extractor, "extract_outline", None)
         if not callable(extract):
             return None
+        parse_key = None
+        if isinstance(repo_root, str) and repo_root.strip() != "" and relative_path.strip() != "":
+            parse_key = f"{repo_root.strip()}::{relative_path.strip()}"
         try:
-            return extract(
-                lang_key=pattern_key,
-                content_text=content_text,
-                budget_sec=self._query_budget_sec,
-            )
+            try:
+                return extract(
+                    lang_key=pattern_key,
+                    content_text=content_text,
+                    budget_sec=self._query_budget_sec,
+                    parse_key=parse_key,
+                )
+            except TypeError:
+                # 테스트 더블/레거시 구현의 구 시그니처를 호환한다.
+                return extract(
+                    lang_key=pattern_key,
+                    content_text=content_text,
+                    budget_sec=self._query_budget_sec,
+                )
         except (RuntimeError, OSError, ValueError, TypeError) as exc:
             log.debug(
                 "L3 tree-sitter outline extraction failed; fallback to regex path (pattern_key=%s)",

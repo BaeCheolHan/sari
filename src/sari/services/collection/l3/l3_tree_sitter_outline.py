@@ -198,6 +198,8 @@ class TreeSitterOutlineExtractor:
         self._get_language = None
         self._compiled_queries: dict[str, Any] = {}
         self._query_source_cache: dict[str, str | None] = {}
+        self._incremental_trees: dict[tuple[str, str], object] = {}
+        self._max_incremental_trees = 2048
         self._asset_loader = asset_loader or L3AssetLoader()
         self._language_registry = language_registry or L3LanguageProcessorRegistry()
         self._asset_mode = str(asset_mode or "shadow").strip().lower()
@@ -253,7 +255,14 @@ class TreeSitterOutlineExtractor:
             return False
         return normalized in self._NODE_KIND_BY_TYPE
 
-    def extract_outline(self, *, lang_key: str, content_text: str, budget_sec: float) -> TreeSitterOutlineResult:
+    def extract_outline(
+        self,
+        *,
+        lang_key: str,
+        content_text: str,
+        budget_sec: float,
+        parse_key: str | None = None,
+    ) -> TreeSitterOutlineResult:
         if not self._available:
             return TreeSitterOutlineResult(symbols=[], degraded=True, reason=self._init_error_reason or "tree_sitter_unavailable")
         normalized = self._LANGUAGE_ALIASES.get(lang_key)
@@ -269,6 +278,7 @@ class TreeSitterOutlineExtractor:
             content_text=content_text,
             budget_sec=budget_sec,
             language_processor=language_processor,
+            parse_key=parse_key,
         )
         if query_result is not None:
             return query_result
@@ -277,6 +287,7 @@ class TreeSitterOutlineExtractor:
             parser=parser,
             content_text=content_text,
             budget_sec=budget_sec,
+            parse_key=parse_key,
         )
 
     def _extract_outline_legacy(
@@ -286,9 +297,15 @@ class TreeSitterOutlineExtractor:
         parser,
         content_text: str,
         budget_sec: float,
+        parse_key: str | None = None,
     ) -> TreeSitterOutlineResult:
         try:
-            tree = parser.parse(content_text.encode("utf-8", errors="ignore"))
+            tree = self._parse_tree(
+                normalized=normalized,
+                parser=parser,
+                content_bytes=content_text.encode("utf-8", errors="ignore"),
+                parse_key=parse_key,
+            )
         except (RuntimeError, OSError, ValueError, TypeError):
             return TreeSitterOutlineResult(symbols=[], degraded=True, reason="tree_sitter_parse_failed")
         started_at = time.perf_counter()
@@ -331,6 +348,7 @@ class TreeSitterOutlineExtractor:
         content_text: str,
         budget_sec: float,
         language_processor,
+        parse_key: str | None = None,
     ) -> TreeSitterOutlineResult | None:
         # Query path is best-effort: if the runtime lacks Query/QueryCursor support or
         # query compilation fails, fall back to the legacy traversal extractor.
@@ -353,7 +371,12 @@ class TreeSitterOutlineExtractor:
                 return None
             self._compiled_queries[normalized] = query
         try:
-            tree = parser.parse(content_text.encode("utf-8", errors="ignore"))
+            tree = self._parse_tree(
+                normalized=normalized,
+                parser=parser,
+                content_bytes=content_text.encode("utf-8", errors="ignore"),
+                parse_key=parse_key,
+            )
         except (RuntimeError, OSError, ValueError, TypeError):
             return TreeSitterOutlineResult(symbols=[], degraded=True, reason="tree_sitter_parse_failed")
         root = tree.root_node
@@ -548,7 +571,13 @@ class TreeSitterOutlineExtractor:
         lang_query = getattr(language, "query", None)
         if callable(lang_query):
             try:
-                return lang_query(source)
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore",
+                        message=r"query\(\) is deprecated\..*",
+                        category=DeprecationWarning,
+                    )
+                    return lang_query(source)
             except (RuntimeError, OSError, ValueError, TypeError, AttributeError, NameError, SyntaxError) as fallback_exc:
                 if primary_error is not None:
                     self._logger.debug(
@@ -749,6 +778,23 @@ class TreeSitterOutlineExtractor:
         except TypeError:
             self._logger.debug("parser constructor(language) is unavailable", exc_info=True)
             return None
+
+    def _parse_tree(self, *, normalized: str, parser, content_bytes: bytes, parse_key: str | None):
+        if not isinstance(parse_key, str) or parse_key.strip() == "":
+            return parser.parse(content_bytes)
+        cache_key = (normalized, parse_key.strip())
+        cached_tree = self._incremental_trees.get(cache_key)
+        try:
+            if cached_tree is not None:
+                tree = parser.parse(content_bytes, cached_tree)
+            else:
+                tree = parser.parse(content_bytes)
+        except TypeError:
+            tree = parser.parse(content_bytes)
+        self._incremental_trees[cache_key] = tree
+        if len(self._incremental_trees) > self._max_incremental_trees:
+            self._incremental_trees.pop(next(iter(self._incremental_trees)))
+        return tree
 
     def _resolve_symbol_name(self, *, node, content_text: str) -> str:
         def _sanitize(raw: str) -> str:

@@ -36,11 +36,20 @@ class L3PreprocessIoStage:
                     content_text = handle.read()
             else:
                 content_text = ""
-            result = preprocess_service.preprocess(
-                relative_path=job.relative_path,
-                content_text=content_text,
-                max_bytes=self._preprocess_max_bytes,
-            )
+            try:
+                result = preprocess_service.preprocess(
+                    relative_path=job.relative_path,
+                    content_text=content_text,
+                    max_bytes=self._preprocess_max_bytes,
+                    repo_root=job.repo_root,
+                )
+            except TypeError:
+                # 테스트 더블/레거시 preprocess 시그니처 호환.
+                result = preprocess_service.preprocess(
+                    relative_path=job.relative_path,
+                    content_text=content_text,
+                    max_bytes=self._preprocess_max_bytes,
+                )
             if (
                 len(result.symbols) == 0
                 and result.decision is not L3PreprocessDecision.DEFERRED_HEAVY
