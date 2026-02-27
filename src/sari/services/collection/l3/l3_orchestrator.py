@@ -254,6 +254,36 @@ class L3Orchestrator:
             self._quality_shadow_tracker = tracker
         return tracker.get_summary()
 
+    def get_quality_shadow_mode(self) -> dict[str, object]:
+        """L3 quality shadow runtime 설정값을 반환한다."""
+        return {
+            "enabled": bool(getattr(self, "_quality_shadow_enabled", False)),
+            "sample_rate": float(getattr(self, "_quality_shadow_sample_rate", 0.0)),
+            "max_files": int(getattr(self, "_quality_shadow_max_files", 0)),
+            "lang_allowlist": tuple(sorted(getattr(self, "_quality_shadow_lang_allowlist", set()))),
+        }
+
+    def set_quality_shadow_mode(
+        self,
+        *,
+        enabled: bool,
+        sample_rate: float,
+        max_files: int,
+        lang_allowlist: tuple[str, ...],
+    ) -> None:
+        """L3 quality shadow runtime 모드를 갱신하고 누적치를 초기화한다."""
+        self._quality_shadow_enabled = bool(enabled) and self._quality_eval_service is not None
+        self._quality_shadow_sample_rate = max(0.0, min(1.0, float(sample_rate)))
+        self._quality_shadow_max_files = max(0, int(max_files))
+        self._quality_shadow_lang_allowlist = {
+            str(item).strip().lower() for item in lang_allowlist if str(item).strip() != ""
+        }
+        self._quality_shadow_sampled_count = 0
+        self._quality_shadow_eval_errors = 0
+        self._quality_shadow_accumulators = {}
+        self._quality_shadow_flag_counts = {}
+        self._quality_shadow_missing_pattern_counts = {}
+
     def _record_quality_shadow_compare(
         self,
         *,

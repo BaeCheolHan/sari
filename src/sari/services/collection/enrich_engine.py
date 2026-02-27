@@ -104,6 +104,9 @@ class EnrichEngine:
         l3_query_compile_cache_enabled: bool = True,
         l3_query_compile_ms_budget: float = 10.0,
         l3_query_budget_ms: float = 30.0,
+        l3_tree_sitter_executor_mode: str = "inline",
+        l3_tree_sitter_subinterp_workers: int = 4,
+        l3_tree_sitter_subinterp_min_bytes: int = 4096,
         l3_asset_mode: str = "shadow",
         l3_asset_lang_allowlist: tuple[str, ...] = (),
         l5_db_short_circuit_enabled: bool = True,
@@ -174,6 +177,9 @@ class EnrichEngine:
             l3_query_compile_cache_enabled=l3_query_compile_cache_enabled,
             l3_query_compile_ms_budget=l3_query_compile_ms_budget,
             l3_query_budget_ms=l3_query_budget_ms,
+            l3_tree_sitter_executor_mode=l3_tree_sitter_executor_mode,
+            l3_tree_sitter_subinterp_workers=l3_tree_sitter_subinterp_workers,
+            l3_tree_sitter_subinterp_min_bytes=l3_tree_sitter_subinterp_min_bytes,
             l3_asset_mode=l3_asset_mode,
             l3_asset_lang_allowlist=l3_asset_lang_allowlist,
         )
@@ -189,6 +195,14 @@ class EnrichEngine:
 
     def shutdown(self) -> None:
         """L3 전역 executor를 종료한다."""
+        preprocess_service = getattr(self, "_l3_preprocess_service", None)
+        if preprocess_service is not None:
+            shutdown = getattr(preprocess_service, "shutdown", None)
+            if callable(shutdown):
+                try:
+                    shutdown()
+                except (RuntimeError, OSError, ValueError, TypeError):
+                    ...
         if self._l3_executor_closed:
             return
         self._l3_executor.shutdown(wait=True)
@@ -253,6 +267,29 @@ class EnrichEngine:
             return {"enabled": False, "sampled_files": 0, "shadow_eval_errors": 0}
         return dict(summary)
 
+    def get_l3_quality_shadow_mode(self) -> dict[str, object]:
+        """L3 quality shadow runtime 설정값을 반환한다."""
+        orchestrator = getattr(self, "_l3_orchestrator", None)
+        getter = getattr(orchestrator, "get_quality_shadow_mode", None)
+        if not callable(getter):
+            return {"enabled": False, "sample_rate": 0.0, "max_files": 0, "lang_allowlist": ()}
+        try:
+            mode = getter()
+        except (RuntimeError, OSError, ValueError, TypeError):
+            return {"enabled": False, "sample_rate": 0.0, "max_files": 0, "lang_allowlist": ()}
+        if not isinstance(mode, dict):
+            return {"enabled": False, "sample_rate": 0.0, "max_files": 0, "lang_allowlist": ()}
+        return {
+            "enabled": bool(mode.get("enabled", False)),
+            "sample_rate": float(mode.get("sample_rate", 0.0)),
+            "max_files": int(mode.get("max_files", 0)),
+            "lang_allowlist": tuple(
+                str(item)
+                for item in mode.get("lang_allowlist", ())
+                if str(item).strip() != ""
+            ),
+        }
+
     def set_l5_admission_mode(self, *, shadow_enabled: bool, enforced: bool) -> None:
         """L5 admission 모드를 런타임에서 동적으로 갱신한다."""
         self._l5_admission_shadow_enabled = bool(shadow_enabled)
@@ -260,6 +297,26 @@ class EnrichEngine:
         self._l3_orchestrator.set_l5_admission_mode(
             evaluate_l5_admission=(self._evaluate_l5_admission_for_job if self._l5_admission_shadow_enabled else None),
             enforced=self._l5_admission_enforced,
+        )
+
+    def set_l3_quality_shadow_mode(
+        self,
+        *,
+        enabled: bool,
+        sample_rate: float,
+        max_files: int,
+        lang_allowlist: tuple[str, ...],
+    ) -> None:
+        """L3 quality shadow 모드를 런타임에서 동적으로 갱신한다."""
+        orchestrator = getattr(self, "_l3_orchestrator", None)
+        setter = getattr(orchestrator, "set_quality_shadow_mode", None)
+        if not callable(setter):
+            return
+        setter(
+            enabled=enabled,
+            sample_rate=sample_rate,
+            max_files=max_files,
+            lang_allowlist=lang_allowlist,
         )
 
     def indexing_mode(self) -> str:

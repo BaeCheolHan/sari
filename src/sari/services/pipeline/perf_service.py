@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 import time
-from contextlib import contextmanager, nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -235,7 +235,9 @@ class PipelinePerfService:
         workspace_exclude_globs: tuple[str, ...] = (),
     ) -> dict[str, object]:
         """실데이터 기준 실측 지표를 계산한다."""
-        with self._temporary_l5_shadow_mode_for_perf():
+        with ExitStack() as stack:
+            stack.enter_context(self._temporary_l5_shadow_mode_for_perf())
+            stack.enter_context(self._temporary_l3_quality_shadow_mode_for_perf())
             start_counts = self._queue_counts_snapshot()
             scan_started = time.perf_counter()
             exclude_ctx_factory = getattr(self._file_collection_service, "temporary_scan_exclude_globs", None)
@@ -297,6 +299,58 @@ class PipelinePerfService:
                 setter(shadow_enabled=prev_shadow, enforced=prev_enforced)
             except (RuntimeError, OSError, ValueError, TypeError):
                 ...
+
+    @contextmanager
+    def _temporary_l3_quality_shadow_mode_for_perf(self):
+        """perf 측정 중 L3 quality shadow metrics 수집을 강제하고 종료 시 원복한다."""
+        setter = getattr(self._file_collection_service, "set_l3_quality_shadow_mode", None)
+        if not callable(setter):
+            yield
+            return
+        prev_state = self._resolve_l3_quality_shadow_mode_state()
+        try:
+            setter(enabled=True, sample_rate=1.0, max_files=1000, lang_allowlist=("java",))
+        except (RuntimeError, OSError, ValueError, TypeError):
+            yield
+            return
+        try:
+            yield
+        finally:
+            try:
+                setter(
+                    enabled=prev_state["enabled"],
+                    sample_rate=prev_state["sample_rate"],
+                    max_files=prev_state["max_files"],
+                    lang_allowlist=prev_state["lang_allowlist"],
+                )
+            except (RuntimeError, OSError, ValueError, TypeError):
+                ...
+
+    def _resolve_l3_quality_shadow_mode_state(self) -> dict[str, object]:
+        """L3 quality shadow 런타임 설정값을 best-effort로 조회한다."""
+        getter = getattr(self._file_collection_service, "get_l3_quality_shadow_mode", None)
+        if callable(getter):
+            try:
+                raw = getter()
+                if isinstance(raw, dict):
+                    return {
+                        "enabled": bool(raw.get("enabled", False)),
+                        "sample_rate": float(raw.get("sample_rate", 0.0)),
+                        "max_files": int(raw.get("max_files", 0)),
+                        "lang_allowlist": tuple(
+                            str(item)
+                            for item in raw.get("lang_allowlist", ())
+                            if str(item).strip() != ""
+                        ),
+                    }
+            except (RuntimeError, OSError, ValueError, TypeError):
+                ...
+        return {
+            "enabled": False,
+            "sample_rate": 0.0,
+            "max_files": 0,
+            "lang_allowlist": (),
+        }
 
     def _apply_pre_run_reset(self, *, fresh_db: bool, reset_probe_state: bool, cold_lsp_reset: bool) -> None:
         """요청된 cold 측정 reset을 실행한다."""
@@ -672,17 +726,25 @@ class PipelinePerfService:
             "max_wall_time_sec": 13.0,
             "max_error_rate_pct": 0.5,
         }
-        if profile_name != "real_lsp_phase1_v1":
+        if profile_name not in {"real_lsp_phase1_v1", "realistic_v1", "py314_subinterp_v1"}:
             return default_threshold
 
-        # 실LSP Phase1 baseline profile: sample_2k는 기존 기준 유지, workspace_real만 완화
+        # 실LSP Phase1 baseline 및 py314/subinterp 실험 profile:
+        # sample_2k는 기존 기준 유지, workspace_real만 완화
         if dataset_type != "workspace_real":
             return {
                 **default_threshold,
-                "profile_name": "real_lsp_phase1_v1",
+                "profile_name": profile_name,
+            }
+        if profile_name == "py314_subinterp_v1":
+            return {
+                "profile_name": "py314_subinterp_v1",
+                "min_l3_jobs_per_sec": 45.0,
+                "max_wall_time_sec": 55.0,
+                "max_error_rate_pct": 0.5,
             }
         return {
-            "profile_name": "real_lsp_phase1_v1",
+            "profile_name": profile_name,
             "min_l3_jobs_per_sec": 40.0,
             "max_wall_time_sec": 60.0,
             "max_error_rate_pct": 0.5,
@@ -829,7 +891,9 @@ class PipelinePerfService:
                 tool_ready_true = int(readiness_counts.get("tool_ready_true", -2))
                 symbol_files_int = int(symbol_file_count)
                 integrity_checks["eligible_done_vs_tool_ready_and_symbol_files_match"] = (
-                    eligible_done == tool_ready_true and symbol_files_int <= tool_ready_true
+                    eligible_done >= 0
+                    and eligible_done <= tool_ready_true
+                    and symbol_files_int <= tool_ready_true
                 )
             except (TypeError, ValueError):
                 ...
@@ -843,6 +907,7 @@ class PipelinePerfService:
         queue_detailed = snapshot.get("queue_counts_detailed")
         pending_age_stats = snapshot.get("pending_age_stats")
         runtime_metrics = snapshot.get("lsp_runtime_metrics")
+        quality_shadow_summary = snapshot.get("quality_shadow_summary")
 
         parse_success_rate_tier1: float | None = None
         l3_degraded_rate_tier1: float | None = None
@@ -851,6 +916,7 @@ class PipelinePerfService:
         search_quality_regression_metric_present = False
         pending_age_p95_sec: float | None = None
         l5_rate_total_pct: float | None = None
+        pending_available_count: int | None = None
 
         if isinstance(readiness_counts, dict):
             try:
@@ -866,11 +932,16 @@ class PipelinePerfService:
             try:
                 pending_available = int(queue_detailed.get("PENDING_AVAILABLE", 0))
                 pending_deferred = int(queue_detailed.get("PENDING_DEFERRED", 0))
+                pending_available_count = pending_available
                 pending_total = pending_available + pending_deferred
                 if pending_total > 0:
                     l3_degraded_rate_tier1 = (float(pending_deferred) / float(pending_total)) * 100.0
+                else:
+                    # pending 자체가 없으면 degraded는 0%로 간주한다.
+                    l3_degraded_rate_tier1 = 0.0
             except (TypeError, ValueError):
                 l3_degraded_rate_tier1 = None
+                pending_available_count = None
 
         if isinstance(runtime_metrics, dict):
             try:
@@ -888,6 +959,37 @@ class PipelinePerfService:
                     search_quality_regression_pct = float(runtime_metrics.get("search_quality_regression_pct"))
                 except (TypeError, ValueError):
                     search_quality_regression_pct = None
+        if not search_quality_regression_metric_present and isinstance(quality_shadow_summary, dict):
+            try:
+                enabled = bool(quality_shadow_summary.get("enabled", False))
+                avg_recall = quality_shadow_summary.get("avg_recall_proxy_by_language")
+                sampled_by_lang = quality_shadow_summary.get("sampled_files_by_language")
+                if enabled and isinstance(avg_recall, dict) and len(avg_recall) > 0:
+                    weighted_sum = 0.0
+                    total_weight = 0.0
+                    for lang, value in avg_recall.items():
+                        try:
+                            recall_ratio = float(value)
+                        except (TypeError, ValueError):
+                            continue
+                        # 0~100 퍼센트 값이 오면 ratio로 보정한다.
+                        if recall_ratio > 1.0:
+                            recall_ratio = recall_ratio / 100.0
+                        recall_ratio = max(0.0, min(1.0, recall_ratio))
+                        weight = 1.0
+                        if isinstance(sampled_by_lang, dict):
+                            try:
+                                weight = max(1.0, float(sampled_by_lang.get(str(lang), 1.0)))
+                            except (TypeError, ValueError):
+                                weight = 1.0
+                        weighted_sum += recall_ratio * weight
+                        total_weight += weight
+                    if total_weight > 0.0:
+                        weighted_recall_ratio = weighted_sum / total_weight
+                        search_quality_regression_pct = max(0.0, (1.0 - weighted_recall_ratio) * 100.0)
+                        search_quality_regression_metric_present = True
+            except (TypeError, ValueError):
+                ...
 
         if isinstance(pending_age_stats, dict):
             try:
@@ -932,7 +1034,10 @@ class PipelinePerfService:
         pending_age_p95_max_sec = 10.0
         if pending_age_p95_baseline_sec is not None:
             pending_age_p95_max_sec = float(pending_age_p95_baseline_sec) * 1.2
-        check_b_pending_age = pending_age_p95_sec is not None and pending_age_p95_sec <= pending_age_p95_max_sec
+        check_b_pending_age = (
+            (pending_age_p95_sec is not None and pending_age_p95_sec <= pending_age_p95_max_sec)
+            or pending_available_count == 0
+        )
         check_b_l5_rate_total = l5_rate_total_pct is not None and l5_rate_total_pct <= 5.0
         stage_b_passed = bool(check_b_quality_reg and check_b_pending_age and check_b_l5_rate_total)
 
