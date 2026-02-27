@@ -260,11 +260,17 @@ class AppConfig:
     l3_query_compile_cache_enabled: bool = True
     l3_query_compile_ms_budget: float = 10.0
     l3_query_budget_ms: float = 30.0
+    l3_tree_sitter_executor_mode: str = "inline"
+    l3_tree_sitter_subinterp_workers: int = 4
+    l3_tree_sitter_subinterp_min_bytes: int = 4096
     l3_asset_mode: str = "shadow"
     l3_asset_manifest_path: str = "src/sari/services/collection/assets/manifest.json"
     l3_asset_lang_allowlist: tuple[str, ...] = ()
     l5_db_short_circuit_enabled: bool = True
     l5_db_short_circuit_log_miss_reason: bool = True
+    l5_symbol_normalizer_executor_mode: str = "inline"
+    l5_symbol_normalizer_subinterp_workers: int = 2
+    l5_symbol_normalizer_subinterp_min_symbols: int = 200
     mcp_forward_to_daemon: bool = False
     mcp_daemon_autostart: bool = True
     mcp_daemon_timeout_sec: float = 2.0
@@ -491,6 +497,12 @@ class AppConfig:
         l3_asset_lang_allowlist_raw = extended_raw_values["l3_asset_lang_allowlist_raw"]
         l5_db_short_circuit_enabled_raw = extended_raw_values["l5_db_short_circuit_enabled_raw"]
         l5_db_short_circuit_log_miss_reason_raw = extended_raw_values["l5_db_short_circuit_log_miss_reason_raw"]
+        l3_tree_sitter_executor_mode_raw = extended_raw_values["l3_tree_sitter_executor_mode_raw"]
+        l3_tree_sitter_subinterp_workers_raw = extended_raw_values["l3_tree_sitter_subinterp_workers_raw"]
+        l3_tree_sitter_subinterp_min_bytes_raw = extended_raw_values["l3_tree_sitter_subinterp_min_bytes_raw"]
+        l5_symbol_normalizer_executor_mode_raw = extended_raw_values["l5_symbol_normalizer_executor_mode_raw"]
+        l5_symbol_normalizer_subinterp_workers_raw = extended_raw_values["l5_symbol_normalizer_subinterp_workers_raw"]
+        l5_symbol_normalizer_subinterp_min_symbols_raw = extended_raw_values["l5_symbol_normalizer_subinterp_min_symbols_raw"]
         mcp_forward_to_daemon_raw = extended_raw_values["mcp_forward_to_daemon_raw"]
         mcp_daemon_autostart_raw = extended_raw_values["mcp_daemon_autostart_raw"]
         mcp_daemon_timeout_raw = extended_raw_values["mcp_daemon_timeout_raw"]
@@ -687,6 +699,26 @@ class AppConfig:
         l5_tokens_per_10sec_per_workspace_max = parser.int_min(l5_tokens_per_10sec_per_workspace_max_raw, minimum=1, default=20)
         l3_query_compile_ms_budget = parser.float_min(l3_query_compile_ms_budget_raw, minimum=0.1, default=10.0)
         l3_query_budget_ms = parser.float_min(l3_query_budget_ms_raw, minimum=0.1, default=30.0)
+        l3_tree_sitter_subinterp_workers = parser.int_min(
+            l3_tree_sitter_subinterp_workers_raw,
+            minimum=1,
+            default=4,
+        )
+        l3_tree_sitter_subinterp_min_bytes = parser.int_min(
+            l3_tree_sitter_subinterp_min_bytes_raw,
+            minimum=0,
+            default=4096,
+        )
+        l5_symbol_normalizer_subinterp_workers = parser.int_min(
+            l5_symbol_normalizer_subinterp_workers_raw,
+            minimum=1,
+            default=2,
+        )
+        l5_symbol_normalizer_subinterp_min_symbols = parser.int_min(
+            l5_symbol_normalizer_subinterp_min_symbols_raw,
+            minimum=0,
+            default=200,
+        )
         include_ext_raw = os.getenv("SARI_COLLECTION_INCLUDE_EXT", "")
         exclude_globs_raw = os.getenv("SARI_COLLECTION_EXCLUDE_GLOBS", "")
         vector_apply_types_raw = os.getenv("SARI_VECTOR_APPLY_TO_ITEM_TYPES", "")
@@ -921,6 +953,13 @@ class AppConfig:
             l3_query_compile_cache_enabled=parser.bool_true(l3_query_compile_cache_enabled_raw),
             l3_query_compile_ms_budget=l3_query_compile_ms_budget,
             l3_query_budget_ms=l3_query_budget_ms,
+            l3_tree_sitter_executor_mode=(
+                l3_tree_sitter_executor_mode_raw
+                if l3_tree_sitter_executor_mode_raw in {"inline", "subinterp"}
+                else "inline"
+            ),
+            l3_tree_sitter_subinterp_workers=l3_tree_sitter_subinterp_workers,
+            l3_tree_sitter_subinterp_min_bytes=l3_tree_sitter_subinterp_min_bytes,
             l3_asset_mode=(
                 l3_asset_mode_raw
                 if l3_asset_mode_raw in {"shadow", "gate", "apply"}
@@ -930,6 +969,13 @@ class AppConfig:
             l3_asset_lang_allowlist=l3_asset_lang_allowlist,
             l5_db_short_circuit_enabled=parser.bool_true(l5_db_short_circuit_enabled_raw),
             l5_db_short_circuit_log_miss_reason=parser.bool_true(l5_db_short_circuit_log_miss_reason_raw),
+            l5_symbol_normalizer_executor_mode=(
+                l5_symbol_normalizer_executor_mode_raw
+                if l5_symbol_normalizer_executor_mode_raw in {"inline", "subinterp"}
+                else "inline"
+            ),
+            l5_symbol_normalizer_subinterp_workers=l5_symbol_normalizer_subinterp_workers,
+            l5_symbol_normalizer_subinterp_min_symbols=l5_symbol_normalizer_subinterp_min_symbols,
             mcp_forward_to_daemon=parser.bool_true(mcp_forward_to_daemon_raw),
             mcp_daemon_autostart=parser.bool_true(mcp_daemon_autostart_raw),
             mcp_daemon_timeout_sec=mcp_daemon_timeout_sec,
@@ -1178,6 +1224,44 @@ def _build_extended_fields(*, file_config: dict[str, object], defaults: type[App
         _ConfigField("l3_asset_lang_allowlist_raw", "SARI_L3_ASSET_LANG_ALLOWLIST", "l3_asset_lang_allowlist", ""),
         _ConfigField("l5_db_short_circuit_enabled_raw", "SARI_L5_DB_SHORT_CIRCUIT_ENABLED", "l5_db_short_circuit_enabled", True, lower=True),
         _ConfigField("l5_db_short_circuit_log_miss_reason_raw", "SARI_L5_DB_SHORT_CIRCUIT_LOG_MISS_REASON", "l5_db_short_circuit_log_miss_reason", True, lower=True),
+        _ConfigField(
+            "l3_tree_sitter_executor_mode_raw",
+            "SARI_L3_TREE_SITTER_EXECUTOR_MODE",
+            "l3_tree_sitter_executor_mode",
+            "inline",
+            lower=True,
+        ),
+        _ConfigField(
+            "l3_tree_sitter_subinterp_workers_raw",
+            "SARI_L3_TREE_SITTER_SUBINTERP_WORKERS",
+            "l3_tree_sitter_subinterp_workers",
+            4,
+        ),
+        _ConfigField(
+            "l3_tree_sitter_subinterp_min_bytes_raw",
+            "SARI_L3_TREE_SITTER_SUBINTERP_MIN_BYTES",
+            "l3_tree_sitter_subinterp_min_bytes",
+            4096,
+        ),
+        _ConfigField(
+            "l5_symbol_normalizer_executor_mode_raw",
+            "SARI_L5_SYMBOL_NORMALIZER_EXECUTOR_MODE",
+            "l5_symbol_normalizer_executor_mode",
+            "inline",
+            lower=True,
+        ),
+        _ConfigField(
+            "l5_symbol_normalizer_subinterp_workers_raw",
+            "SARI_L5_SYMBOL_NORMALIZER_SUBINTERP_WORKERS",
+            "l5_symbol_normalizer_subinterp_workers",
+            2,
+        ),
+        _ConfigField(
+            "l5_symbol_normalizer_subinterp_min_symbols_raw",
+            "SARI_L5_SYMBOL_NORMALIZER_SUBINTERP_MIN_SYMBOLS",
+            "l5_symbol_normalizer_subinterp_min_symbols",
+            200,
+        ),
         _ConfigField("mcp_forward_to_daemon_raw", "SARI_MCP_FORWARD_TO_DAEMON", "mcp_forward_to_daemon", False, lower=True),
         _ConfigField("mcp_daemon_autostart_raw", "SARI_MCP_DAEMON_AUTOSTART", "mcp_daemon_autostart", True, lower=True),
         _ConfigField("mcp_daemon_timeout_raw", "SARI_MCP_DAEMON_TIMEOUT_SEC", "mcp_daemon_timeout_sec", 2.0),

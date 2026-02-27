@@ -6,7 +6,7 @@
 **Description:** A redesigned high-performance local search and indexing engine combined with an MCP (Model Context Protocol) Daemon.
 **Goal:** Provide fast, local code search and symbol indexing for large repositories, exposing functionality via MCP to AI assistants (Gemini, Codex).
 **Tech Stack:**
--   **Language:** Python 3.11+
+-   **Language:** Python 3.14+
 -   **Build System:** `setuptools` (via `pyproject.toml`)
 -   **Database:** SQLite (`state.db`) with `alembic` for migrations.
 -   **Search Engine:** `tantivy` (Rust-based search engine binding).

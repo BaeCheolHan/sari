@@ -730,7 +730,11 @@ class LspHub:
                             request_kind=request_kind,
                             slot=slot,
                         ):
-                            started = self._create_and_start_server(language=language, repo_root=repo_root)
+                            started = self._create_and_start_server(
+                                language=language,
+                                repo_root=repo_root,
+                                request_kind=request_kind,
+                            )
                     finally:
                         self._start_semaphore.release()
                 except (DaemonError, RuntimeError, OSError, ValueError, TypeError, AssertionError) as exc:
@@ -807,7 +811,7 @@ class LspHub:
             )
         )
 
-    def _create_and_start_server(self, language: Language, repo_root: str) -> SolidLanguageServer:
+    def _create_and_start_server(self, language: Language, repo_root: str, request_kind: str) -> SolidLanguageServer:
         """락 밖에서 단일 LSP 서버를 생성/시작한다."""
         self._ensure_global_ssl_cert_file_default()
         with self._perf_tracer.span(
@@ -816,10 +820,15 @@ class LspHub:
             language=language.value,
             repo_root=repo_root,
         ):
-            runtime_context = self._runtime_broker.resolve(language)
+            try:
+                runtime_context = self._runtime_broker.resolve(language, repo_root=repo_root)
+            except TypeError:
+                # 하위호환: 커스텀 broker 테스트 더블이 구 시그니처(resolve(language))를 구현할 수 있다.
+                runtime_context = self._runtime_broker.resolve(language)
         attempts = self._resolve_start_attempt_envs(
             language=language,
             repo_root=repo_root,
+            request_kind=request_kind,
             base_env_overrides=runtime_context.env_overrides,
         )
         last_exc: Exception | None = None
@@ -914,6 +923,7 @@ class LspHub:
         *,
         language: Language,
         repo_root: str,
+        request_kind: str,
         base_env_overrides: dict[str, str],
     ) -> list[dict[str, str]]:
         """언어/프로젝트별 LSP 시작 프로파일 시퀀스를 반환한다."""
@@ -926,6 +936,11 @@ class LspHub:
         wrapper_props = Path(repo_root) / "gradle" / "wrapper" / "gradle-wrapper.properties"
         if not wrapper_props.exists():
             return attempts
+        # indexing 경로에서는 wrapper-first 콜드 타임아웃을 피하기 위해 bundled gradle 우선 시도한다.
+        if request_kind != "interactive":
+            bundled_first = dict(base_env_overrides)
+            bundled_first["SARI_JDTLS_GRADLE_WRAPPER_FIRST"] = "0"
+            return [bundled_first, dict(base_env_overrides)]
         retry_env = dict(base_env_overrides)
         retry_env["SARI_JDTLS_GRADLE_WRAPPER_FIRST"] = "0"
         attempts.append(retry_env)

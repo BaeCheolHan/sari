@@ -91,7 +91,7 @@ run_cmd() {
   fi
 }
 
-DAEMON_PROXY_PASSED="$(run_cmd daemon_proxy "${DAEMON_PROXY_LOG}" pytest -q tests/unit/test_mcp_daemon_forward.py tests/unit/test_mcp_server_protocol.py tests/unit/test_daemon_resolver_and_proxy.py)"
+DAEMON_PROXY_PASSED="$(run_cmd daemon_proxy "${DAEMON_PROXY_LOG}" pytest -q tests/unit/mcp/test_mcp_daemon_forward.py tests/unit/mcp/test_mcp_server_protocol.py tests/unit/daemon/test_daemon_resolver_and_proxy.py)"
 CLI_E2E_PASSED="$(run_cmd cli_e2e "${CLI_E2E_LOG}" bash -lc "python3 -m sari.cli.main --help && python3 -m sari.cli.main mcp stdio --help && python3 -m sari.cli.main daemon --help")"
 CRITICAL_LSP_PASSED="$(run_cmd critical_lsp "${CRITICAL_LSP_LOG}" bash -lc "tools/ci/run_lsp_matrix_gate.sh --report-only true")"
 MCP_HANDSHAKE_PASSED="$(run_cmd mcp_handshake "${MCP_HANDSHAKE_LOG}" python3 tools/ci/release_gate_mcp_probe.py handshake)"

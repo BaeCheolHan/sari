@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-import fnmatch
 from pathlib import Path
 from typing import Callable
 
@@ -42,7 +41,9 @@ class CollectionRepoSupport:
         self._repo_registry_repo = repo_registry_repo
         self._lsp_prewarm_min_language_files = lsp_prewarm_min_language_files
         self._lsp_prewarm_top_language_count = lsp_prewarm_top_language_count
+        self._exclude_glob_spec = PathSpec.from_lines(GitWildMatchPattern, self._policy.exclude_globs)
         self._extra_exclude_globs_stack: list[tuple[str, ...]] = []
+        self._extra_exclude_spec_stack: list[PathSpec] = []
 
     def resolve_lsp_language(self, relative_path: str) -> Language | None:
         """파일 상대 경로로 LSP 언어를 해석한다."""
@@ -135,14 +136,12 @@ class CollectionRepoSupport:
         suffix = file_path.suffix.lower()
         if suffix not in self._policy.include_ext:
             return False
-        for pattern in self._policy.exclude_globs:
-            if fnmatch.fnmatch(relative_posix, pattern):
-                return False
-        if len(self._extra_exclude_globs_stack) > 0:
-            for extra_globs in self._extra_exclude_globs_stack:
-                for pattern in extra_globs:
-                    if fnmatch.fnmatch(relative_posix, pattern):
-                        return False
+        if self._exclude_glob_spec.match_file(relative_posix):
+            return False
+        if len(self._extra_exclude_spec_stack) > 0:
+            for extra_spec in self._extra_exclude_spec_stack:
+                if extra_spec.match_file(relative_posix):
+                    return False
         return True
 
     @contextmanager
@@ -153,11 +152,14 @@ class CollectionRepoSupport:
             yield
             return
         self._extra_exclude_globs_stack.append(normalized)
+        self._extra_exclude_spec_stack.append(PathSpec.from_lines(GitWildMatchPattern, normalized))
         try:
             yield
         finally:
             if len(self._extra_exclude_globs_stack) > 0:
                 self._extra_exclude_globs_stack.pop()
+            if len(self._extra_exclude_spec_stack) > 0:
+                self._extra_exclude_spec_stack.pop()
 
     def is_deletion_hold_enabled(self) -> bool:
         """삭제 보류 정책 활성화 여부를 반환한다."""
@@ -168,6 +170,22 @@ class CollectionRepoSupport:
 
 class WorkspaceFanoutResolver:
     """workspace root 하위 top-level repo fan-out 대상을 판정한다."""
+    _SKIP_TOP_LEVEL_DIRS: frozenset[str] = frozenset(
+        {
+            "bin",
+            "build",
+            "target",
+            "out",
+            "dist",
+            "node_modules",
+            ".gradle",
+            ".idea",
+            ".vscode",
+            ".venv",
+            "venv",
+            "__pycache__",
+        }
+    )
 
     def __init__(
         self,
@@ -190,11 +208,18 @@ class WorkspaceFanoutResolver:
         registered_paths = {Path(item.path).expanduser().resolve() for item in self._workspace_repo.list_all()}
         if root_path not in registered_paths:
             return []
+        workspace_gitignore_spec = self._load_gitignore_spec(root_path)
         targets: list[Path] = []
         for child in root_path.iterdir():
             if not child.is_dir():
                 continue
             if child.name.startswith("."):
+                continue
+            if child.name in self._SKIP_TOP_LEVEL_DIRS:
+                continue
+            # workspace root .gitignore가 top-level child를 제외하면 fan-out 후보에서 제외한다.
+            child_rel_dir = f"{child.name}/"
+            if workspace_gitignore_spec.match_file(child_rel_dir) or workspace_gitignore_spec.match_file(child.name):
                 continue
             if self._is_top_level_repo_candidate(child):
                 targets.append(child.resolve())

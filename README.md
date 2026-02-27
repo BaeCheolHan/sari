@@ -4,6 +4,8 @@ LSP-first 로컬 인덱싱/검색 엔진 + MCP 데몬.
 
 ## 설치
 
+필수 런타임: Python `3.14+`
+
 ```bash
 uv tool install sari
 # 또는

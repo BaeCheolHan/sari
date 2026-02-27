@@ -145,7 +145,7 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run pipeline perf A/B benchmark")
     parser.add_argument("--repo", required=True, help="repository root path")
     parser.add_argument("--target-files", type=int, default=300, help="pipeline perf target files")
-    parser.add_argument("--profile", default="real_lsp_phase1_v1", help="pipeline perf profile")
+    parser.add_argument("--profile", default="py314_subinterp_v1", help="pipeline perf profile")
     parser.add_argument("--dataset-mode", default="isolated", choices=["isolated", "legacy"])
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--out-dir", default="artifacts/perf")

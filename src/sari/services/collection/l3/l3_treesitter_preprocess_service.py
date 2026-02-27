@@ -4,10 +4,19 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import re
 import time
+from concurrent.futures import Executor
 from dataclasses import dataclass
 from enum import Enum
+
+from sari.services.collection.concurrency.interpreter_pool import (
+    create_interpreter_pool_executor,
+    normalize_executor_mode,
+    parse_non_negative_int,
+    parse_positive_int,
+)
 
 from .l3_asset_loader import L3AssetLoader
 from .l3_language_processor import L3LowConfidenceContext
@@ -81,6 +90,9 @@ class L3TreeSitterPreprocessService:
         asset_lang_allowlist: tuple[str, ...] = (),
         tree_sitter_outline_extractor: TreeSitterOutlineExtractor | None = None,
         language_registry: L3LanguageProcessorRegistry | None = None,
+        tree_sitter_executor_mode: str = "inline",
+        tree_sitter_subinterp_workers: int = 4,
+        tree_sitter_subinterp_min_bytes: int = 4096,
     ) -> None:
         self._query_compile_cache_enabled = bool(query_compile_cache_enabled)
         self._query_compile_ms_budget_sec = max(0.0001, float(query_compile_ms_budget)) / 1000.0
@@ -93,6 +105,30 @@ class L3TreeSitterPreprocessService:
             asset_lang_allowlist=asset_lang_allowlist,
         )
         self._language_registry = language_registry or L3LanguageProcessorRegistry()
+        self._asset_mode = asset_mode
+        self._asset_lang_allowlist = tuple(item.strip().lower() for item in asset_lang_allowlist if item.strip() != "")
+        configured_mode = normalize_executor_mode(
+            os.getenv("SARI_L3_TREE_SITTER_EXECUTOR_MODE", tree_sitter_executor_mode),
+            default="inline",
+        )
+        configured_workers = parse_positive_int(
+            os.getenv("SARI_L3_TREE_SITTER_SUBINTERP_WORKERS", str(tree_sitter_subinterp_workers)),
+            default=max(1, int(tree_sitter_subinterp_workers)),
+        )
+        configured_min_bytes = parse_non_negative_int(
+            os.getenv("SARI_L3_TREE_SITTER_SUBINTERP_MIN_BYTES", str(tree_sitter_subinterp_min_bytes)),
+            default=max(0, int(tree_sitter_subinterp_min_bytes)),
+        )
+        self._tree_sitter_executor_mode = configured_mode
+        self._tree_sitter_subinterp_workers = configured_workers
+        self._tree_sitter_subinterp_min_bytes = configured_min_bytes
+        self._tree_sitter_subinterp_executor: Executor | None = None
+        if self._tree_sitter_executor_mode == "subinterp":
+            self._tree_sitter_subinterp_executor = create_interpreter_pool_executor(
+                max_workers=self._tree_sitter_subinterp_workers
+            )
+            if self._tree_sitter_subinterp_executor is None:
+                self._tree_sitter_executor_mode = "inline"
 
     def preprocess(
         self,
@@ -111,7 +147,8 @@ class L3TreeSitterPreprocessService:
                 source="none",
                 reason="l3_preprocess_tsls_fast_path",
             )
-        if len(content_text.encode("utf-8", errors="ignore")) > max_bytes:
+        content_size_bytes = len(content_text.encode("utf-8", errors="ignore"))
+        if content_size_bytes > max_bytes:
             return L3PreprocessResultDTO(
                 symbols=[],
                 degraded=True,
@@ -129,6 +166,7 @@ class L3TreeSitterPreprocessService:
                 content_text=content_text,
                 relative_path=relative_path,
                 repo_root=repo_root,
+                content_size_bytes=content_size_bytes,
             )
             if pattern_key
             else None
@@ -221,6 +259,7 @@ class L3TreeSitterPreprocessService:
         content_text: str,
         relative_path: str,
         repo_root: str | None = None,
+        content_size_bytes: int = 0,
     ):
         if not self._tree_sitter_enabled:
             return None
@@ -234,6 +273,18 @@ class L3TreeSitterPreprocessService:
         parse_key = None
         if isinstance(repo_root, str) and repo_root.strip() != "" and relative_path.strip() != "":
             parse_key = f"{repo_root.strip()}::{relative_path.strip()}"
+        if (
+            self._tree_sitter_executor_mode == "subinterp"
+            and self._tree_sitter_subinterp_executor is not None
+            and content_size_bytes >= self._tree_sitter_subinterp_min_bytes
+        ):
+            result = self._try_tree_sitter_outline_subinterp(
+                pattern_key=pattern_key,
+                content_text=content_text,
+                parse_key=parse_key,
+            )
+            if result is not None:
+                return result
         try:
             try:
                 return extract(
@@ -260,6 +311,57 @@ class L3TreeSitterPreprocessService:
                 degraded=True,
                 reason=f"tree_sitter_outline_exception:{type(exc).__name__}",
             )
+
+    def _try_tree_sitter_outline_subinterp(
+        self,
+        *,
+        pattern_key: str,
+        content_text: str,
+        parse_key: str | None,
+    ) -> TreeSitterOutlineResult | None:
+        executor = self._tree_sitter_subinterp_executor
+        if executor is None:
+            return None
+        try:
+            future = executor.submit(
+                _extract_outline_subinterp_task,
+                pattern_key,
+                content_text,
+                self._query_budget_sec,
+                parse_key,
+                self._asset_mode,
+                self._asset_lang_allowlist,
+            )
+            payload = future.result(timeout=max(0.1, self._query_budget_sec * 2.0))
+            if not isinstance(payload, dict):
+                return None
+            symbols = payload.get("symbols", [])
+            if not isinstance(symbols, list):
+                symbols = []
+            degraded = bool(payload.get("degraded", False))
+            reason = payload.get("reason")
+            if not isinstance(reason, str):
+                reason = None
+            return TreeSitterOutlineResult(symbols=symbols, degraded=degraded, reason=reason)
+        except (RuntimeError, OSError, ValueError, TypeError, TimeoutError) as exc:
+            log.debug(
+                "L3 tree-sitter subinterpreter path failed; fallback to inline extractor (pattern_key=%s)",
+                pattern_key,
+                exc_info=True,
+            )
+            return None
+
+    def shutdown(self) -> None:
+        """subinterpreter executor를 종료한다."""
+        executor = self._tree_sitter_subinterp_executor
+        if executor is None:
+            return
+        try:
+            executor.shutdown(wait=True)
+        except (RuntimeError, OSError, ValueError, TypeError):
+            ...
+        finally:
+            self._tree_sitter_subinterp_executor = None
 
     def _needs_l5_by_low_confidence(self, *, relative_path: str, content_text: str, symbols: list[dict[str, object]]) -> bool:
         language_processor = self._language_registry.resolve(relative_path=relative_path)
@@ -320,3 +422,29 @@ class L3TreeSitterPreprocessService:
         if lowered.endswith(".vue"):
             return False
         return lowered.endswith(self._TSLS_FAST_PATH_EXTENSIONS)
+
+
+def _extract_outline_subinterp_task(
+    pattern_key: str,
+    content_text: str,
+    budget_sec: float,
+    parse_key: str | None,
+    asset_mode: str,
+    asset_lang_allowlist: tuple[str, ...],
+) -> dict[str, object]:
+    """subinterpreter에서 실행할 tree-sitter outline 추출 태스크."""
+    extractor = TreeSitterOutlineExtractor(
+        asset_mode=asset_mode,
+        asset_lang_allowlist=asset_lang_allowlist,
+    )
+    result = extractor.extract_outline(
+        lang_key=pattern_key,
+        content_text=content_text,
+        budget_sec=budget_sec,
+        parse_key=parse_key,
+    )
+    return {
+        "symbols": result.symbols,
+        "degraded": bool(result.degraded),
+        "reason": result.reason,
+    }

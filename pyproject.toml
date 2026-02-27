@@ -7,7 +7,7 @@ name = "sari"
 version = "2.0.14"
 description = "Redesigned high-performance local search and indexing engine"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 dependencies = [
     "peewee>=3.17.0",
     "alembic>=1.13.0",

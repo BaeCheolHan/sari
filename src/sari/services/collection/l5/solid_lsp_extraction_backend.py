@@ -18,6 +18,12 @@ from sari.core.language.registry import resolve_language_from_path
 from sari.lsp.document_symbols import request_document_symbols_with_optional_sync
 from sari.lsp.hub import LspHub
 from sari.lsp.path_normalizer import normalize_location_to_repo_relative, normalize_repo_relative_path
+from sari.services.collection.concurrency.interpreter_pool import (
+    create_interpreter_pool_executor,
+    normalize_executor_mode,
+    parse_non_negative_int,
+    parse_positive_int,
+)
 from sari.services.collection.l5.lsp.scope_planner import LspScopePlanner
 from sari.services.collection.l5.lsp.runtime_metrics_builder import build_runtime_metrics
 from sari.services.collection.l5.lsp.probe_state_update_service import LspProbeStateUpdateService
@@ -76,6 +82,9 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
         warming_retry_sec: int = 5,
         warming_threshold: int = 6,
         permanent_backoff_sec: int = 1800,
+        symbol_normalizer_executor_mode: str = "inline",
+        symbol_normalizer_subinterp_workers: int = 2,
+        symbol_normalizer_subinterp_min_symbols: int = 200,
     ) -> None:
         self._hub = hub
         self._perf_tracer = PerfTracer(component="solid_lsp_backend")
@@ -211,6 +220,34 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
             resolve_symbol_depth=lambda symbol: self._resolve_symbol_depth(symbol),
             resolve_container_name=lambda symbol: self._resolve_container_name(symbol),
         )
+        configured_mode = normalize_executor_mode(
+            os.getenv("SARI_L5_SYMBOL_NORMALIZER_EXECUTOR_MODE", str(symbol_normalizer_executor_mode)),
+            default="inline",
+        )
+        configured_workers = parse_positive_int(
+            os.getenv(
+                "SARI_L5_SYMBOL_NORMALIZER_SUBINTERP_WORKERS",
+                str(max(1, int(symbol_normalizer_subinterp_workers))),
+            ),
+            default=max(1, int(symbol_normalizer_subinterp_workers)),
+        )
+        configured_min_symbols = parse_non_negative_int(
+            os.getenv(
+                "SARI_L5_SYMBOL_NORMALIZER_SUBINTERP_MIN_SYMBOLS",
+                str(max(0, int(symbol_normalizer_subinterp_min_symbols))),
+            ),
+            default=max(0, int(symbol_normalizer_subinterp_min_symbols)),
+        )
+        self._symbol_normalizer_executor_mode = configured_mode
+        self._symbol_normalizer_subinterp_workers = configured_workers
+        self._symbol_normalizer_subinterp_min_symbols = configured_min_symbols
+        self._symbol_normalizer_subinterp_executor: concurrent.futures.Executor | None = None
+        if self._symbol_normalizer_executor_mode == "subinterp":
+            self._symbol_normalizer_subinterp_executor = create_interpreter_pool_executor(
+                max_workers=self._symbol_normalizer_subinterp_workers
+            )
+            if self._symbol_normalizer_subinterp_executor is None:
+                self._symbol_normalizer_executor_mode = "inline"
         self._extract_request_runner_service = LspExtractRequestRunnerService(
             resolve_language=lambda relative_path: self._hub.resolve_language(relative_path),
             resolve_lsp_runtime_scope=lambda **kwargs: self._resolve_lsp_runtime_scope(**kwargs),
@@ -686,12 +723,58 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
             repo_root=repo_root,
             language=(language.value if "language" in locals() else "unknown"),
         ):
-            symbols = self._symbol_normalizer_service.normalize_symbols(
+            symbols = self._normalize_symbols(
                 repo_root=repo_root,
                 normalized_relative_path=normalized_relative_path,
                 raw_symbols=raw_symbols,
             )
         return LspExtractionResultDTO(symbols=symbols, relations=[], error_message=None)
+
+    def _normalize_symbols(
+        self,
+        *,
+        repo_root: str,
+        normalized_relative_path: str,
+        raw_symbols: list[object],
+    ) -> list[dict[str, object]]:
+        if (
+            self._symbol_normalizer_executor_mode == "subinterp"
+            and self._symbol_normalizer_subinterp_executor is not None
+            and len(raw_symbols) >= self._symbol_normalizer_subinterp_min_symbols
+        ):
+            try:
+                future = self._symbol_normalizer_subinterp_executor.submit(
+                    _normalize_symbols_subinterp_task,
+                    repo_root,
+                    normalized_relative_path,
+                    raw_symbols,
+                )
+                result = future.result(timeout=30.0)
+                if isinstance(result, list):
+                    return result
+            except (RuntimeError, OSError, ValueError, TypeError, TimeoutError):
+                log.debug(
+                    "L5 symbol normalizer subinterpreter path failed; fallback to inline normalization",
+                    exc_info=True,
+                )
+        return self._symbol_normalizer_service.normalize_symbols(
+            repo_root=repo_root,
+            normalized_relative_path=normalized_relative_path,
+            raw_symbols=raw_symbols,
+        )
+
+    def shutdown_probe_executor(self) -> None:
+        """probe executor와 부가 executor를 함께 종료한다."""
+        super().shutdown_probe_executor()
+        executor = self._symbol_normalizer_subinterp_executor
+        if executor is None:
+            return
+        try:
+            executor.shutdown(wait=True)
+        except (RuntimeError, OSError, ValueError, TypeError):
+            ...
+        finally:
+            self._symbol_normalizer_subinterp_executor = None
 
     def get_parallelism(self, repo_root: str, language: Language) -> int:
         """현재 언어/레포 풀의 병렬 처리 가능 슬롯 수를 반환한다."""
@@ -835,3 +918,110 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
             error_code=error_code,
             fail_count=fail_count,
         )
+
+
+def _normalize_symbols_subinterp_task(
+    repo_root: str,
+    normalized_relative_path: str,
+    raw_symbols: list[object],
+) -> list[dict[str, object]]:
+    """subinterpreter에서 실행할 L5 symbol normalize 태스크."""
+    symbols: list[dict[str, object]] = []
+    for raw in raw_symbols:
+        if not isinstance(raw, dict):
+            continue
+        location = raw.get("location")
+        resolved_relative_path = normalized_relative_path
+        if isinstance(location, dict):
+            resolved_relative_path = normalize_location_to_repo_relative(
+                location=location,
+                fallback_relative_path=normalized_relative_path,
+                repo_root=repo_root,
+            )
+        if not isinstance(location, dict):
+            location = {}
+        range_data = location.get("range")
+        line = 0
+        end_line = 0
+        if isinstance(range_data, dict):
+            start_data = range_data.get("start")
+            end_data = range_data.get("end")
+            if isinstance(start_data, dict):
+                line = int(start_data.get("line", 0))
+            if isinstance(end_data, dict):
+                end_line = int(end_data.get("line", line))
+        parent_symbol = raw.get("parent")
+        parent_symbol_key = _build_symbol_key_subinterp(
+            repo_root=repo_root,
+            relative_path=resolved_relative_path,
+            symbol=parent_symbol,
+            fallback_parent_key=None,
+        )
+        symbol_key = _build_symbol_key_subinterp(
+            repo_root=repo_root,
+            relative_path=resolved_relative_path,
+            symbol=raw,
+            fallback_parent_key=parent_symbol_key,
+        )
+        symbols.append(
+            {
+                "name": str(raw.get("name", "")),
+                "kind": str(raw.get("kind", "")),
+                "line": line,
+                "end_line": end_line,
+                "symbol_key": symbol_key,
+                "parent_symbol_key": parent_symbol_key,
+                "depth": _resolve_symbol_depth_subinterp(raw),
+                "container_name": _resolve_container_name_subinterp(raw),
+            }
+        )
+    return symbols
+
+
+def _resolve_symbol_depth_subinterp(symbol: dict[str, object]) -> int:
+    depth = 0
+    current = symbol.get("parent")
+    while isinstance(current, dict):
+        depth += 1
+        current = current.get("parent")
+    return depth
+
+
+def _resolve_container_name_subinterp(symbol: dict[str, object]) -> str | None:
+    parent = symbol.get("parent")
+    if not isinstance(parent, dict):
+        return None
+    parent_name = parent.get("name")
+    if isinstance(parent_name, str) and parent_name.strip() != "":
+        return parent_name
+    return None
+
+
+def _build_symbol_key_subinterp(
+    *,
+    repo_root: str,
+    relative_path: str,
+    symbol: object,
+    fallback_parent_key: str | None,
+) -> str | None:
+    if not isinstance(symbol, dict):
+        return None
+    name = symbol.get("name")
+    kind = symbol.get("kind")
+    if not isinstance(name, str) or not isinstance(kind, str):
+        return None
+    line = 0
+    end_line = 0
+    location = symbol.get("location")
+    if isinstance(location, dict):
+        range_data = location.get("range")
+        if isinstance(range_data, dict):
+            start_data = range_data.get("start")
+            end_data = range_data.get("end")
+            if isinstance(start_data, dict):
+                line = int(start_data.get("line", 0))
+            if isinstance(end_data, dict):
+                end_line = int(end_data.get("line", line))
+    parent_key = fallback_parent_key or "root"
+    key_text = f"{repo_root}:{relative_path}:{name}:{kind}:{line}:{end_line}:{parent_key}"
+    return hashlib.sha1(key_text.encode("utf-8")).hexdigest()

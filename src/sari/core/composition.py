@@ -344,10 +344,12 @@ def build_file_collection_service_from_config(
         l3_query_compile_cache_enabled=config.l3_query_compile_cache_enabled,
         l3_query_compile_ms_budget=config.l3_query_compile_ms_budget,
         l3_query_budget_ms=config.l3_query_budget_ms,
+        l3_tree_sitter_executor_mode=config.l3_tree_sitter_executor_mode,
+        l3_tree_sitter_subinterp_workers=config.l3_tree_sitter_subinterp_workers,
+        l3_tree_sitter_subinterp_min_bytes=config.l3_tree_sitter_subinterp_min_bytes,
         l3_asset_mode=config.l3_asset_mode,
         l3_asset_lang_allowlist=config.l3_asset_lang_allowlist,
         l5_db_short_circuit_enabled=config.l5_db_short_circuit_enabled,
         l5_db_short_circuit_log_miss_reason=config.l5_db_short_circuit_log_miss_reason,
         tool_layer_repo=repos.tool_layer_repo,
     )
-
