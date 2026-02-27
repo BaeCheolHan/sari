@@ -77,7 +77,7 @@ def test_pipeline_perf_report_tool_includes_validation_warnings_in_meta(tmp_path
     repo_dir.mkdir()
     _register_workspace(db_path=db_path, repo_path=repo_dir)
 
-    perf_service = SimpleNamespace(get_latest_report=lambda: {"report_id": "latest"})
+    perf_service = SimpleNamespace(get_latest_report=lambda repo_root: {"report_id": "latest", "repo_root": repo_root})
     tool = PipelinePerfReportTool(workspace_repo=WorkspaceRepository(db_path), perf_service=perf_service)  # type: ignore[arg-type]
     response = tool.call({"repo": "repo-a", "repo_key": "missing-repo"})
     _assert_partial_fallback_warning(response)
@@ -119,4 +119,3 @@ def test_call_graph_tool_includes_validation_warnings_in_meta(tmp_path: Path) ->
     tool = CallGraphTool(workspace_repo=WorkspaceRepository(db_path), lsp_repo=LspToolDataRepository(db_path))
     response = tool.call({"repo": "repo-a", "repo_key": "missing-repo", "symbol": "AuthService.login"})
     _assert_partial_fallback_warning(response)
-

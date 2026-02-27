@@ -91,3 +91,35 @@ class PipelinePerfRepository:
             "status": row_str(row, "status"),
             "summary": summary,
         }
+
+    def get_latest_run_for_repo(self, repo_root: str) -> dict[str, object] | None:
+        """특정 저장소 기준 최신 성능 실측 실행 결과를 반환한다."""
+        with connect(self._db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT run_id, repo_root, target_files, profile, started_at, finished_at, status, summary_json
+                FROM pipeline_perf_runs
+                WHERE repo_root = :repo_root
+                ORDER BY started_at DESC
+                LIMIT 1
+                """,
+                {"repo_root": repo_root},
+            ).fetchone()
+        if row is None:
+            return None
+        summary_raw = row_optional_str(row, "summary_json")
+        summary: dict[str, object] = {}
+        if summary_raw is not None:
+            parsed = json.loads(summary_raw)
+            if isinstance(parsed, dict):
+                summary = parsed
+        return {
+            "run_id": row_str(row, "run_id"),
+            "repo_root": row_str(row, "repo_root"),
+            "target_files": row_int(row, "target_files"),
+            "profile": row_str(row, "profile"),
+            "started_at": row_str(row, "started_at"),
+            "finished_at": row_optional_str(row, "finished_at"),
+            "status": row_str(row, "status"),
+            "summary": summary,
+        }

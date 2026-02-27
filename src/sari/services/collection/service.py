@@ -731,7 +731,7 @@ class FileCollectionService:
             except queue.Empty:
                 continue
             try:
-                _ = self._scanner.scan_once(repo_root)
+                _ = self.scan_once(repo_root)
             except CollectionError as exc:
                 if self._handle_background_collection_error_proxy(
                     exc=exc,

@@ -74,8 +74,13 @@ async def pipeline_perf_report_api_endpoint(request) -> JSONResponse:
     service, error = pipeline_perf_or_error(context)
     if error is not None:
         return error
+    _repo_id, repo, _repo_key, repo_error = resolve_repo_from_query(context, request)
+    if repo_error is not None:
+        return repo_error
+    if repo is None:
+        raise ValueError("resolve_repo_from_query returned no error but repo is None")
     try:
-        summary = service.get_latest_report()
+        summary = service.get_latest_report(repo_root=repo)
     except PerfError as exc:
         error = ErrorResponseDTO(code=exc.context.code, message=exc.context.message)
         return JSONResponse({"error": {"code": error.code, "message": error.message}}, status_code=404)

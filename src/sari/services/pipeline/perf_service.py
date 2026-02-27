@@ -181,9 +181,13 @@ class PipelinePerfService:
             )
             raise PerfError(ErrorContext(code="ERR_PERF_RUN_FAILED", message=f"perf run failed: {exc}")) from exc
 
-    def get_latest_report(self) -> dict[str, object]:
+    def get_latest_report(self, repo_root: str | None = None) -> dict[str, object]:
         """최신 성능 실측 리포트를 반환한다."""
-        latest = self._perf_repo.get_latest_run()
+        if isinstance(repo_root, str) and repo_root.strip() != "":
+            normalized_repo_root = str(Path(repo_root).expanduser().resolve())
+            latest = self._perf_repo.get_latest_run_for_repo(normalized_repo_root)
+        else:
+            latest = self._perf_repo.get_latest_run()
         if latest is None:
             raise PerfError(ErrorContext(code="ERR_PERF_NOT_FOUND", message="no perf run found"))
         summary = latest.get("summary")

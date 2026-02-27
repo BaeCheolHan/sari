@@ -137,3 +137,25 @@ def test_cli_lsp_reset_unavailable_calls_perf_file_collection_service(monkeypatc
     payload = json.loads(result.output)
     assert payload["lsp_unavailable_reset"]["cleared_count"] == 7
     assert called["language"] == "java"
+
+
+def test_cli_pipeline_perf_report_passes_repo_scope(monkeypatch: MonkeyPatch) -> None:
+    """pipeline perf report 명령은 --repo 값을 서비스 조회 스코프로 전달해야 한다."""
+    runner = CliRunner()
+    captured: dict[str, object] = {}
+
+    class _FakePerfService:
+        def get_latest_report(self, repo_root: str) -> dict[str, object]:
+            captured["repo_root"] = repo_root
+            return {"status": "COMPLETED", "repo_root": repo_root}
+
+    monkeypatch.setattr(
+        "sari.cli.main._build_services",
+        lambda: SimpleNamespace(pipeline_perf_service=_FakePerfService()),
+    )
+
+    result = runner.invoke(cli, ["pipeline", "perf", "report", "--repo", "/tmp/repo-1"])
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["perf"]["repo_root"] == "/tmp/repo-1"
+    assert captured["repo_root"] == "/tmp/repo-1"

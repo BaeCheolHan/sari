@@ -90,8 +90,9 @@ class PipelinePerfReportTool:
         if validation.error is not None:
             return pack1_error(validation.error)
         warnings_payload = [warning.to_dict() for warning in validation.warnings]
+        repo = str(arguments["repo"])
         try:
-            summary = self._perf_service.get_latest_report()
+            summary = self._perf_service.get_latest_report(repo_root=repo)
         except PerfError as exc:
             return _perf_error(exc)
         return pack1_success(

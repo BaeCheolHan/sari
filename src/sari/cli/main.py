@@ -845,10 +845,9 @@ def pipeline_perf_run_command(
 @click.option("--repo", type=str, required=True)
 def pipeline_perf_report_command(repo: str) -> None:
     """최신 성능 실측 리포트를 출력한다."""
-    del repo
     services = _build_services()
     try:
-        summary = services.pipeline_perf_service.get_latest_report()
+        summary = services.pipeline_perf_service.get_latest_report(repo_root=repo)
     except PerfError as exc:
         _print_json({"error": asdict(exc.context)}, exit_code=1)
         return

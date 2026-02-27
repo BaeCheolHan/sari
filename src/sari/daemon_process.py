@@ -246,6 +246,7 @@ def main() -> None:
     def _auto_loop() -> None:
         """알람 기반 자동제어를 주기적으로 평가한다."""
         while not stop_event.is_set():
+            tick_wait = min(float(config.pipeline_auto_tick_interval_sec), float(config.orphan_ppid_check_interval_sec))
             try:
                 if os.getenv("SARI_TEST_AUTO_LOOP_FAIL", "").strip() == "1":
                     raise RuntimeError("auto loop failpoint")
@@ -288,21 +289,16 @@ def main() -> None:
                         created_at=now_iso8601_utc(),
                     )
                 except sqlite3.Error as event_exc:
-                    if _is_fatal_db_error(event_exc):
-                        _trigger_fatal_shutdown(
-                            stop_event=stop_event,
-                            runtime_repo=runtime_repo,
-                            pid=this_pid,
-                            reason="DB_FATAL_EVENT_RECORD",
-                            shutdown_reason=shutdown_reason,
-                        )
+                    if not _handle_auto_loop_event_record_failure(
+                        event_exc=event_exc,
+                        stop_event=stop_event,
+                        runtime_repo=runtime_repo,
+                        pid=this_pid,
+                        shutdown_reason=shutdown_reason,
+                        tick_wait=tick_wait,
+                    ):
                         return
-                    raise DaemonError(
-                        ErrorContext(
-                            code="ERR_DAEMON_EVENT_RECORD_FAILED",
-                            message=f"자동제어 실패 이벤트 저장 실패: {event_exc}",
-                        )
-                    ) from event_exc
+                    continue
                 if config.run_mode == "dev":
                     shutdown_reason["value"] = "AUTO_LOOP_FAILURE"
                     runtime_repo.mark_exit_reason(this_pid, "AUTO_LOOP_FAILURE", now_iso8601_utc())
@@ -314,7 +310,6 @@ def main() -> None:
                             message=f"자동제어 평가 실패: {exc}",
                         )
                     ) from exc
-            tick_wait = min(float(config.pipeline_auto_tick_interval_sec), float(config.orphan_ppid_check_interval_sec))
             stop_event.wait(timeout=tick_wait)
 
     file_collection_service.start_background()
@@ -382,6 +377,33 @@ def _is_fatal_db_error(exc: sqlite3.Error) -> bool:
     """운영 지속이 불가능한 DB 오류인지 판정한다."""
     message = str(exc).strip().lower()
     return any(pattern in message for pattern in _FATAL_DB_PATTERNS)
+
+
+def _handle_auto_loop_event_record_failure(
+    *,
+    event_exc: sqlite3.Error,
+    stop_event: threading.Event,
+    runtime_repo: RuntimeRepository,
+    pid: int,
+    shutdown_reason: dict[str, str],
+    tick_wait: float,
+) -> bool:
+    """auto-loop 오류 이벤트 기록 실패를 처리한다.
+
+    비치명 DB 오류는 loop 생존성을 위해 continue하고, 치명 오류만 즉시 종료한다.
+    """
+    if _is_fatal_db_error(event_exc):
+        _trigger_fatal_shutdown(
+            stop_event=stop_event,
+            runtime_repo=runtime_repo,
+            pid=pid,
+            reason="DB_FATAL_EVENT_RECORD",
+            shutdown_reason=shutdown_reason,
+        )
+        return False
+    log.exception("자동제어 실패 이벤트 저장 실패(비치명): %s", event_exc)
+    stop_event.wait(timeout=tick_wait)
+    return True
 
 
 def _trigger_fatal_shutdown(

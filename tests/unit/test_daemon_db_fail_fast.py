@@ -8,7 +8,7 @@ import threading
 
 from pytest import MonkeyPatch
 
-from sari.daemon_process import _is_fatal_db_error, _trigger_fatal_shutdown
+from sari.daemon_process import _handle_auto_loop_event_record_failure, _is_fatal_db_error, _trigger_fatal_shutdown
 
 
 def test_is_fatal_db_error_detects_critical_operational_error() -> None:
@@ -52,3 +52,37 @@ def test_trigger_fatal_shutdown_marks_reason_and_sends_sigterm(monkeypatch: Monk
     assert shutdown_reason["value"] == "DB_FATAL_HEARTBEAT"
     assert runtime_repo.calls and runtime_repo.calls[0][1] == "DB_FATAL_HEARTBEAT"
     assert kill_calls == [(12345, int(signal.SIGTERM))]
+
+
+def test_handle_auto_loop_event_record_failure_continues_on_non_fatal_db_error(monkeypatch: MonkeyPatch) -> None:
+    """비치명 DB 오류는 auto-loop 지속을 위해 continue 경로를 반환해야 한다."""
+
+    class _StopEventStub:
+        def __init__(self) -> None:
+            self.wait_calls: list[float] = []
+
+        def wait(self, timeout: float) -> bool:
+            self.wait_calls.append(timeout)
+            return False
+
+    class _RuntimeRepo:
+        def mark_exit_reason(self, pid: int, reason: str, at: str) -> None:
+            _ = (pid, reason, at)
+
+    kill_calls: list[tuple[int, int]] = []
+    monkeypatch.setattr("sari.daemon_process.os.kill", lambda pid, sig: kill_calls.append((pid, int(sig))))
+
+    stop_event = _StopEventStub()
+    shutdown_reason = {"value": ""}
+    should_continue = _handle_auto_loop_event_record_failure(
+        event_exc=sqlite3.OperationalError("database is locked"),
+        stop_event=stop_event,  # type: ignore[arg-type]
+        runtime_repo=_RuntimeRepo(),  # type: ignore[arg-type]
+        pid=7,
+        shutdown_reason=shutdown_reason,
+        tick_wait=0.25,
+    )
+    assert should_continue is True
+    assert stop_event.wait_calls == [0.25]
+    assert shutdown_reason["value"] == ""
+    assert kill_calls == []

@@ -133,3 +133,33 @@ def test_pipeline_perf_run_and_report_endpoint(tmp_path: Path) -> None:
     assert report_response.status_code == 200
     report_payload = json.loads(report_response.body.decode("utf-8"))
     assert report_payload["perf"]["status"] == "COMPLETED"
+
+
+def test_pipeline_perf_report_endpoint_returns_not_found_for_other_repo(tmp_path: Path) -> None:
+    """report 조회는 요청 repo 스코프와 최신 실행 repo가 다르면 404여야 한다."""
+    context = _build_context(tmp_path)
+    workspace_service = WorkspaceService(context.workspace_repo)
+    repo_b = tmp_path / "repo-b"
+    repo_b.mkdir()
+    workspace_service.add_workspace(str(repo_b.resolve()))
+
+    run_request = SimpleNamespace(
+        query_params={
+            "repo": "repo-a",
+            "target_files": "2000",
+            "profile": "realistic_v1",
+            "dataset_mode": "isolated",
+        },
+        app=SimpleNamespace(state=SimpleNamespace(context=context)),
+    )
+    run_response = asyncio.run(pipeline_perf_run_api_endpoint(run_request))
+    assert run_response.status_code == 200
+
+    report_request = SimpleNamespace(
+        query_params={"repo": "repo-b"},
+        app=SimpleNamespace(state=SimpleNamespace(context=context)),
+    )
+    report_response = asyncio.run(pipeline_perf_report_api_endpoint(report_request))
+    assert report_response.status_code == 404
+    report_payload = json.loads(report_response.body.decode("utf-8"))
+    assert report_payload["error"]["code"] == "ERR_PERF_NOT_FOUND"

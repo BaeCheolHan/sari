@@ -342,6 +342,55 @@ def test_file_collection_service_watcher_overflow_rescan_is_async(tmp_path: Path
     service._stop_event.set()  # noqa: SLF001
 
 
+def test_file_collection_service_watcher_overflow_rescan_uses_service_scan_entrypoint(tmp_path: Path) -> None:
+    """overflow rescan은 scanner 직접호출이 아니라 service.scan_once 경로를 사용해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+
+    repo_dir = tmp_path / "repo-scan-entry"
+    repo_dir.mkdir()
+    repo_root = str(repo_dir.resolve())
+
+    service = FileCollectionService(
+        workspace_repo=WorkspaceRepository(db_path),
+        file_repo=FileCollectionRepository(db_path),
+        enrich_queue_repo=FileEnrichQueueRepository(db_path),
+        body_repo=FileBodyRepository(db_path),
+        lsp_repo=LspToolDataRepository(db_path),
+        readiness_repo=ToolReadinessRepository(db_path),
+        policy=_policy(),
+        lsp_backend=_NoopLspBackend(),
+        policy_repo=None,
+        event_repo=None,
+    )
+
+    called = {"service": 0, "scanner": 0}
+
+    def _service_scan_once(path: str) -> CollectionScanResultDTO:
+        assert path == repo_root
+        called["service"] += 1
+        service._stop_event.set()  # noqa: SLF001
+        return CollectionScanResultDTO(scanned_count=0, indexed_count=0, deleted_count=0)
+
+    class _ScannerShouldNotBeUsed:
+        def scan_once(self, path: str) -> CollectionScanResultDTO:
+            _ = path
+            called["scanner"] += 1
+            service._stop_event.set()  # noqa: SLF001
+            return CollectionScanResultDTO(scanned_count=0, indexed_count=0, deleted_count=0)
+
+    service.scan_once = _service_scan_once  # type: ignore[method-assign]
+    service._scanner = _ScannerShouldNotBeUsed()  # type: ignore[attr-defined]
+
+    thread = threading.Thread(target=service._watcher_overflow_rescan_loop, daemon=True)  # noqa: SLF001
+    service._watcher_rescan_queue.put_nowait(repo_root)  # noqa: SLF001
+    thread.start()
+    thread.join(timeout=1.0)
+
+    assert called["service"] == 1
+    assert called["scanner"] == 0
+
+
 def test_file_collection_service_stop_background_waits_for_watcher_rescan_worker(tmp_path: Path) -> None:
     """장기 watcher rescan 중에는 stop_background가 worker 종료 전 반환하면 안 된다."""
     db_path = tmp_path / "state.db"
