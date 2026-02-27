@@ -228,6 +228,10 @@ def wire_engine_services(
         degraded_fallback_service=engine._l3_degraded_fallback_service,
         preprocess_max_bytes=engine._l3_preprocess_max_bytes,
         evaluate_l5_admission=engine._evaluate_l5_admission_for_job if engine._l5_admission_shadow_enabled else None,
+        handoff_to_l5=lambda job, now_iso: engine._enrich_queue_repo.handoff_running_to_l5(
+            job_id=job.job_id,
+            now_iso=now_iso,
+        ),
         l5_admission_enforced=engine._l5_admission_enforced,
         quality_eval_service=engine._l3_quality_eval_service,
         quality_shadow_enabled=False,

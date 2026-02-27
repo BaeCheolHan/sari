@@ -56,6 +56,7 @@ def build_default_config(cls):
     poll_raw = core_raw_values["poll_raw"]
     debounce_raw = core_raw_values["debounce_raw"]
     worker_raw = core_raw_values["worker_raw"]
+    l5_worker_count_raw = core_raw_values["l5_worker_count_raw"]
     p95_raw = core_raw_values["p95_raw"]
     dead_ratio_raw = core_raw_values["dead_ratio_raw"]
     alert_window_raw = core_raw_values["alert_window_raw"]
@@ -194,6 +195,7 @@ def build_default_config(cls):
     poll_ms = parser.int_min(poll_raw, minimum=100, default=100)
     debounce_ms = parser.int_min(debounce_raw, minimum=50, default=150)
     worker_count = parser.int_min(worker_raw, minimum=1, default=4)
+    l5_worker_count = parser.int_min(l5_worker_count_raw, minimum=1, default=2)
     p95_threshold_ms = parser.int_min(p95_raw, minimum=1, default=180_000)
     dead_ratio_bps = parser.int_min(dead_ratio_raw, minimum=1, default=10)
     alert_window_sec = parser.int_min(alert_window_raw, minimum=60, default=300)
@@ -543,6 +545,7 @@ def build_default_config(cls):
         collection_include_ext=collection_runtime.include_ext,
         collection_exclude_globs=collection_runtime.exclude_globs,
         pipeline_worker_count=worker_count,
+        pipeline_l5_worker_count=l5_worker_count,
         pipeline_l3_p95_threshold_ms=p95_threshold_ms,
         pipeline_dead_ratio_threshold_bps=dead_ratio_bps,
         pipeline_alert_window_sec=alert_window_sec,

@@ -33,6 +33,27 @@ def test_jdtls_project_ready_timeout_negative_clamped(monkeypatch):
     assert m._project_ready_timeout_seconds() == 0
 
 
+def test_jdtls_service_ready_timeout_defaults_to_unbounded_for_interactive(monkeypatch):
+    monkeypatch.delenv('SARI_JDTLS_STARTUP_MODE', raising=False)
+    monkeypatch.delenv('SARI_JDTLS_SERVICE_READY_TIMEOUT_SEC', raising=False)
+    m = _mod()
+    assert m._service_ready_timeout_seconds() == 0
+
+
+def test_jdtls_service_ready_timeout_defaults_to_short_wait_for_indexing(monkeypatch):
+    monkeypatch.setenv('SARI_JDTLS_STARTUP_MODE', 'indexing')
+    monkeypatch.delenv('SARI_JDTLS_SERVICE_READY_TIMEOUT_SEC', raising=False)
+    m = _mod()
+    assert m._service_ready_timeout_seconds() == 2
+
+
+def test_jdtls_intellicode_wait_timeout_defaults_to_short_wait_for_indexing(monkeypatch):
+    monkeypatch.setenv('SARI_JDTLS_STARTUP_MODE', 'indexing')
+    monkeypatch.delenv('SARI_JDTLS_INTELLICODE_WAIT_TIMEOUT_SEC', raising=False)
+    m = _mod()
+    assert m._intellicode_wait_timeout_seconds() == 1
+
+
 def test_jdtls_initialize_params_uses_gradle_wrapper_by_default_when_wrapper_is_modern(monkeypatch, tmp_path: Path):
     monkeypatch.delenv('SARI_JDTLS_GRADLE_WRAPPER_FIRST', raising=False)
     m = _mod()

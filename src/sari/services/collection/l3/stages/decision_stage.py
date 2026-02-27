@@ -49,6 +49,7 @@ class L3DecisionStage:
         context: L3JobContext,
         job: FileEnrichJobDTO,
         preprocess_result: L3PreprocessResultDTO | None,
+        l5_lane: bool = False,
     ) -> L3DecisionStageResult:
         now_iso = self._now_iso_supplier()
         if bool(self._skip_eligibility.is_recent_tool_ready(job)):
@@ -95,6 +96,11 @@ class L3DecisionStage:
         admission_decision = self._admission_stage.evaluate(job=job, language=language)
 
         if admission_decision is not None and not admission_decision.admit_l5 and self._admission_enforced:
+            rejection = (
+                admission_decision.reject_reason.value
+                if admission_decision.reject_reason is not None
+                else "unknown"
+            )
             deferred = bool(
                 self._l5_queue_transition.defer_after_l5_admission_rejection(
                     job=job,
@@ -109,11 +115,6 @@ class L3DecisionStage:
                     language=language,
                     admission_decision=admission_decision,
                 )
-            rejection = (
-                admission_decision.reject_reason.value
-                if admission_decision.reject_reason is not None
-                else "unknown"
-            )
             context.state_update = EnrichStateUpdateDTO(
                 repo_root=job.repo_root,
                 relative_path=job.relative_path,

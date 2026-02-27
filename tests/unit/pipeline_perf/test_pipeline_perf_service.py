@@ -215,6 +215,28 @@ class _FakeCollectionServiceWithSeparateL3(_IdleCollectionService):
         return 1 if self.l3_calls == 1 else 0
 
 
+class _FakeCollectionServiceWithL5Only(_IdleCollectionService):
+    def __init__(self) -> None:
+        self.l5_calls = 0
+
+    def process_enrich_jobs_l5(self, limit: int) -> int:
+        del limit
+        self.l5_calls += 1
+        return 1 if self.l5_calls == 1 else 0
+
+
+class _L5OnlyPendingQueueRepository:
+    """L5 lane만 남은 상태를 흉내내는 큐 저장소."""
+
+    def __init__(self, collection: _FakeCollectionServiceWithL5Only) -> None:
+        self._collection = collection
+
+    def get_status_counts(self) -> dict[str, int]:
+        pending = 1 if self._collection.l5_calls == 0 else 0
+        done = 0 if self._collection.l5_calls == 0 else 1
+        return {"PENDING": pending, "RUNNING": 0, "FAILED": 0, "DONE": done, "DEAD": 0}
+
+
 
 class _FakeFileRepoWithStateCounts:
     def get_enrich_state_counts(self) -> dict[str, int]:
@@ -741,6 +763,25 @@ def test_pipeline_perf_service_drain_processes_separate_l3_queue(tmp_path: Path)
     assert collection.l2_calls >= 1
     assert collection.l3_calls >= 1
     assert collection.unified_calls == 0
+
+
+def test_pipeline_perf_service_drain_processes_l5_lane_queue(tmp_path: Path) -> None:
+    """L5 lane pending이 남은 경우 drain 루프는 L5 processor를 호출해 소진해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    collection = _FakeCollectionServiceWithL5Only()
+    queue_repo = _L5OnlyPendingQueueRepository(collection=collection)
+    service = PipelinePerfService(
+        file_collection_service=collection,
+        queue_repo=queue_repo,
+        perf_repo=PipelinePerfRepository(db_path),
+        artifact_root=tmp_path / "artifacts",
+    )
+
+    service._drain_enrich_queue(max_wait_sec=0.2)
+
+    assert collection.l5_calls >= 1
+    assert service._last_drain_diagnostics["drain_timeout_hit"] is False
 
 
 def test_pipeline_perf_service_drain_treats_l5_heavy_deferred_pending_as_terminal(tmp_path: Path) -> None:

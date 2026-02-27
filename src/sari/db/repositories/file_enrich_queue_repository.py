@@ -366,13 +366,21 @@ class FileEnrichQueueRepository:
         """L3 단계에서 처리할 작업을 RUNNING으로 전환하고 반환한다."""
         return self._acquire_pending_internal(limit=limit, now_iso=now_iso, source_mode="l3")
 
+    def acquire_pending_for_l5(self, limit: int, now_iso: str) -> list[FileEnrichJobDTO]:
+        """L5 단계에서 처리할 작업을 RUNNING으로 전환하고 반환한다."""
+        return self._acquire_pending_internal(limit=limit, now_iso=now_iso, source_mode="l5")
+
     def _acquire_pending_internal(self, limit: int, now_iso: str, source_mode: str) -> list[FileEnrichJobDTO]:
         """단계 소스 조건에 맞는 보강 작업을 RUNNING으로 전환하고 반환한다."""
         source_clause = ""
-        if source_mode == "l2":
-            source_clause = "AND enqueue_source <> 'l3'"
+        if source_mode == "all":
+            source_clause = "AND enqueue_source <> 'l5'"
+        elif source_mode == "l2":
+            source_clause = "AND enqueue_source NOT IN ('l3', 'l5')"
         elif source_mode == "l3":
             source_clause = "AND enqueue_source = 'l3'"
+        elif source_mode == "l5":
+            source_clause = "AND enqueue_source = 'l5'"
         with connect(self._db_path) as conn:
             rows = conn.execute(
                 f"""
@@ -430,6 +438,31 @@ class FileEnrichQueueRepository:
             jobs.sort(key=lambda item: (-item.priority, item.next_retry_at, item.created_at))
             conn.commit()
             return jobs
+
+    def handoff_running_to_l5(self, *, job_id: str, now_iso: str) -> bool:
+        """RUNNING 작업을 L5 lane(PENDING/l5)으로 이관한다."""
+        with connect(self._db_path) as conn:
+            cur = conn.execute(
+                """
+                UPDATE file_enrich_queue
+                SET status = 'PENDING',
+                    enqueue_source = 'l5',
+                    attempt_count = 0,
+                    last_error = NULL,
+                    next_retry_at = :now_iso,
+                    defer_reason = NULL,
+                    deferred_state = NULL,
+                    deferred_count = 0,
+                    first_deferred_at = NULL,
+                    last_deferred_at = NULL,
+                    updated_at = :now_iso
+                WHERE job_id = :job_id
+                  AND status = 'RUNNING'
+                """,
+                {"job_id": job_id, "now_iso": now_iso},
+            )
+            conn.commit()
+            return int(cur.rowcount if cur.rowcount is not None else 0) > 0
 
     def promote_to_l3(self, job_id: str, now_iso: str) -> None:
         """L2 완료 작업을 L3 대기 상태로 승격한다."""

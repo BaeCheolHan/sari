@@ -149,6 +149,7 @@ class AppConfig:
     collection_include_ext: tuple[str, ...] = get_default_collection_extensions()
     collection_exclude_globs: tuple[str, ...] = DEFAULT_COLLECTION_EXCLUDE_GLOBS
     pipeline_worker_count: int = 4
+    pipeline_l5_worker_count: int = 2
     pipeline_l3_p95_threshold_ms: int = 180_000
     pipeline_dead_ratio_threshold_bps: int = 10
     pipeline_alert_window_sec: int = 300

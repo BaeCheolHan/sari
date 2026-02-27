@@ -182,3 +182,32 @@ def test_decision_stage_reject_without_enforce_keeps_extract_path_for_shadow_mod
     assert out.should_extract is True
     assert out.admission_decision is decision
     assert context.done_id is None
+
+
+def test_decision_stage_l5_lane_reject_with_enforce_defers_for_retry() -> None:
+    decision = L4AdmissionDecisionDTO(
+        admit_l5=False,
+        reason_code=None,
+        reject_reason=L5RejectReason.PRESSURE_RATE_EXCEEDED,
+    )
+    context = L3JobContext()
+    stage = L3DecisionStage(
+        skip_eligibility=_SkipEligibility(),
+        scope_resolution=_Scope(),
+        admission_stage=_Admission(decision),
+        queue_transition=_QueueTransition(),
+        l5_queue_transition=_L5QueueTransition(defer_l5=True),
+        persist_stage=_Persist(),
+        now_iso_supplier=lambda: "2026-01-01T00:00:00Z",
+        admission_enforced=True,
+    )
+    out = stage.evaluate(
+        context=context,
+        job=_job(),
+        preprocess_result=None,
+        l5_lane=True,
+    )
+
+    assert out.finished_status == "PENDING"
+    assert out.should_extract is False
+    assert context.done_id is None

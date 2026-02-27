@@ -64,6 +64,7 @@ def test_runtime_manager_scheduler_skips_inactive_workspaces(caplog) -> None:
         assert_parent_alive=lambda worker_name: None,
         scan_once=_scan_once,
         process_enrich_jobs_bootstrap=lambda batch: 0,
+        process_enrich_jobs_l5=lambda batch: 0,
         handle_background_collection_error=lambda exc, phase, worker_name: False,
         prune_error_events_if_needed=_prune_and_stop,
         watcher_loop=lambda: None,
@@ -74,3 +75,33 @@ def test_runtime_manager_scheduler_skips_inactive_workspaces(caplog) -> None:
     assert scanned_paths == ["/repo/active"]
     assert "inactive workspace skip" in caplog.text
     assert "/repo/inactive" in caplog.text
+
+
+def test_runtime_manager_enrich_l5_loop_runs_processor_once() -> None:
+    """L5 루프는 전용 processor를 호출하고 stop 시 종료해야 한다."""
+    stop_event = threading.Event()
+    calls: list[int] = []
+
+    def _process_l5(batch: int) -> int:
+        calls.append(batch)
+        stop_event.set()
+        return 1
+
+    manager = RuntimeManager(
+        stop_event=stop_event,
+        enrich_queue_repo=_EnrichQueueRepoStub(),
+        workspace_repo=_WorkspaceRepoStub([]),
+        policy=_PolicyStub(max_enrich_batch=7),
+        policy_repo=None,
+        assert_parent_alive=lambda worker_name: None,
+        scan_once=lambda path: None,
+        process_enrich_jobs_bootstrap=lambda batch: 0,
+        process_enrich_jobs_l5=_process_l5,
+        handle_background_collection_error=lambda exc, phase, worker_name: False,
+        prune_error_events_if_needed=lambda: None,
+        watcher_loop=lambda: None,
+    )
+
+    manager._enrich_l5_loop()
+
+    assert calls == [7]

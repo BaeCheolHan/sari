@@ -58,6 +58,7 @@ def _build_core_fields(*, file_config: dict[str, object], defaults: type[AppConf
         _ConfigField("poll_raw", "SARI_QUEUE_POLL_INTERVAL_MS", "queue_poll_interval_ms", 100),
         _ConfigField("debounce_raw", "SARI_WATCHER_DEBOUNCE_MS", "watcher_debounce_ms", 150),
         _ConfigField("worker_raw", "SARI_PIPELINE_WORKER_COUNT", "pipeline_worker_count", 4),
+        _ConfigField("l5_worker_count_raw", "SARI_PIPELINE_L5_WORKER_COUNT", "pipeline_l5_worker_count", 2),
         _ConfigField("p95_raw", "SARI_PIPELINE_L3_P95_THRESHOLD_MS", "pipeline_l3_p95_threshold_ms", 180000),
         _ConfigField("dead_ratio_raw", "SARI_PIPELINE_DEAD_RATIO_THRESHOLD_BPS", "pipeline_dead_ratio_threshold_bps", 10),
         _ConfigField("alert_window_raw", "SARI_PIPELINE_ALERT_WINDOW_SEC", "pipeline_alert_window_sec", 300),

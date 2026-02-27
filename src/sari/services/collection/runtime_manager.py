@@ -31,10 +31,12 @@ class RuntimeManager:
         assert_parent_alive: Callable[[str], None],
         scan_once: Callable[[str], object],
         process_enrich_jobs_bootstrap: Callable[[int], int],
+        process_enrich_jobs_l5: Callable[[int], int] | None,
         handle_background_collection_error: Callable[[CollectionError, str, str], bool],
         prune_error_events_if_needed: Callable[[], None],
         watcher_loop: Callable[[], None],
         recover_running_ttl_sec: int = 300,
+        l5_worker_count: int = 1,
     ) -> None:
         """런타임 루프 구성요소를 주입받는다."""
         self._stop_event = stop_event
@@ -45,12 +47,15 @@ class RuntimeManager:
         self._assert_parent_alive = assert_parent_alive
         self._scan_once = scan_once
         self._process_enrich_jobs_bootstrap = process_enrich_jobs_bootstrap
+        self._process_enrich_jobs_l5 = process_enrich_jobs_l5
         self._handle_background_collection_error = handle_background_collection_error
         self._prune_error_events_if_needed = prune_error_events_if_needed
         self._watcher_loop = watcher_loop
         self._recover_running_ttl_sec = max(30, int(recover_running_ttl_sec))
+        self._l5_worker_count = max(1, int(l5_worker_count))
         self._scheduler_thread: threading.Thread | None = None
         self._enrich_threads: list[threading.Thread] = []
+        self._enrich_l5_threads: list[threading.Thread] = []
         self._watcher_thread: threading.Thread | None = None
         self._observer: Observer | None = None
 
@@ -60,7 +65,7 @@ class RuntimeManager:
 
     def enrich_thread_count(self) -> int:
         """실행 중 enrich 스레드 수를 반환한다."""
-        return len(self._enrich_threads)
+        return len(self._enrich_threads) + len(self._enrich_l5_threads)
 
     def stop_signal(self) -> None:
         """내부 stop 이벤트를 활성화한다."""
@@ -74,14 +79,20 @@ class RuntimeManager:
         self._stop_event.clear()
         self._scheduler_thread = threading.Thread(target=self._scheduler_loop, daemon=True)
         self._enrich_threads = []
+        self._enrich_l5_threads = []
         self._watcher_thread = threading.Thread(target=self._watcher_loop, daemon=True)
         worker_count = 1
         if self._policy_repo is not None:
             worker_count = self._policy_repo.get_policy().enrich_worker_count
         for _ in range(max(1, worker_count)):
             self._enrich_threads.append(threading.Thread(target=self._enrich_loop, daemon=True))
+        if self._process_enrich_jobs_l5 is not None:
+            for _ in range(self._l5_worker_count):
+                self._enrich_l5_threads.append(threading.Thread(target=self._enrich_l5_loop, daemon=True))
         self._scheduler_thread.start()
         for thread in self._enrich_threads:
+            thread.start()
+        for thread in self._enrich_l5_threads:
             thread.start()
         self._watcher_thread.start()
 
@@ -95,6 +106,8 @@ class RuntimeManager:
         if self._scheduler_thread is not None:
             self._scheduler_thread.join(timeout=2.0)
         for thread in self._enrich_threads:
+            thread.join(timeout=2.0)
+        for thread in self._enrich_l5_threads:
             thread.join(timeout=2.0)
         if self._watcher_thread is not None:
             self._watcher_thread.join(timeout=2.0)
@@ -176,6 +189,31 @@ class RuntimeManager:
                     )
                 )
                 if self._handle_background_collection_error(fatal_error, "enrich_loop_db", "enrich_worker"):
+                    return
+                processed = 0
+            if processed == 0:
+                self._stop_event.wait(timeout=float(self._policy.queue_poll_interval_ms) / 1000.0)
+
+    def _enrich_l5_loop(self) -> None:
+        while not self._stop_event.is_set():
+            self._assert_parent_alive("enrich_worker_l5")
+            processor = self._process_enrich_jobs_l5
+            if processor is None:
+                return
+            try:
+                processed = processor(int(self._policy.max_enrich_batch))
+            except CollectionError as exc:
+                if self._handle_background_collection_error(exc, "enrich_l5_loop", "enrich_worker_l5"):
+                    return
+                processed = 0
+            except sqlite3.Error as exc:
+                fatal_error = CollectionError(
+                    ErrorContext(
+                        code="ERR_COLLECTION_DB_FATAL",
+                        message=f"enrich L5 처리 실패: {exc}",
+                    )
+                )
+                if self._handle_background_collection_error(fatal_error, "enrich_l5_loop_db", "enrich_worker_l5"):
                     return
                 processed = 0
             if processed == 0:

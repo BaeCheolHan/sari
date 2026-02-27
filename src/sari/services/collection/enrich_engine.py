@@ -364,6 +364,31 @@ class EnrichEngine:
         flush_count += 1
         return processed
 
+    def process_enrich_jobs_l5(self, limit: int) -> int:
+        """L5 lane 전용 보강 처리 (병렬)."""
+        from concurrent.futures import as_completed
+        self._assert_parent_alive("enrich_worker_l5")
+        jobs = self._enrich_queue_repo.acquire_pending_for_l5(limit=limit, now_iso=now_iso8601_utc())
+        jobs = self._rebalance_jobs_by_language(jobs=jobs)
+        if not jobs:
+            return 0
+        processed = 0
+        l5_buffers = _L3ResultBuffersDTO.empty()
+        body_upserts: list[CollectedFileBodyDTO] = []
+        last_flush_at = time.perf_counter()
+        futures = {self._l3_executor.submit(self._process_single_l5_job, job): job for job in jobs}
+        for future in as_completed(futures):
+            result = future.result()
+            processed += 1
+            self._l3_result_merger.merge(result=result, buffers=l5_buffers)
+            should_flush_by_size = len(l5_buffers.done_ids) + len(l5_buffers.failed_updates) >= self._flush_batch_size
+            should_flush_by_time = time.perf_counter() - last_flush_at >= self._flush_interval_sec
+            if should_flush_by_size or should_flush_by_time:
+                self._l3_flush_coordinator.flush(buffers=l5_buffers, body_upserts=body_upserts)
+                last_flush_at = time.perf_counter()
+        self._l3_flush_coordinator.flush(buffers=l5_buffers, body_upserts=body_upserts)
+        return processed
+
     def _process_l3_group(
         self,
         *,
@@ -382,7 +407,11 @@ class EnrichEngine:
         """bootstrap 모드 정책에 따라 L2/L3 비율을 조정한다."""
         self.refresh_indexing_mode()
         if self._indexing_mode == "steady":
-            return self.process_enrich_jobs(limit=limit)
+            l2_budget = max(0, (int(limit) + 1) // 2)
+            processed_l2 = self.process_enrich_jobs_l2(limit=l2_budget)
+            l3_budget = max(0, int(limit) - int(processed_l2))
+            processed_l3 = self.process_enrich_jobs_l3(limit=l3_budget)
+            return processed_l2 + processed_l3
         _, l3_worker_count, _, _ = self._resolve_bootstrap_policy()
         processed_l2 = self.process_enrich_jobs_l2(limit=limit)
         if self._indexing_mode == "bootstrap_l2_priority":
@@ -447,6 +476,17 @@ class EnrichEngine:
         if orchestrator is None:
             raise RuntimeError("L3Orchestrator is not initialized")
         result = orchestrator.process_job(job)
+        if not isinstance(result, _L3JobResultDTO):
+            raise TypeError(
+                f"L3Orchestrator returned unexpected result type: {type(result)!r}"
+            )
+        return result
+
+    def _process_single_l5_job(self, job: FileEnrichJobDTO) -> _L3JobResultDTO:
+        orchestrator = getattr(self, "_l3_orchestrator", None)
+        if orchestrator is None:
+            raise RuntimeError("L3Orchestrator is not initialized")
+        result = orchestrator.process_l5_job(job)
         if not isinstance(result, _L3JobResultDTO):
             raise TypeError(
                 f"L3Orchestrator returned unexpected result type: {type(result)!r}"

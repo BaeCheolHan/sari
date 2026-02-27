@@ -341,6 +341,7 @@ def build_file_collection_service_from_config(
         l5_tokens_per_10sec_global_max=config.l5_tokens_per_10sec_global_max,
         l5_tokens_per_10sec_per_lang_max=config.l5_tokens_per_10sec_per_lang_max,
         l5_tokens_per_10sec_per_workspace_max=config.l5_tokens_per_10sec_per_workspace_max,
+        pipeline_l5_worker_count=config.pipeline_l5_worker_count,
         l3_query_compile_cache_enabled=config.l3_query_compile_cache_enabled,
         l3_query_compile_ms_budget=config.l3_query_compile_ms_budget,
         l3_query_budget_ms=config.l3_query_budget_ms,

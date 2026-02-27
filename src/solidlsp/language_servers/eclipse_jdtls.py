@@ -37,6 +37,37 @@ def _project_ready_timeout_seconds() -> int:
         return 20
 
 
+def _startup_mode() -> str:
+    raw = _env_get("SARI_JDTLS_STARTUP_MODE", "interactive").strip().lower()
+    if raw in {"indexing", "interactive"}:
+        return raw
+    return "interactive"
+
+
+def _service_ready_timeout_seconds() -> int:
+    raw = _env_get("SARI_JDTLS_SERVICE_READY_TIMEOUT_SEC", "").strip()
+    if raw != "":
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            pass
+    if _startup_mode() == "indexing":
+        return 2
+    return 0
+
+
+def _intellicode_wait_timeout_seconds() -> int:
+    raw = _env_get("SARI_JDTLS_INTELLICODE_WAIT_TIMEOUT_SEC", "").strip()
+    if raw != "":
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            pass
+    if _startup_mode() == "indexing":
+        return 1
+    return 0
+
+
 def _gradle_wrapper_first_enabled() -> bool:
     raw = _env_get("SARI_JDTLS_GRADLE_WRAPPER_FIRST", "").strip().lower()
     if raw in {"1", "true", "yes", "on"}:
@@ -826,19 +857,34 @@ class EclipseJDTLS(SolidLanguageServer):
         assert "executeCommandProvider" not in init_response["capabilities"]
         self.server.notify.initialized({})
         self.server.notify.workspace_did_change_configuration({"settings": initialize_params["initializationOptions"]["settings"]})  # type: ignore
-        self._intellicode_enable_command_available.wait()
-        java_intellisense_members_path = self.runtime_dependency_paths.intellisense_members_path
-        ensure_paths_exist([java_intellisense_members_path], context="eclipse_jdtls.intellisense_members")
-        intellicode_enable_result = self.server.send.execute_command(
-            {
-                "command": "java.intellicode.enable",
-                "arguments": [True, java_intellisense_members_path],
-            }
-        )
-        assert intellicode_enable_result
+        intellicode_wait_timeout = _intellicode_wait_timeout_seconds()
+        if intellicode_wait_timeout == 0:
+            self._intellicode_enable_command_available.wait()
+        elif not self._intellicode_enable_command_available.wait(timeout=intellicode_wait_timeout):
+            log.warning(
+                "Intellicode enable command was not registered within %ss; continuing startup",
+                intellicode_wait_timeout,
+            )
+        if self._intellicode_enable_command_available.is_set():
+            java_intellisense_members_path = self.runtime_dependency_paths.intellisense_members_path
+            ensure_paths_exist([java_intellisense_members_path], context="eclipse_jdtls.intellisense_members")
+            intellicode_enable_result = self.server.send.execute_command(
+                {
+                    "command": "java.intellicode.enable",
+                    "arguments": [True, java_intellisense_members_path],
+                }
+            )
+            assert intellicode_enable_result
         if not self._service_ready_event.is_set():
             log.info("Waiting for service to be ready ...")
-            self._service_ready_event.wait()
+            service_ready_timeout = _service_ready_timeout_seconds()
+            if service_ready_timeout == 0:
+                self._service_ready_event.wait()
+            elif not self._service_ready_event.wait(timeout=service_ready_timeout):
+                log.warning(
+                    "ServiceReady event was not received within %ss; continuing startup",
+                    service_ready_timeout,
+                )
         log.info("Service is ready")
         if not self._project_ready_event.is_set():
             log.info("Waiting for project to be ready ...")

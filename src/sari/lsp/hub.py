@@ -930,6 +930,9 @@ class LspHub:
         attempts: list[dict[str, str]] = [dict(base_env_overrides)]
         if language != Language.JAVA:
             return attempts
+        startup_mode = "interactive" if request_kind == "interactive" else "indexing"
+        for attempt in attempts:
+            attempt["SARI_JDTLS_STARTUP_MODE"] = startup_mode
         explicit = os.getenv("SARI_JDTLS_GRADLE_WRAPPER_FIRST", "").strip().lower()
         if explicit in {"0", "false", "no", "off", "1", "true", "yes", "on"}:
             return attempts
@@ -939,9 +942,13 @@ class LspHub:
         # indexing 경로에서는 wrapper-first 콜드 타임아웃을 피하기 위해 bundled gradle 우선 시도한다.
         if request_kind != "interactive":
             bundled_first = dict(base_env_overrides)
+            bundled_first["SARI_JDTLS_STARTUP_MODE"] = startup_mode
             bundled_first["SARI_JDTLS_GRADLE_WRAPPER_FIRST"] = "0"
-            return [bundled_first, dict(base_env_overrides)]
+            fallback = dict(base_env_overrides)
+            fallback["SARI_JDTLS_STARTUP_MODE"] = startup_mode
+            return [bundled_first, fallback]
         retry_env = dict(base_env_overrides)
+        retry_env["SARI_JDTLS_STARTUP_MODE"] = startup_mode
         retry_env["SARI_JDTLS_GRADLE_WRAPPER_FIRST"] = "0"
         attempts.append(retry_env)
         return attempts

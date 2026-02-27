@@ -739,13 +739,18 @@ def test_lsp_hub_java_indexing_prefers_bundled_gradle_first(monkeypatch, tmp_pat
         def stop(self) -> None:
             return None
 
-    create_calls: list[str] = []
+    create_calls: list[tuple[str, str]] = []
 
     def _fake_create(*args, **kwargs):  # noqa: ANN001, ANN201
         del args
         process_env = kwargs.get("process_env")
         assert isinstance(process_env, dict)
-        create_calls.append(process_env.get("SARI_JDTLS_GRADLE_WRAPPER_FIRST", ""))
+        create_calls.append(
+            (
+                process_env.get("SARI_JDTLS_GRADLE_WRAPPER_FIRST", ""),
+                process_env.get("SARI_JDTLS_STARTUP_MODE", ""),
+            )
+        )
         return _FakeServer(process_env=process_env)
 
     monkeypatch.delenv("SARI_JDTLS_GRADLE_WRAPPER_FIRST", raising=False)
@@ -754,7 +759,7 @@ def test_lsp_hub_java_indexing_prefers_bundled_gradle_first(monkeypatch, tmp_pat
     hub = LspHub()
     server = hub.get_or_start(language=Language.JAVA, repo_root=str(repo), request_kind="indexing")
     assert server.server.is_running() is True
-    assert create_calls == ["0"]
+    assert create_calls == [("0", "indexing")]
     hub.stop_all()
 
 

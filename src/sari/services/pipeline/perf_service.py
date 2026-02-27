@@ -425,6 +425,7 @@ class PipelinePerfService:
         l2_processor = getattr(self._file_collection_service, "process_enrich_jobs_l2", None)
         unified_processor = getattr(self._file_collection_service, "process_enrich_jobs", None)
         l3_processor = getattr(self._file_collection_service, "process_enrich_jobs_l3", None)
+        l5_processor = getattr(self._file_collection_service, "process_enrich_jobs_l5", None)
         l3_queue_size_getter = getattr(self._file_collection_service, "l3_queue_size", None)
         count_pending_perf_ignorable = getattr(self._queue_repo, "count_pending_perf_ignorable", None)
         with self._force_heavy_deferred_finalization_mode():
@@ -440,7 +441,11 @@ class PipelinePerfService:
                 if callable(l3_processor):
                     with self._perf_tracer.span("drain.loop.process_enrich_jobs_l3", phase="drain"):
                         processed_l3 = int(l3_processor(limit=100))
-                processed = processed_l2 + processed_l3
+                processed_l5 = 0
+                if callable(l5_processor):
+                    with self._perf_tracer.span("drain.loop.process_enrich_jobs_l5", phase="drain"):
+                        processed_l5 = int(l5_processor(limit=100))
+                processed = processed_l2 + processed_l3 + processed_l5
                 with self._perf_tracer.span("drain.loop.queue_snapshot", phase="drain"):
                     counts = self._queue_repo.get_status_counts()
                 last_counts = self._queue_counts_snapshot()
@@ -508,7 +513,11 @@ class PipelinePerfService:
                 if callable(l3_processor):
                     with self._perf_tracer.span("drain.grace.process_enrich_jobs_l3", phase="drain"):
                         processed_l3 = int(l3_processor(limit=100))
-                processed = processed_l2 + processed_l3
+                processed_l5 = 0
+                if callable(l5_processor):
+                    with self._perf_tracer.span("drain.grace.process_enrich_jobs_l5", phase="drain"):
+                        processed_l5 = int(l5_processor(limit=100))
+                processed = processed_l2 + processed_l3 + processed_l5
                 last_counts = self._queue_counts_snapshot()
                 pending = int(last_counts.get("PENDING", 0))
                 running = int(last_counts.get("RUNNING", 0))

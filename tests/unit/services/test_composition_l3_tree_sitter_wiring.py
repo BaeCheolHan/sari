@@ -17,6 +17,7 @@ def test_build_file_collection_service_from_config_wires_l3_tree_sitter_settings
         l3_tree_sitter_executor_mode="subinterp",
         l3_tree_sitter_subinterp_workers=7,
         l3_tree_sitter_subinterp_min_bytes=12_288,
+        pipeline_l5_worker_count=3,
     )
 
     captured: dict[str, object] = {}
@@ -58,3 +59,4 @@ def test_build_file_collection_service_from_config_wires_l3_tree_sitter_settings
     assert captured["l3_tree_sitter_executor_mode"] == "subinterp"
     assert captured["l3_tree_sitter_subinterp_workers"] == 7
     assert captured["l3_tree_sitter_subinterp_min_bytes"] == 12_288
+    assert captured["pipeline_l5_worker_count"] == 3
