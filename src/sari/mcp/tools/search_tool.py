@@ -37,7 +37,6 @@ class SearchTool:
         tool_layer_repo: ToolDataLayerRepository | None = None,
         metrics_provider: Callable[[], object] | None = None,
         repo_registry_repo: RepoRegistryRepository | None = None,
-        stabilization_enabled: bool = True,
         include_info_default: bool = False,
         symbol_info_budget_sec_default: float = 10.0,
         call_timeout_sec: float = 0.0,
@@ -54,9 +53,7 @@ class SearchTool:
         self._symbol_info_budget_sec_default = max(0.0, float(symbol_info_budget_sec_default))
         self._call_timeout_sec = max(0.0, float(call_timeout_sec))
         self._resolve_symbols_default_provider = resolve_symbols_default_provider
-        self._stabilization_service = (
-            stabilization_service if stabilization_service is not None else StabilizationService(enabled=stabilization_enabled)
-        )
+        self._stabilization_service = stabilization_service if stabilization_service is not None else StabilizationService()
         signature = inspect.signature(self._orchestrator.search)
         self._search_params = set(signature.parameters.keys())
         self._timeout_executor: concurrent.futures.ThreadPoolExecutor | None = None

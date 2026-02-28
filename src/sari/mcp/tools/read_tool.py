@@ -31,15 +31,12 @@ class ReadTool:
         lsp_repo: ReadSymbolPort,
         knowledge_repo: ReadKnowledgePort,
         tool_layer_repo: ReadLayerSymbolPort | None = None,
-        stabilization_enabled: bool = True,
         call_timeout_sec: float = 0.0,
         stabilization_service: StabilizationPort | None = None,
     ) -> None:
         """필요 저장소/서비스 의존성을 주입한다."""
         self._workspace_repo = workspace_repo
-        self._stabilization_service = (
-            stabilization_service if stabilization_service is not None else StabilizationService(enabled=stabilization_enabled)
-        )
+        self._stabilization_service = stabilization_service if stabilization_service is not None else StabilizationService()
         self._envelope_builder = Pack1EnvelopeBuilder()
         self._call_timeout_sec = max(0.0, float(call_timeout_sec))
         self._timeout_executor: concurrent.futures.ThreadPoolExecutor | None = None

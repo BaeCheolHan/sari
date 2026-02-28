@@ -428,50 +428,62 @@ class PipelinePerfService:
         l5_processor = getattr(self._file_collection_service, "process_enrich_jobs_l5", None)
         l3_queue_size_getter = getattr(self._file_collection_service, "l3_queue_size", None)
         count_pending_perf_ignorable = getattr(self._queue_repo, "count_pending_perf_ignorable", None)
-        with self._force_heavy_deferred_finalization_mode():
-            while time.time() < deadline:
-                with self._perf_tracer.span("drain.loop.process_enrich_jobs", phase="drain"):
-                    if callable(l2_processor):
-                        processed_l2 = int(l2_processor(limit=100))
-                    elif callable(unified_processor):
-                        processed_l2 = int(unified_processor(limit=100))
-                    else:
-                        processed_l2 = 0
-                processed_l3 = 0
-                if callable(l3_processor):
-                    with self._perf_tracer.span("drain.loop.process_enrich_jobs_l3", phase="drain"):
-                        processed_l3 = int(l3_processor(limit=100))
-                processed_l5 = 0
-                if callable(l5_processor):
-                    with self._perf_tracer.span("drain.loop.process_enrich_jobs_l5", phase="drain"):
-                        processed_l5 = int(l5_processor(limit=100))
-                processed = processed_l2 + processed_l3 + processed_l5
-                with self._perf_tracer.span("drain.loop.queue_snapshot", phase="drain"):
-                    counts = self._queue_repo.get_status_counts()
-                last_counts = self._queue_counts_snapshot()
-                pending = int(counts.get("PENDING", 0))
-                running = int(counts.get("RUNNING", 0))
-                l3_pending = 0
-                if callable(l3_queue_size_getter):
+
+        def _process_once(phase_prefix: str) -> tuple[int, dict[str, int], int, int, int]:
+            """단일 drain tick을 실행하고 처리량/큐 상태를 반환한다."""
+            with self._perf_tracer.span(f"{phase_prefix}.process_enrich_jobs", phase="drain"):
+                if callable(l2_processor):
+                    processed_l2 = int(l2_processor(limit=100))
+                elif callable(unified_processor):
+                    processed_l2 = int(unified_processor(limit=100))
+                else:
+                    processed_l2 = 0
+
+            processed_l3 = 0
+            if callable(l3_processor):
+                with self._perf_tracer.span(f"{phase_prefix}.process_enrich_jobs_l3", phase="drain"):
+                    processed_l3 = int(l3_processor(limit=100))
+
+            processed_l5 = 0
+            if callable(l5_processor):
+                with self._perf_tracer.span(f"{phase_prefix}.process_enrich_jobs_l5", phase="drain"):
+                    processed_l5 = int(l5_processor(limit=100))
+
+            with self._perf_tracer.span(f"{phase_prefix}.queue_snapshot", phase="drain"):
+                counts = self._queue_repo.get_status_counts()
+            counts_snapshot = self._queue_counts_snapshot()
+            pending = int(counts.get("PENDING", 0))
+            running = int(counts.get("RUNNING", 0))
+
+            l3_pending = 0
+            if callable(l3_queue_size_getter):
+                try:
+                    l3_pending = max(0, int(l3_queue_size_getter()))
+                except (RuntimeError, OSError, ValueError, TypeError):
+                    l3_pending = 0
+            elif hasattr(self._file_collection_service, "_l3_ready_queue"):
+                queue_obj = getattr(self._file_collection_service, "_l3_ready_queue")
+                qsize = getattr(queue_obj, "qsize", None)
+                if callable(qsize):
                     try:
-                        l3_pending = max(0, int(l3_queue_size_getter()))
+                        l3_pending = max(0, int(qsize()))
                     except (RuntimeError, OSError, ValueError, TypeError):
                         l3_pending = 0
-                elif hasattr(self._file_collection_service, "_l3_ready_queue"):
-                    queue_obj = getattr(self._file_collection_service, "_l3_ready_queue")
-                    qsize = getattr(queue_obj, "qsize", None)
-                    if callable(qsize):
-                        try:
-                            l3_pending = max(0, int(qsize()))
-                        except (RuntimeError, OSError, ValueError, TypeError):
-                            l3_pending = 0
-                ignored_pending = 0
-                if callable(count_pending_perf_ignorable):
-                    try:
-                        ignored_pending = max(0, int(count_pending_perf_ignorable()))
-                    except (RuntimeError, OSError, ValueError, TypeError):
-                        ignored_pending = 0
-                pending_effective = max(0, pending - ignored_pending)
+
+            ignored_pending = 0
+            if callable(count_pending_perf_ignorable):
+                try:
+                    ignored_pending = max(0, int(count_pending_perf_ignorable()))
+                except (RuntimeError, OSError, ValueError, TypeError):
+                    ignored_pending = 0
+
+            processed = processed_l2 + processed_l3 + processed_l5
+            pending_effective = max(0, pending - ignored_pending)
+            return processed, counts_snapshot, pending_effective, running, l3_pending, ignored_pending
+
+        with self._force_heavy_deferred_finalization_mode():
+            while time.time() < deadline:
+                processed, last_counts, pending_effective, running, l3_pending, ignored_pending = _process_once("drain.loop")
                 if ignored_pending > 0:
                     ignored_deferred_pending_count = ignored_pending
                 if processed == 0 and pending_effective == 0 and ignored_pending > 0 and not forced_heavy_finalize_attempted:
@@ -502,46 +514,9 @@ class PipelinePerfService:
         grace_deadline = time.time() + 3.0
         with self._force_heavy_deferred_finalization_mode():
             while time.time() < grace_deadline:
-                with self._perf_tracer.span("drain.grace.process_enrich_jobs", phase="drain"):
-                    if callable(l2_processor):
-                        processed_l2 = int(l2_processor(limit=100))
-                    elif callable(unified_processor):
-                        processed_l2 = int(unified_processor(limit=100))
-                    else:
-                        processed_l2 = 0
-                processed_l3 = 0
-                if callable(l3_processor):
-                    with self._perf_tracer.span("drain.grace.process_enrich_jobs_l3", phase="drain"):
-                        processed_l3 = int(l3_processor(limit=100))
-                processed_l5 = 0
-                if callable(l5_processor):
-                    with self._perf_tracer.span("drain.grace.process_enrich_jobs_l5", phase="drain"):
-                        processed_l5 = int(l5_processor(limit=100))
-                processed = processed_l2 + processed_l3 + processed_l5
-                last_counts = self._queue_counts_snapshot()
-                pending = int(last_counts.get("PENDING", 0))
-                running = int(last_counts.get("RUNNING", 0))
-                l3_pending = 0
-                if callable(l3_queue_size_getter):
-                    try:
-                        l3_pending = max(0, int(l3_queue_size_getter()))
-                    except (RuntimeError, OSError, ValueError, TypeError):
-                        l3_pending = 0
-                elif hasattr(self._file_collection_service, "_l3_ready_queue"):
-                    queue_obj = getattr(self._file_collection_service, "_l3_ready_queue")
-                    qsize = getattr(queue_obj, "qsize", None)
-                    if callable(qsize):
-                        try:
-                            l3_pending = max(0, int(qsize()))
-                        except (RuntimeError, OSError, ValueError, TypeError):
-                            l3_pending = 0
-                ignored_pending = 0
-                if callable(count_pending_perf_ignorable):
-                    try:
-                        ignored_pending = max(0, int(count_pending_perf_ignorable()))
-                    except (RuntimeError, OSError, ValueError, TypeError):
-                        ignored_pending = 0
-                pending_effective = max(0, pending - ignored_pending)
+                processed, last_counts, pending_effective, running, l3_pending, ignored_pending = _process_once(
+                    "drain.grace"
+                )
                 if ignored_pending > 0:
                     ignored_deferred_pending_count = ignored_pending
                 if processed == 0 and pending_effective == 0 and ignored_pending > 0 and not forced_heavy_finalize_attempted:

@@ -1889,8 +1889,8 @@ def test_solid_lsp_extraction_backend_records_last_trigger_on_schedule() -> None
     assert last_trigger == "bootstrap"
 
 
-def test_solid_lsp_extraction_backend_skips_java_background_probe_in_batch_throughput_mode() -> None:
-    """PR3.4: batch throughput mode에서는 Java background/bootstrap probe 스케줄을 생략한다."""
+def test_solid_lsp_extraction_backend_schedules_java_background_probe() -> None:
+    """배치 throughput 플래그 제거 이후 Java background probe는 기본 스케줄되어야 한다."""
 
     class _FakeHub:
         pass
@@ -1900,7 +1900,6 @@ def test_solid_lsp_extraction_backend_skips_java_background_probe_in_batch_throu
         session_broker=None,
         watcher_hotness_tracker=None,
         enabled=False,
-        batch_throughput_mode_enabled=True,
     )
 
     scheduled = backend.schedule_probe_for_file(
@@ -1909,8 +1908,7 @@ def test_solid_lsp_extraction_backend_skips_java_background_probe_in_batch_throu
         trigger="background",
     )
 
-    assert scheduled == "batch_probe_skipped"
-    assert backend.is_probe_inflight_for_file(repo_root="/repo", relative_path="src/main/java/App.java") is False
+    assert scheduled == "scheduled"
 
 
 def test_solid_lsp_extraction_backend_prewarm_allows_parallel_for_different_keys() -> None:
@@ -3331,8 +3329,8 @@ def test_solid_lsp_scope_override_cache_ttl_expiry() -> None:
     assert backend.get_scope_override(repo_root="/workspace", relative_path="repo_a/a.py") is None
 
 
-def test_solid_lsp_backend_scope_planner_shadow_mode_keeps_runtime_root() -> None:
-    """PR1 baseline shadow mode에서는 planner 계산만 하고 실제 hub root는 변경하지 않아야 한다."""
+def test_solid_lsp_backend_scope_planner_uses_planned_runtime_root() -> None:
+    """planner가 계산한 scope root를 hub runtime root로 사용해야 한다."""
 
     class _FakeLsp:
         def request_document_symbols(self, relative_path: str):  # noqa: ANN001
@@ -3377,12 +3375,12 @@ def test_solid_lsp_backend_scope_planner_shadow_mode_keeps_runtime_root() -> Non
     hub = _FakeHub()
     backend = SolidLspExtractionBackend(hub=hub)  # type: ignore[arg-type]
     planner = _FakePlanner()
-    backend.configure_lsp_scope_planner(planner=planner, enabled=True, shadow_mode=True)
+    backend.configure_lsp_scope_planner(planner=planner, enabled=True)
 
     _ = backend.extract(repo_root="/workspace/repo-a", relative_path="module-x/src/App.java", content_hash="h1")
 
     assert planner.calls == [("/workspace/repo-a", "module-x/src/App.java", "java")]
-    assert hub.last_repo_root == "/workspace/repo-a"
+    assert hub.last_repo_root == "/workspace/repo-a/module-x"
 
 
 def test_solid_lsp_backend_scope_planner_active_mode_uses_planned_root() -> None:
@@ -3434,7 +3432,7 @@ def test_solid_lsp_backend_scope_planner_active_mode_uses_planned_root() -> None
 
     hub = _FakeHub()
     backend = SolidLspExtractionBackend(hub=hub)  # type: ignore[arg-type]
-    backend.configure_lsp_scope_planner(planner=_FakePlanner(), enabled=True, shadow_mode=False)
+    backend.configure_lsp_scope_planner(planner=_FakePlanner(), enabled=True)
 
     _ = backend.extract(repo_root="/workspace/repo-a", relative_path="module-x/src/App.java", content_hash="h1")
 
@@ -3492,7 +3490,7 @@ def test_solid_lsp_backend_scope_override_is_applied_before_planner() -> None:
 
     hub = _FakeHub()
     backend = SolidLspExtractionBackend(hub=hub)  # type: ignore[arg-type]
-    backend.configure_lsp_scope_planner(planner=_PlannerShouldNotWin(), enabled=True, shadow_mode=False)
+    backend.configure_lsp_scope_planner(planner=_PlannerShouldNotWin(), enabled=True)
     backend.record_scope_override_success(
         repo_root="/workspace/repo-a",
         relative_path="module-x/src/App.java",
@@ -3548,7 +3546,7 @@ def test_solid_lsp_backend_scope_planner_counts_fallback_index_building() -> Non
             return _Result()
 
     backend = SolidLspExtractionBackend(hub=_FakeHub())  # type: ignore[arg-type]
-    backend.configure_lsp_scope_planner(planner=_FakePlanner(), enabled=True, shadow_mode=True)
+    backend.configure_lsp_scope_planner(planner=_FakePlanner(), enabled=True)
 
     _ = backend.extract(repo_root="/workspace/repo-a", relative_path="src/App.java", content_hash="h1")
 
@@ -3847,7 +3845,7 @@ def test_solid_lsp_probe_worker_uses_scope_planner_runtime_root() -> None:
     hub = _FakeHub()
     backend = SolidLspExtractionBackend(hub=hub)  # type: ignore[arg-type]
     backend._l1_executor = _ImmediateExecutor()  # type: ignore[attr-defined]
-    backend.configure_lsp_scope_planner(planner=_FakePlanner(), enabled=True, shadow_mode=False)
+    backend.configure_lsp_scope_planner(planner=_FakePlanner(), enabled=True)
     backend._probe_worker(("/workspace/repo-a", Language.JAVA), "module-x/src/App.java")  # type: ignore[attr-defined]
 
     assert hub.prewarm_roots == ["/workspace/repo-a/module-x"]
@@ -3855,8 +3853,8 @@ def test_solid_lsp_probe_worker_uses_scope_planner_runtime_root() -> None:
     assert hub.lsp.last_relative_path == "src/App.java"
 
 
-def test_solid_lsp_probe_worker_skips_java_l1_probe_in_batch_throughput_mode() -> None:
-    """PR3.4: batch throughput mode에서는 Java L1 probe(documentSymbol)를 생략한다."""
+def test_solid_lsp_probe_worker_runs_java_l1_probe() -> None:
+    """배치 throughput 플래그 제거 이후 Java L1 probe(documentSymbol)는 수행되어야 한다."""
 
     class _FakeLsp:
         def __init__(self) -> None:
@@ -3929,18 +3927,17 @@ def test_solid_lsp_probe_worker_skips_java_l1_probe_in_batch_throughput_mode() -
     hub = _FakeHub()
     backend = SolidLspExtractionBackend(hub=hub)  # type: ignore[arg-type]
     backend._l1_executor = _ImmediateExecutor()  # type: ignore[attr-defined]
-    backend.configure_lsp_scope_planner(planner=_FakePlanner(), enabled=True, shadow_mode=False)
+    backend.configure_lsp_scope_planner(planner=_FakePlanner(), enabled=True)
     backend.configure_session_runtime(
         session_broker=None,
         watcher_hotness_tracker=None,
         enabled=False,
-        batch_throughput_mode_enabled=True,
     )
     backend._probe_worker(("/workspace/repo-a", Language.JAVA), "module-x/src/App.java")  # type: ignore[attr-defined]
 
     assert hub.prewarm_roots == ["/workspace/repo-a/module-x"]
-    assert hub.get_or_start_roots == ["/workspace/repo-a/module-x"]
-    assert hub.lsp.last_relative_path is None
+    assert hub.get_or_start_roots.count("/workspace/repo-a/module-x") >= 1
+    assert hub.lsp.last_relative_path == "src/App.java"
 
 
 def test_solid_lsp_backend_scope_planner_can_limit_active_languages() -> None:
@@ -3988,7 +3985,7 @@ def test_solid_lsp_backend_scope_planner_can_limit_active_languages() -> None:
 
     hub = _FakeHub()
     backend = SolidLspExtractionBackend(hub=hub)  # type: ignore[arg-type]
-    backend.configure_lsp_scope_planner(planner=_FakePlanner(), enabled=True, shadow_mode=False)
+    backend.configure_lsp_scope_planner(planner=_FakePlanner(), enabled=True)
     backend.configure_scope_runtime_policy(active_languages=("java",))  # typescript는 제외
 
     result = backend.extract(repo_root="/workspace/repo-a", relative_path="web/main.ts", content_hash="h1")
@@ -3996,8 +3993,8 @@ def test_solid_lsp_backend_scope_planner_can_limit_active_languages() -> None:
     assert hub.last_repo_root == "/workspace/repo-a", "unlisted language should bypass planner application"
 
 
-def test_solid_lsp_backend_broker_throughput_mode_flag_passed_for_large_backlog_only() -> None:
-    """PR3.3: batch throughput mode는 backlog lane + 충분한 pending 힌트에서만 broker에 전달된다."""
+def test_solid_lsp_backend_broker_throughput_mode_flag_is_disabled() -> None:
+    """batch throughput 모드를 제거했으므로 broker lease throughput_mode는 항상 False여야 한다."""
 
     class _FakeLsp:
         def request_document_symbols(self, relative_path: str):  # noqa: ANN001
@@ -4059,14 +4056,10 @@ def test_solid_lsp_backend_broker_throughput_mode_flag_passed_for_large_backlog_
         session_broker=broker,  # type: ignore[arg-type]
         watcher_hotness_tracker=WatcherHotnessTracker(now_monotonic=time.monotonic),
         enabled=True,
-        batch_throughput_mode_enabled=True,
-        batch_throughput_pending_threshold=4,
     )
 
-    # small backlog -> False
     backend.prime_l3_group_pending_hints(group_jobs=[_Job("/workspace/repo", "A.java")])
     _ = backend.extract(repo_root="/workspace/repo", relative_path="A.java", content_hash="h1")
-    # large backlog -> True
     backend.prime_l3_group_pending_hints(group_jobs=[
         _Job("/workspace/repo", "B.java"),
         _Job("/workspace/repo", "C.java"),
@@ -4075,4 +4068,4 @@ def test_solid_lsp_backend_broker_throughput_mode_flag_passed_for_large_backlog_
     ])
     _ = backend.extract(repo_root="/workspace/repo", relative_path="B.java", content_hash="h2")
 
-    assert broker.seen_modes[:2] == [False, True]
+    assert broker.seen_modes[:2] == [False, False]

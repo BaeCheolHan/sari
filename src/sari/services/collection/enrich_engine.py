@@ -101,16 +101,12 @@ class EnrichEngine:
         l5_tokens_per_10sec_global_max: int = 120,
         l5_tokens_per_10sec_per_lang_max: int = 30,
         l5_tokens_per_10sec_per_workspace_max: int = 20,
-        l3_query_compile_cache_enabled: bool = True,
         l3_query_compile_ms_budget: float = 10.0,
         l3_query_budget_ms: float = 30.0,
         l3_tree_sitter_executor_mode: str = "inline",
         l3_tree_sitter_subinterp_workers: int = 4,
         l3_tree_sitter_subinterp_min_bytes: int = 4096,
-        l3_asset_mode: str = "shadow",
-        l3_asset_lang_allowlist: tuple[str, ...] = (),
         l5_db_short_circuit_enabled: bool = True,
-        l5_db_short_circuit_log_miss_reason: bool = True,
     ) -> None:
         """엔진 실행에 필요한 의존성을 주입받는다."""
         self._file_repo = file_repo
@@ -159,7 +155,6 @@ class EnrichEngine:
         self._l5_tokens_per_10sec_per_lang_max = max(1, int(l5_tokens_per_10sec_per_lang_max))
         self._l5_tokens_per_10sec_per_workspace_max = max(1, int(l5_tokens_per_10sec_per_workspace_max))
         self._l5_db_short_circuit_enabled = bool(l5_db_short_circuit_enabled)
-        self._l5_db_short_circuit_log_miss_reason = bool(l5_db_short_circuit_log_miss_reason)
         self._l3_asset_loader = L3AssetLoader()
         self._runtime_services = EnrichRuntimeServiceRegistry(self)
         self._l3_bootstrap_mode_service = L3BootstrapModeService(
@@ -174,14 +169,11 @@ class EnrichEngine:
         self._classify_failure_kind_fn = classify_l3_extract_failure_kind
         wire_engine_services(
             self,
-            l3_query_compile_cache_enabled=l3_query_compile_cache_enabled,
             l3_query_compile_ms_budget=l3_query_compile_ms_budget,
             l3_query_budget_ms=l3_query_budget_ms,
             l3_tree_sitter_executor_mode=l3_tree_sitter_executor_mode,
             l3_tree_sitter_subinterp_workers=l3_tree_sitter_subinterp_workers,
             l3_tree_sitter_subinterp_min_bytes=l3_tree_sitter_subinterp_min_bytes,
-            l3_asset_mode=l3_asset_mode,
-            l3_asset_lang_allowlist=l3_asset_lang_allowlist,
         )
         self._initialize_runtime_processors()
 

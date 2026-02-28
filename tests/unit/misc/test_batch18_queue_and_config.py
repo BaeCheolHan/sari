@@ -105,19 +105,12 @@ def test_app_config_loads_json_and_env_override(tmp_path: Path, monkeypatch) -> 
     monkeypatch.setenv("SARI_L3_SUPPORTED_LANGUAGES", "go,kotlin")
     monkeypatch.setenv("SARI_LSP_MAX_CONCURRENT_STARTS", "2")
     monkeypatch.setenv("SARI_LSP_MAX_CONCURRENT_L1_PROBES", "4")
-    monkeypatch.setenv("SARI_LSP_SCOPE_PLANNER_ENABLED", "1")
-    monkeypatch.setenv("SARI_LSP_SCOPE_PLANNER_SHADOW_MODE", "1")
     monkeypatch.setenv("SARI_LSP_SCOPE_JAVA_MARKERS", "pom.xml,build.gradle.kts")
     monkeypatch.setenv("SARI_LSP_SCOPE_TS_MARKERS", "package.json,tsconfig.json")
     monkeypatch.setenv("SARI_LSP_SCOPE_VUE_MARKERS", "package.json,vue.config.js")
     monkeypatch.setenv("SARI_LSP_SCOPE_TOP_LEVEL_FALLBACK", "1")
     monkeypatch.setenv("SARI_LSP_SCOPE_ACTIVE_LANGUAGES", "java")
     monkeypatch.setenv("SARI_LSP_SESSION_BROKER_ENABLED", "1")
-    monkeypatch.setenv("SARI_LSP_SESSION_BROKER_METRICS_ENABLED", "1")
-    monkeypatch.setenv("SARI_LSP_BROKER_OPTIONAL_SCAFFOLDING_ENABLED", "1")
-    monkeypatch.setenv("SARI_LSP_BROKER_BATCH_THROUGHPUT_MODE_ENABLED", "1")
-    monkeypatch.setenv("SARI_LSP_BROKER_BATCH_THROUGHPUT_PENDING_THRESHOLD", "6")
-    monkeypatch.setenv("SARI_LSP_BROKER_BATCH_DISABLE_JAVA_PROBE", "1")
     monkeypatch.setenv("SARI_LSP_HOTNESS_EVENT_WINDOW_SEC", "12")
     monkeypatch.setenv("SARI_LSP_HOTNESS_DECAY_WINDOW_SEC", "45")
     monkeypatch.setenv("SARI_LSP_BROKER_BACKLOG_MIN_SHARE", "0.25")
@@ -185,19 +178,12 @@ def test_app_config_loads_json_and_env_override(tmp_path: Path, monkeypatch) -> 
     assert config.l3_supported_languages == ("go", "kotlin")
     assert config.lsp_max_concurrent_starts == 2
     assert config.lsp_max_concurrent_l1_probes == 4
-    assert config.lsp_scope_planner_enabled is True
-    assert config.lsp_scope_planner_shadow_mode is True
     assert config.lsp_scope_java_markers == ("pom.xml", "build.gradle.kts")
     assert config.lsp_scope_ts_markers == ("package.json", "tsconfig.json")
     assert config.lsp_scope_vue_markers == ("package.json", "vue.config.js")
     assert config.lsp_scope_top_level_fallback is True
     assert config.lsp_scope_active_languages == ("java",)
     assert config.lsp_session_broker_enabled is True
-    assert config.lsp_session_broker_metrics_enabled is True
-    assert config.lsp_broker_optional_scaffolding_enabled is True
-    assert config.lsp_broker_batch_throughput_mode_enabled is True
-    assert config.lsp_broker_batch_throughput_pending_threshold == 6
-    assert config.lsp_broker_batch_disable_java_probe is True
     assert config.lsp_hotness_event_window_sec == pytest.approx(12.0)
     assert config.lsp_hotness_decay_window_sec == pytest.approx(45.0)
     assert config.lsp_broker_backlog_min_share == pytest.approx(0.25)
@@ -297,7 +283,6 @@ def test_app_config_parses_l5_budget_and_l3_query_budget_env(tmp_path: Path, mon
     monkeypatch.setenv("SARI_L5_TOKENS_PER_10SEC_GLOBAL_MAX", "200")
     monkeypatch.setenv("SARI_L5_TOKENS_PER_10SEC_PER_LANG_MAX", "40")
     monkeypatch.setenv("SARI_L5_TOKENS_PER_10SEC_PER_WORKSPACE_MAX", "25")
-    monkeypatch.setenv("SARI_L3_QUERY_COMPILE_CACHE_ENABLED", "true")
     monkeypatch.setenv("SARI_L3_QUERY_COMPILE_MS_BUDGET", "12.5")
     monkeypatch.setenv("SARI_L3_QUERY_BUDGET_MS", "33.0")
 
@@ -309,7 +294,6 @@ def test_app_config_parses_l5_budget_and_l3_query_budget_env(tmp_path: Path, mon
     assert config.l5_tokens_per_10sec_global_max == 200
     assert config.l5_tokens_per_10sec_per_lang_max == 40
     assert config.l5_tokens_per_10sec_per_workspace_max == 25
-    assert config.l3_query_compile_cache_enabled is True
     assert config.l3_query_compile_ms_budget == pytest.approx(12.5)
     assert config.l3_query_budget_ms == pytest.approx(33.0)
 
@@ -318,13 +302,9 @@ def test_app_config_parses_mcp_tool_call_timeout_env(tmp_path: Path, monkeypatch
     """MCP search/read call timeout 설정이 환경변수에서 파싱되어야 한다."""
     home = tmp_path / "home"
     monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("SARI_MCP_SEARCH_CALL_TIMEOUT_SEC", "1.75")
-    monkeypatch.setenv("SARI_MCP_READ_CALL_TIMEOUT_SEC", "2.25")
 
     config = AppConfig.default()
 
-    assert config.mcp_search_call_timeout_sec == pytest.approx(1.75)
-    assert config.mcp_read_call_timeout_sec == pytest.approx(2.25)
 
 
 def test_app_config_candidate_backend_and_fallback_source_priority(tmp_path: Path, monkeypatch) -> None:

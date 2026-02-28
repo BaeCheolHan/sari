@@ -75,18 +75,6 @@ class SolidLspProbeMixin:
         language = resolve_language_from_path(file_path=normalized_relative_path)
         if language is None:
             return "unknown_language"
-        if (
-            (
-                bool(getattr(self, "_batch_disable_java_probe", False))
-                or bool(getattr(self, "_batch_broker_throughput_mode_enabled", False))
-            )
-            and (not force)
-            and language is Language.JAVA
-            and normalized_trigger in {"background", "bootstrap"}
-        ):
-            current = int(getattr(self, "_probe_schedule_skipped_batch_count", 0))
-            setattr(self, "_probe_schedule_skipped_batch_count", current + 1)
-            return "batch_probe_skipped"
         key = (normalized_root, language)
         now = time.monotonic()
         with self._probe_lock:
@@ -277,14 +265,7 @@ class SolidLspProbeMixin:
                 state.status = "READY_L0"
                 state.warming_count = 0
                 state.next_retry_monotonic = 0.0
-            skip_l1_probe_for_batch = bool(
-                getattr(self, "_batch_disable_java_probe", False)
-                or getattr(self, "_batch_broker_throughput_mode_enabled", False)
-            ) and language is Language.JAVA
-            if skip_l1_probe_for_batch:
-                current = int(getattr(self, "_probe_l1_skipped_batch_count", 0))
-                setattr(self, "_probe_l1_skipped_batch_count", current + 1)
-            elif language in {Language.GO, Language.JAVA, Language.KOTLIN}:
+            if language in {Language.GO, Language.JAVA, Language.KOTLIN}:
                 l1_future = self._l1_executor.submit(self._run_l1_probe_tracked, key, runtime_relative_path)
                 with self._probe_lock:
                     self._probe_inflight[key] = l1_future

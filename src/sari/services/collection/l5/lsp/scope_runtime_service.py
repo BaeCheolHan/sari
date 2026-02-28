@@ -18,11 +18,9 @@ class LspScopeRuntimeService:
         to_scope_relative_path_or_fallback,
         get_lsp_scope_planner,
         is_lsp_scope_planner_enabled,
-        is_lsp_scope_planner_shadow_mode,
         get_scope_active_languages,
         perf_tracer,
         on_scope_override_hit,
-        on_scope_planner_shadow,
         on_scope_planner_applied,
         on_scope_planner_fallback_index_building,
         l3_scope_pending_hints: dict[tuple[str, str], int],
@@ -33,11 +31,9 @@ class LspScopeRuntimeService:
         self._to_scope_relative_path_or_fallback = to_scope_relative_path_or_fallback
         self._get_lsp_scope_planner = get_lsp_scope_planner
         self._is_lsp_scope_planner_enabled = is_lsp_scope_planner_enabled
-        self._is_lsp_scope_planner_shadow_mode = is_lsp_scope_planner_shadow_mode
         self._get_scope_active_languages = get_scope_active_languages
         self._perf_tracer = perf_tracer
         self._on_scope_override_hit = on_scope_override_hit
-        self._on_scope_planner_shadow = on_scope_planner_shadow
         self._on_scope_planner_applied = on_scope_planner_applied
         self._on_scope_planner_fallback_index_building = on_scope_planner_fallback_index_building
         self._l3_scope_pending_hints = l3_scope_pending_hints
@@ -52,7 +48,7 @@ class LspScopeRuntimeService:
         language: Language,
     ) -> tuple[str, str]:
         override = self._get_scope_override(repo_root=repo_root, relative_path=normalized_relative_path)
-        if override is not None and not self._is_lsp_scope_planner_shadow_mode():
+        if override is not None:
             override_scope_root, _override_scope_level = override
             self._on_scope_override_hit()
             runtime_relative_path = self._to_scope_relative_path_or_fallback(
@@ -74,7 +70,6 @@ class LspScopeRuntimeService:
                 phase="l3_extract",
                 repo_root=repo_root,
                 language=language.value,
-                shadow_mode=self._is_lsp_scope_planner_shadow_mode(),
             ):
                 resolution = planner.resolve(
                     workspace_repo_root=repo_root,
@@ -92,9 +87,6 @@ class LspScopeRuntimeService:
             return (repo_root, normalized_relative_path)
         if getattr(resolution, "strategy", "") == "FALLBACK_INDEX_BUILDING":
             self._on_scope_planner_fallback_index_building()
-        if self._is_lsp_scope_planner_shadow_mode():
-            self._on_scope_planner_shadow()
-            return (repo_root, normalized_relative_path)
         self._on_scope_planner_applied()
         runtime_root = str(resolution.lsp_scope_root)
         runtime_relative_path = self._to_scope_relative_path_or_fallback(

@@ -173,47 +173,52 @@ class RuntimeManager:
             return
 
     def _enrich_loop(self) -> None:
-        while not self._stop_event.is_set():
-            self._assert_parent_alive("enrich_worker")
-            try:
-                processed = self._process_enrich_jobs_bootstrap(int(self._policy.max_enrich_batch))
-            except CollectionError as exc:
-                if self._handle_background_collection_error(exc, "enrich_loop", "enrich_worker"):
-                    return
-                processed = 0
-            except sqlite3.Error as exc:
-                fatal_error = CollectionError(
-                    ErrorContext(
-                        code="ERR_COLLECTION_DB_FATAL",
-                        message=f"enrich 처리 실패: {exc}",
-                    )
-                )
-                if self._handle_background_collection_error(fatal_error, "enrich_loop_db", "enrich_worker"):
-                    return
-                processed = 0
-            if processed == 0:
-                self._stop_event.wait(timeout=float(self._policy.queue_poll_interval_ms) / 1000.0)
+        self._run_enrich_processor_loop(
+            processor=self._process_enrich_jobs_bootstrap,
+            worker_name="enrich_worker",
+            error_phase="enrich_loop",
+            db_error_phase="enrich_loop_db",
+            db_error_message_prefix="enrich 처리 실패",
+        )
 
     def _enrich_l5_loop(self) -> None:
+        processor = self._process_enrich_jobs_l5
+        if processor is None:
+            return
+        self._run_enrich_processor_loop(
+            processor=processor,
+            worker_name="enrich_worker_l5",
+            error_phase="enrich_l5_loop",
+            db_error_phase="enrich_l5_loop_db",
+            db_error_message_prefix="enrich L5 처리 실패",
+        )
+
+    def _run_enrich_processor_loop(
+        self,
+        *,
+        processor: Callable[[int], int],
+        worker_name: str,
+        error_phase: str,
+        db_error_phase: str,
+        db_error_message_prefix: str,
+    ) -> None:
+        """enrich 계열 루프의 공통 예외 처리/폴링 동작을 수행한다."""
         while not self._stop_event.is_set():
-            self._assert_parent_alive("enrich_worker_l5")
-            processor = self._process_enrich_jobs_l5
-            if processor is None:
-                return
+            self._assert_parent_alive(worker_name)
             try:
                 processed = processor(int(self._policy.max_enrich_batch))
             except CollectionError as exc:
-                if self._handle_background_collection_error(exc, "enrich_l5_loop", "enrich_worker_l5"):
+                if self._handle_background_collection_error(exc, error_phase, worker_name):
                     return
                 processed = 0
             except sqlite3.Error as exc:
                 fatal_error = CollectionError(
                     ErrorContext(
                         code="ERR_COLLECTION_DB_FATAL",
-                        message=f"enrich L5 처리 실패: {exc}",
+                        message=f"{db_error_message_prefix}: {exc}",
                     )
                 )
-                if self._handle_background_collection_error(fatal_error, "enrich_l5_loop_db", "enrich_worker_l5"):
+                if self._handle_background_collection_error(fatal_error, db_error_phase, worker_name):
                     return
                 processed = 0
             if processed == 0:

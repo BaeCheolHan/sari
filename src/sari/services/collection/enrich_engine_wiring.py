@@ -77,14 +77,11 @@ def build_enrich_processor_deps(engine: "EnrichEngine") -> EnrichProcessorDeps:
 def wire_engine_services(
     engine: "EnrichEngine",
     *,
-    l3_query_compile_cache_enabled: bool,
     l3_query_compile_ms_budget: float,
     l3_query_budget_ms: float,
     l3_tree_sitter_executor_mode: str,
     l3_tree_sitter_subinterp_workers: int,
     l3_tree_sitter_subinterp_min_bytes: int,
-    l3_asset_mode: str,
-    l3_asset_lang_allowlist: tuple[str, ...],
 ) -> None:
     engine._l5_reject_counts_by_reason = {reason: 0 for reason in L5RejectReason}
     engine._l5_cost_units_by_reason = {}
@@ -121,23 +118,18 @@ def wire_engine_services(
         lsp_repo=getattr(engine, "_lsp_repo", None),
         delegate_extract=engine._lsp_backend.extract,
         enabled=bool(getattr(engine, "_l5_db_short_circuit_enabled", True)),
-        log_miss_reason=bool(getattr(engine, "_l5_db_short_circuit_log_miss_reason", True)),
+        log_miss_reason=True,
     )
-    configured_l3_asset_mode = str(l3_asset_mode).strip().lower()
-    if configured_l3_asset_mode not in {"shadow", "gate", "apply"}:
-        configured_l3_asset_mode = "shadow"
-    engine._l3_asset_mode = configured_l3_asset_mode
-    engine._l3_asset_lang_allowlist = tuple(item.strip().lower() for item in l3_asset_lang_allowlist if item.strip() != "")
     engine._l3_preprocess_service = L3TreeSitterPreprocessService(
-        query_compile_cache_enabled=l3_query_compile_cache_enabled,
+        query_compile_cache_enabled=True,
         query_compile_ms_budget=l3_query_compile_ms_budget,
         query_budget_ms=l3_query_budget_ms,
         tree_sitter_executor_mode=l3_tree_sitter_executor_mode,
         tree_sitter_subinterp_workers=l3_tree_sitter_subinterp_workers,
         tree_sitter_subinterp_min_bytes=l3_tree_sitter_subinterp_min_bytes,
         asset_loader=engine._l3_asset_loader,
-        asset_mode=engine._l3_asset_mode,
-        asset_lang_allowlist=engine._l3_asset_lang_allowlist,
+        asset_mode="apply",
+        asset_lang_allowlist=(),
     )
     engine._l3_degraded_fallback_service = L3DegradedFallbackService()
     engine._l3_preprocess_io_service = L3PreprocessIoService(

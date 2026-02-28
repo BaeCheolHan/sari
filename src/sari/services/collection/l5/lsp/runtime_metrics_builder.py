@@ -7,7 +7,6 @@ def build_runtime_metrics(
     *,
     hub_metrics: dict[str, int],
     probe_trigger_counts: dict[str, int],
-    scope_planner_shadow_count: int,
     scope_planner_applied_count: int,
     scope_planner_fallback_index_building_count: int,
     scope_override_hit_count: int,
@@ -18,14 +17,11 @@ def build_runtime_metrics(
     document_symbol_sync_skip_requested_count: int,
     document_symbol_sync_skip_accepted_count: int,
     document_symbol_sync_skip_legacy_fallback_count: int,
-    probe_l1_skipped_batch_count: int,
-    probe_schedule_skipped_batch_count: int,
 ) -> dict[str, int]:
     """hub/probe/상태 카운터를 MCP 노출용 metrics dict로 조합한다."""
     metrics = dict(hub_metrics)
     for trigger, count in probe_trigger_counts.items():
         metrics[f"probe_trigger_{trigger}_count"] = int(count)
-    metrics["scope_planner_shadow_count"] = int(scope_planner_shadow_count)
     metrics["scope_planner_applied_count"] = int(scope_planner_applied_count)
     metrics["scope_planner_fallback_index_building_count"] = int(scope_planner_fallback_index_building_count)
     metrics["scope_override_hit_count"] = int(scope_override_hit_count)
@@ -36,8 +32,6 @@ def build_runtime_metrics(
     metrics["document_symbol_sync_skip_requested_count"] = int(document_symbol_sync_skip_requested_count)
     metrics["document_symbol_sync_skip_accepted_count"] = int(document_symbol_sync_skip_accepted_count)
     metrics["document_symbol_sync_skip_legacy_fallback_count"] = int(document_symbol_sync_skip_legacy_fallback_count)
-    metrics["probe_l1_skipped_batch_count"] = int(probe_l1_skipped_batch_count)
-    metrics["probe_schedule_skipped_batch_count"] = int(probe_schedule_skipped_batch_count)
     metrics.setdefault("session_cache_hit_by_tier_single", 0)
     metrics.setdefault("session_eviction_churn_count", 0)
     metrics.setdefault("lsp_memory_total_rss_mb", 0)

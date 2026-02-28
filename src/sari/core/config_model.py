@@ -162,7 +162,6 @@ class AppConfig:
     daemon_stale_timeout_sec: int = 15
     lsp_request_timeout_sec: float = 20.0
     lsp_max_instances_per_repo_language: int = 3
-    lsp_bulk_mode_enabled: bool = True
     lsp_bulk_max_instances_per_repo_language: int = 4
     lsp_interactive_reserved_slots_per_repo_language: int = 1
     lsp_interactive_timeout_sec: float = 4.0
@@ -194,8 +193,6 @@ class AppConfig:
     lsp_probe_l1_languages: tuple[str, ...] = ("go", "java", "kotlin", "py", "rs", "ts", "js")
 
     # LSP scope planner
-    lsp_scope_planner_enabled: bool = True
-    lsp_scope_planner_shadow_mode: bool = True
     lsp_scope_java_markers: tuple[str, ...] = (
         "pom.xml",
         "build.gradle",
@@ -210,11 +207,6 @@ class AppConfig:
 
     # LSP session broker policy
     lsp_session_broker_enabled: bool = True
-    lsp_session_broker_metrics_enabled: bool = True
-    lsp_broker_optional_scaffolding_enabled: bool = False
-    lsp_broker_batch_throughput_mode_enabled: bool = False
-    lsp_broker_batch_throughput_pending_threshold: int = 4
-    lsp_broker_batch_disable_java_probe: bool = False
     lsp_hotness_event_window_sec: float = 10.0
     lsp_hotness_decay_window_sec: float = 30.0
     lsp_broker_backlog_min_share: float = 0.2
@@ -297,16 +289,12 @@ class AppConfig:
     l5_tokens_per_10sec_per_workspace_max: int = 20
 
     # L3/L5 subinterpreter execution knobs
-    l3_query_compile_cache_enabled: bool = True
     l3_query_compile_ms_budget: float = 10.0
     l3_query_budget_ms: float = 30.0
     l3_tree_sitter_executor_mode: str = "subinterp"
     l3_tree_sitter_subinterp_workers: int = 4
     l3_tree_sitter_subinterp_min_bytes: int = 2048
-    l3_asset_mode: str = "shadow"
-    l3_asset_lang_allowlist: tuple[str, ...] = ()
     l5_db_short_circuit_enabled: bool = True
-    l5_db_short_circuit_log_miss_reason: bool = True
     l5_symbol_normalizer_executor_mode: str = "subinterp"
     l5_symbol_normalizer_subinterp_workers: int = 2
     l5_symbol_normalizer_subinterp_min_symbols: int = 100
@@ -315,12 +303,6 @@ class AppConfig:
     mcp_forward_to_daemon: bool = False
     mcp_daemon_autostart: bool = True
     mcp_daemon_timeout_sec: float = 2.0
-    mcp_search_call_timeout_sec: float = 0.0
-    mcp_read_call_timeout_sec: float = 0.0
-    strict_protocol: bool = False
-    stabilization_enabled: bool = True
-    http_bg_proxy_enabled: bool = False
-    http_bg_proxy_target: str = ""
 
     def collection_config(self) -> CollectionRuntimeConfigDTO:
         """collection/service wiring에 사용할 설정 DTO를 반환한다."""
@@ -338,7 +320,7 @@ class AppConfig:
         return LspHubRuntimeConfigDTO(
             request_timeout_sec=self.lsp_request_timeout_sec,
             max_instances_per_repo_language=self.lsp_max_instances_per_repo_language,
-            bulk_mode_enabled=self.lsp_bulk_mode_enabled,
+            bulk_mode_enabled=True,
             bulk_max_instances_per_repo_language=self.lsp_bulk_max_instances_per_repo_language,
             interactive_reserved_slots_per_repo_language=self.lsp_interactive_reserved_slots_per_repo_language,
             interactive_timeout_sec=self.lsp_interactive_timeout_sec,

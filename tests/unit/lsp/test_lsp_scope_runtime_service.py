@@ -29,17 +29,15 @@ class _Tracer:
         yield
 
 
-def test_resolve_scope_prefers_override_when_not_shadow() -> None:
+def test_resolve_scope_prefers_override() -> None:
     service = LspScopeRuntimeService(
         get_scope_override=lambda repo_root, relative_path: ("/override", "repo"),
         to_scope_relative_path_or_fallback=lambda **kwargs: "src/a.py",
         get_lsp_scope_planner=lambda: None,
         is_lsp_scope_planner_enabled=lambda: False,
-        is_lsp_scope_planner_shadow_mode=lambda: False,
         get_scope_active_languages=lambda: None,
         perf_tracer=_Tracer(),
         on_scope_override_hit=lambda: None,
-        on_scope_planner_shadow=lambda: None,
         on_scope_planner_applied=lambda: None,
         on_scope_planner_fallback_index_building=lambda: None,
         l3_scope_pending_hints={},
@@ -57,19 +55,17 @@ def test_resolve_scope_prefers_override_when_not_shadow() -> None:
     assert rel == "src/a.py"
 
 
-def test_resolve_scope_shadow_mode_keeps_workspace_scope() -> None:
-    shadow = {"count": 0}
+def test_resolve_scope_planner_applies_runtime_scope() -> None:
+    applied = {"count": 0}
     service = LspScopeRuntimeService(
         get_scope_override=lambda repo_root, relative_path: None,
-        to_scope_relative_path_or_fallback=lambda **kwargs: "ignored",
+        to_scope_relative_path_or_fallback=lambda **kwargs: "src/a.py",
         get_lsp_scope_planner=lambda: _Planner("/module", strategy="FALLBACK_INDEX_BUILDING"),
         is_lsp_scope_planner_enabled=lambda: True,
-        is_lsp_scope_planner_shadow_mode=lambda: True,
         get_scope_active_languages=lambda: None,
         perf_tracer=_Tracer(),
         on_scope_override_hit=lambda: None,
-        on_scope_planner_shadow=lambda: shadow.__setitem__("count", shadow["count"] + 1),
-        on_scope_planner_applied=lambda: None,
+        on_scope_planner_applied=lambda: applied.__setitem__("count", applied["count"] + 1),
         on_scope_planner_fallback_index_building=lambda: None,
         l3_scope_pending_hints={},
         l3_scope_pending_hint_lock=threading.Lock(),
@@ -82,9 +78,9 @@ def test_resolve_scope_shadow_mode_keeps_workspace_scope() -> None:
         language=Language.PYTHON,
     )
 
-    assert root == "/workspace"
+    assert root == "/module"
     assert rel == "src/a.py"
-    assert shadow["count"] == 1
+    assert applied["count"] == 1
 
 
 def test_consume_l3_scope_pending_hint_decrements_and_pops() -> None:
@@ -94,11 +90,9 @@ def test_consume_l3_scope_pending_hint_decrements_and_pops() -> None:
         to_scope_relative_path_or_fallback=lambda **kwargs: kwargs["normalized_relative_path"],
         get_lsp_scope_planner=lambda: None,
         is_lsp_scope_planner_enabled=lambda: False,
-        is_lsp_scope_planner_shadow_mode=lambda: False,
         get_scope_active_languages=lambda: None,
         perf_tracer=_Tracer(),
         on_scope_override_hit=lambda: None,
-        on_scope_planner_shadow=lambda: None,
         on_scope_planner_applied=lambda: None,
         on_scope_planner_fallback_index_building=lambda: None,
         l3_scope_pending_hints=hints,

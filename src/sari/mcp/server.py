@@ -174,7 +174,7 @@ class McpServer:
             lsp_reconciler=shared_hub.reconcile_runtime,
         )
         orchestrator = search_stack.orchestrator
-        stabilization_service = StabilizationService(enabled=runtime_config.stabilization_enabled)
+        stabilization_service = StabilizationService()
         self._file_collection_service = file_collection_service
         self._search_tool = SearchTool(
             orchestrator=orchestrator,
@@ -182,11 +182,9 @@ class McpServer:
             tool_layer_repo=tool_layer_repo,
             metrics_provider=file_collection_service.get_pipeline_metrics,
             repo_registry_repo=repo_registry_repo,
-            stabilization_enabled=runtime_config.stabilization_enabled,
             stabilization_service=stabilization_service,
             include_info_default=runtime_config.lsp_include_info_default,
             symbol_info_budget_sec_default=runtime_config.lsp_symbol_info_budget_sec,
-            call_timeout_sec=runtime_config.mcp_search_call_timeout_sec,
         )
         self._doctor_tool = DoctorTool(admin_service=admin_service, workspace_repo=workspace_repo)
         self._rescan_tool = RescanTool(admin_service=admin_service, workspace_repo=workspace_repo)
@@ -214,9 +212,7 @@ class McpServer:
             lsp_repo=lsp_repo,
             knowledge_repo=knowledge_repo,
             tool_layer_repo=tool_layer_repo,
-            stabilization_enabled=runtime_config.stabilization_enabled,
             stabilization_service=stabilization_service,
-            call_timeout_sec=runtime_config.mcp_read_call_timeout_sec,
         )
         self._dry_run_diff_tool = DryRunDiffTool(read_tool=self._read_tool)
         self._list_symbols_tool = ListSymbolsTool(workspace_repo=workspace_repo, lsp_repo=lsp_repo)
@@ -431,9 +427,6 @@ class McpServer:
         for candidate in versions:
             if candidate in self._SUPPORTED_PROTOCOL_VERSIONS:
                 return candidate
-        strict = self._runtime_config.strict_protocol
-        if strict and len(versions) > 0:
-            raise ValueError('Unsupported protocol version')
         return self._DEFAULT_PROTOCOL_VERSION
 
     def _iter_client_protocol_versions(self, params: dict[str, object]) -> list[str]:

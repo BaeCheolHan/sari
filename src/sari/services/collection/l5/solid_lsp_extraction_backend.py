@@ -139,8 +139,6 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
             get_session_broker=lambda: self._session_broker,
             is_session_broker_enabled=lambda: bool(self._session_broker_enabled),
             get_watcher_hotness_tracker=lambda: self._watcher_hotness_tracker,
-            is_batch_broker_throughput_mode_enabled=lambda: bool(self._batch_broker_throughput_mode_enabled),
-            get_batch_broker_pending_threshold=lambda: int(self._batch_broker_pending_threshold),
             increment_broker_guard_reject=lambda: setattr(
                 self,
                 "_broker_guard_reject_count",
@@ -157,13 +155,9 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
         self._scope_override_cache: dict[tuple[str, str, str], _ScopeOverrideRecord] = {}
         self._lsp_scope_planner: LspScopePlanner | None = None
         self._lsp_scope_planner_enabled = False
-        self._lsp_scope_planner_shadow_mode = True
-        self._lsp_scope_planner_shadow_count = 0
         self._lsp_scope_planner_applied_count = 0
         self._lsp_scope_planner_fallback_index_building_count = 0
         self._scope_override_hit_count = 0
-        self._probe_l1_skipped_batch_count = 0
-        self._probe_schedule_skipped_batch_count = 0
         self._runtime_mismatch_auto_recovered_count = 0
         self._runtime_mismatch_auto_recover_failed_count = 0
         self._runtime_mismatch_restart_cooldown_sec = 2.0
@@ -171,9 +165,6 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
         self._session_broker: LspSessionBroker | None = None
         self._watcher_hotness_tracker: WatcherHotnessTracker | None = None
         self._session_broker_enabled = False
-        self._batch_broker_throughput_mode_enabled = False
-        self._batch_broker_pending_threshold = 4
-        self._batch_disable_java_probe = False
         self._broker_guard_reject_count = 0
         self._broker_parallelism_guard_skip_count = 0
         self._document_symbol_sync_skip_requested_count = 0
@@ -190,15 +181,9 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
             to_scope_relative_path_or_fallback=lambda **kwargs: self._to_scope_relative_path_or_fallback(**kwargs),
             get_lsp_scope_planner=lambda: self._lsp_scope_planner,
             is_lsp_scope_planner_enabled=lambda: bool(self._lsp_scope_planner_enabled),
-            is_lsp_scope_planner_shadow_mode=lambda: bool(self._lsp_scope_planner_shadow_mode),
             get_scope_active_languages=lambda: self._scope_active_languages,
             perf_tracer=self._perf_tracer,
             on_scope_override_hit=lambda: setattr(self, "_scope_override_hit_count", int(self._scope_override_hit_count) + 1),
-            on_scope_planner_shadow=lambda: setattr(
-                self,
-                "_lsp_scope_planner_shadow_count",
-                int(self._lsp_scope_planner_shadow_count) + 1,
-            ),
             on_scope_planner_applied=lambda: setattr(
                 self,
                 "_lsp_scope_planner_applied_count",
@@ -448,12 +433,10 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
         *,
         planner: LspScopePlanner | None,
         enabled: bool,
-        shadow_mode: bool,
     ) -> None:
-        """LSP scope planner를 설정한다. Phase 1 baseline은 shadow_mode 기본."""
+        """LSP scope planner를 설정한다."""
         self._lsp_scope_planner = planner
         self._lsp_scope_planner_enabled = bool(enabled) and planner is not None
-        self._lsp_scope_planner_shadow_mode = bool(shadow_mode)
 
     def configure_session_runtime(
         self,
@@ -461,17 +444,11 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
         session_broker: LspSessionBroker | None,
         watcher_hotness_tracker: WatcherHotnessTracker | None,
         enabled: bool,
-        batch_throughput_mode_enabled: bool = False,
-        batch_throughput_pending_threshold: int = 4,
-        batch_disable_java_probe: bool = False,
     ) -> None:
         """PR3 baseline: broker/hotness를 backend에 주입한다."""
         self._session_broker = session_broker
         self._watcher_hotness_tracker = watcher_hotness_tracker
         self._session_broker_enabled = bool(enabled) and session_broker is not None
-        self._batch_broker_throughput_mode_enabled = bool(batch_throughput_mode_enabled)
-        self._batch_broker_pending_threshold = max(1, int(batch_throughput_pending_threshold))
-        self._batch_disable_java_probe = bool(batch_disable_java_probe)
         set_guard = getattr(self._hub, "set_scale_out_guard", None)
         if callable(set_guard):
             if self._session_broker_enabled and session_broker is not None:
@@ -839,7 +816,6 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
         return build_runtime_metrics(
             hub_metrics=dict(self._hub.get_metrics()),
             probe_trigger_counts=probe_counts,
-            scope_planner_shadow_count=self._lsp_scope_planner_shadow_count,
             scope_planner_applied_count=self._lsp_scope_planner_applied_count,
             scope_planner_fallback_index_building_count=self._lsp_scope_planner_fallback_index_building_count,
             scope_override_hit_count=self._scope_override_hit_count,
@@ -850,8 +826,6 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
             document_symbol_sync_skip_requested_count=self._document_symbol_sync_skip_requested_count,
             document_symbol_sync_skip_accepted_count=self._document_symbol_sync_skip_accepted_count,
             document_symbol_sync_skip_legacy_fallback_count=self._document_symbol_sync_skip_legacy_fallback_count,
-            probe_l1_skipped_batch_count=self._probe_l1_skipped_batch_count,
-            probe_schedule_skipped_batch_count=self._probe_schedule_skipped_batch_count,
         )
 
     def _recover_from_runtime_mismatch(self, *, repo_root: str, relative_path: str) -> bool:

@@ -16,8 +16,6 @@ class LspBrokerGuardService:
         get_session_broker,
         is_session_broker_enabled,
         get_watcher_hotness_tracker,
-        is_batch_broker_throughput_mode_enabled,
-        get_batch_broker_pending_threshold,
         increment_broker_guard_reject,
         apply_standby_retention_touch,
     ) -> None:
@@ -26,8 +24,6 @@ class LspBrokerGuardService:
         self._get_session_broker = get_session_broker
         self._is_session_broker_enabled = is_session_broker_enabled
         self._get_watcher_hotness_tracker = get_watcher_hotness_tracker
-        self._is_batch_broker_throughput_mode_enabled = is_batch_broker_throughput_mode_enabled
-        self._get_batch_broker_pending_threshold = get_batch_broker_pending_threshold
         self._increment_broker_guard_reject = increment_broker_guard_reject
         self._apply_standby_retention_touch = apply_standby_retention_touch
 
@@ -63,18 +59,13 @@ class LspBrokerGuardService:
                     hotness = tracker.get_scope_hotness(language=language, lsp_scope_root=runtime_scope_root)
                 except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
                     hotness = 0.0
-            throughput_mode = (
-                self._is_batch_broker_throughput_mode_enabled()
-                and lane.lower() == "backlog"
-                and int(pending_jobs_in_scope) >= int(self._get_batch_broker_pending_threshold())
-            )
             with broker.lease(
                 language=language,
                 lsp_scope_root=runtime_scope_root,
                 lane=lane,
                 hotness_score=hotness,
                 pending_jobs_in_scope=max(0, int(pending_jobs_in_scope)),
-                throughput_mode=throughput_mode,
+                throughput_mode=False,
             ) as lease:
                 if not lease.granted:
                     self._increment_broker_guard_reject()

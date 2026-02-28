@@ -99,7 +99,7 @@ class FileCollectionService:
         "composer.json",
     )
 
-    def __init__(self, workspace_repo: WorkspaceRepository, file_repo: FileCollectionRepository, enrich_queue_repo: FileEnrichQueueRepository, body_repo: FileBodyRepository, lsp_repo: LspToolDataRepository, readiness_repo: ToolReadinessRepository, policy: CollectionPolicyDTO, lsp_backend: LspExtractionBackend, policy_repo: PipelinePolicyRepository | None=None, event_repo: PipelineJobEventRepository | None=None, error_event_repo: PipelineErrorEventRepository | None=None, candidate_index_sink: CandidateIndexSink | None=None, vector_index_sink: VectorIndexSink | None=None, run_mode: str='dev', parent_alive_probe: Callable[[], bool] | None=None, persist_body_for_read: bool=True, repo_registry_repo: RepoRegistryRepository | None=None, l3_parallel_enabled: bool=True, l3_executor_max_workers: int=0, l3_recent_success_ttl_sec: int=120, l3_backpressure_on_interactive: bool=True, l3_backpressure_cooldown_ms: int=300, l3_supported_languages: tuple[str, ...] | None=None, lsp_probe_bootstrap_file_window: int=256, lsp_probe_bootstrap_top_k: int=3, lsp_probe_language_priority: tuple[str, ...]=("go:1.5", "java:1.4", "kotlin:1.3"), lsp_probe_l1_languages: tuple[str, ...]=("go", "java", "kotlin"), lsp_session_broker_enabled: bool=True, lsp_session_broker_metrics_enabled: bool=True, lsp_broker_optional_scaffolding_enabled: bool=False, lsp_hotness_event_window_sec: float=10.0, lsp_hotness_decay_window_sec: float=30.0, lsp_broker_backlog_min_share: float=0.2, lsp_broker_max_standby_sessions_per_lang: int=2, lsp_broker_max_standby_sessions_per_budget_group: int=2, lsp_broker_ts_vue_active_cap: int=2, lsp_broker_java_hot_lanes: int=1, lsp_broker_java_backlog_lanes: int=1, lsp_broker_java_sticky_ttl_sec: float=600.0, lsp_broker_java_switch_cooldown_sec: float=5.0, lsp_broker_java_min_lease_ms: int=1500, lsp_broker_ts_hot_lanes: int=1, lsp_broker_ts_backlog_lanes: int=1, lsp_broker_ts_sticky_ttl_sec: float=180.0, lsp_broker_ts_switch_cooldown_sec: float=2.0, lsp_broker_ts_min_lease_ms: int=500, lsp_broker_vue_hot_lanes: int=1, lsp_broker_vue_backlog_lanes: int=1, lsp_broker_vue_sticky_ttl_sec: float=240.0, lsp_broker_vue_switch_cooldown_sec: float=3.0, lsp_broker_vue_min_lease_ms: int=800, lsp_scope_active_languages: tuple[str, ...] | None=None, lsp_broker_batch_throughput_mode_enabled: bool=False, lsp_broker_batch_throughput_pending_threshold: int=4, lsp_broker_batch_disable_java_probe: bool=False, l5_call_rate_total_max: float=0.05, l5_call_rate_batch_max: float=0.01, l5_calls_per_min_per_lang_max: int=30, l5_tokens_per_10sec_global_max: int=120, l5_tokens_per_10sec_per_lang_max: int=30, l5_tokens_per_10sec_per_workspace_max: int=20, pipeline_l5_worker_count: int=2, l3_query_compile_cache_enabled: bool=True, l3_query_compile_ms_budget: float=10.0, l3_query_budget_ms: float=30.0, l3_tree_sitter_executor_mode: str="inline", l3_tree_sitter_subinterp_workers: int=4, l3_tree_sitter_subinterp_min_bytes: int=4096, l3_asset_mode: str="shadow", l3_asset_lang_allowlist: tuple[str, ...]=(), l5_db_short_circuit_enabled: bool=True, l5_db_short_circuit_log_miss_reason: bool=True, tool_layer_repo: ToolDataLayerRepository | None=None) -> None:
+    def __init__(self, workspace_repo: WorkspaceRepository, file_repo: FileCollectionRepository, enrich_queue_repo: FileEnrichQueueRepository, body_repo: FileBodyRepository, lsp_repo: LspToolDataRepository, readiness_repo: ToolReadinessRepository, policy: CollectionPolicyDTO, lsp_backend: LspExtractionBackend, policy_repo: PipelinePolicyRepository | None=None, event_repo: PipelineJobEventRepository | None=None, error_event_repo: PipelineErrorEventRepository | None=None, candidate_index_sink: CandidateIndexSink | None=None, vector_index_sink: VectorIndexSink | None=None, run_mode: str='dev', parent_alive_probe: Callable[[], bool] | None=None, persist_body_for_read: bool=True, repo_registry_repo: RepoRegistryRepository | None=None, l3_parallel_enabled: bool=True, l3_executor_max_workers: int=0, l3_recent_success_ttl_sec: int=120, l3_backpressure_on_interactive: bool=True, l3_backpressure_cooldown_ms: int=300, l3_supported_languages: tuple[str, ...] | None=None, lsp_probe_bootstrap_file_window: int=256, lsp_probe_bootstrap_top_k: int=3, lsp_probe_language_priority: tuple[str, ...]=("go:1.5", "java:1.4", "kotlin:1.3"), lsp_probe_l1_languages: tuple[str, ...]=("go", "java", "kotlin"), lsp_session_broker_enabled: bool=True, lsp_hotness_event_window_sec: float=10.0, lsp_hotness_decay_window_sec: float=30.0, lsp_broker_backlog_min_share: float=0.2, lsp_broker_max_standby_sessions_per_lang: int=2, lsp_broker_max_standby_sessions_per_budget_group: int=2, lsp_broker_ts_vue_active_cap: int=2, lsp_broker_java_hot_lanes: int=1, lsp_broker_java_backlog_lanes: int=1, lsp_broker_java_sticky_ttl_sec: float=600.0, lsp_broker_java_switch_cooldown_sec: float=5.0, lsp_broker_java_min_lease_ms: int=1500, lsp_broker_ts_hot_lanes: int=1, lsp_broker_ts_backlog_lanes: int=1, lsp_broker_ts_sticky_ttl_sec: float=180.0, lsp_broker_ts_switch_cooldown_sec: float=2.0, lsp_broker_ts_min_lease_ms: int=500, lsp_broker_vue_hot_lanes: int=1, lsp_broker_vue_backlog_lanes: int=1, lsp_broker_vue_sticky_ttl_sec: float=240.0, lsp_broker_vue_switch_cooldown_sec: float=3.0, lsp_broker_vue_min_lease_ms: int=800, lsp_scope_active_languages: tuple[str, ...] | None=None, l5_call_rate_total_max: float=0.05, l5_call_rate_batch_max: float=0.01, l5_calls_per_min_per_lang_max: int=30, l5_tokens_per_10sec_global_max: int=120, l5_tokens_per_10sec_per_lang_max: int=30, l5_tokens_per_10sec_per_workspace_max: int=20, pipeline_l5_worker_count: int=2, l3_query_compile_ms_budget: float=10.0, l3_query_budget_ms: float=30.0, l3_tree_sitter_executor_mode: str="inline", l3_tree_sitter_subinterp_workers: int=4, l3_tree_sitter_subinterp_min_bytes: int=4096, l5_db_short_circuit_enabled: bool=True, tool_layer_repo: ToolDataLayerRepository | None=None) -> None:
         self._workspace_repo = workspace_repo
         self._file_repo = file_repo
         self._enrich_queue_repo = enrich_queue_repo
@@ -127,19 +127,9 @@ class FileCollectionService:
             self._l3_supported_languages = tuple(item.strip() for item in get_enabled_language_names() if item.strip() != "")
         else:
             self._l3_supported_languages = tuple(item.strip() for item in l3_supported_languages if item.strip() != "")
-        self._watcher_queue_max = self.WATCHER_QUEUE_MAX
-        self._watcher_overflow_rescan_cooldown_sec = self.WATCHER_OVERFLOW_RESCAN_COOLDOWN_SEC
-        if self._policy_repo is not None:
-            try:
-                runtime_policy = self._policy_repo.get_policy()
-                self._watcher_queue_max = max(100, int(runtime_policy.watcher_queue_max))
-                self._watcher_overflow_rescan_cooldown_sec = max(
-                    1, int(runtime_policy.watcher_overflow_rescan_cooldown_sec)
-                )
-            except (RuntimeError, ValueError):
-                # 정책 조회 실패 시 기본 안전값으로 동작한다.
-                self._watcher_queue_max = self.WATCHER_QUEUE_MAX
-                self._watcher_overflow_rescan_cooldown_sec = self.WATCHER_OVERFLOW_RESCAN_COOLDOWN_SEC
+        watcher_queue_max, watcher_overflow_rescan_cooldown_sec = self._resolve_watcher_runtime_settings()
+        self._watcher_queue_max = watcher_queue_max
+        self._watcher_overflow_rescan_cooldown_sec = watcher_overflow_rescan_cooldown_sec
         self._stop_event = threading.Event()
         self._scheduler_thread: threading.Thread | None = None
         self._enrich_threads: list[threading.Thread] = []
@@ -161,71 +151,43 @@ class FileCollectionService:
         self._throughput_ema_jobs_per_sec = 0.0
         self._throughput_alpha = 0.2
         self._lsp_session_broker_enabled = bool(lsp_session_broker_enabled)
-        self._lsp_session_broker_metrics_enabled = bool(lsp_session_broker_metrics_enabled)
         self._watcher_hotness_tracker = WatcherHotnessTracker(
             event_window_sec=lsp_hotness_event_window_sec,
             decay_window_sec=lsp_hotness_decay_window_sec,
             now_monotonic=time.monotonic,
             scope_cache_invalidator=self._invalidate_scope_caches_from_watcher_signal,
         )
-        broker_profiles: dict[str, LspBrokerLanguageProfile] = {}
-        if self._lsp_session_broker_enabled:
-            broker_profiles = {
-                "java": LspBrokerLanguageProfile(
-                    language="java",
-                    hot_lanes=max(0, int(lsp_broker_java_hot_lanes)),
-                    backlog_lanes=max(0, int(lsp_broker_java_backlog_lanes)),
-                    sticky_idle_ttl_sec=max(0.0, float(lsp_broker_java_sticky_ttl_sec)),
-                    switch_cooldown_sec=max(0.0, float(lsp_broker_java_switch_cooldown_sec)),
-                    min_lease_ms=max(0, int(lsp_broker_java_min_lease_ms)),
-                ),
-                "typescript": LspBrokerLanguageProfile(
-                    language="typescript",
-                    hot_lanes=max(0, int(lsp_broker_ts_hot_lanes)),
-                    backlog_lanes=max(0, int(lsp_broker_ts_backlog_lanes)),
-                    sticky_idle_ttl_sec=max(0.0, float(lsp_broker_ts_sticky_ttl_sec)),
-                    switch_cooldown_sec=max(0.0, float(lsp_broker_ts_switch_cooldown_sec)),
-                    min_lease_ms=max(0, int(lsp_broker_ts_min_lease_ms)),
-                    shared_budget_group="ts-vue",
-                ),
-                "vue": LspBrokerLanguageProfile(
-                    language="vue",
-                    hot_lanes=max(0, int(lsp_broker_vue_hot_lanes)),
-                    backlog_lanes=max(0, int(lsp_broker_vue_backlog_lanes)),
-                    sticky_idle_ttl_sec=max(0.0, float(lsp_broker_vue_sticky_ttl_sec)),
-                    switch_cooldown_sec=max(0.0, float(lsp_broker_vue_switch_cooldown_sec)),
-                    min_lease_ms=max(0, int(lsp_broker_vue_min_lease_ms)),
-                    shared_budget_group="ts-vue",
-                ),
-            }
+        broker_profiles = self._build_lsp_broker_profiles(
+            enabled=self._lsp_session_broker_enabled,
+            java_hot_lanes=lsp_broker_java_hot_lanes,
+            java_backlog_lanes=lsp_broker_java_backlog_lanes,
+            java_sticky_ttl_sec=lsp_broker_java_sticky_ttl_sec,
+            java_switch_cooldown_sec=lsp_broker_java_switch_cooldown_sec,
+            java_min_lease_ms=lsp_broker_java_min_lease_ms,
+            ts_hot_lanes=lsp_broker_ts_hot_lanes,
+            ts_backlog_lanes=lsp_broker_ts_backlog_lanes,
+            ts_sticky_ttl_sec=lsp_broker_ts_sticky_ttl_sec,
+            ts_switch_cooldown_sec=lsp_broker_ts_switch_cooldown_sec,
+            ts_min_lease_ms=lsp_broker_ts_min_lease_ms,
+            vue_hot_lanes=lsp_broker_vue_hot_lanes,
+            vue_backlog_lanes=lsp_broker_vue_backlog_lanes,
+            vue_sticky_ttl_sec=lsp_broker_vue_sticky_ttl_sec,
+            vue_switch_cooldown_sec=lsp_broker_vue_switch_cooldown_sec,
+            vue_min_lease_ms=lsp_broker_vue_min_lease_ms,
+        )
         self._lsp_session_broker = LspSessionBroker(
             profiles=broker_profiles,
             max_standby_sessions_per_lang=max(0, int(lsp_broker_max_standby_sessions_per_lang)),
             max_standby_sessions_per_budget_group=max(0, int(lsp_broker_max_standby_sessions_per_budget_group)),
             backlog_min_share=min(1.0, max(0.0, float(lsp_broker_backlog_min_share))),
-            optional_scaffolding_enabled=bool(lsp_broker_optional_scaffolding_enabled),
             now_monotonic=time.monotonic,
         )
-        if self._lsp_session_broker_enabled:
-            self._lsp_session_broker.set_budget_group_active_cap("ts-vue", max(0, int(lsp_broker_ts_vue_active_cap)))
-        configure_session_runtime = getattr(self._lsp_backend, "configure_session_runtime", None)
-        if callable(configure_session_runtime):
-            configure_session_runtime(
-                session_broker=self._lsp_session_broker,
-                watcher_hotness_tracker=self._watcher_hotness_tracker,
-                enabled=self._lsp_session_broker_enabled,
-                batch_throughput_mode_enabled=bool(lsp_broker_batch_throughput_mode_enabled),
-                batch_throughput_pending_threshold=max(1, int(lsp_broker_batch_throughput_pending_threshold)),
-                batch_disable_java_probe=bool(lsp_broker_batch_disable_java_probe),
-            )
-        configure_scope_runtime_policy = getattr(self._lsp_backend, "configure_scope_runtime_policy", None)
-        if callable(configure_scope_runtime_policy):
-            configure_scope_runtime_policy(active_languages=lsp_scope_active_languages)
+        self._configure_lsp_backend_runtime(
+            ts_vue_active_cap=lsp_broker_ts_vue_active_cap,
+            lsp_scope_active_languages=lsp_scope_active_languages,
+        )
         self._metrics_lock = threading.Lock()
         self._worker_state = 'running'
-        self._last_error_code: str | None = None
-        self._last_error_message: str | None = None
-        self._last_error_at: str | None = None
         self._indexing_mode = 'steady'
         self._repo_support = CollectionRepoSupport(
             workspace_repo=self._workspace_repo,
@@ -302,16 +264,12 @@ class FileCollectionService:
             l5_tokens_per_10sec_per_workspace_max=l5_tokens_per_10sec_per_workspace_max,
             l5_admission_shadow_enabled=(self._run_mode == "prod"),
             l5_admission_enforced=False,
-            l3_query_compile_cache_enabled=l3_query_compile_cache_enabled,
             l3_query_compile_ms_budget=l3_query_compile_ms_budget,
             l3_query_budget_ms=l3_query_budget_ms,
             l3_tree_sitter_executor_mode=l3_tree_sitter_executor_mode,
             l3_tree_sitter_subinterp_workers=l3_tree_sitter_subinterp_workers,
             l3_tree_sitter_subinterp_min_bytes=l3_tree_sitter_subinterp_min_bytes,
-            l3_asset_mode=l3_asset_mode,
-            l3_asset_lang_allowlist=l3_asset_lang_allowlist,
             l5_db_short_circuit_enabled=l5_db_short_circuit_enabled,
-            l5_db_short_circuit_log_miss_reason=l5_db_short_circuit_log_miss_reason,
             tool_layer_repo=tool_layer_repo,
         )
         self._pipeline_worker = PipelineWorker(
@@ -379,6 +337,95 @@ class FileCollectionService:
             watcher_last_overflow_at=self._watcher_last_overflow_at_snapshot,
             lsp_metrics_snapshot=self._lsp_runtime_metrics_snapshot,
         )
+
+    def _resolve_watcher_runtime_settings(self) -> tuple[int, int]:
+        watcher_queue_max = self.WATCHER_QUEUE_MAX
+        watcher_overflow_rescan_cooldown_sec = self.WATCHER_OVERFLOW_RESCAN_COOLDOWN_SEC
+        if self._policy_repo is None:
+            return watcher_queue_max, watcher_overflow_rescan_cooldown_sec
+        try:
+            runtime_policy = self._policy_repo.get_policy()
+            watcher_queue_max = max(100, int(runtime_policy.watcher_queue_max))
+            watcher_overflow_rescan_cooldown_sec = max(
+                1, int(runtime_policy.watcher_overflow_rescan_cooldown_sec)
+            )
+        except (RuntimeError, ValueError):
+            # 정책 조회 실패 시 기본 안전값으로 동작한다.
+            watcher_queue_max = self.WATCHER_QUEUE_MAX
+            watcher_overflow_rescan_cooldown_sec = self.WATCHER_OVERFLOW_RESCAN_COOLDOWN_SEC
+        return watcher_queue_max, watcher_overflow_rescan_cooldown_sec
+
+    @staticmethod
+    def _build_lsp_broker_profiles(
+        *,
+        enabled: bool,
+        java_hot_lanes: int,
+        java_backlog_lanes: int,
+        java_sticky_ttl_sec: float,
+        java_switch_cooldown_sec: float,
+        java_min_lease_ms: int,
+        ts_hot_lanes: int,
+        ts_backlog_lanes: int,
+        ts_sticky_ttl_sec: float,
+        ts_switch_cooldown_sec: float,
+        ts_min_lease_ms: int,
+        vue_hot_lanes: int,
+        vue_backlog_lanes: int,
+        vue_sticky_ttl_sec: float,
+        vue_switch_cooldown_sec: float,
+        vue_min_lease_ms: int,
+    ) -> dict[str, LspBrokerLanguageProfile]:
+        if not enabled:
+            return {}
+        return {
+            "java": LspBrokerLanguageProfile(
+                language="java",
+                hot_lanes=max(0, int(java_hot_lanes)),
+                backlog_lanes=max(0, int(java_backlog_lanes)),
+                sticky_idle_ttl_sec=max(0.0, float(java_sticky_ttl_sec)),
+                switch_cooldown_sec=max(0.0, float(java_switch_cooldown_sec)),
+                min_lease_ms=max(0, int(java_min_lease_ms)),
+            ),
+            "typescript": LspBrokerLanguageProfile(
+                language="typescript",
+                hot_lanes=max(0, int(ts_hot_lanes)),
+                backlog_lanes=max(0, int(ts_backlog_lanes)),
+                sticky_idle_ttl_sec=max(0.0, float(ts_sticky_ttl_sec)),
+                switch_cooldown_sec=max(0.0, float(ts_switch_cooldown_sec)),
+                min_lease_ms=max(0, int(ts_min_lease_ms)),
+                shared_budget_group="ts-vue",
+            ),
+            "vue": LspBrokerLanguageProfile(
+                language="vue",
+                hot_lanes=max(0, int(vue_hot_lanes)),
+                backlog_lanes=max(0, int(vue_backlog_lanes)),
+                sticky_idle_ttl_sec=max(0.0, float(vue_sticky_ttl_sec)),
+                switch_cooldown_sec=max(0.0, float(vue_switch_cooldown_sec)),
+                min_lease_ms=max(0, int(vue_min_lease_ms)),
+                shared_budget_group="ts-vue",
+            ),
+        }
+
+    def _configure_lsp_backend_runtime(
+        self,
+        *,
+        ts_vue_active_cap: int,
+        lsp_scope_active_languages: tuple[str, ...] | None,
+    ) -> None:
+        if self._lsp_session_broker_enabled:
+            self._lsp_session_broker.set_budget_group_active_cap("ts-vue", max(0, int(ts_vue_active_cap)))
+
+        configure_session_runtime = getattr(self._lsp_backend, "configure_session_runtime", None)
+        if callable(configure_session_runtime):
+            configure_session_runtime(
+                session_broker=self._lsp_session_broker,
+                watcher_hotness_tracker=self._watcher_hotness_tracker,
+                enabled=self._lsp_session_broker_enabled,
+            )
+
+        configure_scope_runtime_policy = getattr(self._lsp_backend, "configure_scope_runtime_policy", None)
+        if callable(configure_scope_runtime_policy):
+            configure_scope_runtime_policy(active_languages=lsp_scope_active_languages)
 
     def scan_once(self, repo_root: str) -> CollectionScanResultDTO:
         """L1 스캔을 실행한다. workspace 컨테이너는 top-level repo fan-out을 수행한다."""
@@ -596,19 +643,18 @@ class FileCollectionService:
                 )
         except (RuntimeError, OSError, ValueError, TypeError):
             ...
-        if self._lsp_session_broker_metrics_enabled:
-            try:
-                broker_metrics = self._lsp_session_broker.get_metrics()
-                if isinstance(broker_metrics, dict):
-                    merged.update(
-                        {
-                            str(key): float(value)
-                            for key, value in broker_metrics.items()
-                            if isinstance(value, (int, float))
-                        }
-                    )
-            except (RuntimeError, OSError, ValueError, TypeError):
-                ...
+        try:
+            broker_metrics = self._lsp_session_broker.get_metrics()
+            if isinstance(broker_metrics, dict):
+                merged.update(
+                    {
+                        str(key): float(value)
+                        for key, value in broker_metrics.items()
+                        if isinstance(value, (int, float))
+                    }
+                )
+        except (RuntimeError, OSError, ValueError, TypeError):
+            ...
         return merged
 
     def get_l5_admission_status(self) -> dict[str, object]:
@@ -862,9 +908,6 @@ class FileCollectionService:
         next_offset = end_index if end_index < total_lines else None
         return FileReadResultDTO(relative_path=relative_path, content='\n'.join(sliced), start_line=offset + 1, end_line=end_index, source=source, total_lines=total_lines, is_truncated=next_offset is not None, next_offset=next_offset)
 
-    def _rebalance_jobs_by_language(self, jobs: list[FileEnrichJobDTO]) -> list[FileEnrichJobDTO]:
-        return self._enrich_engine._rebalance_jobs_by_language(jobs)
-
     def start_background(self) -> None:
         self._enrich_engine.reset_runtime_state()
         self._worker_state = 'running'
@@ -1024,10 +1067,7 @@ class FileCollectionService:
             self._worker_state = 'failed'
         return should_stop
 
-    def _prune_error_events_if_needed(self) -> None:
-        self._error_policy.prune_error_events_if_needed()
-
-def build_default_file_collection_service(workspace_repo: WorkspaceRepository, file_repo: FileCollectionRepository, enrich_queue_repo: FileEnrichQueueRepository, body_repo: FileBodyRepository, lsp_repo: LspToolDataRepository, readiness_repo: ToolReadinessRepository, policy_repo: PipelinePolicyRepository | None=None, event_repo: PipelineJobEventRepository | None=None, error_event_repo: PipelineErrorEventRepository | None=None, candidate_index_sink: CandidateIndexSink | None=None, vector_index_sink: VectorIndexSink | None=None, retry_max_attempts: int=5, retry_backoff_base_sec: int=1, queue_poll_interval_ms: int=500, include_ext: tuple[str, ...] | None=None, exclude_globs: tuple[str, ...] | None=None, watcher_debounce_ms: int=300, run_mode: str='dev', parent_alive_probe: Callable[[], bool] | None=None, lsp_backend: LspExtractionBackend | None=None, persist_body_for_read: bool=True, l3_parallel_enabled: bool=True, l3_executor_max_workers: int=0, l3_recent_success_ttl_sec: int=120, l3_backpressure_on_interactive: bool=True, l3_backpressure_cooldown_ms: int=300, l3_supported_languages: tuple[str, ...] | None=None, lsp_probe_bootstrap_file_window: int=256, lsp_probe_bootstrap_top_k: int=3, lsp_probe_language_priority: tuple[str, ...]=("go:1.5", "java:1.4", "kotlin:1.3"), lsp_probe_l1_languages: tuple[str, ...]=("go", "java", "kotlin"), lsp_scope_planner_enabled: bool=True, lsp_scope_planner_shadow_mode: bool=True, lsp_scope_java_markers: tuple[str, ...]=("pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"), lsp_scope_ts_markers: tuple[str, ...]=("tsconfig.json", "jsconfig.json", "package.json"), lsp_scope_vue_markers: tuple[str, ...]=("vue.config.js", "vite.config.ts", "package.json", "tsconfig.json"), lsp_scope_top_level_fallback: bool=True, lsp_scope_active_languages: tuple[str, ...] | None=None, lsp_session_broker_enabled: bool=True, lsp_session_broker_metrics_enabled: bool=True, lsp_broker_optional_scaffolding_enabled: bool=False, lsp_broker_batch_throughput_mode_enabled: bool=False, lsp_broker_batch_throughput_pending_threshold: int=4, lsp_broker_batch_disable_java_probe: bool=False, lsp_hotness_event_window_sec: float=10.0, lsp_hotness_decay_window_sec: float=30.0, lsp_broker_backlog_min_share: float=0.2, lsp_broker_max_standby_sessions_per_lang: int=2, lsp_broker_max_standby_sessions_per_budget_group: int=2, lsp_broker_ts_vue_active_cap: int=2, lsp_broker_java_hot_lanes: int=1, lsp_broker_java_backlog_lanes: int=1, lsp_broker_java_sticky_ttl_sec: float=600.0, lsp_broker_java_switch_cooldown_sec: float=5.0, lsp_broker_java_min_lease_ms: int=1500, lsp_broker_ts_hot_lanes: int=1, lsp_broker_ts_backlog_lanes: int=1, lsp_broker_ts_sticky_ttl_sec: float=180.0, lsp_broker_ts_switch_cooldown_sec: float=2.0, lsp_broker_ts_min_lease_ms: int=500, lsp_broker_vue_hot_lanes: int=1, lsp_broker_vue_backlog_lanes: int=1, lsp_broker_vue_sticky_ttl_sec: float=240.0, lsp_broker_vue_switch_cooldown_sec: float=3.0, lsp_broker_vue_min_lease_ms: int=800, l5_call_rate_total_max: float=0.05, l5_call_rate_batch_max: float=0.01, l5_calls_per_min_per_lang_max: int=30, l5_tokens_per_10sec_global_max: int=120, l5_tokens_per_10sec_per_lang_max: int=30, l5_tokens_per_10sec_per_workspace_max: int=20, pipeline_l5_worker_count: int=2, l3_query_compile_cache_enabled: bool=True, l3_query_compile_ms_budget: float=10.0, l3_query_budget_ms: float=30.0, l3_tree_sitter_executor_mode: str="inline", l3_tree_sitter_subinterp_workers: int=4, l3_tree_sitter_subinterp_min_bytes: int=4096, l3_asset_mode: str="shadow", l3_asset_lang_allowlist: tuple[str, ...]=(), l5_db_short_circuit_enabled: bool=True, l5_db_short_circuit_log_miss_reason: bool=True, tool_layer_repo: ToolDataLayerRepository | None=None) -> CollectionRuntimePort:
+def build_default_file_collection_service(workspace_repo: WorkspaceRepository, file_repo: FileCollectionRepository, enrich_queue_repo: FileEnrichQueueRepository, body_repo: FileBodyRepository, lsp_repo: LspToolDataRepository, readiness_repo: ToolReadinessRepository, policy_repo: PipelinePolicyRepository | None=None, event_repo: PipelineJobEventRepository | None=None, error_event_repo: PipelineErrorEventRepository | None=None, candidate_index_sink: CandidateIndexSink | None=None, vector_index_sink: VectorIndexSink | None=None, retry_max_attempts: int=5, retry_backoff_base_sec: int=1, queue_poll_interval_ms: int=500, include_ext: tuple[str, ...] | None=None, exclude_globs: tuple[str, ...] | None=None, watcher_debounce_ms: int=300, run_mode: str='dev', parent_alive_probe: Callable[[], bool] | None=None, lsp_backend: LspExtractionBackend | None=None, persist_body_for_read: bool=True, l3_parallel_enabled: bool=True, l3_executor_max_workers: int=0, l3_recent_success_ttl_sec: int=120, l3_backpressure_on_interactive: bool=True, l3_backpressure_cooldown_ms: int=300, l3_supported_languages: tuple[str, ...] | None=None, lsp_probe_bootstrap_file_window: int=256, lsp_probe_bootstrap_top_k: int=3, lsp_probe_language_priority: tuple[str, ...]=("go:1.5", "java:1.4", "kotlin:1.3"), lsp_probe_l1_languages: tuple[str, ...]=("go", "java", "kotlin"),  lsp_scope_java_markers: tuple[str, ...]=("pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"), lsp_scope_ts_markers: tuple[str, ...]=("tsconfig.json", "jsconfig.json", "package.json"), lsp_scope_vue_markers: tuple[str, ...]=("vue.config.js", "vite.config.ts", "package.json", "tsconfig.json"), lsp_scope_top_level_fallback: bool=True, lsp_scope_active_languages: tuple[str, ...] | None=None, lsp_session_broker_enabled: bool=True, lsp_hotness_event_window_sec: float=10.0, lsp_hotness_decay_window_sec: float=30.0, lsp_broker_backlog_min_share: float=0.2, lsp_broker_max_standby_sessions_per_lang: int=2, lsp_broker_max_standby_sessions_per_budget_group: int=2, lsp_broker_ts_vue_active_cap: int=2, lsp_broker_java_hot_lanes: int=1, lsp_broker_java_backlog_lanes: int=1, lsp_broker_java_sticky_ttl_sec: float=600.0, lsp_broker_java_switch_cooldown_sec: float=5.0, lsp_broker_java_min_lease_ms: int=1500, lsp_broker_ts_hot_lanes: int=1, lsp_broker_ts_backlog_lanes: int=1, lsp_broker_ts_sticky_ttl_sec: float=180.0, lsp_broker_ts_switch_cooldown_sec: float=2.0, lsp_broker_ts_min_lease_ms: int=500, lsp_broker_vue_hot_lanes: int=1, lsp_broker_vue_backlog_lanes: int=1, lsp_broker_vue_sticky_ttl_sec: float=240.0, lsp_broker_vue_switch_cooldown_sec: float=3.0, lsp_broker_vue_min_lease_ms: int=800, l5_call_rate_total_max: float=0.05, l5_call_rate_batch_max: float=0.01, l5_calls_per_min_per_lang_max: int=30, l5_tokens_per_10sec_global_max: int=120, l5_tokens_per_10sec_per_lang_max: int=30, l5_tokens_per_10sec_per_workspace_max: int=20, pipeline_l5_worker_count: int=2, l3_query_compile_ms_budget: float=10.0, l3_query_budget_ms: float=30.0, l3_tree_sitter_executor_mode: str="inline", l3_tree_sitter_subinterp_workers: int=4, l3_tree_sitter_subinterp_min_bytes: int=4096, l5_db_short_circuit_enabled: bool=True, tool_layer_repo: ToolDataLayerRepository | None=None) -> CollectionRuntimePort:
     resolved_include_ext = include_ext if include_ext is not None else get_default_collection_extensions()
     resolved_exclude_globs = exclude_globs if exclude_globs is not None else DEFAULT_COLLECTION_EXCLUDE_GLOBS
     policy = CollectionPolicyDTO(include_ext=resolved_include_ext, exclude_globs=resolved_exclude_globs, max_file_size_bytes=512 * 1024, scan_interval_sec=180, max_enrich_batch=20, retry_max_attempts=retry_max_attempts, retry_backoff_base_sec=retry_backoff_base_sec, queue_poll_interval_ms=queue_poll_interval_ms)
@@ -1040,11 +1080,10 @@ def build_default_file_collection_service(workspace_repo: WorkspaceRepository, f
                 vue_markers=lsp_scope_vue_markers,
                 top_level_fallback=lsp_scope_top_level_fallback,
             ),
-            enabled=lsp_scope_planner_enabled,
-            shadow_mode=lsp_scope_planner_shadow_mode,
+            enabled=True,
         )
     repo_registry_repo = RepoRegistryRepository(file_repo.db_path)
-    service = FileCollectionService(workspace_repo=workspace_repo, file_repo=file_repo, enrich_queue_repo=enrich_queue_repo, body_repo=body_repo, lsp_repo=lsp_repo, readiness_repo=readiness_repo, policy=policy, lsp_backend=resolved_lsp_backend, policy_repo=policy_repo, event_repo=event_repo, error_event_repo=error_event_repo, candidate_index_sink=candidate_index_sink, vector_index_sink=vector_index_sink, run_mode=run_mode, parent_alive_probe=parent_alive_probe, persist_body_for_read=persist_body_for_read, repo_registry_repo=repo_registry_repo, l3_parallel_enabled=l3_parallel_enabled, l3_executor_max_workers=l3_executor_max_workers, l3_recent_success_ttl_sec=l3_recent_success_ttl_sec, l3_backpressure_on_interactive=l3_backpressure_on_interactive, l3_backpressure_cooldown_ms=l3_backpressure_cooldown_ms, l3_supported_languages=l3_supported_languages, lsp_probe_bootstrap_file_window=lsp_probe_bootstrap_file_window, lsp_probe_bootstrap_top_k=lsp_probe_bootstrap_top_k, lsp_probe_language_priority=lsp_probe_language_priority, lsp_probe_l1_languages=lsp_probe_l1_languages, lsp_session_broker_enabled=lsp_session_broker_enabled, lsp_session_broker_metrics_enabled=lsp_session_broker_metrics_enabled, lsp_broker_optional_scaffolding_enabled=lsp_broker_optional_scaffolding_enabled, lsp_broker_batch_throughput_mode_enabled=lsp_broker_batch_throughput_mode_enabled, lsp_broker_batch_throughput_pending_threshold=lsp_broker_batch_throughput_pending_threshold, lsp_broker_batch_disable_java_probe=lsp_broker_batch_disable_java_probe, lsp_scope_active_languages=lsp_scope_active_languages, lsp_hotness_event_window_sec=lsp_hotness_event_window_sec, lsp_hotness_decay_window_sec=lsp_hotness_decay_window_sec, lsp_broker_backlog_min_share=lsp_broker_backlog_min_share, lsp_broker_max_standby_sessions_per_lang=lsp_broker_max_standby_sessions_per_lang, lsp_broker_max_standby_sessions_per_budget_group=lsp_broker_max_standby_sessions_per_budget_group, lsp_broker_ts_vue_active_cap=lsp_broker_ts_vue_active_cap, lsp_broker_java_hot_lanes=lsp_broker_java_hot_lanes, lsp_broker_java_backlog_lanes=lsp_broker_java_backlog_lanes, lsp_broker_java_sticky_ttl_sec=lsp_broker_java_sticky_ttl_sec, lsp_broker_java_switch_cooldown_sec=lsp_broker_java_switch_cooldown_sec, lsp_broker_java_min_lease_ms=lsp_broker_java_min_lease_ms, lsp_broker_ts_hot_lanes=lsp_broker_ts_hot_lanes, lsp_broker_ts_backlog_lanes=lsp_broker_ts_backlog_lanes, lsp_broker_ts_sticky_ttl_sec=lsp_broker_ts_sticky_ttl_sec, lsp_broker_ts_switch_cooldown_sec=lsp_broker_ts_switch_cooldown_sec, lsp_broker_ts_min_lease_ms=lsp_broker_ts_min_lease_ms, lsp_broker_vue_hot_lanes=lsp_broker_vue_hot_lanes, lsp_broker_vue_backlog_lanes=lsp_broker_vue_backlog_lanes, lsp_broker_vue_sticky_ttl_sec=lsp_broker_vue_sticky_ttl_sec, lsp_broker_vue_switch_cooldown_sec=lsp_broker_vue_switch_cooldown_sec, lsp_broker_vue_min_lease_ms=lsp_broker_vue_min_lease_ms, l5_call_rate_total_max=l5_call_rate_total_max, l5_call_rate_batch_max=l5_call_rate_batch_max, l5_calls_per_min_per_lang_max=l5_calls_per_min_per_lang_max, l5_tokens_per_10sec_global_max=l5_tokens_per_10sec_global_max, l5_tokens_per_10sec_per_lang_max=l5_tokens_per_10sec_per_lang_max, l5_tokens_per_10sec_per_workspace_max=l5_tokens_per_10sec_per_workspace_max, pipeline_l5_worker_count=pipeline_l5_worker_count, l3_query_compile_cache_enabled=l3_query_compile_cache_enabled, l3_query_compile_ms_budget=l3_query_compile_ms_budget, l3_query_budget_ms=l3_query_budget_ms, l3_tree_sitter_executor_mode=l3_tree_sitter_executor_mode, l3_tree_sitter_subinterp_workers=l3_tree_sitter_subinterp_workers, l3_tree_sitter_subinterp_min_bytes=l3_tree_sitter_subinterp_min_bytes, l3_asset_mode=l3_asset_mode, l3_asset_lang_allowlist=l3_asset_lang_allowlist, l5_db_short_circuit_enabled=l5_db_short_circuit_enabled, l5_db_short_circuit_log_miss_reason=l5_db_short_circuit_log_miss_reason, tool_layer_repo=tool_layer_repo)
+    service = FileCollectionService(workspace_repo=workspace_repo, file_repo=file_repo, enrich_queue_repo=enrich_queue_repo, body_repo=body_repo, lsp_repo=lsp_repo, readiness_repo=readiness_repo, policy=policy, lsp_backend=resolved_lsp_backend, policy_repo=policy_repo, event_repo=event_repo, error_event_repo=error_event_repo, candidate_index_sink=candidate_index_sink, vector_index_sink=vector_index_sink, run_mode=run_mode, parent_alive_probe=parent_alive_probe, persist_body_for_read=persist_body_for_read, repo_registry_repo=repo_registry_repo, l3_parallel_enabled=l3_parallel_enabled, l3_executor_max_workers=l3_executor_max_workers, l3_recent_success_ttl_sec=l3_recent_success_ttl_sec, l3_backpressure_on_interactive=l3_backpressure_on_interactive, l3_backpressure_cooldown_ms=l3_backpressure_cooldown_ms, l3_supported_languages=l3_supported_languages, lsp_probe_bootstrap_file_window=lsp_probe_bootstrap_file_window, lsp_probe_bootstrap_top_k=lsp_probe_bootstrap_top_k, lsp_probe_language_priority=lsp_probe_language_priority, lsp_probe_l1_languages=lsp_probe_l1_languages, lsp_session_broker_enabled=lsp_session_broker_enabled, lsp_scope_active_languages=lsp_scope_active_languages, lsp_hotness_event_window_sec=lsp_hotness_event_window_sec, lsp_hotness_decay_window_sec=lsp_hotness_decay_window_sec, lsp_broker_backlog_min_share=lsp_broker_backlog_min_share, lsp_broker_max_standby_sessions_per_lang=lsp_broker_max_standby_sessions_per_lang, lsp_broker_max_standby_sessions_per_budget_group=lsp_broker_max_standby_sessions_per_budget_group, lsp_broker_ts_vue_active_cap=lsp_broker_ts_vue_active_cap, lsp_broker_java_hot_lanes=lsp_broker_java_hot_lanes, lsp_broker_java_backlog_lanes=lsp_broker_java_backlog_lanes, lsp_broker_java_sticky_ttl_sec=lsp_broker_java_sticky_ttl_sec, lsp_broker_java_switch_cooldown_sec=lsp_broker_java_switch_cooldown_sec, lsp_broker_java_min_lease_ms=lsp_broker_java_min_lease_ms, lsp_broker_ts_hot_lanes=lsp_broker_ts_hot_lanes, lsp_broker_ts_backlog_lanes=lsp_broker_ts_backlog_lanes, lsp_broker_ts_sticky_ttl_sec=lsp_broker_ts_sticky_ttl_sec, lsp_broker_ts_switch_cooldown_sec=lsp_broker_ts_switch_cooldown_sec, lsp_broker_ts_min_lease_ms=lsp_broker_ts_min_lease_ms, lsp_broker_vue_hot_lanes=lsp_broker_vue_hot_lanes, lsp_broker_vue_backlog_lanes=lsp_broker_vue_backlog_lanes, lsp_broker_vue_sticky_ttl_sec=lsp_broker_vue_sticky_ttl_sec, lsp_broker_vue_switch_cooldown_sec=lsp_broker_vue_switch_cooldown_sec, lsp_broker_vue_min_lease_ms=lsp_broker_vue_min_lease_ms, l5_call_rate_total_max=l5_call_rate_total_max, l5_call_rate_batch_max=l5_call_rate_batch_max, l5_calls_per_min_per_lang_max=l5_calls_per_min_per_lang_max, l5_tokens_per_10sec_global_max=l5_tokens_per_10sec_global_max, l5_tokens_per_10sec_per_lang_max=l5_tokens_per_10sec_per_lang_max, l5_tokens_per_10sec_per_workspace_max=l5_tokens_per_10sec_per_workspace_max, pipeline_l5_worker_count=pipeline_l5_worker_count, l3_query_compile_ms_budget=l3_query_compile_ms_budget, l3_query_budget_ms=l3_query_budget_ms, l3_tree_sitter_executor_mode=l3_tree_sitter_executor_mode, l3_tree_sitter_subinterp_workers=l3_tree_sitter_subinterp_workers, l3_tree_sitter_subinterp_min_bytes=l3_tree_sitter_subinterp_min_bytes, l5_db_short_circuit_enabled=l5_db_short_circuit_enabled, tool_layer_repo=tool_layer_repo)
     service._watcher_debounce_ms = max(50, watcher_debounce_ms)
     return service
 

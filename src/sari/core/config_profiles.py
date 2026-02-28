@@ -44,10 +44,6 @@ def build_release_env_allowlist() -> set[str]:
         "SARI_MCP_DAEMON_AUTOSTART",
         # MCP daemon 호출 타임아웃
         "SARI_MCP_DAEMON_TIMEOUT_SEC",
-        # MCP search call 타임아웃
-        "SARI_MCP_SEARCH_CALL_TIMEOUT_SEC",
-        # MCP read call 타임아웃
-        "SARI_MCP_READ_CALL_TIMEOUT_SEC",
     }
 
 

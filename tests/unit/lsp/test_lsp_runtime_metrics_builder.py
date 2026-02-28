@@ -7,7 +7,6 @@ def test_build_runtime_metrics_includes_core_and_placeholder_fields() -> None:
     metrics = build_runtime_metrics(
         hub_metrics={"hub_a": 1},
         probe_trigger_counts={"l1": 3},
-        scope_planner_shadow_count=4,
         scope_planner_applied_count=5,
         scope_planner_fallback_index_building_count=6,
         scope_override_hit_count=7,
@@ -18,15 +17,11 @@ def test_build_runtime_metrics_includes_core_and_placeholder_fields() -> None:
         document_symbol_sync_skip_requested_count=12,
         document_symbol_sync_skip_accepted_count=13,
         document_symbol_sync_skip_legacy_fallback_count=14,
-        probe_l1_skipped_batch_count=15,
-        probe_schedule_skipped_batch_count=16,
     )
 
     assert metrics["hub_a"] == 1
     assert metrics["probe_trigger_l1_count"] == 3
-    assert metrics["scope_planner_shadow_count"] == 4
     assert metrics["broker_guard_reject_count"] == 10
-    assert metrics["probe_schedule_skipped_batch_count"] == 16
     assert metrics["session_cache_hit_by_tier_single"] == 0
     assert metrics["session_eviction_churn_count"] == 0
     assert metrics["lsp_memory_total_rss_mb"] == 0

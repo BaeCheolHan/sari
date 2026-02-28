@@ -67,7 +67,6 @@ def build_default_config(cls):
     stale_timeout_raw = core_raw_values["stale_timeout_raw"]
     lsp_timeout_raw = core_raw_values["lsp_timeout_raw"]
     lsp_max_per_repo_lang_raw = core_raw_values["lsp_max_per_repo_lang_raw"]
-    lsp_bulk_mode_enabled_raw = core_raw_values["lsp_bulk_mode_enabled_raw"]
     lsp_bulk_max_per_repo_lang_raw = core_raw_values["lsp_bulk_max_per_repo_lang_raw"]
     lsp_interactive_reserved_slots_raw = core_raw_values["lsp_interactive_reserved_slots_raw"]
     lsp_interactive_timeout_raw = core_raw_values["lsp_interactive_timeout_raw"]
@@ -100,19 +99,12 @@ def build_default_config(cls):
     lsp_probe_bootstrap_top_k_raw = extended_raw_values["lsp_probe_bootstrap_top_k_raw"]
     lsp_probe_language_priority_raw = extended_raw_values["lsp_probe_language_priority_raw"]
     lsp_probe_l1_languages_raw = extended_raw_values["lsp_probe_l1_languages_raw"]
-    lsp_scope_planner_enabled_raw = extended_raw_values["lsp_scope_planner_enabled_raw"]
-    lsp_scope_planner_shadow_mode_raw = extended_raw_values["lsp_scope_planner_shadow_mode_raw"]
     lsp_scope_java_markers_raw = extended_raw_values["lsp_scope_java_markers_raw"]
     lsp_scope_ts_markers_raw = extended_raw_values["lsp_scope_ts_markers_raw"]
     lsp_scope_vue_markers_raw = extended_raw_values["lsp_scope_vue_markers_raw"]
     lsp_scope_top_level_fallback_raw = extended_raw_values["lsp_scope_top_level_fallback_raw"]
     lsp_scope_active_languages_raw = extended_raw_values["lsp_scope_active_languages_raw"]
     lsp_session_broker_enabled_raw = extended_raw_values["lsp_session_broker_enabled_raw"]
-    lsp_session_broker_metrics_enabled_raw = extended_raw_values["lsp_session_broker_metrics_enabled_raw"]
-    lsp_broker_optional_scaffolding_enabled_raw = extended_raw_values["lsp_broker_optional_scaffolding_enabled_raw"]
-    lsp_broker_batch_throughput_mode_enabled_raw = extended_raw_values["lsp_broker_batch_throughput_mode_enabled_raw"]
-    lsp_broker_batch_throughput_pending_threshold_raw = extended_raw_values["lsp_broker_batch_throughput_pending_threshold_raw"]
-    lsp_broker_batch_disable_java_probe_raw = extended_raw_values["lsp_broker_batch_disable_java_probe_raw"]
     lsp_hotness_event_window_sec_raw = extended_raw_values["lsp_hotness_event_window_sec_raw"]
     lsp_hotness_decay_window_sec_raw = extended_raw_values["lsp_hotness_decay_window_sec_raw"]
     lsp_broker_backlog_min_share_raw = extended_raw_values["lsp_broker_backlog_min_share_raw"]
@@ -165,13 +157,9 @@ def build_default_config(cls):
     l5_tokens_per_10sec_global_max_raw = extended_raw_values["l5_tokens_per_10sec_global_max_raw"]
     l5_tokens_per_10sec_per_lang_max_raw = extended_raw_values["l5_tokens_per_10sec_per_lang_max_raw"]
     l5_tokens_per_10sec_per_workspace_max_raw = extended_raw_values["l5_tokens_per_10sec_per_workspace_max_raw"]
-    l3_query_compile_cache_enabled_raw = extended_raw_values["l3_query_compile_cache_enabled_raw"]
     l3_query_compile_ms_budget_raw = extended_raw_values["l3_query_compile_ms_budget_raw"]
     l3_query_budget_ms_raw = extended_raw_values["l3_query_budget_ms_raw"]
-    l3_asset_mode_raw = extended_raw_values["l3_asset_mode_raw"]
-    l3_asset_lang_allowlist_raw = extended_raw_values["l3_asset_lang_allowlist_raw"]
     l5_db_short_circuit_enabled_raw = extended_raw_values["l5_db_short_circuit_enabled_raw"]
-    l5_db_short_circuit_log_miss_reason_raw = extended_raw_values["l5_db_short_circuit_log_miss_reason_raw"]
     l3_tree_sitter_executor_mode_raw = extended_raw_values["l3_tree_sitter_executor_mode_raw"]
     l3_tree_sitter_subinterp_workers_raw = extended_raw_values["l3_tree_sitter_subinterp_workers_raw"]
     l3_tree_sitter_subinterp_min_bytes_raw = extended_raw_values["l3_tree_sitter_subinterp_min_bytes_raw"]
@@ -181,12 +169,6 @@ def build_default_config(cls):
     mcp_forward_to_daemon_raw = extended_raw_values["mcp_forward_to_daemon_raw"]
     mcp_daemon_autostart_raw = extended_raw_values["mcp_daemon_autostart_raw"]
     mcp_daemon_timeout_raw = extended_raw_values["mcp_daemon_timeout_raw"]
-    mcp_search_call_timeout_raw = extended_raw_values["mcp_search_call_timeout_raw"]
-    mcp_read_call_timeout_raw = extended_raw_values["mcp_read_call_timeout_raw"]
-    strict_protocol_raw = extended_raw_values["strict_protocol_raw"]
-    stabilization_enabled_raw = extended_raw_values["stabilization_enabled_raw"]
-    http_bg_proxy_enabled_raw = extended_raw_values["http_bg_proxy_enabled_raw"]
-    http_bg_proxy_target = extended_raw_values["http_bg_proxy_target"]
     parser = _ConfigValueParser()
     normalized_run_mode = _normalize_run_mode(run_mode_raw)
     run_mode = "prod" if normalized_run_mode in {"prod", "release"} else "dev"
@@ -323,11 +305,6 @@ def build_default_config(cls):
             cls.lsp_broker_vue_min_lease_ms,
         ),
     )
-    lsp_broker_batch_throughput_pending_threshold = parser.int_min(
-        lsp_broker_batch_throughput_pending_threshold_raw,
-        minimum=1,
-        default=cls.lsp_broker_batch_throughput_pending_threshold,
-    )
     l3_supported_languages = _parse_csv_setting(l3_supported_languages_raw, cls.l3_supported_languages)
     lsp_max_concurrent_starts = parser.int_range(lsp_max_concurrent_starts_raw, minimum=1, maximum=4, default=4)
     lsp_max_concurrent_l1_probes = parser.int_range(lsp_max_concurrent_l1_probes_raw, minimum=1, maximum=8, default=4)
@@ -346,8 +323,6 @@ def build_default_config(cls):
     ranking_w_vector = parser.float_range(ranking_w_vector_raw, minimum=0.0, maximum=1.0, default=0.15)
     ranking_w_hierarchy = parser.float_range(ranking_w_hierarchy_raw, minimum=0.0, maximum=1.0, default=0.15)
     mcp_daemon_timeout_sec = parser.float_min(mcp_daemon_timeout_raw, minimum=0.1, default=2.0)
-    mcp_search_call_timeout_sec = parser.float_min(mcp_search_call_timeout_raw, minimum=0.0, default=0.0)
-    mcp_read_call_timeout_sec = parser.float_min(mcp_read_call_timeout_raw, minimum=0.0, default=0.0)
     total_weight = ranking_w_rrf + ranking_w_importance + ranking_w_vector + ranking_w_hierarchy
     if total_weight > 0.0:
         ranking_w_rrf = ranking_w_rrf / total_weight
@@ -434,10 +409,6 @@ def build_default_config(cls):
         include_ext_raw,
         default_value=_read_tuple_setting(file_config, "collection_include_ext", cls.collection_include_ext),
     )
-    l3_asset_lang_allowlist = _parse_csv_setting(
-        l3_asset_lang_allowlist_raw,
-        default_value=_read_tuple_setting(file_config, "l3_asset_lang_allowlist", cls.l3_asset_lang_allowlist),
-    )
     exclude_globs = _parse_csv_setting(
         exclude_globs_raw,
         default_value=_read_tuple_setting(file_config, "collection_exclude_globs", cls.collection_exclude_globs),
@@ -473,7 +444,7 @@ def build_default_config(cls):
     lsp_hub_runtime = LspHubRuntimeConfigDTO(
         request_timeout_sec=lsp_request_timeout_sec,
         max_instances_per_repo_language=lsp_max_instances_per_repo_language,
-        bulk_mode_enabled=parser.bool_true(lsp_bulk_mode_enabled_raw),
+        bulk_mode_enabled=True,
         bulk_max_instances_per_repo_language=lsp_bulk_max_instances_per_repo_language,
         interactive_reserved_slots_per_repo_language=lsp_interactive_reserved_slots_per_repo_language,
         interactive_timeout_sec=lsp_interactive_timeout_sec,
@@ -556,7 +527,6 @@ def build_default_config(cls):
         daemon_stale_timeout_sec=stale_timeout_sec,
         lsp_request_timeout_sec=lsp_hub_runtime.request_timeout_sec,
         lsp_max_instances_per_repo_language=lsp_hub_runtime.max_instances_per_repo_language,
-        lsp_bulk_mode_enabled=lsp_hub_runtime.bulk_mode_enabled,
         lsp_bulk_max_instances_per_repo_language=lsp_hub_runtime.bulk_max_instances_per_repo_language,
         lsp_interactive_reserved_slots_per_repo_language=lsp_hub_runtime.interactive_reserved_slots_per_repo_language,
         lsp_interactive_timeout_sec=lsp_hub_runtime.interactive_timeout_sec,
@@ -584,19 +554,12 @@ def build_default_config(cls):
         lsp_probe_bootstrap_top_k=lsp_probe_bootstrap_top_k,
         lsp_probe_language_priority=lsp_probe_language_priority,
         lsp_probe_l1_languages=lsp_probe_l1_languages,
-        lsp_scope_planner_enabled=parser.bool_true(lsp_scope_planner_enabled_raw),
-        lsp_scope_planner_shadow_mode=parser.bool_true(lsp_scope_planner_shadow_mode_raw),
         lsp_scope_java_markers=lsp_scope_java_markers,
         lsp_scope_ts_markers=lsp_scope_ts_markers,
         lsp_scope_vue_markers=lsp_scope_vue_markers,
         lsp_scope_top_level_fallback=parser.bool_true(lsp_scope_top_level_fallback_raw),
         lsp_scope_active_languages=lsp_scope_active_languages,
         lsp_session_broker_enabled=parser.bool_true(lsp_session_broker_enabled_raw),
-        lsp_session_broker_metrics_enabled=parser.bool_true(lsp_session_broker_metrics_enabled_raw),
-        lsp_broker_optional_scaffolding_enabled=parser.bool_true(lsp_broker_optional_scaffolding_enabled_raw),
-        lsp_broker_batch_throughput_mode_enabled=parser.bool_true(lsp_broker_batch_throughput_mode_enabled_raw),
-        lsp_broker_batch_throughput_pending_threshold=lsp_broker_batch_throughput_pending_threshold,
-        lsp_broker_batch_disable_java_probe=parser.bool_true(lsp_broker_batch_disable_java_probe_raw),
         lsp_hotness_event_window_sec=lsp_hotness_event_window_sec,
         lsp_hotness_decay_window_sec=lsp_hotness_decay_window_sec,
         lsp_broker_backlog_min_share=lsp_broker_backlog_min_share,
@@ -654,7 +617,6 @@ def build_default_config(cls):
         l5_tokens_per_10sec_global_max=l5_tokens_per_10sec_global_max,
         l5_tokens_per_10sec_per_lang_max=l5_tokens_per_10sec_per_lang_max,
         l5_tokens_per_10sec_per_workspace_max=l5_tokens_per_10sec_per_workspace_max,
-        l3_query_compile_cache_enabled=parser.bool_true(l3_query_compile_cache_enabled_raw),
         l3_query_compile_ms_budget=l3_query_compile_ms_budget,
         l3_query_budget_ms=l3_query_budget_ms,
         l3_tree_sitter_executor_mode=(
@@ -664,14 +626,7 @@ def build_default_config(cls):
         ),
         l3_tree_sitter_subinterp_workers=l3_tree_sitter_subinterp_workers,
         l3_tree_sitter_subinterp_min_bytes=l3_tree_sitter_subinterp_min_bytes,
-        l3_asset_mode=(
-            l3_asset_mode_raw
-            if l3_asset_mode_raw in {"shadow", "gate", "apply"}
-            else "shadow"
-        ),
-        l3_asset_lang_allowlist=l3_asset_lang_allowlist,
         l5_db_short_circuit_enabled=parser.bool_true(l5_db_short_circuit_enabled_raw),
-        l5_db_short_circuit_log_miss_reason=parser.bool_true(l5_db_short_circuit_log_miss_reason_raw),
         l5_symbol_normalizer_executor_mode=(
             l5_symbol_normalizer_executor_mode_raw
             if l5_symbol_normalizer_executor_mode_raw in {"inline", "subinterp"}
@@ -682,10 +637,4 @@ def build_default_config(cls):
         mcp_forward_to_daemon=parser.bool_true(mcp_forward_to_daemon_raw),
         mcp_daemon_autostart=parser.bool_true(mcp_daemon_autostart_raw),
         mcp_daemon_timeout_sec=mcp_daemon_timeout_sec,
-        mcp_search_call_timeout_sec=mcp_search_call_timeout_sec,
-        mcp_read_call_timeout_sec=mcp_read_call_timeout_sec,
-        strict_protocol=parser.bool_true(strict_protocol_raw),
-        stabilization_enabled=parser.bool_enabled(stabilization_enabled_raw),
-        http_bg_proxy_enabled=parser.bool_true(http_bg_proxy_enabled_raw),
-        http_bg_proxy_target=http_bg_proxy_target,
     )

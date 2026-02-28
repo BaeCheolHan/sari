@@ -208,57 +208,14 @@ class L3Orchestrator:
                     if decision.finished_status is not None:
                         finished_status = decision.finished_status
                     elif decision.should_extract:
-                        if (
-                            allow_l5_handoff
-                            and preprocess_result is not None
-                            and preprocess_result.decision is L3PreprocessDecision.NEEDS_L5
-                            and self._handoff_to_l5 is not None
-                        ):
-                            handoff_changed = bool(self._handoff_to_l5(job, decision.now_iso))
-                            if handoff_changed:
-                                finished_status = "PENDING"
-                                context.done_id = None
-                            else:
-                                error_message = (
-                                    "L5 handoff DB update failed: RUNNING -> PENDING(l5) transition not applied "
-                                    f"(job_id={job.job_id}, path={job.repo_root}/{job.relative_path})"
-                                )
-                                log.warning(
-                                    "%s",
-                                    error_message,
-                                )
-                                context.failure_update = FileEnrichFailureUpdateDTO(
-                                    job_id=job.job_id,
-                                    error_message=error_message,
-                                    now_iso=decision.now_iso,
-                                    dead_threshold=int(self._policy.retry_max_attempts),
-                                    backoff_base_sec=int(self._policy.retry_backoff_base_sec),
-                                )
-                                context.state_update = EnrichStateUpdateDTO(
-                                    repo_root=job.repo_root,
-                                    relative_path=job.relative_path,
-                                    enrich_state="FAILED",
-                                    updated_at=decision.now_iso,
-                                )
-                                finished_status = "FAILED"
-                                context.done_id = None
-                                self._error_policy.record_error_event(
-                                    component="file_collection_service",
-                                    phase="enrich_l3_handoff",
-                                    severity="error",
-                                    error_code="ERR_ENRICH_L5_HANDOFF_FAILED",
-                                    error_message=error_message,
-                                    error_type="L5HandoffRace",
-                                    repo_root=job.repo_root,
-                                    relative_path=job.relative_path,
-                                    job_id=job.job_id,
-                                    attempt_count=job.attempt_count,
-                                    context_data={
-                                        "enqueue_source": job.enqueue_source,
-                                        "content_hash": job.content_hash,
-                                    },
-                                )
-                        else:
+                        handoff_status = self._try_l5_handoff_if_needed(
+                            context=context,
+                            job=job,
+                            now_iso=decision.now_iso,
+                            preprocess_result=preprocess_result,
+                            allow_l5_handoff=allow_l5_handoff,
+                        )
+                        if handoff_status is None:
                             extraction = self._extract_stage.execute(
                                 repo_root=job.repo_root,
                                 relative_path=job.relative_path,
@@ -280,6 +237,8 @@ class L3Orchestrator:
                                     extraction=extraction,
                                     now_iso=decision.now_iso,
                                 )
+                        else:
+                            finished_status = handoff_status
                     if finished_status not in {"PENDING", "DONE"} and context.failure_update is None:
                         context.done_id = job.job_id
                         finished_status = "DONE"
@@ -297,6 +256,68 @@ class L3Orchestrator:
             elapsed_ms=elapsed_ms,
             context=context,
             dev_error=dev_error,
+        )
+
+    def _try_l5_handoff_if_needed(
+        self,
+        *,
+        context: L3JobContext,
+        job: FileEnrichJobDTO,
+        now_iso: str,
+        preprocess_result: L3PreprocessResultDTO | None,
+        allow_l5_handoff: bool,
+    ) -> str | None:
+        """NEEDS_L5 경로에서 handoff 성공 시 PENDING, 실패 시 FAILED를 반환한다."""
+        if not (
+            allow_l5_handoff
+            and preprocess_result is not None
+            and preprocess_result.decision is L3PreprocessDecision.NEEDS_L5
+            and self._handoff_to_l5 is not None
+        ):
+            return None
+        handoff_changed = bool(self._handoff_to_l5(job, now_iso))
+        if handoff_changed:
+            context.done_id = None
+            return "PENDING"
+        self._record_l5_handoff_failure(context=context, job=job, now_iso=now_iso)
+        return "FAILED"
+
+    def _record_l5_handoff_failure(self, *, context: L3JobContext, job: FileEnrichJobDTO, now_iso: str) -> None:
+        """handoff DB 전환 실패를 FAILURE update + error event로 기록한다."""
+        error_message = (
+            "L5 handoff DB update failed: RUNNING -> PENDING(l5) transition not applied "
+            f"(job_id={job.job_id}, path={job.repo_root}/{job.relative_path})"
+        )
+        log.warning("%s", error_message)
+        context.failure_update = FileEnrichFailureUpdateDTO(
+            job_id=job.job_id,
+            error_message=error_message,
+            now_iso=now_iso,
+            dead_threshold=int(self._policy.retry_max_attempts),
+            backoff_base_sec=int(self._policy.retry_backoff_base_sec),
+        )
+        context.state_update = EnrichStateUpdateDTO(
+            repo_root=job.repo_root,
+            relative_path=job.relative_path,
+            enrich_state="FAILED",
+            updated_at=now_iso,
+        )
+        context.done_id = None
+        self._error_policy.record_error_event(
+            component="file_collection_service",
+            phase="enrich_l3_handoff",
+            severity="error",
+            error_code="ERR_ENRICH_L5_HANDOFF_FAILED",
+            error_message=error_message,
+            error_type="L5HandoffRace",
+            repo_root=job.repo_root,
+            relative_path=job.relative_path,
+            job_id=job.job_id,
+            attempt_count=job.attempt_count,
+            context_data={
+                "enqueue_source": job.enqueue_source,
+                "content_hash": job.content_hash,
+            },
         )
 
     def set_l5_admission_mode(

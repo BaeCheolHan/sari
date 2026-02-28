@@ -2,7 +2,6 @@
 
 from pathlib import Path
 
-from pytest import MonkeyPatch
 from sari import __version__ as SARI_VERSION
 from sari.core.exceptions import DaemonError, ErrorContext, ValidationError
 from sari.core.models import WorkspaceDTO
@@ -197,22 +196,6 @@ def test_mcp_initialize_negotiates_supported_protocol_version(tmp_path: Path) ->
         }
     ).to_dict()
     assert payload["result"]["protocolVersion"] == "2025-03-26"
-
-
-def test_mcp_initialize_strict_protocol_rejects_unknown_versions(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
-    """strict protocol 모드에서 미지원 버전은 명시적으로 실패해야 한다."""
-    monkeypatch.setenv("SARI_STRICT_PROTOCOL", "1")
-    server = McpServer(db_path=tmp_path / "state.db")
-    payload = server.handle_request(
-        {
-            "jsonrpc": "2.0",
-            "id": 20,
-            "method": "initialize",
-            "params": {"supportedProtocolVersions": ["2099-01-01"]},
-        }
-    ).to_dict()
-    assert payload["error"]["code"] == -32602
-    assert payload["error"]["message"] == "Unsupported protocol version"
 
 
 def test_mcp_initialize_and_tools_list_do_not_touch_tantivy_writer(

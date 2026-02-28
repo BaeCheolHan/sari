@@ -181,7 +181,7 @@ def main() -> None:
         probe_service=language_probe_service,
         run_repo=lsp_matrix_repo,
     )
-    stabilization_service = StabilizationService(enabled=config.stabilization_enabled)
+    stabilization_service = StabilizationService()
     read_facade_service = ReadFacadeService(
         workspace_repo=workspace_repo,
         file_collection_service=file_collection_service,
@@ -209,8 +209,8 @@ def main() -> None:
             lsp_metrics_provider=lsp_hub.get_metrics,
             search_resolve_symbols_default_provider=_get_search_resolve_symbols_default,
             db_path=config.db_path,
-            http_bg_proxy_enabled=config.http_bg_proxy_enabled,
-            http_bg_proxy_target=config.http_bg_proxy_target,
+            http_bg_proxy_enabled=False,
+            http_bg_proxy_target="",
         )
     )
     app.state.mcp_server = McpServer(db_path=db_path)
