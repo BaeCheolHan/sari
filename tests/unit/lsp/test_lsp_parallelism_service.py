@@ -56,8 +56,25 @@ def test_parallelism_uses_running_or_prewarm() -> None:
     assert calls["prewarm"] == 1
 
 
-def test_parallelism_for_batch_uses_acquire_pool() -> None:
+def test_parallelism_for_batch_returns_1_without_starting_lsp_when_not_running() -> None:
+    """LSP가 실행 중이 아닐 때 acquire_pool(LSP 기동 부작용)을 호출하지 않고 1을 반환해야 한다."""
     hub = _Hub(running=0)
+    service = LspParallelismService(
+        hub=hub,
+        is_profiled_language=lambda lang: False,
+        ensure_prewarm=lambda **kwargs: None,
+        increment_broker_parallelism_guard_skip=lambda: None,
+    )
+
+    out = service.get_parallelism_for_batch(repo_root="/repo", language=Language.PYTHON, batch_size=4)
+
+    assert out == 1
+    assert len(hub.pool_calls) == 0
+
+
+def test_parallelism_for_batch_uses_acquire_pool_when_lsp_already_running() -> None:
+    """LSP가 이미 실행 중이면 acquire_pool로 pool 크기를 반환해야 한다."""
+    hub = _Hub(running=2)
     service = LspParallelismService(
         hub=hub,
         is_profiled_language=lambda lang: False,

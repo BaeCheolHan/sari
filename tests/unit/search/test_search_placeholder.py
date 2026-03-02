@@ -274,7 +274,6 @@ def test_search_success_merges_l4_l5_snapshot(tmp_path) -> None:
         confidence=0.9,
         ambiguity=0.1,
         coverage=0.95,
-        needs_l5=True,
         updated_at="2026-02-23T12:00:00Z",
     )
     tool_layer_repo.upsert_l5_semantics(
@@ -378,7 +377,6 @@ def test_search_success_skips_l4_l5_when_active_file_row_missing(tmp_path) -> No
         confidence=0.9,
         ambiguity=0.1,
         coverage=0.95,
-        needs_l5=True,
         updated_at="2026-02-23T12:00:00Z",
     )
     tool_layer_repo.upsert_l5_semantics(

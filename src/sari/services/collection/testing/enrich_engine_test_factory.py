@@ -131,6 +131,10 @@ def build_min_enrich_engine_for_l3_test(*, lsp_backend: object, queue_repo: obje
         def is_recent_tool_ready(self, job: FileEnrichJobDTO) -> bool:
             return bool(engine._is_recent_tool_ready(job=job))
 
+        def is_recent_l5_ready(self, job: FileEnrichJobDTO) -> bool:
+            _ = job
+            return False
+
         def resolve_skip_reason(self, job: FileEnrichJobDTO) -> str | None:
             return engine._resolve_l3_skip_reason(job=job)
 

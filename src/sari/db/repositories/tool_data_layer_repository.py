@@ -104,7 +104,6 @@ class ToolDataLayerRepository:
         confidence: float,
         ambiguity: float,
         coverage: float,
-        needs_l5: bool,
         updated_at: str,
     ) -> None:
         self.upsert_l4_normalized_symbols_many(
@@ -119,7 +118,6 @@ class ToolDataLayerRepository:
                     "confidence": confidence,
                     "ambiguity": ambiguity,
                     "coverage": coverage,
-                    "needs_l5": needs_l5,
                     "updated_at": updated_at,
                 }
             ]
@@ -139,7 +137,6 @@ class ToolDataLayerRepository:
                 "confidence": float(item.get("confidence", 0.0)),
                 "ambiguity": float(item.get("ambiguity", 0.0)),
                 "coverage": float(item.get("coverage", 0.0)),
-                "needs_l5": 1 if bool(item.get("needs_l5", False)) else 0,
                 "updated_at": str(item["updated_at"]),
             }
             for item in upserts
@@ -154,11 +151,11 @@ class ToolDataLayerRepository:
                 """
                 INSERT INTO tool_data_l4_normalized_symbols(
                     workspace_id, repo_root, scope_repo_root, relative_path, content_hash, normalized_json,
-                    confidence, ambiguity, coverage, needs_l5, updated_at
+                    confidence, ambiguity, coverage, updated_at
                 )
                 VALUES(
                     :workspace_id, :repo_root, :scope_repo_root, :relative_path, :content_hash, :normalized_json,
-                    :confidence, :ambiguity, :coverage, :needs_l5, :updated_at
+                    :confidence, :ambiguity, :coverage, :updated_at
                 )
                 ON CONFLICT(workspace_id, repo_root, relative_path, content_hash) DO UPDATE SET
                     scope_repo_root = excluded.scope_repo_root,
@@ -166,7 +163,6 @@ class ToolDataLayerRepository:
                     confidence = excluded.confidence,
                     ambiguity = excluded.ambiguity,
                     coverage = excluded.coverage,
-                    needs_l5 = excluded.needs_l5,
                     updated_at = excluded.updated_at
                 """,
                 params,
@@ -325,7 +321,7 @@ class ToolDataLayerRepository:
             ).fetchone()
             l4_row = conn.execute(
                 """
-                SELECT normalized_json, confidence, ambiguity, coverage, needs_l5, updated_at
+                SELECT normalized_json, confidence, ambiguity, coverage, updated_at
                 FROM tool_data_l4_normalized_symbols
                 WHERE workspace_id IN (
                     :workspace_id_1, :workspace_id_2, :workspace_id_3, :workspace_id_4, :workspace_id_5
@@ -384,7 +380,6 @@ class ToolDataLayerRepository:
                 "confidence": float(l4_row["confidence"]),
                 "ambiguity": float(l4_row["ambiguity"]),
                 "coverage": float(l4_row["coverage"]),
-                "needs_l5": bool(int(l4_row["needs_l5"])),
                 "updated_at": str(l4_row["updated_at"]),
             },
             "l5": [
@@ -396,6 +391,35 @@ class ToolDataLayerRepository:
                 for row in l5_rows
             ],
         }
+
+    def has_l5_semantics(
+        self,
+        *,
+        repo_root: str,
+        relative_path: str,
+        content_hash: str,
+    ) -> bool:
+        """해당 파일에 L5 semantics가 이미 저장되어 있는지 확인한다."""
+        ws1, ws2 = self._workspace_id_candidates(workspace_id=repo_root, repo_root=repo_root)
+        with connect(self._db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT 1 FROM tool_data_l5_semantics
+                WHERE workspace_id IN (:ws1, :ws2)
+                  AND repo_root = :repo_root
+                  AND relative_path = :relative_path
+                  AND content_hash = :content_hash
+                LIMIT 1
+                """,
+                {
+                    "ws1": ws1,
+                    "ws2": ws2,
+                    "repo_root": repo_root,
+                    "relative_path": relative_path,
+                    "content_hash": content_hash,
+                },
+            ).fetchone()
+        return row is not None
 
     def drop_stale_l5_semantics(
         self,
@@ -611,3 +635,91 @@ class ToolDataLayerRepository:
         while len(values) < 5:
             values.append("__unused_workspace_id__")
         return (values[0], values[1], values[2], values[3], values[4])
+
+    def list_l5_upgrade_candidates(
+        self,
+        *,
+        workspace_id: str,
+        repo_root: str,
+        limit: int = 50,
+    ) -> list[dict[str, object]]:
+        """현재 버전의 L5 semantics가 없는 파일 목록을 반환한다.
+
+        content_hash 3-way JOIN으로 현재 활성 버전만 조회한다.
+        confidence ASC 정렬(낮은 신뢰도 우선)로 L5 처리 순서를 결정한다.
+
+        Returns:
+            list of dicts with keys: repo_root, relative_path, content_hash, confidence
+        """
+        ws1, ws2 = self._workspace_id_candidates(workspace_id=workspace_id, repo_root=repo_root)
+        with connect(self._db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    f.repo_root,
+                    f.relative_path,
+                    f.content_hash,
+                    q.confidence
+                FROM collected_files_l1 f
+                JOIN tool_data_l4_normalized_symbols q
+                    ON  f.repo_root     = q.repo_root
+                    AND f.relative_path = q.relative_path
+                    AND f.content_hash  = q.content_hash
+                LEFT JOIN tool_data_l5_semantics s
+                    ON  q.workspace_id  = s.workspace_id
+                    AND f.repo_root     = s.repo_root
+                    AND f.relative_path = s.relative_path
+                    AND f.content_hash  = s.content_hash
+                WHERE f.repo_root = :repo_root
+                  AND f.is_deleted = 0
+                  AND q.workspace_id IN (:ws1, :ws2)
+                  AND s.workspace_id IS NULL
+                ORDER BY q.confidence ASC
+                LIMIT :limit
+                """,
+                {
+                    "repo_root": repo_root,
+                    "ws1": ws1,
+                    "ws2": ws2,
+                    "limit": max(1, int(limit)),
+                },
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def count_l5_stale(
+        self,
+        *,
+        workspace_id: str,
+        repo_root: str,
+    ) -> int:
+        """현재 버전의 L5 semantics가 없는 파일 수를 반환한다.
+
+        trigger_startup()에서 daemon 재기동 시 stale 파일 유무 확인에 사용.
+        """
+        ws1, ws2 = self._workspace_id_candidates(workspace_id=workspace_id, repo_root=repo_root)
+        with connect(self._db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS cnt
+                FROM collected_files_l1 f
+                JOIN tool_data_l4_normalized_symbols q
+                    ON  f.repo_root     = q.repo_root
+                    AND f.relative_path = q.relative_path
+                    AND f.content_hash  = q.content_hash
+                LEFT JOIN tool_data_l5_semantics s
+                    ON  q.workspace_id  = s.workspace_id
+                    AND f.repo_root     = s.repo_root
+                    AND f.relative_path = s.relative_path
+                    AND f.content_hash  = s.content_hash
+                WHERE f.repo_root = :repo_root
+                  AND f.is_deleted = 0
+                  AND q.workspace_id IN (:ws1, :ws2)
+                  AND s.workspace_id IS NULL
+                """,
+                {
+                    "repo_root": repo_root,
+                    "ws1": ws1,
+                    "ws2": ws2,
+                },
+            ).fetchone()
+        return int(row["cnt"]) if row else 0

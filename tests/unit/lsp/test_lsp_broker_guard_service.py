@@ -54,8 +54,6 @@ def test_get_or_start_uses_broker_lease_when_enabled_and_profiled() -> None:
         get_session_broker=lambda: broker,
         is_session_broker_enabled=lambda: True,
         get_watcher_hotness_tracker=lambda: None,
-        is_batch_broker_throughput_mode_enabled=lambda: False,
-        get_batch_broker_pending_threshold=lambda: 4,
         increment_broker_guard_reject=lambda: rejects.append(1),
         apply_standby_retention_touch=lambda **kwargs: touched.append((kwargs["language"].value, kwargs["runtime_scope_root"], kwargs["lane"], kwargs["hotness_score"])),
     )
@@ -85,8 +83,6 @@ def test_get_or_start_raises_when_lease_rejected() -> None:
         get_session_broker=lambda: broker,
         is_session_broker_enabled=lambda: True,
         get_watcher_hotness_tracker=lambda: None,
-        is_batch_broker_throughput_mode_enabled=lambda: False,
-        get_batch_broker_pending_threshold=lambda: 4,
         increment_broker_guard_reject=lambda: reject_count.__setitem__("v", reject_count["v"] + 1),
         apply_standby_retention_touch=lambda **kwargs: None,
     )

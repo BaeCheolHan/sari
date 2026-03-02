@@ -38,6 +38,7 @@ def ensure_migrated(db_path: Path) -> None:
         _fallback_upgrade_0010(conn)
         _fallback_upgrade_0011(conn)
         _fallback_upgrade_0012(conn)
+        _fallback_upgrade_0013(conn)
         conn.commit()
 
 
@@ -123,6 +124,7 @@ def _fallback_upgrade_sqlite(db_path: Path) -> None:
         _fallback_upgrade_0010(conn)
         _fallback_upgrade_0011(conn)
         _fallback_upgrade_0012(conn)
+        _fallback_upgrade_0013(conn)
         conn.commit()
 
 
@@ -465,7 +467,6 @@ def _fallback_upgrade_0009(conn: sqlite3.Connection) -> None:
             confidence REAL NOT NULL,
             ambiguity REAL NOT NULL,
             coverage REAL NOT NULL,
-            needs_l5 INTEGER NOT NULL DEFAULT 0 CHECK (needs_l5 IN (0, 1)),
             updated_at TEXT NOT NULL,
             PRIMARY KEY (workspace_id, repo_root, relative_path, content_hash)
         )
@@ -660,3 +661,12 @@ def _fallback_upgrade_0012(conn: sqlite3.Connection) -> None:
         if not set(required_cols).issubset(cols):
             continue
         conn.execute(index_sql)
+
+
+def _fallback_upgrade_0013(conn: sqlite3.Connection) -> None:
+    """0013 tool_data_l4_normalized_symbols에서 needs_l5 컬럼을 제거한다."""
+    if not _table_exists(conn, "tool_data_l4_normalized_symbols"):
+        return
+    cols = _table_columns(conn, "tool_data_l4_normalized_symbols")
+    if "needs_l5" in cols:
+        conn.execute("ALTER TABLE tool_data_l4_normalized_symbols DROP COLUMN needs_l5")

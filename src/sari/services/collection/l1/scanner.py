@@ -54,7 +54,7 @@ class FileScanner:
         enrich_queue_repo: object,
         candidate_index_sink: object | None,
         resolve_lsp_language: Callable[[str], Language | None],
-        configure_lsp_prewarm_languages: Callable[[str, dict[Language, int]], None],
+        configure_lsp_prewarm_languages: Callable[[str, dict[Language, int], dict[Language, str]], None],
         schedule_lsp_probe_for_file: Callable[[str, str], None] | None,
         resolve_repo_identity: Callable[[str], RepoIdentityDTO],
         load_gitignore_spec: Callable[[Path], PathSpec],
@@ -108,6 +108,7 @@ class FileScanner:
         candidate_changes: list[CandidateIndexChangeDTO] = []
         hash_jobs: list[_ScanHashJobDTO] = []
         language_counts: dict[Language, int] = defaultdict(int)
+        language_sample_files: dict[Language, str] = {}
         seen_extensions: set[str] = set()
         flush_calls = 0
         flush_elapsed_ms_total = 0.0
@@ -125,6 +126,8 @@ class FileScanner:
             resolved_language = self._resolve_lsp_language(relative_path=str(file_path.relative_to(root).as_posix()))
             if resolved_language is not None:
                 language_counts[resolved_language] += 1
+                if resolved_language not in language_sample_files:
+                    language_sample_files[resolved_language] = str(file_path.relative_to(root).as_posix())
             relative_path = str(file_path.relative_to(root).as_posix())
             suffix = file_path.suffix.lower()
             if self._schedule_lsp_probe_for_file is not None and suffix != "" and suffix not in seen_extensions:
@@ -245,7 +248,11 @@ class FileScanner:
         flush_elapsed_ms_total += (time.perf_counter() - flush_started_at) * 1000.0
         flush_calls += 1
         prewarm_started_at = time.perf_counter()
-        self._configure_lsp_prewarm_languages(repo_root=str(root), language_counts=language_counts)
+        self._configure_lsp_prewarm_languages(
+            repo_root=str(root),
+            language_counts=language_counts,
+            language_sample_files=language_sample_files,
+        )
         prewarm_elapsed_ms = (time.perf_counter() - prewarm_started_at) * 1000.0
         delete_started_at = time.perf_counter()
         deleted_count = self._file_repo.mark_missing_as_deleted(str(root), seen_paths, now_iso, scan_started_at=scan_started_at)

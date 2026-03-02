@@ -259,7 +259,6 @@ def test_read_symbol_uses_l3_layer_snapshot_when_lsp_symbols_empty(tmp_path: Pat
         confidence=0.95,
         ambiguity=0.1,
         coverage=0.9,
-        needs_l5=True,
         updated_at="2026-02-23T00:00:00Z",
     )
     tool_layer_repo.upsert_l5_semantics(

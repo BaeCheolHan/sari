@@ -48,9 +48,10 @@ def test_layer_upsert_builder_builds_l3_l4_l5_payloads() -> None:
     assert l3["workspace_id"] == "/repo"
     assert l3["degraded"] is False
     assert l3["l3_skipped_large_file"] is False
-    assert l4["needs_l5"] is False
+    assert l4["confidence"] == 0.9  # L3_ONLY + not degraded → confidence 0.9
     assert l4["normalized"]["admit_l5"] is False
     assert l4["normalized"]["reject_reason"] == "pressure_rate_exceeded"
     assert l5["reason_code"] == L5ReasonCode.GOLDENSET_COVERAGE.value
     assert l5["semantics"]["symbols_count"] == 1
     assert l5["semantics"]["relations_count"] == 1
+

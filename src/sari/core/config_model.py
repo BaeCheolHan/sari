@@ -44,6 +44,9 @@ DEFAULT_COLLECTION_EXCLUDE_GLOBS: tuple[str, ...] = (
     "**/.mypy_cache/**",
     "**/.ruff_cache/**",
     "**/.cache/**",
+    "**/*.sh",
+    "**/*.bash",
+    "**/*.md",
 )
 
 @dataclass(frozen=True)
@@ -191,6 +194,7 @@ class AppConfig:
     lsp_probe_bootstrap_top_k: int = 3
     lsp_probe_language_priority: tuple[str, ...] = ("go:1.5", "java:1.4", "kotlin:1.3")
     lsp_probe_l1_languages: tuple[str, ...] = ("go", "java", "kotlin", "py", "rs", "ts", "js")
+    lsp_probe_scan_prewarm_enabled: bool = True
 
     # LSP scope planner
     lsp_scope_java_markers: tuple[str, ...] = (
@@ -298,6 +302,11 @@ class AppConfig:
     l5_symbol_normalizer_executor_mode: str = "subinterp"
     l5_symbol_normalizer_subinterp_workers: int = 2
     l5_symbol_normalizer_subinterp_min_symbols: int = 100
+
+    # L5 async quality upgrade (EventBus 기반 Phase 2)
+    l5_async_quality_upgrade_enabled: bool = True
+    l5_async_quality_upgrade_batch_size: int = 50
+    l5_async_quality_upgrade_poll_interval_sec: float = 5.0
 
     # MCP serving/runtime behavior
     mcp_forward_to_daemon: bool = False

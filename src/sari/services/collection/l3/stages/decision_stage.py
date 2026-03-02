@@ -52,23 +52,36 @@ class L3DecisionStage:
         l5_lane: bool = False,
     ) -> L3DecisionStageResult:
         now_iso = self._now_iso_supplier()
-        if bool(self._skip_eligibility.is_recent_tool_ready(job)):
-            self._persist_stage.mark_recent_ready(
-                context=context,
-                repo_root=job.repo_root,
-                relative_path=job.relative_path,
-                content_hash=job.content_hash,
-                now_iso=now_iso,
-                reason="skip_recent_success",
-            )
-            context.done_id = job.job_id
-            return L3DecisionStageResult(
-                finished_status="DONE",
-                should_extract=False,
-                now_iso=now_iso,
-                language="",
-                admission_decision=None,
-            )
+
+        # Lane별 최근 성공 skip 체크
+        if l5_lane:
+            if bool(self._skip_eligibility.is_recent_l5_ready(job)):
+                context.done_id = job.job_id
+                return L3DecisionStageResult(
+                    finished_status="DONE",
+                    should_extract=False,
+                    now_iso=now_iso,
+                    language="",
+                    admission_decision=None,
+                )
+        else:
+            if bool(self._skip_eligibility.is_recent_tool_ready(job)):
+                self._persist_stage.mark_recent_ready(
+                    context=context,
+                    repo_root=job.repo_root,
+                    relative_path=job.relative_path,
+                    content_hash=job.content_hash,
+                    now_iso=now_iso,
+                    reason="skip_recent_success",
+                )
+                context.done_id = job.job_id
+                return L3DecisionStageResult(
+                    finished_status="DONE",
+                    should_extract=False,
+                    now_iso=now_iso,
+                    language="",
+                    admission_decision=None,
+                )
 
         skip_reason = self._skip_eligibility.resolve_skip_reason(job)
         if skip_reason is not None:
@@ -170,20 +183,18 @@ class L3DecisionStage:
                 admission_decision=admission_decision,
             )
 
-        if (
-            preprocess_result is not None
-            and preprocess_result.decision is L3PreprocessDecision.L3_ONLY
-            and len(preprocess_result.symbols) > 0
-        ):
-            self._persist_stage.apply_l3_only_success(
-                context=context,
-                repo_root=job.repo_root,
-                relative_path=job.relative_path,
-                content_hash=job.content_hash,
-                preprocess_result=preprocess_result,
-                admission_decision=admission_decision,
-                now_iso=now_iso,
-            )
+        # L3 lane: L3_ONLY/NEEDS_L5 구분 없이 즉시 L3 저장 후 DONE (모든 파일 즉각 응답)
+        if not l5_lane:
+            if preprocess_result is not None:
+                self._persist_stage.apply_l3_only_success(
+                    context=context,
+                    repo_root=job.repo_root,
+                    relative_path=job.relative_path,
+                    content_hash=job.content_hash,
+                    preprocess_result=preprocess_result,
+                    admission_decision=admission_decision,
+                    now_iso=now_iso,
+                )
             context.done_id = job.job_id
             return L3DecisionStageResult(
                 finished_status="DONE",
@@ -193,6 +204,7 @@ class L3DecisionStage:
                 admission_decision=admission_decision,
             )
 
+        # L5 lane: LSP 추출로 진행
         return L3DecisionStageResult(
             finished_status=None,
             should_extract=True,

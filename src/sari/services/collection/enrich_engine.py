@@ -107,6 +107,7 @@ class EnrichEngine:
         l3_tree_sitter_subinterp_workers: int = 4,
         l3_tree_sitter_subinterp_min_bytes: int = 4096,
         l5_db_short_circuit_enabled: bool = True,
+        event_bus: object = None,
     ) -> None:
         """엔진 실행에 필요한 의존성을 주입받는다."""
         self._file_repo = file_repo
@@ -155,6 +156,7 @@ class EnrichEngine:
         self._l5_tokens_per_10sec_per_lang_max = max(1, int(l5_tokens_per_10sec_per_lang_max))
         self._l5_tokens_per_10sec_per_workspace_max = max(1, int(l5_tokens_per_10sec_per_workspace_max))
         self._l5_db_short_circuit_enabled = bool(l5_db_short_circuit_enabled)
+        self._event_bus = event_bus
         self._l3_asset_loader = L3AssetLoader()
         self._runtime_services = EnrichRuntimeServiceRegistry(self)
         self._l3_bootstrap_mode_service = L3BootstrapModeService(

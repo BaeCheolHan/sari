@@ -35,6 +35,9 @@ class LspParallelismService:
         if self._is_profiled_language(language):
             self._increment_broker_parallelism_guard_skip()
             return 1
+        running = self._hub.get_running_instance_count(language=language, repo_root=repo_root)
+        if running == 0:
+            return 1
         desired = max(1, int(batch_size))
         servers = self._hub.acquire_pool(language=language, repo_root=repo_root, desired=desired, request_kind="indexing")
         return max(1, len(servers))

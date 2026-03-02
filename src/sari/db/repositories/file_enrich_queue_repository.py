@@ -439,31 +439,6 @@ class FileEnrichQueueRepository:
             conn.commit()
             return jobs
 
-    def handoff_running_to_l5(self, *, job_id: str, now_iso: str) -> bool:
-        """RUNNING 작업을 L5 lane(PENDING/l5)으로 이관한다."""
-        with connect(self._db_path) as conn:
-            cur = conn.execute(
-                """
-                UPDATE file_enrich_queue
-                SET status = 'PENDING',
-                    enqueue_source = 'l5',
-                    attempt_count = 0,
-                    last_error = NULL,
-                    next_retry_at = :now_iso,
-                    defer_reason = NULL,
-                    deferred_state = NULL,
-                    deferred_count = 0,
-                    first_deferred_at = NULL,
-                    last_deferred_at = NULL,
-                    updated_at = :now_iso
-                WHERE job_id = :job_id
-                  AND status = 'RUNNING'
-                """,
-                {"job_id": job_id, "now_iso": now_iso},
-            )
-            conn.commit()
-            return int(cur.rowcount if cur.rowcount is not None else 0) > 0
-
     def promote_to_l3(self, job_id: str, now_iso: str) -> None:
         """L2 완료 작업을 L3 대기 상태로 승격한다."""
         self.promote_to_l3_many(job_ids=[job_id], now_iso=now_iso)

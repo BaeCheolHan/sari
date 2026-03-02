@@ -163,6 +163,11 @@ def wire_engine_services(
             reason=reason,
             now_iso=now_iso,
         ),
+        is_recent_l5_ready=lambda job: engine._tool_data_layer_repo.has_l5_semantics(
+            repo_root=job.repo_root,
+            relative_path=job.relative_path,
+            content_hash=job.content_hash,
+        ),
     )
     engine._l3_queue_transition_service = L3QueueTransitionService(
         queue_repo=engine._enrich_queue_repo,
@@ -220,10 +225,6 @@ def wire_engine_services(
         degraded_fallback_service=engine._l3_degraded_fallback_service,
         preprocess_max_bytes=engine._l3_preprocess_max_bytes,
         evaluate_l5_admission=engine._evaluate_l5_admission_for_job if engine._l5_admission_shadow_enabled else None,
-        handoff_to_l5=lambda job, now_iso: engine._enrich_queue_repo.handoff_running_to_l5(
-            job_id=job.job_id,
-            now_iso=now_iso,
-        ),
         l5_admission_enforced=engine._l5_admission_enforced,
         quality_eval_service=engine._l3_quality_eval_service,
         quality_shadow_enabled=False,
@@ -243,7 +244,10 @@ def wire_runtime_processors(engine: "EnrichEngine") -> None:
         enrich_queue_repo=engine._enrich_queue_repo,
         tool_layer_repo=engine._tool_layer_repo,
     )
-    engine._l3_flush_coordinator = _L3FlushCoordinator(flush_enrich_buffers=engine._enrich_flush_coordinator.flush)
+    engine._l3_flush_coordinator = _L3FlushCoordinator(
+        flush_enrich_buffers=engine._enrich_flush_coordinator.flush,
+        event_bus=getattr(engine, "_event_bus", None),
+    )
     engine._l3_result_merger = _L3ResultMerger()
     engine._l3_timeout_failure_builder = _L3TimeoutFailureBuilder(
         retry_max_attempts=engine._policy.retry_max_attempts,

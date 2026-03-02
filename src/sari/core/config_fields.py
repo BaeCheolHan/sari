@@ -118,6 +118,13 @@ def _build_extended_fields(*, file_config: dict[str, object], defaults: type[App
             ",".join(_read_tuple_setting(file_config, "lsp_probe_l1_languages", defaults.lsp_probe_l1_languages)),
         ),
         _ConfigField(
+            "lsp_probe_scan_prewarm_enabled_raw",
+            "SARI_LSP_PROBE_SCAN_PREWARM_ENABLED",
+            "lsp_probe_scan_prewarm_enabled",
+            True,
+            lower=True,
+        ),
+        _ConfigField(
             "lsp_scope_java_markers_raw",
             "SARI_LSP_SCOPE_JAVA_MARKERS",
             "lsp_scope_java_markers",
@@ -235,6 +242,9 @@ def _build_extended_fields(*, file_config: dict[str, object], defaults: type[App
             "l5_symbol_normalizer_subinterp_min_symbols",
             100,
         ),
+        _ConfigField("l5_async_quality_upgrade_enabled_raw", "SARI_L5_ASYNC_QUALITY_UPGRADE_ENABLED", "l5_async_quality_upgrade_enabled", True, lower=True),
+        _ConfigField("l5_async_quality_upgrade_batch_size_raw", "SARI_L5_ASYNC_QUALITY_UPGRADE_BATCH_SIZE", "l5_async_quality_upgrade_batch_size", 50),
+        _ConfigField("l5_async_quality_upgrade_poll_interval_sec_raw", "SARI_L5_ASYNC_QUALITY_UPGRADE_POLL_INTERVAL_SEC", "l5_async_quality_upgrade_poll_interval_sec", 5.0),
         _ConfigField("mcp_forward_to_daemon_raw", "SARI_MCP_FORWARD_TO_DAEMON", "mcp_forward_to_daemon", False, lower=True),
         _ConfigField("mcp_daemon_autostart_raw", "SARI_MCP_DAEMON_AUTOSTART", "mcp_daemon_autostart", True, lower=True),
         _ConfigField("mcp_daemon_timeout_raw", "SARI_MCP_DAEMON_TIMEOUT_SEC", "mcp_daemon_timeout_sec", 2.0),

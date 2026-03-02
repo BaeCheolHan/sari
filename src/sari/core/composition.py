@@ -258,6 +258,7 @@ def build_file_collection_service_from_config(
     parent_alive_probe: Any = None,
     candidate_index_sink: Any | None = None,
     vector_index_sink: Any | None = None,
+    event_bus: Any = None,
 ) -> Any:
     """AppConfig + RepositoryBundle 기반으로 FileCollectionService를 생성한다.
 
@@ -301,6 +302,7 @@ def build_file_collection_service_from_config(
         lsp_probe_bootstrap_top_k=config.lsp_probe_bootstrap_top_k,
         lsp_probe_language_priority=config.lsp_probe_language_priority,
         lsp_probe_l1_languages=config.lsp_probe_l1_languages,
+        lsp_probe_scan_prewarm_enabled=config.lsp_probe_scan_prewarm_enabled,
         lsp_scope_java_markers=config.lsp_scope_java_markers,
         lsp_scope_ts_markers=config.lsp_scope_ts_markers,
         lsp_scope_vue_markers=config.lsp_scope_vue_markers,
@@ -342,4 +344,8 @@ def build_file_collection_service_from_config(
         l3_tree_sitter_subinterp_min_bytes=config.l3_tree_sitter_subinterp_min_bytes,
         l5_db_short_circuit_enabled=config.l5_db_short_circuit_enabled,
         tool_layer_repo=repos.tool_layer_repo,
+        event_bus=event_bus,
+        l5_async_quality_upgrade_enabled=config.l5_async_quality_upgrade_enabled,
+        l5_async_quality_upgrade_batch_size=config.l5_async_quality_upgrade_batch_size,
+        l5_async_quality_upgrade_poll_interval_sec=config.l5_async_quality_upgrade_poll_interval_sec,
     )

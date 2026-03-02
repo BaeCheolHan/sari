@@ -11,6 +11,7 @@ import threading
 
 import uvicorn
 
+from sari.core.event_bus import EventBus
 from sari.db.repositories.daemon_registry_repository import DaemonRegistryRepository
 from sari.http.app import HttpContext, create_app
 from sari.core.config import AppConfig
@@ -116,9 +117,12 @@ def main() -> None:
     )
     detached_mode = os.getenv("SARI_DAEMON_DETACHED", "").strip().lower() in {"1", "true", "yes", "on"}
 
+    event_bus = EventBus()
+
     file_collection_service = build_file_collection_service_from_config(
         config=config,
         repos=repos,
+        event_bus=event_bus,
         lsp_backend=SolidLspExtractionBackend(
             lsp_hub,
             probe_workers=config.lsp_probe_workers,
@@ -338,6 +342,7 @@ def main() -> None:
                 shutdown_reason["value"] = "MCP_CLOSE_FAILURE"
                 runtime_repo.mark_exit_reason(this_pid, "MCP_CLOSE_FAILURE", now_iso8601_utc())
                 lsp_stop_error = exc
+        event_bus.shutdown()
         file_collection_service.stop_background()
         daemon_registry_repo.remove_by_pid(this_pid)
         runtime_repo.mark_exit_reason(this_pid, shutdown_reason["value"], now_iso8601_utc())

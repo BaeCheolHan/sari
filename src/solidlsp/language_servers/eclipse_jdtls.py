@@ -50,7 +50,7 @@ def _service_ready_timeout_seconds() -> int:
         try:
             return max(0, int(raw))
         except ValueError:
-            pass
+            ...
     if _startup_mode() == "indexing":
         return 2
     return 0
@@ -62,7 +62,7 @@ def _intellicode_wait_timeout_seconds() -> int:
         try:
             return max(0, int(raw))
         except ValueError:
-            pass
+            ...
     if _startup_mode() == "indexing":
         return 1
     return 0

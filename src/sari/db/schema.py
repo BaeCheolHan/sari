@@ -262,7 +262,6 @@ CREATE TABLE IF NOT EXISTS tool_data_l4_normalized_symbols (
     confidence REAL NOT NULL,
     ambiguity REAL NOT NULL,
     coverage REAL NOT NULL,
-    needs_l5 INTEGER NOT NULL DEFAULT 0 CHECK (needs_l5 IN (0, 1)),
     updated_at TEXT NOT NULL,
     PRIMARY KEY (workspace_id, repo_root, relative_path, content_hash)
 );

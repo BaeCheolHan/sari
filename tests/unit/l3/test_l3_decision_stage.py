@@ -30,13 +30,18 @@ def _job() -> FileEnrichJobDTO:
 
 
 class _SkipEligibility:
-    def __init__(self, *, recent: bool = False, reason: str | None = None) -> None:
+    def __init__(self, *, recent: bool = False, reason: str | None = None, l5_ready: bool = False) -> None:
         self._recent = recent
         self._reason = reason
+        self._l5_ready = l5_ready
 
     def is_recent_tool_ready(self, job: FileEnrichJobDTO) -> bool:
         _ = job
         return self._recent
+
+    def is_recent_l5_ready(self, job: FileEnrichJobDTO) -> bool:
+        _ = job
+        return self._l5_ready
 
     def resolve_skip_reason(self, job: FileEnrichJobDTO) -> str | None:
         _ = job
@@ -117,14 +122,15 @@ def test_decision_stage_recent_ready_short_circuits_done() -> None:
     assert out.should_extract is False
 
 
-def test_decision_stage_allows_extract_when_admitted_and_not_l3_only() -> None:
+def test_decision_stage_l5_lane_allows_extract_when_admitted_and_no_l5_semantics() -> None:
+    """l5_lane에서 is_recent_l5_ready=False이면 LSP extract로 진행해야 한다."""
     decision = L4AdmissionDecisionDTO(
         admit_l5=True,
         reason_code=L5ReasonCode.UNRESOLVED_SYMBOL,
         reject_reason=None,
     )
     stage = L3DecisionStage(
-        skip_eligibility=_SkipEligibility(),
+        skip_eligibility=_SkipEligibility(l5_ready=False),
         scope_resolution=_Scope(),
         admission_stage=_Admission(decision),
         queue_transition=_QueueTransition(),
@@ -143,25 +149,28 @@ def test_decision_stage_allows_extract_when_admitted_and_not_l3_only() -> None:
             source="tree_sitter",
             reason="needs_l5",
         ),
+        l5_lane=True,
     )
     assert out.finished_status is None
     assert out.should_extract is True
 
 
-def test_decision_stage_reject_without_enforce_keeps_extract_path_for_shadow_mode() -> None:
+def test_decision_stage_l3_lane_needs_l5_immediately_done_no_extract() -> None:
+    """l3_lane에서 NEEDS_L5 파일도 즉시 DONE 처리, extract 없음."""
     decision = L4AdmissionDecisionDTO(
         admit_l5=False,
         reason_code=None,
         reject_reason=L5RejectReason.MODE_NOT_ALLOWED,
     )
     context = L3JobContext()
+    persist = _Persist()
     stage = L3DecisionStage(
         skip_eligibility=_SkipEligibility(),
         scope_resolution=_Scope(),
         admission_stage=_Admission(decision),
         queue_transition=_QueueTransition(),
         l5_queue_transition=_L5QueueTransition(),
-        persist_stage=_Persist(),
+        persist_stage=persist,
         now_iso_supplier=lambda: "2026-01-01T00:00:00Z",
         admission_enforced=False,
     )
@@ -169,7 +178,7 @@ def test_decision_stage_reject_without_enforce_keeps_extract_path_for_shadow_mod
         context=context,
         job=_job(),
         preprocess_result=L3PreprocessResultDTO(
-            symbols=[],
+            symbols=[{"name": "foo", "kind": "function", "line": 1, "end_line": 1}],
             degraded=False,
             decision=L3PreprocessDecision.NEEDS_L5,
             source="tree_sitter",
@@ -177,11 +186,11 @@ def test_decision_stage_reject_without_enforce_keeps_extract_path_for_shadow_mod
         ),
     )
 
-    # Shadow mode should record the admission decision but must not block extraction.
-    assert out.finished_status is None
-    assert out.should_extract is True
-    assert out.admission_decision is decision
-    assert context.done_id is None
+    # l3_lane: admission_enforced=False이면 admission 거부 무시, apply_l3_only_success 호출 후 DONE
+    assert out.finished_status == "DONE"
+    assert out.should_extract is False
+    assert persist.l3_only_called == 1
+    assert context.done_id == "j1"
 
 
 def test_decision_stage_l5_lane_reject_with_enforce_defers_for_retry() -> None:
@@ -211,3 +220,57 @@ def test_decision_stage_l5_lane_reject_with_enforce_defers_for_retry() -> None:
     assert out.finished_status == "PENDING"
     assert out.should_extract is False
     assert context.done_id is None
+
+
+def test_decision_stage_l5_lane_skips_when_l5_semantics_exist() -> None:
+    """l5_lane에서 is_recent_l5_ready=True이면 skip DONE."""
+    context = L3JobContext()
+    stage = L3DecisionStage(
+        skip_eligibility=_SkipEligibility(l5_ready=True),
+        scope_resolution=_Scope(),
+        admission_stage=_Admission(None),
+        queue_transition=_QueueTransition(),
+        l5_queue_transition=_L5QueueTransition(),
+        persist_stage=_Persist(),
+        now_iso_supplier=lambda: "2026-01-01T00:00:00Z",
+        admission_enforced=False,
+    )
+    out = stage.evaluate(
+        context=context,
+        job=_job(),
+        preprocess_result=None,
+        l5_lane=True,
+    )
+    assert out.finished_status == "DONE"
+    assert out.should_extract is False
+    assert context.done_id == "j1"
+
+
+def test_decision_stage_l3_lane_l3_only_applies_l3_success() -> None:
+    """l3_lane에서 L3_ONLY 파일도 apply_l3_only_success 호출 후 DONE."""
+    context = L3JobContext()
+    persist = _Persist()
+    stage = L3DecisionStage(
+        skip_eligibility=_SkipEligibility(),
+        scope_resolution=_Scope(),
+        admission_stage=_Admission(None),
+        queue_transition=_QueueTransition(),
+        l5_queue_transition=_L5QueueTransition(),
+        persist_stage=persist,
+        now_iso_supplier=lambda: "2026-01-01T00:00:00Z",
+        admission_enforced=False,
+    )
+    out = stage.evaluate(
+        context=context,
+        job=_job(),
+        preprocess_result=L3PreprocessResultDTO(
+            symbols=[{"name": "Alpha", "kind": "class", "line": 1, "end_line": 5}],
+            degraded=False,
+            decision=L3PreprocessDecision.L3_ONLY,
+            source="tree_sitter",
+            reason="l3_preprocess_only",
+        ),
+    )
+    assert out.finished_status == "DONE"
+    assert out.should_extract is False
+    assert persist.l3_only_called == 1

@@ -78,11 +78,12 @@ def _job() -> FileEnrichJobDTO:
     )
 
 
-def _build_orchestrator(*, extract_fn, handoff_to_l5):
+def _build_orchestrator(*, extract_fn, is_recent_l5_ready=None):
     skip = L3SkipEligibilityService(
         is_recent_tool_ready=lambda _job: False,
         resolve_l3_skip_reason=lambda _job: None,
         build_l3_skipped_readiness=lambda _job, _reason, _now_iso: None,  # type: ignore[return-value]
+        is_recent_l5_ready=is_recent_l5_ready,
     )
     return L3Orchestrator(
         file_repo=_StubFileRepo(),
@@ -106,48 +107,7 @@ def _build_orchestrator(*, extract_fn, handoff_to_l5):
         degraded_fallback_service=None,
         preprocess_max_bytes=1024,
         extract_fn=extract_fn,
-        handoff_to_l5=handoff_to_l5,
     )
-
-
-def test_l3_process_job_handoffs_needs_l5_without_extract() -> None:
-    handoff_calls: list[str] = []
-
-    def _extract_should_not_run(repo_root: str, relative_path: str, content_hash: str):
-        _ = (repo_root, relative_path, content_hash)
-        raise AssertionError("extract should not run when handoff succeeds")
-
-    orchestrator = _build_orchestrator(
-        extract_fn=_extract_should_not_run,
-        handoff_to_l5=lambda job, now_iso: handoff_calls.append(f"{job.job_id}:{now_iso}") or True,
-    )
-
-    result = orchestrator.process_job(_job())
-
-    assert result["finished_status"] == "PENDING"
-    assert result["done_id"] is None
-    assert len(handoff_calls) == 1
-
-
-def test_l3_process_job_marks_failed_when_handoff_fails() -> None:
-    """handoff가 False면 RUNNING 고착을 피하기 위해 FAILED 경로로 되돌려야 한다."""
-    extract_calls: list[str] = []
-
-    def _extract(repo_root: str, relative_path: str, content_hash: str) -> LspExtractionResultDTO:
-        extract_calls.append(f"{repo_root}:{relative_path}:{content_hash}")
-        return LspExtractionResultDTO(symbols=[], relations=[], error_message=None)
-
-    orchestrator = _build_orchestrator(
-        extract_fn=_extract,
-        handoff_to_l5=lambda _job, _now_iso: False,
-    )
-
-    result = orchestrator.process_job(_job())
-
-    assert result["finished_status"] == "FAILED"
-    assert result["failure_update"] is not None
-    assert result["state_update"] is not None
-    assert len(extract_calls) == 0
 
 
 def test_l3_process_l5_job_executes_extract_and_persists_l5_layers() -> None:
@@ -159,13 +119,26 @@ def test_l3_process_l5_job_executes_extract_and_persists_l5_layers() -> None:
             error_message=None,
         )
 
-    orchestrator = _build_orchestrator(
-        extract_fn=_extract,
-        handoff_to_l5=lambda _job, _now_iso: True,
-    )
+    orchestrator = _build_orchestrator(extract_fn=_extract, is_recent_l5_ready=lambda _job: False)
 
     result = orchestrator.process_l5_job(_job())
 
     assert result["finished_status"] == "DONE"
     assert result["done_id"] == "j1"
     assert result["layer_upserts"].l5_layer_upsert is not None
+
+
+def test_l3_process_l5_job_skips_when_l5_semantics_exist() -> None:
+    """process_l5_job에서 l5_semantics가 이미 있으면 extract 없이 DONE."""
+    extract_called = []
+
+    def _extract(repo_root: str, relative_path: str, content_hash: str) -> LspExtractionResultDTO:
+        extract_called.append((repo_root, relative_path, content_hash))
+        return LspExtractionResultDTO(symbols=[], relations=[], error_message=None)
+
+    orchestrator = _build_orchestrator(extract_fn=_extract, is_recent_l5_ready=lambda _job: True)
+
+    result = orchestrator.process_l5_job(_job())
+
+    assert result["finished_status"] == "DONE"
+    assert len(extract_called) == 0  # extract는 호출되지 않아야 함

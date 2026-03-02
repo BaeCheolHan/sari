@@ -42,6 +42,7 @@ from sari.services.collection.testing.enrich_engine_test_factory import (
 )
 from sari.services.collection.l1.watcher_hotness_tracker import WatcherHotnessTracker
 from sari.services.collection.enrich_flush_coordinator import EnrichFlushCoordinator
+from sari.services.collection.l3.l3_scheduling_service import L3SchedulingService
 from sari.services.collection.service import FileCollectionService, SolidLspExtractionBackend
 from sari.services.lsp_extraction_contracts import LspExtractionBackend, LspExtractionResultDTO
 import sari.services.collection.service as file_collection_service_module
@@ -453,7 +454,6 @@ def test_enrich_engine_flush_persists_tool_layer_buffers() -> None:
         "confidence": 0.9,
         "ambiguity": 0.1,
         "coverage": 1.0,
-        "needs_l5": False,
         "updated_at": "2026-02-23T00:00:00+00:00",
     }
     l5_upsert = {
@@ -487,7 +487,7 @@ def test_enrich_engine_flush_persists_tool_layer_buffers() -> None:
 
 
 def test_enrich_engine_l3_needs_l5_does_not_escalate_scope_in_l3() -> None:
-    """NEEDS_L5 + scope trigger 오류는 L5 실행 후 scope escalation defer로 전환되어야 한다."""
+    """l3_lane에서는 NEEDS_L5 파일도 LSP 호출 없이 즉시 DONE 처리 — scope escalation은 l5_lane에서 발생한다."""
     queue_repo = _CaptureEscalateQueueRepo()
     error_policy = _StubErrorPolicy()
     engine = build_min_enrich_engine_for_l3_test(
@@ -516,11 +516,10 @@ def test_enrich_engine_l3_needs_l5_does_not_escalate_scope_in_l3() -> None:
 
     result = engine._process_single_l3_job(job)
 
-    assert result.finished_status == "PENDING"
+    # l3_lane: LSP extract 없이 즉시 DONE (scope escalation은 l5_lane에서 처리)
+    assert result.finished_status == "DONE"
     assert result.failure_update is None
-    assert result.state_update is None
-    assert result.readiness_update is None
-    assert len(queue_repo.calls) == 1
+    assert len(queue_repo.calls) == 0  # scope escalation 없음
     assert engine._schedule_l1_probe_after_l3_fallback_called == 0
 
 
@@ -1102,7 +1101,7 @@ def test_enrich_engine_runtime_metrics_include_l5_cost_units_dimensions() -> Non
 
 
 def test_enrich_engine_l3_needs_l5_finishes_without_extract_failure() -> None:
-    """NEEDS_L5에서 LSP 추출 오류가 나면 FAILED로 처리되어야 한다."""
+    """l3_lane에서 NEEDS_L5 파일은 LSP 호출 없이 즉시 DONE — extract 오류가 발생하지 않는다."""
     queue_repo = _CaptureEscalateQueueRepo()
     error_policy = _StubErrorPolicy()
     engine = build_min_enrich_engine_for_l3_test(
@@ -1131,17 +1130,15 @@ def test_enrich_engine_l3_needs_l5_finishes_without_extract_failure() -> None:
 
     result = engine._process_single_l3_job(job)
 
-    assert result.finished_status == "FAILED"
-    assert result.failure_update is not None
-    assert result.state_update is not None
-    assert result.state_update.enrich_state == "FAILED"
-    assert result.readiness_update is None
+    # l3_lane: LSP extract 없이 즉시 DONE
+    assert result.finished_status == "DONE"
+    assert result.failure_update is None
     assert len(queue_repo.calls) == 0
     assert engine._schedule_l1_probe_after_l3_fallback_called == 0
 
 
 def test_enrich_engine_l3_broker_error_string_does_not_trigger_l3_defer() -> None:
-    """broker lease 오류 문자열은 L3에서 defer로 전환되어야 한다."""
+    """l3_lane에서는 broker lease 오류 발생 없이 즉시 DONE — defer는 l5_lane에서 처리된다."""
     queue_repo = _CaptureEscalateQueueRepo()
     error_policy = _StubErrorPolicy()
     engine = build_min_enrich_engine_for_l3_test(
@@ -1172,17 +1169,16 @@ def test_enrich_engine_l3_broker_error_string_does_not_trigger_l3_defer() -> Non
 
     result = engine._process_single_l3_job(job)
 
-    assert result.finished_status == "PENDING"
+    # l3_lane: LSP extract 없이 즉시 DONE (broker defer는 l5_lane에서 발생)
+    assert result.finished_status == "DONE"
     assert result.failure_update is None
-    assert result.state_update is None
-    assert result.readiness_update is None
-    assert len(queue_repo.defer_calls) == 1
-    assert len(queue_repo.calls) == 0  # scope escalation 경로와 혼동되면 안 된다.
+    assert len(queue_repo.defer_calls) == 0
+    assert len(queue_repo.calls) == 0
     assert engine._schedule_l1_probe_after_l3_fallback_called == 0
 
 
 def test_enrich_engine_l3_wrapped_broker_error_also_skips_to_l5_candidate() -> None:
-    """래핑된 broker 오류 문자열도 L3에서 defer 처리되어야 한다."""
+    """l3_lane에서 래핑된 broker 오류도 발생하지 않음 — 즉시 DONE."""
     queue_repo = _CaptureEscalateQueueRepo()
     error_policy = _StubErrorPolicy()
     engine = build_min_enrich_engine_for_l3_test(
@@ -1214,15 +1210,14 @@ def test_enrich_engine_l3_wrapped_broker_error_also_skips_to_l5_candidate() -> N
 
     result = engine._process_single_l3_job(job)
 
-    assert result.finished_status == "PENDING"
+    # l3_lane: LSP extract 없이 즉시 DONE
+    assert result.finished_status == "DONE"
     assert result.failure_update is None
-    assert result.state_update is None
-    assert result.readiness_update is None
-    assert len(queue_repo.defer_calls) == 1
+    assert len(queue_repo.defer_calls) == 0
 
 
 def test_enrich_engine_l3_scope_trigger_message_does_not_fail_when_extract_removed() -> None:
-    """scope trigger라도 escalation 한도 소진 시 FAILED 처리한다."""
+    """l3_lane에서 scope trigger 오류가 발생하지 않음 — 즉시 DONE (scope escalation은 l5_lane에서)."""
     queue_repo = _CaptureEscalateQueueRepo()
     error_policy = _StubErrorPolicy()
     engine = build_min_enrich_engine_for_l3_test(
@@ -1251,11 +1246,9 @@ def test_enrich_engine_l3_scope_trigger_message_does_not_fail_when_extract_remov
 
     result = engine._process_single_l3_job(job)
 
-    assert result.finished_status == "FAILED"
-    assert result.failure_update is not None
-    assert result.state_update is not None
-    assert result.state_update.enrich_state == "FAILED"
-    assert result.readiness_update is None
+    # l3_lane: LSP extract 없이 즉시 DONE
+    assert result.finished_status == "DONE"
+    assert result.failure_update is None
     assert len(queue_repo.calls) == 0
 
 
@@ -2055,7 +2048,7 @@ def test_file_collection_scan_once_skips_unchanged_read_bytes(tmp_path: Path, mo
 
 
 def test_file_collection_scan_once_does_not_schedule_l1_probe(tmp_path: Path) -> None:
-    """L1 스캔 경로는 probe를 직접 스케줄하지 않아야 한다(L4 admission 전용)."""
+    """prewarm disabled 시 L1 스캔 경로는 probe를 직접 스케줄하지 않아야 한다."""
     db_path = tmp_path / "state.db"
     init_schema(db_path)
     repo_dir = tmp_path / "repo-l1-no-probe"
@@ -2074,11 +2067,104 @@ def test_file_collection_scan_once_does_not_schedule_l1_probe(tmp_path: Path) ->
         lsp_backend=backend,
         policy_repo=None,
         event_repo=None,
+        lsp_probe_scan_prewarm_enabled=False,
     )
 
     service.scan_once(str(repo_dir.resolve()))
 
     assert backend.calls == []
+
+
+def test_file_collection_scan_once_schedules_bootstrap_probe_when_prewarm_enabled(tmp_path: Path) -> None:
+    """Wave 1: lsp_probe_scan_prewarm_enabled=True 시 scan이 bootstrap probe를 스케줄해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_dir = tmp_path / "repo-prewarm-wave1"
+    repo_dir.mkdir()
+    (repo_dir / "main.py").write_text("def main():\n    pass\n", encoding="utf-8")
+
+    backend = _ProbeCountingBackend()
+    service = FileCollectionService(
+        workspace_repo=WorkspaceRepository(db_path),
+        file_repo=FileCollectionRepository(db_path),
+        enrich_queue_repo=FileEnrichQueueRepository(db_path),
+        body_repo=FileBodyRepository(db_path),
+        lsp_repo=LspToolDataRepository(db_path),
+        readiness_repo=ToolReadinessRepository(db_path),
+        policy=_policy(),
+        lsp_backend=backend,
+        policy_repo=None,
+        event_repo=None,
+        lsp_probe_scan_prewarm_enabled=True,
+    )
+
+    service.scan_once(str(repo_dir.resolve()))
+
+    assert len(backend.calls) >= 1
+
+
+def test_configure_lsp_prewarm_languages_schedules_wave2_probe() -> None:
+    """Wave 2: hot 언어 확정 후 대표 파일로 probe를 스케줄해야 한다."""
+    from sari.services.collection.repo_support import CollectionRepoSupport
+    from sari.core.models import CollectionPolicyDTO
+    from sari.db.repositories.workspace_repository import WorkspaceRepository
+    from solidlsp.ls_config import Language
+
+    class _FakeWorkspaceRepo:
+        def list_all(self):
+            return []
+
+    class _CapturingSchedulerBackend:
+        def __init__(self):
+            self.probe_calls: list[dict] = []
+
+        def configure_hot_languages(self, *, repo_root: str, languages: set) -> None:
+            pass
+
+        def schedule_probe_for_file(
+            self,
+            *,
+            repo_root: str,
+            relative_path: str,
+            force: bool = False,
+            trigger: str = "background",
+        ) -> str:
+            self.probe_calls.append({"repo_root": repo_root, "relative_path": relative_path, "trigger": trigger})
+            return "scheduled"
+
+    backend = _CapturingSchedulerBackend()
+    repo_support = CollectionRepoSupport(
+        workspace_repo=_FakeWorkspaceRepo(),
+        policy=CollectionPolicyDTO(
+            include_ext=(".py",),
+            exclude_globs=(),
+            max_file_size_bytes=512 * 1024,
+            scan_interval_sec=180,
+            max_enrich_batch=20,
+            retry_max_attempts=5,
+            retry_backoff_base_sec=1,
+            queue_poll_interval_ms=100,
+        ),
+        policy_repo=None,
+        lsp_backend=backend,
+        repo_registry_repo=None,
+        lsp_prewarm_min_language_files=1,
+        lsp_prewarm_top_language_count=2,
+    )
+
+    python_lang = Language.PYTHON
+    language_counts = {python_lang: 5}
+    language_sample_files = {python_lang: "src/main.py"}
+
+    repo_support.configure_lsp_prewarm_languages(
+        repo_root="/fake/repo",
+        language_counts=language_counts,
+        language_sample_files=language_sample_files,
+    )
+
+    wave2_calls = [c for c in backend.probe_calls if c.get("trigger") == "wave2_prewarm"]
+    assert len(wave2_calls) == 1
+    assert wave2_calls[0]["relative_path"] == "src/main.py"
 
 
 def test_vector_embedding_runs_even_when_body_persistence_disabled(tmp_path: Path) -> None:
@@ -2835,19 +2921,22 @@ def test_file_collection_scan_once_configures_top_hot_languages(tmp_path: Path) 
     assert backend.languages == {Language.PYTHON, Language.KOTLIN}
 
 
-def test_file_collection_rebalance_jobs_by_language_round_robin(tmp_path: Path) -> None:
+def test_file_collection_rebalance_jobs_by_language_round_robin() -> None:
     """언어 버킷을 라운드로빈으로 교차 배치해야 한다."""
-    db_path = tmp_path / "state.db"
-    init_schema(db_path)
-    service = FileCollectionService(
-        workspace_repo=WorkspaceRepository(db_path),
-        file_repo=FileCollectionRepository(db_path),
-        enrich_queue_repo=FileEnrichQueueRepository(db_path),
-        body_repo=FileBodyRepository(db_path),
-        lsp_repo=LspToolDataRepository(db_path),
-        readiness_repo=ToolReadinessRepository(db_path),
-        policy=_policy(),
-        lsp_backend=_NoopLspBackend(),
+    _EXT_LANG = {".py": Language.PYTHON, ".kt": Language.KOTLIN}
+
+    def _resolve(relative_path: str):
+        ext = relative_path[relative_path.rfind("."):]
+        return _EXT_LANG.get(ext)
+
+    scheduling = L3SchedulingService(
+        resolve_lsp_language=_resolve,
+        lsp_backend=object(),
+        l3_parallel_enabled=False,
+        executor_max_workers=1,
+        backpressure_on_interactive=False,
+        backpressure_cooldown_sec=0.0,
+        monotonic_now=lambda: 0.0,
     )
 
     jobs = [
@@ -2857,7 +2946,7 @@ def test_file_collection_rebalance_jobs_by_language_round_robin(tmp_path: Path) 
         FileEnrichJobDTO(job_id="j4", repo_id="r_r", repo_root="/r", relative_path="d.kt", content_hash="h4", priority=90, enqueue_source="scan", status="RUNNING", attempt_count=0, last_error=None, next_retry_at="t", created_at="t", updated_at="t"),
     ]
 
-    rebalanced = service._rebalance_jobs_by_language(jobs)
+    rebalanced = scheduling.rebalance_jobs_by_language(jobs)
     ordered_paths = [job.relative_path for job in rebalanced]
 
     assert ordered_paths == ["a.py", "c.kt", "b.py", "d.kt"]

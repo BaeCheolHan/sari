@@ -99,6 +99,7 @@ def build_default_config(cls):
     lsp_probe_bootstrap_top_k_raw = extended_raw_values["lsp_probe_bootstrap_top_k_raw"]
     lsp_probe_language_priority_raw = extended_raw_values["lsp_probe_language_priority_raw"]
     lsp_probe_l1_languages_raw = extended_raw_values["lsp_probe_l1_languages_raw"]
+    lsp_probe_scan_prewarm_enabled_raw = extended_raw_values["lsp_probe_scan_prewarm_enabled_raw"]
     lsp_scope_java_markers_raw = extended_raw_values["lsp_scope_java_markers_raw"]
     lsp_scope_ts_markers_raw = extended_raw_values["lsp_scope_ts_markers_raw"]
     lsp_scope_vue_markers_raw = extended_raw_values["lsp_scope_vue_markers_raw"]
@@ -166,6 +167,9 @@ def build_default_config(cls):
     l5_symbol_normalizer_executor_mode_raw = extended_raw_values["l5_symbol_normalizer_executor_mode_raw"]
     l5_symbol_normalizer_subinterp_workers_raw = extended_raw_values["l5_symbol_normalizer_subinterp_workers_raw"]
     l5_symbol_normalizer_subinterp_min_symbols_raw = extended_raw_values["l5_symbol_normalizer_subinterp_min_symbols_raw"]
+    l5_async_quality_upgrade_enabled_raw = extended_raw_values["l5_async_quality_upgrade_enabled_raw"]
+    l5_async_quality_upgrade_batch_size_raw = extended_raw_values["l5_async_quality_upgrade_batch_size_raw"]
+    l5_async_quality_upgrade_poll_interval_sec_raw = extended_raw_values["l5_async_quality_upgrade_poll_interval_sec_raw"]
     mcp_forward_to_daemon_raw = extended_raw_values["mcp_forward_to_daemon_raw"]
     mcp_daemon_autostart_raw = extended_raw_values["mcp_daemon_autostart_raw"]
     mcp_daemon_timeout_raw = extended_raw_values["mcp_daemon_timeout_raw"]
@@ -554,6 +558,7 @@ def build_default_config(cls):
         lsp_probe_bootstrap_top_k=lsp_probe_bootstrap_top_k,
         lsp_probe_language_priority=lsp_probe_language_priority,
         lsp_probe_l1_languages=lsp_probe_l1_languages,
+        lsp_probe_scan_prewarm_enabled=parser.bool_true(lsp_probe_scan_prewarm_enabled_raw),
         lsp_scope_java_markers=lsp_scope_java_markers,
         lsp_scope_ts_markers=lsp_scope_ts_markers,
         lsp_scope_vue_markers=lsp_scope_vue_markers,
@@ -634,6 +639,9 @@ def build_default_config(cls):
         ),
         l5_symbol_normalizer_subinterp_workers=l5_symbol_normalizer_subinterp_workers,
         l5_symbol_normalizer_subinterp_min_symbols=l5_symbol_normalizer_subinterp_min_symbols,
+        l5_async_quality_upgrade_enabled=parser.bool_true(l5_async_quality_upgrade_enabled_raw),
+        l5_async_quality_upgrade_batch_size=max(1, int(float(l5_async_quality_upgrade_batch_size_raw))),
+        l5_async_quality_upgrade_poll_interval_sec=max(0.5, float(l5_async_quality_upgrade_poll_interval_sec_raw)),
         mcp_forward_to_daemon=parser.bool_true(mcp_forward_to_daemon_raw),
         mcp_daemon_autostart=parser.bool_true(mcp_daemon_autostart_raw),
         mcp_daemon_timeout_sec=mcp_daemon_timeout_sec,

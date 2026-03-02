@@ -433,7 +433,6 @@ def test_mcp_search_includes_layer_snapshot_in_item_payload(tmp_path: Path) -> N
         confidence=0.95,
         ambiguity=0.1,
         coverage=0.9,
-        needs_l5=True,
         updated_at="2026-02-23T12:00:00Z",
     )
     layer_repo.upsert_l5_semantics(
@@ -526,7 +525,6 @@ def test_mcp_search_skips_layer_snapshot_when_active_file_row_missing(tmp_path: 
         confidence=0.95,
         ambiguity=0.1,
         coverage=0.9,
-        needs_l5=True,
         updated_at="2026-02-23T12:00:00Z",
     )
     layer_repo.upsert_l5_semantics(

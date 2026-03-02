@@ -54,15 +54,17 @@ class LayerUpsertBuilder:
             reason = "l3_preprocess_missing"
             symbol_count = 0
             degraded = True
-            needs_l5 = True
         else:
             decision_name = preprocess_result.decision.value
             source = preprocess_result.source
             reason = preprocess_result.reason
             symbol_count = len(preprocess_result.symbols)
             degraded = bool(preprocess_result.degraded)
-            needs_l5 = preprocess_result.decision is not L3PreprocessDecision.L3_ONLY
-        confidence = 0.9 if not needs_l5 and not degraded else 0.35
+        confidence = 0.9 if (
+            preprocess_result is not None
+            and not degraded
+            and preprocess_result.decision is L3PreprocessDecision.L3_ONLY
+        ) else 0.35
         coverage = 0.0 if preprocess_result is not None and preprocess_result.decision is L3PreprocessDecision.DEFERRED_HEAVY else (0.6 if degraded else 1.0)
         ambiguity = max(0.0, min(1.0, 1.0 - confidence))
         normalized: dict[str, object] = {
@@ -82,7 +84,6 @@ class LayerUpsertBuilder:
             "confidence": confidence,
             "ambiguity": ambiguity,
             "coverage": coverage,
-            "needs_l5": needs_l5,
             "updated_at": now_iso,
         }
 

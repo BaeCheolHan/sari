@@ -49,7 +49,6 @@ def test_tool_data_layer_repository_roundtrip_by_content_hash(tmp_path: Path) ->
         confidence=0.9,
         ambiguity=0.1,
         coverage=0.95,
-        needs_l5=True,
         updated_at=now_iso,
     )
     repo.upsert_l5_semantics(
@@ -72,7 +71,6 @@ def test_tool_data_layer_repository_roundtrip_by_content_hash(tmp_path: Path) ->
     assert snapshot["l4"] is not None
     assert isinstance(snapshot["l5"], list)
     assert snapshot["l3"]["symbols"][0]["name"] == "A"
-    assert snapshot["l4"]["needs_l5"] is True
     assert snapshot["l5"][0]["reason_code"] == "L5_REASON_UNRESOLVED_SYMBOL"
 
 
@@ -121,7 +119,6 @@ def test_tool_data_layer_repository_batch_upserts_roundtrip(tmp_path: Path) -> N
                 "confidence": 0.95,
                 "ambiguity": 0.05,
                 "coverage": 0.9,
-                "needs_l5": True,
                 "updated_at": now_iso,
             }
         ]
@@ -147,7 +144,6 @@ def test_tool_data_layer_repository_batch_upserts_roundtrip(tmp_path: Path) -> N
         content_hash="h1",
     )
     assert snapshot["l3"]["symbols"][0]["name"] == "A"
-    assert snapshot["l4"]["needs_l5"] is True
     assert snapshot["l5"][0]["reason_code"] == "L5_REASON_GOLDENSET_COVERAGE"
 
 
@@ -263,7 +259,6 @@ def test_tool_data_layer_repository_search_l3_symbols_includes_l4_l5(tmp_path: P
         confidence=0.9,
         ambiguity=0.1,
         coverage=0.95,
-        needs_l5=True,
         updated_at=now_iso,
     )
     repo.upsert_l5_semantics(
@@ -407,7 +402,6 @@ def test_tool_data_layer_repository_load_supports_legacy_workspace_hash_key(tmp_
         confidence=0.9,
         ambiguity=0.1,
         coverage=0.95,
-        needs_l5=True,
         updated_at=now_iso,
     )
 
@@ -596,7 +590,6 @@ def test_tool_data_layer_repository_load_snapshot_scope_root_uses_effective_work
         confidence=0.9,
         ambiguity=0.1,
         coverage=0.95,
-        needs_l5=True,
         updated_at=now_iso,
     )
     repo.upsert_l5_semantics(
