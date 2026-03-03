@@ -184,6 +184,11 @@ class L5AsyncUpgradeWatcher:
 
         enqueued = 0
         for file_dto in files:
+            if self._is_l5_running(
+                repo_root=str(file_dto["repo_root"]),
+                relative_path=str(file_dto["relative_path"]),
+            ):
+                continue
             try:
                 self._enrich_queue_repo.enqueue(
                     repo_root=file_dto["repo_root"],
@@ -203,3 +208,18 @@ class L5AsyncUpgradeWatcher:
             "L5 upgrade: enqueued %d / %d files (repo=%s)",
             enqueued, len(files), repo_root,
         )
+
+    def _is_l5_running(self, *, repo_root: str, relative_path: str) -> bool:
+        """동일 파일의 L5 RUNNING job 존재 여부를 조회한다."""
+        probe = getattr(self._enrich_queue_repo, "is_l5_job_running", None)
+        if not callable(probe):
+            return False
+        try:
+            return bool(probe(repo_root=repo_root, relative_path=relative_path))
+        except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
+            log.debug(
+                "L5 running probe failed (repo=%s, path=%s)",
+                repo_root,
+                relative_path,
+            )
+            return False

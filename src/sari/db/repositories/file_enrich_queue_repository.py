@@ -1020,6 +1020,23 @@ class FileEnrichQueueRepository:
             ).fetchall()
         return [row_str(row, "job_id") for row in rows]
 
+    def is_l5_job_running(self, *, repo_root: str, relative_path: str) -> bool:
+        """동일 파일의 L5 lane RUNNING job 존재 여부를 반환한다."""
+        with connect(self._db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT 1
+                FROM file_enrich_queue
+                WHERE repo_root = :repo_root
+                  AND relative_path = :relative_path
+                  AND enqueue_source = 'l5'
+                  AND status = 'RUNNING'
+                LIMIT 1
+                """,
+                {"repo_root": repo_root, "relative_path": relative_path},
+            ).fetchone()
+        return row is not None
+
     def get_eligible_counts(self, now_iso: str) -> dict[str, int]:
         """strict eligible(v1) queue-job 기준 집계를 반환한다.
 

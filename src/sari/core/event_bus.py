@@ -91,7 +91,7 @@ class EventBus:
         for handler in handlers:
             try:
                 handler(event)
-            except (RuntimeError, TypeError, ValueError, AttributeError, KeyError, OSError):
+            except Exception:
                 log.exception("EventBus handler error for %s", event_type.__name__)
 
         for q in queues:

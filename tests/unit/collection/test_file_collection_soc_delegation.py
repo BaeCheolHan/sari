@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 import zlib
 
-from sari.core.models import CollectedFileBodyDTO, CollectionPolicyDTO, CollectionScanResultDTO, PipelineMetricsDTO
+from sari.core.models import CollectedFileBodyDTO, CollectionPolicyDTO, CollectionScanResultDTO, PipelineMetricsDTO, WorkspaceDTO
 from sari.db.repositories.file_body_repository import FileBodyRepository
 from sari.db.repositories.file_collection_repository import FileCollectionRepository
 from sari.db.repositories.file_enrich_queue_repository import FileEnrichQueueRepository
@@ -107,6 +107,20 @@ class _BlockingScannerStub:
         self.started.set()
         self.release.wait(timeout=self._release_wait_timeout_sec)
         return CollectionScanResultDTO(scanned_count=0, indexed_count=0, deleted_count=0)
+
+
+class _L5UpgradeWatcherStub:
+    """L5 watcher start/trigger_startup 호출을 기록하는 테스트 더블."""
+
+    def __init__(self) -> None:
+        self.started = 0
+        self.triggered_repo_roots: list[str] = []
+
+    def start(self) -> None:
+        self.started += 1
+
+    def trigger_startup(self, *, repo_root: str) -> None:
+        self.triggered_repo_roots.append(repo_root)
 
 
 
@@ -798,3 +812,38 @@ def test_file_collection_service_fanout_scan_does_not_delete_independent_child_s
     assert str(stale_row["enrich_state"]) == "DELETED"
     assert owned_row is not None
     assert int(owned_row["is_deleted"]) == 0
+
+
+def test_file_collection_service_start_background_triggers_l5_startup_reconciliation_for_active_workspaces(
+    tmp_path: Path,
+) -> None:
+    """start_background()는 활성 workspace에 대해 L5 startup reconciliation을 호출해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    workspace_repo = WorkspaceRepository(db_path)
+    active_root = str((tmp_path / "repo-active").resolve())
+    inactive_root = str((tmp_path / "repo-inactive").resolve())
+    workspace_repo.add(WorkspaceDTO(path=active_root, name="active", indexed_at=None, is_active=True))
+    workspace_repo.add(WorkspaceDTO(path=inactive_root, name="inactive", indexed_at=None, is_active=False))
+
+    service = FileCollectionService(
+        workspace_repo=workspace_repo,
+        file_repo=FileCollectionRepository(db_path),
+        enrich_queue_repo=FileEnrichQueueRepository(db_path),
+        body_repo=FileBodyRepository(db_path),
+        lsp_repo=LspToolDataRepository(db_path),
+        readiness_repo=ToolReadinessRepository(db_path),
+        policy=_policy(),
+        lsp_backend=_NoopLspBackend(),
+        policy_repo=None,
+        event_repo=None,
+    )
+    l5_stub = _L5UpgradeWatcherStub()
+    service._l5_upgrade_watcher = l5_stub  # type: ignore[attr-defined]
+    service._runtime_manager.start_background = lambda: None  # type: ignore[attr-defined]
+    service._ensure_watcher_rescan_worker_started = lambda: None  # type: ignore[attr-defined]
+
+    service.start_background()
+
+    assert l5_stub.started == 1
+    assert l5_stub.triggered_repo_roots == [active_root]

@@ -39,6 +39,18 @@ def test_callback_exception_does_not_block_other_handlers() -> None:
     assert second_called == [True]
 
 
+def test_callback_assertion_error_does_not_block_other_handlers() -> None:
+    """AssertionError 같은 일반 Exception도 삼키고 다음 핸들러를 실행해야 한다."""
+    bus = EventBus()
+    second_called: list[bool] = []
+
+    bus.subscribe(L3FlushCompleted, lambda _: (_ for _ in ()).throw(AssertionError("boom")))
+    bus.subscribe(L3FlushCompleted, lambda _: second_called.append(True))
+
+    bus.publish(L3FlushCompleted(repo_root="/repo", flushed_count=1))
+    assert second_called == [True]
+
+
 def test_unregistered_event_type_does_not_raise() -> None:
     """구독자가 없는 이벤트 타입 발행이 예외를 던지지 않는다."""
     bus = EventBus()

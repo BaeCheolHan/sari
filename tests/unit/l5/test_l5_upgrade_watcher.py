@@ -20,9 +20,13 @@ from sari.services.collection.l5.upgrade_watcher import L5AsyncUpgradeWatcher
 class _FakeEnrichQueueRepo:
     def __init__(self) -> None:
         self.enqueued: list[dict] = []
+        self.running_paths: set[tuple[str, str]] = set()
 
     def enqueue(self, **kwargs) -> None:
         self.enqueued.append(dict(kwargs))
+
+    def is_l5_job_running(self, *, repo_root: str, relative_path: str) -> bool:
+        return (repo_root, relative_path) in self.running_paths
 
 
 class _FakeToolLayerRepo:
@@ -291,4 +295,23 @@ def test_process_batch_respects_batch_size() -> None:
 
     assert len(enrich_repo.enqueued) == 3
 
+    bus.shutdown()
+
+
+def test_process_batch_skips_candidates_already_running_in_l5_lane() -> None:
+    """같은 파일이 L5 RUNNING이면 watcher가 중복 enqueue하지 않아야 한다."""
+    bus = EventBus()
+    enrich_repo = _FakeEnrichQueueRepo()
+    files = [
+        {"repo_root": "/r", "relative_path": "inflight.py", "content_hash": "h-running"},
+    ]
+    tool_repo = _FakeToolLayerRepo(files=files)
+    w = _watcher(bus, enrich_repo=enrich_repo, tool_repo=tool_repo)
+    enrich_repo.running_paths.add(("/r", "inflight.py"))
+    w.start()
+
+    bus.publish(LspWarmReady(repo_root="/r", language=Language.PYTHON))
+    time.sleep(0.1)
+
+    assert len(enrich_repo.enqueued) == 0
     bus.shutdown()

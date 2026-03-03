@@ -934,6 +934,13 @@ class FileCollectionService:
         self._runtime_manager.start_background()
         self._ensure_watcher_rescan_worker_started()
         self._l5_upgrade_watcher.start()
+        for workspace in self._workspace_repo.list_all():
+            if not workspace.is_active:
+                continue
+            try:
+                self._l5_upgrade_watcher.trigger_startup(repo_root=workspace.path)
+            except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
+                log.exception("L5 startup reconciliation failed (repo=%s)", workspace.path)
 
     def stop_background(self) -> None:
         self._runtime_manager.stop_background()
