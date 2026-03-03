@@ -33,6 +33,11 @@ class SearchMetaDTO:
     lsp_sync_mode: str = "did_open_did_change"
     lsp_fallback_used: bool = False
     lsp_fallback_reason: str | None = None
+    include_info_requested: bool = False
+    symbol_info_budget_sec: float = 0.0
+    symbol_info_requested_count: int = 0
+    symbol_info_budget_exceeded_count: int = 0
+    symbol_info_skipped_count: int = 0
     importance_policy: str = "none"
     importance_weights: dict[str, float] | None = None
     importance_normalize_mode: str = "none"
@@ -112,6 +117,8 @@ class SearchOrchestrator:
         repo_root: str | None = None,
         resolve_symbols: bool = True,
         repo_id: str | None = None,
+        include_info: bool | None = None,
+        symbol_info_budget_sec: float | None = None,
     ) -> SearchPipelineResult:
         """질의어 기반 검색 결과를 반환한다."""
         resolved_repo_root = repo_root
@@ -129,8 +136,29 @@ class SearchOrchestrator:
             limit=limit,
         )
         candidates = candidate_result.candidates
+        include_info_requested = bool(include_info) if include_info is not None else False
+        effective_symbol_info_budget_sec = float(symbol_info_budget_sec) if symbol_info_budget_sec is not None else 0.0
+        symbol_info_requested_count = 0
+        symbol_info_budget_exceeded_count = 0
+        symbol_info_skipped_count = 0
         if resolve_symbols:
-            resolved_items, errors = self._symbol_service.resolve(candidates=candidates, query=query, limit=limit)
+            try:
+                resolved_items, errors = self._symbol_service.resolve(
+                    candidates=candidates,
+                    query=query,
+                    limit=limit,
+                    include_info=include_info,
+                    symbol_info_budget_sec=symbol_info_budget_sec,
+                )
+            except TypeError:
+                resolved_items, errors = self._symbol_service.resolve(candidates=candidates, query=query, limit=limit)
+            stats = getattr(self._symbol_service, "last_info_stats", None)
+            if stats is not None:
+                include_info_requested = bool(getattr(stats, "include_info_requested", include_info_requested))
+                effective_symbol_info_budget_sec = float(getattr(stats, "symbol_info_budget_sec", effective_symbol_info_budget_sec))
+                symbol_info_requested_count = int(getattr(stats, "symbol_info_requested_count", 0))
+                symbol_info_budget_exceeded_count = int(getattr(stats, "symbol_info_budget_exceeded_count", 0))
+                symbol_info_skipped_count = int(getattr(stats, "symbol_info_skipped_count", 0))
             merged_errors = [*candidate_result.errors, *errors]
         else:
             resolved_items = []
@@ -139,6 +167,9 @@ class SearchOrchestrator:
         degraded = len(merged_errors) > 0
         error_count = len(merged_errors)
         lsp_fallback_blocked = any(error.code == "ERR_LSP_FALLBACK_BLOCKED" for error in merged_errors)
+        fallback_reason = getattr(self._symbol_service, "last_fallback_reason", None)
+        if not isinstance(fallback_reason, str) or fallback_reason.strip() == "":
+            fallback_reason = "strict_cache_only" if lsp_fallback_blocked else None
         candidate_items = [
             SearchItemDTO(
                 item_type="file",
@@ -223,7 +254,12 @@ class SearchOrchestrator:
                 vector_threshold=vector_threshold,
                 lsp_sync_mode="did_open_did_change",
                 lsp_fallback_used=lsp_fallback_blocked,
-                lsp_fallback_reason="strict_cache_only" if lsp_fallback_blocked else None,
+                lsp_fallback_reason=fallback_reason,
+                include_info_requested=include_info_requested,
+                symbol_info_budget_sec=effective_symbol_info_budget_sec,
+                symbol_info_requested_count=symbol_info_requested_count,
+                symbol_info_budget_exceeded_count=symbol_info_budget_exceeded_count,
+                symbol_info_skipped_count=symbol_info_skipped_count,
                 ranking_stage="blend",
                 blend_config_version=self._blend_config.version,
                 ranking_version="v3-hierarchy",

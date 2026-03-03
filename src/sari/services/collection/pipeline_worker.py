@@ -4,9 +4,6 @@ from __future__ import annotations
 
 from typing import Callable
 
-from sari.services.collection.perf_trace import trace_methods
-
-@trace_methods("pipeline_worker_fn")
 class PipelineWorker:
     """보강 워커 책임을 담당하는 전용 서비스."""
 

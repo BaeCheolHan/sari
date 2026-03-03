@@ -11,13 +11,21 @@ import subprocess
 
 from overrides import override
 
-from solidlsp.ls import SolidLanguageServer
+from solidlsp.ls import SolidLanguageServer, get_current_process_env_snapshot
 from solidlsp.ls_config import LanguageServerConfig
 from solidlsp.lsp_protocol_handler.lsp_types import InitializeParams
 from solidlsp.lsp_protocol_handler.server import ProcessLaunchInfo
 from solidlsp.settings import SolidLSPSettings
 
 log = logging.getLogger(__name__)
+
+
+def _env_snapshot() -> dict[str, str]:
+    return get_current_process_env_snapshot()
+
+
+def _which_in_snapshot(executable_name: str) -> str | None:
+    return shutil.which(executable_name, path=_env_snapshot().get("PATH"))
 
 
 class ZigLanguageServer(SolidLanguageServer):
@@ -38,7 +46,7 @@ class ZigLanguageServer(SolidLanguageServer):
     def _get_zig_version() -> str | None:
         """Get the installed Zig version or None if not found."""
         try:
-            result = subprocess.run(["zig", "version"], capture_output=True, text=True, check=False)
+            result = subprocess.run(["zig", "version"], capture_output=True, text=True, check=False, env=_env_snapshot())
             if result.returncode == 0:
                 return result.stdout.strip()
         except FileNotFoundError:
@@ -49,7 +57,7 @@ class ZigLanguageServer(SolidLanguageServer):
     def _get_zls_version() -> str | None:
         """Get the installed ZLS version or None if not found."""
         try:
-            result = subprocess.run(["zls", "--version"], capture_output=True, text=True, check=False)
+            result = subprocess.run(["zls", "--version"], capture_output=True, text=True, check=False, env=_env_snapshot())
             if result.returncode == 0:
                 return result.stdout.strip()
         except FileNotFoundError:
@@ -59,7 +67,7 @@ class ZigLanguageServer(SolidLanguageServer):
     @staticmethod
     def _check_zls_installed() -> bool:
         """Check if ZLS is installed in the system."""
-        return shutil.which("zls") is not None
+        return _which_in_snapshot("zls") is not None
 
     @staticmethod
     def _setup_runtime_dependency() -> bool:
@@ -152,7 +160,7 @@ class ZigLanguageServer(SolidLanguageServer):
             "initializationOptions": {
                 # ZLS specific options based on schema.json
                 # Critical paths for ZLS to understand the project
-                "zig_exe_path": shutil.which("zig"),  # Path to zig executable
+                "zig_exe_path": _which_in_snapshot("zig"),  # Path to zig executable
                 "zig_lib_path": None,  # Let ZLS auto-detect
                 "build_runner_path": None,  # Let ZLS use its built-in runner
                 "global_cache_path": None,  # Let ZLS use default cache

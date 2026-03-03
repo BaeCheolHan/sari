@@ -7,13 +7,21 @@ import time
 from overrides import override
 
 from solidlsp import ls_types
-from solidlsp.ls import SolidLanguageServer
+from solidlsp.ls import SolidLanguageServer, get_current_process_env_snapshot
 from solidlsp.ls_config import LanguageServerConfig
 from solidlsp.lsp_protocol_handler.lsp_types import InitializeParams
 from solidlsp.lsp_protocol_handler.server import ProcessLaunchInfo
 from solidlsp.settings import SolidLSPSettings
 
 log = logging.getLogger(__name__)
+
+
+def _env_snapshot() -> dict[str, str]:
+    return get_current_process_env_snapshot()
+
+
+def _env_flag_set(key: str) -> bool:
+    return bool(_env_snapshot().get(key))
 
 
 class SourceKitLSP(SolidLanguageServer):
@@ -34,7 +42,7 @@ class SourceKitLSP(SolidLanguageServer):
     def _get_sourcekit_lsp_version() -> str:
         """Get the installed sourcekit-lsp version or raise error if sourcekit was not found."""
         try:
-            result = subprocess.run(["sourcekit-lsp", "-h"], capture_output=True, text=True, check=False)
+            result = subprocess.run(["sourcekit-lsp", "-h"], capture_output=True, text=True, check=False, env=_env_snapshot())
             if result.returncode == 0:
                 return result.stdout.strip()
             raise RuntimeError(f"`sourcekit-lsp -h` resulted in: {result}")
@@ -344,11 +352,11 @@ class SourceKitLSP(SolidLanguageServer):
             if self._initialization_timestamp:
                 elapsed = time.time() - self._initialization_timestamp
                 # Increased CI delay for project indexing: 15s CI, 5s local
-                base_delay = 15 if os.getenv("CI") else 5
+                base_delay = 15 if _env_flag_set("CI") else 5
                 remaining_delay = max(2, base_delay - elapsed)
             else:
                 # Fallback if initialization timestamp is missing
-                remaining_delay = 15 if os.getenv("CI") else 5
+                remaining_delay = 15 if _env_flag_set("CI") else 5
 
             log.info(f"Sleeping {remaining_delay:.1f}s before requesting references for the first time (CI needs extra indexing time)")
             time.sleep(remaining_delay)
@@ -358,7 +366,7 @@ class SourceKitLSP(SolidLanguageServer):
         references = super().request_references(relative_file_path, line, column)
 
         # In CI, if no references found, retry once after additional delay
-        if os.getenv("CI") and not references:
+        if _env_flag_set("CI") and not references:
             log.info("No references found in CI - retrying after additional 5s delay")
             time.sleep(5)
             references = super().request_references(relative_file_path, line, column)

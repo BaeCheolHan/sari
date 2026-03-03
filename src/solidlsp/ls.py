@@ -3,6 +3,7 @@ import hashlib
 import json
 import logging
 import os
+import contextvars
 import pathlib
 import shutil
 import subprocess
@@ -35,6 +36,43 @@ from solidlsp.settings import SolidLSPSettings
 from solidlsp.util.cache import load_cache, save_cache
 GenericDocumentSymbol = Union[LSPTypes.DocumentSymbol, LSPTypes.SymbolInformation, ls_types.UnifiedSymbolInformation]
 log = logging.getLogger(__name__)
+_CURRENT_PROCESS_ENV: contextvars.ContextVar[dict[str, str] | None] = contextvars.ContextVar(
+    "solidlsp_current_process_env",
+    default=None,
+)
+
+
+def get_current_process_env_snapshot() -> dict[str, str]:
+    """현재 create 문맥에 주입된 env snapshot을 반환한다 (없으면 실제 env copy)."""
+    current = _CURRENT_PROCESS_ENV.get()
+    if current is None:
+        return dict(os.environ)
+    return dict(current)
+
+
+@contextmanager
+def process_env_context(process_env: dict[str, str] | None):
+    """현재 스레드/컨텍스트에서 사용할 process env snapshot을 임시로 바인딩한다."""
+    if process_env is None:
+        yield
+        return
+    token = _CURRENT_PROCESS_ENV.set(dict(process_env))
+    try:
+        yield
+    finally:
+        _CURRENT_PROCESS_ENV.reset(token)
+
+
+def _describe_process_launch_info(process_launch_info: ProcessLaunchInfo | None) -> str:
+    """디버그 로깅용 안전 요약 (env 값/전체 argv 노출 방지)."""
+    if process_launch_info is None:
+        return "None"
+    cmd = process_launch_info.cmd
+    if isinstance(cmd, list):
+        cmd_summary = f"argv0={cmd[0]!r}, argc={len(cmd)}" if cmd else "argv0=<empty>, argc=0"
+    else:
+        cmd_summary = "cmd=<string>"
+    return f"ProcessLaunchInfo({cmd_summary}, cwd={process_launch_info.cwd!r}, env_keys={len(process_launch_info.env)})"
 
 @dataclasses.dataclass(kw_only=True)
 class ReferenceInSymbol:
@@ -167,6 +205,7 @@ class LanguageServerDependencyProvider(ABC):
     def __init__(self, custom_settings: SolidLSPSettings.CustomLSSettings, ls_resources_dir: str):
         self._custom_settings = custom_settings
         self._ls_resources_dir = ls_resources_dir
+        self._process_env = get_current_process_env_snapshot()
 
     @abstractmethod
     def create_launch_command(self) -> list[str] | str:
@@ -174,6 +213,15 @@ class LanguageServerDependencyProvider(ABC):
 
     def create_launch_command_env(self) -> dict[str, str]:
         return {}
+
+    def bind_process_env(self, process_env: dict[str, str]) -> None:
+        self._process_env = dict(process_env)
+
+    def env_get(self, key: str, default: str | None = None) -> str | None:
+        return self._process_env.get(key, default)
+
+    def env_copy(self) -> dict[str, str]:
+        return dict(self._process_env)
 
 class LanguageServerDependencyProviderSinglePath(LanguageServerDependencyProvider, ABC):
 
@@ -231,25 +279,39 @@ class SolidLanguageServer(ABC):
         return result
 
     @classmethod
-    def create(cls, config: LanguageServerConfig, repository_root_path: str, timeout: float | None=None, solidlsp_settings: SolidLSPSettings | None=None) -> 'SolidLanguageServer':
+    def create(
+        cls,
+        config: LanguageServerConfig,
+        repository_root_path: str,
+        timeout: float | None=None,
+        solidlsp_settings: SolidLSPSettings | None=None,
+        process_env: dict[str, str] | None = None,
+    ) -> 'SolidLanguageServer':
         ls: SolidLanguageServer
         if solidlsp_settings is None:
             solidlsp_settings = SolidLSPSettings()
         repository_root_path = os.path.abspath(repository_root_path)
         ls_class = config.code_language.get_ls_class()
-        ls = ls_class(config, repository_root_path, solidlsp_settings)
+        with process_env_context(process_env):
+            ls = ls_class(config, repository_root_path, solidlsp_settings)
         ls.set_request_timeout(timeout)
         return ls
 
     def __init__(self, config: LanguageServerConfig, repository_root_path: str, process_launch_info: ProcessLaunchInfo | None, language_id: str, solidlsp_settings: SolidLSPSettings, cache_version_raw_document_symbols: Hashable=1):
         self._solidlsp_settings = solidlsp_settings
+        self._process_env = get_current_process_env_snapshot()
         lang = self.get_language_enum_instance()
         self._custom_settings = solidlsp_settings.get_ls_specific_settings(lang)
         self._ls_resources_dir = self.ls_resources_dir(solidlsp_settings)
         log.debug(f'Custom config (LS-specific settings) for {lang}: {self._custom_settings}')
         self._encoding = config.encoding
         self.repository_root_path: str = repository_root_path
-        log.debug(f'Creating language server instance for repository_root_path={repository_root_path!r} with language_id={language_id!r} and process launch info: {process_launch_info}')
+        log.debug(
+            "Creating language server instance for repository_root_path=%r with language_id=%r and process launch info: %s",
+            repository_root_path,
+            language_id,
+            _describe_process_launch_info(process_launch_info),
+        )
         self.language_id = language_id
         self.open_file_buffers: dict[str, LSPFileBuffer] = {}
         self.language = Language(language_id)
@@ -274,8 +336,23 @@ class SolidLanguageServer(ABC):
         self._dependency_provider: LanguageServerDependencyProvider | None = None
         if process_launch_info is None:
             self._dependency_provider = self._create_dependency_provider()
+            binder = getattr(self._dependency_provider, "bind_process_env", None)
+            if callable(binder):
+                binder(self._process_env)
             process_launch_info = self._create_process_launch_info()
-        log.debug(f'Creating language server instance with language_id={language_id!r} and process launch info: {process_launch_info}')
+        else:
+            merged_env = self._process_env.copy()
+            merged_env.update(process_launch_info.env)
+            process_launch_info = ProcessLaunchInfo(
+                cmd=copy(process_launch_info.cmd),
+                cwd=process_launch_info.cwd,
+                env=merged_env,
+            )
+        log.debug(
+            "Creating language server instance with language_id=%r and process launch info: %s",
+            language_id,
+            _describe_process_launch_info(process_launch_info),
+        )
         self.server = SolidLanguageServerHandler(process_launch_info, language=self.language, determine_log_level=self._determine_log_level, logger=logging_fn, start_independent_lsp_process=config.start_independent_lsp_process)
         processed_patterns = []
         for pattern in set(config.ignored_paths):
@@ -302,7 +379,8 @@ class SolidLanguageServer(ABC):
     def _create_process_launch_info(self) -> ProcessLaunchInfo:
         assert self._dependency_provider is not None
         cmd = self._dependency_provider.create_launch_command()
-        env = self._dependency_provider.create_launch_command_env()
+        env = self._process_env.copy()
+        env.update(self._dependency_provider.create_launch_command_env())
         return ProcessLaunchInfo(cmd=cmd, cwd=self.repository_root_path, env=env)
 
     def _get_wait_time_for_cross_file_referencing(self) -> float:
@@ -695,7 +773,13 @@ class SolidLanguageServer(ABC):
             with self.open_file(relative_file_path) as opened_file_data:
                 return get_raw_document_symbols(opened_file_data)
 
-    def request_document_symbols(self, relative_file_path: str, file_buffer: LSPFileBuffer | None=None) -> DocumentSymbols:
+    def request_document_symbols(
+        self,
+        relative_file_path: str,
+        file_buffer: LSPFileBuffer | None = None,
+        *,
+        sync_with_ls: bool = True,
+    ) -> DocumentSymbols:
         with self._open_file_context(relative_file_path, file_buffer, open_in_ls=False) as file_data:
             cache_key = relative_file_path
             file_hash_and_result = self._document_symbols_cache.get(cache_key)
@@ -708,11 +792,12 @@ class SolidLanguageServer(ABC):
                     log.debug('Cached document symbol content for %s has changed', relative_file_path)
             else:
                 log.debug('No cache hit for document symbols in %s', relative_file_path)
-            try:
-                file_data.ensure_open_in_ls()
-            except (RuntimeError, OSError, ValueError, TypeError) as exc:
-                raise SolidLSPException(f'ERR_LSP_SYNC_OPEN_FAILED: {exc}') from exc
-            file_data.sync_changes_to_ls()
+            if sync_with_ls:
+                try:
+                    file_data.ensure_open_in_ls()
+                except (RuntimeError, OSError, ValueError, TypeError) as exc:
+                    raise SolidLSPException(f'ERR_LSP_SYNC_OPEN_FAILED: {exc}') from exc
+                file_data.sync_changes_to_ls()
             root_symbols = self._request_document_symbols(relative_file_path, file_data)
             if root_symbols is None:
                 log.warning(f"Received None response from the Language Server for document symbols in {relative_file_path}. This means the language server can't understand this file (possibly due to syntax errors). It may also be due to a bug or misconfiguration of the LS. Returning empty list")

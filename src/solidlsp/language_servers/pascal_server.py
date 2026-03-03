@@ -18,13 +18,21 @@ import zipfile
 
 from solidlsp.language_servers._adapter_common import ensure_paths_exist
 from solidlsp.language_servers.common import RuntimeDependency, RuntimeDependencyCollection, quote_windows_path
-from solidlsp.ls import SolidLanguageServer
+from solidlsp.ls import SolidLanguageServer, get_current_process_env_snapshot
 from solidlsp.ls_config import LanguageServerConfig
 from solidlsp.lsp_protocol_handler.lsp_types import InitializeParams
 from solidlsp.lsp_protocol_handler.server import ProcessLaunchInfo
 from solidlsp.settings import SolidLSPSettings
 
 log = logging.getLogger(__name__)
+
+
+def _env_snapshot() -> dict[str, str]:
+    return get_current_process_env_snapshot()
+
+
+def _which_in_snapshot(executable_name: str) -> str | None:
+    return shutil.which(executable_name, path=_env_snapshot().get("PATH"))
 
 class PascalLanguageServer(SolidLanguageServer):
 
@@ -141,7 +149,7 @@ class PascalLanguageServer(SolidLanguageServer):
     def _get_latest_version(cls) -> str | None:
         try:
             headers = {"Accept": "application/vnd.github.v3+json", "User-Agent": "Serena-LSP"}
-            github_token = os.environ.get("GITHUB_TOKEN")
+            github_token = _env_snapshot().get("GITHUB_TOKEN")
             if github_token:
                 headers["Authorization"] = f"token {github_token}"
 
@@ -490,7 +498,7 @@ class PascalLanguageServer(SolidLanguageServer):
 
     @classmethod
     def _setup_runtime_dependencies(cls, solidlsp_settings: SolidLSPSettings) -> str:
-        pasls_in_path = shutil.which("pasls")
+        pasls_in_path = _which_in_snapshot("pasls")
         if pasls_in_path:
             log.info(f"Found pasls in PATH: {pasls_in_path}")
             return quote_windows_path(pasls_in_path)
@@ -605,7 +613,7 @@ class PascalLanguageServer(SolidLanguageServer):
 
         env_vars = ["PP", "FPCDIR", "LAZARUSDIR", "FPCTARGET", "FPCTARGETCPU"]
         for var in env_vars:
-            value = os.environ.get(var, "")
+            value = _env_snapshot().get(var, "")
             if value:
                 initialization_options[var] = value
 

@@ -31,18 +31,20 @@ class VectorEmbeddingRepository:
             conn.execute(
                 """
                 INSERT INTO file_embeddings(
-                    repo_root, relative_path, content_hash, model_id, dim, vector_json, updated_at
+                    repo_root, scope_repo_root, relative_path, content_hash, model_id, dim, vector_json, updated_at
                 )
                 VALUES(
-                    :repo_root, :relative_path, :content_hash, :model_id, :dim, :vector_json, :updated_at
+                    :repo_root, :scope_repo_root, :relative_path, :content_hash, :model_id, :dim, :vector_json, :updated_at
                 )
                 ON CONFLICT(repo_root, relative_path, content_hash, model_id) DO UPDATE SET
+                    scope_repo_root = excluded.scope_repo_root,
                     dim = excluded.dim,
                     vector_json = excluded.vector_json,
                     updated_at = excluded.updated_at
                 """,
                 {
                     "repo_root": repo_root,
+                    "scope_repo_root": repo_root,
                     "relative_path": relative_path,
                     "content_hash": content_hash,
                     "model_id": model_id,

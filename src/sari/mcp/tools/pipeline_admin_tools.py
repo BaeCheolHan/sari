@@ -4,11 +4,10 @@ from __future__ import annotations
 
 from sari.core.exceptions import SariBaseError
 from sari.core.models import ErrorResponseDTO
-from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.mcp.tools.arg_parser import parse_optional_boolean, parse_optional_loose_int
-from sari.mcp.tools.admin_tools import validate_repo_argument
+from sari.mcp.tools.admin_tools import RepoValidationPort, validate_repo_argument
 from sari.mcp.tools.pack1 import Pack1MetaDTO, pack1_error, pack1_success
-from sari.services.pipeline_control_service import PipelineControlService
+from sari.services.pipeline.control_service import PipelineControlService
 
 
 def _service_error(exc: SariBaseError) -> dict[str, object]:
@@ -19,7 +18,7 @@ def _service_error(exc: SariBaseError) -> dict[str, object]:
 class PipelinePolicyGetTool:
     """pipeline_policy_get MCP 도구를 처리한다."""
 
-    def __init__(self, workspace_repo: WorkspaceRepository, service: PipelineControlService) -> None:
+    def __init__(self, workspace_repo: RepoValidationPort, service: PipelineControlService) -> None:
         """필요 의존성을 주입한다."""
         self._workspace_repo = workspace_repo
         self._service = service
@@ -48,7 +47,7 @@ class PipelinePolicyGetTool:
 class PipelinePolicySetTool:
     """pipeline_policy_set MCP 도구를 처리한다."""
 
-    def __init__(self, workspace_repo: WorkspaceRepository, service: PipelineControlService) -> None:
+    def __init__(self, workspace_repo: RepoValidationPort, service: PipelineControlService) -> None:
         """필요 의존성을 주입한다."""
         self._workspace_repo = workspace_repo
         self._service = service
@@ -138,7 +137,7 @@ class PipelinePolicySetTool:
 class PipelineAlertStatusTool:
     """pipeline_alert_status MCP 도구를 처리한다."""
 
-    def __init__(self, workspace_repo: WorkspaceRepository, service: PipelineControlService) -> None:
+    def __init__(self, workspace_repo: RepoValidationPort, service: PipelineControlService) -> None:
         """필요 의존성을 주입한다."""
         self._workspace_repo = workspace_repo
         self._service = service
@@ -167,7 +166,7 @@ class PipelineAlertStatusTool:
 class PipelineDeadListTool:
     """pipeline_dead_list MCP 도구를 처리한다."""
 
-    def __init__(self, workspace_repo: WorkspaceRepository, service: PipelineControlService) -> None:
+    def __init__(self, workspace_repo: RepoValidationPort, service: PipelineControlService) -> None:
         """필요 의존성을 주입한다."""
         self._workspace_repo = workspace_repo
         self._service = service
@@ -206,7 +205,7 @@ class PipelineDeadListTool:
 class PipelineDeadRequeueTool:
     """pipeline_dead_requeue MCP 도구를 처리한다."""
 
-    def __init__(self, workspace_repo: WorkspaceRepository, service: PipelineControlService) -> None:
+    def __init__(self, workspace_repo: RepoValidationPort, service: PipelineControlService) -> None:
         """필요 의존성을 주입한다."""
         self._workspace_repo = workspace_repo
         self._service = service
@@ -253,7 +252,7 @@ class PipelineDeadRequeueTool:
 class PipelineDeadPurgeTool:
     """pipeline_dead_purge MCP 도구를 처리한다."""
 
-    def __init__(self, workspace_repo: WorkspaceRepository, service: PipelineControlService) -> None:
+    def __init__(self, workspace_repo: RepoValidationPort, service: PipelineControlService) -> None:
         """필요 의존성을 주입한다."""
         self._workspace_repo = workspace_repo
         self._service = service
@@ -300,7 +299,7 @@ class PipelineDeadPurgeTool:
 class PipelineAutoStatusTool:
     """pipeline_auto_status MCP 도구를 처리한다."""
 
-    def __init__(self, workspace_repo: WorkspaceRepository, service: PipelineControlService) -> None:
+    def __init__(self, workspace_repo: RepoValidationPort, service: PipelineControlService) -> None:
         """필요 의존성을 주입한다."""
         self._workspace_repo = workspace_repo
         self._service = service
@@ -329,7 +328,7 @@ class PipelineAutoStatusTool:
 class PipelineAutoSetTool:
     """pipeline_auto_set MCP 도구를 처리한다."""
 
-    def __init__(self, workspace_repo: WorkspaceRepository, service: PipelineControlService) -> None:
+    def __init__(self, workspace_repo: RepoValidationPort, service: PipelineControlService) -> None:
         """필요 의존성을 주입한다."""
         self._workspace_repo = workspace_repo
         self._service = service
@@ -363,7 +362,7 @@ class PipelineAutoSetTool:
 class PipelineAutoTickTool:
     """pipeline_auto_tick MCP 도구를 처리한다."""
 
-    def __init__(self, workspace_repo: WorkspaceRepository, service: PipelineControlService) -> None:
+    def __init__(self, workspace_repo: RepoValidationPort, service: PipelineControlService) -> None:
         """필요 의존성을 주입한다."""
         self._workspace_repo = workspace_repo
         self._service = service

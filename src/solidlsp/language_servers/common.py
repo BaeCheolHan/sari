@@ -9,6 +9,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import cast
 
+from solidlsp.ls import get_current_process_env_snapshot
 from solidlsp.ls_utils import FileUtils, PlatformUtils
 from solidlsp.util.subprocess_util import subprocess_kwargs
 
@@ -128,6 +129,7 @@ class RuntimeDependencyCollection:
             cwd=cwd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
+            env=get_current_process_env_snapshot(),
             **kwargs,
         )  # type: ignore
         if completed_process.returncode != 0:

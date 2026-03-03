@@ -4,6 +4,8 @@ LSP-first 로컬 인덱싱/검색 엔진 + MCP 데몬.
 
 ## 설치
 
+필수 런타임: Python `3.14+`
+
 ```bash
 uv tool install sari
 # 또는
@@ -120,8 +122,8 @@ sari install --host codex
 ## 개발 검증
 
 ```bash
-pytest -q
-tools/ci/run_release_gate.sh
+uv run pytest -q .
+uv run tools/ci/run_release_gate.sh
 tools/manual/test_mcp_call_flow.sh /absolute/path/to/repo
 ```
 
@@ -147,7 +149,7 @@ Release 워크플로우 파일: `.github/workflows/release-pypi.yml`
 로컬 빌드 산출물 검증은 `uv tool install dist/*.whl` 대신 아래 스크립트를 사용한다.
 
 ```bash
-python3 -m build
+uv run --with build python -m build
 tools/manual/test_local_wheel_ephemeral.sh
 ```
 

@@ -1,5 +1,7 @@
 """백그라운드 데몬 프로세스를 실행한다."""
 
+from __future__ import annotations
+
 import argparse
 import logging
 import os
@@ -9,52 +11,24 @@ import threading
 
 import uvicorn
 
-from sari.db.repositories.runtime_repository import RuntimeRepository
-from sari.db.repositories.workspace_repository import WorkspaceRepository
+from sari.core.event_bus import EventBus
 from sari.db.repositories.daemon_registry_repository import DaemonRegistryRepository
-from sari.db.repositories.symbol_cache_repository import SymbolCacheRepository
-from sari.db.repositories.symbol_importance_repository import SymbolImportanceRepository
-from sari.db.repositories.file_body_repository import FileBodyRepository
-from sari.db.repositories.candidate_index_change_repository import CandidateIndexChangeRepository
-from sari.db.repositories.file_collection_repository import FileCollectionRepository
-from sari.db.repositories.file_enrich_queue_repository import FileEnrichQueueRepository
-from sari.db.repositories.lsp_tool_data_repository import LspToolDataRepository
-from sari.db.repositories.knowledge_repository import KnowledgeRepository
-from sari.db.repositories.vector_embedding_repository import VectorEmbeddingRepository
-from sari.db.repositories.pipeline_control_state_repository import PipelineControlStateRepository
-from sari.db.repositories.pipeline_job_event_repository import PipelineJobEventRepository
-from sari.db.repositories.pipeline_error_event_repository import PipelineErrorEventRepository
-from sari.db.repositories.pipeline_policy_repository import PipelinePolicyRepository
-from sari.db.repositories.pipeline_benchmark_repository import PipelineBenchmarkRepository
-from sari.db.repositories.pipeline_perf_repository import PipelinePerfRepository
-from sari.db.repositories.pipeline_quality_repository import PipelineQualityRepository
-from sari.db.repositories.language_probe_repository import LanguageProbeRepository
-from sari.db.repositories.pipeline_lsp_matrix_repository import PipelineLspMatrixRepository
-from sari.db.repositories.repo_registry_repository import RepoRegistryRepository
-from sari.db.repositories.tool_readiness_repository import ToolReadinessRepository
-from sari.db.migration import ensure_migrated
-from sari.db.schema import init_schema
 from sari.http.app import HttpContext, create_app
-from sari.lsp.hub import LspHub
-from sari.search.candidate_search import CandidateSearchService
-from sari.search.hierarchy_scorer import HierarchyScorer
-from sari.search.importance_scorer import ImportanceScorePolicyDTO, ImportanceScorer, ImportanceWeightsDTO
-from sari.search.orchestrator import RankingBlendConfigDTO, SearchOrchestrator
-from sari.search.symbol_resolve import SymbolResolveService
-from sari.search.vector_reranker import VectorConfigDTO, VectorIndexSink, VectorReranker
 from sari.core.config import AppConfig
-from sari.core.exceptions import DaemonError, ErrorContext, ValidationError
+from sari.core.composition import build_file_collection_service_from_config, build_lsp_hub, build_repository_bundle, build_search_stack
+from sari.core.exceptions import DaemonError, ErrorContext, PerfError, ValidationError
 from sari.core.models import now_iso8601_utc
-from sari.services.admin_service import AdminService
-from sari.services.file_collection_service import SolidLspExtractionBackend, build_default_file_collection_service
-from sari.services.pipeline_control_service import PipelineControlService
-from sari.services.pipeline_benchmark_service import PipelineBenchmarkService
-from sari.services.pipeline_perf_service import PipelinePerfService
-from sari.services.language_probe_service import LanguageProbeService
-from sari.services.pipeline_lsp_matrix_service import PipelineLspMatrixService
-from sari.services.pipeline_quality_service import PipelineQualityService, SerenaGoldenBackend
-from sari.services.read_facade_service import ReadFacadeService
+from sari.services.admin import AdminService
+from sari.services.collection.service import SolidLspExtractionBackend
+from sari.services.pipeline.control_service import PipelineControlService
+from sari.services.pipeline.perf_service import PipelinePerfService
+from sari.services.language_probe.service import LanguageProbeService
+from sari.services.pipeline.lsp_matrix_service import PipelineLspMatrixService
+from sari.services.pipeline.quality_service import PipelineQualityService, SerenaGoldenBackend
+from sari.services.read.facade_service import ReadFacadeService
+from sari.mcp.stabilization.stabilization_service import StabilizationService
 from sari.mcp.server import McpServer
+from sari.lsp.hub import LspHub as LspHub  # test monkeypatch compatibility
 
 log = logging.getLogger(__name__)
 _FATAL_DB_PATTERNS: tuple[str, ...] = (
@@ -83,31 +57,28 @@ def main() -> None:
     from pathlib import Path
 
     db_path = Path(args.db_path)
-    init_schema(db_path)
-    ensure_migrated(db_path)
-    runtime_repo = RuntimeRepository(db_path)
-    daemon_registry_repo = DaemonRegistryRepository(db_path)
-    workspace_repo = WorkspaceRepository(db_path)
-    symbol_cache_repo = SymbolCacheRepository(db_path)
-    symbol_importance_repo = SymbolImportanceRepository(db_path)
-    file_repo = FileCollectionRepository(db_path)
-    enrich_queue_repo = FileEnrichQueueRepository(db_path)
-    body_repo = FileBodyRepository(db_path)
-    lsp_repo = LspToolDataRepository(db_path)
-    knowledge_repo = KnowledgeRepository(db_path)
-    readiness_repo = ToolReadinessRepository(db_path)
-    policy_repo = PipelinePolicyRepository(db_path)
-    control_state_repo = PipelineControlStateRepository(db_path)
-    event_repo = PipelineJobEventRepository(db_path)
-    error_event_repo = PipelineErrorEventRepository(db_path)
-    benchmark_repo = PipelineBenchmarkRepository(db_path)
-    perf_repo = PipelinePerfRepository(db_path)
-    quality_repo = PipelineQualityRepository(db_path)
-    language_probe_repo = LanguageProbeRepository(db_path)
-    lsp_matrix_repo = PipelineLspMatrixRepository(db_path)
-    repo_registry_repo = RepoRegistryRepository(db_path)
-    vector_repo = VectorEmbeddingRepository(db_path)
-    candidate_change_repo = CandidateIndexChangeRepository(db_path)
+    repos = build_repository_bundle(db_path)
+    runtime_repo = repos.runtime_repo
+    daemon_registry_repo = repos.daemon_registry_repo
+    workspace_repo = repos.workspace_repo
+    symbol_cache_repo = repos.symbol_cache_repo
+    file_repo = repos.file_repo
+    enrich_queue_repo = repos.enrich_queue_repo
+    body_repo = repos.body_repo
+    lsp_repo = repos.lsp_repo
+    tool_layer_repo = repos.tool_layer_repo
+    knowledge_repo = repos.knowledge_repo
+    readiness_repo = repos.readiness_repo
+    policy_repo = repos.policy_repo
+    control_state_repo = repos.control_state_repo
+    event_repo = repos.event_repo
+    error_event_repo = repos.error_event_repo
+    perf_repo = repos.perf_repo
+    stage_baseline_repo = repos.stage_baseline_repo
+    quality_repo = repos.quality_repo
+    language_probe_repo = repos.language_probe_repo
+    lsp_matrix_repo = repos.lsp_matrix_repo
+    repo_registry_repo = repos.repo_registry_repo
     config = AppConfig(
         db_path=db_path,
         host=args.host,
@@ -116,95 +87,25 @@ def main() -> None:
         stop_grace_sec=10,
         run_mode=str(args.run_mode),
     )
+    lsp_hub_config = config.lsp_hub_config()
+    search_config = config.search_config()
+    collection_config = config.collection_config()
     this_pid = os.getpid()
     launch_parent_pid = os.getppid()
 
-    lsp_hub = LspHub(
-        request_timeout_sec=config.lsp_request_timeout_sec,
-        max_instances_per_repo_language=config.lsp_max_instances_per_repo_language,
-        bulk_mode_enabled=config.lsp_bulk_mode_enabled,
-        bulk_max_instances_per_repo_language=config.lsp_bulk_max_instances_per_repo_language,
-        interactive_reserved_slots_per_repo_language=config.lsp_interactive_reserved_slots_per_repo_language,
-        interactive_timeout_sec=config.lsp_interactive_timeout_sec,
-        lsp_global_soft_limit=config.lsp_global_soft_limit,
-        scale_out_hot_hits=config.lsp_scale_out_hot_hits,
-        file_buffer_idle_ttl_sec=config.lsp_file_buffer_idle_ttl_sec,
-        file_buffer_max_open=config.lsp_file_buffer_max_open,
-        java_min_major=config.lsp_java_min_major,
-        max_concurrent_starts=config.lsp_max_concurrent_starts,
-        max_concurrent_l1_probes=config.lsp_max_concurrent_l1_probes,
+    lsp_hub = build_lsp_hub(lsp_hub_config, hub_cls=LspHub)
+    search_stack = build_search_stack(
+        search_config=search_config,
+        repos=repos,
+        lsp_hub=lsp_hub,
+        candidate_backend=search_config.candidate_backend,
+        candidate_fallback_scan=search_config.candidate_fallback_scan,
+        candidate_allowed_suffixes=collection_config.include_ext,
+        blend_config_version="v2-config",
     )
-    importance_scorer = ImportanceScorer(
-        file_repo=file_repo,
-        lsp_repo=lsp_repo,
-        cache_repo=symbol_importance_repo,
-        weights=ImportanceWeightsDTO(
-            kind_class=config.importance_kind_class,
-            kind_function=config.importance_kind_function,
-            kind_interface=config.importance_kind_interface,
-            kind_method=config.importance_kind_method,
-            fan_in_weight=config.importance_fan_in_weight,
-            filename_exact_bonus=config.importance_filename_exact_bonus,
-            core_path_bonus=config.importance_core_path_bonus,
-            noisy_path_penalty=config.importance_noisy_path_penalty,
-            code_ext_bonus=config.importance_code_ext_bonus,
-            noisy_ext_penalty=config.importance_noisy_ext_penalty,
-            recency_24h_multiplier=config.importance_recency_24h_multiplier,
-            recency_7d_multiplier=config.importance_recency_7d_multiplier,
-            recency_30d_multiplier=config.importance_recency_30d_multiplier,
-        ),
-        policy=ImportanceScorePolicyDTO(
-            normalize_mode=config.importance_normalize_mode,
-            max_importance_boost=config.importance_max_boost,
-        ),
-        core_path_tokens=config.importance_core_path_tokens,
-        noisy_path_tokens=config.importance_noisy_path_tokens,
-        code_extensions=config.importance_code_extensions,
-        noisy_extensions=config.importance_noisy_extensions,
-    )
-    vector_config = VectorConfigDTO(
-        enabled=config.vector_enabled,
-        model_id=config.vector_model_id,
-        dim=config.vector_dim,
-        candidate_k=config.vector_candidate_k,
-        rerank_k=config.vector_rerank_k,
-        blend_weight=config.vector_blend_weight,
-        min_similarity_threshold=config.vector_min_similarity_threshold,
-        max_vector_boost=config.vector_max_boost,
-        min_token_count_for_rerank=config.vector_min_token_count_for_rerank,
-        apply_to_item_types=config.vector_apply_to_item_types,
-    )
-    vector_sink = VectorIndexSink(repository=vector_repo, config=vector_config)
-    vector_reranker = VectorReranker(repository=vector_repo, config=vector_config)
-    hierarchy_scorer = HierarchyScorer()
-    candidate_service = CandidateSearchService.build_default(
-        max_file_size_bytes=512 * 1024,
-        index_root=config.db_path.parent / "candidate_index",
-        backend_mode=config.candidate_backend,
-        enable_scan_fallback=config.candidate_fallback_scan,
-        change_repo=candidate_change_repo,
-    )
-    symbol_service = SymbolResolveService(
-        hub=lsp_hub,
-        cache_repo=symbol_cache_repo,
-        lsp_fallback_mode=config.search_lsp_fallback_mode,
-    )
-    search_orchestrator = SearchOrchestrator(
-        workspace_repo=workspace_repo,
-        candidate_service=candidate_service,
-        symbol_service=symbol_service,
-        importance_scorer=importance_scorer,
-        hierarchy_scorer=hierarchy_scorer,
-        vector_reranker=vector_reranker,
-        repo_registry_repo=repo_registry_repo,
-        blend_config=RankingBlendConfigDTO(
-            w_rrf=config.ranking_w_rrf,
-            w_importance=config.ranking_w_importance,
-            w_vector=config.ranking_w_vector,
-            w_hierarchy=config.ranking_w_hierarchy,
-            version="v2-config",
-        ),
-    )
+    candidate_service = search_stack.candidate_service
+    vector_sink = search_stack.vector_sink
+    search_orchestrator = search_stack.orchestrator
     admin_service = AdminService(
         config=config,
         workspace_repo=workspace_repo,
@@ -216,26 +117,12 @@ def main() -> None:
     )
     detached_mode = os.getenv("SARI_DAEMON_DETACHED", "").strip().lower() in {"1", "true", "yes", "on"}
 
-    file_collection_service = build_default_file_collection_service(
-        workspace_repo=workspace_repo,
-        file_repo=file_repo,
-        enrich_queue_repo=enrich_queue_repo,
-        body_repo=body_repo,
-        lsp_repo=lsp_repo,
-        readiness_repo=readiness_repo,
-        policy_repo=policy_repo,
-        event_repo=event_repo,
-        error_event_repo=error_event_repo,
-        candidate_index_sink=candidate_service,
-        vector_index_sink=vector_sink,
-        retry_max_attempts=config.pipeline_retry_max,
-        retry_backoff_base_sec=config.pipeline_backoff_base_sec,
-        queue_poll_interval_ms=config.queue_poll_interval_ms,
-        include_ext=config.collection_include_ext,
-        exclude_globs=config.collection_exclude_globs,
-        watcher_debounce_ms=config.watcher_debounce_ms,
-        run_mode=config.run_mode,
-        parent_alive_probe=(lambda: _is_parent_alive(launch_parent_pid, detached_mode=detached_mode)),
+    event_bus = EventBus()
+
+    file_collection_service = build_file_collection_service_from_config(
+        config=config,
+        repos=repos,
+        event_bus=event_bus,
         lsp_backend=SolidLspExtractionBackend(
             lsp_hub,
             probe_workers=config.lsp_probe_workers,
@@ -244,45 +131,46 @@ def main() -> None:
             warming_retry_sec=config.lsp_probe_warming_retry_sec,
             warming_threshold=config.lsp_probe_warming_threshold,
             permanent_backoff_sec=config.lsp_probe_permanent_backoff_sec,
+            symbol_normalizer_executor_mode=config.l5_symbol_normalizer_executor_mode,
+            symbol_normalizer_subinterp_workers=config.l5_symbol_normalizer_subinterp_workers,
+            symbol_normalizer_subinterp_min_symbols=config.l5_symbol_normalizer_subinterp_min_symbols,
         ),
-        l3_parallel_enabled=config.l3_parallel_enabled,
-        l3_executor_max_workers=config.l3_executor_max_workers,
-        l3_recent_success_ttl_sec=config.l3_recent_success_ttl_sec,
-        l3_backpressure_on_interactive=config.l3_backpressure_on_interactive,
-        l3_backpressure_cooldown_ms=config.l3_backpressure_cooldown_ms,
-        l3_supported_languages=config.l3_supported_languages,
-        lsp_probe_bootstrap_file_window=config.lsp_probe_bootstrap_file_window,
-        lsp_probe_bootstrap_top_k=config.lsp_probe_bootstrap_top_k,
-        lsp_probe_language_priority=config.lsp_probe_language_priority,
-        lsp_probe_l1_languages=config.lsp_probe_l1_languages,
+        run_mode=config.run_mode,
+        parent_alive_probe=(lambda: _is_parent_alive(launch_parent_pid, detached_mode=detached_mode)),
+        candidate_index_sink=candidate_service,
+        vector_index_sink=vector_sink,
     )
+
+    runtime_search_defaults: dict[str, bool] = {"resolve_symbols_default": False}
+
+    def _set_search_resolve_symbols_default(enabled: bool) -> None:
+        runtime_search_defaults["resolve_symbols_default"] = bool(enabled)
+
+    def _get_search_resolve_symbols_default() -> bool:
+        return bool(runtime_search_defaults.get("resolve_symbols_default", False))
+
     pipeline_control_service = PipelineControlService(
         policy_repo=policy_repo,
         event_repo=event_repo,
         queue_repo=enrich_queue_repo,
         control_state_repo=control_state_repo,
+        set_l5_admission_mode=file_collection_service.set_l5_admission_mode,
+        set_search_resolve_symbols_default=_set_search_resolve_symbols_default,
     )
     pipeline_quality_service = PipelineQualityService(
         file_repo=file_repo,
         lsp_repo=lsp_repo,
         quality_repo=quality_repo,
-        golden_backend=SerenaGoldenBackend(hub=lsp_hub),
+        golden_backend=SerenaGoldenBackend(hub=lsp_hub, lsp_repo=lsp_repo),
         artifact_root=config.db_path.parent / "artifacts",
-    )
-    pipeline_benchmark_service = PipelineBenchmarkService(
-        file_collection_service=file_collection_service,
-        queue_repo=enrich_queue_repo,
-        lsp_repo=lsp_repo,
-        policy_repo=policy_repo,
-        benchmark_repo=benchmark_repo,
-        artifact_root=config.db_path.parent / "artifacts",
+        tool_layer_repo=tool_layer_repo,
     )
     pipeline_perf_service = PipelinePerfService(
         file_collection_service=file_collection_service,
         queue_repo=enrich_queue_repo,
-        benchmark_service=pipeline_benchmark_service,
         perf_repo=perf_repo,
         artifact_root=config.db_path.parent / "artifacts",
+        stage_baseline_repo=stage_baseline_repo,
     )
     language_probe_service = LanguageProbeService(
         workspace_repo=workspace_repo,
@@ -297,11 +185,14 @@ def main() -> None:
         probe_service=language_probe_service,
         run_repo=lsp_matrix_repo,
     )
+    stabilization_service = StabilizationService()
     read_facade_service = ReadFacadeService(
         workspace_repo=workspace_repo,
         file_collection_service=file_collection_service,
         lsp_repo=lsp_repo,
         knowledge_repo=knowledge_repo,
+        tool_layer_repo=tool_layer_repo,
+        stabilization_service=stabilization_service,
     )
 
     os.environ["SARI_MCP_FORWARD_TO_DAEMON"] = "0"
@@ -313,7 +204,6 @@ def main() -> None:
             admin_service=admin_service,
             file_collection_service=file_collection_service,
             pipeline_control_service=pipeline_control_service,
-            pipeline_benchmark_service=pipeline_benchmark_service,
             pipeline_perf_service=pipeline_perf_service,
             pipeline_quality_service=pipeline_quality_service,
             pipeline_lsp_matrix_service=pipeline_lsp_matrix_service,
@@ -321,9 +211,10 @@ def main() -> None:
             language_probe_repo=language_probe_repo,
             repo_registry_repo=repo_registry_repo,
             lsp_metrics_provider=lsp_hub.get_metrics,
+            search_resolve_symbols_default_provider=_get_search_resolve_symbols_default,
             db_path=config.db_path,
-            http_bg_proxy_enabled=config.http_bg_proxy_enabled,
-            http_bg_proxy_target=config.http_bg_proxy_target,
+            http_bg_proxy_enabled=False,
+            http_bg_proxy_target="",
         )
     )
     app.state.mcp_server = McpServer(db_path=db_path)
@@ -362,9 +253,8 @@ def main() -> None:
     def _auto_loop() -> None:
         """알람 기반 자동제어를 주기적으로 평가한다."""
         while not stop_event.is_set():
+            tick_wait = min(float(config.pipeline_auto_tick_interval_sec), float(config.orphan_ppid_check_interval_sec))
             try:
-                if os.getenv("SARI_TEST_AUTO_LOOP_FAIL", "").strip() == "1":
-                    raise RuntimeError("auto loop failpoint")
                 if not _is_parent_alive(launch_parent_pid, detached_mode=detached_mode):
                     shutdown_reason["value"] = "ORPHAN_SELF_TERMINATE"
                     runtime_repo.mark_exit_reason(this_pid, "ORPHAN_SELF_TERMINATE", now_iso8601_utc())
@@ -372,6 +262,18 @@ def main() -> None:
                     os.kill(this_pid, signal.SIGTERM)
                     return
                 pipeline_control_service.evaluate_auto_hold()
+                try:
+                    latest_perf_summary = pipeline_perf_service.get_latest_report()
+                except PerfError:
+                    latest_perf_summary = None
+                rollout_action = pipeline_control_service.evaluate_stage_rollout(summary=latest_perf_summary)
+                if bool(rollout_action.get("changed")):
+                    event_repo.record_event(
+                        job_id="daemon:stage_rollout",
+                        status=str(rollout_action.get("action", "ROLLOUT_APPLIED")),
+                        latency_ms=0,
+                        created_at=now_iso8601_utc(),
+                    )
             except (ValidationError, sqlite3.Error, RuntimeError, OSError, ValueError, TypeError) as exc:
                 # 자동제어 실패를 침묵 처리하지 않고 명시적으로 기록한다.
                 log.exception("자동제어 평가 실패: %s", exc)
@@ -392,21 +294,16 @@ def main() -> None:
                         created_at=now_iso8601_utc(),
                     )
                 except sqlite3.Error as event_exc:
-                    if _is_fatal_db_error(event_exc):
-                        _trigger_fatal_shutdown(
-                            stop_event=stop_event,
-                            runtime_repo=runtime_repo,
-                            pid=this_pid,
-                            reason="DB_FATAL_EVENT_RECORD",
-                            shutdown_reason=shutdown_reason,
-                        )
+                    if not _handle_auto_loop_event_record_failure(
+                        event_exc=event_exc,
+                        stop_event=stop_event,
+                        runtime_repo=runtime_repo,
+                        pid=this_pid,
+                        shutdown_reason=shutdown_reason,
+                        tick_wait=tick_wait,
+                    ):
                         return
-                    raise DaemonError(
-                        ErrorContext(
-                            code="ERR_DAEMON_EVENT_RECORD_FAILED",
-                            message=f"자동제어 실패 이벤트 저장 실패: {event_exc}",
-                        )
-                    ) from event_exc
+                    continue
                 if config.run_mode == "dev":
                     shutdown_reason["value"] = "AUTO_LOOP_FAILURE"
                     runtime_repo.mark_exit_reason(this_pid, "AUTO_LOOP_FAILURE", now_iso8601_utc())
@@ -418,7 +315,6 @@ def main() -> None:
                             message=f"자동제어 평가 실패: {exc}",
                         )
                     ) from exc
-            tick_wait = min(float(config.pipeline_auto_tick_interval_sec), float(config.orphan_ppid_check_interval_sec))
             stop_event.wait(timeout=tick_wait)
 
     file_collection_service.start_background()
@@ -446,6 +342,7 @@ def main() -> None:
                 shutdown_reason["value"] = "MCP_CLOSE_FAILURE"
                 runtime_repo.mark_exit_reason(this_pid, "MCP_CLOSE_FAILURE", now_iso8601_utc())
                 lsp_stop_error = exc
+        event_bus.shutdown()
         file_collection_service.stop_background()
         daemon_registry_repo.remove_by_pid(this_pid)
         runtime_repo.mark_exit_reason(this_pid, shutdown_reason["value"], now_iso8601_utc())
@@ -486,6 +383,33 @@ def _is_fatal_db_error(exc: sqlite3.Error) -> bool:
     """운영 지속이 불가능한 DB 오류인지 판정한다."""
     message = str(exc).strip().lower()
     return any(pattern in message for pattern in _FATAL_DB_PATTERNS)
+
+
+def _handle_auto_loop_event_record_failure(
+    *,
+    event_exc: sqlite3.Error,
+    stop_event: threading.Event,
+    runtime_repo: RuntimeRepository,
+    pid: int,
+    shutdown_reason: dict[str, str],
+    tick_wait: float,
+) -> bool:
+    """auto-loop 오류 이벤트 기록 실패를 처리한다.
+
+    비치명 DB 오류는 loop 생존성을 위해 continue하고, 치명 오류만 즉시 종료한다.
+    """
+    if _is_fatal_db_error(event_exc):
+        _trigger_fatal_shutdown(
+            stop_event=stop_event,
+            runtime_repo=runtime_repo,
+            pid=pid,
+            reason="DB_FATAL_EVENT_RECORD",
+            shutdown_reason=shutdown_reason,
+        )
+        return False
+    log.exception("자동제어 실패 이벤트 저장 실패(비치명): %s", event_exc)
+    stop_event.wait(timeout=tick_wait)
+    return True
 
 
 def _trigger_fatal_shutdown(

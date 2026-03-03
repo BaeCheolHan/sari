@@ -12,7 +12,7 @@ import time
 
 from overrides import override
 
-from solidlsp.ls import SolidLanguageServer
+from solidlsp.ls import SolidLanguageServer, get_current_process_env_snapshot
 from solidlsp.ls_config import LanguageServerConfig
 from solidlsp.ls_utils import PlatformId, PlatformUtils
 from solidlsp.lsp_protocol_handler.lsp_types import DidChangeConfigurationParams, InitializeParams
@@ -20,6 +20,10 @@ from solidlsp.lsp_protocol_handler.server import ProcessLaunchInfo
 from solidlsp.settings import SolidLSPSettings
 
 log = logging.getLogger(__name__)
+
+
+def _env_snapshot() -> dict[str, str]:
+    return get_current_process_env_snapshot()
 
 
 class PerlLanguageServer(SolidLanguageServer):
@@ -31,7 +35,7 @@ class PerlLanguageServer(SolidLanguageServer):
     def _get_perl_version() -> str | None:
         """Get the installed Perl version or None if not found."""
         try:
-            result = subprocess.run(["perl", "-v"], capture_output=True, text=True, check=False)
+            result = subprocess.run(["perl", "-v"], capture_output=True, text=True, check=False, env=_env_snapshot())
             if result.returncode == 0:
                 return result.stdout.strip()
         except FileNotFoundError:
@@ -47,6 +51,7 @@ class PerlLanguageServer(SolidLanguageServer):
                 capture_output=True,
                 text=True,
                 check=False,
+                env=_env_snapshot(),
             )
             if result.returncode == 0:
                 return result.stdout.strip()

@@ -74,11 +74,11 @@ class CandidateIndexChangeRepository:
             cursor = conn.execute(
                 """
                 INSERT INTO candidate_index_changes(
-                    change_type, status, repo_id, repo_root, relative_path, absolute_path,
+                    change_type, status, repo_id, repo_root, scope_repo_root, relative_path, absolute_path,
                     content_hash, mtime_ns, size_bytes, event_source, reason, created_at, updated_at
                 )
                 VALUES(
-                    'UPSERT', 'PENDING', :repo_id, :repo_root, :relative_path, :absolute_path,
+                    'UPSERT', 'PENDING', :repo_id, :repo_root, :scope_repo_root, :relative_path, :absolute_path,
                     :content_hash, :mtime_ns, :size_bytes, :event_source, NULL, :recorded_at, :recorded_at
                 )
                 """,
@@ -134,17 +134,18 @@ class CandidateIndexChangeRepository:
             cursor = conn.execute(
                 """
                 INSERT INTO candidate_index_changes(
-                    change_type, status, repo_id, repo_root, relative_path, absolute_path,
+                    change_type, status, repo_id, repo_root, scope_repo_root, relative_path, absolute_path,
                     content_hash, mtime_ns, size_bytes, event_source, reason, created_at, updated_at
                 )
                 VALUES(
-                    'DELETE', 'PENDING', :repo_id, :repo_root, :relative_path, NULL,
+                    'DELETE', 'PENDING', :repo_id, :repo_root, :scope_repo_root, :relative_path, NULL,
                     NULL, NULL, NULL, :event_source, 'deleted', :recorded_at, :recorded_at
                 )
                 """,
                 {
                     "repo_id": resolved_repo_id,
                     "repo_root": repo_root,
+                    "scope_repo_root": repo_root,
                     "relative_path": relative_path,
                     "event_source": event_source,
                     "recorded_at": recorded_at,
@@ -158,7 +159,7 @@ class CandidateIndexChangeRepository:
         with connect(self._db_path) as conn:
             rows = conn.execute(
                 """
-                SELECT change_id, change_type, status, repo_id, repo_root, relative_path, absolute_path,
+                SELECT change_id, change_type, status, repo_id, repo_root, scope_repo_root, relative_path, absolute_path,
                        content_hash, mtime_ns, size_bytes, event_source, reason, created_at, updated_at
                 FROM candidate_index_changes
                 WHERE status = 'PENDING'
@@ -180,6 +181,7 @@ class CandidateIndexChangeRepository:
                     status=row_str(row, "status"),
                     repo_id=row_str(row, "repo_id"),
                     repo_root=row_str(row, "repo_root"),
+                    scope_repo_root=row_optional_str(row, "scope_repo_root"),
                     relative_path=row_str(row, "relative_path"),
                     absolute_path=row_optional_str(row, "absolute_path"),
                     content_hash=row_optional_str(row, "content_hash"),

@@ -4,15 +4,15 @@ from __future__ import annotations
 
 from typing import Callable
 
-from sari.core.language_registry import get_enabled_language_names
+from sari.core.language.registry import get_enabled_language_names
 from sari.core.models import LanguageProbeStatusDTO
 from sari.db.repositories.file_collection_repository import FileCollectionRepository
 from sari.db.repositories.language_probe_repository import LanguageProbeRepository
 from sari.db.repositories.lsp_tool_data_repository import LspToolDataRepository
 from sari.db.repositories.runtime_repository import RuntimeRepository
-from sari.db.repositories.workspace_repository import WorkspaceRepository
-from sari.mcp.tools.admin_tools import validate_repo_argument
+from sari.mcp.tools.admin_tools import RepoValidationPort, validate_repo_argument
 from sari.mcp.tools.pack1 import Pack1MetaDTO, pack1_error, pack1_success
+from sari.services.pipeline.control_service import PipelineControlService
 
 
 def _success(items: list[dict[str, object]], *, warnings: list[dict[str, object]] | None = None) -> dict[str, object]:
@@ -89,13 +89,14 @@ class StatusTool:
 
     def __init__(
         self,
-        workspace_repo: WorkspaceRepository,
+        workspace_repo: RepoValidationPort,
         runtime_repo: RuntimeRepository,
         file_repo: FileCollectionRepository,
         lsp_repo: LspToolDataRepository,
         language_probe_repo: LanguageProbeRepository | None = None,
         lsp_metrics_provider: Callable[[], dict[str, int]] | None = None,
         reconcile_state_provider: Callable[[], dict[str, object]] | None = None,
+        pipeline_control_service: PipelineControlService | None = None,
     ) -> None:
         """필요 저장소 의존성을 주입한다."""
         self._workspace_repo = workspace_repo
@@ -105,6 +106,7 @@ class StatusTool:
         self._language_probe_repo = language_probe_repo
         self._lsp_metrics_provider = lsp_metrics_provider
         self._reconcile_state_provider = reconcile_state_provider
+        self._pipeline_control_service = pipeline_control_service
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """저장소 단위 상태 요약을 반환한다."""
@@ -114,12 +116,16 @@ class StatusTool:
         warnings_payload = [warning.to_dict() for warning in validation.warnings]
         repo_root = str(arguments["repo"])
         runtime = self._runtime_repo.get_runtime()
-        repo_stats = self._file_repo.get_repo_stats()
-        file_count = 0
-        for stat in repo_stats:
-            if str(stat.get("repo", "")) == repo_root:
-                file_count = int(stat.get("file_count", 0))
-                break
+        file_count = self._file_repo.count_active_files_by_scope(scope_repo_root=repo_root)
+        module_repo_count = self._file_repo.count_distinct_repo_roots_by_scope(scope_repo_root=repo_root)
+        if file_count == 0:
+            # fanout 이전/혼합 데이터에서는 module row가 repo_root 기준으로만 존재할 수 있다.
+            # list_files/read_file과 동일한 하위호환 계약을 위해 repo_root 카운트로 폴백한다.
+            repo_file_count = self._file_repo.count_active_files(repo_root=repo_root)
+            if repo_file_count > 0:
+                file_count = repo_file_count
+                module_repo_count = 1
+        repo_scope_kind = "workspace_scope" if module_repo_count > 1 else "module_scope"
         graph_health = self._lsp_repo.get_repo_call_graph_health(repo_root=repo_root)
         language_support = _build_language_support_payload(self._language_probe_repo)
         lsp_metrics: dict[str, int] = {}
@@ -139,10 +145,18 @@ class StatusTool:
                     "reconcile_last_run_ts": raw_state.get("reconcile_last_run_ts"),
                     "reconcile_last_result": raw_state.get("reconcile_last_result"),
                 }
+        auto_control: dict[str, object] | None = None
+        stage_rollout: dict[str, object] | None = None
+        if self._pipeline_control_service is not None:
+            auto_control = self._pipeline_control_service.get_auto_control_state().to_dict()
+            stage_rollout = self._pipeline_control_service.get_stage_rollout_state()
         return _success(
             [
                 {
                     "repo": repo_root,
+                    "scope_repo_root": repo_root,
+                    "repo_scope_kind": repo_scope_kind,
+                    "module_repo_count": module_repo_count,
                     "daemon_state": None if runtime is None else runtime.state,
                     "file_count": file_count,
                     "symbol_count": graph_health["symbol_count"],
@@ -151,6 +165,8 @@ class StatusTool:
                     "language_support": language_support,
                     "lsp_metrics": lsp_metrics,
                     "reconcile_state": reconcile_state,
+                    "auto_control": auto_control,
+                    "stage_rollout": stage_rollout,
                 }
             ],
             warnings=warnings_payload,

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import fnmatch
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable
 
@@ -10,17 +10,17 @@ from pathspec import PathSpec
 from pathspec.patterns import GitWildMatchPattern
 from solidlsp.ls_config import Language
 
-from sari.core.language_registry import resolve_language_from_path
+from sari.core.language.registry import resolve_language_from_path
 from sari.core.models import CollectionPolicyDTO, RepoIdentityDTO, now_iso8601_utc
-from sari.core.repo_identity import compute_repo_id, resolve_workspace_root
-from sari.core.repo_resolver import resolve_repo_key
+from sari.core.repo.identity import compute_repo_id, resolve_workspace_root
+from sari.core.repo.resolver import resolve_repo_key
+from sari.core.event_bus import EventBus
+from sari.core.events import LspWarmReady
 from sari.db.repositories.pipeline_policy_repository import PipelinePolicyRepository
 from sari.db.repositories.repo_registry_repository import RepoRegistryRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
-from sari.services.collection.perf_trace import trace_methods
 
 
-@trace_methods("repo_support_fn")
 class CollectionRepoSupport:
     """repo 식별/수집 정책/LSP prewarm 보조 책임을 담당한다."""
 
@@ -34,6 +34,7 @@ class CollectionRepoSupport:
         repo_registry_repo: RepoRegistryRepository | None,
         lsp_prewarm_min_language_files: int,
         lsp_prewarm_top_language_count: int,
+        event_bus: EventBus | None = None,
     ) -> None:
         """필요 의존성을 주입한다."""
         self._workspace_repo = workspace_repo
@@ -43,12 +44,21 @@ class CollectionRepoSupport:
         self._repo_registry_repo = repo_registry_repo
         self._lsp_prewarm_min_language_files = lsp_prewarm_min_language_files
         self._lsp_prewarm_top_language_count = lsp_prewarm_top_language_count
+        self._event_bus = event_bus
+        self._exclude_glob_spec = PathSpec.from_lines(GitWildMatchPattern, self._policy.exclude_globs)
+        self._extra_exclude_globs_stack: list[tuple[str, ...]] = []
+        self._extra_exclude_spec_stack: list[PathSpec] = []
 
     def resolve_lsp_language(self, relative_path: str) -> Language | None:
         """파일 상대 경로로 LSP 언어를 해석한다."""
         return resolve_language_from_path(file_path=relative_path)
 
-    def configure_lsp_prewarm_languages(self, repo_root: str, language_counts: dict[Language, int]) -> None:
+    def configure_lsp_prewarm_languages(
+        self,
+        repo_root: str,
+        language_counts: dict[Language, int],
+        language_sample_files: dict[Language, str] | None = None,
+    ) -> None:
         """스캔 통계를 바탕으로 repo별 hot language prewarm 대상을 설정한다."""
         configure_func = getattr(self._lsp_backend, "configure_hot_languages", None)
         if not callable(configure_func):
@@ -61,6 +71,34 @@ class CollectionRepoSupport:
         candidates.sort(key=lambda item: item[1], reverse=True)
         selected = {language for language, _ in candidates[: self._lsp_prewarm_top_language_count]}
         configure_func(repo_root=repo_root, languages=selected)
+
+        # EventBus: hot 언어 확정 후 LspWarmReady 발행 (L5AsyncUpgradeWatcher 활성화)
+        if self._event_bus is not None:
+            for language in selected:
+                try:
+                    self._event_bus.publish(
+                        LspWarmReady(repo_root=repo_root, language=language),
+                    )
+                except (RuntimeError, TypeError, ValueError, OSError):
+                    log.debug("LspWarmReady publish failed (lang=%s)", language)
+
+        # Wave 2: hot 언어 확정 후 대표 파일로 probe 스케줄
+        if language_sample_files is not None and selected:
+            scheduler = getattr(self._lsp_backend, "schedule_probe_for_file", None)
+            if callable(scheduler):
+                for language in selected:
+                    sample_file = language_sample_files.get(language)
+                    if sample_file is None:
+                        continue
+                    try:
+                        scheduler(
+                            repo_root=repo_root,
+                            relative_path=sample_file,
+                            force=False,
+                            trigger="wave2_prewarm",
+                        )
+                    except (RuntimeError, ValueError, OSError):
+                        log.debug("wave2_prewarm probe schedule failed (lang=%s)", language)
 
     def schedule_lsp_probe_for_file(self, repo_root: str, relative_path: str) -> None:
         """파일 경로를 기준으로 비동기 LSP probe를 스케줄한다."""
@@ -135,10 +173,30 @@ class CollectionRepoSupport:
         suffix = file_path.suffix.lower()
         if suffix not in self._policy.include_ext:
             return False
-        for pattern in self._policy.exclude_globs:
-            if fnmatch.fnmatch(relative_posix, pattern):
-                return False
+        if self._exclude_glob_spec.match_file(relative_posix):
+            return False
+        if len(self._extra_exclude_spec_stack) > 0:
+            for extra_spec in self._extra_exclude_spec_stack:
+                if extra_spec.match_file(relative_posix):
+                    return False
         return True
+
+    @contextmanager
+    def temporary_extra_exclude_globs(self, globs: tuple[str, ...]):
+        """일시적으로 추가 exclude globs를 적용한다 (perf 측정 전용)."""
+        normalized = tuple(item.strip() for item in globs if item.strip() != "")
+        if len(normalized) == 0:
+            yield
+            return
+        self._extra_exclude_globs_stack.append(normalized)
+        self._extra_exclude_spec_stack.append(PathSpec.from_lines(GitWildMatchPattern, normalized))
+        try:
+            yield
+        finally:
+            if len(self._extra_exclude_globs_stack) > 0:
+                self._extra_exclude_globs_stack.pop()
+            if len(self._extra_exclude_spec_stack) > 0:
+                self._extra_exclude_spec_stack.pop()
 
     def is_deletion_hold_enabled(self) -> bool:
         """삭제 보류 정책 활성화 여부를 반환한다."""
@@ -147,9 +205,24 @@ class CollectionRepoSupport:
         return bool(self._policy_repo.get_policy().deletion_hold)
 
 
-@trace_methods("workspace_fanout_fn")
 class WorkspaceFanoutResolver:
     """workspace root 하위 top-level repo fan-out 대상을 판정한다."""
+    _SKIP_TOP_LEVEL_DIRS: frozenset[str] = frozenset(
+        {
+            "bin",
+            "build",
+            "target",
+            "out",
+            "dist",
+            "node_modules",
+            ".gradle",
+            ".idea",
+            ".vscode",
+            ".venv",
+            "venv",
+            "__pycache__",
+        }
+    )
 
     def __init__(
         self,
@@ -172,11 +245,18 @@ class WorkspaceFanoutResolver:
         registered_paths = {Path(item.path).expanduser().resolve() for item in self._workspace_repo.list_all()}
         if root_path not in registered_paths:
             return []
+        workspace_gitignore_spec = self._load_gitignore_spec(root_path)
         targets: list[Path] = []
         for child in root_path.iterdir():
             if not child.is_dir():
                 continue
             if child.name.startswith("."):
+                continue
+            if child.name in self._SKIP_TOP_LEVEL_DIRS:
+                continue
+            # workspace root .gitignore가 top-level child를 제외하면 fan-out 후보에서 제외한다.
+            child_rel_dir = f"{child.name}/"
+            if workspace_gitignore_spec.match_file(child_rel_dir) or workspace_gitignore_spec.match_file(child.name):
                 continue
             if self._is_top_level_repo_candidate(child):
                 targets.append(child.resolve())

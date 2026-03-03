@@ -15,11 +15,11 @@ from pathlib import Path
 
 import pytest
 
-from sari.core.language_registry import get_enabled_language_names
+from sari.core.language.registry import get_enabled_language_names
 from sari.core.config import AppConfig
 from sari.db.repositories.runtime_repository import RuntimeRepository
 from sari.db.schema import init_schema
-from sari.services.daemon_service import DaemonService
+from sari.services.daemon.service import DaemonService
 
 
 def _pick_free_port() -> int:
@@ -191,8 +191,8 @@ def test_cli_process_e2e_matches_http_report_after_daemon_start(tmp_path: Path) 
 @pytest.mark.cli_e2e_lsp
 def test_cli_process_e2e_real_lsp_all_languages_strict_gate(tmp_path: Path) -> None:
     """실LSP 환경에서 35+ 언어 strict 게이트를 실행하고 응답 계약을 검증한다."""
-    if os.getenv("SARI_ENABLE_REAL_LSP_E2E", "").strip() != "1":
-        pytest.skip("set SARI_ENABLE_REAL_LSP_E2E=1 to run real-lsp 35+ smoke")
+    if os.getenv("SARI_E2E_REAL_LSP_REPO", "").strip() == "":
+        pytest.skip("set SARI_E2E_REAL_LSP_REPO to run real-lsp 35+ smoke")
     home_dir = tmp_path / "home"
     home_dir.mkdir(parents=True, exist_ok=True)
     repo_dir = tmp_path / "repo-c"

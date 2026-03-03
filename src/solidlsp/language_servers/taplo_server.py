@@ -17,7 +17,7 @@ import urllib.request
 # Download timeout in seconds (prevents indefinite hangs)
 DOWNLOAD_TIMEOUT_SECONDS = 120
 
-from solidlsp.ls import SolidLanguageServer
+from solidlsp.ls import SolidLanguageServer, get_current_process_env_snapshot
 from solidlsp.ls_config import LanguageServerConfig
 from solidlsp.ls_utils import PathUtils
 from solidlsp.lsp_protocol_handler.lsp_types import InitializeParams
@@ -134,7 +134,7 @@ class TaploServer(SolidLanguageServer):
         Setup runtime dependencies for Taplo and return the command to start the server.
         """
         # First check if taplo is already installed system-wide
-        system_taplo = shutil.which("taplo")
+        system_taplo = shutil.which("taplo", path=get_current_process_env_snapshot().get("PATH"))
         if system_taplo:
             log.info(f"Using system-installed Taplo at: {system_taplo}")
             return system_taplo

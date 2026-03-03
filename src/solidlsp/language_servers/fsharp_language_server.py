@@ -12,7 +12,7 @@ from pathlib import Path
 from overrides import override
 
 from solidlsp.language_servers.common import RuntimeDependency, RuntimeDependencyCollection
-from solidlsp.ls import SolidLanguageServer
+from solidlsp.ls import SolidLanguageServer, get_current_process_env_snapshot
 from solidlsp.ls_config import LanguageServerConfig
 from solidlsp.ls_exceptions import SolidLSPException
 from solidlsp.lsp_protocol_handler.lsp_types import InitializeParams
@@ -20,6 +20,14 @@ from solidlsp.lsp_protocol_handler.server import ProcessLaunchInfo
 from solidlsp.settings import SolidLSPSettings
 
 log = logging.getLogger(__name__)
+
+
+def _env_snapshot() -> dict[str, str]:
+    return get_current_process_env_snapshot()
+
+
+def _which_in_snapshot(executable_name: str) -> str | None:
+    return shutil.which(executable_name, path=_env_snapshot().get("PATH"))
 
 
 class FSharpLanguageServer(SolidLanguageServer):
@@ -62,7 +70,7 @@ class FSharpLanguageServer(SolidLanguageServer):
         Setup runtime dependencies for F# Language Server and return the command to start the server.
         """
         # First check if .NET SDK is installed
-        dotnet_exe = shutil.which("dotnet")
+        dotnet_exe = _which_in_snapshot("dotnet")
         if not dotnet_exe:
             raise RuntimeError(
                 ".NET SDK is not installed or not in PATH. Please install .NET SDK 8.0 or later and ensure 'dotnet' is in your PATH."
@@ -72,7 +80,7 @@ class FSharpLanguageServer(SolidLanguageServer):
         import subprocess
 
         try:
-            result = subprocess.run([dotnet_exe, "--version"], capture_output=True, text=True, check=True)
+            result = subprocess.run([dotnet_exe, "--version"], capture_output=True, text=True, check=True, env=_env_snapshot())
             log.info(f"Found .NET SDK version: {result.stdout.strip()}")
         except subprocess.CalledProcessError:
             raise RuntimeError("Failed to get .NET SDK version. Please ensure .NET SDK is properly installed.")
@@ -112,6 +120,7 @@ class FSharpLanguageServer(SolidLanguageServer):
                     capture_output=True,
                     text=True,
                     check=True,
+                    env=_env_snapshot(),
                 )
                 log.info("FsAutoComplete installed successfully")
                 log.debug(f"Installation output: {result.stdout}")
@@ -273,13 +282,13 @@ class FSharpLanguageServer(SolidLanguageServer):
         """
         Get the .NET root directory.
         """
-        dotnet_exe = shutil.which("dotnet")
+        dotnet_exe = _which_in_snapshot("dotnet")
         if dotnet_exe:
             # Try to get the installation path
             try:
                 import subprocess
 
-                result = subprocess.run([dotnet_exe, "--info"], capture_output=True, text=True, check=True)
+                result = subprocess.run([dotnet_exe, "--info"], capture_output=True, text=True, check=True, env=_env_snapshot())
                 lines = result.stdout.split("\n")
                 for line in lines:
                     if "Base Path:" in line or "Base path:" in line:

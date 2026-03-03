@@ -11,7 +11,7 @@ import threading
 from overrides import override
 from sensai.util.logging import LogTime
 
-from solidlsp.ls import SolidLanguageServer
+from solidlsp.ls import SolidLanguageServer, get_current_process_env_snapshot
 from solidlsp.ls_config import LanguageServerConfig
 from solidlsp.lsp_protocol_handler.lsp_types import InitializeParams
 from solidlsp.lsp_protocol_handler.server import ProcessLaunchInfo
@@ -20,6 +20,14 @@ from solidlsp.settings import SolidLSPSettings
 from .common import RuntimeDependency, RuntimeDependencyCollection
 
 log = logging.getLogger(__name__)
+
+
+def _env_snapshot() -> dict[str, str]:
+    return get_current_process_env_snapshot()
+
+
+def _which_in_snapshot(executable_name: str) -> str | None:
+    return shutil.which(executable_name, path=_env_snapshot().get("PATH"))
 
 
 class ElmLanguageServer(SolidLanguageServer):
@@ -35,7 +43,7 @@ class ElmLanguageServer(SolidLanguageServer):
 
         # Resolve ELM_HOME to absolute path if it's set to a relative path
         env = {}
-        elm_home = os.environ.get("ELM_HOME")
+        elm_home = _env_snapshot().get("ELM_HOME")
         if elm_home:
             if not os.path.isabs(elm_home):
                 # Convert relative ELM_HOME to absolute based on repository root
@@ -66,15 +74,15 @@ class ElmLanguageServer(SolidLanguageServer):
         Setup runtime dependencies for Elm Language Server and return the command to start the server.
         """
         # Check if elm-language-server is already installed globally
-        system_elm_ls = shutil.which("elm-language-server")
+        system_elm_ls = _which_in_snapshot("elm-language-server")
         if system_elm_ls:
             log.info(f"Found system-installed elm-language-server at {system_elm_ls}")
             return [system_elm_ls, "--stdio"]
 
         # Verify node and npm are installed
-        is_node_installed = shutil.which("node") is not None
+        is_node_installed = _which_in_snapshot("node") is not None
         assert is_node_installed, "node is not installed or isn't in PATH. Please install NodeJS and try again."
-        is_npm_installed = shutil.which("npm") is not None
+        is_npm_installed = _which_in_snapshot("npm") is not None
         assert is_npm_installed, "npm is not installed or isn't in PATH. Please install npm and try again."
 
         deps = RuntimeDependencyCollection(
@@ -133,9 +141,9 @@ class ElmLanguageServer(SolidLanguageServer):
                 },
             },
             "initializationOptions": {
-                "elmPath": shutil.which("elm") or "elm",
-                "elmFormatPath": shutil.which("elm-format") or "elm-format",
-                "elmTestPath": shutil.which("elm-test") or "elm-test",
+                "elmPath": _which_in_snapshot("elm") or "elm",
+                "elmFormatPath": _which_in_snapshot("elm-format") or "elm-format",
+                "elmTestPath": _which_in_snapshot("elm-test") or "elm-test",
                 "skipInstallPackageConfirmation": True,
                 "onlyUpdateDiagnosticsOnSave": False,
             },

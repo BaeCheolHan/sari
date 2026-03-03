@@ -14,7 +14,12 @@ from overrides import override
 from sensai.util.logging import LogTime
 
 from solidlsp import ls_types
-from solidlsp.ls import LanguageServerDependencyProvider, LanguageServerDependencyProviderSinglePath, SolidLanguageServer
+from solidlsp.ls import (
+    LanguageServerDependencyProvider,
+    LanguageServerDependencyProviderSinglePath,
+    SolidLanguageServer,
+    get_current_process_env_snapshot,
+)
 from solidlsp.ls_config import LanguageServerConfig
 from solidlsp.ls_utils import PlatformId, PlatformUtils
 from solidlsp.lsp_protocol_handler.lsp_types import InitializeParams
@@ -23,6 +28,14 @@ from solidlsp.settings import SolidLSPSettings
 from .common import RuntimeDependency, RuntimeDependencyCollection
 
 log = logging.getLogger(__name__)
+
+
+def _env_snapshot() -> dict[str, str]:
+    return get_current_process_env_snapshot()
+
+
+def _which_in_snapshot(executable_name: str) -> str | None:
+    return shutil.which(executable_name, path=_env_snapshot().get("PATH"))
 
 # Platform-specific imports
 if os.name != "nt":  # Unix-like systems
@@ -37,7 +50,7 @@ else:
         @staticmethod
         def getpwuid(uid: int) -> _PwdEntry:
             del uid
-            return _PwdEntry(pw_name=os.environ.get("USERNAME", "unknown"))
+            return _PwdEntry(pw_name=_env_snapshot().get("USERNAME", "unknown"))
 
 
 # Conditionally import pwd module (Unix-only)
@@ -147,9 +160,9 @@ class TypeScriptLanguageServer(SolidLanguageServer):
             )
 
             # Verify both node and npm are installed
-            is_node_installed = shutil.which("node") is not None
+            is_node_installed = _which_in_snapshot("node") is not None
             assert is_node_installed, "node is not installed or isn't in PATH. Please install NodeJS and try again."
-            is_npm_installed = shutil.which("npm") is not None
+            is_npm_installed = _which_in_snapshot("npm") is not None
             assert is_npm_installed, "npm is not installed or isn't in PATH. Please install npm and try again."
 
             # Install typescript and typescript-language-server if not already installed or version mismatch

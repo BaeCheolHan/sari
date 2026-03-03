@@ -4,16 +4,16 @@ from __future__ import annotations
 
 from sari.core.models import ErrorResponseDTO, KnowledgeEntryDTO, SnippetSaveDTO, now_iso8601_utc
 from sari.db.repositories.knowledge_repository import KnowledgeRepository
-from sari.db.repositories.workspace_repository import WorkspaceRepository
-from sari.mcp.tools.admin_tools import validate_repo_argument
+from sari.mcp.tools.admin_tools import RepoValidationPort, validate_repo_argument
 from sari.mcp.tools.pack1 import pack1_error
+from sari.mcp.tools.row_mapper import rows_to_items
 from sari.mcp.tools.tool_common import normalize_source_path, pack1_items_success, resolve_source_path
 
 
 class KnowledgeTool:
     """knowledge MCP 도구를 처리한다."""
 
-    def __init__(self, workspace_repo: WorkspaceRepository, knowledge_repo: KnowledgeRepository) -> None:
+    def __init__(self, workspace_repo: RepoValidationPort, knowledge_repo: KnowledgeRepository) -> None:
         """필요 저장소 의존성을 주입한다."""
         self._workspace_repo = workspace_repo
         self._knowledge_repo = knowledge_repo
@@ -30,13 +30,13 @@ class KnowledgeTool:
         if not isinstance(limit_raw, int) or limit_raw <= 0:
             return pack1_error(ErrorResponseDTO(code="ERR_INVALID_LIMIT", message="limit must be positive integer"))
         rows = self._knowledge_repo.query_knowledge(repo_root=str(arguments["repo"]), kind="knowledge", query=query, limit=limit_raw)
-        return pack1_items_success([row.to_dict() for row in rows], cache_hit=True, warnings=warnings_payload)
+        return pack1_items_success(rows_to_items(rows), cache_hit=True, warnings=warnings_payload)
 
 
 class SaveSnippetTool:
     """save_snippet MCP 도구를 처리한다."""
 
-    def __init__(self, workspace_repo: WorkspaceRepository, knowledge_repo: KnowledgeRepository) -> None:
+    def __init__(self, workspace_repo: RepoValidationPort, knowledge_repo: KnowledgeRepository) -> None:
         """필요 저장소 의존성을 주입한다."""
         self._workspace_repo = workspace_repo
         self._knowledge_repo = knowledge_repo
@@ -89,7 +89,7 @@ class SaveSnippetTool:
 class GetSnippetTool:
     """get_snippet MCP 도구를 처리한다."""
 
-    def __init__(self, workspace_repo: WorkspaceRepository, knowledge_repo: KnowledgeRepository) -> None:
+    def __init__(self, workspace_repo: RepoValidationPort, knowledge_repo: KnowledgeRepository) -> None:
         """필요 저장소 의존성을 주입한다."""
         self._workspace_repo = workspace_repo
         self._knowledge_repo = knowledge_repo
@@ -113,13 +113,13 @@ class GetSnippetTool:
             query=None if query is None else query.strip(),
             limit=limit_raw,
         )
-        return pack1_items_success([row.to_dict() for row in rows], cache_hit=True, warnings=warnings_payload)
+        return pack1_items_success(rows_to_items(rows), cache_hit=True, warnings=warnings_payload)
 
 
 class ArchiveContextTool:
     """archive_context MCP 도구를 처리한다."""
 
-    def __init__(self, workspace_repo: WorkspaceRepository, knowledge_repo: KnowledgeRepository) -> None:
+    def __init__(self, workspace_repo: RepoValidationPort, knowledge_repo: KnowledgeRepository) -> None:
         """필요 저장소 의존성을 주입한다."""
         self._workspace_repo = workspace_repo
         self._knowledge_repo = knowledge_repo
@@ -165,7 +165,7 @@ class ArchiveContextTool:
 class GetContextTool:
     """get_context MCP 도구를 처리한다."""
 
-    def __init__(self, workspace_repo: WorkspaceRepository, knowledge_repo: KnowledgeRepository) -> None:
+    def __init__(self, workspace_repo: RepoValidationPort, knowledge_repo: KnowledgeRepository) -> None:
         """필요 저장소 의존성을 주입한다."""
         self._workspace_repo = workspace_repo
         self._knowledge_repo = knowledge_repo
@@ -181,5 +181,4 @@ class GetContextTool:
         if not isinstance(limit_raw, int) or limit_raw <= 0:
             return pack1_error(ErrorResponseDTO(code="ERR_INVALID_LIMIT", message="limit must be positive integer"))
         rows = self._knowledge_repo.query_knowledge(repo_root=str(arguments["repo"]), kind="context", query=query, limit=limit_raw)
-        return pack1_items_success([row.to_dict() for row in rows], cache_hit=True, warnings=warnings_payload)
-
+        return pack1_items_success(rows_to_items(rows), cache_hit=True, warnings=warnings_payload)

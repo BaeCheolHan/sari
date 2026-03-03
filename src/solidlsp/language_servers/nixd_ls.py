@@ -16,13 +16,21 @@ from pathlib import Path
 from overrides import override
 
 from solidlsp import ls_types
-from solidlsp.ls import DocumentSymbols, LSPFileBuffer, SolidLanguageServer
+from solidlsp.ls import DocumentSymbols, LSPFileBuffer, SolidLanguageServer, get_current_process_env_snapshot
 from solidlsp.ls_config import LanguageServerConfig
 from solidlsp.lsp_protocol_handler.lsp_types import InitializeParams
 from solidlsp.lsp_protocol_handler.server import ProcessLaunchInfo
 from solidlsp.settings import SolidLSPSettings
 
 log = logging.getLogger(__name__)
+
+
+def _env_snapshot() -> dict[str, str]:
+    return get_current_process_env_snapshot()
+
+
+def _which_in_snapshot(executable_name: str) -> str | None:
+    return shutil.which(executable_name, path=_env_snapshot().get("PATH"))
 
 
 class NixLanguageServer(SolidLanguageServer):
@@ -71,13 +79,23 @@ class NixLanguageServer(SolidLanguageServer):
         return symbol
 
     @override
-    def request_document_symbols(self, relative_file_path: str, file_buffer: LSPFileBuffer | None = None) -> DocumentSymbols:
+    def request_document_symbols(
+        self,
+        relative_file_path: str,
+        file_buffer: LSPFileBuffer | None = None,
+        *,
+        sync_with_ls: bool = True,
+    ) -> DocumentSymbols:
         # Override to extend Nix symbol ranges to include trailing semicolons.
         # nixd provides expression-level ranges (excluding semicolons) but serena needs
         # statement-level ranges (including semicolons) for proper symbol replacement.
 
         # Get symbols from parent implementation
-        document_symbols = super().request_document_symbols(relative_file_path, file_buffer=file_buffer)
+        document_symbols = super().request_document_symbols(
+            relative_file_path,
+            file_buffer=file_buffer,
+            sync_with_ls=sync_with_ls,
+        )
 
         # Get file content for range extension
         file_content = self.language_server.retrieve_full_file_content(relative_file_path)
@@ -110,7 +128,7 @@ class NixLanguageServer(SolidLanguageServer):
     def _get_nixd_version():
         """Get the installed nixd version or None if not found."""
         try:
-            result = subprocess.run(["nixd", "--version"], capture_output=True, text=True, check=False)
+            result = subprocess.run(["nixd", "--version"], capture_output=True, text=True, check=False, env=_env_snapshot())
             if result.returncode == 0:
                 # nixd outputs version like: nixd 2.0.0
                 return result.stdout.strip()
@@ -121,13 +139,13 @@ class NixLanguageServer(SolidLanguageServer):
     @staticmethod
     def _check_nixd_installed():
         """Check if nixd is installed in the system."""
-        return shutil.which("nixd") is not None
+        return _which_in_snapshot("nixd") is not None
 
     @staticmethod
     def _get_nixd_path():
         """Get the path to nixd executable."""
         # First check if it's in PATH
-        nixd_path = shutil.which("nixd")
+        nixd_path = _which_in_snapshot("nixd")
         if nixd_path:
             return nixd_path
 
@@ -162,7 +180,7 @@ class NixLanguageServer(SolidLanguageServer):
     def _install_nixd_with_nix():
         """Install nixd using nix if available."""
         # Check if nix is available
-        if not shutil.which("nix"):
+        if not _which_in_snapshot("nix"):
             return None
 
         print("Installing nixd using nix... This may take a few minutes.")
@@ -174,11 +192,12 @@ class NixLanguageServer(SolidLanguageServer):
                 text=True,
                 check=False,
                 timeout=600,  # 10 minute timeout for building
+                env=_env_snapshot(),
             )
 
             if result.returncode == 0:
                 # Check if nixd is now in PATH
-                nixd_path = shutil.which("nixd")
+                nixd_path = _which_in_snapshot("nixd")
                 if nixd_path:
                     print(f"Successfully installed nixd at: {nixd_path}")
                     return nixd_path
@@ -190,9 +209,10 @@ class NixLanguageServer(SolidLanguageServer):
                     text=True,
                     check=False,
                     timeout=600,
+                    env=_env_snapshot(),
                 )
                 if result.returncode == 0:
-                    nixd_path = shutil.which("nixd")
+                    nixd_path = _which_in_snapshot("nixd")
                     if nixd_path:
                         print(f"Successfully installed nixd at: {nixd_path}")
                         return nixd_path
@@ -212,7 +232,7 @@ class NixLanguageServer(SolidLanguageServer):
         Attempts to install nixd if not present.
         """
         # First check if Nix is available (nixd needs it at runtime)
-        if not shutil.which("nix"):
+        if not _which_in_snapshot("nix"):
             print("WARNING: Nix is not installed. nixd requires Nix to function properly.")
             raise RuntimeError("Nix is required for nixd. Please install Nix from https://nixos.org/download.html")
 
@@ -236,7 +256,7 @@ class NixLanguageServer(SolidLanguageServer):
 
         # Verify nixd works
         try:
-            result = subprocess.run([nixd_path, "--version"], capture_output=True, text=True, check=False, timeout=5)
+            result = subprocess.run([nixd_path, "--version"], capture_output=True, text=True, check=False, timeout=5, env=_env_snapshot())
             if result.returncode != 0:
                 raise RuntimeError(f"nixd failed to run: {result.stderr}")
         except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as e:

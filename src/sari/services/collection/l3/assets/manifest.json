@@ -1,0 +1,14 @@
+{
+  "version": "2026-02-24-l3-asset-v1",
+  "sources": [
+    {
+      "name": "tree-sitter-official-queries",
+      "note": "vendored snapshot"
+    },
+    {
+      "name": "nvim-treesitter",
+      "note": "overlay snapshot"
+    }
+  ]
+}
+

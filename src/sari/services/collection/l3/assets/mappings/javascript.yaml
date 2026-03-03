@@ -1,0 +1,33 @@
+{
+  "capture_to_kind": {
+    "symbol.class": "class",
+    "symbol.function": "function",
+    "symbol.method": "method",
+    "symbol.field": "field",
+    "symbol.variable": "variable",
+    "definition.class": "class",
+    "definition.function": "function",
+    "definition.method": "method"
+  },
+  "kind_bucket_map": {
+    "class_declaration": "class",
+    "function_declaration": "function",
+    "method_definition": "method",
+    "lexical_declaration": "field",
+    "variable_declaration": "field",
+    "2": "module",
+    "5": "class",
+    "6": "method",
+    "7": "field",
+    "8": "field",
+    "9": "method",
+    "12": "function",
+    "13": "variable"
+  },
+  "missing_pattern_rules": [],
+  "name_extract_rules": [],
+  "line_match_overrides": {
+    "name_kind_fallback_buckets": ["class", "method", "function", "field"],
+    "name_kind_fallback_max_line_gap": 12
+  }
+}

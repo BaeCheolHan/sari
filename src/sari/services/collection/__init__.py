@@ -2,7 +2,7 @@
 
 from sari.services.collection.enrich_engine import EnrichEngine
 from sari.services.collection.error_policy import CollectionErrorPolicy
-from sari.services.collection.event_watcher import EventWatcher
+from sari.services.collection.l1.event_watcher import EventWatcher
 from sari.services.collection.metrics_service import PipelineMetricsService
 from sari.services.collection.ports import (
     CollectionLifecyclePort,
@@ -14,7 +14,7 @@ from sari.services.collection.ports import (
 from sari.services.collection.pipeline_worker import PipelineWorker
 from sari.services.collection.repo_support import CollectionRepoSupport, WorkspaceFanoutResolver
 from sari.services.collection.runtime_manager import RuntimeManager
-from sari.services.collection.scanner import FileScanner
+from sari.services.collection.l1.scanner import FileScanner
 
 __all__ = [
     "CollectionErrorPolicy",

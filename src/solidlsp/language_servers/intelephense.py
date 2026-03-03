@@ -10,7 +10,12 @@ from time import sleep
 
 from overrides import override
 
-from solidlsp.ls import LanguageServerDependencyProvider, LanguageServerDependencyProviderSinglePath, SolidLanguageServer
+from solidlsp.ls import (
+    LanguageServerDependencyProvider,
+    LanguageServerDependencyProviderSinglePath,
+    SolidLanguageServer,
+    get_current_process_env_snapshot,
+)
 from solidlsp.ls_config import LanguageServerConfig
 from solidlsp.ls_utils import PlatformId, PlatformUtils
 from solidlsp.lsp_protocol_handler.lsp_types import Definition, DefinitionParams, InitializeParams, LocationLink
@@ -20,6 +25,14 @@ from ..lsp_protocol_handler import lsp_types
 from .common import RuntimeDependency, RuntimeDependencyCollection
 
 log = logging.getLogger(__name__)
+
+
+def _env_snapshot() -> dict[str, str]:
+    return get_current_process_env_snapshot()
+
+
+def _which_in_snapshot(executable_name: str) -> str | None:
+    return shutil.which(executable_name, path=_env_snapshot().get("PATH"))
 
 
 class Intelephense(SolidLanguageServer):
@@ -55,9 +68,9 @@ class Intelephense(SolidLanguageServer):
             assert platform_id in valid_platforms, f"Platform {platform_id} is not supported by Intelephense at the moment"
 
             # Verify both node and npm are installed
-            is_node_installed = shutil.which("node") is not None
+            is_node_installed = _which_in_snapshot("node") is not None
             assert is_node_installed, "node is not installed or isn't in PATH. Please install NodeJS and try again."
-            is_npm_installed = shutil.which("npm") is not None
+            is_npm_installed = _which_in_snapshot("npm") is not None
             assert is_npm_installed, "npm is not installed or isn't in PATH. Please install npm and try again."
 
             # Install intelephense if not already installed
@@ -127,7 +140,7 @@ class Intelephense(SolidLanguageServer):
         }
         initialization_options = {}
         # Add license key if provided via environment variable
-        license_key = os.environ.get("INTELEPHENSE_LICENSE_KEY")
+        license_key = _env_snapshot().get("INTELEPHENSE_LICENSE_KEY")
         if license_key:
             initialization_options["licenceKey"] = license_key
 

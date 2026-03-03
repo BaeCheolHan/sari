@@ -14,7 +14,7 @@ from pathlib import Path
 import requests
 from overrides import override
 
-from solidlsp.ls import SolidLanguageServer
+from solidlsp.ls import SolidLanguageServer, get_current_process_env_snapshot
 from solidlsp.ls_config import LanguageServerConfig
 from solidlsp.lsp_protocol_handler.lsp_types import InitializeParams
 from solidlsp.lsp_protocol_handler.server import ProcessLaunchInfo
@@ -40,7 +40,7 @@ class LuaLanguageServer(SolidLanguageServer):
     def _get_lua_ls_path() -> str | None:
         """Get the path to lua-language-server executable."""
         # First check if it's in PATH
-        lua_ls = shutil.which("lua-language-server")
+        lua_ls = shutil.which("lua-language-server", path=get_current_process_env_snapshot().get("PATH"))
         if lua_ls:
             return lua_ls
 

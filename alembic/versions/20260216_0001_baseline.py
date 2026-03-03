@@ -7,8 +7,6 @@ Create Date: 2026-02-16
 
 from __future__ import annotations
 
-from alembic import op
-
 # revision identifiers, used by Alembic.
 revision = "20260216_0001"
 down_revision = None

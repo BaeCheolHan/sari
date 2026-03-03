@@ -3,18 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Protocol
 
-from sari.core.models import ErrorResponseDTO, RepoValidationResultDTO, WarningDTO
-from sari.core.repo_context_resolver import (
+from sari.core.models import ErrorResponseDTO, RepoValidationResultDTO, WarningDTO, WorkspaceDTO
+from sari.core.repo.context_resolver import (
     ERR_WORKSPACE_INACTIVE,
     RepoContextDTO,
     WORKSPACE_INACTIVE_MESSAGE,
     resolve_repo_context,
 )
-from sari.core.repo_resolver import resolve_repo_key
-from sari.db.repositories.workspace_repository import WorkspaceRepository
+from sari.core.repo.resolver import resolve_repo_key
 from sari.mcp.tools.pack1 import Pack1MetaDTO, pack1_error, pack1_success
-from sari.services.admin_service import AdminService
+from sari.services.admin import AdminService
 
 ERR_REPO_ARGUMENT_CONFLICT = "ERR_REPO_ARGUMENT_CONFLICT"
 REPO_ARGUMENT_CONFLICT_MESSAGE = "repo and repo_key resolve to different repositories"
@@ -22,7 +22,14 @@ WARN_REPO_ARG_PARTIAL_FALLBACK = "WARN_REPO_ARG_PARTIAL_FALLBACK"
 REPO_ARG_PARTIAL_FALLBACK_MESSAGE = "repo/repo_key mismatch or invalid input; resolved by fallback"
 
 
-def validate_repo_argument(arguments: dict[str, object], workspace_repo: WorkspaceRepository) -> RepoValidationResultDTO:
+class RepoValidationPort(Protocol):
+    """repo 인자 검증에 필요한 워크스페이스 조회 포트."""
+
+    def get_by_path(self, path: str) -> WorkspaceDTO | None: ...
+    def list_all(self) -> list[WorkspaceDTO]: ...
+
+
+def validate_repo_argument(arguments: dict[str, object], workspace_repo: RepoValidationPort) -> RepoValidationResultDTO:
     """repo 인자를 검증하고 정규화 결과 DTO를 반환한다."""
     repo = arguments.get("repo")
     if (not isinstance(repo, str) or repo.strip() == "") and isinstance(arguments.get("repo_id"), str):
@@ -68,7 +75,9 @@ def validate_repo_argument(arguments: dict[str, object], workspace_repo: Workspa
         else:
             context_error = context_error if context_error is not None else repo_error
     if resolved_context is None:
-        assert context_error is not None
+        if context_error is None:
+            raise ValueError("resolve_repo_context returned None for both resolved and error")
+        # context_error is guaranteed non-None here
         return RepoValidationResultDTO(repo_root=None, repo_key=None, error=context_error)
     if repo_key_value is not None:
         repo_context, repo_error = _resolve_context_with_workspace_fallback(raw_repo=repo_value, workspace_repo=workspace_repo)
@@ -91,7 +100,7 @@ def validate_repo_argument(arguments: dict[str, object], workspace_repo: Workspa
 def _resolve_context_with_workspace_fallback(
     *,
     raw_repo: str,
-    workspace_repo: WorkspaceRepository,
+    workspace_repo: RepoValidationPort,
 ) -> tuple[RepoContextDTO | None, ErrorResponseDTO | None]:
     """repo_context 해석 후 absolute path 입력에 대해 workspace fallback을 적용한다."""
     resolved_context, context_error = resolve_repo_context(
@@ -132,7 +141,7 @@ class DoctorItemDTO:
 class DoctorTool:
     """doctor MCP 도구를 처리한다."""
 
-    def __init__(self, admin_service: AdminService, workspace_repo: WorkspaceRepository) -> None:
+    def __init__(self, admin_service: AdminService, workspace_repo: RepoValidationPort) -> None:
         """필요 의존성을 주입한다."""
         self._admin_service = admin_service
         self._workspace_repo = workspace_repo
@@ -143,11 +152,12 @@ class DoctorTool:
         if validation.error is not None:
             return pack1_error(validation.error)
         warnings_payload = [warning.to_dict() for warning in validation.warnings]
+        repo_root = str(arguments["repo"])
 
-        items = [
+        items = [DoctorItemDTO(name="repo_scope_root", passed=True, detail=repo_root).to_dict(), *[
             DoctorItemDTO(name=check.name, passed=check.passed, detail=check.detail).to_dict()
             for check in self._admin_service.doctor()
-        ]
+        ]]
         return pack1_success(
             {
                 "items": items,
@@ -165,7 +175,7 @@ class DoctorTool:
 class RescanTool:
     """rescan MCP 도구를 처리한다."""
 
-    def __init__(self, admin_service: AdminService, workspace_repo: WorkspaceRepository) -> None:
+    def __init__(self, admin_service: AdminService, workspace_repo: RepoValidationPort) -> None:
         """필요 의존성을 주입한다."""
         self._admin_service = admin_service
         self._workspace_repo = workspace_repo
@@ -197,7 +207,7 @@ class RescanTool:
 class RepoCandidatesTool:
     """repo_candidates MCP 도구를 처리한다."""
 
-    def __init__(self, admin_service: AdminService, workspace_repo: WorkspaceRepository) -> None:
+    def __init__(self, admin_service: AdminService, workspace_repo: RepoValidationPort) -> None:
         """필요 의존성을 주입한다."""
         self._admin_service = admin_service
         self._workspace_repo = workspace_repo

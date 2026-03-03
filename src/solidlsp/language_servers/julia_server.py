@@ -7,13 +7,21 @@ import subprocess
 
 from overrides import override
 
-from solidlsp.ls import SolidLanguageServer
+from solidlsp.ls import SolidLanguageServer, get_current_process_env_snapshot
 from solidlsp.ls_config import LanguageServerConfig
 from solidlsp.lsp_protocol_handler.lsp_types import InitializeParams
 from solidlsp.lsp_protocol_handler.server import ProcessLaunchInfo
 from solidlsp.settings import SolidLSPSettings
 
 log = logging.getLogger(__name__)
+
+
+def _env_snapshot() -> dict[str, str]:
+    return get_current_process_env_snapshot()
+
+
+def _which_in_snapshot(executable_name: str) -> str | None:
+    return shutil.which(executable_name, path=_env_snapshot().get("PATH"))
 
 
 class JuliaLanguageServer(SolidLanguageServer):
@@ -54,7 +62,7 @@ class JuliaLanguageServer(SolidLanguageServer):
         Raises RuntimeError with a helpful message if the dependency is missing.
         """
         # First check if julia is in PATH
-        julia_path = shutil.which("julia")
+        julia_path = _which_in_snapshot("julia")
 
         # If not found in PATH, check common installation locations
         if julia_path is None:
@@ -80,7 +88,7 @@ class JuliaLanguageServer(SolidLanguageServer):
         # Check if LanguageServer.jl is installed
         check_cmd = [julia_path, "-e", "using LanguageServer"]
         try:
-            result = subprocess.run(check_cmd, check=False, capture_output=True, text=True, timeout=10)
+            result = subprocess.run(check_cmd, check=False, capture_output=True, text=True, timeout=10, env=_env_snapshot())
             if result.returncode != 0:
                 # LanguageServer.jl not found, install it
                 JuliaLanguageServer._install_language_server(julia_path)
@@ -98,7 +106,7 @@ class JuliaLanguageServer(SolidLanguageServer):
         install_cmd = [julia_path, "-e", 'using Pkg; Pkg.add("LanguageServer")']
 
         try:
-            result = subprocess.run(install_cmd, check=False, capture_output=True, text=True, timeout=300)  # 5 minutes for installation
+            result = subprocess.run(install_cmd, check=False, capture_output=True, text=True, timeout=300, env=_env_snapshot())  # 5 minutes for installation
 
             if result.returncode == 0:
                 log.info("LanguageServer.jl installed successfully!")

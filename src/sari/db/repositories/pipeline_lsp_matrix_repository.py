@@ -31,15 +31,16 @@ class PipelineLspMatrixRepository:
             conn.execute(
                 """
                 INSERT INTO pipeline_lsp_matrix_runs(
-                    run_id, repo_root, required_languages_json, fail_on_unavailable, strict_symbol_gate, started_at, finished_at, status, summary_json
+                    run_id, repo_root, scope_repo_root, required_languages_json, fail_on_unavailable, strict_symbol_gate, started_at, finished_at, status, summary_json
                 )
                 VALUES(
-                    :run_id, :repo_root, :required_languages_json, :fail_on_unavailable, :strict_symbol_gate, :started_at, NULL, 'RUNNING', NULL
+                    :run_id, :repo_root, :scope_repo_root, :required_languages_json, :fail_on_unavailable, :strict_symbol_gate, :started_at, NULL, 'RUNNING', NULL
                 )
                 """,
                 {
                     "run_id": run_id,
                     "repo_root": repo_root,
+                    "scope_repo_root": repo_root,
                     "required_languages_json": json.dumps(list(required_languages), ensure_ascii=False),
                     "fail_on_unavailable": 1 if fail_on_unavailable else 0,
                     "strict_symbol_gate": 1 if strict_symbol_gate else 0,

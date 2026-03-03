@@ -2,7 +2,7 @@
 import pytest
 import os
 from pathlib import Path
-from sari.services.workspace_service import WorkspaceService
+from sari.services.workspace.service import WorkspaceService
 from sari.core.exceptions import WorkspaceError
 from sari.core.models import Workspace
 

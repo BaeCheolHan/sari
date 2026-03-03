@@ -1,0 +1,47 @@
+{
+  "capture_to_kind": {
+    "symbol.module": "module",
+    "symbol.class": "class",
+    "symbol.interface": "interface",
+    "symbol.enum": "enum",
+    "symbol.method": "method",
+    "symbol.field": "field",
+    "symbol.enum_constant": "field"
+  },
+  "kind_bucket_map": {
+    "constructor": "method",
+    "constructor_declaration": "method",
+    "record": "class",
+    "enum_constant": "field",
+    "variable": "field",
+    "property": "field"
+  },
+  "missing_pattern_rules": [
+    {
+      "when_kind_raw_in": ["9", "constructor", "constructor_declaration"],
+      "result": "missing_constructor"
+    },
+    {
+      "when_kind_bucket_in": ["field"],
+      "result": "missing_field"
+    },
+    {
+      "when_kind_bucket_in": ["class", "interface", "enum"],
+      "when_name_contains_any": [".", "$"],
+      "result": "missing_nested_type"
+    }
+  ],
+  "name_extract_rules": [
+    {
+      "node_type": "package_declaration",
+      "mode": "package_snippet"
+    }
+  ],
+  "line_match_overrides": {
+    "name_kind_fallback_buckets": ["class", "interface", "enum", "module", "method", "field"],
+    "name_kind_fallback_max_line_gap": 12,
+    "name_kind_fallback_max_line_gap_by_bucket": {
+      "field": 512
+    }
+  }
+}

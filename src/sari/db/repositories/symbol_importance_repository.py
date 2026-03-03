@@ -48,15 +48,17 @@ class SymbolImportanceRepository:
         with connect(self._db_path) as conn:
             conn.execute(
                 """
-                INSERT INTO symbol_importance_cache(repo_root, symbol_name, reference_count, revision_epoch, updated_at)
-                VALUES(:repo_root, :symbol_name, :reference_count, :revision_epoch, :updated_at)
+                INSERT INTO symbol_importance_cache(repo_root, scope_repo_root, symbol_name, reference_count, revision_epoch, updated_at)
+                VALUES(:repo_root, :scope_repo_root, :symbol_name, :reference_count, :revision_epoch, :updated_at)
                 ON CONFLICT(repo_root, symbol_name) DO UPDATE SET
+                    scope_repo_root = excluded.scope_repo_root,
                     reference_count = excluded.reference_count,
                     revision_epoch = excluded.revision_epoch,
                     updated_at = excluded.updated_at
                 """,
                 {
                     "repo_root": repo_root,
+                    "scope_repo_root": repo_root,
                     "symbol_name": symbol_name,
                     "reference_count": reference_count,
                     "revision_epoch": revision_epoch,

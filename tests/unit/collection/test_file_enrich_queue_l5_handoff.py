@@ -1,0 +1,64 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from sari.db.repositories.file_enrich_queue_repository import FileEnrichQueueRepository
+from sari.db.schema import connect, init_schema
+
+
+def _enqueue(repo: FileEnrichQueueRepository, *, repo_root: str, relative_path: str, now_iso: str) -> str:
+    return repo.enqueue(
+        repo_root=repo_root,
+        relative_path=relative_path,
+        content_hash=f"h:{relative_path}",
+        priority=50,
+        enqueue_source="scan",
+        now_iso=now_iso,
+        repo_id="r1",
+    )
+
+
+def test_acquire_pending_for_l2_excludes_l5_source_jobs(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = FileEnrichQueueRepository(db_path)
+    now_iso = "2026-03-01T00:00:00+00:00"
+    repo_root = "/repo"
+
+    scan_job_id = _enqueue(repo, repo_root=repo_root, relative_path="scan.py", now_iso=now_iso)
+    l5_job_id = _enqueue(repo, repo_root=repo_root, relative_path="l5.py", now_iso=now_iso)
+    with connect(db_path) as conn:
+        conn.execute(
+            "UPDATE file_enrich_queue SET enqueue_source = 'l5' WHERE job_id = :job_id",
+            {"job_id": l5_job_id},
+        )
+        conn.commit()
+
+    acquired_l2 = repo.acquire_pending_for_l2(limit=10, now_iso=now_iso)
+    acquired_ids = {job.job_id for job in acquired_l2}
+    assert scan_job_id in acquired_ids
+    assert l5_job_id not in acquired_ids
+
+
+def test_acquire_pending_all_excludes_l5_source_jobs(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = FileEnrichQueueRepository(db_path)
+    now_iso = "2026-03-01T00:00:00+00:00"
+    repo_root = "/repo"
+
+    scan_job_id = _enqueue(repo, repo_root=repo_root, relative_path="scan-all.py", now_iso=now_iso)
+    l5_job_id = _enqueue(repo, repo_root=repo_root, relative_path="l5-all.py", now_iso=now_iso)
+    with connect(db_path) as conn:
+        conn.execute(
+            "UPDATE file_enrich_queue SET enqueue_source = 'l5' WHERE job_id = :job_id",
+            {"job_id": l5_job_id},
+        )
+        conn.commit()
+
+    acquired = repo.acquire_pending(limit=10, now_iso=now_iso)
+    acquired_ids = {job.job_id for job in acquired}
+    assert scan_job_id in acquired_ids
+    assert l5_job_id not in acquired_ids
+
+

@@ -18,8 +18,17 @@ class SymbolCacheRepository:
         """저장소에 사용할 DB 경로를 저장한다."""
         self._db_path = db_path
 
-    def get_cached_items(self, repo_root: str, relative_path: str, query: str, file_hash: str) -> list[SearchItemDTO] | None:
+    def get_cached_items(
+        self,
+        repo_root: str,
+        relative_path: str,
+        query: str,
+        file_hash: str,
+        cache_variant: str = "list",
+    ) -> list[SearchItemDTO] | None:
         """유효한 캐시 항목을 조회한다."""
+        normalized_variant = _normalize_cache_variant(cache_variant)
+        query_key = _cache_query_key(query, normalized_variant)
         with connect(self._db_path) as conn:
             row = conn.execute(
                 """
@@ -34,10 +43,29 @@ class SymbolCacheRepository:
                 {
                     "repo_root": repo_root,
                     "relative_path": relative_path,
-                    "query": query,
+                    "query": query_key,
                     "file_hash": file_hash,
                 },
             ).fetchone()
+            if row is None and normalized_variant == "list":
+                # 하위호환: variant 도입 전 레거시 키(query 원문)를 우선 재사용한다.
+                row = conn.execute(
+                    """
+                    SELECT items_json
+                    FROM lsp_symbol_cache
+                    WHERE repo_root = :repo_root
+                      AND relative_path = :relative_path
+                      AND query = :query
+                      AND file_hash = :file_hash
+                      AND invalidated = 0
+                    """,
+                    {
+                        "repo_root": repo_root,
+                        "relative_path": relative_path,
+                        "query": query,
+                        "file_hash": file_hash,
+                    },
+                ).fetchone()
         if row is None:
             return None
 
@@ -57,6 +85,7 @@ class SymbolCacheRepository:
                     source=str(raw["source"]),
                     name=str(raw["name"]) if raw["name"] is not None else None,
                     kind=str(raw["kind"]) if raw["kind"] is not None else None,
+                    symbol_info=str(raw["symbol_info"]) if raw.get("symbol_info") is not None else None,
                     content_hash=str(raw["content_hash"]) if raw.get("content_hash") is not None else None,
                     rrf_score=float(raw.get("rrf_score", 0.0)),
                     importance_score=float(raw.get("importance_score", 0.0)),
@@ -66,8 +95,18 @@ class SymbolCacheRepository:
             )
         return items
 
-    def upsert_items(self, repo_root: str, relative_path: str, query: str, file_hash: str, items: list[SearchItemDTO]) -> None:
+    def upsert_items(
+        self,
+        repo_root: str,
+        relative_path: str,
+        query: str,
+        file_hash: str,
+        items: list[SearchItemDTO],
+        cache_variant: str = "list",
+    ) -> None:
         """캐시 항목을 업서트한다."""
+        normalized_variant = _normalize_cache_variant(cache_variant)
+        query_key = _cache_query_key(query, normalized_variant)
         payload = [
             {
                 "item_type": item.item_type,
@@ -77,6 +116,7 @@ class SymbolCacheRepository:
                 "source": item.source,
                 "name": item.name,
                 "kind": item.kind,
+                "symbol_info": item.symbol_info,
                 "content_hash": item.content_hash,
                 "rrf_score": item.rrf_score,
                 "importance_score": item.importance_score,
@@ -99,7 +139,7 @@ class SymbolCacheRepository:
                 {
                     "repo_root": repo_root,
                     "relative_path": relative_path,
-                    "query": query,
+                    "query": query_key,
                     "file_hash": file_hash,
                     "items_json": json.dumps(payload, ensure_ascii=False),
                 },
@@ -134,3 +174,14 @@ class SymbolCacheRepository:
             )
             conn.commit()
             return int(cur.rowcount if cur.rowcount is not None else 0)
+
+
+def _normalize_cache_variant(cache_variant: str) -> str:
+    normalized = cache_variant.strip().lower()
+    if normalized in {"detail", "list"}:
+        return normalized
+    return "list"
+
+
+def _cache_query_key(query: str, cache_variant: str) -> str:
+    return f"{query}\n__cache_variant:{cache_variant}"

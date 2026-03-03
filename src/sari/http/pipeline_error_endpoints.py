@@ -8,7 +8,7 @@ from starlette.responses import HTMLResponse, JSONResponse
 
 from sari.core.exceptions import ValidationError
 from sari.core.models import ErrorResponseDTO
-from sari.core.repo_resolver import resolve_repo_root
+from sari.core.repo.resolver import resolve_repo_root
 from sari.http.context import HttpContext
 
 

@@ -1,0 +1,29 @@
+{
+  "capture_to_kind": {
+    "symbol.class": "class",
+    "symbol.function": "function",
+    "symbol.method": "method",
+    "symbol.field": "field"
+  },
+  "kind_bucket_map": {
+    "class": "class",
+    "function": "function",
+    "method": "method",
+    "field": "field",
+    "variable": "field",
+    "5": "class",
+    "6": "method",
+    "7": "field",
+    "8": "field",
+    "12": "function",
+    "13": "field",
+    "14": "field",
+    "22": "field"
+  },
+  "missing_pattern_rules": [],
+  "name_extract_rules": [],
+  "line_match_overrides": {
+    "name_kind_fallback_buckets": ["class", "method", "function", "field"],
+    "name_kind_fallback_max_line_gap": 6
+  }
+}

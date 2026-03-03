@@ -112,11 +112,16 @@ class LspToolDataRepository:
             )
             conn.commit()
 
-    def replace_file_data_many(self, items: list[LspExtractPersistDTO]) -> None:
+    def replace_file_data_many(self, items: list[LspExtractPersistDTO], *, conn=None) -> None:
         """파일 단위 심볼/관계 데이터를 배치 교체 저장한다."""
         if len(items) == 0:
             return
-        with connect(self._db_path) as conn:
+        owned_conn = conn is None
+        if owned_conn:
+            conn = connect(self._db_path)
+        if conn is None:
+            raise RuntimeError("conn must not be None when owned_conn is False")
+        try:
             for item in items:
                 conn.execute(
                     """
@@ -192,7 +197,11 @@ class LspToolDataRepository:
                         """,
                         relation_rows,
                     )
-            conn.commit()
+            if owned_conn:
+                conn.commit()
+        finally:
+            if owned_conn:
+                conn.close()
 
     def _dedupe_symbols(self, symbols: list[dict[str, object]]) -> list[dict[str, object]]:
         """심볼 고유키 기준으로 중복 항목을 제거한다."""
@@ -254,6 +263,22 @@ class LspToolDataRepository:
             return 0
         return row_int(row, "symbol_count")
 
+    def count_distinct_symbol_files(self) -> int:
+        """심볼이 저장된 distinct 파일 수를 반환한다."""
+        with connect(self._db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS file_count
+                FROM (
+                    SELECT DISTINCT repo_root, relative_path
+                    FROM lsp_symbols
+                )
+                """
+            ).fetchone()
+        if row is None:
+            return 0
+        return row_int(row, "file_count")
+
     def count_relations(self, repo_root: str, relative_path: str, content_hash: str) -> int:
         """파일의 호출 관계 레코드 수를 반환한다."""
         with connect(self._db_path) as conn:
@@ -299,7 +324,15 @@ class LspToolDataRepository:
                 SELECT repo_root, relative_path, name, kind, line, end_line, content_hash,
                        symbol_key, parent_symbol_key, depth, container_name
                 FROM lsp_symbols
-                WHERE repo_root = :repo_root
+                WHERE (
+                        repo_root = :repo_root
+                        OR repo_root IN (
+                            SELECT DISTINCT repo_root
+                            FROM collected_files_l1
+                            WHERE scope_repo_root = :repo_root
+                              AND is_deleted = 0
+                        )
+                    )
                   AND name LIKE :query_like
                   {where_prefix}
                 ORDER BY relative_path ASC, line ASC
@@ -332,7 +365,15 @@ class LspToolDataRepository:
                 """
                 SELECT repo_root, relative_path, from_symbol, to_symbol, line, content_hash
                 FROM lsp_call_relations
-                WHERE repo_root = :repo_root
+                WHERE (
+                        repo_root = :repo_root
+                        OR repo_root IN (
+                            SELECT DISTINCT repo_root
+                            FROM collected_files_l1
+                            WHERE scope_repo_root = :repo_root
+                              AND is_deleted = 0
+                        )
+                    )
                   AND to_symbol = :to_symbol
                 ORDER BY relative_path ASC, line ASC
                 LIMIT :limit
@@ -359,7 +400,15 @@ class LspToolDataRepository:
                 """
                 SELECT repo_root, relative_path, from_symbol, to_symbol, line, content_hash
                 FROM lsp_call_relations
-                WHERE repo_root = :repo_root
+                WHERE (
+                        repo_root = :repo_root
+                        OR repo_root IN (
+                            SELECT DISTINCT repo_root
+                            FROM collected_files_l1
+                            WHERE scope_repo_root = :repo_root
+                              AND is_deleted = 0
+                        )
+                    )
                   AND from_symbol = :from_symbol
                 ORDER BY relative_path ASC, line ASC
                 LIMIT :limit
@@ -386,7 +435,15 @@ class LspToolDataRepository:
                 SELECT repo_root, relative_path, name, kind, line, end_line, content_hash,
                        symbol_key, parent_symbol_key, depth, container_name
                 FROM lsp_symbols
-                WHERE repo_root = :repo_root
+                WHERE (
+                        repo_root = :repo_root
+                        OR repo_root IN (
+                            SELECT DISTINCT repo_root
+                            FROM collected_files_l1
+                            WHERE scope_repo_root = :repo_root
+                              AND is_deleted = 0
+                        )
+                    )
                   AND name LIKE :name_like
                 ORDER BY relative_path ASC, line ASC
                 LIMIT :limit
@@ -417,7 +474,15 @@ class LspToolDataRepository:
                 """
                 SELECT COUNT(*) AS symbol_count
                 FROM lsp_symbols
-                WHERE repo_root = :repo_root
+                WHERE (
+                        repo_root = :repo_root
+                        OR repo_root IN (
+                            SELECT DISTINCT repo_root
+                            FROM collected_files_l1
+                            WHERE scope_repo_root = :repo_root
+                              AND is_deleted = 0
+                        )
+                    )
                 """,
                 {"repo_root": repo_root},
             ).fetchone()
@@ -425,7 +490,15 @@ class LspToolDataRepository:
                 """
                 SELECT COUNT(*) AS relation_count
                 FROM lsp_call_relations
-                WHERE repo_root = :repo_root
+                WHERE (
+                        repo_root = :repo_root
+                        OR repo_root IN (
+                            SELECT DISTINCT repo_root
+                            FROM collected_files_l1
+                            WHERE scope_repo_root = :repo_root
+                              AND is_deleted = 0
+                        )
+                    )
                 """,
                 {"repo_root": repo_root},
             ).fetchone()
@@ -433,7 +506,15 @@ class LspToolDataRepository:
                 """
                 SELECT COUNT(*) AS orphan_relation_count
                 FROM lsp_call_relations rel
-                WHERE rel.repo_root = :repo_root
+                WHERE (
+                        rel.repo_root = :repo_root
+                        OR rel.repo_root IN (
+                            SELECT DISTINCT repo_root
+                            FROM collected_files_l1
+                            WHERE scope_repo_root = :repo_root
+                              AND is_deleted = 0
+                        )
+                    )
                   AND NOT EXISTS (
                     SELECT 1
                     FROM lsp_symbols sym
@@ -455,9 +536,17 @@ class LspToolDataRepository:
         with connect(self._db_path) as conn:
             row = conn.execute(
                 """
-                SELECT COUNT(DISTINCT relative_path) AS caller_file_count
+                SELECT COUNT(DISTINCT (repo_root || '::' || relative_path)) AS caller_file_count
                 FROM lsp_call_relations
-                WHERE repo_root = :repo_root
+                WHERE (
+                        repo_root = :repo_root
+                        OR repo_root IN (
+                            SELECT DISTINCT repo_root
+                            FROM collected_files_l1
+                            WHERE scope_repo_root = :repo_root
+                              AND is_deleted = 0
+                        )
+                    )
                   AND to_symbol = :to_symbol
                 """,
                 {"repo_root": repo_root, "to_symbol": symbol_name},
@@ -494,6 +583,63 @@ class LspToolDataRepository:
             for row in rows
         ]
 
+    def list_file_symbols_full(self, repo_root: str, relative_path: str, content_hash: str) -> list[dict[str, object]]:
+        """파일 단위 심볼 집합(확장 메타 포함)을 반환한다."""
+        with connect(self._db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT name, kind, line, end_line, symbol_key, parent_symbol_key, depth, container_name
+                FROM lsp_symbols
+                WHERE repo_root = :repo_root
+                  AND relative_path = :relative_path
+                  AND content_hash = :content_hash
+                ORDER BY line ASC, name ASC
+                """,
+                {
+                    "repo_root": repo_root,
+                    "relative_path": relative_path,
+                    "content_hash": content_hash,
+                },
+            ).fetchall()
+        return [
+            {
+                "name": row_str(row, "name"),
+                "kind": row_str(row, "kind"),
+                "line": row_int(row, "line"),
+                "end_line": row_int(row, "end_line"),
+                "symbol_key": row_str(row, "symbol_key") or None,
+                "parent_symbol_key": row_str(row, "parent_symbol_key") or None,
+                "depth": row_int(row, "depth"),
+                "container_name": row_str(row, "container_name") or None,
+            }
+            for row in rows
+        ]
+
+    def list_file_symbols_latest(self, repo_root: str, relative_path: str) -> list[dict[str, object]]:
+        """content_hash 불일치 상황에서도 파일 최신 심볼 집합을 반환한다.
+
+        품질 비교(offline/report) 경로에서만 사용한다. 실시간 read/search 경로는
+        content_hash 일치 강제 조회(list_file_symbols)를 그대로 사용해야 한다.
+        """
+        with connect(self._db_path) as conn:
+            latest = conn.execute(
+                """
+                SELECT content_hash
+                FROM lsp_symbols
+                WHERE repo_root = :repo_root
+                  AND relative_path = :relative_path
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                {
+                    "repo_root": repo_root,
+                    "relative_path": relative_path,
+                },
+            ).fetchone()
+        if latest is None:
+            return []
+        return self.list_file_symbols(repo_root, relative_path, row_str(latest, "content_hash"))
+
     def list_file_relations(self, repo_root: str, relative_path: str, content_hash: str) -> list[dict[str, object]]:
         """파일 단위 호출 관계 집합을 반환한다."""
         with connect(self._db_path) as conn:
@@ -520,3 +666,24 @@ class LspToolDataRepository:
             }
             for row in rows
         ]
+
+    def list_file_relations_latest(self, repo_root: str, relative_path: str) -> list[dict[str, object]]:
+        """content_hash 불일치 상황에서도 파일 최신 호출 관계 집합을 반환한다."""
+        with connect(self._db_path) as conn:
+            latest = conn.execute(
+                """
+                SELECT content_hash
+                FROM lsp_call_relations
+                WHERE repo_root = :repo_root
+                  AND relative_path = :relative_path
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                {
+                    "repo_root": repo_root,
+                    "relative_path": relative_path,
+                },
+            ).fetchone()
+        if latest is None:
+            return []
+        return self.list_file_relations(repo_root, relative_path, row_str(latest, "content_hash"))

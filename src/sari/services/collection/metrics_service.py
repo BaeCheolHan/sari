@@ -7,10 +7,8 @@ from threading import Lock
 from typing import Callable
 
 from sari.core.models import PipelineMetricsDTO
-from sari.services.collection.perf_trace import trace_methods
 
 
-@trace_methods("metrics_service_fn")
 class PipelineMetricsService:
     """진행률/ETA/처리량 계산 책임을 담당한다."""
 

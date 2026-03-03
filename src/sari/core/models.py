@@ -2,6 +2,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 @dataclass(frozen=True)
 class WorkspaceDTO:
     path: str
@@ -204,10 +205,12 @@ class CandidateIndexChangeDTO:
     size_bytes: int
     event_source: str
     recorded_at: str
+    scope_repo_root: str | None = None
     def to_sql_params(self) -> dict[str, object]:
         return {
             "repo_id": self.repo_id,
             "repo_root": self.repo_root,
+            "scope_repo_root": self.scope_repo_root or self.repo_root,
             "relative_path": self.relative_path,
             "absolute_path": self.absolute_path,
             "content_hash": self.content_hash,
@@ -232,6 +235,7 @@ class CandidateIndexChangeLogDTO:
     reason: str | None
     created_at: str
     updated_at: str
+    scope_repo_root: str | None = None
 @dataclass(frozen=True)
 class RankingComponentsDTO:
     """검색 점수 구성요소를 표현한다."""
@@ -262,6 +266,7 @@ class SearchItemDTO:
     source: str
     name: str | None
     kind: str | None
+    symbol_info: str | None = None
     content_hash: str | None = None
     rrf_score: float = 0.0
     importance_score: float = 0.0
@@ -292,10 +297,12 @@ class CollectedFileL1DTO:
     last_seen_at: str
     updated_at: str
     enrich_state: str
+    scope_repo_root: str | None = None
     def to_sql_params(self) -> dict[str, object]:
         return {
             "repo_id": self.repo_id,
             "repo_root": self.repo_root,
+            "scope_repo_root": self.scope_repo_root or self.repo_root,
             "relative_path": self.relative_path,
             "absolute_path": self.absolute_path,
             "repo_label": self.repo_label,
@@ -322,11 +329,21 @@ class FileEnrichJobDTO:
     next_retry_at: str
     created_at: str
     updated_at: str
+    defer_reason: str | None = None
+    deferred_state: str | None = None
+    deferred_count: int = 0
+    first_deferred_at: str | None = None
+    last_deferred_at: str | None = None
+    scope_level: str | None = None
+    scope_root: str | None = None
+    scope_attempts: int = 0
+    scope_repo_root: str | None = None
     def to_sql_params(self) -> dict[str, object]:
         return {
             "job_id": self.job_id,
             "repo_id": self.repo_id,
             "repo_root": self.repo_root,
+            "scope_repo_root": self.scope_repo_root or self.repo_root,
             "relative_path": self.relative_path,
             "content_hash": self.content_hash,
             "priority": self.priority,
@@ -334,6 +351,14 @@ class FileEnrichJobDTO:
             "status": self.status,
             "attempt_count": self.attempt_count,
             "last_error": self.last_error,
+            "defer_reason": self.defer_reason,
+            "deferred_state": self.deferred_state,
+            "deferred_count": self.deferred_count,
+            "first_deferred_at": self.first_deferred_at,
+            "last_deferred_at": self.last_deferred_at,
+            "scope_level": self.scope_level,
+            "scope_root": self.scope_root,
+            "scope_attempts": self.scope_attempts,
             "next_retry_at": self.next_retry_at,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -354,6 +379,8 @@ class EnqueueRequestDTO:
     priority: int
     enqueue_source: str
     now_iso: str
+    defer_reason: str | None = None
+    scope_repo_root: str | None = None
 @dataclass(frozen=True)
 class CollectedFileBodyDTO:
     repo_id: str
@@ -365,10 +392,12 @@ class CollectedFileBodyDTO:
     normalized_text: str
     created_at: str
     updated_at: str
+    scope_repo_root: str | None = None
     def to_sql_params(self) -> dict[str, object]:
         return {
             "repo_id": self.repo_id,
             "repo_root": self.repo_root,
+            "scope_repo_root": self.scope_repo_root or self.repo_root,
             "relative_path": self.relative_path,
             "content_hash": self.content_hash,
             "content_zlib": self.content_zlib,
@@ -391,9 +420,11 @@ class ToolReadinessStateDTO:
     tool_ready: bool
     last_reason: str
     updated_at: str
+    scope_repo_root: str | None = None
     def to_sql_params(self) -> dict[str, object]:
         return {
             "repo_root": self.repo_root,
+            "scope_repo_root": self.scope_repo_root or self.repo_root,
             "relative_path": self.relative_path,
             "content_hash": self.content_hash,
             "list_files_ready": 1 if self.list_files_ready else 0,
@@ -412,9 +443,11 @@ class EnrichStateUpdateDTO:
     relative_path: str
     enrich_state: str
     updated_at: str
+    scope_repo_root: str | None = None
     def to_sql_params(self) -> dict[str, object]:
         return {
             "repo_root": self.repo_root,
+            "scope_repo_root": self.scope_repo_root or self.repo_root,
             "relative_path": self.relative_path,
             "enrich_state": self.enrich_state,
             "updated_at": self.updated_at,
@@ -424,9 +457,11 @@ class FileBodyDeleteTargetDTO:
     repo_root: str
     relative_path: str
     content_hash: str
+    scope_repo_root: str | None = None
     def to_sql_params(self) -> dict[str, object]:
         return {
             "repo_root": self.repo_root,
+            "scope_repo_root": self.scope_repo_root or self.repo_root,
             "relative_path": self.relative_path,
             "content_hash": self.content_hash,
         }
@@ -438,6 +473,7 @@ class LspExtractPersistDTO:
     symbols: list[dict[str, object]]
     relations: list[dict[str, object]]
     created_at: str
+    scope_repo_root: str | None = None
 @dataclass(frozen=True)
 class FileListItemDTO:
     repo: str
@@ -783,6 +819,67 @@ class L3DiffResultDTO:
             "caller_fp": self.caller_fp,
             "caller_fn": self.caller_fn,
             "error_message": self.error_message,
+        }
+
+
+class L5ReasonCode(str, Enum):
+    """L5(LSP 상세처리) 진입 사유 코드."""
+
+    UNRESOLVED_SYMBOL = "L5_REASON_UNRESOLVED_SYMBOL"
+    CROSS_FILE_REFERENCE_REQUIRED = "L5_REASON_CROSS_FILE_REFERENCE_REQUIRED"
+    RENAME_DEFINITION_PRECISION = "L5_REASON_RENAME_DEFINITION_PRECISION"
+    GOLDENSET_COVERAGE = "L5_REASON_GOLDENSET_COVERAGE"
+    USER_INTERACTIVE = "L5_REASON_USER_INTERACTIVE"
+    REGRESSION_SAMPLING = "L5_REASON_REGRESSION_SAMPLING"
+    USER_INTERACTIVE_UNKNOWN = "L5_REASON_USER_INTERACTIVE_UNKNOWN"
+
+
+class L5RejectReason(str, Enum):
+    """L5 admission 거부 사유 코드."""
+
+    PRESSURE_RATE_EXCEEDED = "pressure_rate_exceeded"
+    PRESSURE_BURST_EXCEEDED = "pressure_burst_exceeded"
+    PRESSURE_WORKSPACE_EXCEEDED = "pressure_workspace_exceeded"
+    COOLDOWN_ACTIVE = "cooldown_active"
+    POLICY_DISABLED = "policy_disabled"
+    MODE_NOT_ALLOWED = "mode_not_allowed"
+    REASON_MISSING = "reason_missing"
+
+
+class L5RequestMode(str, Enum):
+    """L5 요청 모드 분류."""
+
+    INTERACTIVE = "interactive"
+    BATCH = "batch"
+
+
+@dataclass(frozen=True)
+class L4AdmissionDecisionDTO:
+    """L4 게이트 결과를 표현한다."""
+
+    admit_l5: bool
+    reason_code: L5ReasonCode | None = None
+    reject_reason: L5RejectReason | None = None
+    mode: L5RequestMode = L5RequestMode.BATCH
+    workspace_uid: str = ""
+    budget_cost: int = 0
+    cooldown_until: float | None = None
+    primary_cause: str | None = None
+    reject_stage: str | None = None
+    policy_version: int | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "admit_l5": self.admit_l5,
+            "reason_code": self.reason_code.value if self.reason_code is not None else None,
+            "reject_reason": self.reject_reason.value if self.reject_reason is not None else None,
+            "mode": self.mode.value,
+            "workspace_uid": self.workspace_uid,
+            "budget_cost": self.budget_cost,
+            "cooldown_until": self.cooldown_until,
+            "primary_cause": self.primary_cause,
+            "reject_stage": self.reject_stage,
+            "policy_version": self.policy_version,
         }
 @dataclass(frozen=True)
 class SnippetSaveDTO:

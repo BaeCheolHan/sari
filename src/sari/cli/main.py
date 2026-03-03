@@ -9,45 +9,51 @@ from dataclasses import dataclass
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import click
 
 from sari.core.config import AppConfig
-from sari.core.exceptions import BenchmarkError, DaemonError, PerfError, QualityError, SariBaseError, WorkspaceError
-from sari.db.repositories.file_body_repository import FileBodyRepository
-from sari.db.repositories.file_collection_repository import FileCollectionRepository
-from sari.db.repositories.runtime_repository import RuntimeRepository
-from sari.db.repositories.symbol_cache_repository import SymbolCacheRepository
-from sari.db.repositories.file_enrich_queue_repository import FileEnrichQueueRepository
-from sari.db.repositories.daemon_registry_repository import DaemonRegistryRepository
-from sari.db.repositories.lsp_tool_data_repository import LspToolDataRepository
-from sari.db.repositories.pipeline_benchmark_repository import PipelineBenchmarkRepository
-from sari.db.repositories.pipeline_perf_repository import PipelinePerfRepository
-from sari.db.repositories.pipeline_quality_repository import PipelineQualityRepository
-from sari.db.repositories.pipeline_control_state_repository import PipelineControlStateRepository
-from sari.db.repositories.pipeline_job_event_repository import PipelineJobEventRepository
-from sari.db.repositories.pipeline_error_event_repository import PipelineErrorEventRepository
-from sari.db.repositories.pipeline_policy_repository import PipelinePolicyRepository
-from sari.db.repositories.tool_readiness_repository import ToolReadinessRepository
-from sari.db.repositories.language_probe_repository import LanguageProbeRepository
-from sari.db.repositories.pipeline_lsp_matrix_repository import PipelineLspMatrixRepository
-from sari.db.repositories.workspace_repository import WorkspaceRepository
-from sari.db.migration import ensure_migrated
-from sari.db.schema import init_schema
-from sari.mcp.proxy import run_stdio_proxy
-from sari.mcp.server import run_stdio
-from sari.services.admin_service import AdminService
-from sari.services.daemon_service import DaemonService
-from sari.services.file_collection_service import build_default_file_collection_service
-from sari.services.pipeline_benchmark_service import BenchmarkLspExtractionBackend, PipelineBenchmarkService
-from sari.services.pipeline_perf_service import PipelinePerfService
-from sari.services.pipeline_quality_service import PipelineQualityService, SerenaGoldenBackend
-from sari.services.pipeline_control_service import PipelineControlService
-from sari.services.language_probe_service import LanguageProbeService
-from sari.services.lsp_matrix_diagnose_service import LspMatrixDiagnoseService
-from sari.services.pipeline_lsp_matrix_service import PipelineLspMatrixService
-from sari.services.workspace_service import WorkspaceService
-from sari.lsp.hub import LspHub
+from sari.core.composition import build_lsp_hub, build_repository_bundle
+from sari.core.exceptions import DaemonError, PerfError, QualityError, SariBaseError, WorkspaceError
+
+if TYPE_CHECKING:
+    from sari.services.admin import AdminService
+    from sari.services.daemon import DaemonService
+    from sari.services.language_probe.service import LanguageProbeService
+    from sari.services.lsp_matrix.diagnose_service import LspMatrixDiagnoseService
+    from sari.services.pipeline.control_service import PipelineControlService
+    from sari.services.pipeline.lsp_matrix_ports import LanguageProbePort, PipelineLspMatrixPort
+    from sari.services.pipeline.perf_service import PipelinePerfService
+    from sari.services.pipeline.quality_service import PipelineQualityService
+    from sari.services.workspace import WorkspaceService
+
+
+def run_stdio_proxy(
+    *,
+    db_path: Path,
+    workspace_root: str | None = None,
+    host_override: str | None = None,
+    port_override: int | None = None,
+    timeout_sec: float = 2.0,
+) -> int:
+    """MCP proxy 실행기를 lazy import로 호출한다."""
+    from sari.mcp.proxy import run_stdio_proxy as _run_stdio_proxy
+
+    return _run_stdio_proxy(
+        db_path=db_path,
+        workspace_root=workspace_root,
+        host_override=host_override,
+        port_override=port_override,
+        timeout_sec=timeout_sec,
+    )
+
+
+def run_stdio(db_path: Path) -> int:
+    """MCP stdio 서버 실행기를 lazy import로 호출한다."""
+    from sari.mcp.server import run_stdio as _run_stdio
+
+    return _run_stdio(db_path)
 
 
 @click.group(invoke_without_command=True)
@@ -85,33 +91,44 @@ class CliServiceBundle:
     daemon_service: DaemonService
     admin_service: AdminService
     pipeline_control_service: PipelineControlService
-    pipeline_benchmark_service: PipelineBenchmarkService
     pipeline_perf_service: PipelinePerfService
     pipeline_quality_service: PipelineQualityService
-    language_probe_service: LanguageProbeService
-    pipeline_lsp_matrix_service: PipelineLspMatrixService
+    language_probe_service: LanguageProbePort
+    pipeline_lsp_matrix_service: PipelineLspMatrixPort
     lsp_matrix_diagnose_service: LspMatrixDiagnoseService
 
 
 def _build_services() -> CliServiceBundle:
     """CLI에서 공통으로 사용할 서비스를 생성한다."""
+    from sari.services.admin import AdminService
+    from sari.services.collection.service import build_default_file_collection_service
+    from sari.services.daemon import DaemonService
+    from sari.services.language_probe.service import LanguageProbeService
+    from sari.services.lsp_matrix.diagnose_service import LspMatrixDiagnoseService
+    from sari.services.pipeline.control_service import PipelineControlService
+    from sari.services.pipeline.lsp_matrix_service import PipelineLspMatrixService
+    from sari.services.pipeline.perf_service import PipelinePerfService
+    from sari.services.pipeline.quality_service import PipelineQualityService, SerenaGoldenBackend
+    from sari.services.workspace import WorkspaceService
+
     config = AppConfig.default()
-    init_schema(config.db_path)
-    ensure_migrated(config.db_path)
-    workspace_repo = WorkspaceRepository(config.db_path)
-    runtime_repo = RuntimeRepository(config.db_path)
-    daemon_registry_repo = DaemonRegistryRepository(config.db_path)
-    symbol_cache_repo = SymbolCacheRepository(config.db_path)
-    queue_repo = FileEnrichQueueRepository(config.db_path)
-    policy_repo = PipelinePolicyRepository(config.db_path)
-    control_state_repo = PipelineControlStateRepository(config.db_path)
-    event_repo = PipelineJobEventRepository(config.db_path)
-    error_event_repo = PipelineErrorEventRepository(config.db_path)
-    file_repo = FileCollectionRepository(config.db_path)
-    body_repo = FileBodyRepository(config.db_path)
-    lsp_repo = LspToolDataRepository(config.db_path)
-    readiness_repo = ToolReadinessRepository(config.db_path)
-    file_collection_service = build_default_file_collection_service(
+    lsp_hub_config = config.lsp_hub_config()
+    repos = build_repository_bundle(config.db_path)
+    workspace_repo = repos.workspace_repo
+    runtime_repo = repos.runtime_repo
+    daemon_registry_repo = repos.daemon_registry_repo
+    symbol_cache_repo = repos.symbol_cache_repo
+    queue_repo = repos.enrich_queue_repo
+    policy_repo = repos.policy_repo
+    control_state_repo = repos.control_state_repo
+    event_repo = repos.event_repo
+    error_event_repo = repos.error_event_repo
+    file_repo = repos.file_repo
+    body_repo = repos.body_repo
+    lsp_repo = repos.lsp_repo
+    tool_layer_repo = repos.tool_layer_repo
+    readiness_repo = repos.readiness_repo
+    perf_file_collection_service = build_default_file_collection_service(
         workspace_repo=workspace_repo,
         file_repo=file_repo,
         enrich_queue_repo=queue_repo,
@@ -122,7 +139,7 @@ def _build_services() -> CliServiceBundle:
         event_repo=event_repo,
         error_event_repo=error_event_repo,
         run_mode=config.run_mode,
-        lsp_backend=BenchmarkLspExtractionBackend(),
+        lsp_backend=None,
         persist_body_for_read=False,
         l3_parallel_enabled=config.l3_parallel_enabled,
         l3_executor_max_workers=config.l3_executor_max_workers,
@@ -134,42 +151,44 @@ def _build_services() -> CliServiceBundle:
         lsp_probe_bootstrap_top_k=config.lsp_probe_bootstrap_top_k,
         lsp_probe_language_priority=config.lsp_probe_language_priority,
         lsp_probe_l1_languages=config.lsp_probe_l1_languages,
+        lsp_scope_java_markers=config.lsp_scope_java_markers,
+        lsp_scope_ts_markers=config.lsp_scope_ts_markers,
+        lsp_scope_vue_markers=config.lsp_scope_vue_markers,
+        lsp_scope_top_level_fallback=config.lsp_scope_top_level_fallback,
+        lsp_scope_active_languages=config.lsp_scope_active_languages,
+        lsp_session_broker_enabled=config.lsp_session_broker_enabled,
+        lsp_hotness_event_window_sec=config.lsp_hotness_event_window_sec,
+        lsp_hotness_decay_window_sec=config.lsp_hotness_decay_window_sec,
+        lsp_broker_backlog_min_share=config.lsp_broker_backlog_min_share,
+        lsp_broker_max_standby_sessions_per_lang=config.lsp_broker_max_standby_sessions_per_lang,
+        lsp_broker_max_standby_sessions_per_budget_group=config.lsp_broker_max_standby_sessions_per_budget_group,
+        lsp_broker_ts_vue_active_cap=config.lsp_broker_ts_vue_active_cap,
+        lsp_broker_java_hot_lanes=config.lsp_broker_java_hot_lanes,
+        lsp_broker_java_backlog_lanes=config.lsp_broker_java_backlog_lanes,
+        lsp_broker_java_sticky_ttl_sec=config.lsp_broker_java_sticky_ttl_sec,
+        lsp_broker_java_switch_cooldown_sec=config.lsp_broker_java_switch_cooldown_sec,
+        lsp_broker_java_min_lease_ms=config.lsp_broker_java_min_lease_ms,
+        lsp_broker_ts_hot_lanes=config.lsp_broker_ts_hot_lanes,
+        lsp_broker_ts_backlog_lanes=config.lsp_broker_ts_backlog_lanes,
+        lsp_broker_ts_sticky_ttl_sec=config.lsp_broker_ts_sticky_ttl_sec,
+        lsp_broker_ts_switch_cooldown_sec=config.lsp_broker_ts_switch_cooldown_sec,
+        lsp_broker_ts_min_lease_ms=config.lsp_broker_ts_min_lease_ms,
+        lsp_broker_vue_hot_lanes=config.lsp_broker_vue_hot_lanes,
+        lsp_broker_vue_backlog_lanes=config.lsp_broker_vue_backlog_lanes,
+        lsp_broker_vue_sticky_ttl_sec=config.lsp_broker_vue_sticky_ttl_sec,
+        lsp_broker_vue_switch_cooldown_sec=config.lsp_broker_vue_switch_cooldown_sec,
+        lsp_broker_vue_min_lease_ms=config.lsp_broker_vue_min_lease_ms,
+        pipeline_l5_worker_count=config.pipeline_l5_worker_count,
+        l5_db_short_circuit_enabled=config.l5_db_short_circuit_enabled,
+        tool_layer_repo=tool_layer_repo,
     )
-    benchmark_repo = PipelineBenchmarkRepository(config.db_path)
-    perf_repo = PipelinePerfRepository(config.db_path)
-    quality_repo = PipelineQualityRepository(config.db_path)
-    language_probe_repo = LanguageProbeRepository(config.db_path)
-    lsp_matrix_repo = PipelineLspMatrixRepository(config.db_path)
-    quality_hub = LspHub(
-        request_timeout_sec=config.lsp_request_timeout_sec,
-        max_instances_per_repo_language=config.lsp_max_instances_per_repo_language,
-        bulk_mode_enabled=config.lsp_bulk_mode_enabled,
-        bulk_max_instances_per_repo_language=config.lsp_bulk_max_instances_per_repo_language,
-        interactive_reserved_slots_per_repo_language=config.lsp_interactive_reserved_slots_per_repo_language,
-        interactive_timeout_sec=config.lsp_interactive_timeout_sec,
-        lsp_global_soft_limit=config.lsp_global_soft_limit,
-        scale_out_hot_hits=config.lsp_scale_out_hot_hits,
-        file_buffer_idle_ttl_sec=config.lsp_file_buffer_idle_ttl_sec,
-        file_buffer_max_open=config.lsp_file_buffer_max_open,
-        java_min_major=config.lsp_java_min_major,
-        max_concurrent_starts=config.lsp_max_concurrent_starts,
-        max_concurrent_l1_probes=config.lsp_max_concurrent_l1_probes,
-    )
-    probe_hub = LspHub(
-        request_timeout_sec=config.lsp_request_timeout_sec,
-        max_instances_per_repo_language=config.lsp_max_instances_per_repo_language,
-        bulk_mode_enabled=config.lsp_bulk_mode_enabled,
-        bulk_max_instances_per_repo_language=config.lsp_bulk_max_instances_per_repo_language,
-        interactive_reserved_slots_per_repo_language=config.lsp_interactive_reserved_slots_per_repo_language,
-        interactive_timeout_sec=config.lsp_interactive_timeout_sec,
-        lsp_global_soft_limit=config.lsp_global_soft_limit,
-        scale_out_hot_hits=config.lsp_scale_out_hot_hits,
-        file_buffer_idle_ttl_sec=config.lsp_file_buffer_idle_ttl_sec,
-        file_buffer_max_open=config.lsp_file_buffer_max_open,
-        java_min_major=config.lsp_java_min_major,
-        max_concurrent_starts=config.lsp_max_concurrent_starts,
-        max_concurrent_l1_probes=config.lsp_max_concurrent_l1_probes,
-    )
+    perf_repo = repos.perf_repo
+    stage_baseline_repo = repos.stage_baseline_repo
+    quality_repo = repos.quality_repo
+    language_probe_repo = repos.language_probe_repo
+    lsp_matrix_repo = repos.lsp_matrix_repo
+    quality_hub = build_lsp_hub(lsp_hub_config)
+    probe_hub = build_lsp_hub(lsp_hub_config)
     language_probe_service = LanguageProbeService(
         workspace_repo=workspace_repo,
         lsp_hub=probe_hub,
@@ -178,14 +197,6 @@ def _build_services() -> CliServiceBundle:
         per_language_timeout_overrides={"go": config.lsp_probe_timeout_go_sec},
         lsp_request_timeout_sec=config.lsp_request_timeout_sec,
         go_warmup_timeout_sec=config.lsp_probe_timeout_go_sec,
-    )
-    pipeline_benchmark_service = PipelineBenchmarkService(
-        file_collection_service=file_collection_service,
-        queue_repo=queue_repo,
-        lsp_repo=lsp_repo,
-        policy_repo=policy_repo,
-        benchmark_repo=benchmark_repo,
-        artifact_root=config.db_path.parent / "artifacts",
     )
     return CliServiceBundle(
         workspace_service=WorkspaceService(workspace_repo),
@@ -208,20 +219,20 @@ def _build_services() -> CliServiceBundle:
             queue_repo=queue_repo,
             control_state_repo=control_state_repo,
         ),
-        pipeline_benchmark_service=pipeline_benchmark_service,
         pipeline_perf_service=PipelinePerfService(
-            file_collection_service=file_collection_service,
+            file_collection_service=perf_file_collection_service,
             queue_repo=queue_repo,
-            benchmark_service=pipeline_benchmark_service,
             perf_repo=perf_repo,
             artifact_root=config.db_path.parent / "artifacts",
+            stage_baseline_repo=stage_baseline_repo,
         ),
         pipeline_quality_service=PipelineQualityService(
             file_repo=file_repo,
             lsp_repo=lsp_repo,
             quality_repo=quality_repo,
-            golden_backend=SerenaGoldenBackend(hub=quality_hub),
+            golden_backend=SerenaGoldenBackend(hub=quality_hub, lsp_repo=lsp_repo),
             artifact_root=config.db_path.parent / "artifacts",
+            tool_layer_repo=tool_layer_repo,
         ),
         language_probe_service=language_probe_service,
         pipeline_lsp_matrix_service=PipelineLspMatrixService(
@@ -497,6 +508,39 @@ def install_command(host: str, print_only: bool) -> None:
     _print_json(payload)
 
 
+@cli.group("lsp")
+def lsp_group() -> None:
+    """LSP 런타임/캐시 관리 명령 그룹이다."""
+
+
+@lsp_group.command("reset-unavailable")
+@click.option("--repo", type=str, default=None, help="특정 repo_root 범위만 초기화한다.")
+@click.option("--lang", type=str, default=None, help="특정 언어만 초기화한다 (예: python, go, java).")
+@click.option("--all", "reset_all", is_flag=True, default=False, help="전체 unavailable 캐시를 초기화한다.")
+def lsp_reset_unavailable_command(repo: str | None, lang: str | None, reset_all: bool) -> None:
+    """LSP unavailable cache를 수동으로 초기화한다."""
+    if not reset_all and (repo is None or repo.strip() == ""):
+        _print_json({"error": {"code": "ERR_REPO_REQUIRED", "message": "--repo 또는 --all 이 필요합니다"}}, exit_code=1)
+        return
+    services = _build_services()
+    file_collection_service = services.pipeline_perf_service._file_collection_service  # type: ignore[attr-defined]
+    resetter = getattr(file_collection_service, "reset_lsp_unavailable_cache", None)
+    if not callable(resetter):
+        _print_json({"error": {"code": "ERR_UNSUPPORTED", "message": "reset_lsp_unavailable_cache capability is required"}}, exit_code=1)
+        return
+    cleared = int(resetter(repo_root=None if reset_all else repo, language=lang))
+    _print_json(
+        {
+            "lsp_unavailable_reset": {
+                "scope": "all" if reset_all else ("repo_language" if lang else "repo"),
+                "repo_root": None if reset_all else str(Path(repo).expanduser().resolve()) if isinstance(repo, str) and repo.strip() != "" else None,
+                "language": lang,
+                "cleared_count": cleared,
+            }
+        }
+    )
+
+
 @cli.group("engine")
 def engine_group() -> None:
     """엔진 운영 명령 그룹이다."""
@@ -747,54 +791,6 @@ def pipeline_auto_tick_command() -> None:
     _print_json(services.pipeline_control_service.evaluate_auto_hold())
 
 
-@pipeline_group.group("benchmark")
-def pipeline_benchmark_group() -> None:
-    """파이프라인 벤치마크 명령 그룹이다."""
-
-
-@pipeline_benchmark_group.command("run")
-@click.option("--repo", type=str, required=True)
-@click.option("--target-files", type=int, default=50_000, show_default=True)
-@click.option("--profile", type=str, default="default", show_default=True)
-@click.option("--language-filter", type=str, multiple=True)
-@click.option("--per-language-report", is_flag=True, default=False)
-def pipeline_benchmark_run_command(
-    repo: str,
-    target_files: int,
-    profile: str,
-    language_filter: tuple[str, ...],
-    per_language_report: bool,
-) -> None:
-    """벤치마크를 실행하고 요약 결과를 출력한다."""
-    services = _build_services()
-    try:
-        summary = services.pipeline_benchmark_service.run(
-            repo_root=repo,
-            target_files=target_files,
-            profile=profile,
-            language_filter=(None if len(language_filter) == 0 else tuple(language_filter)),
-            per_language_report=per_language_report,
-        )
-    except BenchmarkError as exc:
-        _print_json({"error": asdict(exc.context)}, exit_code=1)
-        return
-    _print_json({"benchmark": summary})
-
-
-@pipeline_benchmark_group.command("report")
-@click.option("--latest", is_flag=True, default=False)
-def pipeline_benchmark_report_command(latest: bool) -> None:
-    """최신 벤치마크 리포트를 출력한다."""
-    del latest
-    services = _build_services()
-    try:
-        summary = services.pipeline_benchmark_service.get_latest_report()
-    except BenchmarkError as exc:
-        _print_json({"error": asdict(exc.context)}, exit_code=1)
-        return
-    _print_json({"benchmark": summary})
-
-
 @pipeline_group.group("perf")
 def pipeline_perf_group() -> None:
     """파이프라인 성능 실측 명령 그룹이다."""
@@ -805,9 +801,10 @@ def pipeline_perf_group() -> None:
 @click.option("--target-files", type=int, default=2_000, show_default=True)
 @click.option("--profile", type=str, default="realistic_v1", show_default=True)
 @click.option("--dataset-mode", type=click.Choice(["isolated", "legacy"], case_sensitive=False), default="isolated", show_default=True)
-@click.option("--fresh-db", is_flag=True, default=False, help="측정 시작 전 런타임 상태를 초기화한다.")
+@click.option("--fresh-db", is_flag=True, default=False, help="측정 시작 전 런타임 상태를 논리 초기화한다(DB 파일 재생성 아님).")
 @click.option("--reset-probe-state", is_flag=True, default=False, help="측정 시작 전 probe 상태를 초기화한다.")
 @click.option("--cold-lsp-reset", is_flag=True, default=False, help="측정 시작 전 LSP 런타임을 종료해 cold-start로 측정한다.")
+@click.option("--workspace-exclude-glob", type=str, multiple=True, default=())
 def pipeline_perf_run_command(
     repo: str,
     target_files: int,
@@ -816,6 +813,7 @@ def pipeline_perf_run_command(
     fresh_db: bool,
     reset_probe_state: bool,
     cold_lsp_reset: bool,
+    workspace_exclude_glob: tuple[str, ...],
 ) -> None:
     """혼합지표 성능 실측을 실행하고 요약 결과를 출력한다."""
     services = _build_services()
@@ -828,6 +826,7 @@ def pipeline_perf_run_command(
             fresh_db=fresh_db,
             reset_probe_state=reset_probe_state,
             cold_lsp_reset=cold_lsp_reset,
+            workspace_exclude_globs=tuple(workspace_exclude_glob),
         )
     except PerfError as exc:
         _print_json({"error": asdict(exc.context)}, exit_code=1)
@@ -839,10 +838,9 @@ def pipeline_perf_run_command(
 @click.option("--repo", type=str, required=True)
 def pipeline_perf_report_command(repo: str) -> None:
     """최신 성능 실측 리포트를 출력한다."""
-    del repo
     services = _build_services()
     try:
-        summary = services.pipeline_perf_service.get_latest_report()
+        summary = services.pipeline_perf_service.get_latest_report(repo_root=repo)
     except PerfError as exc:
         _print_json({"error": asdict(exc.context)}, exit_code=1)
         return

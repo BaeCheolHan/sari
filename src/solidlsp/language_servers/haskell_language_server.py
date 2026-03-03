@@ -10,13 +10,21 @@ import time
 
 from overrides import override
 
-from solidlsp.ls import SolidLanguageServer
+from solidlsp.ls import SolidLanguageServer, get_current_process_env_snapshot
 from solidlsp.ls_config import LanguageServerConfig
 from solidlsp.lsp_protocol_handler.lsp_types import InitializeParams
 from solidlsp.lsp_protocol_handler.server import ProcessLaunchInfo
 from solidlsp.settings import SolidLSPSettings
 
 log = logging.getLogger(__name__)
+
+
+def _env_snapshot() -> dict[str, str]:
+    return get_current_process_env_snapshot()
+
+
+def _which_in_snapshot(executable_name: str) -> str | None:
+    return shutil.which(executable_name, path=_env_snapshot().get("PATH"))
 
 
 class HaskellLanguageServer(SolidLanguageServer):
@@ -30,7 +38,7 @@ class HaskellLanguageServer(SolidLanguageServer):
         """Ensure haskell-language-server-wrapper is available."""
         # Try common locations
         common_paths = [
-            shutil.which("haskell-language-server-wrapper"),
+            _which_in_snapshot("haskell-language-server-wrapper"),
             "/opt/homebrew/bin/haskell-language-server-wrapper",
             "/usr/local/bin/haskell-language-server-wrapper",
             os.path.expanduser("~/.ghcup/bin/haskell-language-server-wrapper"),
@@ -89,7 +97,7 @@ class HaskellLanguageServer(SolidLanguageServer):
             working_dir = repository_root_path
 
         # Set up environment with GHCup bin in PATH
-        env = dict(os.environ)
+        env = _env_snapshot()
         ghcup_bin = os.path.expanduser("~/.ghcup/bin")
         if ghcup_bin not in env.get("PATH", ""):
             env["PATH"] = f"{ghcup_bin}{os.pathsep}{env.get('PATH', '')}"

@@ -10,7 +10,12 @@ import subprocess
 import threading
 from typing import cast
 
-from solidlsp.ls import LanguageServerDependencyProvider, LanguageServerDependencyProviderSinglePath, SolidLanguageServer
+from solidlsp.ls import (
+    LanguageServerDependencyProvider,
+    LanguageServerDependencyProviderSinglePath,
+    SolidLanguageServer,
+    get_current_process_env_snapshot,
+)
 from solidlsp.ls_config import LanguageServerConfig
 from solidlsp.lsp_protocol_handler.lsp_types import InitializeParams
 from solidlsp.settings import SolidLSPSettings
@@ -20,15 +25,28 @@ from .common import RuntimeDependency, RuntimeDependencyCollection
 log = logging.getLogger(__name__)
 
 
+def _env_snapshot() -> dict[str, str]:
+    return get_current_process_env_snapshot()
+
+
+def _which_in_snapshot(executable_name: str) -> str | None:
+    return shutil.which(executable_name, path=_env_snapshot().get("PATH"))
+
+
 def run_command(cmd: list, capture_output: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(
-        cmd, stdout=subprocess.PIPE if capture_output else None, stderr=subprocess.STDOUT if capture_output else None, text=True, check=True
+        cmd,
+        stdout=subprocess.PIPE if capture_output else None,
+        stderr=subprocess.STDOUT if capture_output else None,
+        text=True,
+        check=True,
+        env=_env_snapshot(),
     )
 
 
 def verify_clojure_cli() -> None:
     install_msg = "Please install the official Clojure CLI from:\n  https://clojure.org/guides/getting_started"
-    if shutil.which("clojure") is None:
+    if _which_in_snapshot("clojure") is None:
         raise FileNotFoundError("`clojure` not found.\n" + install_msg)
 
     help_proc = run_command(["clojure", "--help"])

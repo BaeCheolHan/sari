@@ -14,8 +14,8 @@ from sari.core.config import AppConfig
 from sari.db.repositories.runtime_repository import RuntimeRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.db.schema import init_schema
-from sari.services.daemon_service import DaemonService
-from sari.services.workspace_service import WorkspaceService
+from sari.services.daemon.service import DaemonService
+from sari.services.workspace.service import WorkspaceService
 
 
 def _pick_free_port() -> int:

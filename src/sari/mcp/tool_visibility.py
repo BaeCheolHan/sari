@@ -20,8 +20,6 @@ HIDDEN_TOOL_NAMES: frozenset[str] = frozenset(
         "pipeline_auto_status",
         "pipeline_auto_set",
         "pipeline_auto_tick",
-        "pipeline_benchmark_run",
-        "pipeline_benchmark_report",
         "pipeline_perf_run",
         "pipeline_perf_report",
         "pipeline_quality_run",

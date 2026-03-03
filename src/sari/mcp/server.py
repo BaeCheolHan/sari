@@ -5,32 +5,9 @@ from pathlib import Path
 from typing import BinaryIO
 from sari import __version__ as SARI_VERSION
 from sari.core.config import AppConfig
+from sari.core.composition import build_file_collection_service_from_config, build_lsp_hub, build_repository_bundle, build_search_stack
 from sari.core.exceptions import DaemonError, ErrorContext, ValidationError
 from sari.core.models import ErrorResponseDTO
-from sari.db.repositories.runtime_repository import RuntimeRepository
-from sari.db.repositories.candidate_index_change_repository import CandidateIndexChangeRepository
-from sari.db.repositories.symbol_cache_repository import SymbolCacheRepository
-from sari.db.repositories.symbol_importance_repository import SymbolImportanceRepository
-from sari.db.repositories.workspace_repository import WorkspaceRepository
-from sari.db.repositories.file_body_repository import FileBodyRepository
-from sari.db.repositories.file_collection_repository import FileCollectionRepository
-from sari.db.repositories.file_enrich_queue_repository import FileEnrichQueueRepository
-from sari.db.repositories.lsp_tool_data_repository import LspToolDataRepository
-from sari.db.repositories.knowledge_repository import KnowledgeRepository
-from sari.db.repositories.vector_embedding_repository import VectorEmbeddingRepository
-from sari.db.repositories.pipeline_benchmark_repository import PipelineBenchmarkRepository
-from sari.db.repositories.pipeline_perf_repository import PipelinePerfRepository
-from sari.db.repositories.pipeline_quality_repository import PipelineQualityRepository
-from sari.db.repositories.language_probe_repository import LanguageProbeRepository
-from sari.db.repositories.pipeline_lsp_matrix_repository import PipelineLspMatrixRepository
-from sari.db.repositories.pipeline_control_state_repository import PipelineControlStateRepository
-from sari.db.repositories.pipeline_job_event_repository import PipelineJobEventRepository
-from sari.db.repositories.pipeline_error_event_repository import PipelineErrorEventRepository
-from sari.db.repositories.pipeline_policy_repository import PipelinePolicyRepository
-from sari.db.repositories.tool_readiness_repository import ToolReadinessRepository
-from sari.db.repositories.repo_registry_repository import RepoRegistryRepository
-from sari.db.migration import ensure_migrated
-from sari.db.schema import init_schema
 from sari.lsp.hub import LspHub
 from sari.mcp.contracts import McpError, McpResponse
 from sari.mcp.daemon_forward_policy import (
@@ -42,13 +19,15 @@ from sari.mcp.daemon_router import DaemonRouter, DaemonRouterConfig
 from sari.mcp.tools.admin_tools import DoctorTool, RepoCandidatesTool, RescanTool
 from sari.mcp.tool_visibility import filter_tools_list_response_payload, is_hidden_tool_name
 from sari.mcp.tools.pipeline_admin_tools import PipelineAutoSetTool, PipelineAutoStatusTool, PipelineAutoTickTool, PipelineAlertStatusTool, PipelineDeadListTool, PipelineDeadPurgeTool, PipelineDeadRequeueTool, PipelinePolicyGetTool, PipelinePolicySetTool
-from sari.mcp.tools.pipeline_benchmark_tools import PipelineBenchmarkReportTool, PipelineBenchmarkRunTool
 from sari.mcp.tools.pipeline_perf_tools import PipelinePerfReportTool, PipelinePerfRunTool
 from sari.mcp.tools.pipeline_lsp_matrix_tools import PipelineLspMatrixReportTool, PipelineLspMatrixRunTool
 from sari.mcp.tools.pipeline_quality_tools import PipelineQualityReportTool, PipelineQualityRunTool
 from sari.mcp.tools.pack1 import pack1_error
 from sari.mcp.pack1_line import PackLineOptionsDTO, render_pack_v2
+from sari.mcp.stabilization.stabilization_service import StabilizationService
 from sari.mcp.tools.file_collection_tools import IndexFileTool, ListFilesTool, ReadFileTool, ScanOnceTool
+from sari.mcp.tools_catalog import build_tools_list_result_payload
+from sari.mcp.tool_registry import build_tool_handler_attr_map
 from sari.mcp.tools.symbol_tools import GetCallersTool, SearchSymbolTool
 from sari.mcp.tools.arg_normalizer import ArgNormalizationError, normalize_tool_arguments
 from sari.mcp.transport import MCP_MODE_FRAMED, McpTransport, McpTransportParseError
@@ -59,20 +38,14 @@ from sari.mcp.tools.read_tool import DryRunDiffTool, ReadTool
 from sari.mcp.tools.sari_guide_tool import SariGuideTool
 from sari.mcp.tools.status_tool import StatusTool
 from sari.mcp.tools.symbol_graph_tools import CallGraphHealthTool, CallGraphTool, GetImplementationsTool, ListSymbolsTool, ReadSymbolTool
-from sari.search.candidate_search import CandidateSearchService
-from sari.search.hierarchy_scorer import HierarchyScorer
-from sari.search.importance_scorer import ImportanceScorePolicyDTO, ImportanceScorer, ImportanceWeightsDTO
 from sari.search.orchestrator import RankingBlendConfigDTO, SearchOrchestrator
-from sari.search.symbol_resolve import SymbolResolveService
-from sari.search.vector_reranker import VectorConfigDTO, VectorIndexSink, VectorReranker
-from sari.services.admin_service import AdminService
-from sari.services.file_collection_service import SolidLspExtractionBackend, build_default_file_collection_service
-from sari.services.pipeline_benchmark_service import BenchmarkLspExtractionBackend, PipelineBenchmarkService
-from sari.services.pipeline_perf_service import PipelinePerfService
-from sari.services.pipeline_control_service import PipelineControlService
-from sari.services.language_probe_service import LanguageProbeService
-from sari.services.pipeline_lsp_matrix_service import PipelineLspMatrixService
-from sari.services.pipeline_quality_service import PipelineQualityService, SerenaGoldenBackend
+from sari.services.admin import AdminService
+from sari.services.collection.service import SolidLspExtractionBackend
+from sari.services.pipeline.perf_service import PipelinePerfService
+from sari.services.pipeline.control_service import PipelineControlService
+from sari.services.language_probe.service import LanguageProbeService
+from sari.services.pipeline.lsp_matrix_service import PipelineLspMatrixService
+from sari.services.pipeline.quality_service import PipelineQualityService, SerenaGoldenBackend
 
 MAX_CONSECUTIVE_INVALID_FRAMES = 3
 
@@ -87,9 +60,8 @@ class McpServer:
     )
 
     def __init__(self, db_path: Path) -> None:
-        init_schema(db_path)
-        ensure_migrated(db_path)
         runtime_config = AppConfig.default()
+        repos = build_repository_bundle(db_path)
         self._runtime_config = runtime_config
         self._db_path = db_path
         self._proxy_to_daemon = runtime_config.mcp_forward_to_daemon
@@ -109,75 +81,47 @@ class McpServer:
         )
         self._closed = False
         self._managed_lsp_hubs: list[LspHub] = []
-        workspace_repo = WorkspaceRepository(db_path)
+        lsp_hub_config = runtime_config.lsp_hub_config()
+        search_config = runtime_config.search_config()
+        collection_config = runtime_config.collection_config()
+        workspace_repo = repos.workspace_repo
         self._workspace_repo = workspace_repo
-        runtime_repo = RuntimeRepository(db_path)
+        runtime_repo = repos.runtime_repo
         self._runtime_repo = runtime_repo
-        symbol_cache_repo = SymbolCacheRepository(db_path)
-        symbol_importance_repo = SymbolImportanceRepository(db_path)
-        file_repo = FileCollectionRepository(db_path)
-        enrich_queue_repo = FileEnrichQueueRepository(db_path)
-        body_repo = FileBodyRepository(db_path)
-        lsp_repo = LspToolDataRepository(db_path)
-        knowledge_repo = KnowledgeRepository(db_path)
-        readiness_repo = ToolReadinessRepository(db_path)
-        policy_repo = PipelinePolicyRepository(db_path)
-        control_state_repo = PipelineControlStateRepository(db_path)
-        event_repo = PipelineJobEventRepository(db_path)
-        error_event_repo = PipelineErrorEventRepository(db_path)
-        benchmark_repo = PipelineBenchmarkRepository(db_path)
-        perf_repo = PipelinePerfRepository(db_path)
-        quality_repo = PipelineQualityRepository(db_path)
-        language_probe_repo = LanguageProbeRepository(db_path)
-        lsp_matrix_repo = PipelineLspMatrixRepository(db_path)
-        vector_repo = VectorEmbeddingRepository(db_path)
-        candidate_change_repo = CandidateIndexChangeRepository(db_path)
-        repo_registry_repo = RepoRegistryRepository(db_path)
-        importance_scorer = ImportanceScorer(file_repo=file_repo, lsp_repo=lsp_repo, cache_repo=symbol_importance_repo, weights=ImportanceWeightsDTO(kind_class=runtime_config.importance_kind_class, kind_function=runtime_config.importance_kind_function, kind_interface=runtime_config.importance_kind_interface, kind_method=runtime_config.importance_kind_method, fan_in_weight=runtime_config.importance_fan_in_weight, filename_exact_bonus=runtime_config.importance_filename_exact_bonus, core_path_bonus=runtime_config.importance_core_path_bonus, noisy_path_penalty=runtime_config.importance_noisy_path_penalty, code_ext_bonus=runtime_config.importance_code_ext_bonus, noisy_ext_penalty=runtime_config.importance_noisy_ext_penalty, recency_24h_multiplier=runtime_config.importance_recency_24h_multiplier, recency_7d_multiplier=runtime_config.importance_recency_7d_multiplier, recency_30d_multiplier=runtime_config.importance_recency_30d_multiplier), policy=ImportanceScorePolicyDTO(normalize_mode=runtime_config.importance_normalize_mode, max_importance_boost=runtime_config.importance_max_boost), core_path_tokens=runtime_config.importance_core_path_tokens, noisy_path_tokens=runtime_config.importance_noisy_path_tokens, code_extensions=runtime_config.importance_code_extensions, noisy_extensions=runtime_config.importance_noisy_extensions)
-        vector_config = VectorConfigDTO(enabled=runtime_config.vector_enabled, model_id=runtime_config.vector_model_id, dim=runtime_config.vector_dim, candidate_k=runtime_config.vector_candidate_k, rerank_k=runtime_config.vector_rerank_k, blend_weight=runtime_config.vector_blend_weight, min_similarity_threshold=runtime_config.vector_min_similarity_threshold, max_vector_boost=runtime_config.vector_max_boost, min_token_count_for_rerank=runtime_config.vector_min_token_count_for_rerank, apply_to_item_types=runtime_config.vector_apply_to_item_types)
-        vector_sink = VectorIndexSink(repository=vector_repo, config=vector_config)
-        vector_reranker = VectorReranker(repository=vector_repo, config=vector_config)
-        hierarchy_scorer = HierarchyScorer()
-        candidate_service = CandidateSearchService.build_default(
-            max_file_size_bytes=512 * 1024,
-            index_root=db_path.parent / 'candidate_index',
-            backend_mode='tantivy',
-            enable_scan_fallback=True,
-            change_repo=candidate_change_repo,
-            allowed_suffixes=runtime_config.collection_include_ext,
-        )
-        shared_hub = LspHub(
-            request_timeout_sec=runtime_config.lsp_request_timeout_sec,
-            max_instances_per_repo_language=runtime_config.lsp_max_instances_per_repo_language,
-            bulk_mode_enabled=runtime_config.lsp_bulk_mode_enabled,
-            bulk_max_instances_per_repo_language=runtime_config.lsp_bulk_max_instances_per_repo_language,
-            interactive_reserved_slots_per_repo_language=runtime_config.lsp_interactive_reserved_slots_per_repo_language,
-            interactive_timeout_sec=runtime_config.lsp_interactive_timeout_sec,
-            lsp_global_soft_limit=runtime_config.lsp_global_soft_limit,
-            scale_out_hot_hits=runtime_config.lsp_scale_out_hot_hits,
-            file_buffer_idle_ttl_sec=runtime_config.lsp_file_buffer_idle_ttl_sec,
-            file_buffer_max_open=runtime_config.lsp_file_buffer_max_open,
-            java_min_major=runtime_config.lsp_java_min_major,
-            max_concurrent_starts=runtime_config.lsp_max_concurrent_starts,
-            max_concurrent_l1_probes=runtime_config.lsp_max_concurrent_l1_probes,
-        )
+        symbol_cache_repo = repos.symbol_cache_repo
+        file_repo = repos.file_repo
+        enrich_queue_repo = repos.enrich_queue_repo
+        body_repo = repos.body_repo
+        lsp_repo = repos.lsp_repo
+        tool_layer_repo = repos.tool_layer_repo
+        knowledge_repo = repos.knowledge_repo
+        readiness_repo = repos.readiness_repo
+        policy_repo = repos.policy_repo
+        control_state_repo = repos.control_state_repo
+        event_repo = repos.event_repo
+        error_event_repo = repos.error_event_repo
+        perf_repo = repos.perf_repo
+        stage_baseline_repo = repos.stage_baseline_repo
+        quality_repo = repos.quality_repo
+        language_probe_repo = repos.language_probe_repo
+        lsp_matrix_repo = repos.lsp_matrix_repo
+        repo_registry_repo = repos.repo_registry_repo
+        shared_hub = build_lsp_hub(lsp_hub_config)
         self._managed_lsp_hubs.append(shared_hub)
-        file_collection_service = build_default_file_collection_service(
-            workspace_repo=workspace_repo,
-            file_repo=file_repo,
-            enrich_queue_repo=enrich_queue_repo,
-            body_repo=body_repo,
-            lsp_repo=lsp_repo,
-            readiness_repo=readiness_repo,
-            policy_repo=policy_repo,
-            event_repo=event_repo,
-            error_event_repo=error_event_repo,
-            candidate_index_sink=candidate_service,
-            vector_index_sink=vector_sink,
-            include_ext=runtime_config.collection_include_ext,
-            exclude_globs=runtime_config.collection_exclude_globs,
-            watcher_debounce_ms=runtime_config.watcher_debounce_ms,
-            run_mode='prod',
+        search_stack = build_search_stack(
+            search_config=search_config,
+            repos=repos,
+            lsp_hub=shared_hub,
+            candidate_backend="tantivy",
+            candidate_fallback_scan=True,
+            candidate_allowed_suffixes=collection_config.include_ext,
+            blend_config_version="v2-config",
+        )
+        candidate_service = search_stack.candidate_service
+        vector_sink = search_stack.vector_sink
+        file_collection_service = build_file_collection_service_from_config(
+            config=runtime_config,
+            repos=repos,
             lsp_backend=SolidLspExtractionBackend(
                 shared_hub,
                 probe_workers=runtime_config.lsp_probe_workers,
@@ -186,51 +130,30 @@ class McpServer:
                 warming_retry_sec=runtime_config.lsp_probe_warming_retry_sec,
                 warming_threshold=runtime_config.lsp_probe_warming_threshold,
                 permanent_backoff_sec=runtime_config.lsp_probe_permanent_backoff_sec,
+                symbol_normalizer_executor_mode=runtime_config.l5_symbol_normalizer_executor_mode,
+                symbol_normalizer_subinterp_workers=runtime_config.l5_symbol_normalizer_subinterp_workers,
+                symbol_normalizer_subinterp_min_symbols=runtime_config.l5_symbol_normalizer_subinterp_min_symbols,
             ),
-            l3_parallel_enabled=runtime_config.l3_parallel_enabled,
-            l3_executor_max_workers=runtime_config.l3_executor_max_workers,
-            l3_recent_success_ttl_sec=runtime_config.l3_recent_success_ttl_sec,
-            l3_backpressure_on_interactive=runtime_config.l3_backpressure_on_interactive,
-            l3_backpressure_cooldown_ms=runtime_config.l3_backpressure_cooldown_ms,
-            l3_supported_languages=runtime_config.l3_supported_languages,
-            lsp_probe_bootstrap_file_window=runtime_config.lsp_probe_bootstrap_file_window,
-            lsp_probe_bootstrap_top_k=runtime_config.lsp_probe_bootstrap_top_k,
-            lsp_probe_language_priority=runtime_config.lsp_probe_language_priority,
-            lsp_probe_l1_languages=runtime_config.lsp_probe_l1_languages,
-        )
-        benchmark_collection_service = build_default_file_collection_service(
-            workspace_repo=workspace_repo,
-            file_repo=file_repo,
-            enrich_queue_repo=enrich_queue_repo,
-            body_repo=body_repo,
-            lsp_repo=lsp_repo,
-            readiness_repo=readiness_repo,
-            policy_repo=policy_repo,
-            event_repo=event_repo,
-            error_event_repo=error_event_repo,
             run_mode='prod',
-            lsp_backend=BenchmarkLspExtractionBackend(),
-            persist_body_for_read=False,
-            l3_parallel_enabled=runtime_config.l3_parallel_enabled,
-            l3_executor_max_workers=runtime_config.l3_executor_max_workers,
-            l3_recent_success_ttl_sec=runtime_config.l3_recent_success_ttl_sec,
-            l3_backpressure_on_interactive=runtime_config.l3_backpressure_on_interactive,
-            l3_backpressure_cooldown_ms=runtime_config.l3_backpressure_cooldown_ms,
-            l3_supported_languages=runtime_config.l3_supported_languages,
-            lsp_probe_bootstrap_file_window=runtime_config.lsp_probe_bootstrap_file_window,
-            lsp_probe_bootstrap_top_k=runtime_config.lsp_probe_bootstrap_top_k,
-            lsp_probe_language_priority=runtime_config.lsp_probe_language_priority,
-            lsp_probe_l1_languages=runtime_config.lsp_probe_l1_languages,
+            candidate_index_sink=candidate_service,
+            vector_index_sink=vector_sink,
         )
-        benchmark_service = PipelineBenchmarkService(file_collection_service=benchmark_collection_service, queue_repo=enrich_queue_repo, lsp_repo=lsp_repo, policy_repo=policy_repo, benchmark_repo=benchmark_repo, artifact_root=db_path.parent / 'artifacts')
+
         perf_service = PipelinePerfService(
             file_collection_service=file_collection_service,
             queue_repo=enrich_queue_repo,
-            benchmark_service=benchmark_service,
             perf_repo=perf_repo,
             artifact_root=db_path.parent / "artifacts",
+            stage_baseline_repo=stage_baseline_repo,
         )
-        quality_service = PipelineQualityService(file_repo=file_repo, lsp_repo=lsp_repo, quality_repo=quality_repo, golden_backend=SerenaGoldenBackend(hub=shared_hub), artifact_root=db_path.parent / 'artifacts')
+        quality_service = PipelineQualityService(
+            file_repo=file_repo,
+            lsp_repo=lsp_repo,
+            quality_repo=quality_repo,
+            golden_backend=SerenaGoldenBackend(hub=shared_hub),
+            artifact_root=db_path.parent / 'artifacts',
+            tool_layer_repo=tool_layer_repo,
+        )
         language_probe_service = LanguageProbeService(
             workspace_repo=workspace_repo,
             lsp_hub=shared_hub,
@@ -250,15 +173,18 @@ class McpServer:
             queue_repo=enrich_queue_repo,
             lsp_reconciler=shared_hub.reconcile_runtime,
         )
-        orchestrator = SearchOrchestrator(workspace_repo=workspace_repo, candidate_service=candidate_service, symbol_service=SymbolResolveService(hub=shared_hub, cache_repo=symbol_cache_repo, lsp_fallback_mode=runtime_config.search_lsp_fallback_mode), importance_scorer=importance_scorer, hierarchy_scorer=hierarchy_scorer, vector_reranker=vector_reranker, blend_config=RankingBlendConfigDTO(w_rrf=runtime_config.ranking_w_rrf, w_importance=runtime_config.ranking_w_importance, w_vector=runtime_config.ranking_w_vector, w_hierarchy=runtime_config.ranking_w_hierarchy, version='v2-config'), repo_registry_repo=repo_registry_repo)
+        orchestrator = search_stack.orchestrator
+        stabilization_service = StabilizationService()
         self._file_collection_service = file_collection_service
-        self._benchmark_collection_service = benchmark_collection_service
         self._search_tool = SearchTool(
             orchestrator=orchestrator,
             workspace_repo=workspace_repo,
+            tool_layer_repo=tool_layer_repo,
             metrics_provider=file_collection_service.get_pipeline_metrics,
             repo_registry_repo=repo_registry_repo,
-            stabilization_enabled=runtime_config.stabilization_enabled,
+            stabilization_service=stabilization_service,
+            include_info_default=runtime_config.lsp_include_info_default,
+            symbol_info_budget_sec_default=runtime_config.lsp_symbol_info_budget_sec,
         )
         self._doctor_tool = DoctorTool(admin_service=admin_service, workspace_repo=workspace_repo)
         self._rescan_tool = RescanTool(admin_service=admin_service, workspace_repo=workspace_repo)
@@ -278,13 +204,15 @@ class McpServer:
             language_probe_repo=language_probe_repo,
             lsp_metrics_provider=shared_hub.get_metrics,
             reconcile_state_provider=admin_service.get_runtime_reconcile_state,
+            pipeline_control_service=pipeline_control_service,
         )
         self._read_tool = ReadTool(
             workspace_repo=workspace_repo,
             file_collection_service=file_collection_service,
             lsp_repo=lsp_repo,
             knowledge_repo=knowledge_repo,
-            stabilization_enabled=runtime_config.stabilization_enabled,
+            tool_layer_repo=tool_layer_repo,
+            stabilization_service=stabilization_service,
         )
         self._dry_run_diff_tool = DryRunDiffTool(read_tool=self._read_tool)
         self._list_symbols_tool = ListSymbolsTool(workspace_repo=workspace_repo, lsp_repo=lsp_repo)
@@ -306,57 +234,13 @@ class McpServer:
         self._pipeline_auto_status_tool = PipelineAutoStatusTool(workspace_repo=workspace_repo, service=pipeline_control_service)
         self._pipeline_auto_set_tool = PipelineAutoSetTool(workspace_repo=workspace_repo, service=pipeline_control_service)
         self._pipeline_auto_tick_tool = PipelineAutoTickTool(workspace_repo=workspace_repo, service=pipeline_control_service)
-        self._pipeline_benchmark_run_tool = PipelineBenchmarkRunTool(workspace_repo=workspace_repo, benchmark_service=benchmark_service)
-        self._pipeline_benchmark_report_tool = PipelineBenchmarkReportTool(workspace_repo=workspace_repo, benchmark_service=benchmark_service)
         self._pipeline_perf_run_tool = PipelinePerfRunTool(workspace_repo=workspace_repo, perf_service=perf_service)
         self._pipeline_perf_report_tool = PipelinePerfReportTool(workspace_repo=workspace_repo, perf_service=perf_service)
         self._pipeline_quality_run_tool = PipelineQualityRunTool(workspace_repo=workspace_repo, quality_service=quality_service)
         self._pipeline_quality_report_tool = PipelineQualityReportTool(workspace_repo=workspace_repo, quality_service=quality_service)
         self._pipeline_lsp_matrix_run_tool = PipelineLspMatrixRunTool(workspace_repo=workspace_repo, matrix_service=pipeline_lsp_matrix_service)
         self._pipeline_lsp_matrix_report_tool = PipelineLspMatrixReportTool(workspace_repo=workspace_repo, matrix_service=pipeline_lsp_matrix_service)
-        self._tool_handler_attrs: dict[str, str] = {
-            "search": "_search_tool",
-            "sari_guide": "_sari_guide_tool",
-            "status": "_status_tool",
-            "doctor": "_doctor_tool",
-            "rescan": "_rescan_tool",
-            "repo_candidates": "_repo_candidates_tool",
-            "read": "_read_tool",
-            "dry_run_diff": "_dry_run_diff_tool",
-            "scan_once": "_scan_once_tool",
-            "list_files": "_list_files_tool",
-            "read_file": "_read_file_tool",
-            "index_file": "_index_file_tool",
-            "list_symbols": "_list_symbols_tool",
-            "read_symbol": "_read_symbol_tool",
-            "search_symbol": "_search_symbol_tool",
-            "get_callers": "_get_callers_tool",
-            "get_implementations": "_get_implementations_tool",
-            "call_graph": "_call_graph_tool",
-            "call_graph_health": "_call_graph_health_tool",
-            "knowledge": "_knowledge_tool",
-            "save_snippet": "_save_snippet_tool",
-            "get_snippet": "_get_snippet_tool",
-            "archive_context": "_archive_context_tool",
-            "get_context": "_get_context_tool",
-            "pipeline_policy_get": "_pipeline_policy_get_tool",
-            "pipeline_policy_set": "_pipeline_policy_set_tool",
-            "pipeline_alert_status": "_pipeline_alert_status_tool",
-            "pipeline_dead_list": "_pipeline_dead_list_tool",
-            "pipeline_dead_requeue": "_pipeline_dead_requeue_tool",
-            "pipeline_dead_purge": "_pipeline_dead_purge_tool",
-            "pipeline_auto_status": "_pipeline_auto_status_tool",
-            "pipeline_auto_set": "_pipeline_auto_set_tool",
-            "pipeline_auto_tick": "_pipeline_auto_tick_tool",
-            "pipeline_benchmark_run": "_pipeline_benchmark_run_tool",
-            "pipeline_benchmark_report": "_pipeline_benchmark_report_tool",
-            "pipeline_perf_run": "_pipeline_perf_run_tool",
-            "pipeline_perf_report": "_pipeline_perf_report_tool",
-            "pipeline_quality_run": "_pipeline_quality_run_tool",
-            "pipeline_quality_report": "_pipeline_quality_report_tool",
-            "pipeline_lsp_matrix_run": "_pipeline_lsp_matrix_run_tool",
-            "pipeline_lsp_matrix_report": "_pipeline_lsp_matrix_report_tool",
-        }
+        self._tool_handler_attrs: dict[str, str] = build_tool_handler_attr_map()
 
     def close(self) -> None:
         """MCP 서버가 생성한 런타임 리소스를 명시적으로 종료한다."""
@@ -364,7 +248,7 @@ class McpServer:
             return
         self._closed = True
         stop_errors: list[str] = []
-        for service in (self._file_collection_service, self._benchmark_collection_service):
+        for service in (self._file_collection_service,):
             try:
                 service.stop_background()
             except (RuntimeError, OSError, ValueError) as exc:
@@ -436,7 +320,7 @@ class McpServer:
         if method == 'ping':
             return McpResponse(request_id=request_id, result={}, error=None)
         if method == 'tools/list':
-            result_payload = {'schemaVersion': self._TOOLS_SCHEMA_VERSION, 'schema_version': self._TOOLS_SCHEMA_VERSION, 'tools': [{'name': 'sari_guide', 'description': 'Return quick usage guide in pack1 format', 'inputSchema': {'type': 'object', 'properties': {}}}, {'name': 'status', 'description': 'Return repository runtime/index status in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'search', 'description': 'Search symbols/files in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo', 'query'], 'properties': {'repo': {'type': 'string'}, 'query': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'doctor', 'description': 'Return runtime health checks in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'rescan', 'description': 'Invalidate symbol cache in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'repo_candidates', 'description': 'List repository candidates in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'read', 'description': 'Unified read interface in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'mode': {'type': 'string'}, 'target': {'type': 'string'}, 'path': {'type': 'string'}, 'offset': {'type': 'integer', 'minimum': 0}, 'limit': {'type': 'integer', 'minimum': 1}, 'content': {'type': 'string'}, 'against': {'type': 'string'}, 'tag': {'type': 'string'}}}}, {'name': 'dry_run_diff', 'description': 'Legacy diff preview wrapper in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo', 'path', 'content'], 'properties': {'repo': {'type': 'string'}, 'path': {'type': 'string'}, 'content': {'type': 'string'}, 'against': {'type': 'string'}}}}, {'name': 'scan_once', 'description': 'Scan repository files once and enqueue enrich jobs', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'list_files', 'description': 'List indexed files for repository in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}, 'prefix': {'type': 'string'}}}}, {'name': 'read_file', 'description': 'Read indexed file content in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo', 'relative_path'], 'properties': {'repo': {'type': 'string'}, 'relative_path': {'type': 'string'}, 'offset': {'type': 'integer', 'minimum': 0}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'index_file', 'description': 'Incrementally index single file in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo', 'relative_path'], 'properties': {'repo': {'type': 'string'}, 'relative_path': {'type': 'string'}}}}, {'name': 'list_symbols', 'description': 'List indexed symbols in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'query': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'read_symbol', 'description': 'Read symbol detail in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'name': {'type': 'string'}, 'symbol_id': {'type': 'string'}, 'sid': {'type': 'string'}, 'path': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'search_symbol', 'description': 'Search indexed symbols in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo', 'query'], 'properties': {'repo': {'type': 'string'}, 'query': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}, 'path_prefix': {'type': 'string'}}}}, {'name': 'get_callers', 'description': 'Get caller edges for symbol in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'symbol': {'type': 'string'}, 'symbol_id': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'get_implementations', 'description': 'Get implementation candidates for symbol in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'symbol': {'type': 'string'}, 'symbol_id': {'type': 'string'}, 'sid': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'call_graph', 'description': 'Get call graph for symbol in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'symbol': {'type': 'string'}, 'symbol_id': {'type': 'string'}, 'sid': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'call_graph_health', 'description': 'Get call graph health summary in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'knowledge', 'description': 'Query archived knowledge entries in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'query': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'save_snippet', 'description': 'Save code snippet to local store in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo', 'path', 'start_line', 'end_line', 'tag'], 'properties': {'repo': {'type': 'string'}, 'path': {'type': 'string'}, 'start_line': {'type': 'integer', 'minimum': 1}, 'end_line': {'type': 'integer', 'minimum': 1}, 'tag': {'type': 'string'}, 'note': {'type': 'string'}, 'commit': {'type': 'string'}}}}, {'name': 'get_snippet', 'description': 'Query saved snippets in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'tag': {'type': 'string'}, 'query': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'archive_context', 'description': 'Archive context notes in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo', 'topic', 'content'], 'properties': {'repo': {'type': 'string'}, 'topic': {'type': 'string'}, 'content': {'type': 'string'}, 'tags': {'type': 'array', 'items': {'type': 'string'}}, 'related_files': {'type': 'array', 'items': {'type': 'string'}}}}}, {'name': 'get_context', 'description': 'Get archived context notes in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'query': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'pipeline_policy_get', 'description': 'Get pipeline policy in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'pipeline_policy_set', 'description': 'Set pipeline policy in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'deletion_hold': {'type': ['string', 'boolean']}, 'l3_p95_threshold_ms': {'type': 'integer', 'minimum': 1}, 'dead_ratio_threshold_bps': {'type': 'integer', 'minimum': 1}, 'workers': {'type': 'integer', 'minimum': 1}, 'watcher_queue_max': {'type': 'integer', 'minimum': 100}, 'watcher_overflow_rescan_cooldown_sec': {'type': 'integer', 'minimum': 1}, 'alert_window_sec': {'type': 'integer', 'minimum': 60}}}}, {'name': 'pipeline_alert_status', 'description': 'Get pipeline alert snapshot in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'pipeline_dead_list', 'description': 'List dead enrich jobs in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}}}}, {'name': 'pipeline_dead_requeue', 'description': 'Requeue dead enrich jobs in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}, 'all': {'type': ['boolean', 'string']}}}}, {'name': 'pipeline_dead_purge', 'description': 'Purge dead enrich jobs in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1}, 'all': {'type': ['boolean', 'string']}}}}, {'name': 'pipeline_auto_status', 'description': 'Get pipeline auto-control state in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'pipeline_auto_set', 'description': 'Set pipeline auto-control enabled flag in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo', 'enabled'], 'properties': {'repo': {'type': 'string'}, 'enabled': {'type': ['string', 'boolean']}}}}, {'name': 'pipeline_auto_tick', 'description': 'Evaluate pipeline auto-control once in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'pipeline_benchmark_run', 'description': 'Run pipeline benchmark and return summary in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'target_files': {'type': 'integer', 'minimum': 1}, 'profile': {'type': 'string'}, 'language_filter': {'type': ['string', 'array'], 'items': {'type': 'string'}}, 'per_language_report': {'type': ['boolean', 'string']}}}}, {'name': 'pipeline_benchmark_report', 'description': 'Return latest pipeline benchmark summary in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'pipeline_quality_run', 'description': 'Run L3 quality evaluation in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'limit_files': {'type': 'integer', 'minimum': 1}, 'profile': {'type': 'string'}, 'language_filter': {'type': ['string', 'array'], 'items': {'type': 'string'}}}}}, {'name': 'pipeline_quality_report', 'description': 'Return latest L3 quality summary in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}, {'name': 'pipeline_lsp_matrix_run', 'description': 'Run LSP readiness matrix and hard gate in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}, 'required_languages': {'type': ['string', 'array'], 'items': {'type': 'string'}}, 'fail_on_unavailable': {'type': ['boolean', 'string']}, 'strict_all_languages': {'type': ['boolean', 'string']}, 'strict_symbol_gate': {'type': ['boolean', 'string']}}}}, {'name': 'pipeline_lsp_matrix_report', 'description': 'Return latest LSP readiness matrix report in pack1 format', 'inputSchema': {'type': 'object', 'required': ['repo'], 'properties': {'repo': {'type': 'string'}}}}]}
+            result_payload = build_tools_list_result_payload(self._TOOLS_SCHEMA_VERSION)
             response_payload = {"result": result_payload}
             decorated_payload = filter_tools_list_response_payload(response_payload)
             decorated_result = decorated_payload.get("result")
@@ -543,9 +427,6 @@ class McpServer:
         for candidate in versions:
             if candidate in self._SUPPORTED_PROTOCOL_VERSIONS:
                 return candidate
-        strict = self._runtime_config.strict_protocol
-        if strict and len(versions) > 0:
-            raise ValueError('Unsupported protocol version')
         return self._DEFAULT_PROTOCOL_VERSION
 
     def _iter_client_protocol_versions(self, params: dict[str, object]) -> list[str]:

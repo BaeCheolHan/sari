@@ -16,7 +16,7 @@ from pathlib import Path
 import requests
 from overrides import override
 
-from solidlsp.ls import SolidLanguageServer
+from solidlsp.ls import SolidLanguageServer, get_current_process_env_snapshot
 from solidlsp.ls_config import LanguageServerConfig
 from solidlsp.lsp_protocol_handler.lsp_types import InitializeParams
 from solidlsp.lsp_protocol_handler.server import ProcessLaunchInfo
@@ -26,6 +26,14 @@ log = logging.getLogger(__name__)
 
 # PowerShell Editor Services version to download
 PSES_VERSION = "4.4.0"
+
+
+def _env_snapshot() -> dict[str, str]:
+    return get_current_process_env_snapshot()
+
+
+def _which_in_snapshot(executable_name: str) -> str | None:
+    return shutil.which(executable_name, path=_env_snapshot().get("PATH"))
 
 
 class PowerShellLanguageServer(SolidLanguageServer):
@@ -49,7 +57,7 @@ class PowerShellLanguageServer(SolidLanguageServer):
     def _get_pwsh_path() -> str | None:
         """Get the path to PowerShell Core (pwsh) executable."""
         # Check if pwsh is in PATH
-        pwsh = shutil.which("pwsh")
+        pwsh = _which_in_snapshot("pwsh")
         if pwsh:
             return pwsh
 
@@ -60,8 +68,8 @@ class PowerShellLanguageServer(SolidLanguageServer):
         possible_paths: list[Path] = []
         if system == "Windows":
             possible_paths = [
-                Path(os.environ.get("PROGRAMFILES", "C:\\Program Files")) / "PowerShell" / "7" / "pwsh.exe",
-                Path(os.environ.get("PROGRAMFILES", "C:\\Program Files")) / "PowerShell" / "7-preview" / "pwsh.exe",
+                Path(_env_snapshot().get("PROGRAMFILES", "C:\\Program Files")) / "PowerShell" / "7" / "pwsh.exe",
+                Path(_env_snapshot().get("PROGRAMFILES", "C:\\Program Files")) / "PowerShell" / "7-preview" / "pwsh.exe",
                 home / "AppData" / "Local" / "Microsoft" / "PowerShell" / "pwsh.exe",
             ]
         elif system == "Darwin":

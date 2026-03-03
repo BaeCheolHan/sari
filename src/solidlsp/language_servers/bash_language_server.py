@@ -10,7 +10,7 @@ import shutil
 import threading
 
 from solidlsp.language_servers.common import RuntimeDependency, RuntimeDependencyCollection
-from solidlsp.ls import DocumentSymbols, LSPFileBuffer, SolidLanguageServer
+from solidlsp.ls import DocumentSymbols, LSPFileBuffer, SolidLanguageServer, get_current_process_env_snapshot
 from solidlsp.ls_config import LanguageServerConfig
 from solidlsp.lsp_protocol_handler.lsp_types import InitializeParams
 from solidlsp.lsp_protocol_handler.server import ProcessLaunchInfo
@@ -47,9 +47,10 @@ class BashLanguageServer(SolidLanguageServer):
         Setup runtime dependencies for Bash Language Server and return the command to start the server.
         """
         # Verify both node and npm are installed
-        is_node_installed = shutil.which("node") is not None
+        env_path = get_current_process_env_snapshot().get("PATH")
+        is_node_installed = shutil.which("node", path=env_path) is not None
         assert is_node_installed, "node is not installed or isn't in PATH. Please install NodeJS and try again."
-        is_npm_installed = shutil.which("npm") is not None
+        is_npm_installed = shutil.which("npm", path=env_path) is not None
         assert is_npm_installed, "npm is not installed or isn't in PATH. Please install npm and try again."
 
         deps = RuntimeDependencyCollection(
@@ -185,7 +186,13 @@ class BashLanguageServer(SolidLanguageServer):
         else:
             log.info("Bash server initialization complete")
 
-    def request_document_symbols(self, relative_file_path: str, file_buffer: LSPFileBuffer | None = None) -> DocumentSymbols:
+    def request_document_symbols(
+        self,
+        relative_file_path: str,
+        file_buffer: LSPFileBuffer | None = None,
+        *,
+        sync_with_ls: bool = True,
+    ) -> DocumentSymbols:
         # Uses the standard LSP documentSymbol request which provides reliable function detection
         # for all bash function syntaxes including:
         # - function name() { ... } (with function keyword)
@@ -196,7 +203,11 @@ class BashLanguageServer(SolidLanguageServer):
         log.debug(f"Requesting document symbols via LSP for {relative_file_path}")
 
         # Use the standard LSP approach - bash-language-server handles all function syntaxes correctly
-        document_symbols = super().request_document_symbols(relative_file_path, file_buffer=file_buffer)
+        document_symbols = super().request_document_symbols(
+            relative_file_path,
+            file_buffer=file_buffer,
+            sync_with_ls=sync_with_ls,
+        )
 
         # Log detection results for debugging
         functions = [s for s in document_symbols.iter_symbols() if s.get("kind") == 12]
