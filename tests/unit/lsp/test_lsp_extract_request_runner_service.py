@@ -50,10 +50,11 @@ def test_run_request_executes_pipeline_and_returns_language_and_symbols() -> Non
         increment_doc_sync_legacy_fallback=lambda: calls.__setitem__("legacy", calls["legacy"] + 1),
     )
 
-    lang, symbols = service.run_request(repo_root="/repo", normalized_relative_path="src/a.py")
+    lang, symbols, _lsp, runtime_relative = service.run_request(repo_root="/repo", normalized_relative_path="src/a.py")
 
     assert lang is Language.PYTHON
     assert len(symbols) == 1
+    assert runtime_relative == "src/a.py"
     assert calls["prewarm"] == 1
     assert calls["requested"] == 1
     assert calls["accepted"] == 1
@@ -77,7 +78,7 @@ def test_run_request_counts_legacy_when_sync_hint_not_accepted() -> None:
         increment_doc_sync_legacy_fallback=lambda: calls.__setitem__("legacy", calls["legacy"] + 1),
     )
 
-    _, _symbols = service.run_request(repo_root="/repo", normalized_relative_path="src/a.py")
+    _, _symbols, _lsp, _runtime_relative = service.run_request(repo_root="/repo", normalized_relative_path="src/a.py")
 
     assert calls["accepted"] == 0
     assert calls["legacy"] == 1

@@ -17,11 +17,13 @@ class L3SkipEligibilityService:
         resolve_l3_skip_reason: Callable[[FileEnrichJobDTO], str | None],
         build_l3_skipped_readiness: Callable[[FileEnrichJobDTO, str, str], ToolReadinessStateDTO],
         is_recent_l5_ready: Callable[[FileEnrichJobDTO], bool] | None = None,
+        get_recent_tool_ready_state: Callable[[FileEnrichJobDTO], ToolReadinessStateDTO | None] | None = None,
     ) -> None:
         self._is_recent_tool_ready = is_recent_tool_ready
         self._resolve_l3_skip_reason = resolve_l3_skip_reason
         self._build_l3_skipped_readiness = build_l3_skipped_readiness
         self._is_recent_l5_ready = is_recent_l5_ready or (lambda _: False)
+        self._get_recent_tool_ready_state = get_recent_tool_ready_state or (lambda _: None)
 
     def is_recent_tool_ready(self, job: FileEnrichJobDTO) -> bool:
         return self._is_recent_tool_ready(job)
@@ -29,9 +31,11 @@ class L3SkipEligibilityService:
     def is_recent_l5_ready(self, job: FileEnrichJobDTO) -> bool:
         return bool(self._is_recent_l5_ready(job))
 
+    def get_recent_tool_ready_state(self, job: FileEnrichJobDTO) -> ToolReadinessStateDTO | None:
+        return self._get_recent_tool_ready_state(job)
+
     def resolve_skip_reason(self, job: FileEnrichJobDTO) -> str | None:
         return self._resolve_l3_skip_reason(job)
 
     def build_skipped_readiness(self, *, job: FileEnrichJobDTO, reason: str, now_iso: str) -> ToolReadinessStateDTO:
         return self._build_l3_skipped_readiness(job, reason, now_iso)
-

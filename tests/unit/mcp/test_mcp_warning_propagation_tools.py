@@ -119,3 +119,24 @@ def test_call_graph_tool_includes_validation_warnings_in_meta(tmp_path: Path) ->
     tool = CallGraphTool(workspace_repo=WorkspaceRepository(db_path), lsp_repo=LspToolDataRepository(db_path))
     response = tool.call({"repo": "repo-a", "repo_key": "missing-repo", "symbol": "AuthService.login"})
     _assert_partial_fallback_warning(response)
+
+
+def test_call_graph_tool_warns_when_relations_not_ready(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_dir = tmp_path / "repo-a"
+    repo_dir.mkdir()
+    _register_workspace(db_path=db_path, repo_path=repo_dir)
+
+    tool = CallGraphTool(workspace_repo=WorkspaceRepository(db_path), lsp_repo=LspToolDataRepository(db_path))
+    response = tool.call({"repo": str(repo_dir.resolve()), "symbol": "AuthService.login"})
+
+    assert response["isError"] is False
+    item = response["structuredContent"]["items"][0]
+    assert item["name"] == "AuthService.login"
+    assert item["relation_data_ready"] is False
+
+    warnings = response["structuredContent"]["meta"].get("warnings")
+    assert isinstance(warnings, list)
+    codes = {str(warning.get("code", "")) for warning in warnings}
+    assert "WARN_CALL_GRAPH_RELATIONS_NOT_READY" in codes

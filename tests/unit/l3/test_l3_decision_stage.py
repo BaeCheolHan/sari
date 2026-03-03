@@ -30,10 +30,18 @@ def _job() -> FileEnrichJobDTO:
 
 
 class _SkipEligibility:
-    def __init__(self, *, recent: bool = False, reason: str | None = None, l5_ready: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        recent: bool = False,
+        reason: str | None = None,
+        l5_ready: bool = False,
+        recent_get_callers_ready: bool = True,
+    ) -> None:
         self._recent = recent
         self._reason = reason
         self._l5_ready = l5_ready
+        self._recent_get_callers_ready = recent_get_callers_ready
 
     def is_recent_tool_ready(self, job: FileEnrichJobDTO) -> bool:
         _ = job
@@ -42,6 +50,12 @@ class _SkipEligibility:
     def is_recent_l5_ready(self, job: FileEnrichJobDTO) -> bool:
         _ = job
         return self._l5_ready
+
+    def get_recent_tool_ready_state(self, job: FileEnrichJobDTO):
+        _ = job
+        if not self._recent:
+            return None
+        return type("RecentState", (), {"get_callers_ready": self._recent_get_callers_ready})()
 
     def resolve_skip_reason(self, job: FileEnrichJobDTO) -> str | None:
         _ = job
@@ -96,9 +110,10 @@ class _L5QueueTransition:
 class _Persist:
     recent_called: int = 0
     l3_only_called: int = 0
+    last_recent_kwargs: dict[str, object] | None = None
 
     def mark_recent_ready(self, **kwargs: object) -> None:
-        _ = kwargs
+        self.last_recent_kwargs = dict(kwargs)
         self.recent_called += 1
 
     def apply_l3_only_success(self, **kwargs: object) -> None:
@@ -120,6 +135,59 @@ def test_decision_stage_recent_ready_short_circuits_done() -> None:
     out = stage.evaluate(context=L3JobContext(), job=_job(), preprocess_result=None)
     assert out.finished_status == "DONE"
     assert out.should_extract is False
+
+
+def test_decision_stage_recent_ready_preserves_get_callers_ready_state() -> None:
+    persist = _Persist()
+    stage = L3DecisionStage(
+        skip_eligibility=_SkipEligibility(recent=True, recent_get_callers_ready=False),
+        scope_resolution=_Scope(),
+        admission_stage=_Admission(None),
+        queue_transition=_QueueTransition(),
+        l5_queue_transition=_L5QueueTransition(),
+        persist_stage=persist,
+        now_iso_supplier=lambda: "2026-01-01T00:00:00Z",
+        admission_enforced=False,
+    )
+    out = stage.evaluate(context=L3JobContext(), job=_job(), preprocess_result=None)
+    assert out.finished_status == "DONE"
+    assert persist.last_recent_kwargs is not None
+    assert persist.last_recent_kwargs["get_callers_ready"] is False
+
+
+def test_decision_stage_recent_ready_without_recent_state_accessor_does_not_fail() -> None:
+    class _SkipWithoutAccessor:
+        def is_recent_tool_ready(self, job: FileEnrichJobDTO) -> bool:
+            _ = job
+            return True
+
+        def is_recent_l5_ready(self, job: FileEnrichJobDTO) -> bool:
+            _ = job
+            return False
+
+        def resolve_skip_reason(self, job: FileEnrichJobDTO) -> str | None:
+            _ = job
+            return None
+
+        def build_skipped_readiness(self, *, job: FileEnrichJobDTO, reason: str, now_iso: str):
+            _ = (job, reason, now_iso)
+            raise AssertionError("should not be called")
+
+    persist = _Persist()
+    stage = L3DecisionStage(
+        skip_eligibility=_SkipWithoutAccessor(),
+        scope_resolution=_Scope(),
+        admission_stage=_Admission(None),
+        queue_transition=_QueueTransition(),
+        l5_queue_transition=_L5QueueTransition(),
+        persist_stage=persist,
+        now_iso_supplier=lambda: "2026-01-01T00:00:00Z",
+        admission_enforced=False,
+    )
+    out = stage.evaluate(context=L3JobContext(), job=_job(), preprocess_result=None)
+    assert out.finished_status == "DONE"
+    assert persist.last_recent_kwargs is not None
+    assert persist.last_recent_kwargs["get_callers_ready"] is False
 
 
 def test_decision_stage_l5_lane_allows_extract_when_admitted_and_no_l5_semantics() -> None:

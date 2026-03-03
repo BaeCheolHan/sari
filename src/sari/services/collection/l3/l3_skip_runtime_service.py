@@ -68,15 +68,19 @@ class L3SkipRuntimeService:
         )
 
     def is_recent_tool_ready(self, job: FileEnrichJobDTO) -> bool:
+        return self.get_recent_tool_ready_state(job) is not None
+
+    def get_recent_tool_ready_state(self, job: FileEnrichJobDTO) -> ToolReadinessStateDTO | None:
+        """최근 성공 TTL 내의 readiness 상태를 반환한다."""
         if self._l3_recent_success_ttl_sec <= 0:
-            return False
+            return None
         state = self._readiness_repo.get_state(job.repo_root, job.relative_path)
         if state is None:
-            return False
+            return None
         if not state.tool_ready:
-            return False
+            return None
         if state.content_hash != job.content_hash:
-            return False
+            return None
         try:
             updated_at = datetime.fromisoformat(state.updated_at)
         except ValueError:
@@ -86,8 +90,10 @@ class L3SkipRuntimeService:
                 job.relative_path,
                 state.updated_at,
             )
-            return False
+            return None
         if updated_at.tzinfo is None:
             updated_at = updated_at.replace(tzinfo=timezone.utc)
         age_sec = (datetime.now(timezone.utc) - updated_at).total_seconds()
-        return age_sec <= float(self._l3_recent_success_ttl_sec)
+        if age_sec > float(self._l3_recent_success_ttl_sec):
+            return None
+        return state

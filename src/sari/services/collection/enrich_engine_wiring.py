@@ -168,6 +168,7 @@ def wire_engine_services(
             relative_path=job.relative_path,
             content_hash=job.content_hash,
         ),
+        get_recent_tool_ready_state=lambda job: engine._get_or_init_l3_skip_runtime_service().get_recent_tool_ready_state(job),
     )
     engine._l3_queue_transition_service = L3QueueTransitionService(
         queue_repo=engine._enrich_queue_repo,

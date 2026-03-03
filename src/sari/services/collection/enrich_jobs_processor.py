@@ -277,7 +277,7 @@ class EnrichJobsProcessor:
                         list_files_ready=True,
                         read_file_ready=True,
                         search_symbol_ready=True,
-                        get_callers_ready=True,
+                        get_callers_ready=len(extraction.relations) > 0,
                         consistency_ready=True,
                         quality_ready=True,
                         tool_ready=True,
@@ -354,4 +354,3 @@ class EnrichJobsProcessor:
                 last_flush_at = time.perf_counter()
         self._flush_enrich(buffers=buffers, body_upserts=body_upserts)
         return processed
-

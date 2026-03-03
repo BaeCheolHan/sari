@@ -111,14 +111,27 @@ class CallGraphTool:
         repo_root = str(arguments["repo"])
         callers = rows_to_items(self._lsp_repo.find_callers(repo_root=repo_root, symbol_name=symbol_key, limit=limit_raw))
         callees = rows_to_items(self._lsp_repo.find_callees(repo_root=repo_root, symbol_name=symbol_key, limit=limit_raw))
+        health = self._lsp_repo.get_repo_call_graph_health(repo_root=repo_root)
+        relation_data_ready = int(health.get("relation_count", 0)) > 0
+        if not relation_data_ready:
+            warnings_payload.append(
+                {
+                    "code": "WARN_CALL_GRAPH_RELATIONS_NOT_READY",
+                    "message": "call relations index is empty; run L5 relation extraction pipeline",
+                }
+            )
         return pack1_items_success(
             [
                 {
+                    "kind": "record",
+                    "path": repo_root,
+                    "name": symbol_key,
                     "symbol": symbol_key,
                     "callers": callers,
                     "callees": callees,
                     "caller_count": len(callers),
                     "callee_count": len(callees),
+                    "relation_data_ready": relation_data_ready,
                 }
             ],
             cache_hit=True,

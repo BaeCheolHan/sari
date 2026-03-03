@@ -166,3 +166,33 @@ def test_render_pack_v2_search_symbol_enforces_strict_contract() -> None:
     assert rendered["isError"] is True
     text = str(rendered["content"][0]["text"])
     assert "@ERR code=ERR_PACK_CONTRACT_VIOLATION" in text
+
+
+def test_render_pack_v2_call_graph_record_row_is_not_file_fallback() -> None:
+    """call_graph 요약 아이템은 file fallback이 아닌 record로 렌더링되어야 한다."""
+    payload = {
+        "isError": False,
+        "structuredContent": {
+            "items": [
+                {
+                    "kind": "record",
+                    "path": "/repo-a",
+                    "name": "AuthService.login",
+                    "symbol": "AuthService.login",
+                    "caller_count": 0,
+                    "callee_count": 0,
+                    "relation_data_ready": False,
+                }
+            ],
+            "meta": {"stabilization": {"degraded": False, "fatal_error": False}},
+        },
+    }
+    rendered = render_pack_v2(
+        tool_name="call_graph",
+        arguments={"repo": "/repo-a", "symbol": "AuthService.login"},
+        payload=payload,
+        options=PackLineOptionsDTO(include_structured=False),
+    )
+    text = str(rendered["content"][0]["text"])
+    assert "@R kind=record " in text
+    assert "name=AuthService.login" in text

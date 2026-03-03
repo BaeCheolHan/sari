@@ -35,7 +35,7 @@ class LspExtractRequestRunnerService:
         self._increment_doc_sync_accepted = increment_doc_sync_accepted
         self._increment_doc_sync_legacy_fallback = increment_doc_sync_legacy_fallback
 
-    def run_request(self, *, repo_root: str, normalized_relative_path: str) -> tuple[Language, list[object]]:
+    def run_request(self, *, repo_root: str, normalized_relative_path: str) -> tuple[Language, list[object], object, str]:
         language = self._resolve_language(normalized_relative_path)
         runtime_scope_root, runtime_relative_path = self._resolve_lsp_runtime_scope(
             repo_root=repo_root,
@@ -78,4 +78,4 @@ class LspExtractRequestRunnerService:
                     self._increment_doc_sync_accepted()
                 else:
                     self._increment_doc_sync_legacy_fallback()
-                return language, list(document_symbols_result.iter_symbols())
+                return language, list(document_symbols_result.iter_symbols()), lsp, runtime_relative_path

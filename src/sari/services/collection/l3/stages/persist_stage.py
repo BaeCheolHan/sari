@@ -38,6 +38,7 @@ class L3PersistStage:
         content_hash: str,
         now_iso: str,
         reason: str = "skip_recent_success",
+        get_callers_ready: bool = False,
     ) -> None:
         context.state_update = EnrichStateUpdateDTO(
             repo_root=repo_root,
@@ -52,7 +53,7 @@ class L3PersistStage:
             list_files_ready=True,
             read_file_ready=True,
             search_symbol_ready=True,
-            get_callers_ready=True,
+            get_callers_ready=bool(get_callers_ready),
             consistency_ready=True,
             quality_ready=True,
             tool_ready=True,
@@ -144,7 +145,7 @@ class L3PersistStage:
             list_files_ready=True,
             read_file_ready=True,
             search_symbol_ready=True,
-            get_callers_ready=True,
+            get_callers_ready=False,
             consistency_ready=True,
             quality_ready=True,
             tool_ready=True,
@@ -205,6 +206,7 @@ class L3PersistStage:
             content_hash=content_hash,
             now_iso=now_iso,
             reason="ok",
+            get_callers_ready=len(lsp_relations) > 0,
         )
 
     def mark_failure(

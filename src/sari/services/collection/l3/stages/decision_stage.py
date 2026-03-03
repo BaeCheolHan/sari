@@ -66,6 +66,9 @@ class L3DecisionStage:
                 )
         else:
             if bool(self._skip_eligibility.is_recent_tool_ready(job)):
+                get_recent_state = getattr(self._skip_eligibility, "get_recent_tool_ready_state", None)
+                recent_state = get_recent_state(job) if callable(get_recent_state) else None
+                preserved_get_callers_ready = bool(getattr(recent_state, "get_callers_ready", False))
                 self._persist_stage.mark_recent_ready(
                     context=context,
                     repo_root=job.repo_root,
@@ -73,6 +76,7 @@ class L3DecisionStage:
                     content_hash=job.content_hash,
                     now_iso=now_iso,
                     reason="skip_recent_success",
+                    get_callers_ready=preserved_get_callers_ready,
                 )
                 context.done_id = job.job_id
                 return L3DecisionStageResult(

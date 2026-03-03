@@ -665,10 +665,16 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
 
     def _extract_once(self, repo_root: str, normalized_relative_path: str) -> LspExtractionResultDTO:
         try:
-            language, raw_symbols = self._extract_request_runner_service.run_request(
+            run_result = self._extract_request_runner_service.run_request(
                 repo_root=repo_root,
                 normalized_relative_path=normalized_relative_path,
             )
+            lsp = None
+            runtime_relative_path = normalized_relative_path
+            if isinstance(run_result, tuple) and len(run_result) >= 4:
+                language, raw_symbols, lsp, runtime_relative_path = run_result[0], run_result[1], run_result[2], str(run_result[3])
+            else:
+                language, raw_symbols = run_result  # type: ignore[misc]
         except SolidLSPException as exc:
             return LspExtractionResultDTO(
                 symbols=[],
@@ -696,7 +702,145 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
                 normalized_relative_path=normalized_relative_path,
                 raw_symbols=raw_symbols,
             )
-        return LspExtractionResultDTO(symbols=symbols, relations=[], error_message=None)
+        relations = self._extract_relations_from_references(
+            lsp=lsp,
+            runtime_relative_path=runtime_relative_path,
+            raw_symbols=raw_symbols,
+            normalized_symbols=symbols,
+        )
+        return LspExtractionResultDTO(symbols=symbols, relations=relations, error_message=None)
+
+    def _extract_relations_from_references(
+        self,
+        *,
+        lsp: object,
+        runtime_relative_path: str,
+        raw_symbols: list[object],
+        normalized_symbols: list[dict[str, object]],
+    ) -> list[dict[str, object]]:
+        """동일 파일 기준 caller -> callee 관계를 references API로 추출한다."""
+        request_referencing_symbols = getattr(lsp, "request_referencing_symbols", None)
+        if not callable(request_referencing_symbols):
+            return []
+        reference_pos_by_symbol = self._build_symbol_reference_position_index(raw_symbols=raw_symbols)
+        deduped: list[dict[str, object]] = []
+        seen: set[tuple[str, str, int]] = set()
+        for symbol in normalized_symbols:
+            target_name = str(symbol.get("name", "")).strip()
+            target_kind = str(symbol.get("kind", "")).strip().lower()
+            target_line_raw = symbol.get("line", 0)
+            if target_name == "":
+                continue
+            if not self._is_relation_target_kind(target_kind):
+                continue
+            try:
+                target_line = int(target_line_raw)
+            except (RuntimeError, ValueError, TypeError):
+                continue
+            query_line, query_col = reference_pos_by_symbol.get((target_name, target_kind, target_line), (target_line, 0))
+            try:
+                incoming = request_referencing_symbols(
+                    runtime_relative_path,
+                    int(query_line),
+                    int(query_col),
+                    include_imports=False,
+                    include_self=False,
+                    include_body=False,
+                    include_file_symbols=False,
+                )
+            except (SolidLSPException, RuntimeError, OSError, ValueError, TypeError):
+                continue
+            if not isinstance(incoming, list):
+                continue
+            for ref in incoming:
+                caller: object | None = None
+                line_raw: object = target_line
+                if isinstance(ref, dict):
+                    caller = ref.get("symbol")
+                    line_raw = ref.get("line", target_line)
+                elif hasattr(ref, "symbol"):
+                    caller = getattr(ref, "symbol", None)
+                    line_raw = getattr(ref, "line", target_line)
+                else:
+                    continue
+                caller_name = ""
+                caller_location: object | None = None
+                if isinstance(caller, dict):
+                    caller_name = str(caller.get("name", "")).strip()
+                    caller_location = caller.get("location")
+                elif caller is not None:
+                    caller_name = str(getattr(caller, "name", "")).strip()
+                    caller_location = getattr(caller, "location", None)
+                if caller_name == "":
+                    continue
+                caller_relative: object | None = None
+                if isinstance(caller_location, dict):
+                    caller_relative = caller_location.get("relativePath")
+                elif caller_location is not None:
+                    caller_relative = getattr(caller_location, "relativePath", None)
+                if not isinstance(caller_relative, str) or caller_relative.strip() == "":
+                    # same-file 여부를 증명할 수 없는 edge는 저장하지 않는다.
+                    continue
+                if caller_relative.strip() != runtime_relative_path:
+                    # lsp_call_relations 스키마는 파일 단위 replace 계약이라 cross-file edge는 제외한다.
+                    continue
+                try:
+                    relation_line = int(line_raw)
+                except (RuntimeError, ValueError, TypeError):
+                    relation_line = target_line
+                key = (caller_name, target_name, relation_line)
+                if key in seen:
+                    continue
+                seen.add(key)
+                deduped.append({"from_symbol": caller_name, "to_symbol": target_name, "line": relation_line})
+        return deduped
+
+    def _build_symbol_reference_position_index(
+        self, *, raw_symbols: list[object]
+    ) -> dict[tuple[str, str, int], tuple[int, int]]:
+        """raw 심볼에서 declaration line 키 -> references query(line, column) 인덱스를 생성한다."""
+        index: dict[tuple[str, str, int], tuple[int, int]] = {}
+        for raw in raw_symbols:
+            if not isinstance(raw, dict):
+                continue
+            name = str(raw.get("name", "")).strip()
+            if name == "":
+                continue
+            kind = str(raw.get("kind", "")).strip().lower()
+            location = raw.get("location")
+            if not isinstance(location, dict):
+                continue
+            selection_range = location.get("selectionRange")
+            range_data = location.get("range")
+            declaration_start = range_data.get("start") if isinstance(range_data, dict) else None
+            selection_start = selection_range.get("start") if isinstance(selection_range, dict) else None
+            if not isinstance(declaration_start, dict):
+                continue
+            try:
+                # normalize_symbols 키는 declaration line을 유지한다.
+                declaration_line = int(declaration_start.get("line", 0))
+                query_line = int(
+                    selection_start.get("line", declaration_line)
+                    if isinstance(selection_start, dict)
+                    else declaration_line
+                )
+                query_col = int(
+                    selection_start.get("character", declaration_start.get("character", 0))
+                    if isinstance(selection_start, dict)
+                    else declaration_start.get("character", 0)
+                )
+            except (RuntimeError, ValueError, TypeError):
+                continue
+            index.setdefault((name, kind, declaration_line), (query_line, query_col))
+        return index
+
+    def _is_relation_target_kind(self, kind: str) -> bool:
+        """relation target으로 취급할 symbol kind를 판정한다."""
+        if kind in {"function", "method", "constructor", "class"}:
+            return True
+        if kind in {"12", "6", "9", "5"}:
+            return True
+        return False
 
     def _normalize_symbols(
         self,

@@ -18,6 +18,15 @@ def _optional_str(value: object) -> str | None:
     return None
 
 
+def _canonical_file_key(*, repo_root: str, relative_path: str) -> str:
+    """repo_root/relative_path 조합을 절대 파일 키로 정규화한다."""
+    base = Path(repo_root.strip()) if repo_root.strip() != "" else Path("/")
+    try:
+        return str((base / relative_path).resolve(strict=False))
+    except OSError:
+        return str((base / relative_path).absolute())
+
+
 class LspToolDataRepository:
     """LSP 기반 심볼/관계 데이터 영속화를 담당한다."""
 
@@ -308,55 +317,38 @@ class LspToolDataRepository:
         path_prefix: str | None = None,
     ) -> list[SymbolSearchItemDTO]:
         """저장된 심볼 인덱스에서 이름 기준 검색 결과를 반환한다."""
-        params: dict[str, object] = {
-            "repo_root": repo_root,
-            "query_like": f"%{query}%",
-            "limit": limit,
-        }
+        query_limit = max(1, int(limit))
+        batch_limit = max(64, min(1024, query_limit * 4))
+        params: dict[str, object] = {"repo_root": repo_root, "query_like": f"%{query}%"}
         where_prefix = ""
         if path_prefix is not None and path_prefix.strip() != "":
             where_prefix = "AND relative_path LIKE :path_prefix"
             params["path_prefix"] = f"{path_prefix.strip()}%"
-
-        with connect(self._db_path) as conn:
-            rows = conn.execute(
-                f"""
-                SELECT repo_root, relative_path, name, kind, line, end_line, content_hash,
-                       symbol_key, parent_symbol_key, depth, container_name
-                FROM lsp_symbols
-                WHERE (
-                        repo_root = :repo_root
-                        OR repo_root IN (
-                            SELECT DISTINCT repo_root
-                            FROM collected_files_l1
-                            WHERE scope_repo_root = :repo_root
-                              AND is_deleted = 0
-                        )
+        sql = f"""
+            SELECT repo_root, relative_path, name, kind, line, end_line, content_hash,
+                   symbol_key, parent_symbol_key, depth, container_name
+            FROM lsp_symbols
+            WHERE (
+                    repo_root = :repo_root
+                    OR repo_root IN (
+                        SELECT DISTINCT repo_root
+                        FROM collected_files_l1
+                        WHERE scope_repo_root = :repo_root
+                          AND is_deleted = 0
                     )
-                  AND name LIKE :query_like
-                  {where_prefix}
-                ORDER BY relative_path ASC, line ASC
-                LIMIT :limit
-                """,
-                params,
-            ).fetchall()
-
-        return [
-            SymbolSearchItemDTO(
-                repo=row_str(row, "repo_root"),
-                relative_path=row_str(row, "relative_path"),
-                name=row_str(row, "name"),
-                kind=row_str(row, "kind"),
-                line=row_int(row, "line"),
-                end_line=row_int(row, "end_line"),
-                content_hash=row_str(row, "content_hash"),
-                symbol_key=row["symbol_key"] if row["symbol_key"] is None or isinstance(row["symbol_key"], str) else None,
-                parent_symbol_key=row["parent_symbol_key"] if row["parent_symbol_key"] is None or isinstance(row["parent_symbol_key"], str) else None,
-                depth=row_int(row, "depth"),
-                container_name=row["container_name"] if row["container_name"] is None or isinstance(row["container_name"], str) else None,
-            )
-            for row in rows
-        ]
+                )
+              AND name LIKE :query_like
+              {where_prefix}
+            ORDER BY relative_path ASC, line ASC, name ASC, repo_root ASC
+            LIMIT :batch_limit OFFSET :batch_offset
+            """
+        return self._search_symbols_with_dedupe_limit(
+            sql=sql,
+            params=params,
+            requested_repo_root=repo_root,
+            limit=query_limit,
+            batch_limit=batch_limit,
+        )
 
     def find_callers(self, repo_root: str, symbol_name: str, limit: int) -> list[CallerEdgeDTO]:
         """지정 심볼을 대상으로 호출자 관계를 조회한다."""
@@ -429,27 +421,113 @@ class LspToolDataRepository:
 
     def find_implementations(self, repo_root: str, symbol_name: str, limit: int) -> list[SymbolSearchItemDTO]:
         """이름 기준 구현 후보 심볼 목록을 조회한다."""
-        with connect(self._db_path) as conn:
-            rows = conn.execute(
-                """
-                SELECT repo_root, relative_path, name, kind, line, end_line, content_hash,
-                       symbol_key, parent_symbol_key, depth, container_name
-                FROM lsp_symbols
-                WHERE (
-                        repo_root = :repo_root
-                        OR repo_root IN (
-                            SELECT DISTINCT repo_root
-                            FROM collected_files_l1
-                            WHERE scope_repo_root = :repo_root
-                              AND is_deleted = 0
-                        )
+        query_limit = max(1, int(limit))
+        batch_limit = max(64, min(1024, query_limit * 4))
+        sql = """
+            SELECT repo_root, relative_path, name, kind, line, end_line, content_hash,
+                   symbol_key, parent_symbol_key, depth, container_name
+            FROM lsp_symbols
+            WHERE (
+                    repo_root = :repo_root
+                    OR repo_root IN (
+                        SELECT DISTINCT repo_root
+                        FROM collected_files_l1
+                        WHERE scope_repo_root = :repo_root
+                          AND is_deleted = 0
                     )
-                  AND name LIKE :name_like
-                ORDER BY relative_path ASC, line ASC
-                LIMIT :limit
-                """,
-                {"repo_root": repo_root, "name_like": f"%{symbol_name}%", "limit": limit},
-            ).fetchall()
+                )
+              AND name LIKE :name_like
+            ORDER BY relative_path ASC, line ASC, name ASC, repo_root ASC
+            LIMIT :batch_limit OFFSET :batch_offset
+            """
+        return self._search_symbols_with_dedupe_limit(
+            sql=sql,
+            params={"repo_root": repo_root, "name_like": f"%{symbol_name}%"},
+            requested_repo_root=repo_root,
+            limit=query_limit,
+            batch_limit=batch_limit,
+        )
+
+    def _search_symbols_with_dedupe_limit(
+        self,
+        *,
+        sql: str,
+        params: dict[str, object],
+        requested_repo_root: str,
+        limit: int,
+        batch_limit: int,
+    ) -> list[SymbolSearchItemDTO]:
+        """배치 조회 후 dedupe 결과에서 limit만큼만 반환한다."""
+        offset = 0
+        picked: dict[tuple[object, ...], SymbolSearchItemDTO] = {}
+        with connect(self._db_path) as conn:
+            while True:
+                batch_params = dict(params)
+                batch_params["batch_limit"] = int(batch_limit)
+                batch_params["batch_offset"] = int(offset)
+                rows = conn.execute(sql, batch_params).fetchall()
+                if len(rows) == 0:
+                    break
+                requested_root = requested_repo_root.strip()
+                for item in self._rows_to_symbol_items(rows):
+                    dedupe_key = self._symbol_item_dedupe_key(item)
+                    existing = picked.get(dedupe_key)
+                    if existing is None:
+                        picked[dedupe_key] = item
+                        continue
+                    existing_rank = self._symbol_item_rank(existing=existing, requested_root=requested_root)
+                    candidate_rank = self._symbol_item_rank(existing=item, requested_root=requested_root)
+                    if candidate_rank < existing_rank:
+                        picked[dedupe_key] = item
+                if len(picked) >= limit:
+                    # head 내 non-requested 항목은 requested_root 직접 조회로 승격 여부를 확정한 뒤 종료한다.
+                    while True:
+                        changed = False
+                        head = sorted(
+                            picked.values(),
+                            key=lambda it: (it.relative_path, it.line, it.name, it.repo),
+                        )[:limit]
+                        for item in head:
+                            if item.repo == requested_root:
+                                continue
+                            promoted = self._find_requested_root_candidate_for_item(
+                                conn=conn,
+                                requested_root=requested_root,
+                                item=item,
+                            )
+                            if promoted is None:
+                                continue
+                            dedupe_key = self._symbol_item_dedupe_key(item)
+                            picked[dedupe_key] = promoted
+                            changed = True
+                        if not changed:
+                            break
+                    head = sorted(
+                        picked.values(),
+                        key=lambda it: self._symbol_item_sort_key(it),
+                    )[:limit]
+                    if len(head) == limit:
+                        worst_head_key = self._symbol_item_sort_key(head[-1])
+                        last_batch_row = rows[-1]
+                        last_batch_key = (
+                            row_str(last_batch_row, "relative_path"),
+                            row_int(last_batch_row, "line"),
+                            row_str(last_batch_row, "name"),
+                            row_str(last_batch_row, "repo_root"),
+                        )
+                        if last_batch_key > worst_head_key:
+                            break
+                if len(rows) < batch_limit:
+                    break
+                offset += len(rows)
+        deduped = sorted(
+            picked.values(),
+            key=lambda it: (it.relative_path, it.line, it.name, it.repo),
+        )
+        return deduped[:limit]
+
+    def _rows_to_symbol_items(self, rows: list[object]) -> list[SymbolSearchItemDTO]:
+        """DB row를 SymbolSearchItemDTO 목록으로 변환한다."""
         return [
             SymbolSearchItemDTO(
                 repo=row_str(row, "repo_root"),
@@ -466,6 +544,111 @@ class LspToolDataRepository:
             )
             for row in rows
         ]
+
+    def _dedupe_symbol_search_items(
+        self,
+        *,
+        items: list[SymbolSearchItemDTO],
+        requested_repo_root: str,
+    ) -> list[SymbolSearchItemDTO]:
+        """동일 절대 파일/심볼 중복을 제거하고 요청 repo_root를 우선한다."""
+        picked: dict[tuple[object, ...], SymbolSearchItemDTO] = {}
+        requested_root = requested_repo_root.strip()
+        for item in items:
+            dedupe_key = self._symbol_item_dedupe_key(item)
+            existing = picked.get(dedupe_key)
+            if existing is None:
+                picked[dedupe_key] = item
+                continue
+            existing_rank = self._symbol_item_rank(existing=existing, requested_root=requested_root)
+            candidate_rank = self._symbol_item_rank(existing=item, requested_root=requested_root)
+            if candidate_rank < existing_rank:
+                picked[dedupe_key] = item
+        return sorted(
+            picked.values(),
+            key=lambda it: (it.relative_path, it.line, it.name, it.repo),
+        )
+
+    def _symbol_item_dedupe_key(self, item: SymbolSearchItemDTO) -> tuple[object, ...]:
+        file_key = _canonical_file_key(repo_root=item.repo, relative_path=item.relative_path)
+        # symbol_key는 repo_root를 포함해 생성될 수 있어 cross-root dedupe 키로 부적합하다.
+        symbol_discriminator = (
+            item.name,
+            item.kind,
+            item.line,
+            item.end_line,
+            item.depth,
+            item.container_name or "",
+        )
+        return (file_key, symbol_discriminator)
+
+    def _find_requested_root_candidate_for_item(
+        self,
+        *,
+        conn: object,
+        requested_root: str,
+        item: SymbolSearchItemDTO,
+    ) -> SymbolSearchItemDTO | None:
+        """현재 항목과 동일 dedupe 키를 갖는 requested_root 후보를 조회한다."""
+        req_root = requested_root.strip()
+        if req_root == "":
+            return None
+        file_key = _canonical_file_key(repo_root=item.repo, relative_path=item.relative_path)
+        root_prefix = req_root.rstrip("/") + "/"
+        if not file_key.startswith(root_prefix):
+            return None
+        candidate_relative = file_key[len(root_prefix) :]
+        row = conn.execute(
+            """
+            SELECT repo_root, relative_path, name, kind, line, end_line, content_hash,
+                   symbol_key, parent_symbol_key, depth, container_name
+            FROM lsp_symbols
+            WHERE repo_root = :repo_root
+              AND relative_path = :relative_path
+              AND name = :name
+              AND kind = :kind
+              AND line = :line
+              AND end_line = :end_line
+              AND depth = :depth
+              AND COALESCE(container_name, '') = :container_name
+            LIMIT 1
+            """,
+            {
+                "repo_root": req_root,
+                "relative_path": candidate_relative,
+                "name": item.name,
+                "kind": item.kind,
+                "line": item.line,
+                "end_line": item.end_line,
+                "depth": item.depth,
+                "container_name": item.container_name or "",
+            },
+        ).fetchone()
+        if row is None:
+            return None
+        return SymbolSearchItemDTO(
+            repo=row_str(row, "repo_root"),
+            relative_path=row_str(row, "relative_path"),
+            name=row_str(row, "name"),
+            kind=row_str(row, "kind"),
+            line=row_int(row, "line"),
+            end_line=row_int(row, "end_line"),
+            content_hash=row_str(row, "content_hash"),
+            symbol_key=row["symbol_key"] if row["symbol_key"] is None or isinstance(row["symbol_key"], str) else None,
+            parent_symbol_key=row["parent_symbol_key"] if row["parent_symbol_key"] is None or isinstance(row["parent_symbol_key"], str) else None,
+            depth=row_int(row, "depth"),
+            container_name=row["container_name"] if row["container_name"] is None or isinstance(row["container_name"], str) else None,
+        )
+
+    def _symbol_item_rank(self, *, existing: SymbolSearchItemDTO, requested_root: str) -> tuple[int, int, int]:
+        """중복 후보 선택 우선순위를 계산한다."""
+        exact_repo_match = 0 if existing.repo == requested_root else 1
+        relative_depth = existing.relative_path.count("/")
+        repo_depth = existing.repo.count("/")
+        return (exact_repo_match, relative_depth, repo_depth)
+
+    def _symbol_item_sort_key(self, item: SymbolSearchItemDTO) -> tuple[str, int, str, str]:
+        return (item.relative_path, item.line, item.name, item.repo)
 
     def get_repo_call_graph_health(self, repo_root: str) -> dict[str, int]:
         """저장소 단위 호출 그래프 건강 지표를 반환한다."""
