@@ -245,6 +245,9 @@ class WorkspaceFanoutResolver:
         registered_paths = {Path(item.path).expanduser().resolve() for item in self._workspace_repo.list_all()}
         if root_path not in registered_paths:
             return []
+        # root 자체가 명시적 repo(.git/build marker)라면 fan-out보다 단일 repo 스캔을 우선한다.
+        if self._is_explicit_repo_root(root_path):
+            return []
         workspace_gitignore_spec = self._load_gitignore_spec(root_path)
         targets: list[Path] = []
         for child in root_path.iterdir():
@@ -265,6 +268,15 @@ class WorkspaceFanoutResolver:
             return []
         targets.sort(key=lambda item: item.name)
         return targets
+
+    def _is_explicit_repo_root(self, root_path: Path) -> bool:
+        """root 경로 자체가 repo 루트임을 명시하는 마커 존재 여부를 반환한다."""
+        if (root_path / ".git").exists():
+            return True
+        for marker in self._build_markers:
+            if (root_path / marker).exists():
+                return True
+        return False
 
     def _is_top_level_repo_candidate(self, candidate: Path) -> bool:
         """top-level 하위 디렉터리가 repo 후보인지 판정한다."""

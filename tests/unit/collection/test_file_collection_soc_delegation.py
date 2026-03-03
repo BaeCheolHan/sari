@@ -814,6 +814,73 @@ def test_file_collection_service_fanout_scan_does_not_delete_independent_child_s
     assert int(owned_row["is_deleted"]) == 0
 
 
+def test_file_collection_service_single_repo_scan_cleans_up_stale_fanout_rows(tmp_path: Path) -> None:
+    """single_repo 스캔 경로에서는 과거 fanout child active row를 선제 삭제해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    root_repo = (tmp_path / "sari").resolve()
+    child_root = (root_repo / "src").resolve()
+    child_root.mkdir(parents=True)
+
+    service = FileCollectionService(
+        workspace_repo=WorkspaceRepository(db_path),
+        file_repo=FileCollectionRepository(db_path),
+        enrich_queue_repo=FileEnrichQueueRepository(db_path),
+        body_repo=FileBodyRepository(db_path),
+        lsp_repo=LspToolDataRepository(db_path),
+        readiness_repo=ToolReadinessRepository(db_path),
+        policy=_policy(),
+        lsp_backend=_NoopLspBackend(),
+        policy_repo=None,
+        event_repo=None,
+    )
+
+    class _SingleRepoScannerStub:
+        def scan_once(self, repo_root: str, scope_repo_root: str | None = None) -> CollectionScanResultDTO:
+            assert repo_root == str(root_repo)
+            assert scope_repo_root == str(root_repo)
+            return CollectionScanResultDTO(scanned_count=1, indexed_count=0, deleted_count=0)
+
+    service._scanner = _SingleRepoScannerStub()  # type: ignore[attr-defined]
+    service._fanout_resolver = _FanoutResolverStub([])  # type: ignore[attr-defined]
+
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO collected_files_l1(
+                repo_id, repo_root, scope_repo_root, relative_path, absolute_path, repo_label,
+                mtime_ns, size_bytes, content_hash, is_deleted, last_seen_at, updated_at, enrich_state
+            ) VALUES(
+                '', :repo_root, :scope_repo_root, 'main.py', :absolute_path, '.',
+                1, 1, 'fanout-stale', 0, '2026-02-20T00:00:00+00:00', '2026-02-20T00:00:00+00:00', 'DONE'
+            )
+            """,
+            {
+                "repo_root": str(child_root),
+                "scope_repo_root": str(root_repo),
+                "absolute_path": str((child_root / "main.py").resolve()),
+            },
+        )
+        conn.commit()
+
+    _ = service.scan_once(str(root_repo))
+
+    with connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT is_deleted, enrich_state
+            FROM collected_files_l1
+            WHERE repo_root = :repo_root
+              AND scope_repo_root = :scope_repo_root
+              AND relative_path = 'main.py'
+            """,
+            {"repo_root": str(child_root), "scope_repo_root": str(root_repo)},
+        ).fetchone()
+    assert row is not None
+    assert int(row["is_deleted"]) == 1
+    assert str(row["enrich_state"]) == "DELETED"
+
+
 def test_file_collection_service_start_background_triggers_l5_startup_reconciliation_for_active_workspaces(
     tmp_path: Path,
 ) -> None:

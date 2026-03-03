@@ -452,8 +452,30 @@ class FileCollectionService:
         root_path = Path(repo_root).expanduser().resolve()
         fanout_targets = self._fanout_resolver.resolve_targets(root_path)
         if len(fanout_targets) == 0:
+            self._cleanup_stale_fanout_rows_for_single_repo(root_path=root_path)
             return self._scanner_scan_once(repo_root=str(root_path), scope_repo_root=str(root_path))
         return self._scan_workspace_fanout(root_path=root_path, targets=fanout_targets)
+
+    def _cleanup_stale_fanout_rows_for_single_repo(self, *, root_path: Path) -> None:
+        """단일 repo 스캔으로 전환 시 과거 fan-out child 산출물(active)을 정리한다."""
+        if not root_path.exists() or not root_path.is_dir():
+            return
+        root_resolved = str(root_path.resolve())
+        stale_repo_roots = self._file_repo.list_active_repo_roots_in_scope_excluding(
+            scope_repo_root=root_resolved,
+            excluded_repo_root=root_resolved,
+        )
+        if len(stale_repo_roots) == 0:
+            return
+        now_iso = now_iso8601_utc()
+        stale_deleted = self._file_repo.mark_all_active_as_deleted_in_scope_excluding(
+            scope_repo_root=root_resolved,
+            excluded_repo_root=root_resolved,
+            updated_at=now_iso,
+        )
+        if stale_deleted > 0 and self._candidate_index_sink is not None:
+            for child_root in stale_repo_roots:
+                self._candidate_index_sink.mark_repo_dirty(child_root)
 
     def _scan_workspace_fanout(self, root_path: Path, targets: list[Path]) -> CollectionScanResultDTO:
         """workspace 컨테이너 하위 repo를 top-level 단위로 순차 스캔한다."""

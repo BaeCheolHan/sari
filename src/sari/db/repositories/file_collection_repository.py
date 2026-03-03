@@ -156,6 +156,53 @@ class FileCollectionRepository:
             conn.commit()
             return int(cur.rowcount if cur.rowcount is not None else 0)
 
+    def list_active_repo_roots_in_scope_excluding(self, *, scope_repo_root: str, excluded_repo_root: str) -> list[str]:
+        """scope 내 활성 행이 있는 repo_root 중 제외 대상 외 목록을 반환한다."""
+        with connect(self._db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT repo_root
+                FROM collected_files_l1
+                WHERE scope_repo_root = :scope_repo_root
+                  AND is_deleted = 0
+                  AND repo_root != :excluded_repo_root
+                ORDER BY repo_root ASC
+                """,
+                {
+                    "scope_repo_root": scope_repo_root,
+                    "excluded_repo_root": excluded_repo_root,
+                },
+            ).fetchall()
+        return [row_str(row, "repo_root") for row in rows]
+
+    def mark_all_active_as_deleted_in_scope_excluding(
+        self,
+        *,
+        scope_repo_root: str,
+        excluded_repo_root: str,
+        updated_at: str,
+    ) -> int:
+        """scope 내 활성 행 중 제외 repo_root 외 전체를 배치 삭제 상태로 전환한다."""
+        with connect(self._db_path) as conn:
+            cur = conn.execute(
+                """
+                UPDATE collected_files_l1
+                SET is_deleted = 1,
+                    updated_at = :updated_at,
+                    enrich_state = 'DELETED'
+                WHERE scope_repo_root = :scope_repo_root
+                  AND repo_root != :excluded_repo_root
+                  AND is_deleted = 0
+                """,
+                {
+                    "scope_repo_root": scope_repo_root,
+                    "excluded_repo_root": excluded_repo_root,
+                    "updated_at": updated_at,
+                },
+            )
+            conn.commit()
+            return int(cur.rowcount if cur.rowcount is not None else 0)
+
     def list_files(self, repo_root: str, limit: int, prefix: str | None = None) -> list[FileListItemDTO]:
         """활성 파일 목록을 조회한다."""
         where_prefix = ""

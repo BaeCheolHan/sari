@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any
 
@@ -259,6 +260,26 @@ class _ScriptedTransport:
         self.writes.append((message, mode))
 
 
+class _DelayedEofTransport:
+    """watchdog 개입 검증을 위해 EOF를 지연시키는 transport 더블이다."""
+
+    def __init__(self, delay_sec: float = 0.2) -> None:
+        self._delay_sec = delay_sec
+        self._returned = False
+        self.writes: list[tuple[dict[str, object], str | None]] = []
+        self.default_mode = "content-length"
+
+    def read_message(self) -> tuple[dict[str, object], str] | None:
+        if self._returned:
+            return None
+        self._returned = True
+        time.sleep(self._delay_sec)
+        return None
+
+    def write_message(self, message: dict[str, object], mode: str | None = None) -> None:
+        self.writes.append((message, mode))
+
+
 def test_proxy_auto_start_retries_forward_once(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     """proxy는 첫 연결 실패 시 daemon 기동 후 1회 재시도해야 한다."""
     from sari.mcp.proxy import run_stdio_proxy
@@ -297,6 +318,137 @@ def test_proxy_auto_start_retries_forward_once(tmp_path: Path, monkeypatch: Monk
     assert called["forward"] == 2
     assert len(transport.writes) == 1
     assert transport.writes[0][0]["result"] == {}
+
+
+def test_proxy_exits_when_parent_is_gone(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """부모가 사라지면 stdio proxy는 orphan 종료를 요청하고 빠져나와야 한다."""
+    from sari.mcp.proxy import run_stdio_proxy
+
+    transport = _DelayedEofTransport(delay_sec=0.15)
+    terminate_called: list[int] = []
+
+    def _fake_transport(*_: object, **__: object) -> _DelayedEofTransport:
+        return transport
+
+    monkeypatch.setattr("sari.mcp.proxy.McpTransport", _fake_transport)
+
+    exit_code = run_stdio_proxy(
+        db_path=tmp_path / "state.db",
+        workspace_root="/repo/a",
+        auto_start_on_failure=False,
+        parent_alive_fn=lambda _: False,
+        input_hangup_fn=lambda: True,
+        orphan_check_interval_sec=0.01,
+        self_terminate_fn=lambda pid: terminate_called.append(pid),
+    )
+
+    assert exit_code == 0
+    assert len(terminate_called) == 1
+    assert transport.writes == []
+
+
+def test_proxy_orphan_shutdown_does_not_emit_protocol_error(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """orphan 종료는 protocol error 응답 없이 조용히 종료되어야 한다."""
+    from sari.mcp.proxy import run_stdio_proxy
+
+    transport = _DelayedEofTransport(delay_sec=0.15)
+    terminate_called: list[int] = []
+
+    def _fake_transport(*_: object, **__: object) -> _DelayedEofTransport:
+        return transport
+
+    monkeypatch.setattr("sari.mcp.proxy.McpTransport", _fake_transport)
+
+    exit_code = run_stdio_proxy(
+        db_path=tmp_path / "state.db",
+        workspace_root="/repo/a",
+        auto_start_on_failure=False,
+        parent_alive_fn=lambda _: False,
+        input_hangup_fn=lambda: True,
+        orphan_check_interval_sec=0.01,
+        self_terminate_fn=lambda pid: terminate_called.append(pid),
+    )
+
+    assert exit_code == 0
+    assert len(terminate_called) == 1
+    assert transport.writes == []
+
+
+def test_proxy_watchdog_thread_stops_on_eof(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """입력 EOF 종료에서는 orphan terminate 요청 없이 정상 종료해야 한다."""
+    from sari.mcp.proxy import run_stdio_proxy
+
+    transport = _ScriptedTransport(messages=[None])
+    terminate_called: list[int] = []
+
+    def _fake_transport(*_: object, **__: object) -> _ScriptedTransport:
+        return transport
+
+    monkeypatch.setattr("sari.mcp.proxy.McpTransport", _fake_transport)
+
+    exit_code = run_stdio_proxy(
+        db_path=tmp_path / "state.db",
+        workspace_root="/repo/a",
+        auto_start_on_failure=False,
+        parent_alive_fn=lambda _: True,
+        orphan_check_interval_sec=0.01,
+        self_terminate_fn=lambda pid: terminate_called.append(pid),
+    )
+
+    assert exit_code == 0
+    assert terminate_called == []
+
+
+def test_proxy_parent_gone_without_input_hangup_does_not_self_terminate(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """부모 종료만으로는 자가종료하지 않고 입력 EOF를 기다려 정상 종료해야 한다."""
+    from sari.mcp.proxy import run_stdio_proxy
+
+    transport = _DelayedEofTransport(delay_sec=0.05)
+    terminate_called: list[int] = []
+
+    def _fake_transport(*_: object, **__: object) -> _DelayedEofTransport:
+        return transport
+
+    monkeypatch.setattr("sari.mcp.proxy.McpTransport", _fake_transport)
+
+    exit_code = run_stdio_proxy(
+        db_path=tmp_path / "state.db",
+        workspace_root="/repo/a",
+        auto_start_on_failure=False,
+        parent_alive_fn=lambda _: False,
+        input_hangup_fn=lambda: False,
+        orphan_check_interval_sec=0.01,
+        self_terminate_fn=lambda pid: terminate_called.append(pid),
+    )
+
+    assert exit_code == 0
+    assert terminate_called == []
+
+
+def test_proxy_keyboard_interrupt_returns_130(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """SIGINT/KeyboardInterrupt 경로는 성공(0)으로 덮지 않고 130을 반환해야 한다."""
+    from sari.mcp.proxy import run_stdio_proxy
+
+    class _InterruptTransport:
+        default_mode = "content-length"
+
+        def read_message(self) -> tuple[dict[str, object], str] | None:
+            raise KeyboardInterrupt
+
+        def write_message(self, message: dict[str, object], mode: str | None = None) -> None:
+            _ = (message, mode)
+
+    monkeypatch.setattr("sari.mcp.proxy.McpTransport", lambda *_, **__: _InterruptTransport())
+
+    exit_code = run_stdio_proxy(
+        db_path=tmp_path / "state.db",
+        workspace_root="/repo/a",
+        auto_start_on_failure=False,
+    )
+
+    assert exit_code == 130
 
 
 def test_proxy_auto_start_waits_until_daemon_ready(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:

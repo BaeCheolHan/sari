@@ -59,3 +59,40 @@ def test_fanout_resolver_skips_build_artifact_children(tmp_path: Path) -> None:
     assert str((workspace_root / "module-a").resolve()) in targets
     assert str((workspace_root / "build").resolve()) not in targets
     assert str((workspace_root / "bin").resolve()) not in targets
+
+
+def test_fanout_resolver_returns_empty_when_root_is_explicit_repo(tmp_path: Path) -> None:
+    """workspace로 등록되어도 root 자체가 repo면 fan-out을 하지 않아야 한다."""
+    workspace_root = tmp_path / "sari"
+    workspace_root.mkdir(parents=True)
+    (workspace_root / "pyproject.toml").write_text("[project]\nname='sari'\n", encoding="utf-8")
+    (workspace_root / "src").mkdir(parents=True)
+    (workspace_root / "src" / "a.py").write_text("def a():\n    return 1\n", encoding="utf-8")
+    (workspace_root / "tests").mkdir(parents=True)
+    (workspace_root / "tests" / "test_a.py").write_text("def test_a():\n    assert 1\n", encoding="utf-8")
+
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    workspace_repo = WorkspaceRepository(db_path)
+    workspace_repo.add(
+        WorkspaceDTO(
+            path=str(workspace_root.resolve()),
+            name="sari",
+            indexed_at=None,
+            is_active=True,
+        )
+    )
+
+    resolver = WorkspaceFanoutResolver(
+        workspace_repo=workspace_repo,
+        load_gitignore_spec=lambda root: PathSpec.from_lines(
+            GitWildMatchPattern,
+            (root / ".gitignore").read_text(encoding="utf-8").splitlines() if (root / ".gitignore").exists() else [],
+        ),
+        is_collectible=lambda file_path, repo_root, gitignore_spec: file_path.suffix == ".py"
+        and not gitignore_spec.match_file(file_path.relative_to(repo_root).as_posix()),
+        build_markers=("pyproject.toml",),
+    )
+
+    targets = resolver.resolve_targets(workspace_root.resolve())
+    assert targets == []
