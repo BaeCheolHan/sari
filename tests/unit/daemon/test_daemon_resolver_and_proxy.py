@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -408,6 +409,39 @@ def test_proxy_forward_failure_returns_explicit_error(tmp_path: Path, monkeypatc
     payload = transport.writes[0][0]
     assert payload["error"]["code"] == -32002
     assert str(payload["error"]["message"]).startswith("ERR_DAEMON_FORWARD_FAILED:")
+
+
+def test_proxy_initializes_schema_before_resolve_target(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """빈 DB에서도 proxy가 스키마를 먼저 초기화하고 forward 오류로 응답해야 한다."""
+    from sari.mcp.proxy import run_stdio_proxy
+
+    db_path = tmp_path / "state.db"
+    transport = _ScriptedTransport(messages=[({"jsonrpc": "2.0", "id": 41, "method": "initialize", "params": {}}, "content-length"), None])
+
+    def _fake_transport(*_: object, **__: object) -> _ScriptedTransport:
+        return transport
+
+    monkeypatch.setattr("sari.mcp.proxy.McpTransport", _fake_transport)
+    monkeypatch.setattr(
+        "sari.mcp.proxy.forward_once",
+        lambda request, host, port, timeout_sec: (_ for _ in ()).throw(OSError("connection refused")),
+    )
+
+    exit_code = run_stdio_proxy(
+        db_path=db_path,
+        workspace_root="/repo/a",
+        auto_start_on_failure=False,
+    )
+
+    assert exit_code == 0
+    assert len(transport.writes) == 1
+    payload = transport.writes[0][0]
+    assert payload["error"]["code"] == -32002
+    assert str(payload["error"]["message"]).startswith("ERR_DAEMON_FORWARD_FAILED:")
+
+    with sqlite3.connect(str(db_path)) as conn:
+        row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='daemon_runtime'").fetchone()
+    assert row is not None
 
 
 def test_proxy_reconnects_when_draining_response_received(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:

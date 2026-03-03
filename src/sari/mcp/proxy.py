@@ -6,6 +6,7 @@ import os
 import sys
 from pathlib import Path
 
+from sari.db.schema import init_schema
 from sari.mcp.daemon_forward_policy import (
     StartDaemonFn,
     build_forward_error_message,
@@ -95,6 +96,9 @@ def run_stdio_proxy(
     start_daemon_fn: StartDaemonFn | None = None,
 ) -> int:
     """표준 입출력 MCP 요청을 daemon endpoint로 중계한다."""
+    # 프록시 경로는 resolver가 daemon/runtime 테이블을 즉시 조회하므로,
+    # 첫 initialize 이전에 스키마를 보장해 빈 DB에서도 기동 실패를 방지한다.
+    init_schema(db_path)
     input_stream = getattr(sys.stdin, "buffer", sys.stdin)
     output_stream = getattr(sys.stdout, "buffer", sys.stdout)
     transport = McpTransport(input_stream=input_stream, output_stream=output_stream, allow_jsonl=True)

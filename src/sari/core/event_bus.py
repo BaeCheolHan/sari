@@ -35,6 +35,25 @@ T = TypeVar("T")
 
 # 내부 종료 마커 — is_sentinel()로 식별
 _SENTINEL = object()
+_HANDLER_NON_FATAL_EXCEPTIONS: tuple[type[BaseException], ...] = (
+    ArithmeticError,
+    AssertionError,
+    AttributeError,
+    BufferError,
+    EOFError,
+    ImportError,
+    LookupError,
+    NameError,
+    OSError,
+    ReferenceError,
+    RuntimeError,
+    SyntaxError,
+    SystemError,
+    TypeError,
+    ValueError,
+    Warning,
+    ExceptionGroup,
+)
 
 
 class EventBus:
@@ -78,7 +97,7 @@ class EventBus:
     def publish(self, event: object) -> None:
         """이벤트 발행. 등록된 콜백 호출 + Queue에 put.
 
-        콜백에서 발생하는 예외는 로깅 후 무시 (publisher를 블로킹하지 않음).
+        콜백에서 발생하는 일반 런타임 예외는 로깅 후 무시 (publisher를 블로킹하지 않음).
         Queue가 가득 찬 경우 put_nowait 실패를 로깅 후 무시.
         """
         if self._shutdown:
@@ -91,7 +110,7 @@ class EventBus:
         for handler in handlers:
             try:
                 handler(event)
-            except Exception:
+            except _HANDLER_NON_FATAL_EXCEPTIONS:
                 log.exception("EventBus handler error for %s", event_type.__name__)
 
         for q in queues:
