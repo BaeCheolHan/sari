@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from pytest import MonkeyPatch
@@ -153,8 +154,8 @@ def test_daemon_service_stop_signals_process_group(tmp_path: Path, monkeypatch: 
     assert ("pgid", 43212, 15) in called_signals
 
 
-def test_clear_stale_runtime_kills_process_group(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
-    """stale 런타임 정리 시 프로세스 그룹 강제 종료가 호출되어야 한다."""
+def test_clear_stale_runtime_does_not_kill_alive_process_group(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """stale heartbeat여도 프로세스가 살아있으면 강제 종료하지 않아야 한다."""
     db_path = tmp_path / "state.db"
     init_schema(db_path)
     runtime_repo = RuntimeRepository(db_path)
@@ -188,15 +189,147 @@ def test_clear_stale_runtime_kills_process_group(tmp_path: Path, monkeypatch: Mo
     runtime_repo.upsert_runtime(runtime)
 
     monkeypatch.setattr(service, "_is_pid_alive", lambda pid: True)
-    monkeypatch.setattr("sari.services.daemon.service.os.getpgid", lambda pid: pid)
+    monkeypatch.setattr(service, "_is_expected_daemon_process", lambda pid: True)
     stale_calls: list[tuple[str, int, int]] = []
     monkeypatch.setattr("sari.services.daemon.service.os.kill", lambda pid, sig: stale_calls.append(("pid", pid, sig)))
     monkeypatch.setattr("sari.services.daemon.service.os.killpg", lambda pgid, sig: stale_calls.append(("pgid", pgid, sig)))
 
     service._clear_stale_runtime_if_needed()
 
-    assert ("pid", runtime.pid, 9) in stale_calls
-    assert ("pgid", runtime.pid, 9) in stale_calls
+    assert stale_calls == []
+    assert runtime_repo.get_runtime() is not None
+
+
+def test_clear_stale_runtime_when_pid_reused_by_non_daemon_process(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """stale runtime의 PID가 재사용되었더라도 비-daemon이면 정리해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    runtime_repo = RuntimeRepository(db_path)
+    workspace_repo = WorkspaceRepository(db_path)
+    registry_repo = DaemonRegistryRepository(db_path)
+    service = DaemonService(
+        config=AppConfig(
+            db_path=db_path,
+            host="127.0.0.1",
+            preferred_port=47777,
+            max_port_scan=1,
+            stop_grace_sec=1,
+            daemon_stale_timeout_sec=1,
+        ),
+        runtime_repo=runtime_repo,
+        workspace_repo=workspace_repo,
+        registry_repo=registry_repo,
+    )
+    runtime_repo.upsert_runtime(
+        DaemonRuntimeDTO(
+            pid=54323,
+            host="127.0.0.1",
+            port=47777,
+            state="running",
+            started_at="1970-01-01T00:00:00+00:00",
+            session_count=0,
+            last_heartbeat_at="1970-01-01T00:00:00+00:00",
+            last_exit_reason=None,
+        )
+    )
+
+    monkeypatch.setattr(service, "_is_pid_alive", lambda pid: True)
+    monkeypatch.setattr(service, "_is_expected_daemon_process", lambda pid: False)
+
+    service._clear_stale_runtime_if_needed()
+
+    assert runtime_repo.get_runtime() is None
+
+
+def test_daemon_status_returns_runtime_when_heartbeat_is_stale_but_process_alive(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """stale heartbeat만으로 runtime을 제거하면 안 된다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    runtime_repo = RuntimeRepository(db_path)
+    workspace_repo = WorkspaceRepository(db_path)
+    registry_repo = DaemonRegistryRepository(db_path)
+    stale_at = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
+    runtime = DaemonRuntimeDTO(
+        pid=65001,
+        host="127.0.0.1",
+        port=47777,
+        state="running",
+        started_at="2026-03-04T00:00:00+00:00",
+        session_count=0,
+        last_heartbeat_at=stale_at,
+        last_exit_reason=None,
+    )
+    runtime_repo.upsert_runtime(runtime)
+    service = DaemonService(
+        config=AppConfig(
+            db_path=db_path,
+            host="127.0.0.1",
+            preferred_port=47777,
+            max_port_scan=1,
+            stop_grace_sec=1,
+            daemon_stale_timeout_sec=15,
+        ),
+        runtime_repo=runtime_repo,
+        workspace_repo=workspace_repo,
+        registry_repo=registry_repo,
+    )
+    monkeypatch.setattr(service, "_is_pid_alive", lambda pid: True)
+    monkeypatch.setattr(service, "_record_registry_health", lambda pid, ok, error_message=None: None)
+    monkeypatch.setattr(service, "_touch_registry", lambda pid: None)
+
+    status = service.status()
+
+    assert status is not None
+    assert status.pid == runtime.pid
+    assert runtime_repo.get_runtime() is not None
+
+
+def test_daemon_status_describes_lease_invalid_as_degraded(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """lease가 만료돼도 pid가 살아있다면 degraded reason을 노출해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    runtime_repo = RuntimeRepository(db_path)
+    workspace_repo = WorkspaceRepository(db_path)
+    registry_repo = DaemonRegistryRepository(db_path)
+    fresh = datetime.now(timezone.utc).isoformat()
+    runtime_repo.upsert_runtime(
+        DaemonRuntimeDTO(
+            pid=65002,
+            host="127.0.0.1",
+            port=47777,
+            state="running",
+            started_at=fresh,
+            session_count=0,
+            last_heartbeat_at=fresh,
+            last_exit_reason=None,
+            lease_token="lease-x",
+            owner_generation=2,
+            updated_at=fresh,
+            lease_expires_at="1970-01-01T00:00:00+00:00",
+        )
+    )
+    service = DaemonService(
+        config=AppConfig(
+            db_path=db_path,
+            host="127.0.0.1",
+            preferred_port=47777,
+            max_port_scan=1,
+            stop_grace_sec=1,
+            daemon_stale_timeout_sec=15,
+        ),
+        runtime_repo=runtime_repo,
+        workspace_repo=workspace_repo,
+        registry_repo=registry_repo,
+    )
+    monkeypatch.setattr(service, "_is_pid_alive", lambda pid: True)
+    runtime = service.status()
+    assert runtime is not None
+    health = service.describe_runtime_health(runtime)
+    assert health["health_state"] == "degraded"
+    assert health["status_reason"] == "lease_invalid_but_pid_alive"
 
 
 def test_daemon_start_redirects_stdout_stderr_to_log_files(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:

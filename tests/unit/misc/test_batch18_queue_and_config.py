@@ -247,11 +247,15 @@ def test_app_config_defaults_for_interactive_timeout_and_instance_cap(tmp_path: 
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.delenv("SARI_LSP_INTERACTIVE_TIMEOUT_SEC", raising=False)
     monkeypatch.delenv("SARI_LSP_MAX_INSTANCES_PER_REPO_LANGUAGE", raising=False)
+    monkeypatch.delenv("SARI_LSP_BULK_MAX_INSTANCES_PER_REPO_LANGUAGE", raising=False)
+    monkeypatch.delenv("SARI_LSP_GLOBAL_SOFT_LIMIT", raising=False)
 
     config = AppConfig.default()
 
     assert config.lsp_interactive_timeout_sec == pytest.approx(4.0)
-    assert config.lsp_max_instances_per_repo_language == 3
+    assert config.lsp_max_instances_per_repo_language == 1
+    assert config.lsp_bulk_max_instances_per_repo_language == 2
+    assert config.lsp_global_soft_limit == 16
 
 
 def test_app_config_search_lsp_guard_and_recent_failure_cooldown_env(tmp_path: Path, monkeypatch) -> None:

@@ -126,6 +126,10 @@ def test_daemon_start_status_stop_and_http(tmp_path: Path) -> None:
         assert isinstance(lifecycle, dict)
         assert isinstance(lifecycle["last_heartbeat_at"], str)
         assert isinstance(lifecycle["heartbeat_age_sec"], float)
+        assert lifecycle["health_state"] in {"running", "degraded", "stale", "dead"}
+        assert isinstance(lifecycle["status_reason"], str)
+        assert isinstance(lifecycle["pid_alive"], bool)
+        assert isinstance(lifecycle["lease_valid"], bool)
         assert "lsp_metrics" in status_payload
         lsp_metrics = status_payload["lsp_metrics"]
         assert isinstance(lsp_metrics, dict)

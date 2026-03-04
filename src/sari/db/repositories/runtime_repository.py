@@ -1,6 +1,7 @@
 """데몬 런타임 상태 저장소를 구현한다."""
 
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 
 from sari.core.models import DaemonRuntimeDTO
 from sari.db.row_mapper import row_int, row_optional_str, row_str
@@ -20,10 +21,12 @@ class RuntimeRepository:
             conn.execute(
                 """
                 INSERT INTO daemon_runtime(
-                    singleton_key, pid, host, port, state, started_at, session_count, last_heartbeat_at, last_exit_reason
+                    singleton_key, pid, host, port, state, started_at, session_count, last_heartbeat_at, last_exit_reason,
+                    lease_token, owner_generation, updated_at, lease_expires_at
                 )
                 VALUES(
-                    :singleton_key, :pid, :host, :port, :state, :started_at, :session_count, :last_heartbeat_at, :last_exit_reason
+                    :singleton_key, :pid, :host, :port, :state, :started_at, :session_count, :last_heartbeat_at, :last_exit_reason,
+                    :lease_token, :owner_generation, :updated_at, :lease_expires_at
                 )
                 ON CONFLICT(singleton_key) DO UPDATE SET
                     pid = excluded.pid,
@@ -33,7 +36,11 @@ class RuntimeRepository:
                     started_at = excluded.started_at,
                     session_count = excluded.session_count,
                     last_heartbeat_at = excluded.last_heartbeat_at,
-                    last_exit_reason = excluded.last_exit_reason
+                    last_exit_reason = excluded.last_exit_reason,
+                    lease_token = excluded.lease_token,
+                    owner_generation = excluded.owner_generation,
+                    updated_at = excluded.updated_at,
+                    lease_expires_at = excluded.lease_expires_at
                 """,
                 runtime.to_sql_params(),
             )
@@ -44,7 +51,10 @@ class RuntimeRepository:
         with connect(self._db_path) as conn:
             row = conn.execute(
                 """
-                SELECT pid, host, port, state, started_at, session_count, last_heartbeat_at, last_exit_reason
+                SELECT pid, host, port, state, started_at, session_count, last_heartbeat_at, last_exit_reason,
+                       lease_token, COALESCE(owner_generation, 0) AS owner_generation,
+                       COALESCE(updated_at, last_heartbeat_at) AS updated_at,
+                       lease_expires_at
                 FROM daemon_runtime
                 WHERE singleton_key = 'default'
                 """
@@ -60,6 +70,10 @@ class RuntimeRepository:
             session_count=row_int(row, "session_count"),
             last_heartbeat_at=row_str(row, "last_heartbeat_at"),
             last_exit_reason=row_optional_str(row, "last_exit_reason"),
+            lease_token=row_optional_str(row, "lease_token"),
+            owner_generation=row_int(row, "owner_generation"),
+            updated_at=row_optional_str(row, "updated_at"),
+            lease_expires_at=row_optional_str(row, "lease_expires_at"),
         )
 
     def clear_runtime(self) -> None:
@@ -74,10 +88,30 @@ class RuntimeRepository:
             conn.execute(
                 """
                 UPDATE daemon_runtime
-                SET last_heartbeat_at = :heartbeat_at
+                SET last_heartbeat_at = :heartbeat_at,
+                    updated_at = :heartbeat_at
                 WHERE singleton_key = 'default' AND pid = :pid
                 """,
                 {"heartbeat_at": heartbeat_at, "pid": pid},
+            )
+            conn.commit()
+
+    def touch_heartbeat_and_extend_lease(self, pid: int, heartbeat_at: str, lease_ttl_sec: int) -> None:
+        """heartbeat와 lease 만료 시각을 함께 갱신한다."""
+        expires_at = (
+            datetime.fromisoformat(heartbeat_at.replace("Z", "+00:00")).astimezone(timezone.utc)
+            + timedelta(seconds=max(1, int(lease_ttl_sec)))
+        ).isoformat()
+        with connect(self._db_path) as conn:
+            conn.execute(
+                """
+                UPDATE daemon_runtime
+                SET last_heartbeat_at = :heartbeat_at,
+                    updated_at = :heartbeat_at,
+                    lease_expires_at = :lease_expires_at
+                WHERE singleton_key = 'default' AND pid = :pid
+                """,
+                {"heartbeat_at": heartbeat_at, "lease_expires_at": expires_at, "pid": pid},
             )
             conn.commit()
 
@@ -127,7 +161,8 @@ class RuntimeRepository:
                 """
                 UPDATE daemon_runtime
                 SET last_exit_reason = :exit_reason,
-                    last_heartbeat_at = :heartbeat_at
+                    last_heartbeat_at = :heartbeat_at,
+                    updated_at = :heartbeat_at
                 WHERE singleton_key = 'default' AND pid = :pid
                 """,
                 {"exit_reason": exit_reason, "heartbeat_at": heartbeat_at, "pid": pid},

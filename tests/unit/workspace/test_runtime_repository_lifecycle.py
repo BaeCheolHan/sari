@@ -24,16 +24,28 @@ def test_runtime_repository_persists_heartbeat_and_exit_reason(tmp_path: Path) -
         session_count=0,
         last_heartbeat_at="2026-02-16T12:00:00+00:00",
         last_exit_reason=None,
+        lease_token="lease-a",
+        owner_generation=7,
+        updated_at="2026-02-16T12:00:00+00:00",
+        lease_expires_at="2026-02-16T12:00:15+00:00",
     )
     repo.upsert_runtime(runtime)
 
-    repo.touch_heartbeat(pid=12345, heartbeat_at="2026-02-16T12:00:05+00:00")
+    repo.touch_heartbeat_and_extend_lease(
+        pid=12345,
+        heartbeat_at="2026-02-16T12:00:05+00:00",
+        lease_ttl_sec=30,
+    )
     repo.mark_exit_reason(pid=12345, exit_reason="NORMAL_SHUTDOWN", heartbeat_at="2026-02-16T12:00:06+00:00")
 
     loaded = repo.get_runtime()
     assert loaded is not None
     assert loaded.last_heartbeat_at == "2026-02-16T12:00:06+00:00"
     assert loaded.last_exit_reason == "NORMAL_SHUTDOWN"
+    assert loaded.lease_token == "lease-a"
+    assert loaded.owner_generation == 7
+    assert loaded.updated_at == "2026-02-16T12:00:06+00:00"
+    assert loaded.lease_expires_at is not None
     latest_exit = repo.get_latest_exit_event()
     assert latest_exit is not None
     assert latest_exit["exit_reason"] == "NORMAL_SHUTDOWN"

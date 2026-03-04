@@ -496,6 +496,50 @@ def test_lsp_hub_scale_out_respects_global_soft_limit(monkeypatch) -> None:
     assert all(server.started for server in created)
 
 
+def test_lsp_hub_global_soft_limit_blocks_new_repo_language_start(monkeypatch) -> None:
+    """전역 soft limit 도달 시 신규 repo/language 키의 추가 기동을 차단해야 한다."""
+
+    class _FakeRuntimeServer:
+        def is_running(self) -> bool:
+            return True
+
+    class _FakeLanguageServer:
+        def __init__(self, idx: int) -> None:
+            self.server = _FakeRuntimeServer()
+            self.idx = idx
+
+        def start(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            pass
+
+    created: list[_FakeLanguageServer] = []
+
+    def _fake_create(*args, **kwargs) -> _FakeLanguageServer:
+        del args, kwargs
+        server = _FakeLanguageServer(len(created))
+        created.append(server)
+        return server
+
+    monkeypatch.setattr("sari.lsp.hub.SolidLanguageServer.create", _fake_create)
+
+    hub = LspHub(
+        max_instances=8,
+        max_instances_per_repo_language=2,
+        lsp_global_soft_limit=2,
+    )
+    _ = hub.get_or_start(language=Language.PYTHON, repo_root="/repo-a")
+    _ = hub.get_or_start(language=Language.JAVA, repo_root="/repo-b")
+
+    with pytest.raises(DaemonError) as exc_info:
+        _ = hub.get_or_start(language=Language.TYPESCRIPT, repo_root="/repo-c")
+
+    assert exc_info.value.context.code == "ERR_LSP_SLOT_EXHAUSTED"
+    assert len(created) == 2
+    hub.stop_all()
+
+
 def test_lsp_hub_background_idle_cleaner_evicts_without_new_request(monkeypatch) -> None:
     """신규 요청이 없어도 백그라운드 cleaner가 idle 인스턴스를 정리해야 한다."""
 

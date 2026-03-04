@@ -86,3 +86,43 @@ def test_is_parent_alive_treats_detached_ppid_as_alive(monkeypatch: MonkeyPatch)
     """ppid=1(detached) 환경은 orphan으로 간주하지 않아야 한다."""
     monkeypatch.setattr(daemon_process.os, "getppid", lambda: 1)
     assert daemon_process._is_parent_alive() is True
+
+
+def test_should_orphan_terminate_requires_confirm_window() -> None:
+    """orphan 판정은 confirm_probes 횟수만큼 연속 실패해야 종료되어야 한다."""
+    terminate, miss = daemon_process._should_orphan_terminate(
+        parent_alive=False,
+        detached_mode=False,
+        miss_count=0,
+        confirm_probes=3,
+    )
+    assert terminate is False
+    assert miss == 1
+    terminate, miss = daemon_process._should_orphan_terminate(
+        parent_alive=False,
+        detached_mode=False,
+        miss_count=miss,
+        confirm_probes=3,
+    )
+    assert terminate is False
+    assert miss == 2
+    terminate, miss = daemon_process._should_orphan_terminate(
+        parent_alive=False,
+        detached_mode=False,
+        miss_count=miss,
+        confirm_probes=3,
+    )
+    assert terminate is True
+    assert miss == 3
+
+
+def test_should_orphan_terminate_resets_on_parent_recovery() -> None:
+    """부모가 다시 살아나면 orphan miss 카운트는 초기화되어야 한다."""
+    terminate, miss = daemon_process._should_orphan_terminate(
+        parent_alive=True,
+        detached_mode=False,
+        miss_count=2,
+        confirm_probes=3,
+    )
+    assert terminate is False
+    assert miss == 0

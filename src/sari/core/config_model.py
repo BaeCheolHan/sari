@@ -164,13 +164,13 @@ class AppConfig:
     daemon_heartbeat_interval_sec: int = 2
     daemon_stale_timeout_sec: int = 15
     lsp_request_timeout_sec: float = 20.0
-    lsp_max_instances_per_repo_language: int = 3
-    lsp_bulk_max_instances_per_repo_language: int = 4
+    lsp_max_instances_per_repo_language: int = 1
+    lsp_bulk_max_instances_per_repo_language: int = 2
     lsp_interactive_reserved_slots_per_repo_language: int = 1
     lsp_interactive_timeout_sec: float = 4.0
     lsp_symbol_info_budget_sec: float = 10.0
     lsp_include_info_default: bool = False
-    lsp_global_soft_limit: int = 0
+    lsp_global_soft_limit: int = 16
     lsp_scale_out_hot_hits: int = 8
     l3_executor_max_workers: int = 0
     l3_recent_success_ttl_sec: int = 120
@@ -237,6 +237,7 @@ class AppConfig:
 
     # Process lifecycle safety
     orphan_ppid_check_interval_sec: int = 1
+    orphan_ppid_confirm_probes: int = 3
     shutdown_join_timeout_sec: int = 2
 
     # Search ranking/importance profile

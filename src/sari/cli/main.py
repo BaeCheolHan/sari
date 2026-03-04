@@ -388,6 +388,7 @@ def daemon_status() -> None:
     if runtime is None:
         _print_json({"daemon": None})
         return
+    lifecycle = services.daemon_service.describe_runtime_health(runtime)
     _print_json(
         {
             "daemon": {
@@ -397,7 +398,14 @@ def daemon_status() -> None:
                 "state": runtime.state,
                 "started_at": runtime.started_at,
                 "session_count": runtime.session_count,
+                "last_heartbeat_at": runtime.last_heartbeat_at,
+                "last_exit_reason": runtime.last_exit_reason,
+                "lease_token": runtime.lease_token,
+                "owner_generation": runtime.owner_generation,
+                "lease_expires_at": runtime.lease_expires_at,
             }
+            ,
+            "daemon_lifecycle": lifecycle,
         }
     )
 
