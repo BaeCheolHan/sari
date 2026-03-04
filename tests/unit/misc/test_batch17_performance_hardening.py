@@ -3082,6 +3082,7 @@ def test_tantivy_pending_change_failure_raises_backend_error(tmp_path: Path) -> 
         config=CandidateSearchConfig(max_file_size_bytes=512 * 1024, allowed_suffixes=(".py",)),
         index_root=tmp_path / "candidate-index-fail",
         change_repo=change_repo,
+        max_maintenance_ms_per_search=5_000,
     )
     workspace = WorkspaceDTO(path=str(repo_dir.resolve()), name="repo-e", indexed_at=None, is_active=True)
 
@@ -3175,6 +3176,7 @@ def test_tantivy_apply_allows_repo_under_active_workspace(tmp_path: Path) -> Non
         config=CandidateSearchConfig(max_file_size_bytes=512 * 1024, allowed_suffixes=(".py",)),
         index_root=tmp_path / "candidate-index-workspace-child",
         change_repo=change_repo,
+        max_maintenance_ms_per_search=5_000,
     )
     workspace = WorkspaceDTO(path=str(workspace_root.resolve()), name="workspace", indexed_at=None, is_active=True)
     items = backend.search(workspaces=[workspace], query="alpha_symbol", limit=10)
