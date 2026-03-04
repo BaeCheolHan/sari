@@ -41,6 +41,27 @@ if TYPE_CHECKING:
     from sari.services.collection.enrich_engine import EnrichEngine
 
 
+def _is_recent_l5_ready(engine: "EnrichEngine", job) -> bool:  # noqa: ANN001
+    """L5 semantics 캐시 존재 여부를 안전하게 판정한다."""
+    repo = getattr(engine, "_tool_layer_repo", None)
+    if repo is None:
+        # 하위호환: 과거 내부 명칭을 fallback으로 허용한다.
+        repo = getattr(engine, "_tool_data_layer_repo", None)
+    checker = getattr(repo, "has_l5_semantics", None)
+    if not callable(checker):
+        return False
+    try:
+        return bool(
+            checker(
+                repo_root=job.repo_root,
+                relative_path=job.relative_path,
+                content_hash=job.content_hash,
+            )
+        )
+    except (RuntimeError, ValueError, TypeError, OSError):
+        return False
+
+
 def build_enrich_processor_deps(engine: "EnrichEngine") -> EnrichProcessorDeps:
     """L2/Enrich processor 공통 의존성을 DTO로 묶어 반환한다."""
     return EnrichProcessorDeps(
@@ -163,11 +184,7 @@ def wire_engine_services(
             reason=reason,
             now_iso=now_iso,
         ),
-        is_recent_l5_ready=lambda job: engine._tool_data_layer_repo.has_l5_semantics(
-            repo_root=job.repo_root,
-            relative_path=job.relative_path,
-            content_hash=job.content_hash,
-        ),
+        is_recent_l5_ready=lambda job: _is_recent_l5_ready(engine, job),
         get_recent_tool_ready_state=lambda job: engine._get_or_init_l3_skip_runtime_service().get_recent_tool_ready_state(job),
     )
     engine._l3_queue_transition_service = L3QueueTransitionService(

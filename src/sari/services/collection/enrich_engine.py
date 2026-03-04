@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import CancelledError, ThreadPoolExecutor
 import queue
+import threading
 import time
 from typing import Callable
 
@@ -13,6 +14,7 @@ from sari.core.models import L4AdmissionDecisionDTO, L5ReasonCode, L5RejectReaso
 from sari.core.language.registry import get_enabled_language_names, resolve_language_from_path
 from sari.core.models import (
     CollectedFileBodyDTO,
+    FileEnrichFailureUpdateDTO,
     FileEnrichJobDTO,
     ToolReadinessStateDTO,
     now_iso8601_utc,
@@ -133,11 +135,14 @@ class EnrichEngine:
         self._l3_parallel_enabled = bool(l3_parallel_enabled)
         self._l3_executor_max_workers = max(1, int(l3_executor_max_workers)) if int(l3_executor_max_workers) > 0 else 32
         self._l3_group_wait_timeout_sec = 90.0
+        self._l5_batch_wait_timeout_sec = 90.0
         self._l3_recent_success_ttl_sec = max(0, int(l3_recent_success_ttl_sec))
         self._l3_backpressure_on_interactive = bool(l3_backpressure_on_interactive)
         self._l3_backpressure_cooldown_sec = max(0.01, float(max(10, int(l3_backpressure_cooldown_ms))) / 1000.0)
         self._l3_executor = ThreadPoolExecutor(max_workers=self._l3_executor_max_workers, thread_name_prefix="enrich-l3")
         self._l3_executor_closed = False
+        self._l5_detached_futures: dict[object, FileEnrichJobDTO] = {}
+        self._l5_detached_lock = threading.Lock()
         self._indexing_mode = "steady"
         self._bootstrap_started_at = time.monotonic()
         self._l3_supported_languages = self._parse_l3_supported_languages(l3_supported_languages)
@@ -360,28 +365,155 @@ class EnrichEngine:
 
     def process_enrich_jobs_l5(self, limit: int) -> int:
         """L5 lane 전용 보강 처리 (병렬)."""
-        from concurrent.futures import as_completed
+        from concurrent.futures import FIRST_COMPLETED, wait
         self._assert_parent_alive("enrich_worker_l5")
-        jobs = self._enrich_queue_repo.acquire_pending_for_l5(limit=limit, now_iso=now_iso8601_utc())
-        jobs = self._rebalance_jobs_by_language(jobs=jobs)
-        if not jobs:
-            return 0
         processed = 0
         l5_buffers = _L3ResultBuffersDTO.empty()
         body_upserts: list[CollectedFileBodyDTO] = []
         last_flush_at = time.perf_counter()
-        futures = {self._l3_executor.submit(self._process_single_l5_job, job): job for job in jobs}
-        for future in as_completed(futures):
-            result = future.result()
-            processed += 1
-            self._l3_result_merger.merge(result=result, buffers=l5_buffers)
-            should_flush_by_size = len(l5_buffers.done_ids) + len(l5_buffers.failed_updates) >= self._flush_batch_size
-            should_flush_by_time = time.perf_counter() - last_flush_at >= self._flush_interval_sec
-            if should_flush_by_size or should_flush_by_time:
+        processed += self._collect_completed_detached_l5_futures(l5_buffers=l5_buffers)
+        jobs = self._enrich_queue_repo.acquire_pending_for_l5(limit=limit, now_iso=now_iso8601_utc())
+        jobs = self._rebalance_jobs_by_language(jobs=jobs)
+        if not jobs:
+            if len(l5_buffers.done_ids) > 0 or len(l5_buffers.failed_updates) > 0:
                 self._l3_flush_coordinator.flush(buffers=l5_buffers, body_upserts=body_upserts)
-                last_flush_at = time.perf_counter()
+            return processed
+        futures = {self._l3_executor.submit(self._process_single_l5_job, job): job for job in jobs}
+        timeout_sec = max(1.0, float(getattr(self, "_l5_batch_wait_timeout_sec", 90.0)))
+        submitted_at = {future: time.perf_counter() for future in futures.keys()}
+        started_at: dict[object, float] = {}
+        pending = set(futures.keys())
+        while pending:
+            done, pending = wait(
+                pending,
+                timeout=0.5,
+                return_when=FIRST_COMPLETED,
+            )
+            now = time.perf_counter()
+            running_state: dict[object, bool] = {}
+            for future in list(pending):
+                running = getattr(future, "running", None)
+                is_running = bool(running()) if callable(running) else False
+                running_state[future] = is_running
+                if is_running and future not in started_at:
+                    started_at[future] = now
+            timed_out: list[object] = []
+            timeout_blocked_by_running = self._has_active_detached_l5_futures()
+            for future in list(pending):
+                if not running_state.get(future, False):
+                    continue
+                started = started_at.get(future)
+                if started is None or now - started <= timeout_sec:
+                    continue
+                canceled = bool(future.cancel())
+                if not canceled:
+                    self._register_detached_l5_future(future=future, job=futures[future])
+                    timed_out.append(future)
+                    timeout_blocked_by_running = True
+                    continue
+                job = futures[future]
+                l5_buffers.failed_updates.append(
+                    self._build_l5_failure_update(
+                        job=job,
+                        error_message=f"L5 future timeout after {int(timeout_sec)}s (cancelled)",
+                    )
+                )
+                processed += 1
+                timed_out.append(future)
+            if timeout_blocked_by_running:
+                for future in list(pending):
+                    if running_state.get(future, False):
+                        continue
+                    queued_for = now - submitted_at.get(future, now)
+                    if queued_for <= timeout_sec:
+                        continue
+                    canceled = bool(future.cancel())
+                    if not canceled:
+                        continue
+                    job = futures[future]
+                    l5_buffers.failed_updates.append(
+                        self._build_l5_failure_update(
+                            job=job,
+                            error_message=f"L5 future timeout after {int(timeout_sec)}s (cancelled_queued)",
+                        )
+                    )
+                    processed += 1
+                    timed_out.append(future)
+            for future in timed_out:
+                pending.discard(future)
+            for future in done:
+                job = futures[future]
+                try:
+                    result = future.result()
+                    self._l3_result_merger.merge(result=result, buffers=l5_buffers)
+                except (CancelledError, RuntimeError, OSError, ValueError, TypeError, AttributeError) as exc:
+                    l5_buffers.failed_updates.append(
+                        self._build_l5_failure_update(
+                            job=job,
+                            error_message=f"L5 future failed: {exc}",
+                        )
+                    )
+                processed += 1
+                should_flush_by_size = len(l5_buffers.done_ids) + len(l5_buffers.failed_updates) >= self._flush_batch_size
+                should_flush_by_time = time.perf_counter() - last_flush_at >= self._flush_interval_sec
+                if should_flush_by_size or should_flush_by_time:
+                    self._l3_flush_coordinator.flush(buffers=l5_buffers, body_upserts=body_upserts)
+                    last_flush_at = time.perf_counter()
         self._l3_flush_coordinator.flush(buffers=l5_buffers, body_upserts=body_upserts)
         return processed
+
+    def _build_l5_failure_update(self, *, job: FileEnrichJobDTO, error_message: str) -> FileEnrichFailureUpdateDTO:
+        """L5 worker 내부 예외/타임아웃을 queue failure update로 변환한다."""
+        return FileEnrichFailureUpdateDTO(
+            job_id=job.job_id,
+            error_message=error_message,
+            now_iso=now_iso8601_utc(),
+            dead_threshold=int(self._policy.retry_max_attempts),
+            backoff_base_sec=int(self._policy.retry_backoff_base_sec),
+        )
+
+    def _register_detached_l5_future(self, *, future: object, job: FileEnrichJobDTO) -> None:
+        """취소되지 않은 running L5 future를 detached 추적으로 등록한다."""
+        with self._l5_detached_lock:
+            self._l5_detached_futures[future] = job
+
+    def _collect_completed_detached_l5_futures(self, *, l5_buffers: _L3ResultBuffersDTO) -> int:
+        """detached L5 future 중 완료된 항목을 수거해 버퍼에 반영한다."""
+        with self._l5_detached_lock:
+            items = list(self._l5_detached_futures.items())
+        processed = 0
+        for future, job in items:
+            done_method = getattr(future, "done", None)
+            if not callable(done_method) or not bool(done_method()):
+                continue
+            with self._l5_detached_lock:
+                current_job = self._l5_detached_futures.get(future)
+                if current_job is None:
+                    continue
+                self._l5_detached_futures.pop(future, None)
+            try:
+                result = future.result()
+                self._l3_result_merger.merge(result=result, buffers=l5_buffers)
+            except (CancelledError, RuntimeError, OSError, ValueError, TypeError, AttributeError) as exc:
+                l5_buffers.failed_updates.append(
+                    self._build_l5_failure_update(
+                        job=job,
+                        error_message=f"L5 detached future failed: {exc}",
+                    )
+                )
+            processed += 1
+        return processed
+
+    def _has_active_detached_l5_futures(self) -> bool:
+        """아직 완료되지 않은 detached L5 future 존재 여부를 반환한다."""
+        with self._l5_detached_lock:
+            for future in self._l5_detached_futures.keys():
+                done_method = getattr(future, "done", None)
+                if not callable(done_method):
+                    return True
+                if not bool(done_method()):
+                    return True
+        return False
 
     def _process_l3_group(
         self,
