@@ -46,6 +46,39 @@ class RuntimeRepository:
             )
             conn.commit()
 
+    def upsert_runtime_if_newer_generation(self, runtime: DaemonRuntimeDTO) -> bool:
+        """owner_generation이 최신일 때만 런타임 상태를 업서트한다."""
+        with connect(self._db_path) as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO daemon_runtime(
+                    singleton_key, pid, host, port, state, started_at, session_count, last_heartbeat_at, last_exit_reason,
+                    lease_token, owner_generation, updated_at, lease_expires_at
+                )
+                VALUES(
+                    :singleton_key, :pid, :host, :port, :state, :started_at, :session_count, :last_heartbeat_at, :last_exit_reason,
+                    :lease_token, :owner_generation, :updated_at, :lease_expires_at
+                )
+                ON CONFLICT(singleton_key) DO UPDATE SET
+                    pid = excluded.pid,
+                    host = excluded.host,
+                    port = excluded.port,
+                    state = excluded.state,
+                    started_at = excluded.started_at,
+                    session_count = excluded.session_count,
+                    last_heartbeat_at = excluded.last_heartbeat_at,
+                    last_exit_reason = excluded.last_exit_reason,
+                    lease_token = excluded.lease_token,
+                    owner_generation = excluded.owner_generation,
+                    updated_at = excluded.updated_at,
+                    lease_expires_at = excluded.lease_expires_at
+                WHERE COALESCE(daemon_runtime.owner_generation, 0) < excluded.owner_generation
+                """,
+                runtime.to_sql_params(),
+            )
+            conn.commit()
+            return int(cursor.rowcount if cursor.rowcount is not None else 0) > 0
+
     def get_runtime(self) -> DaemonRuntimeDTO | None:
         """현재 데몬 런타임 상태를 조회한다."""
         with connect(self._db_path) as conn:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import os
+import sqlite3
 
 from starlette.responses import JSONResponse
 
@@ -67,14 +68,23 @@ async def status_endpoint(request) -> JSONResponse:
     pid_alive = _is_pid_alive(runtime.pid)
     heartbeat_age_sec = _heartbeat_age_sec(runtime.last_heartbeat_at)
     lease_valid = _lease_valid(runtime.lease_expires_at)
+    registry_snapshot = _registry_snapshot(context=context, pid=runtime.pid)
+    registry_degraded = _registry_degraded(snapshot=registry_snapshot)
     health_state = _daemon_health_state(
         runtime=runtime,
         stale_timeout_sec=stale_timeout_sec,
         pid_alive=pid_alive,
         heartbeat_age_sec=heartbeat_age_sec,
         lease_valid=lease_valid,
+        registry_degraded=registry_degraded,
     )
-    status_reason = _daemon_status_reason(runtime=runtime, stale_timeout_sec=stale_timeout_sec, health_state=health_state, lease_valid=lease_valid)
+    status_reason = _daemon_status_reason(
+        runtime=runtime,
+        stale_timeout_sec=stale_timeout_sec,
+        health_state=health_state,
+        lease_valid=lease_valid,
+        registry_degraded=registry_degraded,
+    )
     return JSONResponse(
         {
             "daemon": {
@@ -103,6 +113,14 @@ async def status_endpoint(request) -> JSONResponse:
                 "status_reason": status_reason,
                 "pid_alive": pid_alive,
                 "lease_valid": lease_valid,
+                "health_signals": {
+                    "pid_alive": pid_alive,
+                    "heartbeat_age_sec": heartbeat_age_sec,
+                    "stale_timeout_sec": stale_timeout_sec,
+                    "lease_valid": lease_valid,
+                    "registry_degraded": registry_degraded,
+                },
+                "status_reason_detail": _registry_status_reason_detail(snapshot=registry_snapshot),
             },
             "lsp_metrics": lsp_metrics,
             "reconcile_state": reconcile_state,
@@ -183,6 +201,7 @@ def _daemon_health_state(  # noqa: ANN001
     pid_alive: bool | None = None,
     heartbeat_age_sec: float | None = None,
     lease_valid: bool | None = None,
+    registry_degraded: bool | None = None,
 ) -> str:
     if pid_alive is None:
         pid_alive = _is_pid_alive(int(runtime.pid))
@@ -196,6 +215,8 @@ def _daemon_health_state(  # noqa: ANN001
     lease_ok = _lease_valid(getattr(runtime, "lease_expires_at", None)) if lease_valid is None else lease_valid
     if not lease_ok:
         return "degraded"
+    if bool(registry_degraded):
+        return "degraded"
     return "running"
 
 
@@ -205,6 +226,7 @@ def _daemon_status_reason(  # noqa: ANN001
     stale_timeout_sec: float = 15.0,
     health_state: str | None = None,
     lease_valid: bool | None = None,
+    registry_degraded: bool | None = None,
 ) -> str:
     state = _daemon_health_state(runtime=runtime, stale_timeout_sec=stale_timeout_sec) if health_state is None else health_state
     if state == "dead":
@@ -214,6 +236,46 @@ def _daemon_status_reason(  # noqa: ANN001
     lease_ok = _lease_valid(getattr(runtime, "lease_expires_at", None)) if lease_valid is None else lease_valid
     if state == "degraded" and not lease_ok:
         return "lease_invalid_but_pid_alive"
+    if state == "degraded" and bool(registry_degraded):
+        return "registry_degraded_but_pid_alive"
     if state == "degraded":
         return "heartbeat_parse_error"
     return "running"
+
+
+def _registry_degraded(*, snapshot: dict[str, object] | None) -> bool:
+    if snapshot is None:
+        return False
+    return str(snapshot.get("deployment_state", "ACTIVE")).upper() != "ACTIVE"
+
+
+def _registry_status_reason_detail(*, snapshot: dict[str, object] | None) -> dict[str, object]:
+    if snapshot is None:
+        return {"deployment_state": None, "health_fail_streak": None, "last_health_error": None}
+    return {
+        "deployment_state": snapshot.get("deployment_state"),
+        "health_fail_streak": snapshot.get("health_fail_streak"),
+        "last_health_error": snapshot.get("last_health_error"),
+    }
+
+
+def _registry_snapshot(*, context: HttpContext, pid: int) -> dict[str, object] | None:
+    registry_repo = getattr(getattr(context, "admin_service", None), "_registry_repo", None)
+    if registry_repo is None:
+        return None
+    list_all = getattr(registry_repo, "list_all", None)
+    if not callable(list_all):
+        return None
+    try:
+        entries = list_all()
+    except (sqlite3.Error, RuntimeError, OSError, ValueError, TypeError):
+        return None
+    for entry in entries:
+        if int(getattr(entry, "pid", -1)) != int(pid):
+            continue
+        return {
+            "deployment_state": getattr(entry, "deployment_state", None),
+            "health_fail_streak": getattr(entry, "health_fail_streak", None),
+            "last_health_error": getattr(entry, "last_health_error", None),
+        }
+    return None

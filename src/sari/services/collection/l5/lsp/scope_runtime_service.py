@@ -3,9 +3,22 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from solidlsp.ls_config import Language
 
 log = logging.getLogger(__name__)
+_KNOWN_SCOPE_MARKER_FILES: tuple[str, ...] = (
+    "pom.xml",
+    "build.gradle",
+    "build.gradle.kts",
+    "settings.gradle",
+    "settings.gradle.kts",
+    "package.json",
+    "tsconfig.json",
+    "jsconfig.json",
+    "vue.config.js",
+    "vite.config.ts",
+)
 
 
 class LspScopeRuntimeService:
@@ -89,6 +102,9 @@ class LspScopeRuntimeService:
             self._on_scope_planner_fallback_index_building()
         self._on_scope_planner_applied()
         runtime_root = str(resolution.lsp_scope_root)
+        runtime_root_path = Path(runtime_root).expanduser().resolve()
+        if runtime_root_path.name in _KNOWN_SCOPE_MARKER_FILES:
+            return (repo_root, normalized_relative_path)
         runtime_relative_path = self._to_scope_relative_path_or_fallback(
             repo_root=repo_root,
             normalized_relative_path=normalized_relative_path,

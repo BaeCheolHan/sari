@@ -173,6 +173,7 @@ def _build_extended_fields(*, file_config: dict[str, object], defaults: type[App
         _ConfigField("lsp_broker_vue_min_lease_ms_raw", "SARI_LSP_BROKER_VUE_MIN_LEASE_MS", "lsp_broker_vue_min_lease_ms", defaults.lsp_broker_vue_min_lease_ms),
         _ConfigField("lsp_max_concurrent_starts_raw", "SARI_LSP_MAX_CONCURRENT_STARTS", "lsp_max_concurrent_starts", 4),
         _ConfigField("lsp_max_concurrent_l1_probes_raw", "SARI_LSP_MAX_CONCURRENT_L1_PROBES", "lsp_max_concurrent_l1_probes", 4),
+        _ConfigField("daemon_reconcile_interval_raw", "SARI_DAEMON_RECONCILE_INTERVAL_SEC", "daemon_reconcile_interval_sec", 30),
         _ConfigField("orphan_check_raw", "SARI_ORPHAN_PPID_CHECK_INTERVAL_SEC", "orphan_ppid_check_interval_sec", 1),
         _ConfigField("orphan_confirm_probes_raw", "SARI_ORPHAN_PPID_CONFIRM_PROBES", "orphan_ppid_confirm_probes", 3),
         _ConfigField("shutdown_join_raw", "SARI_SHUTDOWN_JOIN_TIMEOUT_SEC", "shutdown_join_timeout_sec", 2),

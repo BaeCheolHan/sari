@@ -137,14 +137,17 @@ class StatusTool:
         reconcile_state: dict[str, object] = {
             "reconcile_last_run_ts": None,
             "reconcile_last_result": None,
+            "reconcile_last_error_code": None,
+            "reconcile_last_error_message": None,
         }
         if self._reconcile_state_provider is not None:
             raw_state = self._reconcile_state_provider()
             if isinstance(raw_state, dict):
-                reconcile_state = {
-                    "reconcile_last_run_ts": raw_state.get("reconcile_last_run_ts"),
-                    "reconcile_last_result": raw_state.get("reconcile_last_result"),
-                }
+                reconcile_state = dict(raw_state)
+                reconcile_state.setdefault("reconcile_last_run_ts", None)
+                reconcile_state.setdefault("reconcile_last_result", None)
+                reconcile_state.setdefault("reconcile_last_error_code", None)
+                reconcile_state.setdefault("reconcile_last_error_message", None)
         auto_control: dict[str, object] | None = None
         stage_rollout: dict[str, object] | None = None
         if self._pipeline_control_service is not None:

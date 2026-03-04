@@ -109,6 +109,10 @@ def test_runtime_reconcile_includes_lsp_breakdown_and_drain_failures(tmp_path: P
     assert payload["reaped_lsp"] == 3
     assert payload["drain_failures"] == 1
     assert payload["reaped_lsp_by_language"] == {"python": 2, "java": 1}
+    state = service.get_runtime_reconcile_state()
+    assert state["reconcile_last_result"] == "ok"
+    assert state["reconcile_last_error_code"] is None
+    assert state["reconcile_last_error_message"] is None
 
 
 def test_runtime_reconcile_raises_explicit_error_when_lsp_reconcile_fails(tmp_path: Path) -> None:
@@ -129,3 +133,7 @@ def test_runtime_reconcile_raises_explicit_error_when_lsp_reconcile_fails(tmp_pa
         assert "reconcile hang" in exc.context.message
     else:
         raise AssertionError("DaemonError must be raised when LSP reconcile fails")
+    state = service.get_runtime_reconcile_state()
+    assert state["reconcile_last_result"] == "failed"
+    assert state["reconcile_last_error_code"] == "ERR_RUNTIME_RECONCILE_FAILED"
+    assert "reconcile hang" in str(state["reconcile_last_error_message"])

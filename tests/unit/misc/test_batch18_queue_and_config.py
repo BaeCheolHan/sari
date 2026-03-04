@@ -105,6 +105,7 @@ def test_app_config_loads_json_and_env_override(tmp_path: Path, monkeypatch) -> 
     monkeypatch.setenv("SARI_L3_SUPPORTED_LANGUAGES", "go,kotlin")
     monkeypatch.setenv("SARI_LSP_MAX_CONCURRENT_STARTS", "2")
     monkeypatch.setenv("SARI_LSP_MAX_CONCURRENT_L1_PROBES", "4")
+    monkeypatch.setenv("SARI_DAEMON_RECONCILE_INTERVAL_SEC", "11")
     monkeypatch.setenv("SARI_LSP_SCOPE_JAVA_MARKERS", "pom.xml,build.gradle.kts")
     monkeypatch.setenv("SARI_LSP_SCOPE_TS_MARKERS", "package.json,tsconfig.json")
     monkeypatch.setenv("SARI_LSP_SCOPE_VUE_MARKERS", "package.json,vue.config.js")
@@ -178,6 +179,7 @@ def test_app_config_loads_json_and_env_override(tmp_path: Path, monkeypatch) -> 
     assert config.l3_supported_languages == ("go", "kotlin")
     assert config.lsp_max_concurrent_starts == 2
     assert config.lsp_max_concurrent_l1_probes == 4
+    assert config.daemon_reconcile_interval_sec == 11
     assert config.lsp_scope_java_markers == ("pom.xml", "build.gradle.kts")
     assert config.lsp_scope_ts_markers == ("package.json", "tsconfig.json")
     assert config.lsp_scope_vue_markers == ("package.json", "vue.config.js")
@@ -223,6 +225,7 @@ def test_app_config_default_exclude_globs_include_build_artifact_paths(tmp_path:
     monkeypatch.delenv("SARI_LSP_PROBE_L1_LANGUAGES", raising=False)
     monkeypatch.delenv("SARI_LSP_MAX_CONCURRENT_STARTS", raising=False)
     monkeypatch.delenv("SARI_LSP_MAX_CONCURRENT_L1_PROBES", raising=False)
+    monkeypatch.delenv("SARI_DAEMON_RECONCILE_INTERVAL_SEC", raising=False)
     monkeypatch.delenv("SARI_RUN_MODE", raising=False)
 
     config = AppConfig.default()
@@ -238,6 +241,7 @@ def test_app_config_default_exclude_globs_include_build_artifact_paths(tmp_path:
     assert config.lsp_probe_l1_languages == ("go", "java", "kotlin", "py", "rs", "ts", "js")
     assert config.lsp_max_concurrent_starts == 4
     assert config.lsp_max_concurrent_l1_probes == 4
+    assert config.daemon_reconcile_interval_sec == 30
     assert config.run_mode == "prod"
 
 

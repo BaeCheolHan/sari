@@ -56,6 +56,8 @@ class AdminService:
         self._lsp_reconciler = lsp_reconciler
         self._last_runtime_reconcile_at: str | None = None
         self._last_runtime_reconcile_result: str | None = None
+        self._last_runtime_reconcile_error_code: str | None = None
+        self._last_runtime_reconcile_error_message: str | None = None
 
     def doctor(self) -> list[DoctorCheckDTO]:
         """핵심 런타임 상태를 점검한다."""
@@ -405,6 +407,8 @@ class AdminService:
             except (RuntimeError, OSError, ValueError, TypeError) as exc:
                 self._last_runtime_reconcile_at = now_iso8601_utc()
                 self._last_runtime_reconcile_result = "failed"
+                self._last_runtime_reconcile_error_code = "ERR_RUNTIME_RECONCILE_FAILED"
+                self._last_runtime_reconcile_error_message = str(exc)
                 raise DaemonError(
                     ErrorContext(
                         code="ERR_RUNTIME_RECONCILE_FAILED",
@@ -426,6 +430,8 @@ class AdminService:
             except (TypeError, ValueError) as exc:
                 self._last_runtime_reconcile_at = now_iso8601_utc()
                 self._last_runtime_reconcile_result = "failed"
+                self._last_runtime_reconcile_error_code = "ERR_RUNTIME_RECONCILE_FAILED"
+                self._last_runtime_reconcile_error_message = str(exc)
                 raise DaemonError(
                     ErrorContext(
                         code="ERR_RUNTIME_RECONCILE_FAILED",
@@ -434,6 +440,8 @@ class AdminService:
                 ) from exc
         self._last_runtime_reconcile_at = now_iso8601_utc()
         self._last_runtime_reconcile_result = "ok"
+        self._last_runtime_reconcile_error_code = None
+        self._last_runtime_reconcile_error_message = None
         return {
             "reconciled_daemons": reconciled_daemons,
             "reaped_lsp": reaped_lsp,
@@ -448,6 +456,8 @@ class AdminService:
         return {
             "reconcile_last_run_ts": self._last_runtime_reconcile_at,
             "reconcile_last_result": self._last_runtime_reconcile_result,
+            "reconcile_last_error_code": self._last_runtime_reconcile_error_code,
+            "reconcile_last_error_message": self._last_runtime_reconcile_error_message,
         }
 
     def _is_pid_alive(self, pid: int) -> bool:

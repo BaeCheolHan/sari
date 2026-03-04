@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 from contextlib import contextmanager
+from pathlib import Path
 
 from solidlsp.ls_config import Language
 
@@ -55,12 +56,14 @@ def test_resolve_scope_prefers_override() -> None:
     assert rel == "src/a.py"
 
 
-def test_resolve_scope_planner_applies_runtime_scope() -> None:
+def test_resolve_scope_planner_applies_runtime_scope(tmp_path: Path) -> None:
     applied = {"count": 0}
+    module_root = tmp_path / "module"
+    module_root.mkdir(parents=True)
     service = LspScopeRuntimeService(
         get_scope_override=lambda repo_root, relative_path: None,
         to_scope_relative_path_or_fallback=lambda **kwargs: "src/a.py",
-        get_lsp_scope_planner=lambda: _Planner("/module", strategy="FALLBACK_INDEX_BUILDING"),
+        get_lsp_scope_planner=lambda: _Planner(str(module_root), strategy="FALLBACK_INDEX_BUILDING"),
         is_lsp_scope_planner_enabled=lambda: True,
         get_scope_active_languages=lambda: None,
         perf_tracer=_Tracer(),
@@ -78,7 +81,7 @@ def test_resolve_scope_planner_applies_runtime_scope() -> None:
         language=Language.PYTHON,
     )
 
-    assert root == "/module"
+    assert root == str(module_root)
     assert rel == "src/a.py"
     assert applied["count"] == 1
 
@@ -106,3 +109,34 @@ def test_consume_l3_scope_pending_hint_decrements_and_pops() -> None:
     assert first == 2
     assert second == 1
     assert (Language.PYTHON.value, "/repo") not in hints
+
+
+def test_resolve_scope_falls_back_when_planner_returns_non_directory(tmp_path: Path) -> None:
+    repo_root = tmp_path / "workspace"
+    repo_root.mkdir(parents=True)
+    invalid_root = repo_root / "build.gradle.kts"
+    invalid_root.write_text("", encoding="utf-8")
+
+    service = LspScopeRuntimeService(
+        get_scope_override=lambda repo_root, relative_path: None,
+        to_scope_relative_path_or_fallback=lambda **kwargs: kwargs["normalized_relative_path"],
+        get_lsp_scope_planner=lambda: _Planner(str(invalid_root)),
+        is_lsp_scope_planner_enabled=lambda: True,
+        get_scope_active_languages=lambda: None,
+        perf_tracer=_Tracer(),
+        on_scope_override_hit=lambda: None,
+        on_scope_planner_applied=lambda: None,
+        on_scope_planner_fallback_index_building=lambda: None,
+        l3_scope_pending_hints={},
+        l3_scope_pending_hint_lock=threading.Lock(),
+        normalize_repo_relative_path=lambda p: p,
+    )
+
+    root, rel = service.resolve_lsp_runtime_scope(
+        repo_root=str(repo_root),
+        normalized_relative_path="src/a.py",
+        language=Language.PYTHON,
+    )
+
+    assert root == str(repo_root.resolve())
+    assert rel == "src/a.py"

@@ -106,7 +106,8 @@ class LspScopePlanner:
                     candidate = (repo_path / first_segment).resolve()
                     try:
                         candidate.relative_to(repo_path.resolve())
-                        fallback_scope_root = str(candidate)
+                        if candidate.is_dir():
+                            fallback_scope_root = str(candidate)
                     except ValueError:
                         fallback_scope_root = repo_root
             result = LspScopeResolutionDTO(

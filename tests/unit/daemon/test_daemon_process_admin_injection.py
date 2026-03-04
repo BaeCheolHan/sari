@@ -10,6 +10,7 @@ from pytest import MonkeyPatch
 from starlette.applications import Starlette
 
 from sari import daemon_process
+from sari.core.config import AppConfig
 
 
 def test_main_wires_admin_service_and_runs_uvicorn(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
@@ -126,3 +127,60 @@ def test_should_orphan_terminate_resets_on_parent_recovery() -> None:
     )
     assert terminate is False
     assert miss == 0
+
+
+def test_should_run_periodic_reconcile_interval_gate() -> None:
+    should_run = daemon_process._should_run_periodic_reconcile(
+        now_monotonic=10.0,
+        last_run_monotonic=0.0,
+        interval_sec=30.0,
+        inflight=False,
+    )
+    assert should_run is False
+
+    should_run = daemon_process._should_run_periodic_reconcile(
+        now_monotonic=31.0,
+        last_run_monotonic=0.0,
+        interval_sec=30.0,
+        inflight=False,
+    )
+    assert should_run is True
+
+
+def test_should_run_periodic_reconcile_skips_when_inflight() -> None:
+    should_run = daemon_process._should_run_periodic_reconcile(
+        now_monotonic=60.0,
+        last_run_monotonic=0.0,
+        interval_sec=10.0,
+        inflight=True,
+    )
+    assert should_run is False
+
+
+def test_build_daemon_config_overlays_cli_on_loaded_defaults(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    loaded = AppConfig(
+        db_path=tmp_path / "loaded.db",
+        host="0.0.0.0",
+        preferred_port=49999,
+        max_port_scan=5,
+        stop_grace_sec=3,
+        run_mode="prod",
+        daemon_reconcile_interval_sec=77,
+    )
+    monkeypatch.setattr(daemon_process.AppConfig, "default", classmethod(lambda cls: loaded))
+
+    config = daemon_process._build_daemon_config(
+        db_path=tmp_path / "state.db",
+        host="127.0.0.1",
+        port=40123,
+        run_mode="dev",
+    )
+
+    assert config.db_path == (tmp_path / "state.db")
+    assert config.host == "127.0.0.1"
+    assert config.preferred_port == 40123
+    assert config.max_port_scan == 50
+    assert config.stop_grace_sec == 10
+    assert config.run_mode == "dev"
+    # env/file loaded 값은 유지되어야 한다.
+    assert config.daemon_reconcile_interval_sec == 77

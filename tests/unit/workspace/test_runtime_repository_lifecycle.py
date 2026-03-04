@@ -105,3 +105,53 @@ def test_runtime_repository_session_count_increment_and_decrement(tmp_path: Path
     loaded = repo.get_runtime()
     assert loaded is not None
     assert loaded.session_count == 0
+
+
+def test_runtime_repository_upsert_if_newer_generation_blocks_same_or_older_generation(tmp_path: Path) -> None:
+    """owner_generation이 같거나 낮으면 CAS upsert를 거부해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = RuntimeRepository(db_path)
+
+    base = DaemonRuntimeDTO(
+        pid=40001,
+        host="127.0.0.1",
+        port=47777,
+        state="running",
+        started_at="2026-02-16T12:00:00+00:00",
+        session_count=0,
+        last_heartbeat_at="2026-02-16T12:00:00+00:00",
+        last_exit_reason=None,
+        owner_generation=7,
+    )
+    repo.upsert_runtime(base)
+
+    same_generation = DaemonRuntimeDTO(
+        pid=40002,
+        host="127.0.0.1",
+        port=47778,
+        state="running",
+        started_at="2026-02-16T12:00:01+00:00",
+        session_count=0,
+        last_heartbeat_at="2026-02-16T12:00:01+00:00",
+        last_exit_reason=None,
+        owner_generation=7,
+    )
+    assert repo.upsert_runtime_if_newer_generation(same_generation) is False
+
+    newer_generation = DaemonRuntimeDTO(
+        pid=40003,
+        host="127.0.0.1",
+        port=47779,
+        state="running",
+        started_at="2026-02-16T12:00:02+00:00",
+        session_count=0,
+        last_heartbeat_at="2026-02-16T12:00:02+00:00",
+        last_exit_reason=None,
+        owner_generation=8,
+    )
+    assert repo.upsert_runtime_if_newer_generation(newer_generation) is True
+    loaded = repo.get_runtime()
+    assert loaded is not None
+    assert loaded.pid == 40003
+    assert loaded.owner_generation == 8

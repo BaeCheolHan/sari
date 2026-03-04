@@ -129,6 +129,7 @@ def build_default_config(cls):
     lsp_broker_vue_min_lease_ms_raw = extended_raw_values["lsp_broker_vue_min_lease_ms_raw"]
     lsp_max_concurrent_starts_raw = extended_raw_values["lsp_max_concurrent_starts_raw"]
     lsp_max_concurrent_l1_probes_raw = extended_raw_values["lsp_max_concurrent_l1_probes_raw"]
+    daemon_reconcile_interval_raw = extended_raw_values["daemon_reconcile_interval_raw"]
     orphan_check_raw = extended_raw_values["orphan_check_raw"]
     orphan_confirm_probes_raw = extended_raw_values["orphan_confirm_probes_raw"]
     shutdown_join_raw = extended_raw_values["shutdown_join_raw"]
@@ -313,6 +314,7 @@ def build_default_config(cls):
     l3_supported_languages = _parse_csv_setting(l3_supported_languages_raw, cls.l3_supported_languages)
     lsp_max_concurrent_starts = parser.int_range(lsp_max_concurrent_starts_raw, minimum=1, maximum=4, default=4)
     lsp_max_concurrent_l1_probes = parser.int_range(lsp_max_concurrent_l1_probes_raw, minimum=1, maximum=8, default=4)
+    daemon_reconcile_interval_sec = parser.int_min(daemon_reconcile_interval_raw, minimum=1, default=30)
     orphan_check_sec = parser.int_min(orphan_check_raw, minimum=1, default=1)
     orphan_confirm_probes = parser.int_min(orphan_confirm_probes_raw, minimum=1, default=3)
     shutdown_join_sec = parser.int_min(shutdown_join_raw, minimum=1, default=2)
@@ -590,6 +592,7 @@ def build_default_config(cls):
         lsp_broker_vue_min_lease_ms=lsp_broker_vue_min_lease_ms,
         lsp_max_concurrent_starts=lsp_hub_runtime.max_concurrent_starts,
         lsp_max_concurrent_l1_probes=lsp_hub_runtime.max_concurrent_l1_probes,
+        daemon_reconcile_interval_sec=daemon_reconcile_interval_sec,
         orphan_ppid_check_interval_sec=orphan_check_sec,
         orphan_ppid_confirm_probes=orphan_confirm_probes,
         shutdown_join_timeout_sec=shutdown_join_sec,

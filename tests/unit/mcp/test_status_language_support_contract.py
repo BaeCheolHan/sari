@@ -165,6 +165,8 @@ def test_mcp_status_exposes_language_readiness_snapshot(tmp_path: Path) -> None:
     assert item["lsp_metrics"]["lsp_instance_count"] == 4
     assert item["lsp_metrics"]["lsp_orphan_suspect_count"] == 2
     assert item["reconcile_state"]["reconcile_last_run_ts"] == "2026-02-19T12:00:00+00:00"
+    assert item["reconcile_state"]["reconcile_last_error_code"] is None
+    assert item["reconcile_state"]["reconcile_last_error_message"] is None
     assert "stage_rollout" in item
     assert isinstance(item["stage_rollout"], dict)
 

@@ -236,6 +236,7 @@ class AppConfig:
     lsp_max_concurrent_l1_probes: int = 4
 
     # Process lifecycle safety
+    daemon_reconcile_interval_sec: int = 30
     orphan_ppid_check_interval_sec: int = 1
     orphan_ppid_confirm_probes: int = 3
     shutdown_join_timeout_sec: int = 2

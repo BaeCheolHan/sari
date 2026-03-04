@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import sqlite3
 
 from pytest import MonkeyPatch
 
@@ -13,6 +14,7 @@ from sari.db.repositories.daemon_registry_repository import DaemonRegistryReposi
 from sari.db.repositories.runtime_repository import RuntimeRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.db.schema import init_schema
+from sari.core.exceptions import DaemonError
 from sari.services.daemon.service import DaemonService
 
 
@@ -60,6 +62,48 @@ def test_daemon_service_start_registers_registry_entry(tmp_path: Path, monkeypat
     assert len(entries) == 1
     assert entries[0].pid == 43210
     assert entries[0].workspace_root == "/repo/demo"
+
+
+def test_daemon_start_stops_spawned_process_when_generation_claim_fails(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """generation claim 실패 시 방금 띄운 프로세스를 즉시 정리해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    workspace_repo = WorkspaceRepository(db_path)
+    runtime_repo = RuntimeRepository(db_path)
+    registry_repo = DaemonRegistryRepository(db_path)
+
+    service = DaemonService(
+        config=AppConfig(
+            db_path=db_path,
+            host="127.0.0.1",
+            preferred_port=47777,
+            max_port_scan=1,
+            stop_grace_sec=1,
+        ),
+        runtime_repo=runtime_repo,
+        workspace_repo=workspace_repo,
+        registry_repo=registry_repo,
+    )
+
+    monkeypatch.setattr(service, "_is_port_free", lambda host, port: True)
+    monkeypatch.setattr(service, "_clear_stale_runtime_if_needed", lambda: None)
+    monkeypatch.setattr(service, "_is_pid_alive", lambda pid: False)
+    monkeypatch.setattr(
+        "sari.services.daemon.service.subprocess.Popen",
+        lambda *args, **kwargs: _DummyProcess(pid=43333),
+    )
+    monkeypatch.setattr(runtime_repo, "upsert_runtime_if_newer_generation", lambda runtime: False)
+    stopped: list[int] = []
+    monkeypatch.setattr(service, "_signal_process_tree", lambda pid, sig: stopped.append(pid))
+
+    try:
+        service.start(run_mode="dev")
+    except DaemonError as exc:
+        assert exc.context.code == "ERR_DAEMON_ALREADY_RUNNING"
+    else:
+        raise AssertionError("generation claim 실패는 DaemonError를 발생시켜야 한다")
+
+    assert stopped == [43333]
 
 
 def test_daemon_service_stop_removes_registry_entry(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
@@ -330,6 +374,89 @@ def test_daemon_status_describes_lease_invalid_as_degraded(tmp_path: Path, monke
     health = service.describe_runtime_health(runtime)
     assert health["health_state"] == "degraded"
     assert health["status_reason"] == "lease_invalid_but_pid_alive"
+
+
+def test_daemon_status_describes_registry_degraded_as_degraded(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """registry 상태가 DEGRADED이면 health도 degraded로 노출해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    runtime_repo = RuntimeRepository(db_path)
+    workspace_repo = WorkspaceRepository(db_path)
+    registry_repo = DaemonRegistryRepository(db_path)
+    fresh = datetime.now(timezone.utc).isoformat()
+    runtime_repo.upsert_runtime(
+        DaemonRuntimeDTO(
+            pid=65003,
+            host="127.0.0.1",
+            port=47777,
+            state="running",
+            started_at=fresh,
+            session_count=0,
+            last_heartbeat_at=fresh,
+            last_exit_reason=None,
+            owner_generation=3,
+        )
+    )
+    registry_repo.upsert(
+        DaemonRegistryEntryDTO(
+            daemon_id="daemon-65003",
+            host="127.0.0.1",
+            port=47777,
+            pid=65003,
+            workspace_root="/repo",
+            protocol="http",
+            started_at=fresh,
+            last_seen_at=fresh,
+            is_draining=False,
+            deployment_state="DEGRADED",
+            health_fail_streak=5,
+            last_health_error="health probe failed",
+            last_health_at=fresh,
+        )
+    )
+    service = DaemonService(
+        config=AppConfig(
+            db_path=db_path,
+            host="127.0.0.1",
+            preferred_port=47777,
+            max_port_scan=1,
+            stop_grace_sec=1,
+            daemon_stale_timeout_sec=15,
+        ),
+        runtime_repo=runtime_repo,
+        workspace_repo=workspace_repo,
+        registry_repo=registry_repo,
+    )
+    monkeypatch.setattr(service, "_is_pid_alive", lambda pid: True)
+    runtime = service.status()
+    assert runtime is not None
+    health = service.describe_runtime_health(runtime)
+    assert health["health_state"] == "degraded"
+    assert health["status_reason"] == "registry_degraded_but_pid_alive"
+    detail = health["status_reason_detail"]
+    assert detail["deployment_state"] == "DEGRADED"
+
+
+def test_registry_health_snapshot_swallows_sqlite_error(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """registry 조회 실패는 health 계산 실패로 전파되면 안 된다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    service = DaemonService(
+        config=AppConfig(
+            db_path=db_path,
+            host="127.0.0.1",
+            preferred_port=47777,
+            max_port_scan=1,
+            stop_grace_sec=1,
+        ),
+        runtime_repo=RuntimeRepository(db_path),
+        workspace_repo=WorkspaceRepository(db_path),
+        registry_repo=DaemonRegistryRepository(db_path),
+    )
+
+    monkeypatch.setattr(service._registry_repo, "list_all", lambda: (_ for _ in ()).throw(sqlite3.OperationalError("locked")))  # type: ignore[union-attr]
+    snapshot = service._registry_health_snapshot(1234)  # type: ignore[attr-defined]
+    assert snapshot is None
 
 
 def test_daemon_start_redirects_stdout_stderr_to_log_files(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:

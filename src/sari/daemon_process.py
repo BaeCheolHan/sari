@@ -8,6 +8,8 @@ import os
 import signal
 import sqlite3
 import threading
+import time
+from dataclasses import replace
 
 import uvicorn
 
@@ -51,6 +53,20 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _build_daemon_config(*, db_path, host: str, port: int, run_mode: str) -> AppConfig:
+    """파일/환경설정 로딩 결과에 CLI 런타임 인자를 오버레이한다."""
+    loaded = AppConfig.default()
+    return replace(
+        loaded,
+        db_path=db_path,
+        host=host,
+        preferred_port=port,
+        max_port_scan=50,
+        stop_grace_sec=10,
+        run_mode=str(run_mode),
+    )
+
+
 def main() -> None:
     """데몬 HTTP 서버를 실행한다."""
     args = parse_args()
@@ -79,12 +95,10 @@ def main() -> None:
     language_probe_repo = repos.language_probe_repo
     lsp_matrix_repo = repos.lsp_matrix_repo
     repo_registry_repo = repos.repo_registry_repo
-    config = AppConfig(
+    config = _build_daemon_config(
         db_path=db_path,
         host=args.host,
-        preferred_port=args.port,
-        max_port_scan=50,
-        stop_grace_sec=10,
+        port=args.port,
         run_mode=str(args.run_mode),
     )
     lsp_hub_config = config.lsp_hub_config()
@@ -221,6 +235,11 @@ def main() -> None:
     stop_event = threading.Event()
     shutdown_reason: dict[str, str] = {"value": "NORMAL_SHUTDOWN"}
     orphan_miss_count = 0
+    reconcile_state = {
+        "last_run_monotonic": time.monotonic(),
+        "inflight": False,
+    }
+    reconcile_state_lock = threading.Lock()
 
     def _handle_sigterm(signum: int, frame: object) -> None:
         """SIGTERM 수신 시 종료 사유를 기록하고 종료 루프로 진입한다."""
@@ -333,17 +352,54 @@ def main() -> None:
                     ) from exc
             stop_event.wait(timeout=tick_wait)
 
+    def _reconcile_loop() -> None:
+        """런타임 reconcile을 주기적으로 수행한다(auto loop와 분리)."""
+        interval_sec = max(1.0, float(config.daemon_reconcile_interval_sec))
+        while not stop_event.is_set():
+            now_monotonic = time.monotonic()
+            with reconcile_state_lock:
+                should_run = _should_run_periodic_reconcile(
+                    now_monotonic=now_monotonic,
+                    last_run_monotonic=float(reconcile_state["last_run_monotonic"]),
+                    interval_sec=interval_sec,
+                    inflight=bool(reconcile_state["inflight"]),
+                )
+                if should_run:
+                    reconcile_state["inflight"] = True
+            if should_run:
+                try:
+                    _ = admin_service.runtime_reconcile()
+                except (DaemonError, ValidationError, sqlite3.Error, RuntimeError, OSError, ValueError, TypeError) as exc:
+                    log.exception("주기 reconcile 실패: %s", exc)
+                    try:
+                        event_repo.record_event(
+                            job_id="daemon:runtime_reconcile",
+                            status="RUNTIME_RECONCILE_ERROR",
+                            latency_ms=0,
+                            created_at=now_iso8601_utc(),
+                        )
+                    except sqlite3.Error:
+                        log.exception("reconcile 실패 이벤트 기록 실패")
+                finally:
+                    with reconcile_state_lock:
+                        reconcile_state["last_run_monotonic"] = time.monotonic()
+                        reconcile_state["inflight"] = False
+            stop_event.wait(timeout=min(interval_sec, float(config.orphan_ppid_check_interval_sec)))
+
     file_collection_service.start_background()
     heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
     auto_thread = threading.Thread(target=_auto_loop, daemon=True)
+    reconcile_thread = threading.Thread(target=_reconcile_loop, daemon=True)
     heartbeat_thread.start()
     auto_thread.start()
+    reconcile_thread.start()
     try:
         uvicorn.run(app, host=args.host, port=args.port, log_level="error")
     finally:
         stop_event.set()
         heartbeat_thread.join(timeout=float(config.shutdown_join_timeout_sec))
         auto_thread.join(timeout=float(config.shutdown_join_timeout_sec))
+        reconcile_thread.join(timeout=float(config.shutdown_join_timeout_sec))
         lsp_stop_error: DaemonError | None = None
         try:
             lsp_hub.stop_all()
@@ -401,6 +457,22 @@ def _should_orphan_terminate(
         return (False, 0)
     next_count = max(0, int(miss_count)) + 1
     return (next_count >= max(1, int(confirm_probes)), next_count)
+
+
+def _should_run_periodic_reconcile(
+    *,
+    now_monotonic: float,
+    last_run_monotonic: float,
+    interval_sec: float,
+    inflight: bool,
+) -> bool:
+    """주기 reconcile 실행 여부를 결정한다."""
+    if inflight:
+        return False
+    if now_monotonic < 0.0:
+        return False
+    due_after = max(0.0, float(last_run_monotonic)) + max(1.0, float(interval_sec))
+    return float(now_monotonic) >= due_after
 
 
 def _touch_registry_seen(registry_repo: DaemonRegistryRepository, pid: int) -> None:

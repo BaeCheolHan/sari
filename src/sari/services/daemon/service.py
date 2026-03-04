@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import signal
 import socket
+import sqlite3
 import subprocess
 import sys
 import time
@@ -106,7 +107,17 @@ class DaemonService:
             updated_at=now,
             lease_expires_at=lease_expires_at,
         )
-        self._runtime_repo.upsert_runtime(runtime)
+        if not self._runtime_repo.upsert_runtime_if_newer_generation(runtime):
+            try:
+                self._signal_process_tree(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                ...
+            raise DaemonError(
+                ErrorContext(
+                    code="ERR_DAEMON_ALREADY_RUNNING",
+                    message="이미 최신 generation 데몬이 실행 중입니다",
+                )
+            )
         self._runtime_repo.reset_session_count()
         self._register_registry_entry(runtime)
         return runtime
@@ -276,8 +287,14 @@ class DaemonService:
     def describe_runtime_health(self, runtime: DaemonRuntimeDTO) -> dict[str, object]:
         """런타임 상태를 다중 신호로 판정해 근거를 반환한다."""
         pid_alive = self._is_pid_alive(runtime.pid)
-        stale = self._is_runtime_stale(runtime.last_heartbeat_at)
+        heartbeat_age_sec = self._heartbeat_age_sec(runtime.last_heartbeat_at)
+        stale = heartbeat_age_sec < 0 or heartbeat_age_sec > float(self._config.daemon_stale_timeout_sec)
         lease_valid = self._is_lease_valid(runtime.lease_expires_at)
+        registry_snapshot = self._registry_health_snapshot(runtime.pid)
+        registry_degraded = False
+        if registry_snapshot is not None:
+            deployment_state = str(registry_snapshot.get("deployment_state", "ACTIVE")).upper()
+            registry_degraded = deployment_state != "ACTIVE"
         reason = "running"
         state = "running"
         if not pid_alive:
@@ -289,12 +306,55 @@ class DaemonService:
         elif not lease_valid:
             state = "degraded"
             reason = "lease_invalid_but_pid_alive"
+        elif registry_degraded:
+            state = "degraded"
+            reason = "registry_degraded_but_pid_alive"
         return {
             "health_state": state,
             "status_reason": reason,
             "pid_alive": pid_alive,
             "lease_valid": lease_valid,
+            "health_signals": {
+                "pid_alive": pid_alive,
+                "heartbeat_age_sec": heartbeat_age_sec,
+                "stale_timeout_sec": float(self._config.daemon_stale_timeout_sec),
+                "lease_valid": lease_valid,
+                "registry_degraded": registry_degraded,
+            },
+            "status_reason_detail": {
+                "deployment_state": None if registry_snapshot is None else registry_snapshot.get("deployment_state"),
+                "health_fail_streak": None if registry_snapshot is None else registry_snapshot.get("health_fail_streak"),
+                "last_health_error": None if registry_snapshot is None else registry_snapshot.get("last_health_error"),
+            },
         }
+
+    def _heartbeat_age_sec(self, last_heartbeat_at: str) -> float:
+        """마지막 heartbeat 기준 경과 시간을 초 단위로 계산한다."""
+        try:
+            parsed = datetime.fromisoformat(last_heartbeat_at)
+        except ValueError:
+            return -1.0
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds())
+
+    def _registry_health_snapshot(self, pid: int) -> dict[str, object] | None:
+        """daemon registry에서 PID 기준 health snapshot을 조회한다."""
+        if self._registry_repo is None:
+            return None
+        try:
+            entries = self._registry_repo.list_all()
+        except (sqlite3.Error, RuntimeError, OSError, ValueError, TypeError):
+            return None
+        for item in entries:
+            if item.pid != pid:
+                continue
+            return {
+                "deployment_state": item.deployment_state,
+                "health_fail_streak": item.health_fail_streak,
+                "last_health_error": item.last_health_error,
+            }
+        return None
 
     def get_guard_counters(self) -> dict[str, int]:
         """데몬 중복/오탐 방지 카운터를 반환한다."""
