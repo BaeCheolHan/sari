@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 import logging
+import uuid
 from typing import TextIO
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -38,12 +39,19 @@ class DaemonService:
         self._runtime_repo = runtime_repo
         self._workspace_repo = workspace_repo
         self._registry_repo = registry_repo
+        self._stale_alive_events = 0
+        self._duplicate_guard_hits = 0
 
     def start(self, run_mode: str | None = None) -> DaemonRuntimeDTO:
         """데몬 프로세스를 백그라운드로 시작하고 런타임 상태를 저장한다."""
+        previous_runtime = self._runtime_repo.get_runtime()
+        next_generation = 1
+        if previous_runtime is not None:
+            next_generation = max(1, int(previous_runtime.owner_generation) + 1)
         self._clear_stale_runtime_if_needed()
         existing = self._runtime_repo.get_runtime()
         if existing is not None and self._is_pid_alive(existing.pid):
+            self._duplicate_guard_hits += 1
             raise DaemonError(ErrorContext(code="ERR_DAEMON_ALREADY_RUNNING", message="이미 데몬이 실행 중입니다"))
 
         port = self._allocate_port(self._config.preferred_port, self._config.max_port_scan)
@@ -82,15 +90,21 @@ class DaemonService:
             # 자식 프로세스가 fd를 복제하므로 부모에서 즉시 닫아도 안전하다.
             stdout_stream.close()
             stderr_stream.close()
+        now = now_iso8601_utc()
+        lease_expires_at = self._compute_lease_expires_at(now)
         runtime = DaemonRuntimeDTO(
             pid=process.pid,
             host=self._config.host,
             port=port,
             state="running",
-            started_at=now_iso8601_utc(),
+            started_at=now,
             session_count=0,
-            last_heartbeat_at=now_iso8601_utc(),
+            last_heartbeat_at=now,
             last_exit_reason=None,
+            lease_token=str(uuid.uuid4()),
+            owner_generation=next_generation,
+            updated_at=now,
+            lease_expires_at=lease_expires_at,
         )
         self._runtime_repo.upsert_runtime(runtime)
         self._runtime_repo.reset_session_count()
@@ -113,16 +127,19 @@ class DaemonService:
         runtime = self._runtime_repo.get_runtime()
         if runtime is None:
             return None
-        if self._is_runtime_stale(runtime.last_heartbeat_at):
-            self._record_registry_health(pid=runtime.pid, ok=False, error_message="heartbeat stale")
-            self._remove_registry_by_pid(runtime.pid)
-            self._runtime_repo.clear_runtime()
-            return None
-        if not self._is_pid_alive(runtime.pid):
+        health = self.describe_runtime_health(runtime)
+        if health["health_state"] == "dead":
             self._record_registry_health(pid=runtime.pid, ok=False, error_message="process dead")
             self._remove_registry_by_pid(runtime.pid)
             self._runtime_repo.clear_runtime()
             return None
+        if health["health_state"] in {"stale", "degraded"}:
+            # 일시적 DB lock/지연으로 heartbeat가 stale해도 프로세스가 살아있다면
+            # 런타임 레코드를 제거하지 않는다(중복 데몬 기동/불필요한 kill 방지).
+            self._record_registry_health(pid=runtime.pid, ok=False, error_message=str(health["status_reason"]))
+            if health["health_state"] == "stale":
+                self._stale_alive_events += 1
+            return runtime
         self._touch_registry(runtime.pid)
         return runtime
 
@@ -195,6 +212,18 @@ class DaemonService:
             return ""
         return process.stdout.strip()
 
+    def _read_process_command(self, pid: int) -> str:
+        """프로세스 실행 커맨드를 조회한다."""
+        process = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True)
+        if process.returncode != 0:
+            return ""
+        return process.stdout.strip()
+
+    def _is_expected_daemon_process(self, pid: int) -> bool:
+        """PID가 우리 daemon_process인지 확인한다."""
+        command = self._read_process_command(pid)
+        return "sari.daemon_process" in command
+
     def _is_runtime_stale(self, last_heartbeat_at: str) -> bool:
         """heartbeat 기준 stale 상태를 판정한다."""
         try:
@@ -206,6 +235,26 @@ class DaemonService:
         cutoff = datetime.now(timezone.utc) - timedelta(seconds=self._config.daemon_stale_timeout_sec)
         return last < cutoff
 
+    def _is_lease_valid(self, lease_expires_at: str | None) -> bool:
+        """lease 만료 시각 기준으로 유효성을 판정한다."""
+        if lease_expires_at is None or lease_expires_at.strip() == "":
+            return True
+        try:
+            lease_until = datetime.fromisoformat(lease_expires_at)
+        except ValueError:
+            return False
+        if lease_until.tzinfo is None:
+            lease_until = lease_until.replace(tzinfo=timezone.utc)
+        return lease_until >= datetime.now(timezone.utc)
+
+    def _compute_lease_expires_at(self, base_iso: str) -> str:
+        """기준 시각에서 lease 만료 시각을 계산한다."""
+        base = datetime.fromisoformat(base_iso)
+        if base.tzinfo is None:
+            base = base.replace(tzinfo=timezone.utc)
+        ttl_sec = max(5, int(self._config.daemon_stale_timeout_sec))
+        return (base + timedelta(seconds=ttl_sec)).isoformat()
+
     def _clear_stale_runtime_if_needed(self) -> None:
         """stale heartbeat 런타임 레코드를 정리한다."""
         runtime = self._runtime_repo.get_runtime()
@@ -214,12 +263,45 @@ class DaemonService:
         if not self._is_runtime_stale(runtime.last_heartbeat_at):
             return
         if self._is_pid_alive(runtime.pid):
-            try:
-                self._signal_process_tree(runtime.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                log.debug("stale runtime 정리 중 이미 프로세스 종료(pid=%s)", runtime.pid)
+            if not self._is_expected_daemon_process(runtime.pid):
+                self._remove_registry_by_pid(runtime.pid)
+                self._runtime_repo.clear_runtime()
+                return
+            # stale heartbeat만으로 살아있는 프로세스를 종료하지 않는다.
+            self._stale_alive_events += 1
+            return
         self._remove_registry_by_pid(runtime.pid)
         self._runtime_repo.clear_runtime()
+
+    def describe_runtime_health(self, runtime: DaemonRuntimeDTO) -> dict[str, object]:
+        """런타임 상태를 다중 신호로 판정해 근거를 반환한다."""
+        pid_alive = self._is_pid_alive(runtime.pid)
+        stale = self._is_runtime_stale(runtime.last_heartbeat_at)
+        lease_valid = self._is_lease_valid(runtime.lease_expires_at)
+        reason = "running"
+        state = "running"
+        if not pid_alive:
+            state = "dead"
+            reason = "process_dead"
+        elif stale:
+            state = "stale"
+            reason = "heartbeat_stale_but_pid_alive"
+        elif not lease_valid:
+            state = "degraded"
+            reason = "lease_invalid_but_pid_alive"
+        return {
+            "health_state": state,
+            "status_reason": reason,
+            "pid_alive": pid_alive,
+            "lease_valid": lease_valid,
+        }
+
+    def get_guard_counters(self) -> dict[str, int]:
+        """데몬 중복/오탐 방지 카운터를 반환한다."""
+        return {
+            "stale_alive_events": int(self._stale_alive_events),
+            "daemon_duplicate_guard_hits": int(self._duplicate_guard_hits),
+        }
 
     def _signal_process_tree(self, pid: int, sig: signal.Signals) -> None:
         """대상 PID와 같은 프로세스 그룹에 동일 시그널을 전파한다."""

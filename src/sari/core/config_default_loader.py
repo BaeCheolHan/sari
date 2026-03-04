@@ -130,6 +130,7 @@ def build_default_config(cls):
     lsp_max_concurrent_starts_raw = extended_raw_values["lsp_max_concurrent_starts_raw"]
     lsp_max_concurrent_l1_probes_raw = extended_raw_values["lsp_max_concurrent_l1_probes_raw"]
     orphan_check_raw = extended_raw_values["orphan_check_raw"]
+    orphan_confirm_probes_raw = extended_raw_values["orphan_confirm_probes_raw"]
     shutdown_join_raw = extended_raw_values["shutdown_join_raw"]
     vector_enabled_raw = extended_raw_values["vector_enabled_raw"]
     vector_model_id = str(file_config.get("vector_model_id", "hashbow-v1")).strip()
@@ -189,9 +190,9 @@ def build_default_config(cls):
     heartbeat_sec = parser.int_min(heartbeat_raw, minimum=1, default=2)
     stale_timeout_sec = parser.int_min(stale_timeout_raw, minimum=5, default=15)
     lsp_request_timeout_sec = parser.float_min(lsp_timeout_raw, minimum=0.1, default=20.0)
-    lsp_max_instances_per_repo_language = parser.int_min(lsp_max_per_repo_lang_raw, minimum=1, default=3)
-    lsp_global_soft_limit = parser.int_min(lsp_global_soft_limit_raw, minimum=0, default=0)
-    lsp_bulk_max_instances_per_repo_language = parser.int_min(lsp_bulk_max_per_repo_lang_raw, minimum=1, default=4)
+    lsp_max_instances_per_repo_language = parser.int_min(lsp_max_per_repo_lang_raw, minimum=1, default=1)
+    lsp_global_soft_limit = parser.int_min(lsp_global_soft_limit_raw, minimum=0, default=16)
+    lsp_bulk_max_instances_per_repo_language = parser.int_min(lsp_bulk_max_per_repo_lang_raw, minimum=1, default=2)
     lsp_interactive_reserved_slots_per_repo_language = parser.int_min(lsp_interactive_reserved_slots_raw, minimum=0, default=1)
     lsp_interactive_timeout_sec = parser.float_min(lsp_interactive_timeout_raw, minimum=0.1, default=4.0)
     lsp_symbol_info_budget_sec = parser.float_min(lsp_symbol_info_budget_raw, minimum=0.0, default=10.0)
@@ -313,6 +314,7 @@ def build_default_config(cls):
     lsp_max_concurrent_starts = parser.int_range(lsp_max_concurrent_starts_raw, minimum=1, maximum=4, default=4)
     lsp_max_concurrent_l1_probes = parser.int_range(lsp_max_concurrent_l1_probes_raw, minimum=1, maximum=8, default=4)
     orphan_check_sec = parser.int_min(orphan_check_raw, minimum=1, default=1)
+    orphan_confirm_probes = parser.int_min(orphan_confirm_probes_raw, minimum=1, default=3)
     shutdown_join_sec = parser.int_min(shutdown_join_raw, minimum=1, default=2)
     vector_dim = parser.int_min(vector_dim_raw, minimum=16, default=128)
     vector_candidate_k = parser.int_min(vector_candidate_raw, minimum=1, default=50)
@@ -589,6 +591,7 @@ def build_default_config(cls):
         lsp_max_concurrent_starts=lsp_hub_runtime.max_concurrent_starts,
         lsp_max_concurrent_l1_probes=lsp_hub_runtime.max_concurrent_l1_probes,
         orphan_ppid_check_interval_sec=orphan_check_sec,
+        orphan_ppid_confirm_probes=orphan_confirm_probes,
         shutdown_join_timeout_sec=shutdown_join_sec,
         importance_normalize_mode=search_runtime.importance_normalize_mode,
         importance_max_boost=search_runtime.importance_max_boost,

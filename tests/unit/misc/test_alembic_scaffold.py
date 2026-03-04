@@ -129,6 +129,10 @@ def test_ensure_migrated_upgrades_baseline_columns(tmp_path: Path) -> None:
     assert version_row is not None
     assert str(version_row["version_num"]) == HEAD_VERSION
     assert "last_heartbeat_at" in runtime_cols
+    assert "lease_token" in runtime_cols
+    assert "owner_generation" in runtime_cols
+    assert "updated_at" in runtime_cols
+    assert "lease_expires_at" in runtime_cols
     assert "priority" in queue_cols
     assert "bootstrap_mode_enabled" in policy_cols
     assert "watcher_queue_max" in policy_cols

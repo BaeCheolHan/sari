@@ -202,7 +202,11 @@ class LspHub:
                             return selected_entry.server
                         else:
                             self._last_acquire_at[base_key] = now
-                            slot = self._first_allowed_slot(base_key=base_key, request_kind=normalized_kind)
+                            slot = self._next_slot_locked(
+                                language=language,
+                                repo_root=normalized_root,
+                                request_kind=normalized_kind,
+                            )
 
                 return self._start_or_wait_for_slot(
                     language=language,
@@ -603,6 +607,14 @@ class LspHub:
     def _next_slot_locked(self, language: Language, repo_root: str, request_kind: str = "indexing") -> int:
         """새로운 인스턴스에 사용할 슬롯 번호를 계산한다."""
         used_slots = {key.slot for key in self._runtime_keys_for_locked(language=language, repo_root=repo_root)}
+        # 전역 soft limit 도달 시, 기존 슬롯 재사용이 불가능한 신규 키는 기동을 차단한다.
+        if self._lsp_global_soft_limit > 0 and len(self._instances) >= self._lsp_global_soft_limit and len(used_slots) == 0:
+            raise DaemonError(
+                ErrorContext(
+                    code="ERR_LSP_SLOT_EXHAUSTED",
+                    message=f"LSP 전역 soft limit 도달: {language.value}@{repo_root}",
+                )
+            )
         max_slots = self._max_instances_for_key((language, repo_root))
         for slot in range(max_slots):
             if not self._is_slot_allowed_for_kind(

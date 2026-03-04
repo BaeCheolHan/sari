@@ -39,6 +39,7 @@ def ensure_migrated(db_path: Path) -> None:
         _fallback_upgrade_0011(conn)
         _fallback_upgrade_0012(conn)
         _fallback_upgrade_0013(conn)
+        _fallback_upgrade_0014(conn)
         conn.commit()
 
 
@@ -125,6 +126,7 @@ def _fallback_upgrade_sqlite(db_path: Path) -> None:
         _fallback_upgrade_0011(conn)
         _fallback_upgrade_0012(conn)
         _fallback_upgrade_0013(conn)
+        _fallback_upgrade_0014(conn)
         conn.commit()
 
 
@@ -254,6 +256,29 @@ def _fallback_upgrade_0004(conn: sqlite3.Connection) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_daemon_registry_workspace
         ON daemon_registry(workspace_root, is_draining, deployment_state, last_seen_at DESC)
+        """
+    )
+
+
+def _fallback_upgrade_0014(conn: sqlite3.Connection) -> None:
+    """daemon_runtime lease/owner 컬럼을 보강한다."""
+    if not _table_exists(conn, "daemon_runtime"):
+        return
+    daemon_cols = _table_columns(conn, "daemon_runtime")
+    if "lease_token" not in daemon_cols:
+        conn.execute("ALTER TABLE daemon_runtime ADD COLUMN lease_token TEXT NULL")
+    if "owner_generation" not in daemon_cols:
+        conn.execute("ALTER TABLE daemon_runtime ADD COLUMN owner_generation INTEGER NOT NULL DEFAULT 0")
+    if "updated_at" not in daemon_cols:
+        conn.execute("ALTER TABLE daemon_runtime ADD COLUMN updated_at TEXT NULL")
+    if "lease_expires_at" not in daemon_cols:
+        conn.execute("ALTER TABLE daemon_runtime ADD COLUMN lease_expires_at TEXT NULL")
+    conn.execute(
+        """
+        UPDATE daemon_runtime
+        SET updated_at = COALESCE(updated_at, last_heartbeat_at),
+            owner_generation = COALESCE(owner_generation, 0)
+        WHERE singleton_key = 'default'
         """
     )
 

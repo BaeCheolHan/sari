@@ -47,7 +47,12 @@ class DaemonRuntimeDTO:
     session_count: int
     last_heartbeat_at: str
     last_exit_reason: str | None = None
+    lease_token: str | None = None
+    owner_generation: int = 0
+    updated_at: str | None = None
+    lease_expires_at: str | None = None
     def to_sql_params(self) -> dict[str, object]:
+        updated_at = self.updated_at if self.updated_at is not None else self.last_heartbeat_at
         return {
             "singleton_key": "default",
             "pid": self.pid,
@@ -58,6 +63,10 @@ class DaemonRuntimeDTO:
             "session_count": self.session_count,
             "last_heartbeat_at": self.last_heartbeat_at,
             "last_exit_reason": self.last_exit_reason,
+            "lease_token": self.lease_token,
+            "owner_generation": self.owner_generation,
+            "updated_at": updated_at,
+            "lease_expires_at": self.lease_expires_at,
         }
 @dataclass(frozen=True)
 class DaemonRegistryEntryDTO:

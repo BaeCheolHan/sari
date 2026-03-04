@@ -220,6 +220,7 @@ def main() -> None:
     app.state.mcp_server = McpServer(db_path=db_path)
     stop_event = threading.Event()
     shutdown_reason: dict[str, str] = {"value": "NORMAL_SHUTDOWN"}
+    orphan_miss_count = 0
 
     def _handle_sigterm(signum: int, frame: object) -> None:
         """SIGTERM 수신 시 종료 사유를 기록하고 종료 루프로 진입한다."""
@@ -235,7 +236,15 @@ def main() -> None:
         """데몬 heartbeat를 주기적으로 갱신한다."""
         while not stop_event.is_set():
             try:
-                runtime_repo.touch_heartbeat(pid=this_pid, heartbeat_at=now_iso8601_utc())
+                touch_with_lease = getattr(runtime_repo, "touch_heartbeat_and_extend_lease", None)
+                if callable(touch_with_lease):
+                    touch_with_lease(
+                        pid=this_pid,
+                        heartbeat_at=now_iso8601_utc(),
+                        lease_ttl_sec=int(config.daemon_stale_timeout_sec),
+                    )
+                else:
+                    runtime_repo.touch_heartbeat(pid=this_pid, heartbeat_at=now_iso8601_utc())
                 _touch_registry_seen(daemon_registry_repo, this_pid)
             except sqlite3.Error as exc:
                 log.exception("heartbeat 갱신 실패: %s", exc)
@@ -252,10 +261,17 @@ def main() -> None:
 
     def _auto_loop() -> None:
         """알람 기반 자동제어를 주기적으로 평가한다."""
+        nonlocal orphan_miss_count
         while not stop_event.is_set():
             tick_wait = min(float(config.pipeline_auto_tick_interval_sec), float(config.orphan_ppid_check_interval_sec))
             try:
-                if not _is_parent_alive(launch_parent_pid, detached_mode=detached_mode):
+                should_terminate, orphan_miss_count = _should_orphan_terminate(
+                    parent_alive=_is_parent_alive(launch_parent_pid, detached_mode=detached_mode),
+                    detached_mode=detached_mode,
+                    miss_count=orphan_miss_count,
+                    confirm_probes=int(config.orphan_ppid_confirm_probes),
+                )
+                if should_terminate:
                     shutdown_reason["value"] = "ORPHAN_SELF_TERMINATE"
                     runtime_repo.mark_exit_reason(this_pid, "ORPHAN_SELF_TERMINATE", now_iso8601_utc())
                     stop_event.set()
@@ -369,6 +385,22 @@ def _is_parent_alive(parent_pid: int | None=None, detached_mode: bool=False) -> 
     except PermissionError:
         return True
     return True
+
+
+def _should_orphan_terminate(
+    *,
+    parent_alive: bool,
+    detached_mode: bool,
+    miss_count: int,
+    confirm_probes: int,
+) -> tuple[bool, int]:
+    """orphan 종료 여부와 다음 miss 카운트를 계산한다."""
+    if detached_mode:
+        return (False, 0)
+    if parent_alive:
+        return (False, 0)
+    next_count = max(0, int(miss_count)) + 1
+    return (next_count >= max(1, int(confirm_probes)), next_count)
 
 
 def _touch_registry_seen(registry_repo: DaemonRegistryRepository, pid: int) -> None:

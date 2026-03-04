@@ -23,7 +23,11 @@ CREATE TABLE IF NOT EXISTS daemon_runtime (
     started_at TEXT NOT NULL,
     session_count INTEGER NOT NULL,
     last_heartbeat_at TEXT NOT NULL,
-    last_exit_reason TEXT NULL
+    last_exit_reason TEXT NULL,
+    lease_token TEXT NULL,
+    owner_generation INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    lease_expires_at TEXT NULL
 );
 
 CREATE TABLE IF NOT EXISTS daemon_runtime_history (

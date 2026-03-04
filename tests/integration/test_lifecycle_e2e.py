@@ -89,8 +89,8 @@ def _wait_pid_stopped(pid: int, timeout_sec: float = 5.0) -> None:
     raise AssertionError(f"pid did not stop in time: {pid}")
 
 
-def test_stale_runtime_cleanup_kills_stale_pid_on_start(tmp_path: Path) -> None:
-    """stale runtime가 살아있으면 start 시 정리/강제종료되어야 한다."""
+def test_stale_runtime_with_unrelated_alive_pid_is_cleared_on_start(tmp_path: Path) -> None:
+    """stale runtime PID가 unrelated process면 lockout 없이 정리 후 start되어야 한다."""
     db_path = tmp_path / "state.db"
     init_schema(db_path)
     daemon_service, runtime_repo = _build_daemon_service(db_path=db_path, preferred_port=_pick_free_port())
@@ -112,11 +112,14 @@ def test_stale_runtime_cleanup_kills_stale_pid_on_start(tmp_path: Path) -> None:
 
         runtime = daemon_service.start()
         assert runtime.pid != sleeper.pid
-        deadline = time.time() + 3.0
-        while time.time() < deadline and sleeper.poll() is None:
-            time.sleep(0.1)
-        assert sleeper.poll() is not None
+        assert sleeper.poll() is None
     finally:
+        sleeper.terminate()
+        try:
+            sleeper.wait(timeout=3.0)
+        except subprocess.TimeoutExpired:
+            sleeper.kill()
+            sleeper.wait(timeout=3.0)
         try:
             daemon_service.stop()
         except DaemonError as exc:
@@ -215,4 +218,3 @@ def test_force_kill_fallback_records_force_killed(tmp_path: Path) -> None:
     latest = runtime_repo.get_latest_exit_event()
     assert latest is not None
     assert latest["exit_reason"] == "FORCE_KILLED"
-
