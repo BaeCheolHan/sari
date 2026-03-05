@@ -150,7 +150,7 @@ def test_read_missing_target_returns_self_describing_error(tmp_path: Path) -> No
 
 
 def test_read_includes_validation_warnings_in_meta(tmp_path: Path) -> None:
-    """repo_key partial fallback이 발생하면 meta.warnings를 포함해야 한다."""
+    """legacy repo key fallback이 발생하면 meta.warnings를 포함해야 한다."""
     db_path = tmp_path / "state.db"
     init_schema(db_path)
     repo_path = tmp_path / "repo"
@@ -182,7 +182,6 @@ def test_read_includes_validation_warnings_in_meta(tmp_path: Path) -> None:
                 "name": "read",
                 "arguments": {
                     "repo": "repo",
-                    "repo_key": "missing-repo",
                     "mode": "file",
                     "target": "main.py",
                     "options": {"structured": 1},
@@ -194,7 +193,7 @@ def test_read_includes_validation_warnings_in_meta(tmp_path: Path) -> None:
     assert payload["result"]["isError"] is False
     meta = payload["result"]["structuredContent"]["meta"]
     assert isinstance(meta.get("warnings"), list)
-    assert meta["warnings"][0]["code"] == "WARN_REPO_ARG_PARTIAL_FALLBACK"
+    assert meta["warnings"][0]["code"] == "WARN_REPO_LEGACY_KEY_FALLBACK"
 
 
 def test_read_symbol_uses_l3_layer_snapshot_when_lsp_symbols_empty(tmp_path: Path) -> None:
@@ -210,6 +209,19 @@ def test_read_symbol_uses_l3_layer_snapshot_when_lsp_symbols_empty(tmp_path: Pat
     repo_root = str(repo_path.resolve())
     WorkspaceRepository(db_path).add(WorkspaceDTO(path=repo_root, name="repo", indexed_at=None, is_active=True))
     with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO repositories(repo_id, repo_label, repo_root, workspace_root, updated_at, is_active)
+            VALUES('repo', 'repo', :repo_root, :repo_root, '2026-02-23T00:00:00Z', 1)
+            ON CONFLICT(repo_id) DO UPDATE SET
+                repo_label = excluded.repo_label,
+                repo_root = excluded.repo_root,
+                workspace_root = excluded.workspace_root,
+                updated_at = excluded.updated_at,
+                is_active = 1
+            """,
+            {"repo_root": repo_root},
+        )
         conn.execute(
             """
             INSERT INTO collected_files_l1(

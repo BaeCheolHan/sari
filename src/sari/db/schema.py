@@ -3,6 +3,7 @@
 from pathlib import Path
 import sqlite3
 
+from sari.core.exceptions import ErrorContext, ValidationError
 from sari.db.migration import ensure_migrated
 
 
@@ -599,6 +600,89 @@ def _create_repo_id_indexes(conn: sqlite3.Connection) -> None:
             )
 
 
+def _repo_id_integrity_targets() -> tuple[str, ...]:
+    """repo_id 정합성 검증 대상 테이블 목록을 반환한다."""
+    return (
+        "collected_files_l1",
+        "file_enrich_queue",
+        "candidate_index_changes",
+        "collected_file_bodies_l2",
+        "lsp_symbols",
+        "lsp_call_relations",
+    )
+
+
+def _backfill_repo_id_from_repositories(conn: sqlite3.Connection) -> None:
+    """repo_root 정확일치 규칙으로 빈 repo_id를 자동 백필한다."""
+    if not _table_exists(conn, "repositories"):
+        return
+    for table_name in _repo_id_integrity_targets():
+        if not _table_exists(conn, table_name):
+            continue
+        cols = _table_columns(conn, table_name)
+        if not {"repo_id", "repo_root"}.issubset(cols):
+            continue
+        conn.execute(
+            f"""
+            UPDATE {table_name}
+            SET repo_id = (
+                SELECT repositories.repo_id
+                FROM repositories
+                WHERE repositories.repo_root = {table_name}.repo_root
+                LIMIT 1
+            )
+            WHERE TRIM(COALESCE(repo_id, '')) = ''
+              AND EXISTS (
+                  SELECT 1
+                  FROM repositories
+                  WHERE repositories.repo_root = {table_name}.repo_root
+              )
+            """
+        )
+
+
+def _collect_repo_id_integrity_counts(conn: sqlite3.Connection) -> dict[str, int]:
+    """테이블별 repo_id 정합성 위반 건수를 집계한다."""
+    counts: dict[str, int] = {}
+    if not _table_exists(conn, "repositories"):
+        return counts
+    for table_name in _repo_id_integrity_targets():
+        if not _table_exists(conn, table_name):
+            continue
+        cols = _table_columns(conn, table_name)
+        if "repo_id" not in cols:
+            continue
+        row = conn.execute(
+            f"""
+            SELECT COUNT(1) AS cnt
+            FROM {table_name}
+            WHERE TRIM(COALESCE(repo_id, '')) = ''
+               OR repo_id NOT IN (SELECT repo_id FROM repositories)
+            """
+        ).fetchone()
+        if row is None:
+            continue
+        cnt = int(row["cnt"])
+        if cnt > 0:
+            counts[table_name] = cnt
+    return counts
+
+
+def _enforce_repo_id_integrity(conn: sqlite3.Connection) -> None:
+    """repo_id 정합성을 자동 보정 후 검증하고 미해결 시 실패한다."""
+    _backfill_repo_id_from_repositories(conn)
+    counts = _collect_repo_id_integrity_counts(conn)
+    if len(counts) == 0:
+        return
+    detail = ", ".join(f"{name}={count}" for name, count in sorted(counts.items()))
+    raise ValidationError(
+        ErrorContext(
+            code="ERR_REPO_ID_INTEGRITY",
+            message=f"repo_id integrity check failed: {detail}",
+        )
+    )
+
+
 def _has_user_tables(conn: sqlite3.Connection) -> bool:
     """sqlite 내부 테이블을 제외한 사용자 테이블 존재 여부를 반환한다."""
     row = conn.execute(
@@ -632,4 +716,5 @@ def init_schema(db_path: Path) -> None:
         ensure_migrated(db_path)
     with connect(db_path) as conn:
         _create_repo_id_indexes(conn)
+        _enforce_repo_id_integrity(conn)
         conn.commit()

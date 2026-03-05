@@ -30,15 +30,15 @@ HIDDEN_TOOL_NAMES: frozenset[str] = frozenset(
 )
 
 TOOL_EXAMPLES: dict[str, dict[str, object]] = {
-    "search": {"repo_id": "sari", "query": "AuthService", "limit": 5},
-    "read": {"repo_id": "sari", "mode": "file", "target": "README.md", "limit": 40},
-    "read_symbol": {"repo_id": "sari", "symbol": "AuthService.login", "limit": 10},
-    "search_symbol": {"repo_id": "sari", "query": "Auth", "limit": 10},
-    "get_callers": {"repo_id": "sari", "symbol": "AuthService.login", "limit": 20},
-    "get_implementations": {"repo_id": "sari", "symbol": "UserRepository", "limit": 20},
-    "call_graph": {"repo_id": "sari", "symbol": "AuthService.login", "limit": 20},
-    "knowledge": {"repo_id": "sari", "query": "JWT", "limit": 5},
-    "list_symbols": {"repo_id": "sari", "query": "Auth", "limit": 20},
+    "search": {"repo": "sari", "query": "AuthService", "limit": 5},
+    "read": {"repo": "sari", "mode": "file", "target": "README.md", "limit": 40},
+    "read_symbol": {"repo": "sari", "symbol": "AuthService.login", "limit": 10},
+    "search_symbol": {"repo": "sari", "query": "Auth", "limit": 10},
+    "get_callers": {"repo": "sari", "symbol": "AuthService.login", "limit": 20},
+    "get_implementations": {"repo": "sari", "symbol": "UserRepository", "limit": 20},
+    "call_graph": {"repo": "sari", "symbol": "AuthService.login", "limit": 20},
+    "knowledge": {"repo": "sari", "query": "JWT", "limit": 5},
+    "list_symbols": {"repo": "sari", "query": "Auth", "limit": 20},
 }
 
 
@@ -82,12 +82,12 @@ def _decorate_tool_entry(entry: object) -> dict[str, object]:
     example = TOOL_EXAMPLES.get(tool_name)
     if example is not None:
         payload["x_examples"] = [example]
-    payload = _decorate_repo_id_hint(payload)
+    payload = _decorate_repo_hint(payload)
     return payload
 
 
-def _decorate_repo_id_hint(entry: dict[str, object]) -> dict[str, object]:
-    """repo 입력 스키마를 repo_id 우선 안내로 보강한다."""
+def _decorate_repo_hint(entry: dict[str, object]) -> dict[str, object]:
+    """repo 입력 스키마를 식별자 기준으로 안내한다."""
     schema_obj = entry.get("inputSchema")
     if not isinstance(schema_obj, dict):
         return entry
@@ -97,11 +97,7 @@ def _decorate_repo_id_hint(entry: dict[str, object]) -> dict[str, object]:
     repo_obj = properties_obj.get("repo")
     if not isinstance(repo_obj, dict):
         return entry
-    repo_description = "repository id(권장). alias: repo(하위호환)."
-    properties_obj["repo_id"] = {
-        "type": "string",
-        "description": repo_description,
-    }
+    repo_description = "repository identifier token (slug/id). Absolute path input is deprecated."
     if "description" not in repo_obj:
         repo_obj["description"] = repo_description
     return entry

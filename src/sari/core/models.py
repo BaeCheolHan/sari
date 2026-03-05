@@ -125,6 +125,7 @@ class WarningDTO:
 class RepoValidationResultDTO:
     """repo 입력 검증 결과를 표현한다."""
 
+    repo_id: str | None
     repo_root: str | None
     repo_key: str | None
     error: ErrorResponseDTO | None

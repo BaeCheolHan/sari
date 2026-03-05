@@ -52,7 +52,6 @@ def test_mcp_initialize_and_tools_list(tmp_path: Path) -> None:
     }
     tools_by_name = {tool["name"]: tool for tool in tools}
     search_props = tools_by_name["search"]["inputSchema"]["properties"]
-    assert "repo_id" in search_props
     assert "repo" in search_props
     assert "x_examples" in tools_by_name["search"]
     server.close()

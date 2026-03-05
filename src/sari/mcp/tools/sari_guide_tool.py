@@ -33,12 +33,12 @@ class SariGuideTool:
                     "name": "sari_guide",
                     "summary": "최소 호출 흐름: search -> read(file) -> search_symbol",
                     "quick_start": [
-                        {"tool": "search", "arguments": {"repo_id": "sari", "query": "AuthService", "limit": 5}},
-                        {"tool": "read", "arguments": {"repo_id": "sari", "mode": "file", "target": "README.md", "limit": 40}},
-                        {"tool": "search_symbol", "arguments": {"repo_id": "sari", "query": "Auth", "limit": 10}},
+                        {"tool": "search", "arguments": {"repo": "sari", "query": "AuthService", "limit": 5}},
+                        {"tool": "read", "arguments": {"repo": "sari", "mode": "file", "target": "README.md", "limit": 40}},
+                        {"tool": "search_symbol", "arguments": {"repo": "sari", "query": "Auth", "limit": 10}},
                     ],
                     "alias_map": {
-                        "repo": ["repo_id"],
+                        "repo": ["repo_id", "repo_key"],
                         "read.target": ["path", "file_path", "relative_path"],
                         "search.query": ["q", "keyword"],
                         "search_symbol.path_prefix": ["path"],

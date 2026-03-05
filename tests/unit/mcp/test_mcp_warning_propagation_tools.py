@@ -31,13 +31,14 @@ def _register_workspace(db_path: Path, repo_path: Path) -> None:
     )
 
 
-def _assert_partial_fallback_warning(response: dict[str, object]) -> None:
+def _assert_repo_legacy_warning(response: dict[str, object]) -> None:
     assert response["isError"] is False
     structured = response["structuredContent"]
     meta = structured["meta"]
     warnings = meta.get("warnings")
     assert isinstance(warnings, list)
-    assert warnings[0]["code"] == "WARN_REPO_ARG_PARTIAL_FALLBACK"
+    codes = {str(item.get("code", "")) for item in warnings}
+    assert "WARN_REPO_LEGACY_KEY_FALLBACK" in codes
 
 
 def test_status_tool_includes_validation_warnings_in_meta(tmp_path: Path) -> None:
@@ -53,8 +54,8 @@ def test_status_tool_includes_validation_warnings_in_meta(tmp_path: Path) -> Non
         file_repo=FileCollectionRepository(db_path),
         lsp_repo=LspToolDataRepository(db_path),
     )
-    response = tool.call({"repo": "repo-a", "repo_key": "missing-repo"})
-    _assert_partial_fallback_warning(response)
+    response = tool.call({"repo": "repo-a"})
+    _assert_repo_legacy_warning(response)
 
 
 def test_pipeline_policy_get_tool_includes_validation_warnings_in_meta(tmp_path: Path) -> None:
@@ -66,8 +67,8 @@ def test_pipeline_policy_get_tool_includes_validation_warnings_in_meta(tmp_path:
 
     service = SimpleNamespace(get_policy=lambda: SimpleNamespace(to_dict=lambda: {"deletion_hold": False}))
     tool = PipelinePolicyGetTool(workspace_repo=WorkspaceRepository(db_path), service=service)  # type: ignore[arg-type]
-    response = tool.call({"repo": "repo-a", "repo_key": "missing-repo"})
-    _assert_partial_fallback_warning(response)
+    response = tool.call({"repo": "repo-a"})
+    _assert_repo_legacy_warning(response)
 
 
 def test_pipeline_perf_report_tool_includes_validation_warnings_in_meta(tmp_path: Path) -> None:
@@ -79,8 +80,8 @@ def test_pipeline_perf_report_tool_includes_validation_warnings_in_meta(tmp_path
 
     perf_service = SimpleNamespace(get_latest_report=lambda repo_root: {"report_id": "latest", "repo_root": repo_root})
     tool = PipelinePerfReportTool(workspace_repo=WorkspaceRepository(db_path), perf_service=perf_service)  # type: ignore[arg-type]
-    response = tool.call({"repo": "repo-a", "repo_key": "missing-repo"})
-    _assert_partial_fallback_warning(response)
+    response = tool.call({"repo": "repo-a"})
+    _assert_repo_legacy_warning(response)
 
 
 def test_pipeline_quality_report_tool_includes_validation_warnings_in_meta(tmp_path: Path) -> None:
@@ -92,8 +93,8 @@ def test_pipeline_quality_report_tool_includes_validation_warnings_in_meta(tmp_p
 
     quality_service = SimpleNamespace(get_latest_report=lambda repo_root: {"repo": repo_root, "quality": "ok"})
     tool = PipelineQualityReportTool(workspace_repo=WorkspaceRepository(db_path), quality_service=quality_service)  # type: ignore[arg-type]
-    response = tool.call({"repo": "repo-a", "repo_key": "missing-repo"})
-    _assert_partial_fallback_warning(response)
+    response = tool.call({"repo": "repo-a"})
+    _assert_repo_legacy_warning(response)
 
 
 def test_pipeline_lsp_matrix_report_tool_includes_validation_warnings_in_meta(tmp_path: Path) -> None:
@@ -105,8 +106,8 @@ def test_pipeline_lsp_matrix_report_tool_includes_validation_warnings_in_meta(tm
 
     matrix_service = SimpleNamespace(get_latest_report=lambda repo_root: {"repo": repo_root, "ready": True})
     tool = PipelineLspMatrixReportTool(workspace_repo=WorkspaceRepository(db_path), matrix_service=matrix_service)  # type: ignore[arg-type]
-    response = tool.call({"repo": "repo-a", "repo_key": "missing-repo"})
-    _assert_partial_fallback_warning(response)
+    response = tool.call({"repo": "repo-a"})
+    _assert_repo_legacy_warning(response)
 
 
 def test_call_graph_tool_includes_validation_warnings_in_meta(tmp_path: Path) -> None:
@@ -117,8 +118,8 @@ def test_call_graph_tool_includes_validation_warnings_in_meta(tmp_path: Path) ->
     _register_workspace(db_path=db_path, repo_path=repo_dir)
 
     tool = CallGraphTool(workspace_repo=WorkspaceRepository(db_path), lsp_repo=LspToolDataRepository(db_path))
-    response = tool.call({"repo": "repo-a", "repo_key": "missing-repo", "symbol": "AuthService.login"})
-    _assert_partial_fallback_warning(response)
+    response = tool.call({"repo": "repo-a", "symbol": "AuthService.login"})
+    _assert_repo_legacy_warning(response)
 
 
 def test_call_graph_tool_warns_when_relations_not_ready(tmp_path: Path) -> None:

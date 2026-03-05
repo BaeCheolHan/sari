@@ -346,12 +346,12 @@ def _resolve_rid(item: Mapping[str, object], arguments: Mapping[str, object]) ->
 
 
 def _resolve_repo_token(item: Mapping[str, object], arguments: Mapping[str, object]) -> str:
-    """repo 식별자를 repo_key 우선으로 추출한다."""
-    for key in ("repo_key", "repo_id", "repo"):
+    """repo 식별자를 repo_id 우선으로 추출한다."""
+    for key in ("repo_id", "repo", "repo_key"):
         value = item.get(key)
         if isinstance(value, str) and value.strip() != "":
             return _normalize_repo_token(value)
-    for key in ("repo_key", "repo_id", "repo"):
+    for key in ("repo_id", "repo", "repo_key"):
         value = arguments.get(key)
         if isinstance(value, str) and value.strip() != "":
             return _normalize_repo_token(value)

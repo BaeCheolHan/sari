@@ -11,6 +11,30 @@ from sari.mcp.server import McpServer
 from sari.services.workspace.service import WorkspaceService
 
 
+def _upsert_repo_identity(db_path: Path, *, repo_id: str, repo_root: str, repo_label: str) -> None:
+    """repo_id 정합성 게이트를 통과하기 위한 repositories 행을 준비한다."""
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO repositories(repo_id, repo_label, repo_root, workspace_root, updated_at, is_active)
+            VALUES(:repo_id, :repo_label, :repo_root, :workspace_root, '2026-03-05T00:00:00Z', 1)
+            ON CONFLICT(repo_id) DO UPDATE SET
+                repo_label = excluded.repo_label,
+                repo_root = excluded.repo_root,
+                workspace_root = excluded.workspace_root,
+                updated_at = excluded.updated_at,
+                is_active = 1
+            """,
+            {
+                "repo_id": repo_id,
+                "repo_label": repo_label,
+                "repo_root": repo_root,
+                "workspace_root": repo_root,
+            },
+        )
+        conn.commit()
+
+
 def test_mcp_tools_list_includes_symbol_tools(tmp_path: Path) -> None:
     """tools/list 응답은 search_symbol/get_callers를 포함해야 한다."""
     server = McpServer(db_path=tmp_path / "state.db")
@@ -31,6 +55,7 @@ def test_mcp_search_symbol_returns_indexed_symbols(tmp_path: Path) -> None:
     repo_dir = tmp_path / "repo-a"
     repo_dir.mkdir()
     WorkspaceService(WorkspaceRepository(db_path)).add_workspace(str(repo_dir))
+    _upsert_repo_identity(db_path, repo_id="repo-a", repo_root=str(repo_dir.resolve()), repo_label="repo-a")
 
     lsp_repo = LspToolDataRepository(db_path)
     lsp_repo.replace_symbols(
@@ -75,6 +100,7 @@ def test_mcp_get_callers_returns_relation_edges(tmp_path: Path) -> None:
     repo_dir = tmp_path / "repo-a"
     repo_dir.mkdir()
     WorkspaceService(WorkspaceRepository(db_path)).add_workspace(str(repo_dir))
+    _upsert_repo_identity(db_path, repo_id="repo-a", repo_root=str(repo_dir.resolve()), repo_label="repo-a")
 
     lsp_repo = LspToolDataRepository(db_path)
     lsp_repo.replace_relations(
@@ -150,6 +176,8 @@ def test_mcp_search_symbol_supports_scope_root_repo(tmp_path: Path) -> None:
     module_root = scope_root / "mod-a"
     module_root.mkdir(parents=True)
     WorkspaceService(WorkspaceRepository(db_path)).add_workspace(str(scope_root.resolve()))
+    _upsert_repo_identity(db_path, repo_id="scope-root", repo_root=str(scope_root.resolve()), repo_label="workspace")
+    _upsert_repo_identity(db_path, repo_id="mod-a", repo_root=str(module_root.resolve()), repo_label="mod-a")
     with connect(db_path) as conn:
         conn.execute(
             """
@@ -212,6 +240,8 @@ def test_mcp_get_callers_supports_scope_root_repo(tmp_path: Path) -> None:
     module_root = scope_root / "mod-a"
     module_root.mkdir(parents=True)
     WorkspaceService(WorkspaceRepository(db_path)).add_workspace(str(scope_root.resolve()))
+    _upsert_repo_identity(db_path, repo_id="scope-root", repo_root=str(scope_root.resolve()), repo_label="workspace")
+    _upsert_repo_identity(db_path, repo_id="mod-a", repo_root=str(module_root.resolve()), repo_label="mod-a")
     with connect(db_path) as conn:
         conn.execute(
             """
