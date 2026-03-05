@@ -1052,3 +1052,71 @@ def test_escalate_scope_on_same_job_updates_existing_queue_row_only(tmp_path: Pa
     assert int(row["scope_attempts"]) == 1
     assert str(row["next_retry_at"]) == "2026-02-16T00:00:01+00:00"
     assert row["defer_reason"] is None
+
+
+def test_defer_jobs_to_pending_enforces_min_defer_seconds(tmp_path: Path) -> None:
+    """min_defer_sec이 지정되면 즉시 재시도 시각은 최소 지연으로 보정되어야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = FileEnrichQueueRepository(db_path)
+
+    now_iso = "2026-02-16T00:00:00+00:00"
+    job_id = repo.enqueue(
+        repo_root="/repo",
+        relative_path="min_defer.py",
+        content_hash="h-min-defer",
+        priority=10,
+        enqueue_source="scan",
+        now_iso=now_iso,
+    )
+    _ = repo.acquire_pending(limit=1, now_iso=now_iso)
+
+    changed = repo.defer_jobs_to_pending(
+        job_ids=[job_id],
+        next_retry_at=now_iso,
+        defer_reason="broker_defer:budget",
+        now_iso=now_iso,
+        min_defer_sec=5,
+    )
+    assert changed == 1
+
+    row = _read_queue_row(db_path, job_id)
+    assert row["next_retry_at"] == "2026-02-16T00:00:05+00:00"
+
+
+def test_escalate_scope_on_same_job_enforces_min_defer_seconds(tmp_path: Path) -> None:
+    """scope escalation도 min_defer_sec을 적용해 즉시 재획득 루프를 방지해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = FileEnrichQueueRepository(db_path)
+    now_iso = "2026-02-16T00:00:00+00:00"
+    job_id = repo.enqueue(
+        repo_root="/repo",
+        relative_path="scope_min_defer.py",
+        content_hash="h-scope-min",
+        priority=10,
+        enqueue_source="scan",
+        now_iso=now_iso,
+    )
+
+    changed = repo.escalate_scope_on_same_job(
+        job_id=job_id,
+        next_scope_level="repo",
+        next_scope_root="/repo/subproj",
+        next_retry_at=now_iso,
+        now_iso=now_iso,
+        min_defer_sec=5,
+    )
+    assert changed is True
+
+    with connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT next_retry_at
+            FROM file_enrich_queue
+            WHERE job_id = :job_id
+            """,
+            {"job_id": job_id},
+        ).fetchone()
+    assert row is not None
+    assert str(row["next_retry_at"]) == "2026-02-16T00:00:05+00:00"

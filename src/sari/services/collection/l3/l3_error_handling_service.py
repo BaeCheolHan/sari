@@ -28,10 +28,12 @@ class L3ErrorHandlingService:
         queue_repo: object,
         error_policy: _ErrorPolicyPort,
         now_iso_supplier: Callable[[], str],
+        min_defer_sec: int = 5,
     ) -> None:
         self._queue_repo = queue_repo
         self._error_policy = error_policy
         self._now_iso_supplier = now_iso_supplier
+        self._min_defer_sec = max(0, int(min_defer_sec))
 
     def try_escalate_scope_after_l3_extract_error(self, *, job: FileEnrichJobDTO, error_message: str) -> bool:
         escalator = getattr(self._queue_repo, "escalate_scope_on_same_job", None)
@@ -49,15 +51,27 @@ class L3ErrorHandlingService:
         next_scope_root = self.resolve_next_scope_root_for_escalation(job=job, next_scope_level=next_scope_level)
         now_iso = self._now_iso_supplier()
         try:
-            updated = bool(
-                escalator(
-                    job_id=job.job_id,
-                    next_scope_level=next_scope_level,
-                    next_scope_root=next_scope_root,
-                    next_retry_at=now_iso,
-                    now_iso=now_iso,
+            try:
+                updated = bool(
+                    escalator(
+                        job_id=job.job_id,
+                        next_scope_level=next_scope_level,
+                        next_scope_root=next_scope_root,
+                        next_retry_at=now_iso,
+                        now_iso=now_iso,
+                        min_defer_sec=self._min_defer_sec,
+                    )
                 )
-            )
+            except TypeError:
+                updated = bool(
+                    escalator(
+                        job_id=job.job_id,
+                        next_scope_level=next_scope_level,
+                        next_scope_root=next_scope_root,
+                        next_retry_at=now_iso,
+                        now_iso=now_iso,
+                    )
+                )
         except (RuntimeError, OSError, ValueError, TypeError):
             return False
         if not updated:
@@ -97,14 +111,25 @@ class L3ErrorHandlingService:
         next_retry_at = (now_dt + timedelta(seconds=defer_delay_sec)).isoformat()
         now_iso = now_dt.isoformat()
         try:
-            updated = int(
-                defer_writer(
-                    job_ids=[job.job_id],
-                    next_retry_at=next_retry_at,
-                    defer_reason=defer_reason,
-                    now_iso=now_iso,
+            try:
+                updated = int(
+                    defer_writer(
+                        job_ids=[job.job_id],
+                        next_retry_at=next_retry_at,
+                        defer_reason=defer_reason,
+                        now_iso=now_iso,
+                        min_defer_sec=self._min_defer_sec,
+                    )
                 )
-            )
+            except TypeError:
+                updated = int(
+                    defer_writer(
+                        job_ids=[job.job_id],
+                        next_retry_at=next_retry_at,
+                        defer_reason=defer_reason,
+                        now_iso=now_iso,
+                    )
+                )
         except (RuntimeError, OSError, ValueError, TypeError):
             return False
         if updated <= 0:

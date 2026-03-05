@@ -286,6 +286,33 @@ def test_process_enrich_jobs_l5_collects_detached_completion_next_cycle(monkeypa
     assert len(engine._l5_detached_futures) == 0
 
 
+def test_process_enrich_jobs_l5_does_not_count_pending_only_result_as_processed() -> None:
+    engine = object.__new__(EnrichEngine)
+    engine._assert_parent_alive = lambda worker_name: None
+    engine._l5_detached_futures = {}
+    engine._l5_detached_lock = threading.Lock()
+    engine._enrich_queue_repo = _QueueRepo([_sample_l5_job("job-pending-only")])
+    engine._rebalance_jobs_by_language = lambda jobs: jobs
+    pending_only_result = type("PendingOnlyResult", (), {"done_id": None, "failure_update": None})()
+    future: Future = Future()
+    future.set_result(pending_only_result)
+    engine._l3_executor = _ScriptedExecutor(future)
+    engine._process_single_l5_job = lambda job: pending_only_result
+    engine._l3_result_merger = MagicMock()
+    engine._flush_batch_size = 100
+    engine._flush_interval_sec = 9999.0
+    engine._policy = type("Policy", (), {"retry_max_attempts": 5, "retry_backoff_base_sec": 1})()
+    engine._l5_batch_wait_timeout_sec = 1.0
+    captured = _CapturedFlush()
+    engine._l3_flush_coordinator = captured
+
+    processed = engine.process_enrich_jobs_l5(limit=10)
+
+    assert processed == 0
+    assert engine._l3_result_merger.merge.call_count == 1
+    assert captured.failed_job_ids == []
+
+
 def test_process_enrich_jobs_l5_times_out_queued_when_detached_backlog_exists(monkeypatch) -> None:  # noqa: ANN001
     engine = object.__new__(EnrichEngine)
     engine._assert_parent_alive = lambda worker_name: None

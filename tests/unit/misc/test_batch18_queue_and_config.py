@@ -291,6 +291,7 @@ def test_app_config_parses_l5_budget_and_l3_query_budget_env(tmp_path: Path, mon
     monkeypatch.setenv("SARI_L5_TOKENS_PER_10SEC_GLOBAL_MAX", "200")
     monkeypatch.setenv("SARI_L5_TOKENS_PER_10SEC_PER_LANG_MAX", "40")
     monkeypatch.setenv("SARI_L5_TOKENS_PER_10SEC_PER_WORKSPACE_MAX", "25")
+    monkeypatch.setenv("SARI_L5_MIN_DEFER_SEC", "7")
     monkeypatch.setenv("SARI_L3_QUERY_COMPILE_MS_BUDGET", "12.5")
     monkeypatch.setenv("SARI_L3_QUERY_BUDGET_MS", "33.0")
 
@@ -302,6 +303,7 @@ def test_app_config_parses_l5_budget_and_l3_query_budget_env(tmp_path: Path, mon
     assert config.l5_tokens_per_10sec_global_max == 200
     assert config.l5_tokens_per_10sec_per_lang_max == 40
     assert config.l5_tokens_per_10sec_per_workspace_max == 25
+    assert config.l5_min_defer_sec == 7
     assert config.l3_query_compile_ms_budget == pytest.approx(12.5)
     assert config.l3_query_budget_ms == pytest.approx(33.0)
 

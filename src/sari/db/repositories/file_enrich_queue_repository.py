@@ -530,6 +530,7 @@ class FileEnrichQueueRepository:
         max_deferred_queue_size: int | None = None,
         max_deferred_per_workspace: int | None = None,
         deferred_ttl_hours: int | None = None,
+        min_defer_sec: int = 0,
     ) -> int:
         """RUNNING/PENDING 작업을 broker defer 의미로 PENDING 상태로 되돌린다.
 
@@ -544,6 +545,11 @@ class FileEnrichQueueRepository:
             return 0
         changed = 0
         now_dt = self._parse_iso_utc(now_iso)
+        effective_next_retry_at = self._ensure_min_defer_next_retry_at(
+            next_retry_at=next_retry_at,
+            now_iso=now_iso,
+            min_defer_sec=min_defer_sec,
+        )
         ttl_limit_dt = None
         if now_dt is not None and deferred_ttl_hours is not None and deferred_ttl_hours > 0:
             ttl_limit_dt = now_dt - timedelta(hours=int(deferred_ttl_hours))
@@ -654,7 +660,7 @@ class FileEnrichQueueRepository:
                     """,
                     {
                         "job_id": job_id,
-                        "next_retry_at": next_retry_at,
+                        "next_retry_at": effective_next_retry_at,
                         "defer_reason": defer_reason,
                         "deferred_state": next_state,
                         "deferred_count": next_count,
@@ -674,8 +680,14 @@ class FileEnrichQueueRepository:
         next_scope_root: str,
         next_retry_at: str,
         now_iso: str,
+        min_defer_sec: int = 0,
     ) -> bool:
         """동일 queue row를 재사용해 scope escalation 상태를 갱신한다."""
+        effective_next_retry_at = self._ensure_min_defer_next_retry_at(
+            next_retry_at=next_retry_at,
+            now_iso=now_iso,
+            min_defer_sec=min_defer_sec,
+        )
         with connect(self._db_path) as conn:
             cur = conn.execute(
                 """
@@ -693,7 +705,7 @@ class FileEnrichQueueRepository:
                     "job_id": job_id,
                     "scope_level": next_scope_level,
                     "scope_root": next_scope_root,
-                    "next_retry_at": next_retry_at,
+                    "next_retry_at": effective_next_retry_at,
                     "updated_at": now_iso,
                 },
             )
@@ -1292,6 +1304,20 @@ class FileEnrichQueueRepository:
         if parsed.tzinfo is None:
             return parsed.replace(tzinfo=UTC)
         return parsed.astimezone(UTC)
+
+    def _ensure_min_defer_next_retry_at(self, *, next_retry_at: str, now_iso: str, min_defer_sec: int) -> str:
+        """next_retry_at이 now+min_defer_sec 이전이면 최소 지연 시각으로 보정한다."""
+        min_delay = max(0, int(min_defer_sec))
+        if min_delay <= 0:
+            return next_retry_at
+        now_dt = self._parse_iso_utc(now_iso)
+        if now_dt is None:
+            return next_retry_at
+        requested_dt = self._parse_iso_utc(next_retry_at)
+        min_allowed_dt = now_dt + timedelta(seconds=min_delay)
+        if requested_dt is None or requested_dt < min_allowed_dt:
+            return min_allowed_dt.isoformat()
+        return next_retry_at
 
     def _percentile(self, values: list[float], percentile: float) -> float | None:
         """단순 nearest-rank 방식 백분위를 계산한다."""

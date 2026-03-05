@@ -203,6 +203,7 @@ def _build_extended_fields(*, file_config: dict[str, object], defaults: type[App
         _ConfigField("l5_tokens_per_10sec_global_max_raw", "SARI_L5_TOKENS_PER_10SEC_GLOBAL_MAX", "l5_tokens_per_10sec_global_max", 240),
         _ConfigField("l5_tokens_per_10sec_per_lang_max_raw", "SARI_L5_TOKENS_PER_10SEC_PER_LANG_MAX", "l5_tokens_per_10sec_per_lang_max", 60),
         _ConfigField("l5_tokens_per_10sec_per_workspace_max_raw", "SARI_L5_TOKENS_PER_10SEC_PER_WORKSPACE_MAX", "l5_tokens_per_10sec_per_workspace_max", 20),
+        _ConfigField("l5_min_defer_sec_raw", "SARI_L5_MIN_DEFER_SEC", "l5_min_defer_sec", 5),
         _ConfigField("l3_query_compile_ms_budget_raw", "SARI_L3_QUERY_COMPILE_MS_BUDGET", "l3_query_compile_ms_budget", 10.0),
         _ConfigField("l3_query_budget_ms_raw", "SARI_L3_QUERY_BUDGET_MS", "l3_query_budget_ms", 30.0),
         _ConfigField("l5_db_short_circuit_enabled_raw", "SARI_L5_DB_SHORT_CIRCUIT_ENABLED", "l5_db_short_circuit_enabled", True, lower=True),

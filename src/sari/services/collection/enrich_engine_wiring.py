@@ -195,6 +195,7 @@ def wire_engine_services(
         extract_error_code=engine._extract_error_code_fn,
         is_scope_escalation_trigger=engine._is_scope_escalation_trigger_fn,
         next_scope_level_for_escalation=engine._next_scope_level_for_escalation_fn,
+        min_defer_sec=engine._l5_min_defer_sec,
     )
     engine._l5_queue_defer_service = L5QueueDeferService(
         queue_repo=engine._enrich_queue_repo,
@@ -214,6 +215,7 @@ def wire_engine_services(
         queue_repo=engine._enrich_queue_repo,
         error_policy=engine._error_policy,
         now_iso_supplier=now_iso8601_utc,
+        min_defer_sec=engine._l5_min_defer_sec,
     )
     engine._layer_upsert_builder = LayerUpsertBuilder()
     engine._l3_persist_service = L3PersistService(

@@ -51,6 +51,7 @@ class EnrichRuntimeServiceRegistry:
             queue_repo=getattr(engine, "_enrich_queue_repo", object()),
             error_policy=getattr(engine, "_error_policy", object()),
             now_iso_supplier=now_iso8601_utc,
+            min_defer_sec=max(0, int(getattr(engine, "_l5_min_defer_sec", 5))),
         )
         engine._l3_error_handling_service = created
         return created

@@ -293,6 +293,7 @@ class AppConfig:
     l5_tokens_per_10sec_global_max: int = 240
     l5_tokens_per_10sec_per_lang_max: int = 60
     l5_tokens_per_10sec_per_workspace_max: int = 20
+    l5_min_defer_sec: int = 5
 
     # L3/L5 subinterpreter execution knobs
     l3_query_compile_ms_budget: float = 10.0

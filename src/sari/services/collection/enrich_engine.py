@@ -103,6 +103,7 @@ class EnrichEngine:
         l5_tokens_per_10sec_global_max: int = 120,
         l5_tokens_per_10sec_per_lang_max: int = 30,
         l5_tokens_per_10sec_per_workspace_max: int = 20,
+        l5_min_defer_sec: int = 5,
         l3_query_compile_ms_budget: float = 10.0,
         l3_query_budget_ms: float = 30.0,
         l3_tree_sitter_executor_mode: str = "inline",
@@ -160,6 +161,7 @@ class EnrichEngine:
         self._l5_tokens_per_10sec_global_max = max(1, int(l5_tokens_per_10sec_global_max))
         self._l5_tokens_per_10sec_per_lang_max = max(1, int(l5_tokens_per_10sec_per_lang_max))
         self._l5_tokens_per_10sec_per_workspace_max = max(1, int(l5_tokens_per_10sec_per_workspace_max))
+        self._l5_min_defer_sec = max(0, int(l5_min_defer_sec))
         self._l5_db_short_circuit_enabled = bool(l5_db_short_circuit_enabled)
         self._event_bus = event_bus
         self._l3_asset_loader = L3AssetLoader()
@@ -446,6 +448,8 @@ class EnrichEngine:
                 try:
                     result = future.result()
                     self._l3_result_merger.merge(result=result, buffers=l5_buffers)
+                    if self._result_counts_as_processed(result):
+                        processed += 1
                 except (CancelledError, RuntimeError, OSError, ValueError, TypeError, AttributeError) as exc:
                     l5_buffers.failed_updates.append(
                         self._build_l5_failure_update(
@@ -453,7 +457,7 @@ class EnrichEngine:
                             error_message=f"L5 future failed: {exc}",
                         )
                     )
-                processed += 1
+                    processed += 1
                 should_flush_by_size = len(l5_buffers.done_ids) + len(l5_buffers.failed_updates) >= self._flush_batch_size
                 should_flush_by_time = time.perf_counter() - last_flush_at >= self._flush_interval_sec
                 if should_flush_by_size or should_flush_by_time:
@@ -494,6 +498,8 @@ class EnrichEngine:
             try:
                 result = future.result()
                 self._l3_result_merger.merge(result=result, buffers=l5_buffers)
+                if self._result_counts_as_processed(result):
+                    processed += 1
             except (CancelledError, RuntimeError, OSError, ValueError, TypeError, AttributeError) as exc:
                 l5_buffers.failed_updates.append(
                     self._build_l5_failure_update(
@@ -501,8 +507,19 @@ class EnrichEngine:
                         error_message=f"L5 detached future failed: {exc}",
                     )
                 )
-            processed += 1
+                processed += 1
         return processed
+
+    @staticmethod
+    def _result_counts_as_processed(result: object) -> bool:
+        """queue terminal progress(done/failed)가 있을 때만 처리 건수로 센다."""
+        has_done_attr = hasattr(result, "done_id")
+        has_failure_attr = hasattr(result, "failure_update")
+        if not (has_done_attr or has_failure_attr):
+            return True
+        done_id = getattr(result, "done_id", None)
+        failure_update = getattr(result, "failure_update", None)
+        return done_id is not None or failure_update is not None
 
     def _has_active_detached_l5_futures(self) -> bool:
         """아직 완료되지 않은 detached L5 future 존재 여부를 반환한다."""

@@ -160,6 +160,7 @@ def build_default_config(cls):
     l5_tokens_per_10sec_global_max_raw = extended_raw_values["l5_tokens_per_10sec_global_max_raw"]
     l5_tokens_per_10sec_per_lang_max_raw = extended_raw_values["l5_tokens_per_10sec_per_lang_max_raw"]
     l5_tokens_per_10sec_per_workspace_max_raw = extended_raw_values["l5_tokens_per_10sec_per_workspace_max_raw"]
+    l5_min_defer_sec_raw = extended_raw_values["l5_min_defer_sec_raw"]
     l3_query_compile_ms_budget_raw = extended_raw_values["l3_query_compile_ms_budget_raw"]
     l3_query_budget_ms_raw = extended_raw_values["l3_query_budget_ms_raw"]
     l5_db_short_circuit_enabled_raw = extended_raw_values["l5_db_short_circuit_enabled_raw"]
@@ -356,6 +357,7 @@ def build_default_config(cls):
     l5_tokens_per_10sec_global_max = parser.int_min(l5_tokens_per_10sec_global_max_raw, minimum=1, default=240)
     l5_tokens_per_10sec_per_lang_max = parser.int_min(l5_tokens_per_10sec_per_lang_max_raw, minimum=1, default=60)
     l5_tokens_per_10sec_per_workspace_max = parser.int_min(l5_tokens_per_10sec_per_workspace_max_raw, minimum=1, default=20)
+    l5_min_defer_sec = parser.int_min(l5_min_defer_sec_raw, minimum=0, default=5)
     l3_query_compile_ms_budget = parser.float_min(l3_query_compile_ms_budget_raw, minimum=0.1, default=10.0)
     l3_query_budget_ms = parser.float_min(l3_query_budget_ms_raw, minimum=0.1, default=30.0)
     l3_tree_sitter_subinterp_workers = parser.int_min(
@@ -628,6 +630,7 @@ def build_default_config(cls):
         l5_tokens_per_10sec_global_max=l5_tokens_per_10sec_global_max,
         l5_tokens_per_10sec_per_lang_max=l5_tokens_per_10sec_per_lang_max,
         l5_tokens_per_10sec_per_workspace_max=l5_tokens_per_10sec_per_workspace_max,
+        l5_min_defer_sec=l5_min_defer_sec,
         l3_query_compile_ms_budget=l3_query_compile_ms_budget,
         l3_query_budget_ms=l3_query_budget_ms,
         l3_tree_sitter_executor_mode=(

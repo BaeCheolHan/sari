@@ -27,6 +27,7 @@ class L3QueueTransitionService:
         extract_error_code: Callable[[str], str],
         is_scope_escalation_trigger: Callable[[str, str], bool],
         next_scope_level_for_escalation: Callable[[str | None], str | None],
+        min_defer_sec: int = 5,
     ) -> None:
         self._queue_repo = queue_repo
         self._error_policy = error_policy
@@ -35,6 +36,7 @@ class L3QueueTransitionService:
         self._extract_error_code = extract_error_code
         self._is_scope_escalation_trigger = is_scope_escalation_trigger
         self._next_scope_level_for_escalation = next_scope_level_for_escalation
+        self._min_defer_sec = max(0, int(min_defer_sec))
 
     def defer_after_broker_lease_denial(self, *, job: FileEnrichJobDTO, error_message: str) -> bool:
         if not self._broker_admission.is_broker_lease_denial(error_message):
@@ -49,14 +51,25 @@ class L3QueueTransitionService:
         next_retry_at = (now_dt + timedelta(seconds=delay_sec)).isoformat()
         now_iso = now_dt.isoformat()
         try:
-            updated = int(
-                defer_writer(
-                    job_ids=[job.job_id],
-                    next_retry_at=next_retry_at,
-                    defer_reason=defer_reason,
-                    now_iso=now_iso,
+            try:
+                updated = int(
+                    defer_writer(
+                        job_ids=[job.job_id],
+                        next_retry_at=next_retry_at,
+                        defer_reason=defer_reason,
+                        now_iso=now_iso,
+                        min_defer_sec=self._min_defer_sec,
+                    )
                 )
-            )
+            except TypeError:
+                updated = int(
+                    defer_writer(
+                        job_ids=[job.job_id],
+                        next_retry_at=next_retry_at,
+                        defer_reason=defer_reason,
+                        now_iso=now_iso,
+                    )
+                )
         except (RuntimeError, OSError, ValueError, TypeError):
             log.warning(
                 "Failed to defer job after broker lease denial (job_id=%s, reason=%s)",
@@ -104,15 +117,27 @@ class L3QueueTransitionService:
         next_scope_root = self._resolve_next_scope_root(job=job, next_scope_level=next_scope_level)
         now_iso = self._now_iso_supplier()
         try:
-            updated = bool(
-                escalator(
-                    job_id=job.job_id,
-                    next_scope_level=next_scope_level,
-                    next_scope_root=next_scope_root,
-                    next_retry_at=now_iso,
-                    now_iso=now_iso,
+            try:
+                updated = bool(
+                    escalator(
+                        job_id=job.job_id,
+                        next_scope_level=next_scope_level,
+                        next_scope_root=next_scope_root,
+                        next_retry_at=now_iso,
+                        now_iso=now_iso,
+                        min_defer_sec=self._min_defer_sec,
+                    )
                 )
-            )
+            except TypeError:
+                updated = bool(
+                    escalator(
+                        job_id=job.job_id,
+                        next_scope_level=next_scope_level,
+                        next_scope_root=next_scope_root,
+                        next_retry_at=now_iso,
+                        now_iso=now_iso,
+                    )
+                )
         except (RuntimeError, OSError, ValueError, TypeError):
             log.warning(
                 "Failed to escalate scope after L3 extract error (job_id=%s, next_scope=%s)",
@@ -166,4 +191,3 @@ class L3QueueTransitionService:
             return now_dt.astimezone(timezone.utc)
         except (RuntimeError, OSError, ValueError, TypeError):
             return datetime.now(timezone.utc)
-
