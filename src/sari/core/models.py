@@ -571,10 +571,13 @@ class PipelineMetricsDTO:
     watcher_drop_count: int = 0
     watcher_overflow_count: int = 0
     watcher_last_overflow_at: str | None = None
+    watcher_rescan_queue_depth: int = 0
+    watcher_rescan_drop_count: int = 0
     lsp_instance_count: int = 0
     lsp_forced_kill_count: int = 0
     lsp_stop_timeout_count: int = 0
     lsp_orphan_suspect_count: int = 0
+    lsp_residual_reap_count: int = 0
     lsp_interactive_pending_count: int = 0
     lsp_interactive_timeout_count: int = 0
     lsp_interactive_rejected_count: int = 0
@@ -607,10 +610,13 @@ class PipelineMetricsDTO:
             "watcher_drop_count": self.watcher_drop_count,
             "watcher_overflow_count": self.watcher_overflow_count,
             "watcher_last_overflow_at": self.watcher_last_overflow_at,
+            "watcher_rescan_queue_depth": self.watcher_rescan_queue_depth,
+            "watcher_rescan_drop_count": self.watcher_rescan_drop_count,
             "lsp_instance_count": self.lsp_instance_count,
             "lsp_forced_kill_count": self.lsp_forced_kill_count,
             "lsp_stop_timeout_count": self.lsp_stop_timeout_count,
             "lsp_orphan_suspect_count": self.lsp_orphan_suspect_count,
+            "lsp_residual_reap_count": self.lsp_residual_reap_count,
             "lsp_interactive_pending_count": self.lsp_interactive_pending_count,
             "lsp_interactive_timeout_count": self.lsp_interactive_timeout_count,
             "lsp_interactive_rejected_count": self.lsp_interactive_rejected_count,

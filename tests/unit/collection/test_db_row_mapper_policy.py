@@ -11,7 +11,8 @@ from sari.core.models import DaemonRuntimeDTO, now_iso8601_utc
 from sari.db.repositories.file_body_repository import FileBodyDecodeError, FileBodyRepository
 from sari.db.repositories.runtime_repository import RuntimeRepository
 from sari.db.repositories.symbol_cache_repository import SymbolCacheRepository
-from sari.db.row_mapper import row_bool, row_int, row_optional_str, row_str
+from sari.db.repositories.lsp_tool_data_repository import LspToolDataRepository
+from sari.db.row_mapper import row_bool, row_int, row_optional_str, row_optional_str_normalized, row_str
 from sari.db.schema import connect, init_schema
 
 
@@ -39,6 +40,54 @@ def test_row_mapper_helpers_raise_for_invalid_types() -> None:
     with pytest.raises(ValidationError) as exc_info:
         row_optional_str(fake_row, "as_opt")
     assert exc_info.value.context.code == "ERR_DB_MAPPING_INVALID"
+
+
+def test_row_optional_str_normalized_maps_blank_to_none() -> None:
+    """nullable 문자열 helper는 빈 문자열을 None으로 정규화해야 한다."""
+    row = {"value": ""}
+    assert row_optional_str_normalized(row, "value") is None
+
+
+def test_list_file_symbols_full_tolerates_blank_optional_fields(tmp_path: Path) -> None:
+    """lsp_symbols의 optional 필드가 빈 문자열이어도 조회가 실패하면 안 된다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = LspToolDataRepository(db_path)
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO lsp_symbols(
+                repo_id, repo_root, scope_repo_root, relative_path, content_hash,
+                name, kind, line, end_line, symbol_key, parent_symbol_key, depth, container_name, created_at
+            ) VALUES (
+                :repo_id, :repo_root, :scope_repo_root, :relative_path, :content_hash,
+                :name, :kind, :line, :end_line, :symbol_key, :parent_symbol_key, :depth, :container_name, :created_at
+            )
+            """,
+            {
+                "repo_id": "repo-main",
+                "repo_root": "/repo",
+                "scope_repo_root": "/repo",
+                "relative_path": "src/a.py",
+                "content_hash": "h1",
+                "name": "Foo",
+                "kind": "class",
+                "line": 1,
+                "end_line": 10,
+                "symbol_key": "",
+                "parent_symbol_key": "",
+                "depth": 0,
+                "container_name": "",
+                "created_at": now_iso8601_utc(),
+            },
+        )
+        conn.commit()
+
+    symbols = repo.list_file_symbols_full("/repo", "src/a.py", "h1")
+    assert len(symbols) == 1
+    assert symbols[0]["symbol_key"] is None
+    assert symbols[0]["parent_symbol_key"] is None
+    assert symbols[0]["container_name"] is None
 
 
 def test_runtime_repository_raises_on_invalid_pid_type(tmp_path: Path) -> None:

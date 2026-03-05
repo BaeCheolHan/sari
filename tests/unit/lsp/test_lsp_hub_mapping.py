@@ -678,6 +678,150 @@ def test_lsp_hub_stop_timeout_forces_kill_process_group(monkeypatch) -> None:
     assert ("pgid", 32123, 9) in kill_calls
 
 
+def test_lsp_hub_stop_tracks_and_reaps_residual_descendants(monkeypatch) -> None:
+    """stop 성공 이후에도 종료 전 스냅샷 자식 PID가 남으면 회수해야 한다."""
+
+    class _Server:
+        class _Runtime:
+            def __init__(self) -> None:
+                self.process = self
+                self.pid = 2000
+
+            def is_running(self) -> bool:
+                return True
+
+        def __init__(self) -> None:
+            self.server = self._Runtime()
+
+        def stop(self) -> None:
+            return None
+
+    kill_calls: list[tuple[int, int]] = []
+
+    def _fake_kill(pid: int, sig: int) -> None:
+        kill_calls.append((pid, int(sig)))
+
+    monkeypatch.setattr("sari.lsp.hub.os.kill", _fake_kill)
+
+    hub = LspHub(stop_timeout_sec=0.05)
+    monkeypatch.setattr(hub, "_snapshot_descendant_pids", lambda pid: {pid, 2100, 2200})
+    monkeypatch.setattr(
+        hub,
+        "_snapshot_pid_identity",
+        lambda tracked: {2100: ("start-a", "cmd-a"), 2200: ("start-b", "cmd-b")},
+    )
+    monkeypatch.setattr(hub, "_get_pid_start_label", lambda pid: {2100: "start-a", 2200: "start-b"}.get(pid))
+    monkeypatch.setattr(hub, "_get_pid_command", lambda pid: {2100: "cmd-a", 2200: "cmd-b"}.get(pid))
+    monkeypatch.setattr(hub, "_is_pid_alive", lambda pid: pid in {2100, 2200})
+    monkeypatch.setattr(hub, "_force_kill_server_process", lambda server: None)
+
+    key = LspRuntimeKey(language=Language.PYTHON, repo_root="/repo", slot=0)
+    hub._instances[key] = LspRuntimeEntry(server=_Server(), last_used_at=0.0)
+
+    hub._stop_entry_locked(key)
+    assert (2100, 15) in kill_calls
+    assert (2100, 9) in kill_calls
+    assert (2200, 15) in kill_calls
+    assert (2200, 9) in kill_calls
+
+
+def test_lsp_hub_reap_skips_non_descendant_pid_reused_after_snapshot(monkeypatch) -> None:
+    """재사용된 PID가 현재 하위 트리에 없으면 신호를 보내지 않아야 한다."""
+
+    kill_calls: list[tuple[int, int]] = []
+
+    def _fake_kill(pid: int, sig: int) -> None:
+        kill_calls.append((pid, int(sig)))
+
+    monkeypatch.setattr("sari.lsp.hub.os.kill", _fake_kill)
+
+    hub = LspHub(stop_timeout_sec=0.05)
+    monkeypatch.setattr(hub, "_get_pid_start_label", lambda pid: {2100: "start-2100", 9999: "start-new"}.get(pid))
+    monkeypatch.setattr(hub, "_get_pid_command", lambda pid: {2100: "cmd-2100", 9999: "cmd-new"}.get(pid))
+    monkeypatch.setattr(hub, "_is_pid_alive", lambda pid: pid in {2100, 9999})
+
+    hub._reap_tracked_descendants(
+        tracked_pids={2000, 2100, 9999},
+        tracked_pid_identity={2000: ("root", "root-cmd"), 2100: ("start-2100", "cmd-2100"), 9999: ("old", "old-cmd")},
+        exclude_pid=2000,
+    )
+
+    assert (2100, 15) in kill_calls
+    assert (2100, 9) in kill_calls
+    assert (9999, 15) not in kill_calls
+    assert (9999, 9) not in kill_calls
+
+
+def test_lsp_hub_reap_tracked_pid_when_root_already_gone(monkeypatch) -> None:
+    """루트 PID가 사라져도 tracked PID age가 연속성이 있으면 회수해야 한다."""
+
+    kill_calls: list[tuple[int, int]] = []
+
+    def _fake_kill(pid: int, sig: int) -> None:
+        kill_calls.append((pid, int(sig)))
+
+    monkeypatch.setattr("sari.lsp.hub.os.kill", _fake_kill)
+
+    hub = LspHub(stop_timeout_sec=0.05)
+    monkeypatch.setattr(hub, "_get_pid_start_label", lambda pid: "start-2100" if pid == 2100 else None)
+    monkeypatch.setattr(hub, "_get_pid_command", lambda pid: "cmd-2100" if pid == 2100 else None)
+    monkeypatch.setattr(hub, "_is_pid_alive", lambda pid: pid == 2100)
+
+    hub._reap_tracked_descendants(
+        tracked_pids={2000, 2100},
+        tracked_pid_identity={2000: ("root", "root-cmd"), 2100: ("start-2100", "cmd-2100")},
+        exclude_pid=2000,
+    )
+
+    assert (2100, 15) in kill_calls
+    assert (2100, 9) in kill_calls
+
+
+def test_lsp_hub_reap_skips_pid_without_age_snapshot(monkeypatch) -> None:
+    """identity snapshot이 없는 PID는 미확정으로 간주해 신호를 보내지 않아야 한다."""
+    kill_calls: list[tuple[int, int]] = []
+
+    def _fake_kill(pid: int, sig: int) -> None:
+        kill_calls.append((pid, int(sig)))
+
+    monkeypatch.setattr("sari.lsp.hub.os.kill", _fake_kill)
+
+    hub = LspHub(stop_timeout_sec=0.05)
+    monkeypatch.setattr(hub, "_is_pid_alive", lambda pid: pid == 2100)
+    monkeypatch.setattr(hub, "_get_pid_age_seconds", lambda pid: 30.0 if pid == 2100 else None)
+
+    hub._reap_tracked_descendants(
+        tracked_pids={2100},
+        tracked_pid_identity={},
+        exclude_pid=2000,
+    )
+
+    assert kill_calls == []
+
+
+def test_lsp_hub_reap_skips_pid_when_identity_changed(monkeypatch) -> None:
+    """현재 start/command identity가 바뀐 PID에는 신호를 보내면 안 된다."""
+    kill_calls: list[tuple[int, int]] = []
+
+    def _fake_kill(pid: int, sig: int) -> None:
+        kill_calls.append((pid, int(sig)))
+
+    monkeypatch.setattr("sari.lsp.hub.os.kill", _fake_kill)
+
+    hub = LspHub(stop_timeout_sec=0.05)
+    monkeypatch.setattr(hub, "_is_pid_alive", lambda pid: pid == 2100)
+    monkeypatch.setattr(hub, "_get_pid_start_label", lambda pid: "new-start" if pid == 2100 else None)
+    monkeypatch.setattr(hub, "_get_pid_command", lambda pid: "new-cmd" if pid == 2100 else None)
+
+    hub._reap_tracked_descendants(
+        tracked_pids={2100},
+        tracked_pid_identity={2100: ("old-start", "old-cmd")},
+        exclude_pid=2000,
+    )
+
+    assert kill_calls == []
+
+
 def test_lsp_hub_maps_assertion_error_to_explicit_unavailable(monkeypatch) -> None:
     """언어서버 start 내부 assertion 실패는 명시적 LSP unavailable 오류로 승격되어야 한다."""
 
@@ -997,6 +1141,84 @@ def test_lsp_hub_max_instances_per_repo_language_not_clamped_to_two() -> None:
     """repo/language 풀 상한은 설정값을 그대로 반영해야 한다."""
     hub = LspHub(max_instances_per_repo_language=6)
     assert hub._max_instances_per_repo_language == 6
+    hub.stop_all()
+
+
+def test_lsp_hub_reconcile_runtime_reaps_residual_orphan_processes(monkeypatch) -> None:
+    """reconcile는 ppid=1로 남은 residual LSP 프로세스를 회수해야 한다."""
+    hub = LspHub()
+    killed: list[tuple[int, int]] = []
+
+    class _ProcessResult:
+        returncode = 0
+        stdout = "321 1 /tmp/.solidlsp/jdtls/bin/java\n777 42 /usr/bin/python\n"
+
+    monkeypatch.setattr("sari.lsp.hub.subprocess.run", lambda *args, **kwargs: _ProcessResult())
+    monkeypatch.setattr("sari.lsp.hub.time.sleep", lambda _sec: None)
+    monkeypatch.setattr(hub, "_is_pid_alive", lambda pid: pid == 321)
+    monkeypatch.setattr("sari.lsp.hub.os.kill", lambda pid, sig: killed.append((int(pid), int(sig))))
+
+    payload = hub.reconcile_runtime()
+    assert payload["reaped_lsp"] == 0
+    assert payload["reaped_residual_lsp"] == 1
+    assert payload["residual_lsp_by_language"].get("java") == 1
+    assert payload["drain_failures"] == 0
+    assert killed[0][0] == 321
+
+
+def test_lsp_hub_reconcile_runtime_ignores_non_sari_orphan_lsp_processes(monkeypatch) -> None:
+    """generic LSP 서명만으로는 잔존 프로세스를 회수하지 않아야 한다."""
+    hub = LspHub()
+    killed: list[tuple[int, int]] = []
+
+    class _ProcessResult:
+        returncode = 0
+        stdout = "654 1 /usr/bin/pyright-langserver --stdio\n"
+
+    monkeypatch.setattr("sari.lsp.hub.subprocess.run", lambda *args, **kwargs: _ProcessResult())
+    monkeypatch.setattr("sari.lsp.hub.time.sleep", lambda _sec: None)
+    monkeypatch.setattr(hub, "_is_pid_alive", lambda _pid: True)
+    monkeypatch.setattr("sari.lsp.hub.os.kill", lambda pid, sig: killed.append((int(pid), int(sig))))
+
+    payload = hub.reconcile_runtime()
+    assert payload["reaped_lsp"] == 0
+    assert payload["reaped_residual_lsp"] == 0
+    assert payload["residual_lsp_by_language"] == {}
+    assert payload["drain_failures"] == 0
+    assert killed == []
+
+
+def test_lsp_hub_reconcile_runtime_counts_idle_eviction_by_language(monkeypatch) -> None:
+    """idle eviction으로 제거된 인스턴스도 language breakdown에 포함해야 한다."""
+    now = {"value": 0.0}
+
+    class _FakeRuntimeServer:
+        def is_running(self) -> bool:
+            return True
+
+    class _FakeLanguageServer:
+        def __init__(self) -> None:
+            self.server = _FakeRuntimeServer()
+
+        def start(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+    monkeypatch.setattr("sari.lsp.hub.SolidLanguageServer.create", lambda *args, **kwargs: _FakeLanguageServer())
+    hub = LspHub(idle_timeout_sec=1, idle_cleanup_interval_sec=3600.0, clock=lambda: now["value"])
+    _ = hub.get_or_start(language=Language.PYTHON, repo_root="/repo-a")
+    now["value"] = 2.0
+    monkeypatch.setattr(
+        hub,
+        "_reap_residual_lsp_processes",
+        lambda: {"reaped_residual_lsp": 0, "residual_lsp_by_language": {}, "drain_failures": 0},
+    )
+
+    payload = hub.reconcile_runtime()
+    assert payload["reaped_lsp"] == 1
+    assert payload["reaped_lsp_by_language"] == {"python": 1}
     hub.stop_all()
 
 

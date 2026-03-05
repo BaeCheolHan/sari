@@ -82,6 +82,7 @@ class FileCollectionService:
     LSP_PREWARM_TOP_LANGUAGE_COUNT = 2
     LSP_PREWARM_MIN_LANGUAGE_FILES = 32
     WATCHER_QUEUE_MAX = 10_000
+    WATCHER_RESCAN_QUEUE_MAX = 256
     WATCHER_OVERFLOW_RESCAN_COOLDOWN_SEC = 30
     SCAN_OPERATION_LOCK_MAX_ATTEMPTS = 6
     SCAN_OPERATION_LOCK_BACKOFF_BASE_SEC = 0.05
@@ -148,10 +149,11 @@ class FileCollectionService:
         self._watcher_drop_count = 0
         self._watcher_overflow_count = 0
         self._watcher_last_overflow_at: str | None = None
-        self._watcher_rescan_queue: queue.Queue[str] = queue.Queue()
+        self._watcher_rescan_queue: queue.Queue[str] = queue.Queue(maxsize=self.WATCHER_RESCAN_QUEUE_MAX)
         self._watcher_rescan_pending_roots: set[str] = set()
         self._watcher_rescan_lock = threading.Lock()
         self._watcher_rescan_thread: threading.Thread | None = None
+        self._watcher_rescan_drop_count = 0
         self._enrich_latency_samples_ms: list[float] = []
         self._throughput_samples_jobs_per_sec: list[float] = []
         self._throughput_ema_jobs_per_sec = 0.0
@@ -357,6 +359,8 @@ class FileCollectionService:
             watcher_drop_count=self._watcher_drop_count_snapshot,
             watcher_overflow_count=self._watcher_overflow_count_snapshot,
             watcher_last_overflow_at=self._watcher_last_overflow_at_snapshot,
+            watcher_rescan_queue_depth=self._watcher_rescan_queue_depth_snapshot,
+            watcher_rescan_drop_count=self._watcher_rescan_drop_count_snapshot,
             lsp_metrics_snapshot=self._lsp_runtime_metrics_snapshot,
         )
         self._l5_upgrade_watcher = L5AsyncUpgradeWatcher(
@@ -661,6 +665,15 @@ class FileCollectionService:
         with self._metrics_lock:
             return self._watcher_last_overflow_at
 
+    def _watcher_rescan_queue_depth_snapshot(self) -> int:
+        """watcher overflow rescan 큐 깊이 스냅샷을 반환한다."""
+        return int(self._watcher_rescan_queue.qsize())
+
+    def _watcher_rescan_drop_count_snapshot(self) -> int:
+        """watcher overflow rescan 드롭 카운트 스냅샷을 반환한다."""
+        with self._metrics_lock:
+            return int(self._watcher_rescan_drop_count)
+
     def _lsp_runtime_metrics_snapshot(self) -> dict[str, float]:
         """LSP 런타임 메트릭 스냅샷을 반환한다."""
         merged: dict[str, float] = {}
@@ -843,7 +856,27 @@ class FileCollectionService:
             if repo_root in self._watcher_rescan_pending_roots:
                 return
             self._watcher_rescan_pending_roots.add(repo_root)
-        self._watcher_rescan_queue.put_nowait(repo_root)
+        try:
+            self._watcher_rescan_queue.put_nowait(repo_root)
+        except queue.Full:
+            with self._watcher_rescan_lock:
+                self._watcher_rescan_pending_roots.discard(repo_root)
+            with self._metrics_lock:
+                self._watcher_rescan_drop_count += 1
+            self._error_policy.record_error_event(
+                component="event_watcher",
+                phase="watcher_overflow_rescan",
+                severity="warning",
+                error_code="ERR_WATCHER_RESCAN_BACKPRESSURE",
+                error_message="watcher overflow rescan queue is full; request dropped",
+                error_type="QueueFull",
+                repo_root=repo_root,
+                relative_path=None,
+                job_id=None,
+                attempt_count=0,
+                context_data={"rescan_queue_max": self.WATCHER_RESCAN_QUEUE_MAX},
+                worker_name="watcher_rescan",
+            )
 
     def _ensure_watcher_rescan_worker_started(self) -> None:
         """watcher overflow rescan 전용 워커를 필요 시 시작한다."""

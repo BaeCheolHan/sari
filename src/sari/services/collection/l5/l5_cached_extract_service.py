@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 
+from sari.core.exceptions import ValidationError
 from sari.services.lsp_extraction_contracts import LspExtractionResultDTO
 
 
@@ -95,7 +96,7 @@ class L5CachedExtractService:
                         self._record_miss("no_l5_semantics")
                     self._record_hit()
                     return LspExtractionResultDTO(symbols=symbols, relations=relations, error_message=None)
-        except (sqlite3.Error, RuntimeError, OSError, ValueError, TypeError):
+        except (ValidationError, sqlite3.Error, RuntimeError, OSError, ValueError, TypeError):
             delegate_reason = "error_fallback"
         if delegate_reason is not None:
             self._record_miss(delegate_reason)

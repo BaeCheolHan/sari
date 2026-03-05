@@ -11,6 +11,7 @@ from starlette.responses import JSONResponse
 from sari import __version__
 from sari.core.models import HealthResponseDTO
 from sari.http.context import HttpContext
+from sari.services.daemon.health import evaluate_daemon_health
 
 
 async def health_endpoint(request) -> JSONResponse:
@@ -70,20 +71,13 @@ async def status_endpoint(request) -> JSONResponse:
     lease_valid = _lease_valid(runtime.lease_expires_at)
     registry_snapshot = _registry_snapshot(context=context, pid=runtime.pid)
     registry_degraded = _registry_degraded(snapshot=registry_snapshot)
-    health_state = _daemon_health_state(
-        runtime=runtime,
-        stale_timeout_sec=stale_timeout_sec,
+    health_payload = evaluate_daemon_health(
         pid_alive=pid_alive,
         heartbeat_age_sec=heartbeat_age_sec,
-        lease_valid=lease_valid,
-        registry_degraded=registry_degraded,
-    )
-    status_reason = _daemon_status_reason(
-        runtime=runtime,
         stale_timeout_sec=stale_timeout_sec,
-        health_state=health_state,
         lease_valid=lease_valid,
         registry_degraded=registry_degraded,
+        status_reason_detail=_registry_status_reason_detail(snapshot=registry_snapshot),
     )
     return JSONResponse(
         {
@@ -109,18 +103,12 @@ async def status_endpoint(request) -> JSONResponse:
                 "last_heartbeat_at": runtime.last_heartbeat_at,
                 "heartbeat_age_sec": heartbeat_age_sec,
                 "last_exit_reason": runtime.last_exit_reason,
-                "health_state": health_state,
-                "status_reason": status_reason,
-                "pid_alive": pid_alive,
-                "lease_valid": lease_valid,
-                "health_signals": {
-                    "pid_alive": pid_alive,
-                    "heartbeat_age_sec": heartbeat_age_sec,
-                    "stale_timeout_sec": stale_timeout_sec,
-                    "lease_valid": lease_valid,
-                    "registry_degraded": registry_degraded,
-                },
-                "status_reason_detail": _registry_status_reason_detail(snapshot=registry_snapshot),
+                "health_state": health_payload["health_state"],
+                "status_reason": health_payload["status_reason"],
+                "pid_alive": health_payload["pid_alive"],
+                "lease_valid": health_payload["lease_valid"],
+                "health_signals": health_payload["health_signals"],
+                "status_reason_detail": health_payload["status_reason_detail"],
             },
             "lsp_metrics": lsp_metrics,
             "reconcile_state": reconcile_state,
@@ -203,21 +191,17 @@ def _daemon_health_state(  # noqa: ANN001
     lease_valid: bool | None = None,
     registry_degraded: bool | None = None,
 ) -> str:
-    if pid_alive is None:
-        pid_alive = _is_pid_alive(int(runtime.pid))
-    if not pid_alive:
-        return "dead"
-    heartbeat_age = _heartbeat_age_sec(str(runtime.last_heartbeat_at)) if heartbeat_age_sec is None else heartbeat_age_sec
-    if heartbeat_age < 0:
-        return "degraded"
-    if heartbeat_age > stale_timeout_sec:
-        return "stale"
-    lease_ok = _lease_valid(getattr(runtime, "lease_expires_at", None)) if lease_valid is None else lease_valid
-    if not lease_ok:
-        return "degraded"
-    if bool(registry_degraded):
-        return "degraded"
-    return "running"
+    resolved_pid_alive = _is_pid_alive(int(runtime.pid)) if pid_alive is None else bool(pid_alive)
+    heartbeat_age = _heartbeat_age_sec(str(runtime.last_heartbeat_at)) if heartbeat_age_sec is None else float(heartbeat_age_sec)
+    lease_ok = _lease_valid(getattr(runtime, "lease_expires_at", None)) if lease_valid is None else bool(lease_valid)
+    payload = evaluate_daemon_health(
+        pid_alive=resolved_pid_alive,
+        heartbeat_age_sec=heartbeat_age,
+        stale_timeout_sec=stale_timeout_sec,
+        lease_valid=lease_ok,
+        registry_degraded=bool(registry_degraded),
+    )
+    return str(payload["health_state"])
 
 
 def _daemon_status_reason(  # noqa: ANN001
@@ -228,7 +212,7 @@ def _daemon_status_reason(  # noqa: ANN001
     lease_valid: bool | None = None,
     registry_degraded: bool | None = None,
 ) -> str:
-    state = _daemon_health_state(runtime=runtime, stale_timeout_sec=stale_timeout_sec) if health_state is None else health_state
+    state = _daemon_health_state(runtime=runtime, stale_timeout_sec=stale_timeout_sec) if health_state is None else str(health_state)
     if state == "dead":
         return "process_dead"
     if state == "stale":

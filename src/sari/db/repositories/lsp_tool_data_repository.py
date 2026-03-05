@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from sari.core.models import CallerEdgeDTO, LspExtractPersistDTO, SymbolSearchItemDTO
-from sari.db.row_mapper import row_int, row_str
+from sari.db.row_mapper import row_int, row_optional_str_normalized, row_str
 from sari.db.schema import connect
 
 
@@ -796,10 +796,10 @@ class LspToolDataRepository:
                 "kind": row_str(row, "kind"),
                 "line": row_int(row, "line"),
                 "end_line": row_int(row, "end_line"),
-                "symbol_key": row_str(row, "symbol_key") or None,
-                "parent_symbol_key": row_str(row, "parent_symbol_key") or None,
+                "symbol_key": row_optional_str_normalized(row, "symbol_key"),
+                "parent_symbol_key": row_optional_str_normalized(row, "parent_symbol_key"),
                 "depth": row_int(row, "depth"),
-                "container_name": row_str(row, "container_name") or None,
+                "container_name": row_optional_str_normalized(row, "container_name"),
             }
             for row in rows
         ]

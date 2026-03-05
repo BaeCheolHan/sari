@@ -8,7 +8,6 @@ import os
 import sqlite3
 import subprocess
 import logging
-import time
 from typing import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -23,6 +22,7 @@ from sari.db.repositories.file_enrich_queue_repository import FileEnrichQueueRep
 from sari.db.repositories.runtime_repository import RuntimeRepository
 from sari.db.repositories.symbol_cache_repository import SymbolCacheRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
+from sari.db.sqlite_retry import run_with_sqlite_lock_retry
 
 log = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ class AdminService:
         symbol_cache_repo: SymbolCacheRepository,
         queue_repo: FileEnrichQueueRepository | None = None,
         registry_repo: DaemonRegistryRepository | None = None,
-        lsp_reconciler: Callable[[], int] | None = None,
+        lsp_reconciler: Callable[[], int | dict[str, object]] | None = None,
     ) -> None:
         """서비스에 필요한 저장소와 설정을 주입한다."""
         self._config = config
@@ -149,25 +149,18 @@ class AdminService:
 
     def index(self) -> dict[str, object]:
         """캐시 무효화 기반 재색인 트리거를 수행한다."""
-        max_attempts = 4
-        base_backoff_sec = 0.05
-        max_backoff_sec = 0.4
-        for attempt in range(max_attempts):
-            try:
-                invalidated = self._symbol_cache_repo.invalidate_all()
-                return {"invalidated_cache_rows": invalidated, "lock_retry_count": attempt}
-            except sqlite3.OperationalError as exc:
-                if "database is locked" not in str(exc).lower():
-                    raise
-                if attempt + 1 >= max_attempts:
-                    raise DaemonError(
-                        ErrorContext(
-                            code="ERR_DB_LOCK_BUSY",
-                            message="database is locked during index/rescan operation",
-                        )
-                    ) from exc
-                sleep_sec = min(base_backoff_sec * float(2**attempt), max_backoff_sec)
-                time.sleep(sleep_sec)
+        try:
+            invalidated, retry_count = run_with_sqlite_lock_retry(self._symbol_cache_repo.invalidate_all)
+        except sqlite3.OperationalError as exc:
+            if "database is locked" not in str(exc).lower():
+                raise
+            raise DaemonError(
+                ErrorContext(
+                    code="ERR_DB_LOCK_BUSY",
+                    message="database is locked during index/rescan operation",
+                )
+            ) from exc
+        return {"invalidated_cache_rows": invalidated, "lock_retry_count": retry_count}
 
     def install_host_config(self, host: str) -> dict[str, object]:
         """호스트별 MCP 설정 스니펫을 생성한다."""
@@ -408,9 +401,12 @@ class AdminService:
         reconciled_daemons = 0
         stale_registry_cleaned = 0
         reaped_lsp = 0
+        reaped_residual_lsp = 0
         orphan_workers_stopped = 0
         reaped_lsp_by_language: dict[str, int] = {}
+        residual_lsp_by_language: dict[str, int] = {}
         drain_failures = 0
+        db_lock_retry_count = 0
         runtime = self._runtime_repo.get_runtime()
         if runtime is not None and not self._is_pid_alive(runtime.pid):
             self._runtime_repo.clear_runtime()
@@ -419,7 +415,9 @@ class AdminService:
                 self._registry_repo.remove_by_pid(runtime.pid)
                 stale_registry_cleaned += 1
         if self._queue_repo is not None:
-            orphan_workers_stopped = self._queue_repo.reset_running_to_failed(now_iso=now_iso8601_utc())
+            orphan_workers_stopped, db_lock_retry_count = self._queue_repo.reset_running_to_failed_with_retry_count(
+                now_iso=now_iso8601_utc()
+            )
         if self._lsp_reconciler is not None:
             try:
                 raw_result = self._lsp_reconciler()
@@ -437,12 +435,19 @@ class AdminService:
             try:
                 if isinstance(raw_result, dict):
                     reaped_lsp = max(0, int(raw_result.get("reaped_lsp", 0)))
+                    reaped_residual_lsp = max(0, int(raw_result.get("reaped_residual_lsp", 0)))
                     drain_failures = max(0, int(raw_result.get("drain_failures", 0)))
                     raw_breakdown = raw_result.get("reaped_lsp_by_language", {})
                     if isinstance(raw_breakdown, dict):
                         reaped_lsp_by_language = {
                             str(language): max(0, int(count))
                             for language, count in raw_breakdown.items()
+                        }
+                    raw_residual_breakdown = raw_result.get("residual_lsp_by_language", {})
+                    if isinstance(raw_residual_breakdown, dict):
+                        residual_lsp_by_language = {
+                            str(language): max(0, int(count))
+                            for language, count in raw_residual_breakdown.items()
                         }
                 else:
                     reaped_lsp = max(0, int(raw_result))
@@ -465,9 +470,12 @@ class AdminService:
             "reconciled_daemons": reconciled_daemons,
             "reaped_lsp": reaped_lsp,
             "reaped_lsp_by_language": reaped_lsp_by_language,
+            "reaped_residual_lsp": reaped_residual_lsp,
+            "residual_lsp_by_language": residual_lsp_by_language,
             "drain_failures": drain_failures,
             "orphan_workers_stopped": orphan_workers_stopped,
             "stale_registry_cleaned": stale_registry_cleaned,
+            "db_lock_retry_count": db_lock_retry_count,
         }
 
     def get_runtime_reconcile_state(self) -> dict[str, object]:

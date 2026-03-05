@@ -8,12 +8,14 @@ import logging
 import os
 from pathlib import Path
 import signal
+import subprocess
 import threading
 import time
 from typing import Callable
 
 from sari.core.language.registry import resolve_language_from_path
 from sari.core.exceptions import DaemonError, ErrorContext
+from sari.lsp.process_classifier import classify_language_from_command, is_residual_lsp_command
 from sari.lsp.runtime_broker import LspRuntimeBroker
 from sari.services.collection.perf_trace import PerfTracer
 from solidlsp.ls import SolidLanguageServer, process_env_context
@@ -116,6 +118,7 @@ class LspHub:
         self._forced_kill_count = 0
         self._stop_timeout_count = 0
         self._orphan_suspect_count = 0
+        self._residual_reap_count = 0
         self._cleanup_thread = threading.Thread(
             target=self._idle_cleanup_loop,
             name="sari-lsp-idle-cleaner",
@@ -362,6 +365,7 @@ class LspHub:
                 "lsp_forced_kill_count": int(self._forced_kill_count),
                 "lsp_stop_timeout_count": int(self._stop_timeout_count),
                 "lsp_orphan_suspect_count": int(self._orphan_suspect_count),
+                "lsp_residual_reap_count": int(self._residual_reap_count),
                 "lsp_interactive_pending_count": int(self._interactive_pending_count),
                 "lsp_interactive_timeout_count": int(self._interactive_timeout_count),
                 "lsp_interactive_rejected_count": int(self._interactive_rejected_count),
@@ -500,10 +504,10 @@ class LspHub:
                     break
         return servers[:target_count]
 
-    def reconcile_runtime(self) -> int:
-        """비정상/유휴 LSP 엔트리를 즉시 정리하고 정리 건수를 반환한다."""
+    def reconcile_runtime(self) -> dict[str, object]:
+        """비정상/유휴/잔존 LSP를 정리하고 상세 통계를 반환한다."""
         with self._lock:
-            before_count = len(self._instances)
+            before_keys = list(self._instances.keys())
             now = self._clock()
             for key in list(self._instances.keys()):
                 entry = self._instances.get(key)
@@ -513,7 +517,22 @@ class LspHub:
                     continue
                 self._cleanup_not_running_entry_locked(key=key, entry=entry)
             self._evict_idle_locked(now)
-            return max(0, before_count - len(self._instances))
+            alive_keys = set(self._instances.keys())
+            reaped_by_language: dict[str, int] = {}
+            for key in before_keys:
+                if key in alive_keys:
+                    continue
+                language_key = str(key.language.value)
+                reaped_by_language[language_key] = int(reaped_by_language.get(language_key, 0)) + 1
+            reaped_inmemory = max(0, len(before_keys) - len(alive_keys))
+        residual_result = self._reap_residual_lsp_processes()
+        return {
+            "reaped_lsp": int(reaped_inmemory),
+            "reaped_lsp_by_language": reaped_by_language,
+            "reaped_residual_lsp": int(residual_result["reaped_residual_lsp"]),
+            "residual_lsp_by_language": dict(residual_result["residual_lsp_by_language"]),
+            "drain_failures": int(residual_result["drain_failures"]),
+        }
 
     def set_bulk_mode(self, language: Language, repo_root: str, enabled: bool) -> None:
         """언어/저장소 키의 bulk 모드 활성 상태를 설정한다."""
@@ -978,6 +997,9 @@ class LspHub:
         """LSP stop 호출이 장시간 블로킹될 때 타임아웃으로 중단시킨다."""
         error_box: list[BaseException] = []
         done = threading.Event()
+        root_pid = self._server_pid(server)
+        tracked_descendants = self._snapshot_descendant_pids(root_pid) if root_pid is not None else set()
+        tracked_pid_identity = self._snapshot_pid_identity(tracked_descendants)
 
         def _runner() -> None:
             try:
@@ -993,23 +1015,236 @@ class LspHub:
         if not finished:
             self._stop_timeout_count += 1
             self._force_kill_server_process(server)
+            self._reap_tracked_descendants(
+                tracked_pids=tracked_descendants,
+                tracked_pid_identity=tracked_pid_identity,
+                exclude_pid=root_pid,
+            )
             raise DaemonError(
                 ErrorContext(
                     code="ERR_LSP_STOP_TIMEOUT",
                     message="LSP stop 타임아웃으로 인스턴스 정리를 완료하지 못했습니다",
                 )
             )
+        self._reap_tracked_descendants(
+            tracked_pids=tracked_descendants,
+            tracked_pid_identity=tracked_pid_identity,
+            exclude_pid=root_pid,
+        )
         if len(error_box) > 0:
             first_error = error_box[0]
             if isinstance(first_error, (RuntimeError, OSError, ValueError)):
                 raise first_error
 
-    def _force_kill_server_process(self, server: SolidLanguageServer) -> None:
-        """stop 타임아웃 시 LSP 하위 프로세스를 강제 종료한다."""
+    def _server_pid(self, server: SolidLanguageServer) -> int | None:
+        """SolidLSP 서버 프로세스 PID를 안전하게 조회한다."""
         handler = getattr(server, "server", None)
         process = getattr(handler, "process", None)
         pid = getattr(process, "pid", None)
-        if not isinstance(pid, int) or pid <= 0:
+        if isinstance(pid, int) and pid > 0:
+            return pid
+        return None
+
+    def _snapshot_descendant_pids(self, root_pid: int) -> set[int]:
+        """현재 시점의 하위 프로세스 PID 스냅샷을 수집한다."""
+        all_pids, children = self._read_process_tree_for_snapshot()
+        if all_pids is None:
+            return {root_pid}
+        if root_pid not in all_pids:
+            return {root_pid}
+        return self._collect_descendant_pids(root_pid, children)
+
+    def _read_process_tree_for_snapshot(self) -> tuple[set[int] | None, dict[int, list[int]]]:
+        """`ps` 출력에서 PID/PPID 트리를 읽는다."""
+        try:
+            process = subprocess.run(
+                ["ps", "-axo", "pid=,ppid="],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except (RuntimeError, OSError, ValueError):
+            return None, {}
+        if process.returncode != 0:
+            return None, {}
+        children: dict[int, list[int]] = {}
+        all_pids: set[int] = set()
+        for line in process.stdout.splitlines():
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            try:
+                pid = int(parts[0])
+                ppid = int(parts[1])
+            except ValueError:
+                continue
+            all_pids.add(pid)
+            children.setdefault(ppid, []).append(pid)
+        return all_pids, children
+
+    def _collect_descendant_pids(self, root_pid: int, children: dict[int, list[int]]) -> set[int]:
+        """트리 맵에서 root 포함 하위 PID 집합을 계산한다."""
+        stack = [root_pid]
+        seen: set[int] = set()
+        while len(stack) > 0:
+            current = stack.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            for child in children.get(current, []):
+                if child not in seen:
+                    stack.append(child)
+        return seen
+
+    def _parse_etime_to_seconds(self, etime: str) -> float | None:
+        """ps etime 문자열([[dd-]hh:]mm:ss)을 초로 변환한다."""
+        raw = etime.strip()
+        if raw == "":
+            return None
+        day_part = 0
+        clock_part = raw
+        if "-" in raw:
+            day_token, clock_token = raw.split("-", 1)
+            try:
+                day_part = int(day_token)
+            except ValueError:
+                return None
+            clock_part = clock_token
+        pieces = clock_part.split(":")
+        try:
+            if len(pieces) == 3:
+                hours = int(pieces[0])
+                minutes = int(pieces[1])
+                seconds = int(pieces[2])
+            elif len(pieces) == 2:
+                hours = 0
+                minutes = int(pieces[0])
+                seconds = int(pieces[1])
+            else:
+                return None
+        except ValueError:
+            return None
+        return float(day_part * 86400 + hours * 3600 + minutes * 60 + seconds)
+
+    def _get_pid_age_seconds(self, pid: int) -> float | None:
+        """현재 pid의 process age(초)를 조회한다."""
+        try:
+            process = subprocess.run(
+                ["ps", "-o", "etime=", "-p", str(pid)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except (RuntimeError, OSError, ValueError):
+            return None
+        if process.returncode != 0:
+            return None
+        return self._parse_etime_to_seconds(process.stdout.strip())
+
+    def _get_pid_start_label(self, pid: int) -> str | None:
+        """현재 pid의 시작 시각 레이블(ps lstart)을 조회한다."""
+        try:
+            process = subprocess.run(
+                ["ps", "-o", "lstart=", "-p", str(pid)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except (RuntimeError, OSError, ValueError):
+            return None
+        if process.returncode != 0:
+            return None
+        value = process.stdout.strip()
+        if value == "":
+            return None
+        return value
+
+    def _get_pid_command(self, pid: int) -> str | None:
+        """현재 pid의 command 라인을 조회한다."""
+        try:
+            process = subprocess.run(
+                ["ps", "-o", "command=", "-p", str(pid)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except (RuntimeError, OSError, ValueError):
+            return None
+        if process.returncode != 0:
+            return None
+        value = process.stdout.strip()
+        if value == "":
+            return None
+        return value
+
+    def _snapshot_pid_identity(self, tracked_pids: set[int]) -> dict[int, tuple[str, str]]:
+        """tracked pid의 identity(start_label, command)를 스냅샷한다."""
+        result: dict[int, tuple[str, str]] = {}
+        for pid in sorted(tracked_pids):
+            if pid <= 1:
+                continue
+            start_label = self._get_pid_start_label(pid)
+            command = self._get_pid_command(pid)
+            if start_label is None or command is None:
+                continue
+            result[pid] = (start_label, command)
+        return result
+
+    def _is_pid_alive(self, pid: int) -> bool:
+        """PID 생존 여부를 확인한다."""
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+
+    def _reap_tracked_descendants(
+        self,
+        *,
+        tracked_pids: set[int],
+        tracked_pid_identity: dict[int, tuple[str, str]],
+        exclude_pid: int | None,
+    ) -> None:
+        """stop 시점에 추적한 하위 PID가 남아있으면 TERM/KILL로 회수한다."""
+        for pid in sorted(tracked_pids):
+            if exclude_pid is not None and pid == exclude_pid:
+                continue
+            if pid <= 1:
+                continue
+            if not self._is_pid_alive(pid):
+                continue
+            # PID 재사용 보호: start_label + command가 모두 일치할 때만 동일 프로세스로 간주한다.
+            snap_identity = tracked_pid_identity.get(pid)
+            if snap_identity is None:
+                continue
+            current_start = self._get_pid_start_label(pid)
+            current_command = self._get_pid_command(pid)
+            if current_start is None or current_command is None:
+                continue
+            if (current_start, current_command) != snap_identity:
+                continue
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                continue
+            except OSError:
+                continue
+            time.sleep(0.05)
+            if self._is_pid_alive(pid):
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    continue
+                except OSError:
+                    continue
+            self._residual_reap_count += 1
+
+    def _force_kill_server_process(self, server: SolidLanguageServer) -> None:
+        """stop 타임아웃 시 LSP 하위 프로세스를 강제 종료한다."""
+        pid = self._server_pid(server)
+        if pid is None:
             return
         try:
             pgid = os.getpgid(pid)
@@ -1047,6 +1282,60 @@ class LspHub:
         except OSError:
             return
 
+    def _reap_residual_lsp_processes(self) -> dict[str, object]:
+        """허브 추적 외 잔존 LSP 프로세스를 best-effort로 회수한다."""
+        try:
+            process = subprocess.run(
+                ["ps", "-axo", "pid=,ppid=,command="],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except (RuntimeError, OSError, ValueError):
+            return {"reaped_residual_lsp": 0, "residual_lsp_by_language": {}, "drain_failures": 1}
+        if process.returncode != 0:
+            return {"reaped_residual_lsp": 0, "residual_lsp_by_language": {}, "drain_failures": 1}
+        reaped = 0
+        drain_failures = 0
+        breakdown: dict[str, int] = {}
+        for line in process.stdout.splitlines():
+            parts = line.strip().split(maxsplit=2)
+            if len(parts) < 3:
+                continue
+            try:
+                pid = int(parts[0])
+                ppid = int(parts[1])
+            except ValueError:
+                continue
+            command = parts[2]
+            if pid <= 1:
+                continue
+            if not is_residual_lsp_command(command):
+                continue
+            if ppid > 1:
+                # 정상 프로세스 트리에 붙어있는 경우는 건드리지 않는다.
+                continue
+            if not self._is_pid_alive(pid):
+                continue
+            try:
+                os.kill(pid, signal.SIGTERM)
+                time.sleep(0.05)
+                if self._is_pid_alive(pid):
+                    os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                ...
+            except OSError:
+                drain_failures += 1
+                continue
+            reaped += 1
+            self._residual_reap_count += 1
+            language = classify_language_from_command(command)
+            breakdown[language] = int(breakdown.get(language, 0)) + 1
+        return {
+            "reaped_residual_lsp": int(reaped),
+            "residual_lsp_by_language": breakdown,
+            "drain_failures": int(drain_failures),
+        }
 
 def _classify_lsp_start_exception(*, exc: BaseException, language: Language, repo_root: str) -> tuple[str, str]:
     """LSP 시작 실패 원인을 분류해 구체적인 오류 코드/메시지로 변환한다."""

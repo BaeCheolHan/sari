@@ -6,6 +6,7 @@ import logging
 import threading
 from dataclasses import dataclass
 
+from sari.core.exceptions import ErrorContext, ValidationError
 from sari.services.collection.runtime_manager import RuntimeManager
 
 
@@ -105,3 +106,69 @@ def test_runtime_manager_enrich_l5_loop_runs_processor_once() -> None:
     manager._enrich_l5_loop()
 
     assert calls == [7]
+
+
+def test_runtime_manager_enrich_l5_loop_handles_validation_error() -> None:
+    """L5 루프는 ValidationError를 CollectionError로 승격해 핸들러로 전달해야 한다."""
+    stop_event = threading.Event()
+    handled: list[tuple[str, str, str]] = []
+
+    def _process_l5(batch: int) -> int:
+        _ = batch
+        raise ValidationError(ErrorContext(code="ERR_DB_MAPPING_INVALID", message="parent_symbol_key must be non-empty str"))
+
+    def _handle(exc, phase: str, worker_name: str):  # noqa: ANN001
+        handled.append((exc.context.code, phase, worker_name))
+        stop_event.set()
+        return False
+
+    manager = RuntimeManager(
+        stop_event=stop_event,
+        enrich_queue_repo=_EnrichQueueRepoStub(),
+        workspace_repo=_WorkspaceRepoStub([]),
+        policy=_PolicyStub(max_enrich_batch=3),
+        policy_repo=None,
+        assert_parent_alive=lambda worker_name: None,
+        scan_once=lambda path: None,
+        process_enrich_jobs_bootstrap=lambda batch: 0,
+        process_enrich_jobs_l5=_process_l5,
+        handle_background_collection_error=_handle,
+        prune_error_events_if_needed=lambda: None,
+        watcher_loop=lambda: None,
+    )
+
+    manager._enrich_l5_loop()
+    assert handled == [("ERR_L5_SYMBOL_MAPPING", "enrich_l5_loop_validation", "enrich_worker_l5")]
+
+
+def test_runtime_manager_enrich_bootstrap_loop_uses_non_l5_validation_code() -> None:
+    """bootstrap 루프 ValidationError는 L5 전용 코드로 라벨링되면 안 된다."""
+    stop_event = threading.Event()
+    handled: list[tuple[str, str, str]] = []
+
+    def _process_bootstrap(batch: int) -> int:
+        _ = batch
+        raise ValidationError(ErrorContext(code="ERR_DB_MAPPING_INVALID", message="bootstrap mapping invalid"))
+
+    def _handle(exc, phase: str, worker_name: str):  # noqa: ANN001
+        handled.append((exc.context.code, phase, worker_name))
+        stop_event.set()
+        return False
+
+    manager = RuntimeManager(
+        stop_event=stop_event,
+        enrich_queue_repo=_EnrichQueueRepoStub(),
+        workspace_repo=_WorkspaceRepoStub([]),
+        policy=_PolicyStub(max_enrich_batch=3),
+        policy_repo=None,
+        assert_parent_alive=lambda worker_name: None,
+        scan_once=lambda path: None,
+        process_enrich_jobs_bootstrap=_process_bootstrap,
+        process_enrich_jobs_l5=lambda batch: 0,
+        handle_background_collection_error=_handle,
+        prune_error_events_if_needed=lambda: None,
+        watcher_loop=lambda: None,
+    )
+
+    manager._enrich_loop()
+    assert handled == [("ERR_COLLECTION_VALIDATION", "enrich_loop_validation", "enrich_worker")]

@@ -11,7 +11,7 @@ from typing import Callable
 
 from watchdog.observers import Observer
 
-from sari.core.exceptions import CollectionError, ErrorContext
+from sari.core.exceptions import CollectionError, ErrorContext, ValidationError
 from sari.core.models import now_iso8601_utc
 
 log = logging.getLogger(__name__)
@@ -179,6 +179,7 @@ class RuntimeManager:
             error_phase="enrich_loop",
             db_error_phase="enrich_loop_db",
             db_error_message_prefix="enrich 처리 실패",
+            validation_error_code="ERR_COLLECTION_VALIDATION",
         )
 
     def _enrich_l5_loop(self) -> None:
@@ -191,6 +192,7 @@ class RuntimeManager:
             error_phase="enrich_l5_loop",
             db_error_phase="enrich_l5_loop_db",
             db_error_message_prefix="enrich L5 처리 실패",
+            validation_error_code="ERR_L5_SYMBOL_MAPPING",
         )
 
     def _run_enrich_processor_loop(
@@ -201,12 +203,23 @@ class RuntimeManager:
         error_phase: str,
         db_error_phase: str,
         db_error_message_prefix: str,
+        validation_error_code: str,
     ) -> None:
         """enrich 계열 루프의 공통 예외 처리/폴링 동작을 수행한다."""
         while not self._stop_event.is_set():
             self._assert_parent_alive(worker_name)
             try:
                 processed = processor(int(self._policy.max_enrich_batch))
+            except ValidationError as exc:
+                fatal_error = CollectionError(
+                    ErrorContext(
+                        code=validation_error_code,
+                        message=f"{db_error_message_prefix} (validation): {exc.context.message}",
+                    )
+                )
+                if self._handle_background_collection_error(fatal_error, f"{error_phase}_validation", worker_name):
+                    return
+                processed = 0
             except CollectionError as exc:
                 if self._handle_background_collection_error(exc, error_phase, worker_name):
                     return

@@ -21,6 +21,7 @@ from sari.core.models import DaemonRegistryEntryDTO, DaemonRuntimeDTO, now_iso86
 from sari.db.repositories.daemon_registry_repository import DaemonRegistryRepository
 from sari.db.repositories.runtime_repository import RuntimeRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
+from sari.services.daemon.health import evaluate_daemon_health
 
 log = logging.getLogger(__name__)
 
@@ -288,45 +289,20 @@ class DaemonService:
         """런타임 상태를 다중 신호로 판정해 근거를 반환한다."""
         pid_alive = self._is_pid_alive(runtime.pid)
         heartbeat_age_sec = self._heartbeat_age_sec(runtime.last_heartbeat_at)
-        stale = heartbeat_age_sec < 0 or heartbeat_age_sec > float(self._config.daemon_stale_timeout_sec)
         lease_valid = self._is_lease_valid(runtime.lease_expires_at)
         registry_snapshot = self._registry_health_snapshot(runtime.pid)
-        registry_degraded = False
-        if registry_snapshot is not None:
-            deployment_state = str(registry_snapshot.get("deployment_state", "ACTIVE")).upper()
-            registry_degraded = deployment_state != "ACTIVE"
-        reason = "running"
-        state = "running"
-        if not pid_alive:
-            state = "dead"
-            reason = "process_dead"
-        elif stale:
-            state = "stale"
-            reason = "heartbeat_stale_but_pid_alive"
-        elif not lease_valid:
-            state = "degraded"
-            reason = "lease_invalid_but_pid_alive"
-        elif registry_degraded:
-            state = "degraded"
-            reason = "registry_degraded_but_pid_alive"
-        return {
-            "health_state": state,
-            "status_reason": reason,
-            "pid_alive": pid_alive,
-            "lease_valid": lease_valid,
-            "health_signals": {
-                "pid_alive": pid_alive,
-                "heartbeat_age_sec": heartbeat_age_sec,
-                "stale_timeout_sec": float(self._config.daemon_stale_timeout_sec),
-                "lease_valid": lease_valid,
-                "registry_degraded": registry_degraded,
-            },
-            "status_reason_detail": {
-                "deployment_state": None if registry_snapshot is None else registry_snapshot.get("deployment_state"),
-                "health_fail_streak": None if registry_snapshot is None else registry_snapshot.get("health_fail_streak"),
-                "last_health_error": None if registry_snapshot is None else registry_snapshot.get("last_health_error"),
-            },
-        }
+        registry_degraded = bool(
+            registry_snapshot is not None
+            and str(registry_snapshot.get("deployment_state", "ACTIVE")).upper() != "ACTIVE"
+        )
+        return evaluate_daemon_health(
+            pid_alive=pid_alive,
+            heartbeat_age_sec=heartbeat_age_sec,
+            stale_timeout_sec=float(self._config.daemon_stale_timeout_sec),
+            lease_valid=lease_valid,
+            registry_degraded=registry_degraded,
+            status_reason_detail={} if registry_snapshot is None else dict(registry_snapshot),
+        )
 
     def _heartbeat_age_sec(self, last_heartbeat_at: str) -> float:
         """마지막 heartbeat 기준 경과 시간을 초 단위로 계산한다."""

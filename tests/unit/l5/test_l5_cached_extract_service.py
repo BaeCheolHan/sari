@@ -4,6 +4,7 @@ import sqlite3
 
 import pytest
 
+from sari.core.exceptions import ErrorContext, ValidationError
 from sari.services.collection.l5.l5_cached_extract_service import L5CachedExtractService
 from sari.services.lsp_extraction_contracts import LspExtractionResultDTO
 
@@ -43,6 +44,14 @@ class _FailingToolLayerRepo:
 
     def load_effective_snapshot(self, **kwargs):  # noqa: ANN003
         return {"l5": []}
+
+
+class _FailingValidationLspRepo(_LspRepo):
+    def __init__(self) -> None:
+        super().__init__(symbols=[], relations=[])
+
+    def list_file_symbols_full(self, repo_root: str, relative_path: str, content_hash: str):  # noqa: ANN001
+        raise ValidationError(ErrorContext(code="ERR_DB_MAPPING_INVALID", message="bad mapping"))
 
 
 def test_cached_extract_returns_db_hit_without_delegate() -> None:
@@ -127,6 +136,32 @@ def test_cached_extract_falls_back_to_delegate_on_sqlite_error() -> None:
     service = L5CachedExtractService(
         tool_layer_repo=_FailingToolLayerRepo(),
         lsp_repo=_LspRepo(symbols=[], relations=[]),
+        delegate_extract=_delegate,
+        enabled=True,
+        log_miss_reason=True,
+    )
+    result = service.extract("/repo/workspace", "src/service.py", "abc")
+
+    assert len(result.symbols) == 1
+    assert calls == [("/repo/workspace", "src/service.py", "abc")]
+    metrics = service.get_metrics()
+    assert metrics["l5_db_cache_miss_reason_error_fallback"] == 1.0
+
+
+def test_cached_extract_falls_back_to_delegate_on_validation_error() -> None:
+    calls: list[tuple[str, str, str]] = []
+
+    def _delegate(repo_root: str, relative_path: str, content_hash: str) -> LspExtractionResultDTO:
+        calls.append((repo_root, relative_path, content_hash))
+        return LspExtractionResultDTO(
+            symbols=[{"name": "FromLsp"}],
+            relations=[],
+            error_message=None,
+        )
+
+    service = L5CachedExtractService(
+        tool_layer_repo=_ToolLayerRepo(resolved_repo_root="/repo/module", has_l5=False),
+        lsp_repo=_FailingValidationLspRepo(),
         delegate_extract=_delegate,
         enabled=True,
         log_miss_reason=True,

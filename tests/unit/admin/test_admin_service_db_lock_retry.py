@@ -40,7 +40,7 @@ def test_index_retries_on_database_locked_then_succeeds(tmp_path: Path, monkeypa
     repo = _FlakySymbolCacheRepo(fail_count=2)
     service = _build_service(db_path, repo)
     sleeps: list[float] = []
-    monkeypatch.setattr("sari.services.admin.service.time.sleep", lambda sec: sleeps.append(sec))
+    monkeypatch.setattr("sari.db.sqlite_retry.time.sleep", lambda sec: sleeps.append(sec))
 
     payload = service.index()
 
@@ -55,7 +55,7 @@ def test_index_raises_domain_error_when_lock_retries_exhausted(tmp_path: Path, m
     init_schema(db_path)
     repo = _FlakySymbolCacheRepo(fail_count=10)
     service = _build_service(db_path, repo)
-    monkeypatch.setattr("sari.services.admin.service.time.sleep", lambda _sec: None)
+    monkeypatch.setattr("sari.db.sqlite_retry.time.sleep", lambda _sec: None)
 
     try:
         _ = service.index()
@@ -63,3 +63,21 @@ def test_index_raises_domain_error_when_lock_retries_exhausted(tmp_path: Path, m
         assert exc.context.code == "ERR_DB_LOCK_BUSY"
     else:
         raise AssertionError("DaemonError must be raised when DB lock retry is exhausted")
+
+
+def test_index_propagates_non_lock_operational_error(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    class _BrokenSymbolCacheRepo:
+        def invalidate_all(self) -> int:
+            raise sqlite3.OperationalError("malformed database schema")
+
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    service = _build_service(db_path, _BrokenSymbolCacheRepo())
+    monkeypatch.setattr("sari.db.sqlite_retry.time.sleep", lambda _sec: None)
+
+    try:
+        _ = service.index()
+    except sqlite3.OperationalError as exc:
+        assert "malformed database schema" in str(exc)
+    else:
+        raise AssertionError("Non-lock OperationalError must be propagated")

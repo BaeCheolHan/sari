@@ -30,6 +30,17 @@ def row_optional_str(row: Mapping[str, object], field_name: str) -> str | None:
     return value
 
 
+def row_optional_str_normalized(row: Mapping[str, object], field_name: str) -> str | None:
+    """nullable 문자열 필드를 읽고 빈 문자열은 None으로 정규화한다."""
+    value = row_optional_str(row, field_name)
+    if value is None:
+        return None
+    normalized = value.strip()
+    if normalized == "":
+        return None
+    return value
+
+
 def row_int(row: Mapping[str, object], field_name: str) -> int:
     """정수 필드를 엄격하게 읽는다."""
     value = row[field_name]

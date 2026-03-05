@@ -102,17 +102,45 @@ def test_runtime_reconcile_includes_lsp_breakdown_and_drain_failures(tmp_path: P
     service._lsp_reconciler = lambda: {  # type: ignore[assignment]
         "reaped_lsp": 3,
         "reaped_lsp_by_language": {"python": 2, "java": 1},
+        "reaped_residual_lsp": 2,
+        "residual_lsp_by_language": {"java": 2},
         "drain_failures": 1,
     }
 
     payload = service.runtime_reconcile()
     assert payload["reaped_lsp"] == 3
+    assert payload["reaped_residual_lsp"] == 2
     assert payload["drain_failures"] == 1
     assert payload["reaped_lsp_by_language"] == {"python": 2, "java": 1}
+    assert payload["residual_lsp_by_language"] == {"java": 2}
+    assert payload["db_lock_retry_count"] >= 0
     state = service.get_runtime_reconcile_state()
     assert state["reconcile_last_result"] == "ok"
     assert state["reconcile_last_error_code"] is None
     assert state["reconcile_last_error_message"] is None
+
+
+def test_runtime_reconcile_uses_queue_repo_retry_count(tmp_path: Path) -> None:
+    """queue repo가 계산한 DB lock 재시도 횟수를 그대로 노출해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    ensure_migrated(db_path)
+
+    class _QueueRepoWithRetryCount:
+        def reset_running_to_failed(self, now_iso: str) -> int:
+            del now_iso
+            raise AssertionError("legacy reset_running_to_failed path must not be used")
+
+        def reset_running_to_failed_with_retry_count(self, now_iso: str) -> tuple[int, int]:
+            del now_iso
+            return 4, 2
+
+    service = _build_service(db_path, queue_repo=_QueueRepoWithRetryCount())  # type: ignore[arg-type]
+    service._lsp_reconciler = lambda: 0  # type: ignore[assignment]
+
+    payload = service.runtime_reconcile()
+    assert payload["orphan_workers_stopped"] == 4
+    assert payload["db_lock_retry_count"] == 2
 
 
 def test_runtime_reconcile_raises_explicit_error_when_lsp_reconcile_fails(tmp_path: Path) -> None:

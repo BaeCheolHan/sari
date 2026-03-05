@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+import queue
 from pathlib import Path
 import zlib
 
@@ -403,6 +404,39 @@ def test_file_collection_service_watcher_overflow_rescan_uses_service_scan_entry
 
     assert called["service"] == 1
     assert called["scanner"] == 0
+
+
+def test_file_collection_service_drops_rescan_when_queue_is_full(tmp_path: Path) -> None:
+    """rescan 큐가 가득 찬 경우 요청은 드롭되고 pending set에 남지 않아야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_dir = tmp_path / "repo-rescan-full"
+    repo_dir.mkdir()
+    repo_root = str(repo_dir.resolve())
+
+    service = FileCollectionService(
+        workspace_repo=WorkspaceRepository(db_path),
+        file_repo=FileCollectionRepository(db_path),
+        enrich_queue_repo=FileEnrichQueueRepository(db_path),
+        body_repo=FileBodyRepository(db_path),
+        lsp_repo=LspToolDataRepository(db_path),
+        readiness_repo=ToolReadinessRepository(db_path),
+        policy=_policy(),
+        lsp_backend=_NoopLspBackend(),
+        policy_repo=None,
+        event_repo=None,
+    )
+
+    service._watcher_rescan_queue = queue.Queue(maxsize=1)  # noqa: SLF001
+    service._ensure_watcher_rescan_worker_started = lambda: None  # type: ignore[method-assign]  # noqa: SLF001
+    service._watcher_rescan_queue.put_nowait(repo_root)  # noqa: SLF001
+    service._schedule_rescan_from_watcher(repo_root + "-2")  # noqa: SLF001
+    service._stop_event.set()  # noqa: SLF001
+
+    metrics = service.get_pipeline_metrics().to_dict()
+    assert metrics["watcher_rescan_drop_count"] >= 1
+    with service._watcher_rescan_lock:  # noqa: SLF001
+        assert (repo_root + "-2") not in service._watcher_rescan_pending_roots  # noqa: SLF001
 
 
 def test_file_collection_service_stop_background_waits_for_watcher_rescan_worker(tmp_path: Path) -> None:

@@ -36,6 +36,8 @@ class PipelineMetricsService:
         watcher_drop_count: Callable[[], int],
         watcher_overflow_count: Callable[[], int],
         watcher_last_overflow_at: Callable[[], str | None],
+        watcher_rescan_queue_depth: Callable[[], int],
+        watcher_rescan_drop_count: Callable[[], int],
         lsp_metrics_snapshot: Callable[[], dict[str, int]],
     ) -> None:
         """메트릭 계산에 필요한 의존성만 주입받는다."""
@@ -60,6 +62,8 @@ class PipelineMetricsService:
         self._watcher_drop_count = watcher_drop_count
         self._watcher_overflow_count = watcher_overflow_count
         self._watcher_last_overflow_at = watcher_last_overflow_at
+        self._watcher_rescan_queue_depth = watcher_rescan_queue_depth
+        self._watcher_rescan_drop_count = watcher_rescan_drop_count
         self._lsp_metrics_snapshot = lsp_metrics_snapshot
 
     def get_pipeline_metrics(self) -> PipelineMetricsDTO:
@@ -142,10 +146,13 @@ class PipelineMetricsService:
             watcher_drop_count=int(self._watcher_drop_count()),
             watcher_overflow_count=int(self._watcher_overflow_count()),
             watcher_last_overflow_at=self._watcher_last_overflow_at(),
+            watcher_rescan_queue_depth=int(self._watcher_rescan_queue_depth()),
+            watcher_rescan_drop_count=int(self._watcher_rescan_drop_count()),
             lsp_instance_count=int(lsp_metrics.get("lsp_instance_count", 0)),
             lsp_forced_kill_count=int(lsp_metrics.get("lsp_forced_kill_count", 0)),
             lsp_stop_timeout_count=int(lsp_metrics.get("lsp_stop_timeout_count", 0)),
             lsp_orphan_suspect_count=int(lsp_metrics.get("lsp_orphan_suspect_count", 0)),
+            lsp_residual_reap_count=int(lsp_metrics.get("lsp_residual_reap_count", 0)),
             lsp_interactive_pending_count=int(lsp_metrics.get("lsp_interactive_pending_count", 0)),
             lsp_interactive_timeout_count=int(lsp_metrics.get("lsp_interactive_timeout_count", 0)),
             lsp_interactive_rejected_count=int(lsp_metrics.get("lsp_interactive_rejected_count", 0)),

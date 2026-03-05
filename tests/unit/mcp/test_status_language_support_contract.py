@@ -149,6 +149,7 @@ def test_mcp_status_exposes_language_readiness_snapshot(tmp_path: Path) -> None:
             "lsp_forced_kill_count": 1,
             "lsp_stop_timeout_count": 0,
             "lsp_orphan_suspect_count": 2,
+            "lsp_residual_reap_count": 3,
         },
         reconcile_state_provider=lambda: {
             "reconcile_last_run_ts": "2026-02-19T12:00:00+00:00",
@@ -164,6 +165,7 @@ def test_mcp_status_exposes_language_readiness_snapshot(tmp_path: Path) -> None:
     assert any(entry["language"] == "python" for entry in language_support["languages"])
     assert item["lsp_metrics"]["lsp_instance_count"] == 4
     assert item["lsp_metrics"]["lsp_orphan_suspect_count"] == 2
+    assert item["lsp_metrics"]["lsp_residual_reap_count"] == 3
     assert item["reconcile_state"]["reconcile_last_run_ts"] == "2026-02-19T12:00:00+00:00"
     assert item["reconcile_state"]["reconcile_last_error_code"] is None
     assert item["reconcile_state"]["reconcile_last_error_message"] is None
