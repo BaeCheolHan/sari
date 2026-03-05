@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+import time
 from pathlib import Path
 
 from sari.core.exceptions import CollectionError
@@ -50,3 +52,57 @@ def test_scan_operation_lock_raises_when_retries_exhausted(tmp_path: Path) -> No
         assert exc.context.code == "ERR_SCAN_OPERATION_LOCK_BUSY"
     else:
         raise AssertionError("CollectionError expected when scan operation lock retries are exhausted")
+
+
+def test_scan_operation_lock_serializes_same_process_concurrency(tmp_path: Path) -> None:
+    state = {"held": False}
+    entered = threading.Event()
+    errors: list[str] = []
+    order: list[str] = []
+
+    def _lock(_file: object) -> None:
+        if state["held"]:
+            raise BlockingIOError("busy")
+        state["held"] = True
+
+    def _unlock(_file: object) -> None:
+        state["held"] = False
+
+    lock = ScanOperationLock(
+        lock_path=tmp_path / ".scan.lock",
+        max_attempts=2,
+        backoff_base_sec=0.01,
+        backoff_max_sec=0.01,
+        sleep_fn=lambda _sec: None,
+        lock_fn=_lock,
+        unlock_fn=_unlock,
+    )
+
+    def _first() -> None:
+        try:
+            with lock.acquire(operation="scan_once", repo_root="/repo"):
+                order.append("first-enter")
+                entered.set()
+                time.sleep(0.05)
+                order.append("first-exit")
+        except CollectionError as exc:  # pragma: no cover - regression signal
+            errors.append(exc.context.code)
+
+    def _second() -> None:
+        entered.wait(timeout=1.0)
+        try:
+            with lock.acquire(operation="scan_once", repo_root="/repo"):
+                order.append("second-enter")
+                order.append("second-exit")
+        except CollectionError as exc:
+            errors.append(exc.context.code)
+
+    t1 = threading.Thread(target=_first)
+    t2 = threading.Thread(target=_second)
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    assert errors == []
+    assert order == ["first-enter", "first-exit", "second-enter", "second-exit"]

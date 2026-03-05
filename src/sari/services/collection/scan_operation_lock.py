@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -37,37 +38,40 @@ class ScanOperationLock:
         self._sleep = sleep_fn
         self._lock_fn = lock_fn if lock_fn is not None else self._default_lock
         self._unlock_fn = unlock_fn if unlock_fn is not None else self._default_unlock
+        # 프로세스 내 동시 진입은 우선 직렬화해서 불필요한 LOCK_BUSY를 방지한다.
+        self._thread_lock = threading.RLock()
 
     @contextmanager
     def acquire(self, *, operation: str, repo_root: str):
         """락 획득 시도 후 성공 시 임계구역을 실행한다."""
-        if fcntl is None:
-            yield
-            return
-        self._lock_path.parent.mkdir(parents=True, exist_ok=True)
-        lock_file = self._lock_path.open("a+", encoding="utf-8")
-        acquired = False
-        try:
-            for attempt in range(self._max_attempts):
-                try:
-                    self._lock_fn(lock_file)
-                    acquired = True
-                    break
-                except BlockingIOError:
-                    if attempt + 1 >= self._max_attempts:
-                        raise CollectionError(
-                            ErrorContext(
-                                code="ERR_SCAN_OPERATION_LOCK_BUSY",
-                                message=f"scan operation lock busy(operation={operation}, repo={repo_root})",
+        with self._thread_lock:
+            if fcntl is None:
+                yield
+                return
+            self._lock_path.parent.mkdir(parents=True, exist_ok=True)
+            lock_file = self._lock_path.open("a+", encoding="utf-8")
+            acquired = False
+            try:
+                for attempt in range(self._max_attempts):
+                    try:
+                        self._lock_fn(lock_file)
+                        acquired = True
+                        break
+                    except BlockingIOError:
+                        if attempt + 1 >= self._max_attempts:
+                            raise CollectionError(
+                                ErrorContext(
+                                    code="ERR_SCAN_OPERATION_LOCK_BUSY",
+                                    message=f"scan operation lock busy(operation={operation}, repo={repo_root})",
+                                )
                             )
-                        )
-                    sleep_sec = min(self._backoff_base_sec * float(2**attempt), self._backoff_max_sec)
-                    self._sleep(sleep_sec)
-            yield
-        finally:
-            if acquired:
-                self._unlock_fn(lock_file)
-            lock_file.close()
+                        sleep_sec = min(self._backoff_base_sec * float(2**attempt), self._backoff_max_sec)
+                        self._sleep(sleep_sec)
+                yield
+            finally:
+                if acquired:
+                    self._unlock_fn(lock_file)
+                lock_file.close()
 
     @staticmethod
     def _default_lock(lock_file: object) -> None:
