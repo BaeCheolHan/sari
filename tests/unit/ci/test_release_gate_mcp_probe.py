@@ -7,6 +7,9 @@ import threading
 from pathlib import Path
 import sys
 
+from sari.db.migration import ensure_migrated
+from sari.db.schema import connect, init_schema
+
 
 def _load_probe_module():
     """tools/ci/release_gate_mcp_probe.py 모듈을 로드한다."""
@@ -49,6 +52,70 @@ def test_run_call_flow_success(monkeypatch):
     assert probe._run_call_flow() == 0
     assert captured["mode"] == "call_flow"
     assert captured["ok"] is True
+
+
+def test_run_call_flow_uses_resolved_repo_when_env_missing(monkeypatch):
+    """call_flow는 env가 비어도 내부 해석 repo로 실행해야 한다."""
+    probe = _load_probe_module()
+
+    def fake_run_internal_client(**kwargs):
+        assert kwargs["run_call_flow"] is True
+        assert kwargs["repo"] == "/tmp/auto-repo"
+        assert kwargs["search_query"] == "proxy"
+        return True, {"stage": "ok", "tool_count": 1}
+
+    captured: dict[str, object] = {}
+    monkeypatch.delenv("SARI_MCP_PROBE_REPO", raising=False)
+    monkeypatch.setattr(probe, "_resolve_call_flow_repo", lambda: "/tmp/auto-repo")
+    monkeypatch.setattr(probe, "_resolve_call_flow_query", lambda _repo: "proxy")
+    monkeypatch.setattr(
+        probe.subprocess,
+        "run",
+        lambda *args, **kwargs: type("R", (), {"returncode": 0, "stdout": b"", "stderr": b""})(),
+    )
+    monkeypatch.setattr(probe, "_run_internal_client", fake_run_internal_client)
+    monkeypatch.setattr(probe, "_emit_summary", lambda mode, ok, detail: captured.update({"mode": mode, "ok": ok, "detail": detail}))
+
+    assert probe._run_call_flow() == 0
+    assert captured["ok"] is True
+
+
+def test_resolve_call_flow_repo_ignores_nonexistent_db_candidate(monkeypatch, tmp_path: Path):
+    """DB 최상위 후보가 존재하지 않으면 CWD로 폴백해야 한다."""
+    probe = _load_probe_module()
+    db_path = tmp_path / "probe.db"
+    init_schema(db_path)
+    ensure_migrated(db_path)
+    missing_repo = tmp_path / "missing-repo"
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO collected_files_l1(
+                repo_id, repo_root, scope_repo_root, relative_path, absolute_path,
+                repo_label, mtime_ns, size_bytes, content_hash, is_deleted,
+                last_seen_at, updated_at, enrich_state
+            ) VALUES(
+                '', :repo_root, '', 'src/a.py', :absolute_path,
+                'missing', 1, 1, 'h', 0, '2026-03-05T00:00:00Z', '2026-03-05T00:00:00Z', 'queued'
+            )
+            """,
+            {
+                "repo_root": str(missing_repo),
+                "absolute_path": str(missing_repo / "src" / "a.py"),
+            },
+        )
+
+    import sari.core.config as config_module
+
+    class _FakeAppConfig:
+        @classmethod
+        def default(cls):
+            return type("Cfg", (), {"db_path": db_path})()
+
+    monkeypatch.delenv("SARI_MCP_PROBE_REPO", raising=False)
+    monkeypatch.setattr(config_module, "AppConfig", _FakeAppConfig)
+
+    assert probe._resolve_call_flow_repo() == str(Path.cwd())
 
 
 def test_main_routes_call_flow(monkeypatch):

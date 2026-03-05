@@ -43,6 +43,7 @@ from sari.services.collection.pipeline_worker import PipelineWorker
 from sari.services.collection.ports import CollectionRuntimePort
 from sari.services.collection.repo_support import CollectionRepoSupport, WorkspaceFanoutResolver
 from sari.services.collection.runtime_manager import RuntimeManager
+from sari.services.collection.scan_operation_lock import ScanOperationLock
 log = logging.getLogger(__name__)
 
 from sari.services.collection.l5.solid_lsp_extraction_backend import SolidLspExtractionBackend
@@ -82,6 +83,9 @@ class FileCollectionService:
     LSP_PREWARM_MIN_LANGUAGE_FILES = 32
     WATCHER_QUEUE_MAX = 10_000
     WATCHER_OVERFLOW_RESCAN_COOLDOWN_SEC = 30
+    SCAN_OPERATION_LOCK_MAX_ATTEMPTS = 6
+    SCAN_OPERATION_LOCK_BACKOFF_BASE_SEC = 0.05
+    SCAN_OPERATION_LOCK_BACKOFF_MAX_SEC = 0.5
     WORKSPACE_SCAN_BUILD_MARKERS: tuple[str, ...] = (
         "pyproject.toml",
         "package.json",
@@ -233,6 +237,12 @@ class FileCollectionService:
             bootstrap_file_window=self._lsp_probe_bootstrap_file_window,
             bootstrap_top_k=self._lsp_probe_bootstrap_top_k,
             language_priority_weights=self._lsp_probe_language_priority_weights,
+        )
+        self._scan_operation_lock = ScanOperationLock(
+            lock_path=self._file_repo.db_path.parent / ".scan-operation.lock",
+            max_attempts=self.SCAN_OPERATION_LOCK_MAX_ATTEMPTS,
+            backoff_base_sec=self.SCAN_OPERATION_LOCK_BACKOFF_BASE_SEC,
+            backoff_max_sec=self.SCAN_OPERATION_LOCK_BACKOFF_MAX_SEC,
         )
         self._error_policy = CollectionErrorPolicy(
             error_event_repo=self._error_event_repo,
@@ -451,11 +461,12 @@ class FileCollectionService:
     def scan_once(self, repo_root: str) -> CollectionScanResultDTO:
         """L1 스캔을 실행한다. workspace 컨테이너는 top-level repo fan-out을 수행한다."""
         root_path = Path(repo_root).expanduser().resolve()
-        fanout_targets = self._fanout_resolver.resolve_targets(root_path)
-        if len(fanout_targets) == 0:
-            self._cleanup_stale_fanout_rows_for_single_repo(root_path=root_path)
-            return self._scanner_scan_once(repo_root=str(root_path), scope_repo_root=str(root_path))
-        return self._scan_workspace_fanout(root_path=root_path, targets=fanout_targets)
+        with self._scan_operation_lock.acquire(operation="scan_once", repo_root=str(root_path)):
+            fanout_targets = self._fanout_resolver.resolve_targets(root_path)
+            if len(fanout_targets) == 0:
+                self._cleanup_stale_fanout_rows_for_single_repo(root_path=root_path)
+                return self._scanner_scan_once(repo_root=str(root_path), scope_repo_root=str(root_path))
+            return self._scan_workspace_fanout(root_path=root_path, targets=fanout_targets)
 
     def _cleanup_stale_fanout_rows_for_single_repo(self, *, root_path: Path) -> None:
         """단일 repo 스캔으로 전환 시 과거 fan-out child 산출물(active)을 정리한다."""
@@ -554,7 +565,13 @@ class FileCollectionService:
 
     def index_file(self, repo_root: str, relative_path: str) -> CollectionScanResultDTO:
         """단일 파일 인덱싱을 전용 스캐너 컴포넌트로 위임한다."""
-        return self._scanner_index_file(repo_root=repo_root, relative_path=relative_path, scope_repo_root=repo_root)
+        resolved_repo_root = str(Path(repo_root).expanduser().resolve())
+        with self._scan_operation_lock.acquire(operation="index_file", repo_root=resolved_repo_root):
+            return self._scanner_index_file(
+                repo_root=resolved_repo_root,
+                relative_path=relative_path,
+                scope_repo_root=resolved_repo_root,
+            )
 
     def _scanner_scan_once(self, *, repo_root: str, scope_repo_root: str) -> CollectionScanResultDTO:
         """신/구 시그니처 모두 호환해 scanner.scan_once를 호출한다."""

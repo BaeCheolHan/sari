@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from sari.core.exceptions import DaemonError
 from sari.core.models import ErrorResponseDTO, RepoValidationResultDTO, WarningDTO, WorkspaceDTO
 from sari.core.repo.context_resolver import (
     ERR_WORKSPACE_INACTIVE,
@@ -187,7 +188,10 @@ class RescanTool:
             return pack1_error(validation.error)
         warnings_payload = [warning.to_dict() for warning in validation.warnings]
 
-        result = self._admin_service.index()
+        try:
+            result = self._admin_service.index()
+        except DaemonError as exc:
+            return pack1_error(ErrorResponseDTO(code=exc.context.code, message=exc.context.message))
         invalidated_rows = int(result.get("invalidated_cache_rows", 0))
         return pack1_success(
             {

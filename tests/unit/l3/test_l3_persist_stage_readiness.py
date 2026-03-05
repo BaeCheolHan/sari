@@ -57,6 +57,28 @@ def test_apply_l5_success_sets_get_callers_ready_false_when_relations_empty() ->
     assert context.readiness_update.get_callers_ready is False
 
 
+def test_apply_l5_success_sets_repo_id_on_lsp_update() -> None:
+    stage = L3PersistStage(layer_upsert_builder=_LayerBuilder(), deletion_hold_enabled=lambda: False)
+    context = L3JobContext()
+
+    stage.apply_l5_success(
+        context=context,
+        repo_id="r1",
+        repo_root="/repo",
+        relative_path="src/a.py",
+        content_hash="h1",
+        preprocess_result=_preprocess(),
+        admission_decision=None,
+        reason_code=L5ReasonCode.GOLDENSET_COVERAGE,
+        lsp_symbols=[{"name": "run_stdio_proxy", "kind": "function", "line": 10, "end_line": 20}],
+        lsp_relations=[],
+        now_iso="2026-03-03T00:00:00Z",
+    )
+
+    assert context.lsp_update is not None
+    assert context.lsp_update.repo_id == "r1"
+
+
 def test_apply_l5_success_sets_get_callers_ready_true_when_relations_present() -> None:
     stage = L3PersistStage(layer_upsert_builder=_LayerBuilder(), deletion_hold_enabled=lambda: False)
     context = L3JobContext()

@@ -17,7 +17,10 @@ async def errors_endpoint(request) -> JSONResponse:
 async def rescan_endpoint(request) -> JSONResponse:
     """강제 인덱싱 재실행을 요청한다."""
     context: HttpContext = request.app.state.context
-    return JSONResponse(context.admin_service.index())
+    try:
+        return JSONResponse(context.admin_service.index())
+    except DaemonError as exc:
+        return JSONResponse({"error": {"code": exc.context.code, "message": exc.context.message}}, status_code=503)
 
 
 async def repo_candidates_endpoint(request) -> JSONResponse:

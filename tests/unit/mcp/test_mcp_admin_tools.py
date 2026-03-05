@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from sari.core.exceptions import DaemonError, ErrorContext
 from sari.core.models import WorkspaceDTO
 from sari.core.repo.context_resolver import ERR_WORKSPACE_INACTIVE, WORKSPACE_INACTIVE_MESSAGE
 from sari.db.repositories.workspace_repository import WorkspaceRepository
@@ -68,6 +69,45 @@ def test_mcp_rescan_returns_invalidation_count(tmp_path: Path) -> None:
     assert result["isError"] is False
     structured = result["structuredContent"]
     assert "invalidated_cache_rows" in structured
+
+
+def test_mcp_rescan_returns_pack1_error_when_db_lock_busy(tmp_path: Path) -> None:
+    """rescan은 DB lock busy를 pack1 에러로 반환해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_dir = tmp_path / "repo-a"
+    repo_dir.mkdir()
+    WorkspaceService(WorkspaceRepository(db_path)).add_workspace(str(repo_dir))
+
+    server = McpServer(db_path=db_path)
+
+    class _BusyAdminService:
+        def index(self) -> dict[str, object]:
+            raise DaemonError(
+                ErrorContext(
+                    code="ERR_DB_LOCK_BUSY",
+                    message="database is locked during index/rescan operation",
+                )
+            )
+
+    server._rescan_tool._admin_service = _BusyAdminService()  # type: ignore[attr-defined]
+    response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 22,
+            "method": "tools/call",
+            "params": {
+                "name": "rescan",
+                "arguments": {"repo": "repo-a", "options": {"structured": 1}},
+            },
+        }
+    )
+
+    payload = response.to_dict()
+    result = payload["result"]
+    assert result["isError"] is True
+    text = result["content"][0]["text"]
+    assert "ERR_DB_LOCK_BUSY" in text
 
 
 def test_mcp_doctor_includes_repo_scope_root_item(tmp_path: Path) -> None:

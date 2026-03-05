@@ -467,7 +467,10 @@ def daemon_ensure(run_mode: str) -> None:
 def daemon_refresh() -> None:
     """운영 인덱스 갱신 작업을 트리거한다."""
     services = _build_services()
-    _print_json(services.admin_service.index())
+    try:
+        _print_json(services.admin_service.index())
+    except DaemonError as exc:
+        _print_json({"error": asdict(exc.context)}, exit_code=1)
 
 
 @cli.command("doctor")
@@ -493,7 +496,10 @@ def doctor_command() -> None:
 def index_command() -> None:
     """캐시 무효화 기반 인덱스 갱신을 수행한다."""
     services = _build_services()
-    _print_json(services.admin_service.index())
+    try:
+        _print_json(services.admin_service.index())
+    except DaemonError as exc:
+        _print_json({"error": asdict(exc.context)}, exit_code=1)
 
 
 @cli.command("install")

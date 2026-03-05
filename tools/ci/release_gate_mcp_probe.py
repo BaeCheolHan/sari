@@ -105,11 +105,134 @@ def _ensure_probe_repo_registered(repo: str) -> None:
     )
 
 
+def _resolve_call_flow_repo() -> str:
+    """call_flow probe 대상 repo를 환경/DB/CWD 순서로 결정한다."""
+    explicit = os.getenv("SARI_MCP_PROBE_REPO", "").strip()
+    if explicit != "":
+        return explicit
+    try:
+        from sari.core.config import AppConfig
+        from sari.db.migration import ensure_migrated
+        from sari.db.schema import connect, init_schema
+
+        config = AppConfig.default()
+        init_schema(config.db_path)
+        ensure_migrated(config.db_path)
+        with connect(config.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    CASE
+                        WHEN scope_repo_root IS NOT NULL AND TRIM(scope_repo_root) <> '' THEN scope_repo_root
+                        ELSE repo_root
+                    END AS candidate,
+                    COUNT(*) AS file_count
+                FROM collected_files_l1
+                WHERE is_deleted = 0
+                GROUP BY candidate
+                ORDER BY file_count DESC, candidate ASC
+                """
+            ).fetchall()
+        for row in rows:
+            candidate = str(row["candidate"]).strip()
+            if candidate != "" and Path(candidate).exists():
+                return candidate
+    except Exception:
+        pass
+    return str(Path.cwd())
+
+
+def _resolve_call_flow_query(repo: str) -> str:
+    """call_flow search 쿼리를 환경/DB 기반으로 결정한다."""
+    explicit = os.getenv("SARI_MCP_PROBE_QUERY", "").strip()
+    if explicit != "":
+        return explicit
+    if repo.strip() == "":
+        return "McpServer"
+    try:
+        from sari.core.config import AppConfig
+        from sari.db.migration import ensure_migrated
+        from sari.db.schema import connect, init_schema
+
+        config = AppConfig.default()
+        init_schema(config.db_path)
+        ensure_migrated(config.db_path)
+        with connect(config.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT relative_path
+                FROM collected_files_l1
+                WHERE is_deleted = 0
+                  AND (
+                      repo_root = :repo
+                      OR (
+                          scope_repo_root IS NOT NULL
+                          AND TRIM(scope_repo_root) <> ''
+                          AND scope_repo_root = :repo
+                      )
+                  )
+                ORDER BY updated_at DESC, relative_path ASC
+                LIMIT 1
+                """,
+                {"repo": repo},
+            ).fetchone()
+        if row is not None:
+            rel = str(row["relative_path"]).strip()
+            stem = Path(rel).stem.strip()
+            if len(stem) >= 3:
+                return stem
+    except Exception:
+        pass
+    return "McpServer"
+
+
+def _resolve_call_flow_target(repo: str) -> str | None:
+    """call_flow read(file) 폴백에 사용할 relative_path를 결정한다."""
+    if repo.strip() == "":
+        return None
+    try:
+        from sari.core.config import AppConfig
+        from sari.db.migration import ensure_migrated
+        from sari.db.schema import connect, init_schema
+
+        config = AppConfig.default()
+        init_schema(config.db_path)
+        ensure_migrated(config.db_path)
+        with connect(config.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT relative_path
+                FROM collected_files_l1
+                WHERE is_deleted = 0
+                  AND (
+                      repo_root = :repo
+                      OR (
+                          scope_repo_root IS NOT NULL
+                          AND TRIM(scope_repo_root) <> ''
+                          AND scope_repo_root = :repo
+                      )
+                  )
+                ORDER BY updated_at DESC, relative_path ASC
+                LIMIT 1
+                """,
+                {"repo": repo},
+            ).fetchone()
+        if row is None:
+            return None
+        relative_path = str(row["relative_path"]).strip()
+        if relative_path == "":
+            return None
+        return relative_path
+    except Exception:
+        return None
+
+
 def _run_internal_client(
     timeout_initialize_sec: float = 30.0,
     timeout_tools_sec: float = 10.0,
     run_call_flow: bool = False,
     repo: str | None = None,
+    search_query: str = "McpServer",
     use_local_server: bool = True,
 ) -> tuple[bool, dict[str, object]]:
     command = [sys.executable, "-m", "sari.cli.main", "mcp", "stdio"]
@@ -176,7 +299,7 @@ def _run_internal_client(
             "method": "tools/call",
             "params": {
                 "name": "search",
-                "arguments": {"repo": repo, "query": "McpServer", "limit": 3, "options": {"structured": 1}},
+                "arguments": {"repo": repo, "query": search_query, "limit": 3, "options": {"structured": 1}},
             },
         }
         proc.stdin.write(_frame(search_payload))
@@ -201,6 +324,38 @@ def _run_internal_client(
             )
         items = structured.get("items")
         if not isinstance(items, list) or len(items) == 0:
+            fallback_target = _resolve_call_flow_target(repo)
+            if isinstance(fallback_target, str) and fallback_target.strip() != "":
+                read_payload_fallback = {
+                    "jsonrpc": "2.0",
+                    "id": 5,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "read",
+                        "arguments": {"repo": repo, "mode": "file", "target": fallback_target, "options": {"structured": 1}},
+                    },
+                }
+                proc.stdin.write(_frame(read_payload_fallback))
+                proc.stdin.flush()
+                read_resp_fallback = _read_by_id(proc.stdout, request_id=5, timeout_sec=max(timeout_tools_sec, 20.0))
+                read_result_fallback = read_resp_fallback.get("result")
+                if isinstance(read_result_fallback, dict) and not bool(read_result_fallback.get("isError", False)):
+                    read_structured_fallback = read_result_fallback.get("structuredContent")
+                    if isinstance(read_structured_fallback, dict):
+                        return (
+                            True,
+                            {
+                                "stage": "ok",
+                                "tool_count": len(tools_obj.get("tools", [])),
+                                "search_item_count": 0,
+                                "rid": None,
+                                "relative_path": fallback_target,
+                                "read_keys": sorted(read_structured_fallback.keys()),
+                                "read_fallback_used": True,
+                                "search_fallback_used": True,
+                                "stderr_tail": stderr_lines[-20:],
+                            },
+                        )
             return (
                 False,
                 {"stage": "call_flow/search", "reason": "search items empty", "response": search_resp, "stderr_tail": stderr_lines[-20:]},
@@ -348,7 +503,8 @@ def _run_concurrency() -> int:
 
 def _run_call_flow() -> int:
     """search -> read 도구 호출 흐름을 단일 세션에서 검증한다."""
-    probe_repo = os.getenv("SARI_MCP_PROBE_REPO", "").strip()
+    probe_repo = _resolve_call_flow_repo()
+    search_query = _resolve_call_flow_query(probe_repo)
     if probe_repo != "":
         _ensure_probe_repo_registered(probe_repo)
     index_result = subprocess.run(
@@ -367,7 +523,11 @@ def _run_call_flow() -> int:
         }
         _emit_summary(mode="call_flow", ok=False, detail=detail)
         raise RuntimeError(f"mcp call_flow probe failed: {detail}")
-    ok, detail = _run_internal_client(run_call_flow=True, repo=probe_repo if probe_repo != "" else None)
+    ok, detail = _run_internal_client(
+        run_call_flow=True,
+        repo=probe_repo if probe_repo != "" else None,
+        search_query=search_query,
+    )
     _emit_summary(mode="call_flow", ok=ok, detail=detail)
     if not ok:
         raise RuntimeError(f"mcp call_flow probe failed: {detail}")

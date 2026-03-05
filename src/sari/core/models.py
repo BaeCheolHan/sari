@@ -482,6 +482,7 @@ class LspExtractPersistDTO:
     symbols: list[dict[str, object]]
     relations: list[dict[str, object]]
     created_at: str
+    repo_id: str = ""
     scope_repo_root: str | None = None
 @dataclass(frozen=True)
 class FileListItemDTO:

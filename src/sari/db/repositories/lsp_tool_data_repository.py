@@ -41,6 +41,7 @@ class LspToolDataRepository:
         content_hash: str,
         symbols: list[dict[str, object]],
         created_at: str,
+        repo_id: str = "",
     ) -> None:
         """파일 단위 심볼 데이터를 교체 저장한다."""
         with connect(self._db_path) as conn:
@@ -56,15 +57,16 @@ class LspToolDataRepository:
                 conn.execute(
                     """
                     INSERT INTO lsp_symbols(
-                        repo_root, relative_path, content_hash, name, kind, line, end_line,
+                        repo_id, repo_root, relative_path, content_hash, name, kind, line, end_line,
                         symbol_key, parent_symbol_key, depth, container_name, created_at
                     )
                     VALUES(
-                        :repo_root, :relative_path, :content_hash, :name, :kind, :line, :end_line,
+                        :repo_id, :repo_root, :relative_path, :content_hash, :name, :kind, :line, :end_line,
                         :symbol_key, :parent_symbol_key, :depth, :container_name, :created_at
                     )
                     """,
                     {
+                        "repo_id": repo_id,
                         "repo_root": repo_root,
                         "relative_path": relative_path,
                         "content_hash": content_hash,
@@ -88,6 +90,7 @@ class LspToolDataRepository:
         content_hash: str,
         relations: list[dict[str, object]],
         created_at: str,
+        repo_id: str = "",
     ) -> None:
         """파일 단위 호출 관계 데이터를 교체 저장한다."""
         with connect(self._db_path) as conn:
@@ -103,13 +106,14 @@ class LspToolDataRepository:
                 conn.execute(
                     """
                     INSERT INTO lsp_call_relations(
-                        repo_root, relative_path, content_hash, from_symbol, to_symbol, line, created_at
+                        repo_id, repo_root, relative_path, content_hash, from_symbol, to_symbol, line, created_at
                     )
                     VALUES(
-                        :repo_root, :relative_path, :content_hash, :from_symbol, :to_symbol, :line, :created_at
+                        :repo_id, :repo_root, :relative_path, :content_hash, :from_symbol, :to_symbol, :line, :created_at
                     )
                     """,
                     {
+                        "repo_id": repo_id,
                         "repo_root": repo_root,
                         "relative_path": relative_path,
                         "content_hash": content_hash,
@@ -144,6 +148,7 @@ class LspToolDataRepository:
                 for symbol in self._dedupe_symbols(item.symbols):
                     symbol_rows.append(
                         {
+                            "repo_id": item.repo_id,
                             "repo_root": item.repo_root,
                             "relative_path": item.relative_path,
                             "content_hash": item.content_hash,
@@ -162,11 +167,11 @@ class LspToolDataRepository:
                     conn.executemany(
                         """
                         INSERT INTO lsp_symbols(
-                            repo_root, relative_path, content_hash, name, kind, line, end_line,
+                            repo_id, repo_root, relative_path, content_hash, name, kind, line, end_line,
                             symbol_key, parent_symbol_key, depth, container_name, created_at
                         )
                         VALUES(
-                            :repo_root, :relative_path, :content_hash, :name, :kind, :line, :end_line,
+                            :repo_id, :repo_root, :relative_path, :content_hash, :name, :kind, :line, :end_line,
                             :symbol_key, :parent_symbol_key, :depth, :container_name, :created_at
                         )
                         """,
@@ -185,6 +190,7 @@ class LspToolDataRepository:
                 for relation in self._dedupe_relations(item.relations):
                     relation_rows.append(
                         {
+                            "repo_id": item.repo_id,
                             "repo_root": item.repo_root,
                             "relative_path": item.relative_path,
                             "content_hash": item.content_hash,
@@ -198,10 +204,10 @@ class LspToolDataRepository:
                     conn.executemany(
                         """
                         INSERT INTO lsp_call_relations(
-                            repo_root, relative_path, content_hash, from_symbol, to_symbol, line, created_at
+                            repo_id, repo_root, relative_path, content_hash, from_symbol, to_symbol, line, created_at
                         )
                         VALUES(
-                            :repo_root, :relative_path, :content_hash, :from_symbol, :to_symbol, :line, :created_at
+                            :repo_id, :repo_root, :relative_path, :content_hash, :from_symbol, :to_symbol, :line, :created_at
                         )
                         """,
                         relation_rows,

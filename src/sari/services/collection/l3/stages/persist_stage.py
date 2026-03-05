@@ -102,6 +102,7 @@ class L3PersistStage:
         self,
         *,
         context: L3JobContext,
+        repo_id: str = "",
         repo_root: str,
         relative_path: str,
         content_hash: str,
@@ -125,6 +126,7 @@ class L3PersistStage:
             now_iso=now_iso,
         )
         context.lsp_update = LspExtractPersistDTO(
+            repo_id=repo_id,
             repo_root=repo_root,
             relative_path=relative_path,
             content_hash=content_hash,
@@ -157,6 +159,7 @@ class L3PersistStage:
         self,
         *,
         context: L3JobContext,
+        repo_id: str = "",
         repo_root: str,
         relative_path: str,
         content_hash: str,
@@ -192,6 +195,7 @@ class L3PersistStage:
             now_iso=now_iso,
         )
         context.lsp_update = LspExtractPersistDTO(
+            repo_id=repo_id,
             repo_root=repo_root,
             relative_path=relative_path,
             content_hash=content_hash,

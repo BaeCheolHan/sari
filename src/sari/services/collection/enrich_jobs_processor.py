@@ -261,6 +261,7 @@ class EnrichJobsProcessor:
                     continue
                 buffers.lsp_updates.append(
                     LspExtractPersistDTO(
+                        repo_id=job.repo_id,
                         repo_root=job.repo_root,
                         relative_path=job.relative_path,
                         content_hash=job.content_hash,

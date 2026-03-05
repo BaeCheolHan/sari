@@ -48,6 +48,7 @@ class L3ExtractSuccessStage:
         )
         self._persist_stage.apply_l5_success(
             context=context,
+            repo_id=job.repo_id,
             repo_root=job.repo_root,
             relative_path=job.relative_path,
             content_hash=job.content_hash,

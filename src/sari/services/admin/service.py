@@ -5,8 +5,10 @@ from __future__ import annotations
 import importlib.metadata
 import json
 import os
+import sqlite3
 import subprocess
 import logging
+import time
 from typing import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -147,8 +149,25 @@ class AdminService:
 
     def index(self) -> dict[str, object]:
         """캐시 무효화 기반 재색인 트리거를 수행한다."""
-        invalidated = self._symbol_cache_repo.invalidate_all()
-        return {"invalidated_cache_rows": invalidated}
+        max_attempts = 4
+        base_backoff_sec = 0.05
+        max_backoff_sec = 0.4
+        for attempt in range(max_attempts):
+            try:
+                invalidated = self._symbol_cache_repo.invalidate_all()
+                return {"invalidated_cache_rows": invalidated, "lock_retry_count": attempt}
+            except sqlite3.OperationalError as exc:
+                if "database is locked" not in str(exc).lower():
+                    raise
+                if attempt + 1 >= max_attempts:
+                    raise DaemonError(
+                        ErrorContext(
+                            code="ERR_DB_LOCK_BUSY",
+                            message="database is locked during index/rescan operation",
+                        )
+                    ) from exc
+                sleep_sec = min(base_backoff_sec * float(2**attempt), max_backoff_sec)
+                time.sleep(sleep_sec)
 
     def install_host_config(self, host: str) -> dict[str, object]:
         """호스트별 MCP 설정 스니펫을 생성한다."""
