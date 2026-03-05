@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from sari.core.models import EnqueueRequestDTO
+from sari.db.repositories import file_enrich_queue_repository as queue_repo_module
 from sari.db.repositories.file_enrich_queue_repository import FileEnrichQueueRepository
 from sari.db.schema import connect, init_schema
 
@@ -543,6 +544,38 @@ def test_enqueue_many_preserves_input_order_and_merges_duplicate_requests(tmp_pa
     assert row is not None
     assert int(row["priority"]) == 40
     assert str(row["enqueue_source"]) == "l3"
+
+
+def test_enqueue_many_uses_sqlite_lock_retry_wrapper(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """enqueue_many는 DB lock 재시도 래퍼를 통해 실행되어야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = FileEnrichQueueRepository(db_path)
+    captured: dict[str, int] = {"called": 0}
+    original = queue_repo_module.run_with_sqlite_lock_retry
+
+    def _wrapped(operation, **kwargs):  # noqa: ANN001, ANN202
+        captured["called"] += 1
+        return original(operation, **kwargs)
+
+    monkeypatch.setattr(queue_repo_module, "run_with_sqlite_lock_retry", _wrapped)
+
+    ids = repo.enqueue_many(
+        [
+            EnqueueRequestDTO(
+                repo_id="",
+                repo_root="/repo",
+                relative_path="retry.py",
+                content_hash="h1",
+                priority=10,
+                enqueue_source="scan",
+                now_iso="2026-02-16T00:00:00+00:00",
+            )
+        ]
+    )
+
+    assert len(ids) == 1
+    assert captured["called"] == 1
 
 
 def test_mark_failed_with_backoff_updates_attempt_and_delay(tmp_path: Path) -> None:

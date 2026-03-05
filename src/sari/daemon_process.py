@@ -281,8 +281,11 @@ def main() -> None:
     def _auto_loop() -> None:
         """알람 기반 자동제어를 주기적으로 평가한다."""
         nonlocal orphan_miss_count
+        last_auto_run_monotonic = 0.0
         while not stop_event.is_set():
-            tick_wait = min(float(config.pipeline_auto_tick_interval_sec), float(config.orphan_ppid_check_interval_sec))
+            auto_interval = max(1.0, float(config.pipeline_auto_tick_interval_sec))
+            orphan_interval = max(1.0, float(config.orphan_ppid_check_interval_sec))
+            tick_wait = min(auto_interval, orphan_interval)
             try:
                 should_terminate, orphan_miss_count = _should_orphan_terminate(
                     parent_alive=_is_parent_alive(launch_parent_pid, detached_mode=detached_mode),
@@ -296,6 +299,14 @@ def main() -> None:
                     stop_event.set()
                     os.kill(this_pid, signal.SIGTERM)
                     return
+                now_monotonic = time.monotonic()
+                if not _should_run_auto_control(
+                    now_monotonic=now_monotonic,
+                    last_run_monotonic=last_auto_run_monotonic,
+                    interval_sec=auto_interval,
+                ):
+                    stop_event.wait(timeout=tick_wait)
+                    continue
                 pipeline_control_service.evaluate_auto_hold()
                 try:
                     latest_perf_summary = pipeline_perf_service.get_latest_report()
@@ -309,6 +320,7 @@ def main() -> None:
                         latency_ms=0,
                         created_at=now_iso8601_utc(),
                     )
+                last_auto_run_monotonic = now_monotonic
             except (ValidationError, sqlite3.Error, RuntimeError, OSError, ValueError, TypeError) as exc:
                 # 자동제어 실패를 침묵 처리하지 않고 명시적으로 기록한다.
                 log.exception("자동제어 평가 실패: %s", exc)
@@ -350,6 +362,7 @@ def main() -> None:
                             message=f"자동제어 평가 실패: {exc}",
                         )
                     ) from exc
+                last_auto_run_monotonic = time.monotonic()
             stop_event.wait(timeout=tick_wait)
 
     def _reconcile_loop() -> None:
@@ -469,6 +482,19 @@ def _should_run_periodic_reconcile(
     """주기 reconcile 실행 여부를 결정한다."""
     if inflight:
         return False
+    if now_monotonic < 0.0:
+        return False
+    due_after = max(0.0, float(last_run_monotonic)) + max(1.0, float(interval_sec))
+    return float(now_monotonic) >= due_after
+
+
+def _should_run_auto_control(
+    *,
+    now_monotonic: float,
+    last_run_monotonic: float,
+    interval_sec: float,
+) -> bool:
+    """자동제어 루프 실행 여부를 결정한다."""
     if now_monotonic < 0.0:
         return False
     due_after = max(0.0, float(last_run_monotonic)) + max(1.0, float(interval_sec))

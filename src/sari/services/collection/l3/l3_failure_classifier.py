@@ -19,6 +19,10 @@ def extract_error_code_from_lsp_error_message(message: str) -> str:
     if trimmed.startswith("ERR_"):
         return trimmed.split(":", 1)[0].strip()
     lowered = trimmed.lower()
+    if "soft limit" in lowered and "lsp" in lowered:
+        return "ERR_LSP_GLOBAL_SOFT_LIMIT"
+    if "slot exhausted" in lowered and "lsp" in lowered:
+        return "ERR_LSP_SLOT_EXHAUSTED"
     if "workspace contains" in lowered and "no " in lowered and "contains" in lowered:
         return "ERR_LSP_WORKSPACE_MISMATCH"
     if "project model missing" in lowered:

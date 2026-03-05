@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 import threading
 from dataclasses import dataclass
 
@@ -172,3 +173,50 @@ def test_runtime_manager_enrich_bootstrap_loop_uses_non_l5_validation_code() -> 
 
     manager._enrich_loop()
     assert handled == [("ERR_COLLECTION_VALIDATION", "enrich_loop_validation", "enrich_worker")]
+
+
+def test_runtime_manager_scheduler_handles_sqlite_scan_error_without_thread_exit() -> None:
+    """scheduler scan 중 sqlite 오류가 발생해도 핸들러로 전달 후 다음 workspace를 계속 처리해야 한다."""
+    stop_event = threading.Event()
+    scanned_paths: list[str] = []
+    handled: list[tuple[str, str, str, str]] = []
+    workspaces = [
+        _WorkspaceStub(path="/repo/locked", is_active=True),
+        _WorkspaceStub(path="/repo/ok", is_active=True),
+    ]
+
+    def _scan_once(path: str) -> None:
+        if path == "/repo/locked":
+            raise sqlite3.OperationalError("database is locked")
+        scanned_paths.append(path)
+
+    def _handle(exc, phase: str, worker_name: str):  # noqa: ANN001
+        handled.append((exc.context.code, phase, worker_name, exc.context.message))
+        return False
+
+    def _prune_and_stop() -> None:
+        stop_event.set()
+
+    manager = RuntimeManager(
+        stop_event=stop_event,
+        enrich_queue_repo=_EnrichQueueRepoStub(),
+        workspace_repo=_WorkspaceRepoStub(workspaces),
+        policy=_PolicyStub(),
+        policy_repo=None,
+        assert_parent_alive=lambda worker_name: None,
+        scan_once=_scan_once,
+        process_enrich_jobs_bootstrap=lambda batch: 0,
+        process_enrich_jobs_l5=lambda batch: 0,
+        handle_background_collection_error=_handle,
+        prune_error_events_if_needed=_prune_and_stop,
+        watcher_loop=lambda: None,
+    )
+
+    manager._scheduler_loop()
+
+    assert scanned_paths == ["/repo/ok"]
+    assert len(handled) == 1
+    assert handled[0][0] == "ERR_COLLECTION_DB_FATAL"
+    assert handled[0][1] == "scheduler_scan_db"
+    assert handled[0][2] == "scheduler"
+    assert "database is locked" in handled[0][3]

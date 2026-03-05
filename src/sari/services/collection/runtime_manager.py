@@ -139,6 +139,16 @@ class RuntimeManager:
                     continue
                 try:
                     self._scan_once(workspace.path)
+                except sqlite3.Error as exc:
+                    fatal_error = CollectionError(
+                        ErrorContext(
+                            code="ERR_COLLECTION_DB_FATAL",
+                            message=f"scan 수행 실패: {exc}",
+                        )
+                    )
+                    if self._handle_background_collection_error(fatal_error, "scheduler_scan_db", "scheduler"):
+                        return
+                    continue
                 except CollectionError as exc:
                     if not self._handle_background_collection_error(exc, "scheduler_scan", "scheduler"):
                         continue

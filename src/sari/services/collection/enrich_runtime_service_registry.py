@@ -34,7 +34,7 @@ class EnrichRuntimeServiceRegistry:
             resolve_lsp_language=lambda relative_path: engine._resolve_lsp_language(relative_path),
             lsp_backend=getattr(engine, "_lsp_backend", object()),
             l3_parallel_enabled=bool(getattr(engine, "_l3_parallel_enabled", True)),
-            executor_max_workers=max(1, int(getattr(engine, "_l3_executor_max_workers", 32))),
+            executor_max_workers=max(1, int(getattr(engine, "_l3_executor_max_workers", 8))),
             backpressure_on_interactive=bool(getattr(engine, "_l3_backpressure_on_interactive", True)),
             backpressure_cooldown_sec=float(getattr(engine, "_l3_backpressure_cooldown_sec", 0.3)),
             monotonic_now=time.monotonic,

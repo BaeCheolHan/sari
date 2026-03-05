@@ -84,6 +84,7 @@ class FileCollectionService:
     WATCHER_QUEUE_MAX = 10_000
     WATCHER_RESCAN_QUEUE_MAX = 256
     WATCHER_OVERFLOW_RESCAN_COOLDOWN_SEC = 30
+    WATCHER_OVERFLOW_ERROR_LOG_INTERVAL_SEC = 5.0
     SCAN_OPERATION_LOCK_MAX_ATTEMPTS = 6
     SCAN_OPERATION_LOCK_BACKOFF_BASE_SEC = 0.05
     SCAN_OPERATION_LOCK_BACKOFF_MAX_SEC = 0.5
@@ -149,6 +150,7 @@ class FileCollectionService:
         self._watcher_drop_count = 0
         self._watcher_overflow_count = 0
         self._watcher_last_overflow_at: str | None = None
+        self._watcher_overflow_error_last_monotonic_by_repo: dict[str, float] = {}
         self._watcher_rescan_queue: queue.Queue[str] = queue.Queue(maxsize=self.WATCHER_RESCAN_QUEUE_MAX)
         self._watcher_rescan_pending_roots: set[str] = set()
         self._watcher_rescan_lock = threading.Lock()
@@ -830,10 +832,22 @@ class FileCollectionService:
     def _record_watcher_queue_overflow(self, repo_root: str | None, src_path: str) -> None:
         """watcher 큐 overflow를 기록한다."""
         now_iso = now_iso8601_utc()
+        now_monotonic = time.monotonic()
+        should_emit_event = False
+        throttle_key = "__global__" if repo_root is None else str(repo_root)
         with self._metrics_lock:
             self._watcher_drop_count += 1
             self._watcher_overflow_count += 1
             self._watcher_last_overflow_at = now_iso
+            last_monotonic = self._watcher_overflow_error_last_monotonic_by_repo.get(throttle_key)
+            if (
+                last_monotonic is None
+                or (now_monotonic - last_monotonic) >= float(self.WATCHER_OVERFLOW_ERROR_LOG_INTERVAL_SEC)
+            ):
+                self._watcher_overflow_error_last_monotonic_by_repo[throttle_key] = now_monotonic
+                should_emit_event = True
+        if not should_emit_event:
+            return
         self._error_policy.record_error_event(
             component="event_watcher",
             phase="watcher_overflow",

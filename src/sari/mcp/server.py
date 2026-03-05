@@ -1,12 +1,19 @@
 from __future__ import annotations
+import logging
 import os
+import sqlite3
 import sys
 from pathlib import Path
 from typing import BinaryIO
 from sari import __version__ as SARI_VERSION
 from sari.core.config import AppConfig
 from sari.core.composition import build_file_collection_service_from_config, build_lsp_hub, build_repository_bundle, build_search_stack
-from sari.core.exceptions import DaemonError, ErrorContext, ValidationError
+from sari.core.exceptions import (
+    DaemonError,
+    ErrorContext,
+    SariBaseError,
+    ValidationError,
+)
 from sari.core.models import ErrorResponseDTO
 from sari.lsp.hub import LspHub
 from sari.mcp.contracts import McpError, McpResponse
@@ -48,6 +55,20 @@ from sari.services.pipeline.lsp_matrix_service import PipelineLspMatrixService
 from sari.services.pipeline.quality_service import PipelineQualityService, SerenaGoldenBackend
 
 MAX_CONSECUTIVE_INVALID_FRAMES = 3
+log = logging.getLogger(__name__)
+_TOOL_INTERNAL_EXCEPTIONS = (
+    SariBaseError,
+    RuntimeError,
+    OSError,
+    TimeoutError,
+    sqlite3.Error,
+    ValueError,
+    TypeError,
+    KeyError,
+    AttributeError,
+    LookupError,
+    ArithmeticError,
+)
 
 class McpServer:
     _TOOLS_SCHEMA_VERSION = "2026-02-18.pack1.v2-line"
@@ -367,6 +388,20 @@ class McpServer:
                     received=exc.hint.received,
                     example=exc.hint.example,
                     normalized_from=exc.hint.normalized_from,
+                )
+                pack_result = self._render_pack_v2(
+                    tool_name=str(tool_name) if isinstance(tool_name, str) else "unknown",
+                    arguments=arguments,
+                    payload=payload,
+                )
+                return McpResponse(request_id=request_id, result=pack_result, error=None)
+            except _TOOL_INTERNAL_EXCEPTIONS as exc:
+                log.exception("mcp tools/call internal error(tool=%s)", tool_name)
+                payload = pack1_error(
+                    ErrorResponseDTO(
+                        code="ERR_MCP_TOOL_INTERNAL",
+                        message=f"{type(exc).__name__}: {exc}",
+                    )
                 )
                 pack_result = self._render_pack_v2(
                     tool_name=str(tool_name) if isinstance(tool_name, str) else "unknown",

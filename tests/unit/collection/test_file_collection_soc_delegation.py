@@ -439,6 +439,35 @@ def test_file_collection_service_drops_rescan_when_queue_is_full(tmp_path: Path)
         assert (repo_root + "-2") not in service._watcher_rescan_pending_roots  # noqa: SLF001
 
 
+def test_file_collection_service_throttles_watcher_overflow_error_events(tmp_path: Path) -> None:
+    """watcher overflow 에러 이벤트는 짧은 구간 중복 기록을 억제해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+
+    service = FileCollectionService(
+        workspace_repo=WorkspaceRepository(db_path),
+        file_repo=FileCollectionRepository(db_path),
+        enrich_queue_repo=FileEnrichQueueRepository(db_path),
+        body_repo=FileBodyRepository(db_path),
+        lsp_repo=LspToolDataRepository(db_path),
+        readiness_repo=ToolReadinessRepository(db_path),
+        policy=_policy(),
+        lsp_backend=_NoopLspBackend(),
+        policy_repo=None,
+        event_repo=None,
+    )
+    events: list[dict[str, object]] = []
+    service._error_policy.record_error_event = lambda **kwargs: events.append(kwargs)  # type: ignore[method-assign]  # noqa: SLF001
+
+    repo_root = str((tmp_path / "repo-overflow-throttle").resolve())
+    service._record_watcher_queue_overflow(repo_root, "a.py")  # noqa: SLF001
+    service._record_watcher_queue_overflow(repo_root, "b.py")  # noqa: SLF001
+
+    assert len(events) == 1
+    metrics = service.get_pipeline_metrics().to_dict()
+    assert metrics["watcher_overflow_count"] >= 2
+
+
 def test_file_collection_service_stop_background_waits_for_watcher_rescan_worker(tmp_path: Path) -> None:
     """장기 watcher rescan 중에는 stop_background가 worker 종료 전 반환하면 안 된다."""
     db_path = tmp_path / "state.db"

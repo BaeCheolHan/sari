@@ -125,6 +125,34 @@ def test_mcp_tool_call_returns_pack1_error_on_validation_exception(tmp_path: Pat
     assert "@ERR code=ERR_DB_MAPPING_INVALID" in text
 
 
+def test_mcp_tool_call_returns_pack1_error_on_unexpected_exception(tmp_path: Path) -> None:
+    """도구 내부 미처리 예외도 세션 종료 대신 pack1 오류로 반환되어야 한다."""
+
+    class _BrokenTool:
+        def call(self, arguments: dict[str, object]) -> dict[str, object]:
+            _ = arguments
+            raise RuntimeError("boom")
+
+    server = McpServer(db_path=tmp_path / "state.db")
+    server._doctor_tool = _BrokenTool()  # type: ignore[assignment]
+
+    response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 51,
+            "method": "tools/call",
+            "params": {"name": "doctor", "arguments": {"repo": "/repo"}},
+        }
+    )
+
+    payload = response.to_dict()
+    assert "error" not in payload
+    assert payload["result"]["isError"] is True
+    text = payload["result"]["content"][0]["text"]
+    assert "@ERR code=ERR_MCP_TOOL_INTERNAL" in text
+    assert "RuntimeError%3A%20boom" in text
+
+
 def test_mcp_supports_method_surface_parity(tmp_path: Path) -> None:
     """표준 MCP 보조 메서드와 확장 메서드를 지원해야 한다."""
     db_path = tmp_path / "state.db"

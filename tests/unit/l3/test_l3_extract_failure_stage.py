@@ -26,9 +26,14 @@ def _job() -> FileEnrichJobDTO:
 
 
 class _QueueTransition:
-    def __init__(self, *, defer: bool = False, escalate: bool = False) -> None:
+    def __init__(self, *, defer: bool = False, defer_backpressure: bool = False, escalate: bool = False) -> None:
         self._defer = defer
+        self._defer_backpressure = defer_backpressure
         self._escalate = escalate
+
+    def defer_after_l3_extract_backpressure(self, *, job: FileEnrichJobDTO, error_message: str) -> bool:
+        _ = (job, error_message)
+        return self._defer_backpressure
 
     def defer_after_broker_lease_denial(self, *, job: FileEnrichJobDTO, error_message: str) -> bool:
         _ = (job, error_message)
@@ -51,6 +56,19 @@ class _PersistStage:
 def test_extract_failure_stage_returns_pending_when_deferred() -> None:
     stage = L3ExtractFailureStage(
         queue_transition=_QueueTransition(defer=True),
+        persist_stage=_PersistStage(),
+        now_iso_supplier=lambda: "2026-01-01T00:00:00Z",
+        record_error_event=None,
+        retry_max_attempts=2,
+        retry_backoff_base_sec=1,
+    )
+    status = stage.handle_extract_error(context=L3JobContext(), job=_job(), error_message="ERR")
+    assert status == "PENDING"
+
+
+def test_extract_failure_stage_returns_pending_when_backpressure_deferred() -> None:
+    stage = L3ExtractFailureStage(
+        queue_transition=_QueueTransition(defer_backpressure=True),
         persist_stage=_PersistStage(),
         now_iso_supplier=lambda: "2026-01-01T00:00:00Z",
         record_error_event=None,

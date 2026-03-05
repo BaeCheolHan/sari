@@ -157,6 +157,30 @@ def test_should_run_periodic_reconcile_skips_when_inflight() -> None:
     assert should_run is False
 
 
+def test_should_run_auto_control_interval_gate() -> None:
+    should_run = daemon_process._should_run_auto_control(
+        now_monotonic=1.0,
+        last_run_monotonic=0.0,
+        interval_sec=5.0,
+    )
+    assert should_run is False
+
+    should_run = daemon_process._should_run_auto_control(
+        now_monotonic=5.0,
+        last_run_monotonic=0.0,
+        interval_sec=5.0,
+    )
+    assert should_run is True
+
+
+def test_should_run_auto_control_handles_non_positive_time() -> None:
+    should_run = daemon_process._should_run_auto_control(
+        now_monotonic=-1.0,
+        last_run_monotonic=0.0,
+        interval_sec=5.0,
+    )
+    assert should_run is False
+
 def test_build_daemon_config_overlays_cli_on_loaded_defaults(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     loaded = AppConfig(
         db_path=tmp_path / "loaded.db",

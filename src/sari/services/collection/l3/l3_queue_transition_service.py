@@ -101,6 +101,70 @@ class L3QueueTransitionService:
             )
         return True
 
+    def defer_after_l3_extract_backpressure(self, *, job: FileEnrichJobDTO, error_message: str) -> bool:
+        """LSP 전역/슬롯 backpressure 오류를 실패 대신 defer로 전환한다."""
+        error_code = self._extract_error_code(error_message).strip().upper()
+        if error_code not in {"ERR_LSP_GLOBAL_SOFT_LIMIT", "ERR_LSP_SLOT_EXHAUSTED"}:
+            return False
+        defer_writer = getattr(self._queue_repo, "defer_jobs_to_pending", None)
+        if not callable(defer_writer):
+            return False
+        now_dt = self._now_datetime_utc()
+        delay_sec = max(5.0, float(self._min_defer_sec))
+        next_retry_at = (now_dt + timedelta(seconds=delay_sec)).isoformat()
+        now_iso = now_dt.isoformat()
+        defer_reason = "l3_defer:lsp_backpressure"
+        try:
+            try:
+                updated = int(
+                    defer_writer(
+                        job_ids=[job.job_id],
+                        next_retry_at=next_retry_at,
+                        defer_reason=defer_reason,
+                        now_iso=now_iso,
+                        min_defer_sec=self._min_defer_sec,
+                    )
+                )
+            except TypeError:
+                updated = int(
+                    defer_writer(
+                        job_ids=[job.job_id],
+                        next_retry_at=next_retry_at,
+                        defer_reason=defer_reason,
+                        now_iso=now_iso,
+                    )
+                )
+        except (RuntimeError, OSError, ValueError, TypeError):
+            log.warning(
+                "Failed to defer job after L3 backpressure (job_id=%s, code=%s)",
+                job.job_id,
+                error_code,
+                exc_info=True,
+            )
+            return False
+        if updated <= 0:
+            return False
+        record_error_event = getattr(self._error_policy, "record_error_event", None)
+        if callable(record_error_event):
+            record_error_event(
+                component="file_collection_service",
+                phase="enrich_l3_backpressure_defer",
+                severity="warning",
+                error_code="ERR_L3_DEFERRED_BACKPRESSURE",
+                error_message=error_message,
+                error_type="LspBackpressure",
+                repo_root=job.repo_root,
+                relative_path=job.relative_path,
+                job_id=job.job_id,
+                attempt_count=job.attempt_count,
+                context_data={
+                    "l3_error_code": error_code,
+                    "defer_reason": defer_reason,
+                    "next_retry_at": next_retry_at,
+                },
+            )
+        return True
+
     def escalate_scope_after_l3_extract_error(self, *, job: FileEnrichJobDTO, error_message: str) -> bool:
         escalator = getattr(self._queue_repo, "escalate_scope_on_same_job", None)
         if not callable(escalator):

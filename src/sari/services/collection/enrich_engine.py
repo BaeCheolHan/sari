@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import CancelledError, ThreadPoolExecutor
+import os
 import queue
 import threading
 import time
@@ -60,6 +61,12 @@ from sari.services.collection.l3.l3_treesitter_preprocess_service import (
     L3PreprocessResultDTO,
 )
 from sari.services.collection.perf_trace import PerfTracer
+
+
+def _default_l3_executor_max_workers() -> int:
+    """L3 전역 executor 기본 병렬도를 안정성 우선으로 계산한다."""
+    cpu_count = os.cpu_count() or 4
+    return max(2, min(8, int(cpu_count)))
 
 
 class EnrichEngine:
@@ -134,7 +141,11 @@ class EnrichEngine:
         self._flush_interval_sec = flush_interval_sec
         self._flush_max_body_bytes = flush_max_body_bytes
         self._l3_parallel_enabled = bool(l3_parallel_enabled)
-        self._l3_executor_max_workers = max(1, int(l3_executor_max_workers)) if int(l3_executor_max_workers) > 0 else 32
+        self._l3_executor_max_workers = (
+            max(1, int(l3_executor_max_workers))
+            if int(l3_executor_max_workers) > 0
+            else _default_l3_executor_max_workers()
+        )
         self._l3_group_wait_timeout_sec = 90.0
         self._l5_batch_wait_timeout_sec = 90.0
         self._l3_recent_success_ttl_sec = max(0, int(l3_recent_success_ttl_sec))

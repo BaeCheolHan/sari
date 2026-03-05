@@ -36,6 +36,11 @@ class L3ExtractFailureStage:
         job: FileEnrichJobDTO,
         error_message: str,
     ) -> str:
+        defer_backpressure_fn = getattr(self._queue_transition, "defer_after_l3_extract_backpressure", None)
+        if callable(defer_backpressure_fn):
+            deferred_backpressure = bool(defer_backpressure_fn(job=job, error_message=error_message))
+            if deferred_backpressure:
+                return "PENDING"
         defer_fn = getattr(self._queue_transition, "defer_after_broker_lease_denial", None)
         if callable(defer_fn):
             deferred = bool(defer_fn(job=job, error_message=error_message))
