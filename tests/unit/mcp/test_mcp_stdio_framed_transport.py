@@ -117,3 +117,36 @@ def test_run_stdio_streams_calls_server_close_on_eof(tmp_path: Path, monkeypatch
 
     assert exit_code == 0
     assert close_called["value"] is True
+
+
+def test_run_stdio_streams_returns_internal_error_when_handler_raises(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """handle_request 내부 예외는 transport 종료 대신 JSON-RPC internal error로 반환해야 한다."""
+
+    class _RuntimeRepo:
+        def get_runtime(self) -> None:
+            return None
+
+    class _FakeServer:
+        def __init__(self, db_path: Path) -> None:
+            del db_path
+            self._runtime_repo = _RuntimeRepo()
+
+        def handle_request(self, payload: dict[str, object]) -> object:
+            del payload
+            raise RuntimeError("boom")
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr("sari.mcp.server.McpServer", _FakeServer)
+    request = {"jsonrpc": "2.0", "id": 77, "method": "initialize"}
+    input_stream = io.BytesIO(_make_frame(request))
+    output_stream = io.BytesIO()
+
+    exit_code = run_stdio_streams(db_path=tmp_path / "state.db", input_stream=input_stream, output_stream=output_stream)
+
+    assert exit_code == 0
+    payload = _read_first_frame(output_stream.getvalue())
+    assert payload["id"] == 77
+    assert payload["error"]["code"] == -32603
+    assert "RuntimeError" in payload["error"]["message"]

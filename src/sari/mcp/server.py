@@ -69,6 +69,7 @@ _TOOL_INTERNAL_EXCEPTIONS = (
     LookupError,
     ArithmeticError,
 )
+_STDIO_LOOP_INTERNAL_EXCEPTIONS = _TOOL_INTERNAL_EXCEPTIONS
 
 class McpServer:
     _TOOLS_SCHEMA_VERSION = "2026-02-18.pack1.v2-line"
@@ -576,7 +577,16 @@ def run_stdio_streams(db_path: Path, input_stream: BinaryIO, output_stream: Bina
                 return 0
             consecutive_invalid_frames = 0
             payload, mode = read_result
-            response = server.handle_request(payload)
+            try:
+                response = server.handle_request(payload)
+            except _STDIO_LOOP_INTERNAL_EXCEPTIONS as exc:
+                request_id = payload.get("id")
+                log.exception("mcp stdio loop internal error(method=%s)", payload.get("method"))
+                response = McpResponse(
+                    request_id=request_id,
+                    result=None,
+                    error=McpError(code=-32603, message=f"internal error: {type(exc).__name__}: {exc}"),
+                )
             response_payload = response.to_dict()
             if str(payload.get("method", "")).strip() == "tools/list":
                 response_payload = filter_tools_list_response_payload(response_payload)
