@@ -24,6 +24,7 @@ from sari.db.repositories.pipeline_perf_repository import PipelinePerfRepository
 from sari.db.repositories.pipeline_policy_repository import PipelinePolicyRepository
 from sari.db.repositories.pipeline_quality_repository import PipelineQualityRepository
 from sari.db.repositories.pipeline_stage_baseline_repository import PipelineStageBaselineRepository
+from sari.db.repositories.repo_language_probe_repository import RepoLanguageProbeRepository
 from sari.db.repositories.repo_registry_repository import RepoRegistryRepository
 from sari.db.repositories.runtime_repository import RuntimeRepository
 from sari.db.repositories.symbol_cache_repository import SymbolCacheRepository
@@ -68,6 +69,7 @@ class RepositoryBundle:
     stage_baseline_repo: PipelineStageBaselineRepository
     quality_repo: PipelineQualityRepository
     language_probe_repo: LanguageProbeRepository
+    repo_language_probe_repo: RepoLanguageProbeRepository
     lsp_matrix_repo: PipelineLspMatrixRepository
     repo_registry_repo: RepoRegistryRepository
     vector_repo: VectorEmbeddingRepository
@@ -112,6 +114,7 @@ def build_repository_bundle(db_path: Path) -> RepositoryBundle:
         stage_baseline_repo=PipelineStageBaselineRepository(db_path),
         quality_repo=PipelineQualityRepository(db_path),
         language_probe_repo=LanguageProbeRepository(db_path),
+        repo_language_probe_repo=RepoLanguageProbeRepository(db_path),
         lsp_matrix_repo=PipelineLspMatrixRepository(db_path),
         repo_registry_repo=RepoRegistryRepository(db_path),
         vector_repo=VectorEmbeddingRepository(db_path),
@@ -349,4 +352,5 @@ def build_file_collection_service_from_config(
         l5_async_quality_upgrade_enabled=config.l5_async_quality_upgrade_enabled,
         l5_async_quality_upgrade_batch_size=config.l5_async_quality_upgrade_batch_size,
         l5_async_quality_upgrade_poll_interval_sec=config.l5_async_quality_upgrade_poll_interval_sec,
+        repo_language_probe_repo=getattr(repos, "repo_language_probe_repo", None),
     )

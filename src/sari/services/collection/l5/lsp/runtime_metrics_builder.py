@@ -17,6 +17,11 @@ def build_runtime_metrics(
     document_symbol_sync_skip_requested_count: int,
     document_symbol_sync_skip_accepted_count: int,
     document_symbol_sync_skip_legacy_fallback_count: int,
+    probe_state_unavailable_count: int = 0,
+    probe_state_workspace_mismatch_count: int = 0,
+    probe_state_cooldown_count: int = 0,
+    probe_reconcile_clear_count: int = 0,
+    probe_reconcile_skip_count: int = 0,
 ) -> dict[str, int]:
     """hub/probe/상태 카운터를 MCP 노출용 metrics dict로 조합한다."""
     metrics = dict(hub_metrics)
@@ -32,6 +37,11 @@ def build_runtime_metrics(
     metrics["document_symbol_sync_skip_requested_count"] = int(document_symbol_sync_skip_requested_count)
     metrics["document_symbol_sync_skip_accepted_count"] = int(document_symbol_sync_skip_accepted_count)
     metrics["document_symbol_sync_skip_legacy_fallback_count"] = int(document_symbol_sync_skip_legacy_fallback_count)
+    metrics["probe_state_unavailable_count"] = int(probe_state_unavailable_count)
+    metrics["probe_state_workspace_mismatch_count"] = int(probe_state_workspace_mismatch_count)
+    metrics["probe_state_cooldown_count"] = int(probe_state_cooldown_count)
+    metrics["probe_reconcile_clear_count"] = int(probe_reconcile_clear_count)
+    metrics["probe_reconcile_skip_count"] = int(probe_reconcile_skip_count)
     metrics.setdefault("session_cache_hit_by_tier_single", 0)
     metrics.setdefault("session_eviction_churn_count", 0)
     metrics.setdefault("lsp_memory_total_rss_mb", 0)

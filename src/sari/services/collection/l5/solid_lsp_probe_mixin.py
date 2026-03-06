@@ -4,6 +4,7 @@ import concurrent.futures
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from solidlsp.ls_config import Language
@@ -11,6 +12,7 @@ from solidlsp.ls_exceptions import SolidLSPException
 
 from sari.core.exceptions import DaemonError
 from sari.core.language.registry import resolve_language_from_path
+from sari.core.models import now_iso8601_utc
 from sari.lsp.document_symbols import request_document_symbols_with_optional_sync
 from sari.lsp.path_normalizer import normalize_repo_relative_path
 
@@ -29,6 +31,61 @@ class _ProbeStateRecord:
     last_error_message: str | None = None
 
 class SolidLspProbeMixin:
+    def _sync_probe_state_record(self, key: tuple[str, Language]) -> None:
+        repo = getattr(self, "_repo_language_probe_repo", None)
+        if repo is None:
+            return
+        with self._probe_lock:
+            state = self._probe_state.get(key)
+            phase = self._probe_inflight_phase.get(key)
+        if state is None:
+            repo.clear_states(repo_root=key[0], language=key[1].value)
+            return
+        now_iso = now_iso8601_utc()
+        repo.upsert_state(
+            repo_root=key[0],
+            language=key[1].value,
+            status=state.status,
+            fail_count=state.fail_count,
+            inflight_phase=phase,
+            next_retry_at=_next_retry_at_iso(
+                next_retry_monotonic=state.next_retry_monotonic,
+                last_seen_monotonic=state.last_seen_monotonic,
+            ),
+            last_error_code=state.last_error_code,
+            last_error_message=state.last_error_message,
+            last_trigger=state.last_trigger,
+            last_seen_at=_monotonic_to_iso(state.last_seen_monotonic),
+            updated_at=now_iso,
+        )
+
+    def _clear_persisted_probe_state(self, key: tuple[str, Language]) -> None:
+        repo = getattr(self, "_repo_language_probe_repo", None)
+        if repo is None:
+            return
+        repo.clear_states(repo_root=key[0], language=key[1].value)
+
+    def _mark_probe_ready(self, key: tuple[str, Language], *, now_mono: float, clear_errors: bool = True) -> None:
+        with self._probe_lock:
+            state = self._probe_state.get(key)
+            if state is None:
+                state = _ProbeStateRecord(status="IDLE", last_seen_monotonic=now_mono)
+                self._probe_state[key] = state
+            if state.status in {"UNAVAILABLE_COOLDOWN", "COOLDOWN", "WORKSPACE_MISMATCH"}:
+                self._probe_reconcile_clear_count = int(getattr(self, "_probe_reconcile_clear_count", 0)) + 1
+            else:
+                self._probe_reconcile_skip_count = int(getattr(self, "_probe_reconcile_skip_count", 0)) + 1
+            state.status = "READY_L0"
+            state.fail_count = 0
+            state.warming_count = 0
+            state.next_retry_monotonic = 0.0
+            state.last_seen_monotonic = now_mono
+            if clear_errors:
+                state.last_error_code = None
+                state.last_error_message = None
+                state.last_error_time_monotonic = None
+        self._sync_probe_state_record(key)
+
     def _ensure_prewarm(self, language: Language, repo_root: str) -> None:
         key = (language, str(Path(repo_root).resolve()))
         with self._prewarm_lock:
@@ -77,6 +134,8 @@ class SolidLspProbeMixin:
             return "unknown_language"
         key = (normalized_root, language)
         now = time.monotonic()
+        result = "scheduled"
+        should_sync = False
         with self._probe_lock:
             if self._probe_stopping:
                 return "stopping"
@@ -95,23 +154,34 @@ class SolidLspProbeMixin:
             state.last_seen_monotonic = now
             state.last_trigger = normalized_trigger
             if state.status == "READY_L0":
-                return "ready"
-            if state.status == "WORKSPACE_MISMATCH":
+                should_sync = True
+                result = "ready"
+            elif state.status == "WORKSPACE_MISMATCH":
                 if force:
                     state.status = "IDLE"
                     state.next_retry_monotonic = 0.0
+                    state.last_error_code = None
+                    state.last_error_message = None
                 else:
                     return "workspace_mismatch"
-            if state.status == "WARMING":
+            if result == "ready":
+                pass
+            elif state.status == "WARMING":
                 if (not force) and now < state.next_retry_monotonic:
-                    return "warming"
-            if (not force) and now < state.next_retry_monotonic:
-                return "cooldown"
-            future = self._probe_executor.submit(self._probe_worker, key, normalized_relative_path)
-            self._probe_inflight[key] = future
-            self._probe_inflight_phase[key] = "probe"
-            self._probe_trigger_counts[normalized_trigger] = int(self._probe_trigger_counts.get(normalized_trigger, 0)) + 1
-            return "scheduled"
+                    should_sync = True
+                    result = "warming"
+            if result == "scheduled" and (not force) and now < state.next_retry_monotonic:
+                should_sync = True
+                result = "cooldown"
+            if result == "scheduled":
+                future = self._probe_executor.submit(self._probe_worker, key, normalized_relative_path)
+                self._probe_inflight[key] = future
+                self._probe_inflight_phase[key] = "probe"
+                self._probe_trigger_counts[normalized_trigger] = int(self._probe_trigger_counts.get(normalized_trigger, 0)) + 1
+                should_sync = True
+        if should_sync:
+            self._sync_probe_state_record(key)
+        return result
 
     def invalidate_probe_ready_for_file(self, repo_root: str, relative_path: str) -> None:
         """READY/WARMING 상태를 제거한다."""
@@ -131,6 +201,8 @@ class SolidLspProbeMixin:
             state.next_retry_monotonic = 0.0
             state.last_error_code = None
             state.last_error_message = None
+            state.last_error_time_monotonic = None
+        self._sync_probe_state_record(key)
 
     def shutdown_probe_executor(self) -> None:
         """probe executor를 종료한다."""
@@ -153,6 +225,9 @@ class SolidLspProbeMixin:
             self._probe_inflight_phase.clear()
             self._probe_state.clear()
             self._probe_trigger_counts.clear()
+        repo = getattr(self, "_repo_language_probe_repo", None)
+        if repo is not None:
+            repo.clear_states()
 
     def reset_lsp_runtime(self) -> None:
         """LSP 런타임을 정리한다."""
@@ -216,6 +291,7 @@ class SolidLspProbeMixin:
                 state.last_error_message = None
                 state.last_error_time_monotonic = None
                 cleared += 1
+                self._clear_persisted_probe_state((key_root, key_lang))
         return cleared
 
     def _probe_worker(self, key: tuple[str, Language], sample_relative_path: str) -> None:
@@ -229,6 +305,8 @@ class SolidLspProbeMixin:
                 state = _ProbeStateRecord(status="IDLE", last_seen_monotonic=now)
                 self._probe_state[key] = state
             state.status = "IDLE"
+            state.last_seen_monotonic = now
+        self._sync_probe_state_record(key)
         try:
             repo_root, language = key
             resolver = getattr(self, "_resolve_probe_runtime_scope", None)
@@ -254,22 +332,14 @@ class SolidLspProbeMixin:
                 )
             else:
                 lsp = self._hub.get_or_start(language=language, repo_root=runtime_scope_root, request_kind="indexing")
-            with self._probe_lock:
-                state = self._probe_state[key]
-                state.status = "READY_L0"
-                state.fail_count = 0
-                state.last_error_code = None
+            self._mark_probe_ready(key, now_mono=now)
             status = "success"
-            with self._probe_lock:
-                state = self._probe_state[key]
-                state.status = "READY_L0"
-                state.warming_count = 0
-                state.next_retry_monotonic = 0.0
             if language in {Language.GO, Language.JAVA, Language.KOTLIN}:
                 l1_future = self._l1_executor.submit(self._run_l1_probe_tracked, key, runtime_relative_path)
                 with self._probe_lock:
                     self._probe_inflight[key] = l1_future
                     self._probe_inflight_phase[key] = "l1"
+                self._sync_probe_state_record(key)
                 handed_off_to_l1 = True
         except (SolidLSPException, DaemonError, RuntimeError, OSError, ValueError, TypeError) as exc:
             error_message = str(exc)
@@ -285,6 +355,7 @@ class SolidLspProbeMixin:
                     error_code=error_code,
                     fail_count=state.fail_count,
                 )
+            self._sync_probe_state_record(key)
             status = "failure"
         finally:
             with self._probe_lock:
@@ -294,6 +365,7 @@ class SolidLspProbeMixin:
                 if not handed_off_to_l1:
                     self._probe_inflight.pop(key, None)
                     self._probe_inflight_phase.pop(key, None)
+            self._sync_probe_state_record(key)
             _ = status
 
     def _run_l1_probe_tracked(self, key: tuple[str, Language], sample_relative_path: str) -> None:
@@ -306,6 +378,7 @@ class SolidLspProbeMixin:
                 state = self._probe_state.get(key)
                 if state is not None:
                     state.last_seen_monotonic = time.monotonic()
+            self._sync_probe_state_record(key)
 
     def _run_l1_probe(self, key: tuple[str, Language], sample_relative_path: str) -> None:
         """READY_L0 이후 L1(documentSymbol) probe를 지연 실행한다."""
@@ -341,14 +414,7 @@ class SolidLspProbeMixin:
                     sync_with_ls=False,
                 )
                 _ = list(symbols_result.iter_symbols())
-            with self._probe_lock:
-                state = self._probe_state.get(key)
-                if state is None:
-                    return
-                state.status = "READY_L0"
-                state.warming_count = 0
-                state.next_retry_monotonic = 0.0
-                state.last_seen_monotonic = now
+            self._mark_probe_ready(key, now_mono=now)
         except (SolidLSPException, DaemonError, RuntimeError, OSError, ValueError, TypeError) as exc:
             error_message = str(exc)
             error_code = _extract_error_code_from_message(error_message)
@@ -382,6 +448,24 @@ class SolidLspProbeMixin:
                             fail_count=state.fail_count,
                         )
                 state.last_seen_monotonic = now
+            self._sync_probe_state_record(key)
+
+
+def _monotonic_to_iso(value: float | None) -> str | None:
+    if value is None or value <= 0.0:
+        return None
+    return now_iso8601_utc()
+
+
+def _next_retry_at_iso(*, next_retry_monotonic: float, last_seen_monotonic: float) -> str | None:
+    if next_retry_monotonic <= 0.0:
+        return None
+    if next_retry_monotonic == float("inf"):
+        return None
+    if last_seen_monotonic <= 0.0:
+        return None
+    delta_sec = max(0.0, next_retry_monotonic - last_seen_monotonic)
+    return (datetime.now(timezone.utc) + timedelta(seconds=delta_sec)).isoformat()
 
 def _extract_error_code_from_message(message: str) -> str:
     trimmed = message.strip()

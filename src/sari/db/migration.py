@@ -34,6 +34,7 @@ def ensure_migrated(db_path: Path) -> None:
     command.upgrade(config, "head")
     # Alembic head와 별개로 additive fallback 확장 테이블을 항상 보장한다.
     with _connect(db_path) as conn:
+        _ensure_repo_language_probe_state_table(conn)
         _fallback_upgrade_0009(conn)
         _fallback_upgrade_0010(conn)
         _fallback_upgrade_0011(conn)
@@ -214,6 +215,8 @@ def _fallback_upgrade_0003(conn: sqlite3.Connection) -> None:
     if "updated_at" not in probe_cols:
         conn.execute("ALTER TABLE language_probe_status ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''")
 
+    _ensure_repo_language_probe_state_table(conn)
+
     symbol_cols = _table_columns(conn, "lsp_symbols")
     if "symbol_key" not in symbol_cols:
         conn.execute("ALTER TABLE lsp_symbols ADD COLUMN symbol_key TEXT NULL")
@@ -233,6 +236,53 @@ def _fallback_upgrade_0003(conn: sqlite3.Connection) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_lsp_symbols_symbol_key
         ON lsp_symbols(repo_root, relative_path, content_hash, symbol_key)
+        """
+    )
+
+
+def _ensure_repo_language_probe_state_table(conn: sqlite3.Connection) -> None:
+    """repo_language_probe_state additive 테이블/컬럼을 보장한다."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS repo_language_probe_state (
+            repo_root TEXT NOT NULL CHECK (repo_root <> ''),
+            language TEXT NOT NULL CHECK (language <> ''),
+            status TEXT NOT NULL,
+            fail_count INTEGER NOT NULL DEFAULT 0,
+            inflight_phase TEXT NULL,
+            next_retry_at TEXT NULL,
+            last_error_code TEXT NULL,
+            last_error_message TEXT NULL,
+            last_trigger TEXT NULL,
+            last_seen_at TEXT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(repo_root, language)
+        )
+        """
+    )
+    repo_probe_cols = _table_columns(conn, "repo_language_probe_state")
+    if "status" not in repo_probe_cols:
+        conn.execute("ALTER TABLE repo_language_probe_state ADD COLUMN status TEXT NOT NULL DEFAULT 'IDLE'")
+    if "fail_count" not in repo_probe_cols:
+        conn.execute("ALTER TABLE repo_language_probe_state ADD COLUMN fail_count INTEGER NOT NULL DEFAULT 0")
+    if "inflight_phase" not in repo_probe_cols:
+        conn.execute("ALTER TABLE repo_language_probe_state ADD COLUMN inflight_phase TEXT NULL")
+    if "next_retry_at" not in repo_probe_cols:
+        conn.execute("ALTER TABLE repo_language_probe_state ADD COLUMN next_retry_at TEXT NULL")
+    if "last_error_code" not in repo_probe_cols:
+        conn.execute("ALTER TABLE repo_language_probe_state ADD COLUMN last_error_code TEXT NULL")
+    if "last_error_message" not in repo_probe_cols:
+        conn.execute("ALTER TABLE repo_language_probe_state ADD COLUMN last_error_message TEXT NULL")
+    if "last_trigger" not in repo_probe_cols:
+        conn.execute("ALTER TABLE repo_language_probe_state ADD COLUMN last_trigger TEXT NULL")
+    if "last_seen_at" not in repo_probe_cols:
+        conn.execute("ALTER TABLE repo_language_probe_state ADD COLUMN last_seen_at TEXT NULL")
+    if "updated_at" not in repo_probe_cols:
+        conn.execute("ALTER TABLE repo_language_probe_state ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''")
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_repo_language_probe_state_status
+        ON repo_language_probe_state(status, updated_at DESC)
         """
     )
 

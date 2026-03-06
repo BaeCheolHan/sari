@@ -476,6 +476,24 @@ CREATE TABLE IF NOT EXISTS language_probe_status (
 CREATE INDEX IF NOT EXISTS idx_language_probe_status_available
 ON language_probe_status(available, updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS repo_language_probe_state (
+    repo_root TEXT NOT NULL CHECK (repo_root <> ''),
+    language TEXT NOT NULL CHECK (language <> ''),
+    status TEXT NOT NULL,
+    fail_count INTEGER NOT NULL DEFAULT 0,
+    inflight_phase TEXT NULL,
+    next_retry_at TEXT NULL,
+    last_error_code TEXT NULL,
+    last_error_message TEXT NULL,
+    last_trigger TEXT NULL,
+    last_seen_at TEXT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(repo_root, language)
+);
+
+CREATE INDEX IF NOT EXISTS idx_repo_language_probe_state_status
+ON repo_language_probe_state(status, updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS file_embeddings (
     repo_root TEXT NOT NULL CHECK (repo_root <> ''),
     scope_repo_root TEXT NOT NULL DEFAULT '',

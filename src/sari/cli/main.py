@@ -181,6 +181,7 @@ def _build_services() -> CliServiceBundle:
         pipeline_l5_worker_count=config.pipeline_l5_worker_count,
         l5_db_short_circuit_enabled=config.l5_db_short_circuit_enabled,
         tool_layer_repo=tool_layer_repo,
+        repo_language_probe_repo=repos.repo_language_probe_repo,
     )
     perf_repo = repos.perf_repo
     stage_baseline_repo = repos.stage_baseline_repo

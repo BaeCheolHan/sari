@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from sari.db.repositories.language_probe_repository import LanguageProbeRepository
+from sari.db.repositories.repo_language_probe_repository import RepoLanguageProbeRepository
 from sari.db.repositories.runtime_repository import RuntimeRepository
 from sari.db.repositories.file_collection_repository import FileCollectionRepository
 from sari.db.repositories.lsp_tool_data_repository import LspToolDataRepository
@@ -128,6 +129,7 @@ def test_mcp_status_exposes_language_readiness_snapshot(tmp_path: Path) -> None:
         )
     )
     probe_repo = LanguageProbeRepository(db_path)
+    repo_probe_repo = RepoLanguageProbeRepository(db_path)
     probe_repo.upsert_result(
         language="python",
         enabled=True,
@@ -135,6 +137,19 @@ def test_mcp_status_exposes_language_readiness_snapshot(tmp_path: Path) -> None:
         last_probe_at="2026-02-17T00:00:00+00:00",
         last_error_code=None,
         last_error_message=None,
+    )
+    repo_probe_repo.upsert_state(
+        repo_root=str(repo_root.resolve()),
+        language="python",
+        status="UNAVAILABLE_COOLDOWN",
+        fail_count=2,
+        inflight_phase="probe",
+        next_retry_at="2026-02-17T00:30:00+00:00",
+        last_error_code="ERR_RPC_TIMEOUT",
+        last_error_message="rpc timeout",
+        last_trigger="background",
+        last_seen_at="2026-02-17T00:00:00+00:00",
+        updated_at="2026-02-17T00:00:01+00:00",
     )
     pipeline_control_service = _build_pipeline_control_service(db_path)
     tool = StatusTool(
@@ -155,6 +170,7 @@ def test_mcp_status_exposes_language_readiness_snapshot(tmp_path: Path) -> None:
             "reconcile_last_run_ts": "2026-02-19T12:00:00+00:00",
             "reconcile_last_result": "ok",
         },
+        repo_language_probe_repo=repo_probe_repo,
     )
     payload = tool.call({"repo": str(repo_root.resolve())})
 
@@ -169,6 +185,10 @@ def test_mcp_status_exposes_language_readiness_snapshot(tmp_path: Path) -> None:
     assert item["reconcile_state"]["reconcile_last_run_ts"] == "2026-02-19T12:00:00+00:00"
     assert item["reconcile_state"]["reconcile_last_error_code"] is None
     assert item["reconcile_state"]["reconcile_last_error_message"] is None
+    assert item["repo_language_probe"]["states"][0]["language"] == "python"
+    assert item["repo_language_probe"]["states"][0]["status"] == "UNAVAILABLE_COOLDOWN"
+    assert item["repo_language_probe"]["states"][0]["blocked_reason"] == "probe_unavailable"
+    assert item["repo_language_probe"]["states"][0]["next_retry_at"] == "2026-02-17T00:30:00+00:00"
     assert "stage_rollout" in item
     assert isinstance(item["stage_rollout"], dict)
 

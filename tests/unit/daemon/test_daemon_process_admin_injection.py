@@ -5,6 +5,7 @@ from __future__ import annotations
 from argparse import Namespace
 from pathlib import Path
 from typing import cast
+from types import SimpleNamespace
 
 from pytest import MonkeyPatch
 from starlette.applications import Starlette
@@ -81,6 +82,54 @@ def test_main_stops_lsp_hub_on_shutdown(monkeypatch: MonkeyPatch, tmp_path: Path
     daemon_process.main()
 
     assert captured["stop_all_called"] is True
+
+
+def test_main_wires_repo_probe_repository_into_lsp_backend(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    captured: dict[str, object] = {}
+
+    class _FakeBackend:
+        def __init__(self, hub: object, **kwargs: object) -> None:
+            captured["hub"] = hub
+            captured["repo_language_probe_repo"] = kwargs.get("repo_language_probe_repo")
+
+    class _FakeFileCollectionService:
+        def set_l5_admission_mode(self, enabled: bool) -> None:
+            del enabled
+
+        def get_pipeline_metrics(self) -> dict[str, object]:
+            return {}
+
+        def start_background(self) -> None:
+            return
+
+        def stop_background(self) -> None:
+            return
+
+    def _fake_parse_args() -> Namespace:
+        return Namespace(db_path=str(db_path), host="127.0.0.1", port=40125, run_mode="dev")
+
+    def _fake_build_search_stack(**kwargs):
+        del kwargs
+        return SimpleNamespace(candidate_service=object(), vector_sink=object(), orchestrator=object())
+
+    def _fake_build_file_collection_service_from_config(**kwargs):
+        captured["lsp_backend"] = kwargs["lsp_backend"]
+        return _FakeFileCollectionService()
+
+    def _fake_create_app(context):
+        return SimpleNamespace(state=SimpleNamespace(context=context))
+
+    monkeypatch.setattr(daemon_process, "parse_args", _fake_parse_args)
+    monkeypatch.setattr(daemon_process, "build_search_stack", _fake_build_search_stack)
+    monkeypatch.setattr(daemon_process, "build_file_collection_service_from_config", _fake_build_file_collection_service_from_config)
+    monkeypatch.setattr(daemon_process, "SolidLspExtractionBackend", _FakeBackend)
+    monkeypatch.setattr(daemon_process, "create_app", _fake_create_app)
+    monkeypatch.setattr(daemon_process.uvicorn, "run", lambda *args, **kwargs: None)
+
+    daemon_process.main()
+
+    assert captured["repo_language_probe_repo"] is not None
 
 
 def test_is_parent_alive_treats_detached_ppid_as_alive(monkeypatch: MonkeyPatch) -> None:

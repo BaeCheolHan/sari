@@ -148,6 +148,7 @@ def main() -> None:
             symbol_normalizer_executor_mode=config.l5_symbol_normalizer_executor_mode,
             symbol_normalizer_subinterp_workers=config.l5_symbol_normalizer_subinterp_workers,
             symbol_normalizer_subinterp_min_symbols=config.l5_symbol_normalizer_subinterp_min_symbols,
+            repo_language_probe_repo=repos.repo_language_probe_repo,
         ),
         run_mode=config.run_mode,
         parent_alive_probe=(lambda: _is_parent_alive(launch_parent_pid, detached_mode=detached_mode)),

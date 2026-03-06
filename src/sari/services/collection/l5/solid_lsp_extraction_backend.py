@@ -15,6 +15,7 @@ from solidlsp.ls_exceptions import SolidLSPException
 
 from sari.core.exceptions import DaemonError, ValidationError
 from sari.core.language.registry import resolve_language_from_path
+from sari.db.repositories.repo_language_probe_repository import RepoLanguageProbeRepository
 from sari.lsp.document_symbols import request_document_symbols_with_optional_sync
 from sari.lsp.hub import LspHub
 from sari.lsp.path_normalizer import normalize_location_to_repo_relative, normalize_repo_relative_path
@@ -85,6 +86,7 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
         symbol_normalizer_executor_mode: str = "inline",
         symbol_normalizer_subinterp_workers: int = 2,
         symbol_normalizer_subinterp_min_symbols: int = 200,
+        repo_language_probe_repo: RepoLanguageProbeRepository | None = None,
     ) -> None:
         self._hub = hub
         self._perf_tracer = PerfTracer(component="solid_lsp_backend")
@@ -121,6 +123,9 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
         self._probe_timeout_backoff_cap_sec = 120.0
         self._probe_timeout_window_sec = 30.0
         self._probe_trigger_counts: dict[str, int] = {}
+        self._repo_language_probe_repo = repo_language_probe_repo
+        self._probe_reconcile_clear_count = 0
+        self._probe_reconcile_skip_count = 0
         self._probe_state_update_service = LspProbeStateUpdateService(
             resolve_language=lambda relative_path: resolve_language_from_path(file_path=relative_path),
             is_unavailable_probe_error=_is_unavailable_probe_error,
@@ -957,6 +962,9 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
         """LSP 허브 런타임 메트릭을 반환한다."""
         with self._probe_lock:
             probe_counts = dict(self._probe_trigger_counts)
+            unavailable_count = sum(1 for state in self._probe_state.values() if state.status == "UNAVAILABLE_COOLDOWN")
+            workspace_mismatch_count = sum(1 for state in self._probe_state.values() if state.status == "WORKSPACE_MISMATCH")
+            cooldown_count = sum(1 for state in self._probe_state.values() if state.status == "COOLDOWN")
         return build_runtime_metrics(
             hub_metrics=dict(self._hub.get_metrics()),
             probe_trigger_counts=probe_counts,
@@ -970,6 +978,11 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
             document_symbol_sync_skip_requested_count=self._document_symbol_sync_skip_requested_count,
             document_symbol_sync_skip_accepted_count=self._document_symbol_sync_skip_accepted_count,
             document_symbol_sync_skip_legacy_fallback_count=self._document_symbol_sync_skip_legacy_fallback_count,
+            probe_state_unavailable_count=unavailable_count,
+            probe_state_workspace_mismatch_count=workspace_mismatch_count,
+            probe_state_cooldown_count=cooldown_count,
+            probe_reconcile_clear_count=self._probe_reconcile_clear_count,
+            probe_reconcile_skip_count=self._probe_reconcile_skip_count,
         )
 
     def _recover_from_runtime_mismatch(self, *, repo_root: str, relative_path: str) -> bool:
@@ -1020,6 +1033,9 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
                 error_code=error_code,
                 error_message=error_message,
             )
+        language = resolve_language_from_path(file_path=relative_path)
+        if language is not None:
+            self._sync_probe_state_record((repo_root, language))
 
     def _next_probe_retry_backoff_sec(self, *, error_code: str, fail_count: int) -> float:
         """오류 코드/누적 실패 횟수에 따라 probe 재시도 백오프를 계산한다."""

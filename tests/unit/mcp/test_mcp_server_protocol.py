@@ -1,6 +1,7 @@
 """MCP 서버 프로토콜 동작을 검증한다."""
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from sari import __version__ as SARI_VERSION
 from sari.core.exceptions import DaemonError, ErrorContext, ValidationError
@@ -92,6 +93,40 @@ def test_mcp_doctor_requires_repo(tmp_path: Path) -> None:
     assert payload["result"]["isError"] is True
     text = payload["result"]["content"][0]["text"]
     assert "@ERR code=ERR_REPO_REQUIRED" in text
+
+
+def test_mcp_server_wires_repo_probe_repository_into_lsp_backend(tmp_path: Path, monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeBackend:
+        def __init__(self, hub: object, **kwargs: object) -> None:
+            captured["hub"] = hub
+            captured["repo_language_probe_repo"] = kwargs.get("repo_language_probe_repo")
+
+    class _FakeOrchestrator:
+        def search(self, **kwargs: object) -> dict[str, object]:
+            del kwargs
+            return {}
+
+    class _FakeFileCollectionService:
+        def get_pipeline_metrics(self) -> dict[str, object]:
+            return {}
+
+        def stop_background(self) -> None:
+            return
+
+    monkeypatch.setattr(
+        "sari.mcp.server.build_search_stack",
+        lambda **kwargs: SimpleNamespace(candidate_service=object(), vector_sink=object(), orchestrator=_FakeOrchestrator()),
+    )
+    monkeypatch.setattr("sari.mcp.server.build_file_collection_service_from_config", lambda **kwargs: _FakeFileCollectionService())
+    monkeypatch.setattr("sari.mcp.server.SolidLspExtractionBackend", _FakeBackend)
+
+    server = McpServer(db_path=tmp_path / "state.db")
+    try:
+        assert captured["repo_language_probe_repo"] is not None
+    finally:
+        server.close()
 
 
 def test_mcp_tool_call_returns_pack1_error_on_validation_exception(tmp_path: Path) -> None:

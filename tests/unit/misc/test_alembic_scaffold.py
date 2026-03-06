@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from sari.db.migration import HEAD_VERSION, ensure_migrated
+from sari.db.migration import HEAD_VERSION, _fallback_upgrade_0003, ensure_migrated
 from sari.db.repositories.pipeline_error_event_repository import PipelineErrorEventRepository
 from sari.db.schema import init_schema, connect
 
@@ -264,6 +264,60 @@ def test_ensure_migrated_handles_partial_legacy_schema_without_optional_tables(t
     assert version_row is not None
     assert str(version_row["version_num"]) == HEAD_VERSION
     assert "idx_collected_files_l1_scope_repo" in indexes
+
+
+def test_fallback_upgrade_0003_creates_repo_probe_table_when_missing(tmp_path: Path) -> None:
+    """0003 fallback은 누락된 repo probe 테이블이 있어도 실패하지 않아야 한다."""
+    db_path = tmp_path / "legacy-0003.db"
+    with connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE pipeline_lsp_matrix_runs(id INTEGER);
+            CREATE TABLE language_probe_status(language TEXT);
+            CREATE TABLE lsp_symbols(
+                repo_root TEXT NOT NULL,
+                relative_path TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                line INTEGER NOT NULL
+            );
+            """
+        )
+        conn.commit()
+
+    with connect(db_path) as conn:
+        _fallback_upgrade_0003(conn)
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(repo_language_probe_state)").fetchall()
+        }
+
+    assert "status" in columns
+    assert "updated_at" in columns
+
+
+def test_ensure_migrated_additively_creates_repo_probe_table_for_head_db(tmp_path: Path) -> None:
+    """head 버전 DB라도 additive repo probe 테이블은 ensure_migrated에서 보장되어야 한다."""
+    db_path = tmp_path / "head-missing-repo-probe.db"
+    with connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS alembic_version (
+                version_num VARCHAR(32) NOT NULL PRIMARY KEY
+            );
+            DELETE FROM alembic_version;
+            INSERT INTO alembic_version(version_num) VALUES('20260222_0008');
+            """
+        )
+        conn.commit()
+
+    ensure_migrated(db_path)
+
+    with connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='repo_language_probe_state'"
+        ).fetchone()
+
+    assert row is not None
 
 
 def test_ensure_migrated_handles_pipeline_error_events_null_repo_root(tmp_path: Path) -> None:
