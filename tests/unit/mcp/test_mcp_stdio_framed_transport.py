@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 
 from pytest import MonkeyPatch
+from sari.core.exceptions import ErrorContext, ValidationError
+from sari.db.schema import connect, init_schema
 from sari.mcp.transport import McpTransport
 from sari.mcp.server import run_stdio_streams
 
@@ -150,3 +152,93 @@ def test_run_stdio_streams_returns_internal_error_when_handler_raises(tmp_path: 
     assert payload["id"] == 77
     assert payload["error"]["code"] == -32603
     assert "RuntimeError" in payload["error"]["message"]
+
+
+def test_run_stdio_streams_degrades_on_repo_id_integrity_failure(tmp_path: Path) -> None:
+    """repo_id integrity 오류가 있어도 stdio handshake는 framed 응답으로 유지해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO candidate_index_changes(
+                change_type, status, repo_id, repo_root, scope_repo_root, relative_path,
+                absolute_path, content_hash, mtime_ns, size_bytes, event_source, reason, created_at, updated_at
+            ) VALUES(
+                'UPSERT', 'PENDING', '', '/broken/repo', '/broken/repo', 'a.py',
+                '/broken/repo/a.py', 'h1', 1, 10, 'test', NULL, '2026-03-05T00:00:00Z', '2026-03-05T00:00:00Z'
+            )
+            """
+        )
+        conn.commit()
+
+    requests = b"".join(
+        [
+            _make_frame({"jsonrpc": "2.0", "id": 1, "method": "initialize"}),
+            _make_frame({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+            _make_frame(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 3,
+                        "method": "tools/call",
+                        "params": {"name": "search", "arguments": {"repo": "sari", "query": "x", "structured": 1}},
+                    }
+                ),
+            ]
+        )
+    input_stream = io.BytesIO(requests)
+    output_stream = io.BytesIO()
+
+    exit_code = run_stdio_streams(db_path=db_path, input_stream=input_stream, output_stream=output_stream)
+
+    assert exit_code == 0
+    raw_output = output_stream.getvalue()
+    assert raw_output.startswith(b"Content-Length: ")
+    frames: list[dict[str, object]] = []
+    remaining = raw_output
+    while remaining:
+        header_end = remaining.find(b"\r\n\r\n")
+        assert header_end > 0
+        header = remaining[:header_end].decode("ascii")
+        prefix = "Content-Length: "
+        assert header.startswith(prefix)
+        length = int(header[len(prefix):].strip())
+        body_start = header_end + 4
+        body = remaining[body_start:body_start + length]
+        frames.append(json.loads(body.decode("utf-8")))
+        remaining = remaining[body_start + length:]
+
+    assert frames[0]["result"]["serverInfo"]["name"] == "sari-v2"
+    tools = frames[1]["result"]["tools"]
+    tool_names = {str(tool["name"]) for tool in tools}
+    assert tool_names == {"doctor", "repo_candidates", "sari_guide", "status"}
+    tool_call_payload = frames[2]
+    assert "error" not in tool_call_payload
+    assert tool_call_payload["result"]["isError"] is True
+    structured = tool_call_payload["result"]["structuredContent"]
+    assert structured["error"]["code"] == "ERR_MCP_STARTUP_DEGRADED"
+    assert structured["error"]["recovery_hint"] == "Run status or doctor to inspect startup degradation before retrying."
+
+
+def test_run_stdio_streams_fatal_startup_error_does_not_write_stdout(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    capsys,
+) -> None:
+    """fatal startup 오류는 stdout 프레임을 쓰지 않고 stderr + exit code로만 끝나야 한다."""
+
+    def _raise_bootstrap(db_path: Path):
+        del db_path
+        raise ValidationError(ErrorContext(code="ERR_BOOTSTRAP_FATAL", message="fatal bootstrap"))
+
+    monkeypatch.setattr("sari.mcp.server._build_stdio_server", _raise_bootstrap)
+    input_stream = io.BytesIO(_make_frame({"jsonrpc": "2.0", "id": 1, "method": "initialize"}))
+    output_stream = io.BytesIO()
+
+    exit_code = run_stdio_streams(db_path=tmp_path / "state.db", input_stream=input_stream, output_stream=output_stream)
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert output_stream.getvalue() == b""
+    assert "ERR_BOOTSTRAP_FATAL" in captured.err

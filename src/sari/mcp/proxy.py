@@ -6,12 +6,13 @@ import logging
 import os
 import select
 import signal
+import sqlite3
 import sys
 import threading
 from pathlib import Path
 from typing import Callable
 
-from sari.db.schema import init_schema
+from sari.core.exceptions import SariBaseError
 from sari.mcp.daemon_forward_policy import (
     StartDaemonFn,
     build_forward_error_message,
@@ -20,6 +21,7 @@ from sari.mcp.daemon_forward_policy import (
     resolve_target,
 )
 from sari.mcp.contracts import McpError, McpResponse
+from sari.mcp.server import DegradedMcpServer, resolve_stdio_startup_issue
 from sari.mcp.server_daemon_forward import DaemonForwardError, forward_once
 from sari.mcp.tool_visibility import filter_tools_list_response_payload, is_hidden_tool_name
 from sari.mcp.transport import MCP_MODE_FRAMED, McpTransport, McpTransportParseError
@@ -170,13 +172,22 @@ def run_stdio_proxy(
     input_hangup_fn: InputHangupFn | None = None,
 ) -> int:
     """표준 입출력 MCP 요청을 daemon endpoint로 중계한다."""
-    # 프록시 경로는 resolver가 daemon/runtime 테이블을 즉시 조회하므로,
-    # 첫 initialize 이전에 스키마를 보장해 빈 DB에서도 기동 실패를 방지한다.
-    init_schema(db_path)
     input_stream = getattr(sys.stdin, "buffer", sys.stdin)
     output_stream = getattr(sys.stdout, "buffer", sys.stdout)
     transport = McpTransport(input_stream=input_stream, output_stream=output_stream, allow_jsonl=True)
     transport.default_mode = MCP_MODE_FRAMED
+    try:
+        startup_issue = resolve_stdio_startup_issue(db_path)
+    except SariBaseError as exc:
+        print(f"sari mcp stdio startup failed: {exc.context.code}: {exc.context.message}", file=sys.stderr)
+        return 1
+    except (OSError, sqlite3.Error, RuntimeError, ValueError) as exc:
+        print(f"sari mcp stdio startup failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+    degraded_server: DegradedMcpServer | None = None
+    if startup_issue is not None:
+        log.warning("mcp proxy startup degraded(code=%s message=%s)", startup_issue.code, startup_issue.message)
+        degraded_server = DegradedMcpServer(db_path=db_path, startup_error=startup_issue)
     daemon_starter = default_start_daemon if start_daemon_fn is None else start_daemon_fn
     parent_alive_checker = _is_parent_alive if parent_alive_fn is None else parent_alive_fn
     self_terminator = _request_self_terminate if self_terminate_fn is None else self_terminate_fn
@@ -255,6 +266,12 @@ def run_stdio_proxy(
             payload, mode = read_result
             request_id = payload.get("id")
             is_notification = request_id is None
+            if degraded_server is not None:
+                if is_notification:
+                    continue
+                response = degraded_server.handle_request(payload)
+                transport.write_message(response.to_dict(), mode=mode)
+                continue
             hidden_tool_name = _extract_tools_call_name(payload)
             if hidden_tool_name is not None and is_hidden_tool_name(hidden_tool_name):
                 if is_notification:
@@ -328,3 +345,5 @@ def run_stdio_proxy(
             signal.signal(signal.SIGTERM, previous_sigterm)
         if previous_sigint is not None:
             signal.signal(signal.SIGINT, previous_sigint)
+        if degraded_server is not None:
+            degraded_server.close()

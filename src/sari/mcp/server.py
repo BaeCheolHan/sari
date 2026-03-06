@@ -1,4 +1,5 @@
 from __future__ import annotations
+from copy import deepcopy
 import logging
 import os
 import sqlite3
@@ -15,6 +16,8 @@ from sari.core.exceptions import (
     ValidationError,
 )
 from sari.core.models import ErrorResponseDTO
+from sari.db.repositories.workspace_repository import WorkspaceRepository
+from sari.db.schema import init_schema
 from sari.lsp.hub import LspHub
 from sari.mcp.contracts import McpError, McpResponse
 from sari.mcp.daemon_forward_policy import (
@@ -29,7 +32,7 @@ from sari.mcp.tools.pipeline_admin_tools import PipelineAutoSetTool, PipelineAut
 from sari.mcp.tools.pipeline_perf_tools import PipelinePerfReportTool, PipelinePerfRunTool
 from sari.mcp.tools.pipeline_lsp_matrix_tools import PipelineLspMatrixReportTool, PipelineLspMatrixRunTool
 from sari.mcp.tools.pipeline_quality_tools import PipelineQualityReportTool, PipelineQualityRunTool
-from sari.mcp.tools.pack1 import pack1_error
+from sari.mcp.tools.pack1 import Pack1MetaDTO, pack1_error
 from sari.mcp.pack1_line import PackLineOptionsDTO, render_pack_v2
 from sari.mcp.stabilization.stabilization_service import StabilizationService
 from sari.mcp.tools.file_collection_tools import IndexFileTool, ListFilesTool, ReadFileTool, ScanOnceTool
@@ -55,6 +58,9 @@ from sari.services.pipeline.lsp_matrix_service import PipelineLspMatrixService
 from sari.services.pipeline.quality_service import PipelineQualityService, SerenaGoldenBackend
 
 MAX_CONSECUTIVE_INVALID_FRAMES = 3
+ERR_MCP_STARTUP_DEGRADED = "ERR_MCP_STARTUP_DEGRADED"
+MCP_DEGRADED_RECOVERY_HINT = "Run status or doctor to inspect startup degradation before retrying."
+_DEGRADED_TOOL_NAMES = {"status", "doctor", "repo_candidates", "sari_guide"}
 log = logging.getLogger(__name__)
 _TOOL_INTERNAL_EXCEPTIONS = (
     SariBaseError,
@@ -70,6 +76,334 @@ _TOOL_INTERNAL_EXCEPTIONS = (
     ArithmeticError,
 )
 _STDIO_LOOP_INTERNAL_EXCEPTIONS = _TOOL_INTERNAL_EXCEPTIONS
+
+
+class _NoopRuntimeRepo:
+    def get_runtime(self) -> None:
+        return None
+
+    def increment_session(self) -> None:
+        return None
+
+    def decrement_session(self) -> None:
+        return None
+
+
+def _build_degraded_tools_list_result_payload(schema_version: str) -> dict[str, object]:
+    """degraded startup용 tools/list payload를 구성한다."""
+    tools: list[dict[str, object]] = []
+    for tool in build_tools_list_result_payload(schema_version)["tools"]:
+        tool_name = str(tool.get("name"))
+        if tool_name not in _DEGRADED_TOOL_NAMES:
+            continue
+        tool_payload = deepcopy(tool)
+        if tool_name in {"repo_candidates", "status", "doctor"}:
+            input_schema = tool_payload.get("inputSchema")
+            if isinstance(input_schema, dict):
+                required = input_schema.get("required")
+                if isinstance(required, list):
+                    input_schema["required"] = [name for name in required if str(name) != "repo"]
+        tools.append(tool_payload)
+    return {
+        "schemaVersion": schema_version,
+        "schema_version": schema_version,
+        "tools": tools,
+    }
+
+
+class DegradedMcpServer:
+    _TOOLS_SCHEMA_VERSION = "2026-02-18.pack1.v2-line"
+    _DEFAULT_PROTOCOL_VERSION = '2024-11-05'
+    _SUPPORTED_PROTOCOL_VERSIONS = (
+        '2025-11-25',
+        '2025-06-18',
+        '2025-03-26',
+        '2024-11-05',
+    )
+
+    def __init__(self, db_path: Path, *, startup_error: ErrorResponseDTO) -> None:
+        self._db_path = db_path
+        self._runtime_repo = _NoopRuntimeRepo()
+        self._workspace_repo = WorkspaceRepository(db_path)
+        self._sari_guide_tool = SariGuideTool()
+        self._startup_error = startup_error
+
+    def close(self) -> None:
+        return None
+
+    def handle_request(self, payload: dict[str, object]) -> McpResponse:
+        request_id = payload.get("id")
+        method = payload.get("method")
+        if not isinstance(method, str):
+            return McpResponse(request_id=request_id, result=None, error=McpError(code=-32600, message="invalid request"))
+        if method == "initialize":
+            params = payload.get("params")
+            if not isinstance(params, dict):
+                params = {}
+            protocol_version = self._negotiate_protocol_version(params=params)
+            return McpResponse(
+                request_id=request_id,
+                result={
+                    "protocolVersion": protocol_version,
+                    "serverInfo": {"name": "sari-v2", "version": SARI_VERSION},
+                    "schemaVersion": self._TOOLS_SCHEMA_VERSION,
+                    "schema_version": self._TOOLS_SCHEMA_VERSION,
+                    "capabilities": {"tools": {}},
+                },
+                error=None,
+            )
+        if method == "sari/identify":
+            return McpResponse(
+                request_id=request_id,
+                result={
+                    "name": "sari-v2",
+                    "version": SARI_VERSION,
+                    "schemaVersion": self._TOOLS_SCHEMA_VERSION,
+                    "schema_version": self._TOOLS_SCHEMA_VERSION,
+                    "workspaceRoot": self._default_workspace_root(),
+                    "pid": os.getpid(),
+                    "startup": self._startup_payload(),
+                },
+                error=None,
+            )
+        if method == "prompts/list":
+            return McpResponse(request_id=request_id, result={"prompts": []}, error=None)
+        if method == "resources/list":
+            return McpResponse(request_id=request_id, result={"resources": []}, error=None)
+        if method == "resources/templates/list":
+            return McpResponse(request_id=request_id, result={"resourceTemplates": []}, error=None)
+        if method == "roots/list":
+            return McpResponse(request_id=request_id, result={"roots": self._roots_list()}, error=None)
+        if method == "initialized":
+            return McpResponse(request_id=request_id, result={}, error=None)
+        if method == "notifications/initialized":
+            return McpResponse(request_id=request_id, result={}, error=None)
+        if method == "ping":
+            return McpResponse(request_id=request_id, result={}, error=None)
+        if method == "tools/list":
+            return McpResponse(
+                request_id=request_id,
+                result=_build_degraded_tools_list_result_payload(self._TOOLS_SCHEMA_VERSION),
+                error=None,
+            )
+        if method == "tools/call":
+            params = payload.get("params")
+            if not isinstance(params, dict):
+                return McpResponse(request_id=request_id, result=None, error=McpError(code=-32602, message="invalid params"))
+            tool_name = str(params.get("name", "")).strip()
+            arguments = params.get("arguments", {})
+            if not isinstance(arguments, dict):
+                return McpResponse(request_id=request_id, result=None, error=McpError(code=-32602, message="invalid arguments"))
+            if is_hidden_tool_name(tool_name):
+                return McpResponse(request_id=request_id, result=None, error=McpError(code=-32601, message="tool not found"))
+            if tool_name == "sari_guide":
+                return McpResponse(
+                    request_id=request_id,
+                    result=self._render_pack_v2(tool_name=tool_name, arguments=arguments, payload=self._sari_guide_tool.call(arguments)),
+                    error=None,
+                )
+            if tool_name == "status":
+                return McpResponse(
+                    request_id=request_id,
+                    result=self._render_pack_v2(tool_name=tool_name, arguments=arguments, payload=self._status_payload()),
+                    error=None,
+                )
+            if tool_name == "doctor":
+                return McpResponse(
+                    request_id=request_id,
+                    result=self._render_pack_v2(tool_name=tool_name, arguments=arguments, payload=self._doctor_payload()),
+                    error=None,
+                )
+            if tool_name == "repo_candidates":
+                return McpResponse(
+                    request_id=request_id,
+                    result=self._render_pack_v2(tool_name=tool_name, arguments=arguments, payload=self._repo_candidates_payload()),
+                    error=None,
+                )
+            if tool_name == "":
+                return McpResponse(request_id=request_id, result=None, error=McpError(code=-32601, message="tool not found"))
+            return McpResponse(
+                request_id=request_id,
+                result=self._render_pack_v2(tool_name=tool_name, arguments=arguments, payload=self._degraded_tool_error_payload()),
+                error=None,
+            )
+        return McpResponse(request_id=request_id, result=None, error=McpError(code=-32601, message="method not found"))
+
+    def _startup_payload(self) -> dict[str, object]:
+        return {
+            "state": "degraded",
+            "reason_code": self._startup_error.code,
+            "reason_message": self._startup_error.message,
+        }
+
+    def _status_payload(self) -> dict[str, object]:
+        items = [
+            {
+                "repo": None,
+                "scope_repo_root": None,
+                "repo_scope_kind": "startup_degraded",
+                "module_repo_count": 0,
+                "daemon_state": None,
+                "file_count": 0,
+                "symbol_count": 0,
+                "relation_count": 0,
+                "orphan_relation_count": 0,
+                "language_support": {"enabled": [], "enabled_count": 0, "available_count": 0, "active_last_5m": [], "languages": []},
+                "lsp_metrics": {},
+                "reconcile_state": {
+                    "reconcile_last_run_ts": None,
+                    "reconcile_last_result": None,
+                    "reconcile_last_error_code": None,
+                    "reconcile_last_error_message": None,
+                },
+                "auto_control": None,
+                "stage_rollout": None,
+                "mcp_startup": self._startup_payload(),
+            }
+        ]
+        return {
+            "content": [{"type": "text", "text": "ok"}],
+            "structuredContent": {
+                "items": items,
+                "meta": Pack1MetaDTO(
+                    candidate_count=1,
+                    resolved_count=1,
+                    cache_hit=False,
+                    errors=[],
+                    stabilization={"degraded": True, "fatal_error": False, "startup_reason": self._startup_payload()},
+                ).to_dict(),
+            },
+            "isError": False,
+        }
+
+    def _doctor_payload(self) -> dict[str, object]:
+        items = [
+            {
+                "name": "mcp_startup",
+                "passed": False,
+                "detail": f"{self._startup_error.code}: {self._startup_error.message}",
+            }
+        ]
+        return {
+            "content": [{"type": "text", "text": "ok"}],
+            "structuredContent": {
+                "items": items,
+                "meta": Pack1MetaDTO(
+                    candidate_count=len(items),
+                    resolved_count=len(items),
+                    cache_hit=False,
+                    errors=[],
+                    stabilization={"degraded": True, "fatal_error": False, "startup_reason": self._startup_payload()},
+                ).to_dict(),
+            },
+            "isError": False,
+        }
+
+    def _repo_candidates_payload(self) -> dict[str, object]:
+        items = [{"repo": item.path, "name": item.name, "active": item.is_active} for item in self._workspace_repo.list_all()]
+        return {
+            "content": [{"type": "text", "text": "ok"}],
+            "structuredContent": {
+                "items": items,
+                "meta": Pack1MetaDTO(
+                    candidate_count=len(items),
+                    resolved_count=len(items),
+                    cache_hit=False,
+                    errors=[],
+                    stabilization={"degraded": True, "fatal_error": False, "startup_reason": self._startup_payload()},
+                ).to_dict(),
+            },
+            "isError": False,
+        }
+
+    def _degraded_tool_error_payload(self) -> dict[str, object]:
+        return pack1_error(
+            ErrorResponseDTO(
+                code=ERR_MCP_STARTUP_DEGRADED,
+                message="tool unavailable while MCP startup is degraded",
+            ),
+            stabilization={"degraded": True, "fatal_error": False, "startup_reason": self._startup_payload()},
+            recovery_hint=MCP_DEGRADED_RECOVERY_HINT,
+        )
+
+    def _roots_list(self) -> list[dict[str, str]]:
+        roots: list[dict[str, str]] = []
+        for workspace in self._workspace_repo.list_all():
+            root_path = workspace.path
+            name = Path(root_path).name if Path(root_path).name != '' else root_path
+            roots.append({"uri": f"file://{root_path}", "name": name})
+        return roots
+
+    def _default_workspace_root(self) -> str:
+        workspaces = self._workspace_repo.list_all()
+        if len(workspaces) == 0:
+            return ""
+        return workspaces[0].path
+
+    def _negotiate_protocol_version(self, params: dict[str, object]) -> str:
+        versions = self._iter_client_protocol_versions(params=params)
+        for candidate in versions:
+            if candidate in self._SUPPORTED_PROTOCOL_VERSIONS:
+                return candidate
+        return self._DEFAULT_PROTOCOL_VERSION
+
+    def _iter_client_protocol_versions(self, params: dict[str, object]) -> list[str]:
+        versions: list[str] = []
+        seen: set[str] = set()
+
+        def _append(raw_value: object) -> None:
+            if not isinstance(raw_value, str):
+                return
+            normalized = raw_value.strip()
+            if normalized == "" or normalized in seen:
+                return
+            seen.add(normalized)
+            versions.append(normalized)
+
+        _append(params.get("protocolVersion"))
+        supported = params.get("supportedProtocolVersions")
+        if isinstance(supported, list):
+            for item in supported:
+                _append(item)
+        capabilities = params.get("capabilities")
+        if isinstance(capabilities, dict):
+            cap_versions = capabilities.get("protocolVersions")
+            if isinstance(cap_versions, list):
+                for item in cap_versions:
+                    _append(item)
+        return versions
+
+    def _render_pack_v2(self, *, tool_name: str, arguments: dict[str, object], payload: dict[str, object]) -> dict[str, object]:
+        include_structured = _is_structured_requested(arguments=arguments)
+        return render_pack_v2(
+            tool_name=tool_name,
+            arguments=arguments,
+            payload=payload,
+            options=PackLineOptionsDTO(
+                include_structured=include_structured,
+                include_score=_is_score_requested(arguments=arguments),
+            ),
+        )
+
+
+def _build_stdio_server(db_path: Path) -> tuple[McpServer | DegradedMcpServer, ErrorResponseDTO | None]:
+    try:
+        return McpServer(db_path=db_path), None
+    except ValidationError as exc:
+        if exc.context.code != "ERR_REPO_ID_INTEGRITY":
+            raise
+        error = ErrorResponseDTO(code=exc.context.code, message=exc.context.message)
+        return DegradedMcpServer(db_path=db_path, startup_error=error), error
+
+
+def resolve_stdio_startup_issue(db_path: Path) -> ErrorResponseDTO | None:
+    try:
+        init_schema(db_path)
+    except ValidationError as exc:
+        if exc.context.code != "ERR_REPO_ID_INTEGRITY":
+            raise
+        return ErrorResponseDTO(code=exc.context.code, message=exc.context.message)
+    return None
 
 class McpServer:
     _TOOLS_SCHEMA_VERSION = "2026-02-18.pack1.v2-line"
@@ -102,6 +436,11 @@ class McpServer:
             forward_once_fn=forward_once,
         )
         self._closed = False
+        self._startup_payload = {
+            "state": "healthy",
+            "reason_code": None,
+            "reason_message": None,
+        }
         self._managed_lsp_hubs: list[LspHub] = []
         lsp_hub_config = runtime_config.lsp_hub_config()
         search_config = runtime_config.search_config()
@@ -227,6 +566,7 @@ class McpServer:
             lsp_metrics_provider=shared_hub.get_metrics,
             reconcile_state_provider=admin_service.get_runtime_reconcile_state,
             pipeline_control_service=pipeline_control_service,
+            mcp_startup_provider=lambda: dict(self._startup_payload),
         )
         self._read_tool = ReadTool(
             workspace_repo=workspace_repo,
@@ -553,12 +893,21 @@ def _is_score_requested(arguments: dict[str, object]) -> bool:
     return False
 
 def run_stdio_streams(db_path: Path, input_stream: BinaryIO, output_stream: BinaryIO) -> int:
-    server = McpServer(db_path=db_path)
+    transport = McpTransport(input_stream=input_stream, output_stream=output_stream, allow_jsonl=True)
+    transport.default_mode = MCP_MODE_FRAMED
+    try:
+        server, startup_error = _build_stdio_server(db_path=db_path)
+    except SariBaseError as exc:
+        print(f"sari mcp stdio startup failed: {exc.context.code}: {exc.context.message}", file=sys.stderr)
+        return 1
+    except (OSError, sqlite3.Error, RuntimeError, ValueError) as exc:
+        print(f"sari mcp stdio startup failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+    if startup_error is not None:
+        log.warning("mcp stdio startup degraded(code=%s message=%s)", startup_error.code, startup_error.message)
     runtime = server._runtime_repo.get_runtime()
     if runtime is not None:
         server._runtime_repo.increment_session()
-    transport = McpTransport(input_stream=input_stream, output_stream=output_stream, allow_jsonl=True)
-    transport.default_mode = MCP_MODE_FRAMED
     consecutive_invalid_frames = 0
     try:
         while True:

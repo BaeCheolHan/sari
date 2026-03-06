@@ -97,6 +97,7 @@ class StatusTool:
         lsp_metrics_provider: Callable[[], dict[str, int]] | None = None,
         reconcile_state_provider: Callable[[], dict[str, object]] | None = None,
         pipeline_control_service: PipelineControlService | None = None,
+        mcp_startup_provider: Callable[[], dict[str, object]] | None = None,
     ) -> None:
         """필요 저장소 의존성을 주입한다."""
         self._workspace_repo = workspace_repo
@@ -107,6 +108,7 @@ class StatusTool:
         self._lsp_metrics_provider = lsp_metrics_provider
         self._reconcile_state_provider = reconcile_state_provider
         self._pipeline_control_service = pipeline_control_service
+        self._mcp_startup_provider = mcp_startup_provider
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """저장소 단위 상태 요약을 반환한다."""
@@ -153,6 +155,11 @@ class StatusTool:
         if self._pipeline_control_service is not None:
             auto_control = self._pipeline_control_service.get_auto_control_state().to_dict()
             stage_rollout = self._pipeline_control_service.get_stage_rollout_state()
+        mcp_startup: dict[str, object] | None = None
+        if self._mcp_startup_provider is not None:
+            raw_startup = self._mcp_startup_provider()
+            if isinstance(raw_startup, dict):
+                mcp_startup = dict(raw_startup)
         return _success(
             [
                 {
@@ -170,6 +177,7 @@ class StatusTool:
                     "reconcile_state": reconcile_state,
                     "auto_control": auto_control,
                     "stage_rollout": stage_rollout,
+                    "mcp_startup": mcp_startup,
                 }
             ],
             warnings=warnings_payload,

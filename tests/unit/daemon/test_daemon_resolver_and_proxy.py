@@ -871,3 +871,172 @@ def test_proxy_blocks_hidden_pipeline_tool_call(tmp_path: Path, monkeypatch: Mon
     payload = transport.writes[0][0]
     assert payload["error"]["code"] == -32601
     assert payload["error"]["message"] == "tool not found"
+
+
+def test_proxy_degrades_on_repo_id_integrity_failure_without_forwarding(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """repo_id integrity 오류가 있어도 proxy는 degraded MCP 응답을 반환해야 한다."""
+    from sari.db.schema import connect, init_schema
+    from sari.mcp.proxy import run_stdio_proxy
+
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO candidate_index_changes(
+                change_type, status, repo_id, repo_root, scope_repo_root, relative_path,
+                absolute_path, content_hash, mtime_ns, size_bytes, event_source, reason, created_at, updated_at
+            ) VALUES(
+                'UPSERT', 'PENDING', '', '/broken/repo', '/broken/repo', 'a.py',
+                '/broken/repo/a.py', 'h1', 1, 10, 'test', NULL, '2026-03-05T00:00:00Z', '2026-03-05T00:00:00Z'
+            )
+            """
+        )
+        conn.commit()
+
+    transport = _ScriptedTransport(
+        messages=[
+            ({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}, "content-length"),
+            ({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, "content-length"),
+            (
+                {
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "tools/call",
+                    "params": {"name": "search", "arguments": {"repo": "sari", "query": "x", "structured": 1}},
+                },
+                "content-length",
+            ),
+            None,
+        ]
+    )
+    called = {"forwarded": False, "started": False}
+
+    def _fake_transport(*_: object, **__: object) -> _ScriptedTransport:
+        return transport
+
+    def _fake_forward_once(request: dict[str, object], host: str, port: int, timeout_sec: float) -> dict[str, object]:
+        _ = (request, host, port, timeout_sec)
+        called["forwarded"] = True
+        return {"jsonrpc": "2.0", "id": 1, "result": {}}
+
+    def _fake_start_daemon(db_path: Path, workspace_root: str | None) -> bool:
+        _ = (db_path, workspace_root)
+        called["started"] = True
+        return True
+
+    monkeypatch.setattr("sari.mcp.proxy.McpTransport", _fake_transport)
+    monkeypatch.setattr("sari.mcp.proxy.forward_once", _fake_forward_once)
+    monkeypatch.setattr("sari.mcp.proxy.resolve_target", lambda *_: ("127.0.0.1", 47777))
+
+    exit_code = run_stdio_proxy(
+        db_path=db_path,
+        workspace_root="/repo/a",
+        auto_start_on_failure=True,
+        start_daemon_fn=_fake_start_daemon,
+    )
+
+    assert exit_code == 0
+    assert called["forwarded"] is False
+    assert called["started"] is False
+    assert len(transport.writes) == 3
+    init_payload = transport.writes[0][0]
+    tools_payload = transport.writes[1][0]
+    call_payload = transport.writes[2][0]
+    assert init_payload["result"]["serverInfo"]["name"] == "sari-v2"
+    tool_names = {str(tool["name"]) for tool in tools_payload["result"]["tools"]}
+    assert tool_names == {"doctor", "repo_candidates", "sari_guide", "status"}
+    assert call_payload["result"]["isError"] is True
+    assert call_payload["result"]["structuredContent"]["error"]["code"] == "ERR_MCP_STARTUP_DEGRADED"
+
+
+def test_proxy_degraded_path_skips_notification_replies(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """degraded startup 경로에서도 notification에는 응답하지 않아야 한다."""
+    from sari.db.schema import connect, init_schema
+    from sari.mcp.proxy import run_stdio_proxy
+
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO candidate_index_changes(
+                change_type, status, repo_id, repo_root, scope_repo_root, relative_path,
+                absolute_path, content_hash, mtime_ns, size_bytes, event_source, reason, created_at, updated_at
+            ) VALUES(
+                'UPSERT', 'PENDING', '', '/broken/repo', '/broken/repo', 'a.py',
+                '/broken/repo/a.py', 'h1', 1, 10, 'test', NULL, '2026-03-05T00:00:00Z', '2026-03-05T00:00:00Z'
+            )
+            """
+        )
+        conn.commit()
+
+    transport = _ScriptedTransport(
+        [
+            ({"jsonrpc": "2.0", "id": 1, "method": "initialize"}, "content-length"),
+            ({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}, "content-length"),
+            ({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, "content-length"),
+            None,
+        ]
+    )
+
+    def _fake_transport(*_: object, **__: object) -> _ScriptedTransport:
+        return transport
+
+    monkeypatch.setattr("sari.mcp.proxy.McpTransport", _fake_transport)
+    monkeypatch.setattr("sari.mcp.proxy.resolve_target", lambda *_: ("127.0.0.1", 47777))
+
+    exit_code = run_stdio_proxy(
+        db_path=db_path,
+        workspace_root="/repo/a",
+        auto_start_on_failure=False,
+    )
+
+    assert exit_code == 0
+    assert len(transport.writes) == 2
+    assert transport.writes[0][0]["id"] == 1
+    assert transport.writes[1][0]["id"] == 2
+
+
+def test_proxy_degraded_path_preserves_orphan_self_termination(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """degraded startup 경로도 orphan watchdog을 유지해야 한다."""
+    from sari.db.schema import connect, init_schema
+    from sari.mcp.proxy import run_stdio_proxy
+
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO candidate_index_changes(
+                change_type, status, repo_id, repo_root, scope_repo_root, relative_path,
+                absolute_path, content_hash, mtime_ns, size_bytes, event_source, reason, created_at, updated_at
+            ) VALUES(
+                'UPSERT', 'PENDING', '', '/broken/repo', '/broken/repo', 'a.py',
+                '/broken/repo/a.py', 'h1', 1, 10, 'test', NULL, '2026-03-05T00:00:00Z', '2026-03-05T00:00:00Z'
+            )
+            """
+        )
+        conn.commit()
+
+    transport = _DelayedEofTransport(delay_sec=0.15)
+    terminate_called: list[int] = []
+
+    def _fake_transport(*_: object, **__: object) -> _DelayedEofTransport:
+        return transport
+
+    monkeypatch.setattr("sari.mcp.proxy.McpTransport", _fake_transport)
+
+    exit_code = run_stdio_proxy(
+        db_path=db_path,
+        workspace_root="/repo/a",
+        auto_start_on_failure=False,
+        parent_alive_fn=lambda _: False,
+        input_hangup_fn=lambda: True,
+        orphan_check_interval_sec=0.01,
+        self_terminate_fn=lambda pid: terminate_called.append(pid),
+    )
+
+    assert exit_code == 0
+    assert len(terminate_called) == 1
+    assert transport.writes == []

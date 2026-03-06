@@ -4,10 +4,10 @@ from pathlib import Path
 
 from sari import __version__ as SARI_VERSION
 from sari.core.exceptions import DaemonError, ErrorContext, ValidationError
-from sari.core.models import WorkspaceDTO
+from sari.core.models import ErrorResponseDTO, WorkspaceDTO
 from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.db.schema import init_schema
-from sari.mcp.server import McpServer
+from sari.mcp.server import DegradedMcpServer, McpServer
 
 
 def test_mcp_initialize_and_tools_list(tmp_path: Path) -> None:
@@ -244,6 +244,101 @@ def test_mcp_initialize_and_tools_list_do_not_touch_tantivy_writer(
     assert "error" not in init_payload
     assert "error" not in list_payload
     assert init_payload["result"]["serverInfo"]["name"] == "sari-v2"
+    server.close()
+
+
+def test_degraded_tools_list_relaxes_repo_candidates_repo_requirement(tmp_path: Path) -> None:
+    """degraded tools/list의 repo_candidates schema는 repo 없이도 호출 가능해야 한다."""
+    server = DegradedMcpServer(
+        db_path=tmp_path / "state.db",
+        startup_error=ErrorResponseDTO(code="ERR_REPO_ID_INTEGRITY", message="broken repo_id"),
+    )
+
+    payload = server.handle_request({"jsonrpc": "2.0", "id": 23, "method": "tools/list"}).to_dict()
+
+    tools = {str(tool["name"]): tool for tool in payload["result"]["tools"]}
+    repo_candidates_schema = tools["repo_candidates"]["inputSchema"]
+    assert "repo" not in repo_candidates_schema.get("required", [])
+
+
+def test_degraded_tools_list_relaxes_status_and_doctor_repo_requirement(tmp_path: Path) -> None:
+    """degraded tools/list의 status/doctor schema도 repo 없이 호출 가능해야 한다."""
+    server = DegradedMcpServer(
+        db_path=tmp_path / "state.db",
+        startup_error=ErrorResponseDTO(code="ERR_REPO_ID_INTEGRITY", message="broken repo_id"),
+    )
+
+    payload = server.handle_request({"jsonrpc": "2.0", "id": 26, "method": "tools/list"}).to_dict()
+
+    tools = {str(tool["name"]): tool for tool in payload["result"]["tools"]}
+    for tool_name in ("status", "doctor"):
+        input_schema = tools[tool_name]["inputSchema"]
+        assert "repo" not in input_schema.get("required", [])
+
+
+def test_degraded_status_tool_returns_structured_payload(tmp_path: Path) -> None:
+    """degraded recovery 도구는 NameError 없이 정상 payload를 반환해야 한다."""
+    server = DegradedMcpServer(
+        db_path=tmp_path / "state.db",
+        startup_error=ErrorResponseDTO(code="ERR_REPO_ID_INTEGRITY", message="broken repo_id"),
+    )
+
+    payload = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 24,
+            "method": "tools/call",
+            "params": {"name": "status", "arguments": {"structured": 1}},
+        }
+    ).to_dict()
+
+    assert payload["result"]["isError"] is False
+    item = payload["result"]["structuredContent"]["items"][0]
+    assert item["mcp_startup"]["state"] == "degraded"
+    assert item["mcp_startup"]["reason_code"] == "ERR_REPO_ID_INTEGRITY"
+
+
+def test_degraded_hidden_tool_call_remains_not_found(tmp_path: Path) -> None:
+    """degraded tools/call에서도 hidden tool은 기존과 같이 not found로 숨겨야 한다."""
+    server = DegradedMcpServer(
+        db_path=tmp_path / "state.db",
+        startup_error=ErrorResponseDTO(code="ERR_REPO_ID_INTEGRITY", message="broken repo_id"),
+    )
+
+    payload = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 25,
+            "method": "tools/call",
+            "params": {"name": "pipeline_auto_status", "arguments": {}},
+        }
+    ).to_dict()
+
+    assert payload["error"]["code"] == -32601
+    assert payload["error"]["message"] == "tool not found"
+
+
+def test_mcp_status_includes_startup_state_when_healthy(tmp_path: Path) -> None:
+    """status 응답은 MCP startup 상태를 additive 필드로 포함해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_root = (tmp_path / "repo-a").resolve()
+    repo_root.mkdir(parents=True, exist_ok=True)
+    WorkspaceRepository(db_path).add(WorkspaceDTO(path=str(repo_root), name="repo-a", indexed_at=None, is_active=True))
+
+    server = McpServer(db_path=db_path)
+    payload = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 23,
+            "method": "tools/call",
+            "params": {"name": "status", "arguments": {"repo": str(repo_root), "structured": 1}},
+        }
+    ).to_dict()
+
+    assert payload["result"]["isError"] is False
+    item = payload["result"]["structuredContent"]["items"][0]
+    assert item["mcp_startup"] == {"state": "healthy", "reason_code": None, "reason_message": None}
     server.close()
 
 
