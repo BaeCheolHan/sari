@@ -271,3 +271,46 @@ def test_tantivy_build_index_raises_when_rebuild_fails(tmp_path: Path, monkeypat
             config=CandidateSearchConfig(max_file_size_bytes=512 * 1024, allowed_suffixes=(".py",)),
             index_root=index_root,
         )
+
+
+def test_tantivy_enqueue_delete_change_defers_repo_id_resolution_to_repository(tmp_path: Path) -> None:
+    """delete 변경은 backend가 legacy repo_id를 직접 만들지 말아야 한다."""
+
+    class _ChangeRepoStub:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def enqueue_delete(
+            self,
+            *,
+            repo_root: str,
+            relative_path: str,
+            event_source: str,
+            recorded_at: str,
+            repo_id: str | None = None,
+        ) -> None:
+            self.calls.append(
+                {
+                    "repo_id": repo_id,
+                    "repo_root": repo_root,
+                    "relative_path": relative_path,
+                    "event_source": event_source,
+                    "recorded_at": recorded_at,
+                }
+            )
+
+    backend = TantivyCandidateBackend(
+        config=CandidateSearchConfig(max_file_size_bytes=512 * 1024, allowed_suffixes=(".py",)),
+        index_root=tmp_path / "candidate-index-delete",
+    )
+    stub = _ChangeRepoStub()
+    backend._change_repo = stub  # noqa: SLF001
+
+    backend.enqueue_delete_change(
+        repo_root="/Users/vendys-chulhan/Documents/study",
+        relative_path="serena/.git/index",
+        reason="watcher_deleted",
+    )
+
+    assert len(stub.calls) == 1
+    assert stub.calls[0]["repo_id"] is None

@@ -613,7 +613,7 @@ def _repo_id_integrity_targets() -> tuple[str, ...]:
 
 
 def _backfill_repo_id_from_repositories(conn: sqlite3.Connection) -> None:
-    """repo_root 정확일치 규칙으로 빈 repo_id를 자동 백필한다."""
+    """repo_root 정확일치 규칙으로 빈/불일치 repo_id를 자동 백필한다."""
     if not _table_exists(conn, "repositories"):
         return
     for table_name in _repo_id_integrity_targets():
@@ -631,7 +631,10 @@ def _backfill_repo_id_from_repositories(conn: sqlite3.Connection) -> None:
                 WHERE repositories.repo_root = {table_name}.repo_root
                 LIMIT 1
             )
-            WHERE TRIM(COALESCE(repo_id, '')) = ''
+            WHERE (
+                    TRIM(COALESCE(repo_id, '')) = ''
+                 OR repo_id NOT IN (SELECT repo_id FROM repositories)
+                  )
               AND EXISTS (
                   SELECT 1
                   FROM repositories

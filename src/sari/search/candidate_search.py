@@ -362,9 +362,8 @@ class TantivyCandidateBackend:
         if self._change_repo is None:
             self.mark_dirty()
             return
-        derived_repo_id = compute_repo_id(repo_label=Path(repo_root).name, workspace_root=None)
         self._change_repo.enqueue_delete(
-            repo_id=derived_repo_id,
+            repo_id=None,
             repo_root=repo_root,
             relative_path=relative_path,
             event_source=reason,

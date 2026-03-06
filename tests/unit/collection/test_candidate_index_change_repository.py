@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from sari.core.repo.identity import compute_repo_id
 from sari.core.models import CandidateIndexChangeDTO
 from sari.db.repositories.candidate_index_change_repository import CandidateIndexChangeRepository, _extract_lastrowid
-from sari.db.schema import init_schema
+from sari.db.schema import connect, init_schema
 
 
 def test_candidate_index_change_repository_coalesces_latest_upsert(tmp_path: Path) -> None:
@@ -111,3 +112,53 @@ def test_extract_lastrowid_raises_when_both_raw_and_fallback_invalid() -> None:
         assert "failed to resolve last inserted change_id" in str(exc)
     else:
         raise AssertionError("RuntimeError was not raised")
+
+
+def test_candidate_index_change_repository_resolves_repo_id_from_repositories_when_omitted(tmp_path: Path) -> None:
+    """repo_id 미지정 변경 로그는 repositories SSOT의 repo_id를 사용해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    workspace_root = str((tmp_path / "ws").resolve())
+    repo_root = str((tmp_path / "ws" / "repo-a").resolve())
+    Path(workspace_root).mkdir(parents=True, exist_ok=True)
+    Path(repo_root).mkdir(parents=True, exist_ok=True)
+    expected_repo_id = compute_repo_id(repo_label="repo-a", workspace_root=workspace_root)
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO workspaces(path, name, indexed_at, is_active)
+            VALUES(:path, 'ws', '2026-03-06T00:00:00Z', 1)
+            """,
+            {"path": workspace_root},
+        )
+        conn.execute(
+            """
+            INSERT INTO repositories(repo_id, repo_label, repo_root, workspace_root, updated_at, is_active)
+            VALUES(:repo_id, 'repo-a', :repo_root, :workspace_root, '2026-03-06T00:00:00Z', 1)
+            """,
+            {"repo_id": expected_repo_id, "repo_root": repo_root, "workspace_root": workspace_root},
+        )
+        conn.commit()
+
+    repo = CandidateIndexChangeRepository(db_path)
+    repo.enqueue_upsert(
+        CandidateIndexChangeDTO(
+            repo_id="",
+            repo_root=repo_root,
+            relative_path="a.py",
+            absolute_path=f"{repo_root}/a.py",
+            content_hash="h1",
+            mtime_ns=1,
+            size_bytes=10,
+            event_source="scan",
+            recorded_at="2026-03-06T00:00:01Z",
+        )
+    )
+
+    with connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT repo_id FROM candidate_index_changes WHERE repo_root = :repo_root AND relative_path = 'a.py'",
+            {"repo_root": repo_root},
+        ).fetchone()
+    assert row is not None
+    assert str(row["repo_id"]) == expected_repo_id

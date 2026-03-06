@@ -7,9 +7,10 @@ from pathlib import Path
 
 import pytest
 
+from sari.core.repo.identity import compute_repo_id
 from sari.core.config import AppConfig
 from sari.db.repositories.file_enrich_queue_repository import FileEnrichQueueRepository
-from sari.db.schema import init_schema
+from sari.db.schema import connect, init_schema
 
 
 def test_file_enrich_queue_acquire_orders_by_priority(tmp_path: Path) -> None:
@@ -29,6 +30,44 @@ def test_file_enrich_queue_acquire_orders_by_priority(tmp_path: Path) -> None:
     assert jobs[0].relative_path == "high.py"
     assert jobs[1].relative_path == "mid.py"
     assert jobs[2].relative_path == "low.py"
+
+
+def test_file_enrich_queue_resolves_repo_id_from_repositories_when_omitted(tmp_path: Path) -> None:
+    """repo_id 미지정 enqueue는 repositories SSOT의 repo_id를 사용해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    workspace_root = str((tmp_path / "ws").resolve())
+    repo_root = str((tmp_path / "ws" / "repo-a").resolve())
+    Path(workspace_root).mkdir(parents=True, exist_ok=True)
+    Path(repo_root).mkdir(parents=True, exist_ok=True)
+    expected_repo_id = compute_repo_id(repo_label="repo-a", workspace_root=workspace_root)
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO workspaces(path, name, indexed_at, is_active)
+            VALUES(:path, 'ws', '2026-03-06T00:00:00Z', 1)
+            """,
+            {"path": workspace_root},
+        )
+        conn.execute(
+            """
+            INSERT INTO repositories(repo_id, repo_label, repo_root, workspace_root, updated_at, is_active)
+            VALUES(:repo_id, 'repo-a', :repo_root, :workspace_root, '2026-03-06T00:00:00Z', 1)
+            """,
+            {"repo_id": expected_repo_id, "repo_root": repo_root, "workspace_root": workspace_root},
+        )
+        conn.commit()
+
+    repo = FileEnrichQueueRepository(db_path)
+    repo.enqueue(repo_root, "main.py", "h1", 30, "scan", "2026-03-06T00:00:01Z")
+
+    with connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT repo_id FROM file_enrich_queue WHERE repo_root = :repo_root AND relative_path = 'main.py'",
+            {"repo_root": repo_root},
+        ).fetchone()
+    assert row is not None
+    assert str(row["repo_id"]) == expected_repo_id
 
 
 def test_app_config_loads_json_and_env_override(tmp_path: Path, monkeypatch) -> None:

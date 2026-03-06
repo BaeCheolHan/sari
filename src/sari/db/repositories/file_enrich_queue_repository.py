@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from sari.core.models import DeadJobItemDTO, EnqueueRequestDTO, FileEnrichFailureUpdateDTO, FileEnrichJobDTO
+from sari.db.repositories.repo_id_resolution import resolve_repo_id_for_repo_root
 from sari.db.row_mapper import row_int, row_optional_str, row_str
 from sari.db.schema import connect
 from sari.db.sqlite_retry import run_with_sqlite_lock_retry
@@ -31,27 +32,31 @@ class FileEnrichQueueRepository:
         scope_repo_root: str | None = None,
     ) -> str:
         """L2 본문 보강 큐 작업을 적재한다."""
-        resolved_repo_id = repo_id if repo_id is not None and repo_id.strip() != "" else f"r_{uuid.uuid5(uuid.NAMESPACE_URL, repo_root).hex[:20]}"
         resolved_scope_repo_root = scope_repo_root if scope_repo_root is not None and scope_repo_root.strip() != "" else repo_root
         job_id = str(uuid.uuid4())
-        job = FileEnrichJobDTO(
-            job_id=job_id,
-            repo_id=resolved_repo_id,
-            repo_root=repo_root,
-            scope_repo_root=resolved_scope_repo_root,
-            relative_path=relative_path,
-            content_hash=content_hash,
-            priority=priority,
-            enqueue_source=enqueue_source,
-            status="PENDING",
-            attempt_count=0,
-            last_error=None,
-            defer_reason=None,
-            next_retry_at=now_iso,
-            created_at=now_iso,
-            updated_at=now_iso,
-        )
         with connect(self._db_path) as conn:
+            resolved_repo_id = (
+                repo_id.strip()
+                if repo_id is not None and repo_id.strip() != ""
+                else resolve_repo_id_for_repo_root(conn, repo_root)
+            )
+            job = FileEnrichJobDTO(
+                job_id=job_id,
+                repo_id=resolved_repo_id,
+                repo_root=repo_root,
+                scope_repo_root=resolved_scope_repo_root,
+                relative_path=relative_path,
+                content_hash=content_hash,
+                priority=priority,
+                enqueue_source=enqueue_source,
+                status="PENDING",
+                attempt_count=0,
+                last_error=None,
+                defer_reason=None,
+                next_retry_at=now_iso,
+                created_at=now_iso,
+                updated_at=now_iso,
+            )
             existing = conn.execute(
                 """
                 SELECT job_id, priority
@@ -121,50 +126,54 @@ class FileEnrichQueueRepository:
         """L2 본문 보강 큐 작업을 배치 적재한다."""
         if len(requests) == 0:
             return []
-        grouped_rows: list[dict[str, object]] = []
-        stage_id_by_key: dict[tuple[str, str, str], int] = {}
-        input_stage_ids: list[int] = []
-
-        for request in requests:
-            resolved_repo_id = request.repo_id if request.repo_id.strip() != "" else f"r_{uuid.uuid5(uuid.NAMESPACE_URL, request.repo_root).hex[:20]}"
-            resolved_scope_repo_root = request.scope_repo_root if request.scope_repo_root is not None and request.scope_repo_root.strip() != "" else request.repo_root
-            key = (resolved_repo_id, request.repo_root, request.relative_path)
-            existing_stage_id = stage_id_by_key.get(key)
-            if existing_stage_id is None:
-                stage_id = len(grouped_rows) + 1
-                stage_id_by_key[key] = stage_id
-                grouped_rows.append(
-                    {
-                        "stage_id": stage_id,
-                        "repo_id": resolved_repo_id,
-                        "repo_root": request.repo_root,
-                        "scope_repo_root": resolved_scope_repo_root,
-                        "relative_path": request.relative_path,
-                        "content_hash": request.content_hash,
-                        "priority": request.priority,
-                        "enqueue_source": request.enqueue_source,
-                        "defer_reason": request.defer_reason,
-                        "now_iso": request.now_iso,
-                        "new_job_id": str(uuid.uuid4()),
-                        "had_hash_transition": 0,
-                    }
-                )
-                input_stage_ids.append(stage_id)
-                continue
-            stage_row = grouped_rows[existing_stage_id - 1]
-            previous_hash = str(stage_row["content_hash"])
-            if previous_hash != request.content_hash:
-                stage_row["had_hash_transition"] = 1
-            stage_row["scope_repo_root"] = resolved_scope_repo_root
-            stage_row["content_hash"] = request.content_hash
-            stage_row["enqueue_source"] = request.enqueue_source
-            stage_row["defer_reason"] = request.defer_reason
-            stage_row["now_iso"] = request.now_iso
-            stage_row["priority"] = max(int(stage_row["priority"]), request.priority)
-            input_stage_ids.append(existing_stage_id)
 
         def _op() -> list[str]:
             with connect(self._db_path) as conn:
+                grouped_rows: list[dict[str, object]] = []
+                stage_id_by_key: dict[tuple[str, str, str], int] = {}
+                input_stage_ids: list[int] = []
+                for request in requests:
+                    resolved_repo_id = (
+                        request.repo_id.strip()
+                        if request.repo_id.strip() != ""
+                        else resolve_repo_id_for_repo_root(conn, request.repo_root)
+                    )
+                    resolved_scope_repo_root = request.scope_repo_root if request.scope_repo_root is not None and request.scope_repo_root.strip() != "" else request.repo_root
+                    key = (resolved_repo_id, request.repo_root, request.relative_path)
+                    existing_stage_id = stage_id_by_key.get(key)
+                    if existing_stage_id is None:
+                        stage_id = len(grouped_rows) + 1
+                        stage_id_by_key[key] = stage_id
+                        grouped_rows.append(
+                            {
+                                "stage_id": stage_id,
+                                "repo_id": resolved_repo_id,
+                                "repo_root": request.repo_root,
+                                "scope_repo_root": resolved_scope_repo_root,
+                                "relative_path": request.relative_path,
+                                "content_hash": request.content_hash,
+                                "priority": request.priority,
+                                "enqueue_source": request.enqueue_source,
+                                "defer_reason": request.defer_reason,
+                                "now_iso": request.now_iso,
+                                "new_job_id": str(uuid.uuid4()),
+                                "had_hash_transition": 0,
+                            }
+                        )
+                        input_stage_ids.append(stage_id)
+                        continue
+                    stage_row = grouped_rows[existing_stage_id - 1]
+                    previous_hash = str(stage_row["content_hash"])
+                    if previous_hash != request.content_hash:
+                        stage_row["had_hash_transition"] = 1
+                    stage_row["scope_repo_root"] = resolved_scope_repo_root
+                    stage_row["content_hash"] = request.content_hash
+                    stage_row["enqueue_source"] = request.enqueue_source
+                    stage_row["defer_reason"] = request.defer_reason
+                    stage_row["now_iso"] = request.now_iso
+                    stage_row["priority"] = max(int(stage_row["priority"]), request.priority)
+                    input_stage_ids.append(existing_stage_id)
+
                 conn.execute("DROP TABLE IF EXISTS temp_enqueue_stage")
                 conn.execute("DROP TABLE IF EXISTS temp_enqueue_existing")
                 conn.execute("DROP TABLE IF EXISTS temp_enqueue_result")

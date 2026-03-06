@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from sari.core.models import CandidateIndexChangeDTO, CandidateIndexChangeLogDTO
+from sari.db.repositories.repo_id_resolution import resolve_repo_id_for_repo_root
 from sari.db.row_mapper import row_int, row_optional_str, row_str
 from sari.db.schema import connect
 
@@ -20,12 +21,12 @@ class CandidateIndexChangeRepository:
 
     def enqueue_upsert(self, change: CandidateIndexChangeDTO) -> int:
         """동일 파일 pending 변경을 최신 upsert로 coalesce한다."""
-        resolved_repo_id = (
-            change.repo_id
-            if change.repo_id.strip() != ""
-            else f"r_{hashlib.sha1(change.repo_root.encode('utf-8')).hexdigest()[:20]}"
-        )
         with connect(self._db_path) as conn:
+            resolved_repo_id = (
+                change.repo_id.strip()
+                if change.repo_id.strip() != ""
+                else resolve_repo_id_for_repo_root(conn, change.repo_root)
+            )
             existing = conn.execute(
                 """
                 SELECT change_id
@@ -92,12 +93,12 @@ class CandidateIndexChangeRepository:
 
     def enqueue_delete(self, repo_root: str, relative_path: str, event_source: str, recorded_at: str, repo_id: str | None = None) -> int:
         """동일 파일 pending 변경을 delete 이벤트로 coalesce한다."""
-        resolved_repo_id = (
-            repo_id
-            if repo_id is not None and repo_id.strip() != ""
-            else f"r_{hashlib.sha1(repo_root.encode('utf-8')).hexdigest()[:20]}"
-        )
         with connect(self._db_path) as conn:
+            resolved_repo_id = (
+                repo_id.strip()
+                if repo_id is not None and repo_id.strip() != ""
+                else resolve_repo_id_for_repo_root(conn, repo_root)
+            )
             existing = conn.execute(
                 """
                 SELECT change_id

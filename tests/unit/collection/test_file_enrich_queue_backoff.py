@@ -578,6 +578,73 @@ def test_enqueue_many_uses_sqlite_lock_retry_wrapper(tmp_path: Path, monkeypatch
     assert captured["called"] == 1
 
 
+def test_enqueue_many_coalesces_mixed_blank_and_explicit_repo_id_for_same_file(tmp_path: Path) -> None:
+    """blank/explicit repo_id가 섞여도 해석 후 동일 파일은 1건으로 합쳐져야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    workspace_root = str((tmp_path / "ws").resolve())
+    repo_root = str((tmp_path / "ws" / "repo-a").resolve())
+    Path(workspace_root).mkdir(parents=True, exist_ok=True)
+    Path(repo_root).mkdir(parents=True, exist_ok=True)
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO workspaces(path, name, indexed_at, is_active)
+            VALUES(:path, 'ws', '2026-03-06T00:00:00Z', 1)
+            """,
+            {"path": workspace_root},
+        )
+        conn.execute(
+            """
+            INSERT INTO repositories(repo_id, repo_label, repo_root, workspace_root, updated_at, is_active)
+            VALUES('r_repo_a', 'repo-a', :repo_root, :workspace_root, '2026-03-06T00:00:00Z', 1)
+            """,
+            {"repo_root": repo_root, "workspace_root": workspace_root},
+        )
+        conn.commit()
+
+    repo = FileEnrichQueueRepository(db_path)
+    ids = repo.enqueue_many(
+        [
+            EnqueueRequestDTO(
+                repo_id="",
+                repo_root=repo_root,
+                relative_path="same.py",
+                content_hash="h1",
+                priority=10,
+                enqueue_source="scan",
+                now_iso="2026-03-06T00:00:01Z",
+            ),
+            EnqueueRequestDTO(
+                repo_id="r_repo_a",
+                repo_root=repo_root,
+                relative_path="same.py",
+                content_hash="h2",
+                priority=20,
+                enqueue_source="l3",
+                now_iso="2026-03-06T00:00:02Z",
+            ),
+        ]
+    )
+
+    assert ids == [ids[0], ids[0]]
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT job_id, repo_id, content_hash, priority, enqueue_source
+            FROM file_enrich_queue
+            WHERE repo_root = :repo_root
+              AND relative_path = 'same.py'
+            """,
+            {"repo_root": repo_root},
+        ).fetchall()
+    assert len(rows) == 1
+    assert str(rows[0]["repo_id"]) == "r_repo_a"
+    assert str(rows[0]["content_hash"]) == "h2"
+    assert int(rows[0]["priority"]) == 20
+    assert str(rows[0]["enqueue_source"]) == "l3"
+
+
 def test_mark_failed_with_backoff_updates_attempt_and_delay(tmp_path: Path) -> None:
     """백오프 실패 처리 시 시도횟수/재시도 시각/상태가 갱신되어야 한다."""
     db_path = tmp_path / "state.db"
