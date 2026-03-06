@@ -86,29 +86,67 @@ def _build_language_support_payload(language_probe_repo: LanguageProbeRepository
 
 
 def _blocked_reason_for_probe_status(status: str) -> str:
+    if status == "BACKPRESSURE_COOLDOWN":
+        return "backpressure"
     if status in {"COOLDOWN", "UNAVAILABLE_COOLDOWN", "WORKSPACE_MISMATCH"}:
         return "probe_unavailable"
     return "none"
 
 
-def _build_repo_language_probe_payload(repo_root: str, repo_language_probe_repo: RepoLanguageProbeRepository | None) -> dict[str, object]:
+def _is_manual_probe_trigger(trigger: object) -> bool:
+    normalized = str(trigger).strip().lower() if trigger is not None else ""
+    return normalized in {"manual", "manual_index", "manual_probe", "interactive", "mcp", "http", "cli", "user", "force"}
+
+
+def _build_repo_language_probe_payload(
+    repo_root: str,
+    repo_language_probe_repo: RepoLanguageProbeRepository | None,
+    repo_hot_checker: Callable[[str], bool] | None = None,
+) -> dict[str, object]:
     if repo_language_probe_repo is None:
-        return {"states": [], "blocked_count": 0}
+        return {"states": [], "blocked_count": 0, "hot_repo_active": False}
     items = repo_language_probe_repo.list_by_repo_root(repo_root)
     states: list[dict[str, object]] = []
     blocked_count = 0
+    hot_repo_active = bool(repo_hot_checker(repo_root)) if callable(repo_hot_checker) else False
     for item in items:
         status = str(item["status"])
         blocked_reason = _blocked_reason_for_probe_status(status)
         if blocked_reason != "none":
             blocked_count += 1
+        row_is_manual = _is_manual_probe_trigger(item.get("last_trigger"))
         states.append(
             {
                 **item,
                 "blocked_reason": blocked_reason,
+                "priority_class": "manual_hot" if row_is_manual else "background",
+                "last_admission_kind": item.get("last_trigger"),
             }
         )
-    return {"states": states, "blocked_count": blocked_count}
+    return {"states": states, "blocked_count": blocked_count, "hot_repo_active": hot_repo_active}
+
+
+def _build_runtime_activity_payload(
+    repo_root: str,
+    repo_runtime_activity_provider: Callable[[str], dict[str, object]] | None,
+) -> dict[str, object]:
+    default_payload: dict[str, object] = {
+        "repo_root": repo_root,
+        "active_request_count": 0,
+        "busy_runtime_count": 0,
+        "idle_runtime_count": 0,
+    }
+    if repo_runtime_activity_provider is None:
+        return default_payload
+    raw_payload = repo_runtime_activity_provider(repo_root)
+    if not isinstance(raw_payload, dict):
+        return default_payload
+    payload = dict(raw_payload)
+    payload.setdefault("repo_root", repo_root)
+    payload.setdefault("active_request_count", 0)
+    payload.setdefault("busy_runtime_count", 0)
+    payload.setdefault("idle_runtime_count", 0)
+    return payload
 
 
 class StatusTool:
@@ -122,6 +160,8 @@ class StatusTool:
         lsp_repo: LspToolDataRepository,
         language_probe_repo: LanguageProbeRepository | None = None,
         repo_language_probe_repo: RepoLanguageProbeRepository | None = None,
+        repo_hot_checker: Callable[[str], bool] | None = None,
+        repo_runtime_activity_provider: Callable[[str], dict[str, object]] | None = None,
         lsp_metrics_provider: Callable[[], dict[str, int]] | None = None,
         reconcile_state_provider: Callable[[], dict[str, object]] | None = None,
         pipeline_control_service: PipelineControlService | None = None,
@@ -134,6 +174,8 @@ class StatusTool:
         self._lsp_repo = lsp_repo
         self._language_probe_repo = language_probe_repo
         self._repo_language_probe_repo = repo_language_probe_repo
+        self._repo_hot_checker = repo_hot_checker
+        self._repo_runtime_activity_provider = repo_runtime_activity_provider
         self._lsp_metrics_provider = lsp_metrics_provider
         self._reconcile_state_provider = reconcile_state_provider
         self._pipeline_control_service = pipeline_control_service
@@ -145,7 +187,7 @@ class StatusTool:
         if validation.error is not None:
             return pack1_error(validation.error)
         warnings_payload = [warning.to_dict() for warning in validation.warnings]
-        repo_root = str(arguments["repo"])
+        repo_root = str(validation.repo_root or arguments["repo"])
         runtime = self._runtime_repo.get_runtime()
         file_count = self._file_repo.count_active_files_by_scope(scope_repo_root=repo_root)
         module_repo_count = self._file_repo.count_distinct_repo_roots_by_scope(scope_repo_root=repo_root)
@@ -159,7 +201,12 @@ class StatusTool:
         repo_scope_kind = "workspace_scope" if module_repo_count > 1 else "module_scope"
         graph_health = self._lsp_repo.get_repo_call_graph_health(repo_root=repo_root)
         language_support = _build_language_support_payload(self._language_probe_repo)
-        repo_language_probe = _build_repo_language_probe_payload(repo_root, self._repo_language_probe_repo)
+        repo_language_probe = _build_repo_language_probe_payload(
+            repo_root,
+            self._repo_language_probe_repo,
+            self._repo_hot_checker,
+        )
+        runtime_activity = _build_runtime_activity_payload(repo_root, self._repo_runtime_activity_provider)
         lsp_metrics: dict[str, int] = {}
         if self._lsp_metrics_provider is not None:
             raw_metrics = self._lsp_metrics_provider()
@@ -204,6 +251,7 @@ class StatusTool:
                     "orphan_relation_count": graph_health["orphan_relation_count"],
                     "language_support": language_support,
                     "repo_language_probe": repo_language_probe,
+                    "runtime_activity": runtime_activity,
                     "lsp_metrics": lsp_metrics,
                     "reconcile_state": reconcile_state,
                     "auto_control": auto_control,

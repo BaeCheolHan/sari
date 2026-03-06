@@ -51,7 +51,8 @@ def test_runtime_manager_scheduler_skips_inactive_workspaces(caplog) -> None:
         _WorkspaceStub(path="/repo/inactive", is_active=False),
     ]
 
-    def _scan_once(path: str) -> None:
+    def _scan_once(path: str, *, trigger: str = "manual") -> None:
+        assert trigger == "background"
         scanned_paths.append(path)
 
     def _prune_and_stop() -> None:
@@ -185,7 +186,8 @@ def test_runtime_manager_scheduler_handles_sqlite_scan_error_without_thread_exit
         _WorkspaceStub(path="/repo/ok", is_active=True),
     ]
 
-    def _scan_once(path: str) -> None:
+    def _scan_once(path: str, *, trigger: str = "manual") -> None:
+        assert trigger == "background"
         if path == "/repo/locked":
             raise sqlite3.OperationalError("database is locked")
         scanned_paths.append(path)

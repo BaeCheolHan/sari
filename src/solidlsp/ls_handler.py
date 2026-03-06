@@ -40,6 +40,8 @@ log = logging.getLogger(__name__)
 RequestId = int | str
 RequestHandler = Callable[[PayloadLike], PayloadLike]
 NotificationHandler = Callable[[PayloadLike], None]
+RequestStartHandler = Callable[[str, RequestId], None]
+RequestEndHandler = Callable[[str, RequestId, bool], None]
 
 
 def _normalize_command_args(cmd: str | list[str], is_windows: bool) -> list[str]:
@@ -179,6 +181,38 @@ class SolidLanguageServerHandler:
         self._request_id_lock = threading.Lock()
         self._response_handlers_lock = threading.Lock()
         self._tasks_lock = threading.Lock()
+        self._request_lifecycle_lock = threading.Lock()
+        self._request_start_handler: RequestStartHandler | None = None
+        self._request_end_handler: RequestEndHandler | None = None
+        self._active_lifecycle_requests: set[RequestId] = set()
+
+    def set_request_lifecycle_hooks(
+        self,
+        *,
+        on_request_start: RequestStartHandler | None = None,
+        on_request_end: RequestEndHandler | None = None,
+    ) -> None:
+        with self._request_lifecycle_lock:
+            self._request_start_handler = on_request_start
+            self._request_end_handler = on_request_end
+
+    def _notify_request_start(self, method: str, request_id: RequestId) -> None:
+        with self._request_lifecycle_lock:
+            self._active_lifecycle_requests.add(request_id)
+            callback = self._request_start_handler
+        if callback is None:
+            return
+        callback(method, request_id)
+
+    def _notify_request_end(self, method: str, request_id: RequestId, *, ok: bool) -> None:
+        with self._request_lifecycle_lock:
+            if request_id not in self._active_lifecycle_requests:
+                return
+            self._active_lifecycle_requests.discard(request_id)
+            callback = self._request_end_handler
+        if callback is None:
+            return
+        callback(method, request_id, ok)
 
     def set_request_timeout(self, timeout: float | None) -> None:
         """
@@ -480,6 +514,7 @@ class SolidLanguageServerHandler:
             for request in self._pending_requests.values():
                 log.info("Cancelling %s", request)
                 request.on_error(exception)
+                self._notify_request_end(request._method, request._request_id, ok=False)
             self._pending_requests.clear()
 
     def send_request(self, method: str, params: dict | None = None) -> PayloadLike:
@@ -496,18 +531,24 @@ class SolidLanguageServerHandler:
         with self._response_handlers_lock:
             self._pending_requests[request_id] = request
 
+        self._notify_request_start(method, request_id)
         self._send_payload(make_request(method, request_id, params))
 
         self._log(f"Waiting for response to request {method} with params:\n{params}")
-        result = request.get_result(timeout=self._request_timeout)
-        log.debug("Completed: %s", request)
+        ok = False
+        try:
+            result = request.get_result(timeout=self._request_timeout)
+            log.debug("Completed: %s", request)
 
-        self._log("Processing result")
-        if result.is_error():
-            raise SolidLSPException(f"Error processing request {method} with params:\n{params}", cause=result.error) from result.error
+            self._log("Processing result")
+            if result.is_error():
+                raise SolidLSPException(f"Error processing request {method} with params:\n{params}", cause=result.error) from result.error
 
-        self._log(f"Returning non-error result, which is:\n{result.payload}")
-        return result.payload
+            self._log(f"Returning non-error result, which is:\n{result.payload}")
+            ok = True
+            return result.payload
+        finally:
+            self._notify_request_end(method, request_id, ok=ok)
 
     def _send_payload(self, payload: PayloadLike) -> None:
         """
@@ -549,15 +590,21 @@ class SolidLanguageServerHandler:
         with self._response_handlers_lock:
             for request_id, _, request in request_items:
                 self._pending_requests[request_id] = request
+                self._notify_request_start(request._method, request_id)
 
         self._send_payload(payloads)
 
         results: list[PayloadLike] = []
-        for _, method, request in request_items:
-            result = request.get_result(timeout=self._request_timeout)
-            if result.is_error():
-                raise SolidLSPException(f"Error processing batch request {method}", cause=result.error) from result.error
-            results.append(result.payload)
+        for request_id, method, request in request_items:
+            ok = False
+            try:
+                result = request.get_result(timeout=self._request_timeout)
+                if result.is_error():
+                    raise SolidLSPException(f"Error processing batch request {method}", cause=result.error) from result.error
+                results.append(result.payload)
+                ok = True
+            finally:
+                self._notify_request_end(method, request_id, ok=ok)
         return results
 
     def on_request(self, method: str, cb: RequestHandler) -> None:

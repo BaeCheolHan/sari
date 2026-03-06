@@ -31,6 +31,22 @@ class _ProbeStateRecord:
     last_error_message: str | None = None
 
 class SolidLspProbeMixin:
+    def _is_manual_probe_trigger(self, trigger: str | None) -> bool:
+        normalized = trigger.strip().lower() if isinstance(trigger, str) else ""
+        return normalized in {"manual", "force", "manual_probe", "manual_index", "interactive"}
+
+    def _request_kind_for_probe_trigger(self, trigger: str | None) -> str:
+        return "manual_probe" if self._is_manual_probe_trigger(trigger) else "background_probe"
+
+    def _probe_status_for_error_code(self, error_code: str) -> str:
+        if error_code == "ERR_LSP_WORKSPACE_MISMATCH":
+            return "WORKSPACE_MISMATCH"
+        if error_code in {"ERR_LSP_GLOBAL_SOFT_LIMIT", "ERR_LSP_SLOT_EXHAUSTED"}:
+            return "BACKPRESSURE_COOLDOWN"
+        if _is_unavailable_probe_error(error_code):
+            return "UNAVAILABLE_COOLDOWN"
+        return "COOLDOWN"
+
     def _sync_probe_state_record(self, key: tuple[str, Language]) -> None:
         repo = getattr(self, "_repo_language_probe_repo", None)
         if repo is None:
@@ -71,7 +87,7 @@ class SolidLspProbeMixin:
             if state is None:
                 state = _ProbeStateRecord(status="IDLE", last_seen_monotonic=now_mono)
                 self._probe_state[key] = state
-            if state.status in {"UNAVAILABLE_COOLDOWN", "COOLDOWN", "WORKSPACE_MISMATCH"}:
+            if state.status in {"UNAVAILABLE_COOLDOWN", "COOLDOWN", "WORKSPACE_MISMATCH", "BACKPRESSURE_COOLDOWN"}:
                 self._probe_reconcile_clear_count = int(getattr(self, "_probe_reconcile_clear_count", 0)) + 1
             else:
                 self._probe_reconcile_skip_count = int(getattr(self, "_probe_reconcile_skip_count", 0)) + 1
@@ -152,8 +168,8 @@ class SolidLspProbeMixin:
                 state = _ProbeStateRecord(status="IDLE", last_seen_monotonic=now)
                 self._probe_state[key] = state
             state.last_seen_monotonic = now
-            state.last_trigger = normalized_trigger
             if state.status == "READY_L0":
+                state.last_trigger = normalized_trigger
                 should_sync = True
                 result = "ready"
             elif state.status == "WORKSPACE_MISMATCH":
@@ -162,18 +178,23 @@ class SolidLspProbeMixin:
                     state.next_retry_monotonic = 0.0
                     state.last_error_code = None
                     state.last_error_message = None
+                    state.last_trigger = normalized_trigger
                 else:
                     return "workspace_mismatch"
             if result == "ready":
                 pass
             elif state.status == "WARMING":
                 if (not force) and now < state.next_retry_monotonic:
+                    if self._is_manual_probe_trigger(normalized_trigger):
+                        state.last_trigger = normalized_trigger
                     should_sync = True
                     result = "warming"
-            if result == "scheduled" and (not force) and now < state.next_retry_monotonic:
+            bypass_backpressure = self._is_manual_probe_trigger(normalized_trigger) and state.status == "BACKPRESSURE_COOLDOWN"
+            if result == "scheduled" and (not force) and now < state.next_retry_monotonic and not bypass_backpressure:
                 should_sync = True
                 result = "cooldown"
             if result == "scheduled":
+                state.last_trigger = normalized_trigger
                 future = self._probe_executor.submit(self._probe_worker, key, normalized_relative_path)
                 self._probe_inflight[key] = future
                 self._probe_inflight_phase[key] = "probe"
@@ -257,6 +278,8 @@ class SolidLspProbeMixin:
                 return False
             if state.status == "WORKSPACE_MISMATCH":
                 return True
+            if state.status == "BACKPRESSURE_COOLDOWN":
+                return now < state.next_retry_monotonic
             if state.status not in {"COOLDOWN", "UNAVAILABLE_COOLDOWN"}:
                 return False
             return now < state.next_retry_monotonic
@@ -281,7 +304,7 @@ class SolidLspProbeMixin:
                     continue
                 if target_language is not None and key_lang != target_language:
                     continue
-                if state.status not in {"COOLDOWN", "UNAVAILABLE_COOLDOWN", "WORKSPACE_MISMATCH"}:
+                if state.status not in {"COOLDOWN", "UNAVAILABLE_COOLDOWN", "WORKSPACE_MISMATCH", "BACKPRESSURE_COOLDOWN"}:
                     continue
                 state.status = "IDLE"
                 state.fail_count = 0
@@ -319,6 +342,10 @@ class SolidLspProbeMixin:
             else:
                 runtime_scope_root, runtime_relative_path = (repo_root, sample_relative_path)
             self._ensure_prewarm(language=language, repo_root=runtime_scope_root)
+            with self._probe_lock:
+                state = self._probe_state.get(key)
+                last_trigger = state.last_trigger if state is not None else None
+            request_kind = self._request_kind_for_probe_trigger(last_trigger)
             guarded_get_or_start = getattr(self, "_get_or_start_with_broker_guard", None)
             if callable(guarded_get_or_start):
                 lsp = guarded_get_or_start(
@@ -326,12 +353,12 @@ class SolidLspProbeMixin:
                     runtime_scope_root=runtime_scope_root,
                     lane="backlog",
                     pending_jobs_in_scope=0,
-                    request_kind="indexing",
+                    request_kind=request_kind,
                     trace_name="probe.get_or_start",
                     trace_phase="probe",
                 )
             else:
-                lsp = self._hub.get_or_start(language=language, repo_root=runtime_scope_root, request_kind="indexing")
+                lsp = self._hub.get_or_start(language=language, repo_root=runtime_scope_root, request_kind=request_kind)
             self._mark_probe_ready(key, now_mono=now)
             status = "success"
             if language in {Language.GO, Language.JAVA, Language.KOTLIN}:
@@ -346,7 +373,7 @@ class SolidLspProbeMixin:
             error_code = _extract_error_code_from_message(error_message)
             with self._probe_lock:
                 state = self._probe_state[key]
-                state.status = "UNAVAILABLE_COOLDOWN" if _is_unavailable_probe_error(error_code) else "COOLDOWN"
+                state.status = self._probe_status_for_error_code(error_code)
                 state.fail_count += 1
                 state.last_error_code = error_code
                 state.last_error_message = error_message
@@ -385,6 +412,9 @@ class SolidLspProbeMixin:
         now = time.monotonic()
         try:
             repo_root, language = key
+            with self._probe_lock:
+                state = self._probe_state.get(key)
+                request_kind = self._request_kind_for_probe_trigger(state.last_trigger if state is not None else None)
             resolver = getattr(self, "_resolve_probe_runtime_scope", None)
             if callable(resolver):
                 runtime_scope_root, runtime_relative_path = resolver(
@@ -401,12 +431,12 @@ class SolidLspProbeMixin:
                     runtime_scope_root=runtime_scope_root,
                     lane="backlog",
                     pending_jobs_in_scope=0,
-                    request_kind="indexing",
+                    request_kind=request_kind,
                     trace_name="probe_l1.get_or_start",
                     trace_phase="probe",
                 )
             else:
-                lsp = self._hub.get_or_start(language=language, repo_root=runtime_scope_root, request_kind="indexing")
+                lsp = self._hub.get_or_start(language=language, repo_root=runtime_scope_root, request_kind=request_kind)
             with self._acquire_l1_probe_slot():
                 symbols_result, _sync_hint_accepted = request_document_symbols_with_optional_sync(
                     lsp,
@@ -432,10 +462,7 @@ class SolidLspProbeMixin:
                     else:
                         state.next_retry_monotonic = now + self._probe_warming_retry_sec
                 else:
-                    if error_code == "ERR_LSP_WORKSPACE_MISMATCH":
-                        state.status = "WORKSPACE_MISMATCH"
-                    else:
-                        state.status = "UNAVAILABLE_COOLDOWN" if _is_unavailable_probe_error(error_code) else "COOLDOWN"
+                    state.status = self._probe_status_for_error_code(error_code)
                     state.fail_count += 1
                     state.last_error_code = error_code
                     state.last_error_message = error_message
@@ -484,6 +511,12 @@ def _extract_error_code_from_message(message: str) -> str:
         return "ERR_RUNTIME_MISMATCH"
     if "broken pipe" in lowered:
         return "ERR_BROKEN_PIPE"
+    if "soft limit" in lowered and "lsp" in lowered:
+        return "ERR_LSP_GLOBAL_SOFT_LIMIT"
+    if "슬롯" in lowered and "lsp" in lowered:
+        return "ERR_LSP_SLOT_EXHAUSTED"
+    if "slot" in lowered and "lsp" in lowered:
+        return "ERR_LSP_SLOT_EXHAUSTED"
     if "timed out" in lowered or "timeout" in lowered:
         return "ERR_RPC_TIMEOUT"
     if "server exited" in lowered:

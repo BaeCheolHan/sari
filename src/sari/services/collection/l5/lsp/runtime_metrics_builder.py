@@ -20,6 +20,7 @@ def build_runtime_metrics(
     probe_state_unavailable_count: int = 0,
     probe_state_workspace_mismatch_count: int = 0,
     probe_state_cooldown_count: int = 0,
+    probe_state_backpressure_count: int = 0,
     probe_reconcile_clear_count: int = 0,
     probe_reconcile_skip_count: int = 0,
 ) -> dict[str, int]:
@@ -40,6 +41,7 @@ def build_runtime_metrics(
     metrics["probe_state_unavailable_count"] = int(probe_state_unavailable_count)
     metrics["probe_state_workspace_mismatch_count"] = int(probe_state_workspace_mismatch_count)
     metrics["probe_state_cooldown_count"] = int(probe_state_cooldown_count)
+    metrics["probe_state_backpressure_count"] = int(probe_state_backpressure_count)
     metrics["probe_reconcile_clear_count"] = int(probe_reconcile_clear_count)
     metrics["probe_reconcile_skip_count"] = int(probe_reconcile_skip_count)
     metrics.setdefault("session_cache_hit_by_tier_single", 0)

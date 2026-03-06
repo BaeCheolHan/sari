@@ -25,6 +25,7 @@ from solidlsp import ls_types
 from solidlsp.ls_config import Language, LanguageServerConfig
 from solidlsp.ls_exceptions import SolidLSPException
 from solidlsp.ls_handler import SolidLanguageServerHandler
+from solidlsp.ls_handler import RequestEndHandler, RequestStartHandler
 from solidlsp.ls_types import UnifiedSymbolInformation
 from solidlsp.ls_utils import FileUtils, PathUtils, TextUtils
 from solidlsp.lsp_protocol_handler import lsp_types
@@ -388,6 +389,17 @@ class SolidLanguageServer(ABC):
 
     def set_request_timeout(self, timeout: float | None) -> None:
         self.server.set_request_timeout(timeout)
+
+    def set_request_lifecycle_hooks(
+        self,
+        *,
+        on_request_start: RequestStartHandler | None = None,
+        on_request_end: RequestEndHandler | None = None,
+    ) -> None:
+        self.server.set_request_lifecycle_hooks(
+            on_request_start=on_request_start,
+            on_request_end=on_request_end,
+        )
 
     def get_ignore_spec(self) -> pathspec.PathSpec:
         return self._ignore_spec

@@ -44,10 +44,14 @@ class _ReadinessRepo:
 
 
 class _Backend:
-    def __init__(self, unavailable: bool = False) -> None:
+    def __init__(self, unavailable: bool = False, status: str | None = None) -> None:
         self._unavailable = unavailable
+        self._status = status
 
     def is_l3_permanently_unavailable_for_file(self, *, repo_root: str, relative_path: str) -> bool:
+        del repo_root, relative_path
+        if self._status == "BACKPRESSURE_COOLDOWN":
+            return True
         return self._unavailable
 
 
@@ -57,6 +61,17 @@ def test_skip_runtime_reports_probe_unavailable() -> None:
         l3_recent_success_ttl_sec=30,
         readiness_repo=_ReadinessRepo(None),
         lsp_backend=_Backend(unavailable=True),
+        resolve_language_from_path_fn=lambda _: Language.PYTHON,
+    )
+    assert svc.resolve_skip_reason(_job()) == "skip_probe_unavailable"
+
+
+def test_skip_runtime_reports_backpressure_cooldown_as_probe_unavailable() -> None:
+    svc = L3SkipRuntimeService(
+        l3_supported_languages={Language.PYTHON},
+        l3_recent_success_ttl_sec=30,
+        readiness_repo=_ReadinessRepo(None),
+        lsp_backend=_Backend(status="BACKPRESSURE_COOLDOWN"),
         resolve_language_from_path_fn=lambda _: Language.PYTHON,
     )
     assert svc.resolve_skip_reason(_job()) == "skip_probe_unavailable"

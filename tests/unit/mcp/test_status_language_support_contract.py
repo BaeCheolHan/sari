@@ -9,12 +9,15 @@ from types import SimpleNamespace
 
 from sari.db.repositories.language_probe_repository import LanguageProbeRepository
 from sari.db.repositories.repo_language_probe_repository import RepoLanguageProbeRepository
+from sari.db.repositories.repo_registry_repository import RepoRegistryRepository
 from sari.db.repositories.runtime_repository import RuntimeRepository
 from sari.db.repositories.file_collection_repository import FileCollectionRepository
 from sari.db.repositories.lsp_tool_data_repository import LspToolDataRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.core.models import WorkspaceDTO
 from sari.core.models import PipelineMetricsDTO
+from sari.core.models import RepoIdentityDTO
+from sari.core.models import now_iso8601_utc
 from sari.db.schema import init_schema
 from sari.db.schema import connect
 from sari.http.app import HttpContext, status_endpoint
@@ -141,13 +144,13 @@ def test_mcp_status_exposes_language_readiness_snapshot(tmp_path: Path) -> None:
     repo_probe_repo.upsert_state(
         repo_root=str(repo_root.resolve()),
         language="python",
-        status="UNAVAILABLE_COOLDOWN",
+        status="BACKPRESSURE_COOLDOWN",
         fail_count=2,
-        inflight_phase="probe",
+        inflight_phase="manual_probe",
         next_retry_at="2026-02-17T00:30:00+00:00",
-        last_error_code="ERR_RPC_TIMEOUT",
-        last_error_message="rpc timeout",
-        last_trigger="background",
+        last_error_code="ERR_LSP_GLOBAL_SOFT_LIMIT",
+        last_error_message="soft limit",
+        last_trigger="manual_probe",
         last_seen_at="2026-02-17T00:00:00+00:00",
         updated_at="2026-02-17T00:00:01+00:00",
     )
@@ -166,6 +169,7 @@ def test_mcp_status_exposes_language_readiness_snapshot(tmp_path: Path) -> None:
             "lsp_orphan_suspect_count": 2,
             "lsp_residual_reap_count": 3,
         },
+        repo_hot_checker=lambda repo: repo == str(repo_root.resolve()),
         reconcile_state_provider=lambda: {
             "reconcile_last_run_ts": "2026-02-19T12:00:00+00:00",
             "reconcile_last_result": "ok",
@@ -185,12 +189,177 @@ def test_mcp_status_exposes_language_readiness_snapshot(tmp_path: Path) -> None:
     assert item["reconcile_state"]["reconcile_last_run_ts"] == "2026-02-19T12:00:00+00:00"
     assert item["reconcile_state"]["reconcile_last_error_code"] is None
     assert item["reconcile_state"]["reconcile_last_error_message"] is None
+    assert item["repo_language_probe"]["hot_repo_active"] is True
     assert item["repo_language_probe"]["states"][0]["language"] == "python"
-    assert item["repo_language_probe"]["states"][0]["status"] == "UNAVAILABLE_COOLDOWN"
-    assert item["repo_language_probe"]["states"][0]["blocked_reason"] == "probe_unavailable"
+    assert item["repo_language_probe"]["states"][0]["status"] == "BACKPRESSURE_COOLDOWN"
+    assert item["repo_language_probe"]["states"][0]["blocked_reason"] == "backpressure"
+    assert item["repo_language_probe"]["states"][0]["priority_class"] == "manual_hot"
+    assert item["repo_language_probe"]["states"][0]["last_admission_kind"] == "manual_probe"
     assert item["repo_language_probe"]["states"][0]["next_retry_at"] == "2026-02-17T00:30:00+00:00"
     assert "stage_rollout" in item
     assert isinstance(item["stage_rollout"], dict)
+
+
+def test_mcp_status_uses_validated_repo_root_for_repo_id_inputs(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_root = tmp_path / "repo-a"
+    repo_root.mkdir(parents=True, exist_ok=True)
+    workspace_repo = WorkspaceRepository(db_path)
+    workspace_repo.add(
+        WorkspaceDTO(
+            path=str(repo_root.resolve()),
+            name=repo_root.name,
+            indexed_at=None,
+            is_active=True,
+        )
+    )
+    RepoRegistryRepository(db_path).upsert(
+        RepoIdentityDTO(
+            repo_id="rid_repo_a",
+            repo_label="repo-a",
+            repo_root=str(repo_root.resolve()),
+            workspace_root=str(repo_root.resolve()),
+            updated_at=now_iso8601_utc(),
+        )
+    )
+    repo_probe_repo = RepoLanguageProbeRepository(db_path)
+    repo_probe_repo.upsert_state(
+        repo_root=str(repo_root.resolve()),
+        language="python",
+        status="BACKPRESSURE_COOLDOWN",
+        fail_count=1,
+        inflight_phase="manual_probe",
+        next_retry_at="2026-02-17T00:30:00+00:00",
+        last_error_code="ERR_LSP_GLOBAL_SOFT_LIMIT",
+        last_error_message="soft limit",
+        last_trigger="manual_probe",
+        last_seen_at="2026-02-17T00:00:00+00:00",
+        updated_at="2026-02-17T00:00:01+00:00",
+    )
+
+    seen_repo_roots: list[str] = []
+    tool = StatusTool(
+        workspace_repo=workspace_repo,
+        runtime_repo=RuntimeRepository(db_path),
+        file_repo=FileCollectionRepository(db_path),
+        lsp_repo=LspToolDataRepository(db_path),
+        repo_language_probe_repo=repo_probe_repo,
+        repo_hot_checker=lambda repo: seen_repo_roots.append(repo) or repo == str(repo_root.resolve()),
+    )
+    payload = tool.call({"repo": "rid_repo_a"})
+
+    assert payload["isError"] is False
+    item = payload["structuredContent"]["items"][0]
+    assert seen_repo_roots == [str(repo_root.resolve())]
+
+
+def test_mcp_status_priority_class_uses_row_last_trigger(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_root = tmp_path / "repo-a"
+    repo_root.mkdir(parents=True, exist_ok=True)
+    workspace_repo = WorkspaceRepository(db_path)
+    workspace_repo.add(
+        WorkspaceDTO(
+            path=str(repo_root.resolve()),
+            name=repo_root.name,
+            indexed_at=None,
+            is_active=True,
+        )
+    )
+    repo_probe_repo = RepoLanguageProbeRepository(db_path)
+    repo_probe_repo.upsert_state(
+        repo_root=str(repo_root.resolve()),
+        language="python",
+        status="BACKPRESSURE_COOLDOWN",
+        fail_count=1,
+        inflight_phase="background_probe",
+        next_retry_at="2026-02-17T00:30:00+00:00",
+        last_error_code="ERR_LSP_GLOBAL_SOFT_LIMIT",
+        last_error_message="soft limit",
+        last_trigger="background",
+        last_seen_at="2026-02-17T00:00:00+00:00",
+        updated_at="2026-02-17T00:00:01+00:00",
+    )
+    repo_probe_repo.upsert_state(
+        repo_root=str(repo_root.resolve()),
+        language="java",
+        status="BACKPRESSURE_COOLDOWN",
+        fail_count=1,
+        inflight_phase="manual_probe",
+        next_retry_at="2026-02-17T00:31:00+00:00",
+        last_error_code="ERR_LSP_GLOBAL_SOFT_LIMIT",
+        last_error_message="soft limit",
+        last_trigger="manual_probe",
+        last_seen_at="2026-02-17T00:00:00+00:00",
+        updated_at="2026-02-17T00:00:02+00:00",
+    )
+    tool = StatusTool(
+        workspace_repo=workspace_repo,
+        runtime_repo=RuntimeRepository(db_path),
+        file_repo=FileCollectionRepository(db_path),
+        lsp_repo=LspToolDataRepository(db_path),
+        repo_language_probe_repo=repo_probe_repo,
+        repo_hot_checker=lambda repo: repo == str(repo_root.resolve()),
+    )
+
+    payload = tool.call({"repo": str(repo_root.resolve())})
+
+    assert payload["isError"] is False
+    item = payload["structuredContent"]["items"][0]
+    rows = {
+        row["language"]: row
+        for row in item["repo_language_probe"]["states"]
+    }
+    assert rows["python"]["priority_class"] == "background"
+    assert rows["java"]["priority_class"] == "manual_hot"
+    assert item["repo_language_probe"]["hot_repo_active"] is True
+    assert rows["python"]["repo_root"] == str(repo_root.resolve())
+
+
+def test_mcp_status_treats_force_trigger_as_manual_hot(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_root = tmp_path / "repo-a"
+    repo_root.mkdir(parents=True, exist_ok=True)
+    workspace_repo = WorkspaceRepository(db_path)
+    workspace_repo.add(
+        WorkspaceDTO(
+            path=str(repo_root.resolve()),
+            name=repo_root.name,
+            indexed_at=None,
+            is_active=True,
+        )
+    )
+    repo_probe_repo = RepoLanguageProbeRepository(db_path)
+    repo_probe_repo.upsert_state(
+        repo_root=str(repo_root.resolve()),
+        language="python",
+        status="BACKPRESSURE_COOLDOWN",
+        fail_count=1,
+        inflight_phase="manual_probe",
+        next_retry_at="2026-02-17T00:30:00+00:00",
+        last_error_code="ERR_LSP_GLOBAL_SOFT_LIMIT",
+        last_error_message="soft limit",
+        last_trigger="force",
+        last_seen_at="2026-02-17T00:00:00+00:00",
+        updated_at="2026-02-17T00:00:01+00:00",
+    )
+    tool = StatusTool(
+        workspace_repo=workspace_repo,
+        runtime_repo=RuntimeRepository(db_path),
+        file_repo=FileCollectionRepository(db_path),
+        lsp_repo=LspToolDataRepository(db_path),
+        repo_language_probe_repo=repo_probe_repo,
+        repo_hot_checker=lambda repo: repo == str(repo_root.resolve()),
+    )
+
+    payload = tool.call({"repo": str(repo_root.resolve())})
+
+    assert payload["isError"] is False
+    row = payload["structuredContent"]["items"][0]["repo_language_probe"]["states"][0]
+    assert row["priority_class"] == "manual_hot"
 
 
 def test_mcp_status_aggregates_scope_file_count_and_module_count(tmp_path: Path) -> None:
@@ -332,3 +501,38 @@ def test_mcp_status_falls_back_to_module_repo_count_when_scope_rows_are_missing(
     assert item["file_count"] == 1
     assert item["module_repo_count"] == 1
     assert item["repo_scope_kind"] == "module_scope"
+
+
+def test_mcp_status_exposes_runtime_activity_snapshot(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_root = tmp_path / "repo-a"
+    repo_root.mkdir(parents=True, exist_ok=True)
+    workspace_repo = WorkspaceRepository(db_path)
+    workspace_repo.add(
+        WorkspaceDTO(
+            path=str(repo_root.resolve()),
+            name=repo_root.name,
+            indexed_at=None,
+            is_active=True,
+        )
+    )
+    tool = StatusTool(
+        workspace_repo=workspace_repo,
+        runtime_repo=RuntimeRepository(db_path),
+        file_repo=FileCollectionRepository(db_path),
+        lsp_repo=LspToolDataRepository(db_path),
+        repo_runtime_activity_provider=lambda repo: {
+            "repo_root": repo,
+            "active_request_count": 2,
+            "busy_runtime_count": 1,
+            "idle_runtime_count": 3,
+        },
+    )
+
+    payload = tool.call({"repo": str(repo_root.resolve())})
+
+    item = payload["structuredContent"]["items"][0]
+    assert item["runtime_activity"]["active_request_count"] == 2
+    assert item["runtime_activity"]["busy_runtime_count"] == 1
+    assert item["runtime_activity"]["idle_runtime_count"] == 3

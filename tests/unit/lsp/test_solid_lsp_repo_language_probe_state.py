@@ -100,3 +100,114 @@ def test_l1_warming_failure_preserves_short_warming_retry(monkeypatch) -> None:
         state = backend._probe_state[key]  # type: ignore[attr-defined]
     assert state.status == "WARMING"
     assert 4.5 <= state.next_retry_monotonic - now <= 5.5
+
+
+def test_manual_trigger_bypasses_backpressure_cooldown(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    backend = SolidLspExtractionBackend(hub=_FakeHub())  # type: ignore[arg-type]
+    key = (str(Path("/repo").resolve()), Language.PYTHON)
+    now = time.monotonic()
+    with backend._probe_lock:
+        backend._probe_state[key] = _ProbeStateRecord(
+            status="BACKPRESSURE_COOLDOWN",
+            fail_count=2,
+            last_seen_monotonic=now,
+            next_retry_monotonic=now + 60.0,
+        )  # type: ignore[attr-defined]
+
+    submitted: list[tuple[object, tuple[object, ...]]] = []
+
+    class _FakeFuture:
+        def result(self, timeout: float | None = None) -> None:
+            del timeout
+            return None
+
+    def _submit(fn, *args):  # noqa: ANN001
+        submitted.append((fn, args))
+        return _FakeFuture()
+
+    backend._probe_executor.submit = _submit  # type: ignore[method-assign, assignment]
+
+    result = backend.schedule_probe_for_file(
+        repo_root="/repo",
+        relative_path="a.py",
+        force=False,
+        trigger="manual",
+    )
+    backend.shutdown_probe_executor()
+
+    assert result == "scheduled"
+    assert len(submitted) == 1
+
+
+def test_backpressure_cooldown_blocks_background_l3_until_retry_expires() -> None:
+    backend = SolidLspExtractionBackend(hub=_FakeHub())  # type: ignore[arg-type]
+    key = (str(Path("/repo").resolve()), Language.PYTHON)
+    now = time.monotonic()
+    with backend._probe_lock:
+        backend._probe_state[key] = _ProbeStateRecord(
+            status="BACKPRESSURE_COOLDOWN",
+            last_seen_monotonic=now,
+            next_retry_monotonic=now + 30.0,
+        )  # type: ignore[attr-defined]
+
+    try:
+        assert backend.is_l3_permanently_unavailable_for_file("/repo", "a.py") is True
+    finally:
+        backend.shutdown_probe_executor()
+
+
+def test_background_cooldown_retry_does_not_overwrite_manual_trigger() -> None:
+    backend = SolidLspExtractionBackend(hub=_FakeHub())  # type: ignore[arg-type]
+    key = (str(Path("/repo").resolve()), Language.PYTHON)
+    now = time.monotonic()
+    with backend._probe_lock:
+        backend._probe_state[key] = _ProbeStateRecord(
+            status="BACKPRESSURE_COOLDOWN",
+            last_seen_monotonic=now,
+            next_retry_monotonic=now + 30.0,
+            last_trigger="manual_probe",
+        )  # type: ignore[attr-defined]
+
+    try:
+        result = backend.schedule_probe_for_file(
+            repo_root="/repo",
+            relative_path="a.py",
+            force=False,
+            trigger="background",
+        )
+        assert result == "cooldown"
+        with backend._probe_lock:
+            state = backend._probe_state[key]  # type: ignore[attr-defined]
+        assert state.last_trigger == "manual_probe"
+    finally:
+        backend.shutdown_probe_executor()
+
+
+def test_manual_retry_while_warming_preserves_manual_trigger() -> None:
+    backend = SolidLspExtractionBackend(hub=_FakeHub())  # type: ignore[arg-type]
+    key = (str(Path("/repo").resolve()), Language.PYTHON)
+    now = time.monotonic()
+    with backend._probe_lock:
+        backend._probe_state[key] = _ProbeStateRecord(
+            status="WARMING",
+            warming_count=1,
+            last_seen_monotonic=now,
+            next_retry_monotonic=now + 30.0,
+            last_trigger="background",
+        )  # type: ignore[attr-defined]
+
+    try:
+        result = backend.schedule_probe_for_file(
+            repo_root="/repo",
+            relative_path="a.py",
+            force=False,
+            trigger="manual",
+        )
+        assert result == "warming"
+        with backend._probe_lock:
+            state = backend._probe_state[key]  # type: ignore[attr-defined]
+        assert state.last_trigger == "manual"
+    finally:
+        backend.shutdown_probe_executor()

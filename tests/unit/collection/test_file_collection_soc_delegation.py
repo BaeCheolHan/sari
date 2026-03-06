@@ -877,6 +877,96 @@ def test_file_collection_service_fanout_scan_does_not_delete_independent_child_s
     assert int(owned_row["is_deleted"]) == 0
 
 
+def test_file_collection_service_fanout_scan_marks_child_repo_hot(tmp_path: Path) -> None:
+    """workspace fan-out scan은 실제 child repo root를 hot으로 표시해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    workspace_root = (tmp_path / "workspace").resolve()
+    module_a = (workspace_root / "mod-a").resolve()
+    module_b = (workspace_root / "mod-b").resolve()
+    module_a.mkdir(parents=True)
+    module_b.mkdir(parents=True)
+
+    class _HotMarkBackend(_NoopLspBackend):
+        def __init__(self) -> None:
+            self.marked: list[str] = []
+
+        def mark_repo_hot(self, repo_root: str) -> None:
+            self.marked.append(repo_root)
+
+    backend = _HotMarkBackend()
+    service = FileCollectionService(
+        workspace_repo=WorkspaceRepository(db_path),
+        file_repo=FileCollectionRepository(db_path),
+        enrich_queue_repo=FileEnrichQueueRepository(db_path),
+        body_repo=FileBodyRepository(db_path),
+        lsp_repo=LspToolDataRepository(db_path),
+        readiness_repo=ToolReadinessRepository(db_path),
+        policy=_policy(),
+        lsp_backend=backend,
+        policy_repo=None,
+        event_repo=None,
+    )
+
+    class _FanoutScanScannerStub:
+        def scan_once(self, repo_root: str, scope_repo_root: str | None = None) -> CollectionScanResultDTO:
+            del scope_repo_root
+            return CollectionScanResultDTO(scanned_count=1, indexed_count=1, deleted_count=0)
+
+    service._fanout_resolver = _FanoutResolverStub([module_a, module_b])  # type: ignore[attr-defined]
+    service._scanner = _FanoutScanScannerStub()  # type: ignore[attr-defined]
+
+    _ = service.scan_once(str(workspace_root))
+
+    assert backend.marked == [
+        str(workspace_root),
+        str(module_a),
+        str(module_b),
+    ]
+
+
+def test_file_collection_service_background_scan_does_not_mark_repo_hot(tmp_path: Path) -> None:
+    """background scan 경로는 repo hot-mark를 하지 않아야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    workspace_root = (tmp_path / "workspace").resolve()
+    module_a = (workspace_root / "mod-a").resolve()
+    module_a.mkdir(parents=True)
+
+    class _HotMarkBackend(_NoopLspBackend):
+        def __init__(self) -> None:
+            self.marked: list[str] = []
+
+        def mark_repo_hot(self, repo_root: str) -> None:
+            self.marked.append(repo_root)
+
+    backend = _HotMarkBackend()
+    service = FileCollectionService(
+        workspace_repo=WorkspaceRepository(db_path),
+        file_repo=FileCollectionRepository(db_path),
+        enrich_queue_repo=FileEnrichQueueRepository(db_path),
+        body_repo=FileBodyRepository(db_path),
+        lsp_repo=LspToolDataRepository(db_path),
+        readiness_repo=ToolReadinessRepository(db_path),
+        policy=_policy(),
+        lsp_backend=backend,
+        policy_repo=None,
+        event_repo=None,
+    )
+
+    class _FanoutScanScannerStub:
+        def scan_once(self, repo_root: str, scope_repo_root: str | None = None) -> CollectionScanResultDTO:
+            del repo_root, scope_repo_root
+            return CollectionScanResultDTO(scanned_count=1, indexed_count=1, deleted_count=0)
+
+    service._fanout_resolver = _FanoutResolverStub([module_a])  # type: ignore[attr-defined]
+    service._scanner = _FanoutScanScannerStub()  # type: ignore[attr-defined]
+
+    _ = service.scan_once(str(workspace_root), trigger="background")
+
+    assert backend.marked == []
+
+
 def test_file_collection_service_single_repo_scan_cleans_up_stale_fanout_rows(tmp_path: Path) -> None:
     """single_repo 스캔 경로에서는 과거 fanout child active row를 선제 삭제해야 한다."""
     db_path = tmp_path / "state.db"

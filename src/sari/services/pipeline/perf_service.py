@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import subprocess
 import time
@@ -248,7 +249,7 @@ class PipelinePerfService:
             )
             with self._perf_tracer.span("measure_workspace.scan_once", phase="scan", repo_root=repo_root):
                 with exclude_ctx:
-                    self._file_collection_service.scan_once(repo_root=repo_root)
+                    self._scan_once_background_compatible(repo_root=repo_root)
             scan_elapsed_sec = float(time.perf_counter() - scan_started)
             enrich_started = time.perf_counter()
             self._last_drain_diagnostics = {}
@@ -276,6 +277,19 @@ class PipelinePerfService:
             run_context=workspace_context,
             integrity_snapshot=integrity_snapshot,
         )
+
+    def _scan_once_background_compatible(self, *, repo_root: str) -> object:
+        """scan_once 구현체가 trigger 인자를 지원하지 않아도 동작해야 한다."""
+        scan_once = getattr(self._file_collection_service, "scan_once")
+        try:
+            parameters = inspect.signature(scan_once).parameters
+        except (TypeError, ValueError):
+            parameters = {}
+        if "trigger" in parameters or any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
+        ):
+            return scan_once(repo_root=repo_root, trigger="background")
+        return scan_once(repo_root=repo_root)
 
     @contextmanager
     def _temporary_l5_shadow_mode_for_perf(self):

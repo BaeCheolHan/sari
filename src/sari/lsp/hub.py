@@ -47,6 +47,11 @@ class LspRuntimeEntry:
     retention_expires_at: float = 0.0
     retention_tier: str | None = None
     retention_hotness: float = 0.0
+    active_request_count: int = 0
+    last_request_started_at: float | None = None
+    last_request_finished_at: float | None = None
+    last_request_kind: str | None = None
+    last_request_method: str | None = None
 
 
 class LspHub:
@@ -72,6 +77,7 @@ class LspHub:
         java_min_major: int = 17,
         max_concurrent_starts: int = 2,
         max_concurrent_l1_probes: int = 2,
+        manual_hot_repo_ttl_sec: float = 30.0,
         runtime_broker: LspRuntimeBroker | None = None,
         clock: Callable[[], float] | None = None,
     ) -> None:
@@ -114,6 +120,12 @@ class LspHub:
         self._retention_touch_count = 0
         self._retention_prune_count = 0
         self._scale_out_guard: Callable[[Language, str], bool] | None = None
+        self._manual_hot_repo_ttl_sec = max(1.0, float(manual_hot_repo_ttl_sec))
+        self._manual_hot_repo_until: dict[str, float] = {}
+        self._priority_eviction_count = 0
+        self._soft_limit_denied_background_count = 0
+        self._soft_limit_admitted_manual_count = 0
+        self._runtime_activity_anomaly_count = 0
         self._stop_cleanup = threading.Event()
         self._forced_kill_count = 0
         self._stop_timeout_count = 0
@@ -139,6 +151,8 @@ class LspHub:
         normalized_root = str(Path(repo_root).resolve())
         base_key = (language, normalized_root)
         normalized_kind = self._normalize_request_kind(request_kind)
+        if self._is_manual_priority_kind(normalized_kind):
+            self.mark_repo_hot(normalized_root)
         wait_timeout_sec = self._interactive_timeout_sec if normalized_kind == "interactive" else self._request_timeout_sec
         with self._perf_tracer.span(
             "get_or_start.total",
@@ -178,7 +192,12 @@ class LspHub:
                                 continue
                             self._cleanup_not_running_entry_locked(key=key, entry=entry)
 
-                        should_scale_out = self._should_scale_out_locked(base_key=base_key, now=now, running_count=len(running_keys))
+                        should_scale_out = self._should_scale_out_locked(
+                            base_key=base_key,
+                            now=now,
+                            running_count=len(running_keys),
+                            request_kind=normalized_kind,
+                        )
                         if should_scale_out:
                             try:
                                 slot = self._next_slot_locked(
@@ -360,8 +379,14 @@ class LspHub:
     def get_metrics(self) -> dict[str, int]:
         """LSP 런타임 운영 메트릭 스냅샷을 반환한다."""
         with self._lock:
+            active_request_count = sum(max(0, int(entry.active_request_count)) for entry in self._instances.values())
+            busy_runtime_count = sum(1 for entry in self._instances.values() if int(entry.active_request_count) > 0)
             return {
                 "lsp_instance_count": len(self._instances),
+                "lsp_active_request_count": int(active_request_count),
+                "lsp_busy_runtime_count": int(busy_runtime_count),
+                "lsp_idle_runtime_count": int(max(0, len(self._instances) - busy_runtime_count)),
+                "lsp_runtime_activity_anomaly_count": int(self._runtime_activity_anomaly_count),
                 "lsp_forced_kill_count": int(self._forced_kill_count),
                 "lsp_stop_timeout_count": int(self._stop_timeout_count),
                 "lsp_orphan_suspect_count": int(self._orphan_suspect_count),
@@ -374,7 +399,70 @@ class LspHub:
                 "lsp_scale_out_guard_block_count": int(self._scale_out_guard_block_count),
                 "lsp_retention_touch_count": int(self._retention_touch_count),
                 "lsp_retention_prune_count": int(self._retention_prune_count),
+                "lsp_manual_hot_repo_count": int(self._active_manual_hot_repo_count_locked()),
+                "lsp_priority_eviction_count": int(self._priority_eviction_count),
+                "lsp_soft_limit_denied_background_count": int(self._soft_limit_denied_background_count),
+                "lsp_soft_limit_admitted_manual_count": int(self._soft_limit_admitted_manual_count),
             }
+
+    def get_repo_runtime_activity(self, repo_root: str) -> dict[str, int | str]:
+        """지정 repo의 runtime busy/idle 요약을 반환한다."""
+        normalized_root = str(Path(repo_root).resolve())
+        with self._lock:
+            entries = [entry for key, entry in self._instances.items() if key.repo_root == normalized_root]
+            active_request_count = sum(max(0, int(entry.active_request_count)) for entry in entries)
+            busy_runtime_count = sum(1 for entry in entries if int(entry.active_request_count) > 0)
+            return {
+                "repo_root": normalized_root,
+                "active_request_count": int(active_request_count),
+                "busy_runtime_count": int(busy_runtime_count),
+                "idle_runtime_count": int(max(0, len(entries) - busy_runtime_count)),
+            }
+
+    def record_request_start(self, *, key: LspRuntimeKey, request_kind: str, method: str) -> None:
+        """runtime의 in-flight request 시작을 기록한다."""
+        with self._lock:
+            entry = self._instances.get(key)
+            if entry is None:
+                self._runtime_activity_anomaly_count += 1
+                return
+            now = self._clock()
+            entry.active_request_count = max(0, int(entry.active_request_count)) + 1
+            entry.last_request_started_at = now
+            entry.last_request_kind = str(request_kind)
+            entry.last_request_method = str(method)
+            entry.last_used_at = now
+
+    def record_request_end(self, *, key: LspRuntimeKey, ok: bool) -> None:
+        """runtime의 in-flight request 종료를 기록한다."""
+        del ok
+        with self._lock:
+            entry = self._instances.get(key)
+            if entry is None:
+                self._runtime_activity_anomaly_count += 1
+                return
+            current = int(entry.active_request_count)
+            if current <= 0:
+                self._runtime_activity_anomaly_count += 1
+                entry.active_request_count = 0
+            else:
+                entry.active_request_count = current - 1
+            now = self._clock()
+            entry.last_request_finished_at = now
+            entry.last_used_at = now
+
+    def mark_repo_hot(self, repo_root: str, *, ttl_override_sec: float | None = None) -> None:
+        normalized_root = str(Path(repo_root).resolve())
+        ttl_sec = self._manual_hot_repo_ttl_sec if ttl_override_sec is None else max(1.0, float(ttl_override_sec))
+        with self._lock:
+            self._manual_hot_repo_until[normalized_root] = self._clock() + ttl_sec
+
+    def is_repo_hot(self, repo_root: str) -> bool:
+        normalized_root = str(Path(repo_root).resolve())
+        with self._lock:
+            self._prune_manual_hot_repos_locked(now=self._clock())
+            expires_at = self._manual_hot_repo_until.get(normalized_root)
+            return expires_at is not None and expires_at > self._clock()
 
     def set_scale_out_guard(self, guard: Callable[[Language, str], bool] | None) -> None:
         """추가 scale-out 증설 차단 가드를 설정한다 (첫 기동은 허용)."""
@@ -550,6 +638,7 @@ class LspHub:
         evict_keys = [
             key
             for key, entry in self._instances.items()
+            if int(entry.active_request_count) <= 0
             if (now - entry.last_used_at) >= float(self._idle_timeout_sec)
             and now >= float(entry.retention_expires_at)
         ]
@@ -564,7 +653,10 @@ class LspHub:
                 # retention 보호가 없는 항목을 먼저 정리한다.
                 retention_rank = 1 if entry.retention_expires_at > self._clock() else 0
                 return (retention_rank, float(entry.last_used_at), float(entry.retention_hotness))
-            lru_key = min(self._instances.keys(), key=_lru_key_sort)
+            candidates = [key for key, entry in self._instances.items() if int(entry.active_request_count) <= 0]
+            if len(candidates) == 0:
+                return
+            lru_key = min(candidates, key=_lru_key_sort)
             self._stop_entry_locked(lru_key)
 
     def _stop_entry_locked(self, key: LspRuntimeKey) -> None:
@@ -572,6 +664,9 @@ class LspHub:
         entry = self._instances.get(key)
         if entry is None:
             return
+        if int(entry.active_request_count) > 0:
+            self._runtime_activity_anomaly_count += 1
+            entry.active_request_count = 0
         try:
             self._stop_server_with_timeout(entry.server)
         except (RuntimeError, OSError, ValueError) as exc:
@@ -590,6 +685,9 @@ class LspHub:
     def _cleanup_not_running_entry_locked(self, key: LspRuntimeKey, entry: LspRuntimeEntry) -> None:
         """is_running=false 엔트리를 OS 프로세스까지 정리한다."""
         self._orphan_suspect_count += 1
+        if int(entry.active_request_count) > 0:
+            self._runtime_activity_anomaly_count += 1
+            entry.active_request_count = 0
         try:
             self._stop_server_with_timeout(entry.server)
         except (RuntimeError, OSError, ValueError) as exc:
@@ -628,12 +726,20 @@ class LspHub:
         used_slots = {key.slot for key in self._runtime_keys_for_locked(language=language, repo_root=repo_root)}
         # 전역 soft limit 도달 시, 기존 슬롯 재사용이 불가능한 신규 키는 기동을 차단한다.
         if self._lsp_global_soft_limit > 0 and len(self._instances) >= self._lsp_global_soft_limit and len(used_slots) == 0:
-            raise DaemonError(
-                ErrorContext(
-                    code="ERR_LSP_SLOT_EXHAUSTED",
-                    message=f"LSP 전역 soft limit 도달: {language.value}@{repo_root}",
+            if self._try_free_soft_limit_capacity_locked(
+                target_repo_root=repo_root,
+                request_kind=request_kind,
+            ):
+                used_slots = {key.slot for key in self._runtime_keys_for_locked(language=language, repo_root=repo_root)}
+            else:
+                if self._is_background_request_kind(request_kind):
+                    self._soft_limit_denied_background_count += 1
+                raise DaemonError(
+                    ErrorContext(
+                        code="ERR_LSP_SLOT_EXHAUSTED",
+                        message=f"LSP 전역 soft limit 도달: {language.value}@{repo_root}",
+                    )
                 )
-            )
         max_slots = self._max_instances_for_key((language, repo_root))
         for slot in range(max_slots):
             if not self._is_slot_allowed_for_kind(
@@ -651,7 +757,7 @@ class LspHub:
             )
         )
 
-    def _should_scale_out_locked(self, base_key: tuple[Language, str], now: float, running_count: int) -> bool:
+    def _should_scale_out_locked(self, base_key: tuple[Language, str], now: float, running_count: int, request_kind: str) -> bool:
         """짧은 시간 내 재요청이 몰리면 동일 언어/레포 풀을 확장한다."""
         self._record_hot_hit_locked(base_key=base_key, now=now)
         if running_count == 0:
@@ -665,16 +771,20 @@ class LspHub:
             except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
                 # guard 오류는 서비스 가용성보다 낮은 우선순위다.
                 ...
-        # 전역 소프트 상한을 넘기면 추가 scale-out을 차단한다.
-        if self._lsp_global_soft_limit > 0 and len(self._instances) >= self._lsp_global_soft_limit:
-            return False
         max_instances_for_key = self._max_instances_for_key(base_key)
         if running_count >= max_instances_for_key:
             return False
         hits = self._hot_acquire_hits.get(base_key, 0)
+        scale_out_threshold = self._scale_out_hot_hits
         if base_key in self._bulk_active_keys:
-            return hits >= max(2, self._scale_out_hot_hits // 2)
-        return hits >= self._scale_out_hot_hits
+            scale_out_threshold = max(2, self._scale_out_hot_hits // 2)
+        if hits < scale_out_threshold:
+            return False
+        # 전역 소프트 상한을 넘기면 추가 scale-out을 차단한다.
+        if self._lsp_global_soft_limit > 0 and len(self._instances) >= self._lsp_global_soft_limit:
+            if not self._try_free_soft_limit_capacity_locked(target_repo_root=base_key[1], request_kind=request_kind):
+                return False
+        return True
 
     def _max_instances_for_key(self, base_key: tuple[Language, str]) -> int:
         """키별 허용 인스턴스 상한을 계산한다."""
@@ -689,6 +799,53 @@ class LspHub:
             self._hot_acquire_hits[base_key] = 1
             return
         self._hot_acquire_hits[base_key] = self._hot_acquire_hits.get(base_key, 0) + 1
+
+    def _prune_manual_hot_repos_locked(self, *, now: float) -> None:
+        for repo_root, expires_at in list(self._manual_hot_repo_until.items()):
+            if expires_at <= now:
+                self._manual_hot_repo_until.pop(repo_root, None)
+
+    def _active_manual_hot_repo_count_locked(self) -> int:
+        now = self._clock()
+        self._prune_manual_hot_repos_locked(now=now)
+        return len(self._manual_hot_repo_until)
+
+    def _is_manual_priority_kind(self, request_kind: str) -> bool:
+        return request_kind in {"interactive", "manual_index", "manual_probe"}
+
+    def _is_background_request_kind(self, request_kind: str) -> bool:
+        return request_kind in {"background_probe", "background_bulk", "indexing"}
+
+    def _is_manual_priority_repo_locked(self, repo_root: str) -> bool:
+        now = self._clock()
+        self._prune_manual_hot_repos_locked(now=now)
+        expires_at = self._manual_hot_repo_until.get(repo_root)
+        return expires_at is not None and expires_at > now
+
+    def _select_priority_eviction_candidate_locked(self, *, target_repo_root: str) -> LspRuntimeKey | None:
+        now = self._clock()
+        self._prune_manual_hot_repos_locked(now=now)
+        candidates: list[LspRuntimeKey] = []
+        for key, entry in self._instances.items():
+            if key.repo_root == target_repo_root:
+                continue
+            if key in self._starting_events:
+                continue
+            if self._is_manual_priority_repo_locked(key.repo_root):
+                continue
+            if entry.retention_expires_at > now:
+                continue
+            candidates.append(key)
+        if len(candidates) == 0:
+            return None
+        return min(candidates, key=lambda key: float(self._instances[key].last_used_at))
+
+    def _try_free_soft_limit_capacity_locked(self, *, target_repo_root: str, request_kind: str) -> bool:
+        del target_repo_root, request_kind
+        # soft-limit 상황에서 runtime이 실제 idle인지 증명할 정보가 없어
+        # cross-repo priority eviction은 in-flight 요청을 깨뜨릴 수 있다.
+        # 따라서 idle cleanup / explicit reuse 외의 선제 eviction은 허용하지 않는다.
+        return False
 
     def _select_round_robin_key_locked(
         self,
@@ -779,6 +936,19 @@ class LspHub:
                     raise DaemonError(ErrorContext(code=err_code, message=err_message)) from exc
                 with self._lock:
                     self._instances[key] = LspRuntimeEntry(server=started, last_used_at=self._clock())
+                    setter = getattr(started, "set_request_lifecycle_hooks", None)
+                    if callable(setter):
+                        setter(
+                            on_request_start=lambda method, _request_id, runtime_key=key, runtime_kind=request_kind: self.record_request_start(
+                                key=runtime_key,
+                                request_kind=runtime_kind,
+                                method=method,
+                            ),
+                            on_request_end=lambda method, _request_id, ok, runtime_key=key: self.record_request_end(
+                                key=runtime_key,
+                                ok=ok,
+                            ),
+                        )
                     event = self._starting_events.pop(key, None)
                     if event is not None:
                         event.set()
@@ -806,8 +976,11 @@ class LspHub:
 
     def _normalize_request_kind(self, request_kind: str) -> str:
         """요청 종류 값을 정규화한다."""
-        if request_kind.strip().lower() == "interactive":
+        normalized = request_kind.strip().lower()
+        if normalized == "interactive":
             return "interactive"
+        if normalized in {"manual_index", "manual_probe", "background_probe", "background_bulk"}:
+            return normalized
         return "indexing"
 
     def _reserved_slots_for_key(self, base_key: tuple[Language, str]) -> int:

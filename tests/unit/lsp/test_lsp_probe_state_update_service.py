@@ -86,3 +86,32 @@ def test_timeout_backoff_progression() -> None:
     assert service.next_probe_retry_backoff_sec(error_code='ERR_RPC_TIMEOUT', fail_count=1) == 30.0
     assert service.next_probe_retry_backoff_sec(error_code='ERR_RPC_TIMEOUT', fail_count=2) == 60.0
     assert service.next_probe_retry_backoff_sec(error_code='ERR_RPC_TIMEOUT', fail_count=3) == 120.0
+
+
+def test_backpressure_error_enters_backpressure_cooldown() -> None:
+    service = LspProbeStateUpdateService(
+        resolve_language=_resolver,
+        is_unavailable_probe_error=lambda _code: False,
+        next_transient_backoff_sec=lambda _n: 9.0,
+        monotonic_now=lambda: 50.0,
+        probe_unavailable_backoff_initial_sec=180.0,
+        probe_unavailable_backoff_mid_sec=600.0,
+        probe_unavailable_backoff_cap_sec=1800.0,
+        probe_timeout_backoff_initial_sec=30.0,
+        probe_timeout_backoff_mid_sec=60.0,
+        probe_timeout_backoff_cap_sec=120.0,
+    )
+    state_map: dict[tuple[str, Language], _ProbeStateRecord] = {}
+
+    service.record_extract_error(
+        probe_state=state_map,
+        repo_root="/repo",
+        relative_path="a.py",
+        error_code="ERR_LSP_GLOBAL_SOFT_LIMIT",
+        error_message="soft limit",
+    )
+
+    rec = state_map[("/repo", Language.PYTHON)]
+    assert rec.status == "BACKPRESSURE_COOLDOWN"
+    assert rec.fail_count == 1
+    assert rec.next_retry_monotonic == 59.0

@@ -10,6 +10,7 @@ from sari.core.exceptions import DaemonError, ErrorContext
 from sari.core.models import WorkspaceDTO
 from sari.core.repo.context_resolver import ERR_WORKSPACE_INACTIVE, WORKSPACE_INACTIVE_MESSAGE
 from sari.db.repositories.repo_registry_repository import RepoRegistryRepository
+from sari.db.repositories.repo_language_probe_repository import RepoLanguageProbeRepository
 from sari.db.repositories.workspace_repository import WorkspaceRepository
 from sari.db.schema import init_schema
 from sari.mcp.server import McpServer
@@ -140,6 +141,233 @@ def test_mcp_doctor_includes_repo_scope_root_item(tmp_path: Path) -> None:
     assert len(items) >= 1
     assert items[0]["name"] == "repo_scope_root"
     assert items[0]["detail"] == str(repo_dir.resolve())
+
+
+def test_mcp_doctor_reports_repo_language_starvation_for_manual_hot_repo(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_dir = tmp_path / "repo-a"
+    repo_dir.mkdir()
+    WorkspaceService(WorkspaceRepository(db_path)).add_workspace(str(repo_dir))
+    probe_repo = RepoLanguageProbeRepository(db_path)
+    probe_repo.upsert_state(
+        repo_root=str(repo_dir.resolve()),
+        language="python",
+        status="BACKPRESSURE_COOLDOWN",
+        fail_count=2,
+        inflight_phase="manual_probe",
+        next_retry_at="2026-03-06T00:10:00+00:00",
+        last_error_code="ERR_LSP_GLOBAL_SOFT_LIMIT",
+        last_error_message="soft limit",
+        last_trigger="manual_probe",
+        last_seen_at="2026-03-06T00:00:00+00:00",
+        updated_at="2026-03-06T00:00:01+00:00",
+    )
+
+    server = McpServer(db_path=db_path)
+    server._doctor_tool._repo_language_probe_repo = probe_repo  # type: ignore[attr-defined]
+    server._doctor_tool._repo_hot_checker = lambda repo: repo == str(repo_dir.resolve())  # type: ignore[attr-defined]
+    response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 23,
+            "method": "tools/call",
+            "params": {
+                "name": "doctor",
+                "arguments": {"repo": str(repo_dir.resolve()), "options": {"structured": 1}},
+            },
+        }
+    )
+
+    payload = response.to_dict()
+    result = payload["result"]
+    assert result["isError"] is False
+    items = result["structuredContent"]["items"]
+    starvation_items = [item for item in items if item["name"] == "repo_language_starvation"]
+    assert len(starvation_items) == 1
+    assert starvation_items[0]["passed"] is False
+    assert "python" in starvation_items[0]["detail"]
+
+
+def test_mcp_doctor_reports_manual_starvation_for_cold_repo(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_dir = tmp_path / "repo-a"
+    repo_dir.mkdir()
+    WorkspaceService(WorkspaceRepository(db_path)).add_workspace(str(repo_dir.resolve()))
+    probe_repo = RepoLanguageProbeRepository(db_path)
+    probe_repo.upsert_state(
+        repo_root=str(repo_dir.resolve()),
+        language="python",
+        status="BACKPRESSURE_COOLDOWN",
+        fail_count=1,
+        inflight_phase="manual_probe",
+        next_retry_at="2026-03-06T00:10:00+00:00",
+        last_error_code="ERR_LSP_SLOT_EXHAUSTED",
+        last_error_message="soft limit",
+        last_trigger="manual_probe",
+        last_seen_at="2026-03-06T00:00:00+00:00",
+        updated_at="2026-03-06T00:00:01+00:00",
+    )
+
+    server = McpServer(db_path=db_path)
+    server._doctor_tool._repo_language_probe_repo = probe_repo  # type: ignore[attr-defined]
+    server._doctor_tool._repo_hot_checker = lambda repo: False  # type: ignore[attr-defined]
+    response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 230,
+            "method": "tools/call",
+            "params": {
+                "name": "doctor",
+                "arguments": {"repo": str(repo_dir.resolve()), "options": {"structured": 1}},
+            },
+        }
+    )
+
+    payload = response.to_dict()
+    items = payload["result"]["structuredContent"]["items"]
+    starvation_items = [item for item in items if item["name"] == "repo_language_starvation"]
+    assert len(starvation_items) == 1
+
+
+def test_mcp_doctor_uses_validated_repo_root_for_repo_id_inputs(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_dir = tmp_path / "repo-a"
+    repo_dir.mkdir()
+    WorkspaceService(WorkspaceRepository(db_path)).add_workspace(str(repo_dir.resolve()))
+    RepoRegistryRepository(db_path).upsert(
+        RepoIdentityDTO(
+            repo_id="rid_repo_a",
+            repo_label="repo-a",
+            repo_root=str(repo_dir.resolve()),
+            workspace_root=str(repo_dir.resolve()),
+            updated_at=now_iso8601_utc(),
+        )
+    )
+    probe_repo = RepoLanguageProbeRepository(db_path)
+    probe_repo.upsert_state(
+        repo_root=str(repo_dir.resolve()),
+        language="python",
+        status="BACKPRESSURE_COOLDOWN",
+        fail_count=1,
+        inflight_phase="manual_probe",
+        next_retry_at="2026-03-06T00:10:00+00:00",
+        last_error_code="ERR_LSP_GLOBAL_SOFT_LIMIT",
+        last_error_message="soft limit",
+        last_trigger="manual_probe",
+        last_seen_at="2026-03-06T00:00:00+00:00",
+        updated_at="2026-03-06T00:00:01+00:00",
+    )
+
+    seen_repo_roots: list[str] = []
+    server = McpServer(db_path=db_path)
+    server._doctor_tool._repo_language_probe_repo = probe_repo  # type: ignore[attr-defined]
+    server._doctor_tool._repo_hot_checker = lambda repo: seen_repo_roots.append(repo) or repo == str(repo_dir.resolve())  # type: ignore[attr-defined]
+    response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 24,
+            "method": "tools/call",
+            "params": {
+                "name": "doctor",
+                "arguments": {"repo": "rid_repo_a", "options": {"structured": 1}},
+            },
+        }
+    )
+
+    payload = response.to_dict()
+    result = payload["result"]
+    assert result["isError"] is False
+    assert seen_repo_roots == [str(repo_dir.resolve())]
+    items = result["structuredContent"]["items"]
+    starvation_items = [item for item in items if item["name"] == "repo_language_starvation"]
+    assert len(starvation_items) == 1
+
+
+def test_mcp_doctor_ignores_background_backpressure_rows_for_hot_repo(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_dir = tmp_path / "repo-a"
+    repo_dir.mkdir()
+    WorkspaceService(WorkspaceRepository(db_path)).add_workspace(str(repo_dir.resolve()))
+    probe_repo = RepoLanguageProbeRepository(db_path)
+    probe_repo.upsert_state(
+        repo_root=str(repo_dir.resolve()),
+        language="python",
+        status="BACKPRESSURE_COOLDOWN",
+        fail_count=1,
+        inflight_phase="background_probe",
+        next_retry_at="2026-03-06T00:10:00+00:00",
+        last_error_code="ERR_LSP_GLOBAL_SOFT_LIMIT",
+        last_error_message="soft limit",
+        last_trigger="background",
+        last_seen_at="2026-03-06T00:00:00+00:00",
+        updated_at="2026-03-06T00:00:01+00:00",
+    )
+
+    server = McpServer(db_path=db_path)
+    server._doctor_tool._repo_language_probe_repo = probe_repo  # type: ignore[attr-defined]
+    server._doctor_tool._repo_hot_checker = lambda repo: repo == str(repo_dir.resolve())  # type: ignore[attr-defined]
+    response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 25,
+            "method": "tools/call",
+            "params": {
+                "name": "doctor",
+                "arguments": {"repo": str(repo_dir.resolve()), "options": {"structured": 1}},
+            },
+        }
+    )
+
+    payload = response.to_dict()
+    items = payload["result"]["structuredContent"]["items"]
+    starvation_items = [item for item in items if item["name"] == "repo_language_starvation"]
+    assert starvation_items == []
+
+
+def test_mcp_doctor_treats_force_trigger_as_manual_starvation(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_dir = tmp_path / "repo-a"
+    repo_dir.mkdir()
+    WorkspaceService(WorkspaceRepository(db_path)).add_workspace(str(repo_dir.resolve()))
+    probe_repo = RepoLanguageProbeRepository(db_path)
+    probe_repo.upsert_state(
+        repo_root=str(repo_dir.resolve()),
+        language="python",
+        status="BACKPRESSURE_COOLDOWN",
+        fail_count=1,
+        inflight_phase="manual_probe",
+        next_retry_at="2026-03-06T00:10:00+00:00",
+        last_error_code="ERR_LSP_GLOBAL_SOFT_LIMIT",
+        last_error_message="soft limit",
+        last_trigger="force",
+        last_seen_at="2026-03-06T00:00:00+00:00",
+        updated_at="2026-03-06T00:00:01+00:00",
+    )
+
+    server = McpServer(db_path=db_path)
+    server._doctor_tool._repo_language_probe_repo = probe_repo  # type: ignore[attr-defined]
+    server._doctor_tool._repo_hot_checker = lambda repo: repo == str(repo_dir.resolve())  # type: ignore[attr-defined]
+    response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 26,
+            "method": "tools/call",
+            "params": {
+                "name": "doctor",
+                "arguments": {"repo": str(repo_dir.resolve()), "options": {"structured": 1}},
+            },
+        }
+    )
+
+    payload = response.to_dict()
+    items = payload["result"]["structuredContent"]["items"]
+    starvation_items = [item for item in items if item["name"] == "repo_language_starvation"]
+    assert len(starvation_items) == 1
 
 
 def test_validate_repo_argument_rejects_inactive_workspace(tmp_path: Path) -> None:

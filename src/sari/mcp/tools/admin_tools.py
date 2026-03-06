@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Callable, Protocol
 
 from sari.core.exceptions import DaemonError
 from sari.core.models import ErrorResponseDTO, RepoValidationResultDTO, WarningDTO, WorkspaceDTO
@@ -17,6 +17,7 @@ from sari.core.repo.context_resolver import (
 )
 from sari.core.repo.resolver import resolve_repo_key
 from sari.db.repositories.repo_registry_repository import RepoRegistryRepository
+from sari.db.repositories.repo_language_probe_repository import RepoLanguageProbeRepository
 from sari.mcp.tools.pack1 import Pack1MetaDTO, pack1_error, pack1_success
 from sari.services.admin import AdminService
 
@@ -27,6 +28,11 @@ ERR_REPO_PATH_DEPRECATED = "ERR_REPO_PATH_DEPRECATED"
 WARN_REPO_LEGACY_KEY_FALLBACK = "WARN_REPO_LEGACY_KEY_FALLBACK"
 WARN_REPO_PATH_DEPRECATED = "WARN_REPO_PATH_DEPRECATED"
 WARN_REPO_ALIAS_USED = "WARN_REPO_ALIAS_USED"
+
+
+def _is_manual_probe_trigger(trigger: object) -> bool:
+    normalized = str(trigger).strip().lower() if trigger is not None else ""
+    return normalized in {"manual", "manual_index", "manual_probe", "interactive", "mcp", "http", "cli", "user", "force"}
 
 
 class RepoValidationPort(Protocol):
@@ -353,10 +359,18 @@ class DoctorItemDTO:
 class DoctorTool:
     """doctor MCP 도구를 처리한다."""
 
-    def __init__(self, admin_service: AdminService, workspace_repo: RepoValidationPort) -> None:
+    def __init__(
+        self,
+        admin_service: AdminService,
+        workspace_repo: RepoValidationPort,
+        repo_language_probe_repo: RepoLanguageProbeRepository | None = None,
+        repo_hot_checker: Callable[[str], bool] | None = None,
+    ) -> None:
         """필요 의존성을 주입한다."""
         self._admin_service = admin_service
         self._workspace_repo = workspace_repo
+        self._repo_language_probe_repo = repo_language_probe_repo
+        self._repo_hot_checker = repo_hot_checker
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """doctor 응답을 pack1 형식으로 반환한다."""
@@ -364,12 +378,29 @@ class DoctorTool:
         if validation.error is not None:
             return pack1_error(validation.error)
         warnings_payload = [warning.to_dict() for warning in validation.warnings]
-        repo_root = str(arguments["repo"])
+        repo_root = str(validation.repo_root or arguments["repo"])
 
         items = [DoctorItemDTO(name="repo_scope_root", passed=True, detail=repo_root).to_dict(), *[
             DoctorItemDTO(name=check.name, passed=check.passed, detail=check.detail).to_dict()
             for check in self._admin_service.doctor()
         ]]
+        if self._repo_language_probe_repo is not None:
+            probe_rows = self._repo_language_probe_repo.list_by_repo_root(repo_root)
+            starving = [
+                row
+                for row in probe_rows
+                if str(row.get("status")) == "BACKPRESSURE_COOLDOWN"
+                and _is_manual_probe_trigger(row.get("last_trigger"))
+            ]
+            if len(starving) > 0:
+                langs = ",".join(sorted(str(row.get("language")) for row in starving))
+                items.append(
+                    DoctorItemDTO(
+                        name="repo_language_starvation",
+                        passed=False,
+                        detail=f"manual probe is backpressured: {langs}",
+                    ).to_dict()
+                )
         return pack1_success(
             {
                 "items": items,

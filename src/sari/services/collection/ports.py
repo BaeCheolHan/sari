@@ -10,7 +10,7 @@ from sari.core.models import CollectionScanResultDTO, FileReadResultDTO, Pipelin
 class CollectionScanPort(Protocol):
     """L1 스캔/파일 조회 계층 포트를 정의한다."""
 
-    def scan_once(self, repo_root: str) -> CollectionScanResultDTO:
+    def scan_once(self, repo_root: str, *, trigger: str = "manual") -> CollectionScanResultDTO:
         """저장소 전체를 1회 스캔한다."""
         ...
 
@@ -85,4 +85,3 @@ class CollectionRuntimePort(
     Protocol,
 ):
     """수집 런타임 전체 기능을 제공하는 통합 포트다."""
-

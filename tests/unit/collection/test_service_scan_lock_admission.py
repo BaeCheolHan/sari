@@ -22,6 +22,7 @@ def test_scan_once_uses_scan_operation_lock(tmp_path: Path) -> None:
 
     service._fanout_resolver = _Resolver()
     service._scan_operation_lock = type("Lock", (), {"acquire": staticmethod(_acquire)})()
+    service._lsp_backend = object()
     service._cleanup_stale_fanout_rows_for_single_repo = lambda *, root_path: None
     service._scanner_scan_once = lambda **kwargs: CollectionScanResultDTO(scanned_count=1, indexed_count=1, deleted_count=0)
 
@@ -43,6 +44,7 @@ def test_index_file_uses_scan_operation_lock(tmp_path: Path) -> None:
         yield
 
     service._scan_operation_lock = type("Lock", (), {"acquire": staticmethod(_acquire)})()
+    service._lsp_backend = object()
 
     def _scanner_index_file(*, repo_root: str, relative_path: str, scope_repo_root: str) -> CollectionScanResultDTO:
         scanner_calls.append(

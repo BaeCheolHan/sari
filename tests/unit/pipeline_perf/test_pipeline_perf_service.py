@@ -62,10 +62,12 @@ class _FakeCollectionService:
         self.reset_probe_state_calls = 0
         self.reset_lsp_runtime_calls = 0
         self.exclude_context_calls: list[tuple[str, ...]] = []
+        self.scan_triggers: list[str] = []
 
-    def scan_once(self, repo_root: str):  # noqa: ANN201
+    def scan_once(self, repo_root: str, *, trigger: str = "manual"):  # noqa: ANN201
         """스캔 더미 결과를 반환한다."""
         del repo_root
+        self.scan_triggers.append(trigger)
         return type(
             "ScanResult",
             (),
@@ -101,8 +103,12 @@ class _FakeCollectionService:
 class _FakeCollectionServiceWithoutReset:
     """reset capability가 없는 더미 수집 서비스다."""
 
+    def __init__(self) -> None:
+        self.scan_calls = 0
+
     def scan_once(self, repo_root: str):  # noqa: ANN201
         del repo_root
+        self.scan_calls += 1
         return type(
             "ScanResult",
             (),
@@ -591,6 +597,7 @@ def test_pipeline_perf_service_run_returns_gate_summary(tmp_path: Path) -> None:
     assert workspace["run_context"]["fresh_db"] is False
     assert workspace["run_context"]["pre_state_reset"] is False
     assert workspace["integrity"]["integrity_checks"]["measurement_backend_real_lsp"] is False
+    assert service._file_collection_service.scan_triggers == ["background"]
 
 
 def test_pipeline_perf_service_rejects_invalid_repo(tmp_path: Path) -> None:
@@ -675,6 +682,26 @@ def test_pipeline_perf_service_rejects_missing_probe_reset_capability(tmp_path: 
             profile="realistic_v1",
             reset_probe_state=True,
         )
+
+
+def test_pipeline_perf_service_supports_legacy_scan_once_signature(tmp_path: Path) -> None:
+    """trigger 미지원 scan_once 구현체도 perf run에서 계속 동작해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_dir = tmp_path / "repo-a"
+    repo_dir.mkdir()
+    collection_service = _FakeCollectionServiceWithoutReset()
+    service = PipelinePerfService(
+        file_collection_service=collection_service,
+        queue_repo=_FakeQueueRepository(),
+        perf_repo=PipelinePerfRepository(db_path),
+        artifact_root=tmp_path / "artifacts",
+    )
+
+    summary = service.run(repo_root=str(repo_dir), target_files=2000, profile="realistic_v1")
+
+    assert summary["status"] == "COMPLETED"
+    assert collection_service.scan_calls == 1
 
 
 def test_pipeline_perf_service_rejects_missing_lsp_reset_capability(tmp_path: Path) -> None:

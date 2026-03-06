@@ -490,6 +490,8 @@ def test_lsp_hub_scale_out_respects_global_soft_limit(monkeypatch) -> None:
 
     assert first is second
     assert len(created) == 1
+    metrics = hub.get_metrics()
+    assert metrics["lsp_soft_limit_denied_background_count"] == 0
     hub.prewarm_language_pool(language=Language.PYTHON, repo_root="/repo-a")
 
     assert len(created) == 2
@@ -537,6 +539,230 @@ def test_lsp_hub_global_soft_limit_blocks_new_repo_language_start(monkeypatch) -
 
     assert exc_info.value.context.code == "ERR_LSP_SLOT_EXHAUSTED"
     assert len(created) == 2
+    metrics = hub.get_metrics()
+    assert metrics["lsp_soft_limit_denied_background_count"] >= 1
+    hub.stop_all()
+
+
+def test_lsp_hub_manual_request_does_not_evict_background_entry_under_soft_limit(monkeypatch) -> None:
+    """soft limit 상태에서는 manual 요청도 다른 repo runtime을 강제 eviction하면 안 된다."""
+
+    class _FakeRuntimeServer:
+        def is_running(self) -> bool:
+            return True
+
+    class _FakeLanguageServer:
+        def __init__(self, idx: int) -> None:
+            self.server = _FakeRuntimeServer()
+            self.idx = idx
+            self.stopped = False
+
+        def start(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            self.stopped = True
+
+    created: list[_FakeLanguageServer] = []
+
+    def _fake_create(*args, **kwargs) -> _FakeLanguageServer:
+        del args, kwargs
+        server = _FakeLanguageServer(len(created))
+        created.append(server)
+        return server
+
+    monkeypatch.setattr("sari.lsp.hub.SolidLanguageServer.create", _fake_create)
+
+    hub = LspHub(
+        max_instances=8,
+        max_instances_per_repo_language=1,
+        lsp_global_soft_limit=1,
+    )
+    background = hub.get_or_start(language=Language.PYTHON, repo_root="/repo-a", request_kind="background_probe")
+    with pytest.raises(DaemonError) as exc_info:
+        _ = hub.get_or_start(language=Language.JAVA, repo_root="/repo-b", request_kind="manual_index")
+
+    assert background is created[0]
+    assert exc_info.value.context.code == "ERR_LSP_SLOT_EXHAUSTED"
+    assert created[0].stopped is False
+    assert len(created) == 1
+    metrics = hub.get_metrics()
+    assert metrics["lsp_priority_eviction_count"] == 0
+    assert metrics["lsp_soft_limit_admitted_manual_count"] == 0
+    hub.stop_all()
+
+
+def test_lsp_hub_manual_request_does_not_evict_same_repo_background_entry_under_soft_limit(monkeypatch) -> None:
+    """같은 repo의 background 엔트리는 in-flight 가능성이 있으므로 eviction하면 안 된다."""
+
+    class _FakeRuntimeServer:
+        def is_running(self) -> bool:
+            return True
+
+    class _FakeLanguageServer:
+        def __init__(self, idx: int) -> None:
+            self.server = _FakeRuntimeServer()
+            self.idx = idx
+            self.stopped = False
+
+        def start(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            self.stopped = True
+
+    created: list[_FakeLanguageServer] = []
+
+    def _fake_create(*args, **kwargs) -> _FakeLanguageServer:
+        del args, kwargs
+        server = _FakeLanguageServer(len(created))
+        created.append(server)
+        return server
+
+    monkeypatch.setattr("sari.lsp.hub.SolidLanguageServer.create", _fake_create)
+
+    hub = LspHub(max_instances=8, max_instances_per_repo_language=1, lsp_global_soft_limit=1)
+    background = hub.get_or_start(language=Language.PYTHON, repo_root="/repo", request_kind="background_probe")
+    with pytest.raises(DaemonError) as exc_info:
+        _ = hub.get_or_start(language=Language.JAVA, repo_root="/repo", request_kind="manual_index")
+
+    assert background is created[0]
+    assert exc_info.value.context.code == "ERR_LSP_SLOT_EXHAUSTED"
+    assert hub.is_repo_hot("/repo") is True
+    assert created[0].stopped is False
+    assert len(created) == 1
+    hub.stop_all()
+
+
+def test_lsp_hub_manual_reuse_does_not_evict_other_repo_under_soft_limit(monkeypatch) -> None:
+    """기존 런타임 재사용이면 unrelated repo eviction이 일어나면 안 된다."""
+
+    class _FakeRuntimeServer:
+        def is_running(self) -> bool:
+            return True
+
+    class _FakeLanguageServer:
+        def __init__(self, idx: int) -> None:
+            self.server = _FakeRuntimeServer()
+            self.idx = idx
+            self.stopped = False
+
+        def start(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            self.stopped = True
+
+    created: list[_FakeLanguageServer] = []
+
+    def _fake_create(*args, **kwargs) -> _FakeLanguageServer:
+        del args, kwargs
+        server = _FakeLanguageServer(len(created))
+        created.append(server)
+        return server
+
+    monkeypatch.setattr("sari.lsp.hub.SolidLanguageServer.create", _fake_create)
+
+    hub = LspHub(
+        max_instances=8,
+        max_instances_per_repo_language=1,
+        lsp_global_soft_limit=2,
+    )
+    repo_a = hub.get_or_start(language=Language.PYTHON, repo_root="/repo-a", request_kind="background_probe")
+    repo_b = hub.get_or_start(language=Language.JAVA, repo_root="/repo-b", request_kind="background_probe")
+    reused = hub.get_or_start(language=Language.PYTHON, repo_root="/repo-a", request_kind="manual_probe")
+
+    assert reused is repo_a
+    assert repo_b is created[1]
+    assert created[0].stopped is False
+    assert created[1].stopped is False
+    metrics = hub.get_metrics()
+    assert metrics["lsp_priority_eviction_count"] == 0
+    assert metrics["lsp_soft_limit_admitted_manual_count"] == 0
+    assert metrics["lsp_soft_limit_denied_background_count"] == 0
+    hub.stop_all()
+
+
+def test_lsp_hub_hot_repo_background_request_does_not_gain_eviction_rights(monkeypatch) -> None:
+    """hot TTL이 남아 있어도 background 요청은 eviction 권한을 가지면 안 된다."""
+
+    class _FakeRuntimeServer:
+        def is_running(self) -> bool:
+            return True
+
+    class _FakeLanguageServer:
+        def __init__(self, idx: int) -> None:
+            self.server = _FakeRuntimeServer()
+            self.idx = idx
+            self.stopped = False
+
+        def start(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            self.stopped = True
+
+    created: list[_FakeLanguageServer] = []
+
+    def _fake_create(*args, **kwargs) -> _FakeLanguageServer:
+        del args, kwargs
+        server = _FakeLanguageServer(len(created))
+        created.append(server)
+        return server
+
+    monkeypatch.setattr("sari.lsp.hub.SolidLanguageServer.create", _fake_create)
+
+    hub = LspHub(max_instances=8, max_instances_per_repo_language=1, lsp_global_soft_limit=1)
+    background = hub.get_or_start(language=Language.PYTHON, repo_root="/repo-a", request_kind="background_probe")
+    hub.mark_repo_hot("/repo-b")
+    with pytest.raises(DaemonError) as exc_info:
+        _ = hub.get_or_start(language=Language.JAVA, repo_root="/repo-b", request_kind="background_probe")
+
+    assert background is created[0]
+    assert exc_info.value.context.code == "ERR_LSP_SLOT_EXHAUSTED"
+    assert created[0].stopped is False
+    assert len(created) == 1
+    metrics = hub.get_metrics()
+    assert metrics["lsp_priority_eviction_count"] == 0
+    assert metrics["lsp_soft_limit_admitted_manual_count"] == 0
+    hub.stop_all()
+
+
+def test_lsp_hub_failed_interactive_request_marks_repo_hot(monkeypatch) -> None:
+    """interactive 요청이 soft limit로 실패해도 manual intent hot 신호는 남아야 한다."""
+
+    class _FakeRuntimeServer:
+        def is_running(self) -> bool:
+            return True
+
+    class _FakeLanguageServer:
+        def __init__(self, idx: int) -> None:
+            self.server = _FakeRuntimeServer()
+            self.idx = idx
+
+        def start(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            pass
+
+    created: list[_FakeLanguageServer] = []
+
+    def _fake_create(*args, **kwargs) -> _FakeLanguageServer:
+        del args, kwargs
+        server = _FakeLanguageServer(len(created))
+        created.append(server)
+        return server
+
+    monkeypatch.setattr("sari.lsp.hub.SolidLanguageServer.create", _fake_create)
+
+    hub = LspHub(max_instances=8, max_instances_per_repo_language=1, lsp_global_soft_limit=1)
+    _ = hub.get_or_start(language=Language.PYTHON, repo_root="/repo-a", request_kind="background_probe")
+    with pytest.raises(DaemonError) as exc_info:
+        _ = hub.get_or_start(language=Language.JAVA, repo_root="/repo-b", request_kind="interactive")
+
+    assert exc_info.value.context.code == "ERR_LSP_SLOT_EXHAUSTED"
+    assert hub.is_repo_hot("/repo-b") is True
     hub.stop_all()
 
 
@@ -1437,3 +1663,94 @@ def test_lsp_hub_applies_attempt_process_env_during_start_call(monkeypatch, tmp_
 
     assert server is not None
     assert create_calls == ["0"]
+
+
+def test_lsp_hub_busy_runtime_is_not_idle_evicted() -> None:
+    """active request가 있는 runtime은 idle cleaner가 제거하면 안 된다."""
+
+    class _FakeRuntimeServer:
+        def is_running(self) -> bool:
+            return True
+
+    class _FakeLanguageServer:
+        def __init__(self) -> None:
+            self.server = _FakeRuntimeServer()
+            self.stopped = False
+
+        def stop(self) -> None:
+            self.stopped = True
+
+    hub = LspHub(idle_timeout_sec=1, max_instances=8, clock=lambda: 100.0)
+    key = LspRuntimeKey(language=Language.PYTHON, repo_root="/repo-a", slot=0)
+    server = _FakeLanguageServer()
+    hub._instances[key] = LspRuntimeEntry(server=server, last_used_at=0.0, active_request_count=1)  # noqa: SLF001
+
+    hub._evict_idle_locked(100.0)  # noqa: SLF001
+
+    assert key in hub._instances  # noqa: SLF001
+    assert server.stopped is False
+
+
+def test_lsp_hub_runtime_activity_metrics_follow_request_lifecycle() -> None:
+    """request lifecycle 기록이 busy/idle 메트릭으로 반영되어야 한다."""
+
+    class _FakeRuntimeServer:
+        def is_running(self) -> bool:
+            return True
+
+    class _FakeLanguageServer:
+        def __init__(self) -> None:
+            self.server = _FakeRuntimeServer()
+
+        def stop(self) -> None:
+            return None
+
+    hub = LspHub(clock=lambda: 10.0)
+    key = LspRuntimeKey(language=Language.PYTHON, repo_root="/repo-a", slot=0)
+    hub._instances[key] = LspRuntimeEntry(server=_FakeLanguageServer(), last_used_at=0.0)  # noqa: SLF001
+
+    hub.record_request_start(key=key, request_kind="manual_probe", method="workspace/symbol")
+    mid = hub.get_metrics()
+    snapshot = hub.get_repo_runtime_activity("/repo-a")
+
+    assert mid["lsp_active_request_count"] == 1
+    assert mid["lsp_busy_runtime_count"] == 1
+    assert mid["lsp_idle_runtime_count"] == 0
+    assert snapshot["active_request_count"] == 1
+    assert snapshot["busy_runtime_count"] == 1
+    assert snapshot["idle_runtime_count"] == 0
+
+    hub.record_request_end(key=key, ok=True)
+    end = hub.get_metrics()
+    snapshot = hub.get_repo_runtime_activity("/repo-a")
+
+    assert end["lsp_active_request_count"] == 0
+    assert end["lsp_busy_runtime_count"] == 0
+    assert end["lsp_idle_runtime_count"] == 1
+    assert snapshot["active_request_count"] == 0
+    assert snapshot["busy_runtime_count"] == 0
+    assert snapshot["idle_runtime_count"] == 1
+
+
+def test_lsp_hub_cleanup_busy_runtime_counts_activity_anomaly() -> None:
+    """running=false cleanup에서 active request 누수는 anomaly 메트릭으로 잡아야 한다."""
+
+    class _FakeRuntimeServer:
+        def is_running(self) -> bool:
+            return False
+
+    class _FakeLanguageServer:
+        def __init__(self) -> None:
+            self.server = _FakeRuntimeServer()
+
+        def stop(self) -> None:
+            return None
+
+    hub = LspHub(clock=lambda: 10.0)
+    key = LspRuntimeKey(language=Language.PYTHON, repo_root="/repo-a", slot=0)
+    entry = LspRuntimeEntry(server=_FakeLanguageServer(), last_used_at=0.0, active_request_count=2)
+    hub._instances[key] = entry  # noqa: SLF001
+
+    hub._cleanup_not_running_entry_locked(key, entry)  # noqa: SLF001
+
+    assert hub.get_metrics()["lsp_runtime_activity_anomaly_count"] == 1

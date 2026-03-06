@@ -29,7 +29,7 @@ class RuntimeManager:
         policy: object,
         policy_repo: object | None,
         assert_parent_alive: Callable[[str], None],
-        scan_once: Callable[[str], object],
+        scan_once: Callable[..., object],
         process_enrich_jobs_bootstrap: Callable[[int], int],
         process_enrich_jobs_l5: Callable[[int], int] | None,
         handle_background_collection_error: Callable[[CollectionError, str, str], bool],
@@ -138,7 +138,7 @@ class RuntimeManager:
                     )
                     continue
                 try:
-                    self._scan_once(workspace.path)
+                    self._scan_once(workspace.path, trigger="background")
                 except sqlite3.Error as exc:
                     fatal_error = CollectionError(
                         ErrorContext(

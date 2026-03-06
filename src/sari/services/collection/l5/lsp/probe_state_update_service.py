@@ -61,6 +61,14 @@ class LspProbeStateUpdateService:
             state.status = "WORKSPACE_MISMATCH"
             state.next_retry_monotonic = float("inf")
             return
+        if error_code in {"ERR_LSP_GLOBAL_SOFT_LIMIT", "ERR_LSP_SLOT_EXHAUSTED"}:
+            state.status = "BACKPRESSURE_COOLDOWN"
+            state.fail_count += 1
+            state.next_retry_monotonic = now + self.next_probe_retry_backoff_sec(
+                error_code=error_code,
+                fail_count=state.fail_count,
+            )
+            return
         if not self._is_unavailable_probe_error(error_code):
             return
         state.status = "UNAVAILABLE_COOLDOWN"
@@ -83,4 +91,6 @@ class LspProbeStateUpdateService:
             if fail_count == 2:
                 return self._probe_timeout_backoff_mid_sec
             return self._probe_timeout_backoff_cap_sec
+        if error_code in {"ERR_LSP_GLOBAL_SOFT_LIMIT", "ERR_LSP_SLOT_EXHAUSTED"}:
+            return float(self._next_transient_backoff_sec(fail_count))
         return float(self._next_transient_backoff_sec(fail_count))

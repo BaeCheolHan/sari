@@ -464,15 +464,23 @@ class FileCollectionService:
         if callable(configure_scope_runtime_policy):
             configure_scope_runtime_policy(active_languages=lsp_scope_active_languages)
 
-    def scan_once(self, repo_root: str) -> CollectionScanResultDTO:
+    def scan_once(self, repo_root: str, *, trigger: str = "manual") -> CollectionScanResultDTO:
         """L1 스캔을 실행한다. workspace 컨테이너는 top-level repo fan-out을 수행한다."""
         root_path = Path(repo_root).expanduser().resolve()
+        mark_repo_hot = getattr(self._lsp_backend, "mark_repo_hot", None)
+        normalized_trigger = trigger.strip().lower()
+        manual_trigger = normalized_trigger in {"manual", "interactive", "mcp", "http", "cli", "user"}
+        if manual_trigger and callable(mark_repo_hot):
+            try:
+                mark_repo_hot(str(root_path))
+            except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
+                ...
         with self._scan_operation_lock.acquire(operation="scan_once", repo_root=str(root_path)):
             fanout_targets = self._fanout_resolver.resolve_targets(root_path)
             if len(fanout_targets) == 0:
                 self._cleanup_stale_fanout_rows_for_single_repo(root_path=root_path)
                 return self._scanner_scan_once(repo_root=str(root_path), scope_repo_root=str(root_path))
-            return self._scan_workspace_fanout(root_path=root_path, targets=fanout_targets)
+            return self._scan_workspace_fanout(root_path=root_path, targets=fanout_targets, manual_trigger=manual_trigger)
 
     def _cleanup_stale_fanout_rows_for_single_repo(self, *, root_path: Path) -> None:
         """단일 repo 스캔으로 전환 시 과거 fan-out child 산출물(active)을 정리한다."""
@@ -495,11 +503,12 @@ class FileCollectionService:
             for child_root in stale_repo_roots:
                 self._candidate_index_sink.mark_repo_dirty(child_root)
 
-    def _scan_workspace_fanout(self, root_path: Path, targets: list[Path]) -> CollectionScanResultDTO:
+    def _scan_workspace_fanout(self, root_path: Path, targets: list[Path], *, manual_trigger: bool) -> CollectionScanResultDTO:
         """workspace 컨테이너 하위 repo를 top-level 단위로 순차 스캔한다."""
         scanned_total = 0
         indexed_total = 0
         deleted_total = 0
+        mark_repo_hot = getattr(self._lsp_backend, "mark_repo_hot", None)
         # fan-out 모드에서는 workspace-root 행이 legacy/stale 상태로 남을 수 있으므로 먼저 비활성화한다.
         legacy_deleted = self._file_repo.mark_all_active_as_deleted(
             repo_root=str(root_path),
@@ -532,6 +541,11 @@ class FileCollectionService:
         results: list[CollectionScanRepoResultDTO] = []
         for target in targets:
             try:
+                if manual_trigger and callable(mark_repo_hot):
+                    try:
+                        mark_repo_hot(str(target.resolve()))
+                    except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
+                        ...
                 scan_result = self._scanner_scan_once(repo_root=str(target), scope_repo_root=str(root_path))
                 scanned_total += scan_result.scanned_count
                 indexed_total += scan_result.indexed_count
@@ -572,6 +586,12 @@ class FileCollectionService:
     def index_file(self, repo_root: str, relative_path: str) -> CollectionScanResultDTO:
         """단일 파일 인덱싱을 전용 스캐너 컴포넌트로 위임한다."""
         resolved_repo_root = str(Path(repo_root).expanduser().resolve())
+        mark_repo_hot = getattr(self._lsp_backend, "mark_repo_hot", None)
+        if callable(mark_repo_hot):
+            try:
+                mark_repo_hot(resolved_repo_root)
+            except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
+                ...
         with self._scan_operation_lock.acquire(operation="index_file", repo_root=resolved_repo_root):
             return self._scanner_index_file(
                 repo_root=resolved_repo_root,
@@ -912,7 +932,7 @@ class FileCollectionService:
             except queue.Empty:
                 continue
             try:
-                _ = self.scan_once(repo_root)
+                _ = self.scan_once(repo_root, trigger="background")
             except CollectionError as exc:
                 if self._handle_background_collection_error_proxy(
                     exc=exc,

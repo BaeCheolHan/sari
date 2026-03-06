@@ -965,6 +965,7 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
             unavailable_count = sum(1 for state in self._probe_state.values() if state.status == "UNAVAILABLE_COOLDOWN")
             workspace_mismatch_count = sum(1 for state in self._probe_state.values() if state.status == "WORKSPACE_MISMATCH")
             cooldown_count = sum(1 for state in self._probe_state.values() if state.status == "COOLDOWN")
+            backpressure_cooldown_count = sum(1 for state in self._probe_state.values() if state.status == "BACKPRESSURE_COOLDOWN")
         return build_runtime_metrics(
             hub_metrics=dict(self._hub.get_metrics()),
             probe_trigger_counts=probe_counts,
@@ -981,9 +982,21 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
             probe_state_unavailable_count=unavailable_count,
             probe_state_workspace_mismatch_count=workspace_mismatch_count,
             probe_state_cooldown_count=cooldown_count,
+            probe_state_backpressure_count=backpressure_cooldown_count,
             probe_reconcile_clear_count=self._probe_reconcile_clear_count,
             probe_reconcile_skip_count=self._probe_reconcile_skip_count,
         )
+
+    def mark_repo_hot(self, repo_root: str) -> None:
+        marker = getattr(self._hub, "mark_repo_hot", None)
+        if callable(marker):
+            marker(repo_root)
+
+    def is_repo_hot(self, repo_root: str) -> bool:
+        checker = getattr(self._hub, "is_repo_hot", None)
+        if callable(checker):
+            return bool(checker(repo_root))
+        return False
 
     def _recover_from_runtime_mismatch(self, *, repo_root: str, relative_path: str) -> bool:
         """ERR_RUNTIME_MISMATCH 발생 시 repo/language LSP 런타임을 강제 재시작한다."""

@@ -548,7 +548,12 @@ class McpServer:
             include_info_default=runtime_config.lsp_include_info_default,
             symbol_info_budget_sec_default=runtime_config.lsp_symbol_info_budget_sec,
         )
-        self._doctor_tool = DoctorTool(admin_service=admin_service, workspace_repo=workspace_repo)
+        self._doctor_tool = DoctorTool(
+            admin_service=admin_service,
+            workspace_repo=workspace_repo,
+            repo_language_probe_repo=repos.repo_language_probe_repo,
+            repo_hot_checker=shared_hub.is_repo_hot,
+        )
         self._rescan_tool = RescanTool(admin_service=admin_service, workspace_repo=workspace_repo)
         self._repo_candidates_tool = RepoCandidatesTool(admin_service=admin_service, workspace_repo=workspace_repo)
         self._scan_once_tool = ScanOnceTool(workspace_repo=workspace_repo, collection_service=file_collection_service)
@@ -565,6 +570,8 @@ class McpServer:
             lsp_repo=lsp_repo,
             language_probe_repo=language_probe_repo,
             repo_language_probe_repo=repos.repo_language_probe_repo,
+            repo_hot_checker=shared_hub.is_repo_hot,
+            repo_runtime_activity_provider=shared_hub.get_repo_runtime_activity,
             lsp_metrics_provider=shared_hub.get_metrics,
             reconcile_state_provider=admin_service.get_runtime_reconcile_state,
             pipeline_control_service=pipeline_control_service,
