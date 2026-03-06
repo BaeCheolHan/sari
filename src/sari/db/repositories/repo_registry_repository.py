@@ -76,3 +76,29 @@ class RepoRegistryRepository:
             workspace_root=row_optional_str(row, "workspace_root"),
             updated_at=row_str(row, "updated_at"),
         )
+
+    def get_by_repo_label(self, repo_label: str) -> RepoIdentityDTO | None:
+        """repo_label로 레지스트리 항목을 조회한다.
+
+        workspace_root 단위로만 label 유니크가 보장되므로 다중 매칭 시 None을 반환한다.
+        """
+        with connect(self._db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT repo_id, repo_label, repo_root, workspace_root, updated_at
+                FROM repositories
+                WHERE repo_label = :repo_label
+                ORDER BY updated_at DESC, repo_id ASC
+                """,
+                {"repo_label": repo_label},
+            ).fetchall()
+        if len(rows) != 1:
+            return None
+        row = rows[0]
+        return RepoIdentityDTO(
+            repo_id=row_str(row, "repo_id"),
+            repo_label=row_str(row, "repo_label"),
+            repo_root=row_str(row, "repo_root"),
+            workspace_root=row_optional_str(row, "workspace_root"),
+            updated_at=row_str(row, "updated_at"),
+        )

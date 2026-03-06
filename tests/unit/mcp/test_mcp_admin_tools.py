@@ -181,6 +181,24 @@ def test_validate_repo_argument_returns_conflict_error_when_repo_and_repo_key_di
     assert result.error.message == "repo/repo_key/repo_id must match"
 
 
+def test_validate_repo_argument_rejects_unresolvable_secondary_repo_id(tmp_path: Path) -> None:
+    """주 인자는 유효해도 보조 repo_id가 미해석이면 충돌로 거부해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_a = tmp_path / "repo-a"
+    repo_a.mkdir()
+    WorkspaceService(WorkspaceRepository(db_path)).add_workspace(str(repo_a.resolve()))
+
+    workspace_repo = WorkspaceRepository(db_path)
+    arguments: dict[str, object] = {"repo": "repo-a", "repo_id": "repo-a-typo"}
+
+    result = validate_repo_argument(arguments=arguments, workspace_repo=workspace_repo)
+
+    assert result.error is not None
+    assert result.error.code == "ERR_REPO_ARGUMENT_CONFLICT"
+    assert result.error.message == "repo/repo_key/repo_id must match"
+
+
 def test_validate_repo_argument_accepts_matching_repo_and_repo_key(tmp_path: Path) -> None:
     """repo/repo_key가 같은 식별자를 가리키면 정상 처리되어야 한다."""
     db_path = tmp_path / "state.db"
@@ -212,6 +230,40 @@ def test_validate_repo_argument_accepts_matching_repo_and_repo_key(tmp_path: Pat
     assert str(arguments["repo_key"]).strip() == "repo-a"
 
 
+def test_validate_repo_argument_accepts_mixed_repo_fields_for_same_repository(tmp_path: Path) -> None:
+    """repo/repo_key/repo_id가 표현만 다르고 동일 저장소면 정상 처리되어야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_a = tmp_path / "repo-a"
+    repo_a.mkdir()
+    service = WorkspaceService(WorkspaceRepository(db_path))
+    service.add_workspace(str(repo_a.resolve()))
+    repo_registry_repo = RepoRegistryRepository(db_path)
+    repo_registry_repo.upsert(
+        RepoIdentityDTO(
+            repo_id="repo-a-id",
+            repo_label="repo-a",
+            repo_root=str(repo_a.resolve()),
+            workspace_root=str(repo_a.resolve()),
+            updated_at=now_iso8601_utc(),
+        )
+    )
+
+    workspace_repo = WorkspaceRepository(db_path)
+    arguments: dict[str, object] = {
+        "repo": str(repo_a.resolve()),
+        "repo_key": "repo-a",
+        "repo_id": "repo-a-id",
+    }
+
+    result = validate_repo_argument(arguments=arguments, workspace_repo=workspace_repo)
+
+    assert result.error is None
+    assert arguments["repo"] == str(repo_a.resolve())
+    assert arguments["repo_id"] == "repo-a-id"
+    assert arguments["repo_key"] == "repo-a"
+
+
 def test_validate_repo_argument_warns_on_legacy_key_fallback(tmp_path: Path) -> None:
     """미등록 repo_id 입력이 legacy key로 해석되면 경고와 함께 성공해야 한다(v2.N)."""
     db_path = tmp_path / "state.db"
@@ -231,6 +283,83 @@ def test_validate_repo_argument_warns_on_legacy_key_fallback(tmp_path: Path) -> 
     assert result.warnings[0].code == "WARN_REPO_LEGACY_KEY_FALLBACK"
     assert arguments["repo"] == str(repo_a.resolve())
     assert str(arguments["repo_id"]).startswith("r_")
+
+
+def test_validate_repo_argument_falls_back_when_repo_label_registry_row_is_stale(tmp_path: Path) -> None:
+    """stale repo_label row가 있어도 유효한 workspace fallback은 계속 동작해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_a = tmp_path / "repo-a"
+    repo_a.mkdir()
+    WorkspaceService(WorkspaceRepository(db_path)).add_workspace(str(repo_a.resolve()))
+
+    stale_root = tmp_path / "removed" / "repo-a"
+    stale_root.parent.mkdir(parents=True)
+    RepoRegistryRepository(db_path).upsert(
+        RepoIdentityDTO(
+            repo_id="stale-repo-a-id",
+            repo_label="repo-a",
+            repo_root=str(stale_root.resolve()),
+            workspace_root=str(stale_root.resolve()),
+            updated_at=now_iso8601_utc(),
+        )
+    )
+
+    workspace_repo = WorkspaceRepository(db_path)
+    arguments: dict[str, object] = {"repo": "repo-a"}
+
+    result = validate_repo_argument(arguments=arguments, workspace_repo=workspace_repo)
+
+    assert result.error is None
+    assert arguments["repo"] == str(repo_a.resolve())
+    assert str(arguments["repo_id"]).strip() != "stale-repo-a-id"
+
+
+def test_validate_repo_argument_ignores_ambiguous_repo_label_in_conflict_check(tmp_path: Path) -> None:
+    """repo_key label이 다중 workspace에 걸쳐 모호하면 임의 row 선택으로 충돌시키면 안 된다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_a1 = (tmp_path / "ws1" / "repo-a").resolve()
+    repo_a2 = (tmp_path / "ws2" / "repo-a").resolve()
+    repo_a1.mkdir(parents=True)
+    repo_a2.mkdir(parents=True)
+    workspace_service = WorkspaceService(WorkspaceRepository(db_path))
+    workspace_service.add_workspace(str(repo_a1))
+    workspace_service.add_workspace(str(repo_a2))
+
+    repo_registry_repo = RepoRegistryRepository(db_path)
+    # 의도적으로 반대 순서로 삽입해 LIMIT 1 비결정성 경로를 자극한다.
+    repo_registry_repo.upsert(
+        RepoIdentityDTO(
+            repo_id="repo-a-id-2",
+            repo_label="repo-a",
+            repo_root=str(repo_a2),
+            workspace_root=str(repo_a2),
+            updated_at=now_iso8601_utc(),
+        )
+    )
+    repo_registry_repo.upsert(
+        RepoIdentityDTO(
+            repo_id="repo-a-id-1",
+            repo_label="repo-a",
+            repo_root=str(repo_a1),
+            workspace_root=str(repo_a1),
+            updated_at=now_iso8601_utc(),
+        )
+    )
+
+    workspace_repo = WorkspaceRepository(db_path)
+    arguments: dict[str, object] = {
+        "repo": str(repo_a1),
+        "repo_key": "repo-a",
+        "repo_id": "repo-a-id-1",
+    }
+
+    result = validate_repo_argument(arguments=arguments, workspace_repo=workspace_repo)
+
+    assert result.error is None
+    assert arguments["repo"] == str(repo_a1)
+    assert arguments["repo_id"] == "repo-a-id-1"
 
 
 def test_validate_repo_argument_rejects_unknown_repo_id(tmp_path: Path) -> None:

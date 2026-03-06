@@ -51,14 +51,6 @@ def validate_repo_argument(arguments: dict[str, object], workspace_repo: RepoVal
             repo_key=None,
             error=ErrorResponseDTO(code="ERR_REPO_REQUIRED", message="repo is required"),
         )
-    distinct_values = {value for value in received.values()}
-    if len(distinct_values) > 1:
-        return RepoValidationResultDTO(
-            repo_id=None,
-            repo_root=None,
-            repo_key=None,
-            error=ErrorResponseDTO(code=ERR_REPO_ARGUMENT_CONFLICT, message=REPO_ARGUMENT_CONFLICT_MESSAGE),
-        )
 
     source_key = "repo"
     if "repo" in received:
@@ -108,6 +100,57 @@ def validate_repo_argument(arguments: dict[str, object], workspace_repo: RepoVal
             context_error = ErrorResponseDTO(code=ERR_REPO_NOT_REGISTERED, message=f"repo is not registered: {raw_repo}")
         return RepoValidationResultDTO(repo_id=None, repo_root=None, repo_key=None, error=context_error, warnings=tuple(warnings))
 
+    for key, value in received.items():
+        if key == source_key:
+            continue
+        normalized_value = value.strip()
+        if key == "repo_key":
+            if normalized_value == resolved_context.repo_key:
+                continue
+            candidate_context = _resolve_repo_argument_identity(
+                value=value,
+                workspace_repo=workspace_repo,
+                repo_registry_repo=repo_registry_repo,
+            )
+            if candidate_context is None or candidate_context.repo_id != resolved_context.repo_id:
+                return RepoValidationResultDTO(
+                    repo_id=None,
+                    repo_root=None,
+                    repo_key=None,
+                    error=ErrorResponseDTO(code=ERR_REPO_ARGUMENT_CONFLICT, message=REPO_ARGUMENT_CONFLICT_MESSAGE),
+                )
+            continue
+        if key == "repo_id" and normalized_value == resolved_context.repo_id:
+            continue
+        if key == "repo_id":
+            candidate_context = _resolve_repo_argument_identity(
+                value=value,
+                workspace_repo=workspace_repo,
+                repo_registry_repo=repo_registry_repo,
+            )
+            if candidate_context is None or candidate_context.repo_id != resolved_context.repo_id:
+                return RepoValidationResultDTO(
+                    repo_id=None,
+                    repo_root=None,
+                    repo_key=None,
+                    error=ErrorResponseDTO(code=ERR_REPO_ARGUMENT_CONFLICT, message=REPO_ARGUMENT_CONFLICT_MESSAGE),
+                )
+            continue
+        candidate_context = _resolve_repo_argument_identity(
+            value=value,
+            workspace_repo=workspace_repo,
+            repo_registry_repo=repo_registry_repo,
+        )
+        # repo가 유효하면 해석 불가한 보조 필드는 무시하되,
+        # 유효하게 해석되어 다른 저장소를 가리키는 경우만 충돌로 처리한다.
+        if candidate_context is not None and candidate_context.repo_id != resolved_context.repo_id:
+            return RepoValidationResultDTO(
+                repo_id=None,
+                repo_root=None,
+                repo_key=None,
+                error=ErrorResponseDTO(code=ERR_REPO_ARGUMENT_CONFLICT, message=REPO_ARGUMENT_CONFLICT_MESSAGE),
+            )
+
     arguments["repo"] = resolved_context.repo_root
     arguments["repo_id"] = resolved_context.repo_id
     arguments["repo_key"] = resolved_context.repo_key
@@ -130,7 +173,7 @@ def _resolve_identifier_repo_input(
     if repo_registry_repo is not None:
         identity = repo_registry_repo.get_by_repo_id(raw_repo)
         if identity is not None:
-            workspace_match = workspace_repo.get_by_path(identity.repo_root)
+            workspace_match = _resolve_workspace_by_path(workspace_repo=workspace_repo, raw_path=identity.repo_root)
             if workspace_match is None:
                 return (None, ErrorResponseDTO(code=ERR_REPO_NOT_REGISTERED, message=f"repo is not registered: {raw_repo}"))
             if workspace_match is not None and not workspace_match.is_active:
@@ -139,6 +182,21 @@ def _resolve_identifier_repo_input(
                 RepoContextDTO(repo_id=identity.repo_id, repo_root=identity.repo_root, repo_key=identity.repo_label),
                 None,
             )
+        label_identity = repo_registry_repo.get_by_repo_label(raw_repo)
+        if label_identity is not None:
+            workspace_match = _resolve_workspace_by_path(workspace_repo=workspace_repo, raw_path=label_identity.repo_root)
+            if workspace_match is not None:
+                if not workspace_match.is_active:
+                    return (None, ErrorResponseDTO(code=ERR_WORKSPACE_INACTIVE, message=WORKSPACE_INACTIVE_MESSAGE))
+                return (
+                    RepoContextDTO(
+                        repo_id=label_identity.repo_id,
+                        repo_root=label_identity.repo_root,
+                        repo_key=label_identity.repo_label,
+                    ),
+                    None,
+                )
+            # stale label row면 registry 결과를 신뢰하지 않고 resolver fallback으로 진행한다.
     context, error = _resolve_context_with_workspace_fallback(
         raw_repo=raw_repo,
         workspace_repo=workspace_repo,
@@ -163,7 +221,7 @@ def _resolve_absolute_repo_input(
     if repo_registry_repo is not None:
         identity = repo_registry_repo.get_by_repo_root(normalized)
         if identity is not None:
-            workspace_match = workspace_repo.get_by_path(identity.repo_root)
+            workspace_match = _resolve_workspace_by_path(workspace_repo=workspace_repo, raw_path=identity.repo_root)
             if workspace_match is None:
                 return (None, ErrorResponseDTO(code=ERR_REPO_PATH_DEPRECATED, message="absolute repo path is deprecated; use repo identifier"))
             if not workspace_match.is_active:
@@ -173,7 +231,7 @@ def _resolve_absolute_repo_input(
                 None,
             )
 
-    workspace_match = workspace_repo.get_by_path(normalized)
+    workspace_match = _resolve_workspace_by_path(workspace_repo=workspace_repo, raw_path=normalized)
     if workspace_match is None:
         return (None, ErrorResponseDTO(code=ERR_REPO_PATH_DEPRECATED, message="absolute repo path is deprecated; use repo identifier"))
     if not workspace_match.is_active:
@@ -216,6 +274,51 @@ def _resolve_context_with_workspace_fallback(
         RepoContextDTO(repo_id=repo_id, repo_root=workspace_match.path, repo_key=resolved_key),
         None,
     )
+
+
+def _resolve_repo_argument_identity(
+    *,
+    value: str,
+    workspace_repo: RepoValidationPort,
+    repo_registry_repo: RepoRegistryRepository | None,
+) -> RepoContextDTO | None:
+    """충돌 판정용으로 입력 필드를 RepoContext로 해석한다."""
+    raw_value = value.strip()
+    if raw_value == "":
+        return None
+    if _looks_like_absolute_path(raw_value):
+        context, error = _resolve_absolute_repo_input(
+            raw_repo=raw_value,
+            workspace_repo=workspace_repo,
+            repo_registry_repo=repo_registry_repo,
+        )
+    else:
+        context, error = _resolve_identifier_repo_input(
+            raw_repo=raw_value,
+            workspace_repo=workspace_repo,
+            repo_registry_repo=repo_registry_repo,
+        )
+    if error is not None:
+        return None
+    return context
+
+
+def _resolve_workspace_by_path(*, workspace_repo: RepoValidationPort, raw_path: str) -> WorkspaceDTO | None:
+    """워크스페이스 경로를 문자열/resolve 동치까지 허용해 조회한다."""
+    direct = workspace_repo.get_by_path(raw_path)
+    if direct is not None:
+        return direct
+    try:
+        normalized = str(Path(raw_path).expanduser().resolve())
+    except OSError:
+        return None
+    for item in workspace_repo.list_all():
+        try:
+            if str(Path(item.path).expanduser().resolve()) == normalized:
+                return item
+        except OSError:
+            continue
+    return None
 
 
 def _resolve_repo_registry_repo(workspace_repo: RepoValidationPort) -> RepoRegistryRepository | None:
