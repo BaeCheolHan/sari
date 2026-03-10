@@ -365,12 +365,14 @@ class DoctorTool:
         workspace_repo: RepoValidationPort,
         repo_language_probe_repo: RepoLanguageProbeRepository | None = None,
         repo_hot_checker: Callable[[str], bool] | None = None,
+        repo_runtime_activity_provider: Callable[[str], dict[str, object]] | None = None,
     ) -> None:
         """필요 의존성을 주입한다."""
         self._admin_service = admin_service
         self._workspace_repo = workspace_repo
         self._repo_language_probe_repo = repo_language_probe_repo
         self._repo_hot_checker = repo_hot_checker
+        self._repo_runtime_activity_provider = repo_runtime_activity_provider
 
     def call(self, arguments: dict[str, object]) -> dict[str, object]:
         """doctor 응답을 pack1 형식으로 반환한다."""
@@ -399,6 +401,19 @@ class DoctorTool:
                         name="repo_language_starvation",
                         passed=False,
                         detail=f"manual probe is backpressured: {langs}",
+                    ).to_dict()
+                )
+        if self._repo_runtime_activity_provider is not None:
+            raw_metrics = self._repo_runtime_activity_provider(repo_root)
+            anomaly_count = 0
+            if isinstance(raw_metrics, dict):
+                anomaly_count = int(raw_metrics.get("runtime_activity_anomaly_count", 0))
+            if anomaly_count > 0:
+                items.append(
+                    DoctorItemDTO(
+                        name="lsp_runtime_activity",
+                        passed=False,
+                        detail=f"recent runtime activity anomaly detected: {anomaly_count}",
                     ).to_dict()
                 )
         return pack1_success(

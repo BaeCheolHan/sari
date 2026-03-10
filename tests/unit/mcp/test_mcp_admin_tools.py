@@ -370,6 +370,152 @@ def test_mcp_doctor_treats_force_trigger_as_manual_starvation(tmp_path: Path) ->
     assert len(starvation_items) == 1
 
 
+def test_mcp_doctor_reports_runtime_activity_anomaly_signal_for_current_busy_repo(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_dir = tmp_path / "repo-a"
+    repo_dir.mkdir()
+    WorkspaceService(WorkspaceRepository(db_path)).add_workspace(str(repo_dir.resolve()))
+
+    server = McpServer(db_path=db_path)
+    server._doctor_tool._repo_runtime_activity_provider = lambda repo: {  # type: ignore[attr-defined]
+        "repo_root": repo,
+        "active_request_count": 1,
+        "busy_runtime_count": 1,
+        "idle_runtime_count": 0,
+        "runtime_activity_anomaly_count": 2,
+    }
+
+    response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 401,
+            "method": "tools/call",
+            "params": {
+                "name": "doctor",
+                "arguments": {"repo": str(repo_dir.resolve()), "options": {"structured": 1}},
+            },
+        }
+    )
+
+    payload = response.to_dict()
+    items = payload["result"]["structuredContent"]["items"]
+    anomaly_items = [item for item in items if item["name"] == "lsp_runtime_activity"]
+    assert len(anomaly_items) == 1
+    assert anomaly_items[0]["passed"] is False
+    assert "2" in anomaly_items[0]["detail"]
+
+
+def test_mcp_doctor_ignores_runtime_activity_anomaly_from_other_repo(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_a = tmp_path / "repo-a"
+    repo_b = tmp_path / "repo-b"
+    repo_a.mkdir()
+    repo_b.mkdir()
+    workspace_service = WorkspaceService(WorkspaceRepository(db_path))
+    workspace_service.add_workspace(str(repo_a.resolve()))
+    workspace_service.add_workspace(str(repo_b.resolve()))
+
+    server = McpServer(db_path=db_path)
+
+    def _provider(repo: str) -> dict[str, object]:
+        return {
+            "repo_root": repo,
+            "active_request_count": 0,
+            "busy_runtime_count": 0,
+            "idle_runtime_count": 0,
+            "runtime_activity_anomaly_count": 3 if repo == str(repo_b.resolve()) else 0,
+        }
+
+    server._doctor_tool._repo_runtime_activity_provider = _provider  # type: ignore[attr-defined]
+
+    response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 402,
+            "method": "tools/call",
+            "params": {
+                "name": "doctor",
+                "arguments": {"repo": str(repo_a.resolve()), "options": {"structured": 1}},
+            },
+        }
+    )
+
+    payload = response.to_dict()
+    items = payload["result"]["structuredContent"]["items"]
+    anomaly_items = [item for item in items if item["name"] == "lsp_runtime_activity"]
+    assert anomaly_items == []
+
+
+def test_mcp_doctor_ignores_historical_runtime_activity_anomaly_when_repo_is_idle(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_dir = tmp_path / "repo-a"
+    repo_dir.mkdir()
+    WorkspaceService(WorkspaceRepository(db_path)).add_workspace(str(repo_dir.resolve()))
+
+    server = McpServer(db_path=db_path)
+    server._doctor_tool._repo_runtime_activity_provider = lambda repo: {  # type: ignore[attr-defined]
+        "repo_root": repo,
+        "active_request_count": 0,
+        "busy_runtime_count": 0,
+        "idle_runtime_count": 1,
+        "runtime_activity_anomaly_count": 0,
+    }
+
+    response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 403,
+            "method": "tools/call",
+            "params": {
+                "name": "doctor",
+                "arguments": {"repo": str(repo_dir.resolve()), "options": {"structured": 1}},
+            },
+        }
+    )
+
+    payload = response.to_dict()
+    items = payload["result"]["structuredContent"]["items"]
+    anomaly_items = [item for item in items if item["name"] == "lsp_runtime_activity"]
+    assert anomaly_items == []
+
+
+def test_mcp_doctor_reports_recent_runtime_activity_anomaly_for_idle_repo(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_dir = tmp_path / "repo-a"
+    repo_dir.mkdir()
+    WorkspaceService(WorkspaceRepository(db_path)).add_workspace(str(repo_dir.resolve()))
+
+    server = McpServer(db_path=db_path)
+    server._doctor_tool._repo_runtime_activity_provider = lambda repo: {  # type: ignore[attr-defined]
+        "repo_root": repo,
+        "active_request_count": 0,
+        "busy_runtime_count": 0,
+        "idle_runtime_count": 0,
+        "runtime_activity_anomaly_count": 1,
+    }
+
+    response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 404,
+            "method": "tools/call",
+            "params": {
+                "name": "doctor",
+                "arguments": {"repo": str(repo_dir.resolve()), "options": {"structured": 1}},
+            },
+        }
+    )
+
+    payload = response.to_dict()
+    items = payload["result"]["structuredContent"]["items"]
+    anomaly_items = [item for item in items if item["name"] == "lsp_runtime_activity"]
+    assert len(anomaly_items) == 1
+
+
 def test_validate_repo_argument_rejects_inactive_workspace(tmp_path: Path) -> None:
     """validate_repo_argument는 비활성 workspace를 명시적으로 거부해야 한다."""
     db_path = tmp_path / "state.db"

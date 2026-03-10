@@ -126,6 +126,8 @@ class LspHub:
         self._soft_limit_denied_background_count = 0
         self._soft_limit_admitted_manual_count = 0
         self._runtime_activity_anomaly_count = 0
+        self._runtime_activity_anomaly_ttl_sec = 60.0
+        self._runtime_activity_anomaly_by_repo: dict[str, tuple[int, float]] = {}
         self._stop_cleanup = threading.Event()
         self._forced_kill_count = 0
         self._stop_timeout_count = 0
@@ -412,19 +414,39 @@ class LspHub:
             entries = [entry for key, entry in self._instances.items() if key.repo_root == normalized_root]
             active_request_count = sum(max(0, int(entry.active_request_count)) for entry in entries)
             busy_runtime_count = sum(1 for entry in entries if int(entry.active_request_count) > 0)
+            anomaly_count = 0
+            anomaly_state = self._runtime_activity_anomaly_by_repo.get(normalized_root)
+            if anomaly_state is not None:
+                stored_count, last_ts = anomaly_state
+                if (self._clock() - float(last_ts)) <= float(self._runtime_activity_anomaly_ttl_sec):
+                    anomaly_count = int(stored_count)
+                else:
+                    self._runtime_activity_anomaly_by_repo.pop(normalized_root, None)
             return {
                 "repo_root": normalized_root,
                 "active_request_count": int(active_request_count),
                 "busy_runtime_count": int(busy_runtime_count),
                 "idle_runtime_count": int(max(0, len(entries) - busy_runtime_count)),
+                "runtime_activity_anomaly_count": int(anomaly_count),
             }
+
+    def _record_runtime_activity_anomaly_locked(self, repo_root: str) -> None:
+        normalized_root = str(Path(repo_root).resolve())
+        self._runtime_activity_anomaly_count += 1
+        previous_count, previous_ts = self._runtime_activity_anomaly_by_repo.get(normalized_root, (0, 0.0))
+        if (self._clock() - float(previous_ts)) > float(self._runtime_activity_anomaly_ttl_sec):
+            previous_count = 0
+        self._runtime_activity_anomaly_by_repo[normalized_root] = (
+            int(previous_count) + 1,
+            float(self._clock()),
+        )
 
     def record_request_start(self, *, key: LspRuntimeKey, request_kind: str, method: str) -> None:
         """runtime의 in-flight request 시작을 기록한다."""
         with self._lock:
             entry = self._instances.get(key)
             if entry is None:
-                self._runtime_activity_anomaly_count += 1
+                self._record_runtime_activity_anomaly_locked(key.repo_root)
                 return
             now = self._clock()
             entry.active_request_count = max(0, int(entry.active_request_count)) + 1
@@ -439,11 +461,11 @@ class LspHub:
         with self._lock:
             entry = self._instances.get(key)
             if entry is None:
-                self._runtime_activity_anomaly_count += 1
+                self._record_runtime_activity_anomaly_locked(key.repo_root)
                 return
             current = int(entry.active_request_count)
             if current <= 0:
-                self._runtime_activity_anomaly_count += 1
+                self._record_runtime_activity_anomaly_locked(key.repo_root)
                 entry.active_request_count = 0
             else:
                 entry.active_request_count = current - 1
@@ -665,7 +687,7 @@ class LspHub:
         if entry is None:
             return
         if int(entry.active_request_count) > 0:
-            self._runtime_activity_anomaly_count += 1
+            self._record_runtime_activity_anomaly_locked(key.repo_root)
             entry.active_request_count = 0
         try:
             self._stop_server_with_timeout(entry.server)
@@ -686,7 +708,7 @@ class LspHub:
         """is_running=false 엔트리를 OS 프로세스까지 정리한다."""
         self._orphan_suspect_count += 1
         if int(entry.active_request_count) > 0:
-            self._runtime_activity_anomaly_count += 1
+            self._record_runtime_activity_anomaly_locked(key.repo_root)
             entry.active_request_count = 0
         try:
             self._stop_server_with_timeout(entry.server)

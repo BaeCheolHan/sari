@@ -553,6 +553,7 @@ class McpServer:
             workspace_repo=workspace_repo,
             repo_language_probe_repo=repos.repo_language_probe_repo,
             repo_hot_checker=shared_hub.is_repo_hot,
+            repo_runtime_activity_provider=shared_hub.get_repo_runtime_activity,
         )
         self._rescan_tool = RescanTool(admin_service=admin_service, workspace_repo=workspace_repo)
         self._repo_candidates_tool = RepoCandidatesTool(admin_service=admin_service, workspace_repo=workspace_repo)

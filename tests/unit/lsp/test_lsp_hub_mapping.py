@@ -1114,10 +1114,23 @@ def test_lsp_hub_java_auto_fallback_retries_with_bundled_gradle(monkeypatch, tmp
         create_calls.append(process_env.get("SARI_JDTLS_GRADLE_WRAPPER_FIRST", ""))
         return _FakeServer(process_env=process_env)
 
+    class _Broker:
+        def resolve(self, language: Language, repo_root: str | None = None) -> RuntimeLaunchContextDTO:
+            assert language == Language.JAVA
+            assert repo_root == str(repo)
+            return RuntimeLaunchContextDTO(
+                requirement=RuntimeRequirementDTO(language=Language.JAVA, runtime_name="java", minimum_major=17),
+                env_overrides={"JAVA_HOME": "/tmp/jdk-a", "PATH": "/tmp/jdk-a/bin:/usr/bin"},
+                selected_executable="/tmp/jdk-a/bin/java",
+                selected_major=21,
+                selected_source="mock",
+                auto_provision_expected=False,
+            )
+
     monkeypatch.delenv("SARI_JDTLS_GRADLE_WRAPPER_FIRST", raising=False)
     monkeypatch.setattr("sari.lsp.hub.SolidLanguageServer.create", _fake_create)
 
-    hub = LspHub()
+    hub = LspHub(runtime_broker=_Broker())
     server = hub.get_or_start(language=Language.JAVA, repo_root=str(repo), request_kind="interactive")
     assert server.server.is_running() is True
     assert len(create_calls) == 2
@@ -1167,10 +1180,23 @@ def test_lsp_hub_java_indexing_prefers_bundled_gradle_first(monkeypatch, tmp_pat
         )
         return _FakeServer(process_env=process_env)
 
+    class _Broker:
+        def resolve(self, language: Language, repo_root: str | None = None) -> RuntimeLaunchContextDTO:
+            assert language == Language.JAVA
+            assert repo_root == str(repo)
+            return RuntimeLaunchContextDTO(
+                requirement=RuntimeRequirementDTO(language=Language.JAVA, runtime_name="java", minimum_major=17),
+                env_overrides={"JAVA_HOME": "/tmp/jdk-a", "PATH": "/tmp/jdk-a/bin:/usr/bin"},
+                selected_executable="/tmp/jdk-a/bin/java",
+                selected_major=21,
+                selected_source="mock",
+                auto_provision_expected=False,
+            )
+
     monkeypatch.delenv("SARI_JDTLS_GRADLE_WRAPPER_FIRST", raising=False)
     monkeypatch.setattr("sari.lsp.hub.SolidLanguageServer.create", _fake_create)
 
-    hub = LspHub()
+    hub = LspHub(runtime_broker=_Broker())
     server = hub.get_or_start(language=Language.JAVA, repo_root=str(repo), request_kind="indexing")
     assert server.server.is_running() is True
     assert create_calls == [("0", "indexing")]
@@ -1209,10 +1235,23 @@ def test_lsp_hub_java_explicit_wrapper_setting_disables_auto_fallback(monkeypatc
         create_calls["count"] += 1
         return _BrokenServer()
 
+    class _Broker:
+        def resolve(self, language: Language, repo_root: str | None = None) -> RuntimeLaunchContextDTO:
+            assert language == Language.JAVA
+            assert repo_root == str(repo)
+            return RuntimeLaunchContextDTO(
+                requirement=RuntimeRequirementDTO(language=Language.JAVA, runtime_name="java", minimum_major=17),
+                env_overrides={"JAVA_HOME": "/tmp/jdk-a", "PATH": "/tmp/jdk-a/bin:/usr/bin"},
+                selected_executable="/tmp/jdk-a/bin/java",
+                selected_major=21,
+                selected_source="mock",
+                auto_provision_expected=False,
+            )
+
     monkeypatch.setenv("SARI_JDTLS_GRADLE_WRAPPER_FIRST", "1")
     monkeypatch.setattr("sari.lsp.hub.SolidLanguageServer.create", _fake_create)
 
-    hub = LspHub()
+    hub = LspHub(runtime_broker=_Broker())
     with pytest.raises(DaemonError):
         hub.get_or_start(language=Language.JAVA, repo_root=str(repo))
     assert create_calls["count"] == 1
@@ -1754,3 +1793,95 @@ def test_lsp_hub_cleanup_busy_runtime_counts_activity_anomaly() -> None:
     hub._cleanup_not_running_entry_locked(key, entry)  # noqa: SLF001
 
     assert hub.get_metrics()["lsp_runtime_activity_anomaly_count"] == 1
+
+
+def test_lsp_hub_repo_runtime_activity_retains_recent_idle_anomaly() -> None:
+    """idle repo여도 최근 anomaly는 관측 가능해야 한다."""
+
+    hub = LspHub(clock=lambda: 10.0)
+    hub._runtime_activity_anomaly_by_repo["/repo-a"] = (3, 9.0)  # noqa: SLF001
+
+    snapshot = hub.get_repo_runtime_activity("/repo-a")
+
+    assert snapshot["runtime_activity_anomaly_count"] == 3
+
+
+def test_lsp_hub_repo_runtime_activity_expires_stale_idle_anomaly() -> None:
+    """오래된 anomaly는 TTL 이후 관측에서 사라져야 한다."""
+
+    hub = LspHub(clock=lambda: 100.0)
+    hub._runtime_activity_anomaly_by_repo["/repo-a"] = (3, 0.0)  # noqa: SLF001
+
+    snapshot = hub.get_repo_runtime_activity("/repo-a")
+
+    assert snapshot["runtime_activity_anomaly_count"] == 0
+
+
+def test_lsp_hub_record_runtime_activity_anomaly_resets_expired_repo_count() -> None:
+    """write 경로도 TTL이 지난 stale anomaly count를 재사용하면 안 된다."""
+
+    now = {"value": 100.0}
+    hub = LspHub(clock=lambda: now["value"])
+    hub._runtime_activity_anomaly_by_repo["/repo-a"] = (3, 0.0)  # noqa: SLF001
+
+    hub._record_runtime_activity_anomaly_locked("/repo-a")  # noqa: SLF001
+    snapshot = hub.get_repo_runtime_activity("/repo-a")
+
+    assert snapshot["runtime_activity_anomaly_count"] == 1
+
+
+def test_lsp_hub_lru_cleanup_skips_busy_runtime_and_evicts_idle_candidate() -> None:
+    """max_instances 정리 경로도 busy runtime은 건드리지 않고 idle만 정리해야 한다."""
+
+    class _FakeRuntimeServer:
+        def is_running(self) -> bool:
+            return True
+
+    class _FakeLanguageServer:
+        def __init__(self) -> None:
+            self.server = _FakeRuntimeServer()
+            self.stopped = False
+
+        def stop(self) -> None:
+            self.stopped = True
+
+    hub = LspHub(max_instances=1, clock=lambda: 100.0)
+    busy_key = LspRuntimeKey(language=Language.PYTHON, repo_root="/repo-busy", slot=0)
+    idle_key = LspRuntimeKey(language=Language.TYPESCRIPT, repo_root="/repo-idle", slot=0)
+    busy_server = _FakeLanguageServer()
+    idle_server = _FakeLanguageServer()
+    hub._instances[busy_key] = LspRuntimeEntry(server=busy_server, last_used_at=10.0, active_request_count=1)  # noqa: SLF001
+    hub._instances[idle_key] = LspRuntimeEntry(server=idle_server, last_used_at=5.0, active_request_count=0)  # noqa: SLF001
+
+    hub._evict_lru_if_needed_locked()  # noqa: SLF001
+
+    assert busy_key in hub._instances  # noqa: SLF001
+    assert idle_key not in hub._instances  # noqa: SLF001
+    assert busy_server.stopped is False
+    assert idle_server.stopped is True
+
+
+def test_lsp_hub_lru_cleanup_does_nothing_when_all_runtimes_are_busy() -> None:
+    """자동 capacity cleanup은 모든 runtime이 busy면 아무 것도 제거하지 않아야 한다."""
+
+    class _FakeRuntimeServer:
+        def is_running(self) -> bool:
+            return True
+
+    class _FakeLanguageServer:
+        def __init__(self) -> None:
+            self.server = _FakeRuntimeServer()
+            self.stopped = False
+
+        def stop(self) -> None:
+            self.stopped = True
+
+    hub = LspHub(max_instances=1, clock=lambda: 100.0)
+    key = LspRuntimeKey(language=Language.PYTHON, repo_root="/repo-a", slot=0)
+    server = _FakeLanguageServer()
+    hub._instances[key] = LspRuntimeEntry(server=server, last_used_at=0.0, active_request_count=2)  # noqa: SLF001
+
+    hub._evict_lru_if_needed_locked()  # noqa: SLF001
+
+    assert key in hub._instances  # noqa: SLF001
+    assert server.stopped is False
