@@ -536,3 +536,43 @@ def test_mcp_status_exposes_runtime_activity_snapshot(tmp_path: Path) -> None:
     assert item["runtime_activity"]["active_request_count"] == 2
     assert item["runtime_activity"]["busy_runtime_count"] == 1
     assert item["runtime_activity"]["idle_runtime_count"] == 3
+
+
+def test_mcp_status_exposes_selective_eviction_metrics(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_root = tmp_path / "repo-a"
+    repo_root.mkdir(parents=True, exist_ok=True)
+    workspace_repo = WorkspaceRepository(db_path)
+    workspace_repo.add(
+        WorkspaceDTO(
+            path=str(repo_root.resolve()),
+            name=repo_root.name,
+            indexed_at=None,
+            is_active=True,
+        )
+    )
+    tool = StatusTool(
+        workspace_repo=workspace_repo,
+        runtime_repo=RuntimeRepository(db_path),
+        file_repo=FileCollectionRepository(db_path),
+        lsp_repo=LspToolDataRepository(db_path),
+        lsp_metrics_provider=lambda: {
+            "lsp_selective_eviction_attempt_count": 3,
+            "lsp_selective_eviction_success_count": 1,
+            "lsp_selective_eviction_skip_hot_repo_count": 1,
+            "lsp_selective_eviction_skip_busy_count": 1,
+            "lsp_selective_eviction_skip_grace_count": 2,
+            "lsp_selective_eviction_skip_post_acquire_idle_count": 1,
+        },
+    )
+
+    payload = tool.call({"repo": str(repo_root.resolve())})
+
+    item = payload["structuredContent"]["items"][0]
+    assert item["lsp_metrics"]["lsp_selective_eviction_attempt_count"] == 3
+    assert item["lsp_metrics"]["lsp_selective_eviction_success_count"] == 1
+    assert item["lsp_metrics"]["lsp_selective_eviction_skip_hot_repo_count"] == 1
+    assert item["lsp_metrics"]["lsp_selective_eviction_skip_busy_count"] == 1
+    assert item["lsp_metrics"]["lsp_selective_eviction_skip_grace_count"] == 2
+    assert item["lsp_metrics"]["lsp_selective_eviction_skip_post_acquire_idle_count"] == 1

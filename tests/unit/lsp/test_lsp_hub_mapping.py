@@ -752,6 +752,87 @@ def test_lsp_hub_manual_request_evicts_unused_background_entry_under_soft_limit_
     hub.stop_all()
 
 
+def test_lsp_hub_selective_eviction_metrics_record_success_and_skips() -> None:
+    """selective eviction metrics는 시도/성공과 주요 skip 이유를 노출해야 한다."""
+
+    class _FakeRuntimeServer:
+        def is_running(self) -> bool:
+            return True
+
+    class _FakeLanguageServer:
+        def __init__(self) -> None:
+            self.server = _FakeRuntimeServer()
+            self.stopped = False
+
+        def stop(self) -> None:
+            self.stopped = True
+
+    now = {"value": 10.0}
+    hub = LspHub(clock=lambda: float(now["value"]), eviction_idle_grace_sec=2.0, manual_hot_repo_ttl_sec=30.0)
+    hot_key = LspRuntimeKey(language=Language.PYTHON, repo_root="/repo-hot", slot=0)
+    busy_key = LspRuntimeKey(language=Language.JAVA, repo_root="/repo-busy", slot=0)
+    grace_key = LspRuntimeKey(language=Language.RUST, repo_root="/repo-grace", slot=0)
+    no_request_key = LspRuntimeKey(language=Language.GO, repo_root="/repo-no-request", slot=0)
+    ok_key = LspRuntimeKey(language=Language.TYPESCRIPT, repo_root="/repo-ok", slot=0)
+
+    hub._instances[hot_key] = LspRuntimeEntry(  # noqa: SLF001
+        server=_FakeLanguageServer(),
+        last_used_at=1.0,
+        last_acquired_at=1.0,
+        active_request_count=0,
+        last_acquire_kind="background_probe",
+        last_request_started_at=6.0,
+        last_request_finished_at=7.0,
+    )
+    hub._instances[busy_key] = LspRuntimeEntry(  # noqa: SLF001
+        server=_FakeLanguageServer(),
+        last_used_at=1.0,
+        last_acquired_at=1.0,
+        active_request_count=1,
+        last_acquire_kind="background_probe",
+        last_request_started_at=6.0,
+        last_request_finished_at=7.0,
+    )
+    hub._instances[grace_key] = LspRuntimeEntry(  # noqa: SLF001
+        server=_FakeLanguageServer(),
+        last_used_at=9.5,
+        last_acquired_at=1.0,
+        active_request_count=0,
+        last_acquire_kind="background_probe",
+        last_request_started_at=9.5,
+        last_request_finished_at=9.5,
+    )
+    hub._instances[no_request_key] = LspRuntimeEntry(  # noqa: SLF001
+        server=_FakeLanguageServer(),
+        last_used_at=1.0,
+        last_acquired_at=9.0,
+        active_request_count=0,
+        last_acquire_kind="background_probe",
+        last_request_started_at=7.0,
+        last_request_finished_at=9.5,
+    )
+    hub._instances[ok_key] = LspRuntimeEntry(  # noqa: SLF001
+        server=_FakeLanguageServer(),
+        last_used_at=1.0,
+        last_acquired_at=1.0,
+        active_request_count=0,
+        last_acquire_kind="background_probe",
+        last_request_started_at=6.0,
+        last_request_finished_at=7.0,
+    )
+    hub.mark_repo_hot("/repo-hot")
+
+    assert hub._try_free_soft_limit_capacity_locked(target_repo_root="/repo-target", request_kind="manual_index") is True  # noqa: SLF001
+
+    metrics = hub.get_metrics()
+    assert metrics["lsp_selective_eviction_attempt_count"] == 1
+    assert metrics["lsp_selective_eviction_success_count"] == 1
+    assert metrics["lsp_selective_eviction_skip_hot_repo_count"] >= 1
+    assert metrics["lsp_selective_eviction_skip_busy_count"] >= 1
+    assert metrics["lsp_selective_eviction_skip_grace_count"] >= 1
+    assert metrics["lsp_selective_eviction_skip_post_acquire_idle_count"] >= 1
+
+
 def test_lsp_hub_manual_request_does_not_evict_same_repo_background_entry_under_soft_limit(monkeypatch) -> None:
     """같은 repo의 background 엔트리는 in-flight 가능성이 있으므로 eviction하면 안 된다."""
 
@@ -1241,6 +1322,7 @@ def test_lsp_hub_selective_eviction_candidate_allows_unused_background_runtime_a
         server=_FakeLanguageServer(),
         last_used_at=1.0,
         last_acquired_at=7.0,
+        acquire_count=1,
         active_request_count=0,
         last_acquire_kind="background_probe",
     )
@@ -1251,6 +1333,39 @@ def test_lsp_hub_selective_eviction_candidate_allows_unused_background_runtime_a
     )
 
     assert selected == key
+
+
+def test_lsp_hub_selective_eviction_candidate_excludes_reacquired_unused_background_runtime() -> None:
+    """재획득만 되고 아직 요청이 없는 runtime은 unused라도 후보가 되면 안 된다."""
+
+    class _FakeRuntimeServer:
+        def is_running(self) -> bool:
+            return True
+
+    class _FakeLanguageServer:
+        def __init__(self) -> None:
+            self.server = _FakeRuntimeServer()
+
+        def stop(self) -> None:
+            return None
+
+    hub = LspHub(clock=lambda: 10.0, eviction_idle_grace_sec=2.0)
+    key = LspRuntimeKey(language=Language.PYTHON, repo_root="/repo-a", slot=0)
+    hub._instances[key] = LspRuntimeEntry(  # noqa: SLF001
+        server=_FakeLanguageServer(),
+        last_used_at=1.0,
+        last_acquired_at=7.0,
+        acquire_count=2,
+        active_request_count=0,
+        last_acquire_kind="background_probe",
+    )
+
+    selected = hub._select_safe_eviction_candidate_locked(  # noqa: SLF001
+        target_repo_root="/repo-b",
+        request_kind="manual_index",
+    )
+
+    assert selected is None
 
 
 def test_lsp_hub_waiter_acquire_updates_last_acquire_kind(monkeypatch) -> None:

@@ -45,6 +45,7 @@ class LspRuntimeEntry:
     server: SolidLanguageServer
     last_used_at: float
     last_acquired_at: float = 0.0
+    acquire_count: int = 0
     retention_expires_at: float = 0.0
     retention_tier: str | None = None
     retention_hotness: float = 0.0
@@ -126,6 +127,12 @@ class LspHub:
         self._manual_hot_repo_ttl_sec = max(1.0, float(manual_hot_repo_ttl_sec))
         self._manual_hot_repo_until: dict[str, float] = {}
         self._eviction_idle_grace_sec = max(0.0, float(eviction_idle_grace_sec))
+        self._selective_eviction_attempt_count = 0
+        self._selective_eviction_success_count = 0
+        self._selective_eviction_skip_hot_repo_count = 0
+        self._selective_eviction_skip_busy_count = 0
+        self._selective_eviction_skip_grace_count = 0
+        self._selective_eviction_skip_post_acquire_idle_count = 0
         self._priority_eviction_count = 0
         self._soft_limit_denied_background_count = 0
         self._soft_limit_admitted_manual_count = 0
@@ -220,6 +227,7 @@ class LspHub:
                                 selected_entry = self._instances[selected_key]
                                 selected_entry.last_used_at = now
                                 selected_entry.last_acquired_at = now
+                                selected_entry.acquire_count = max(1, int(selected_entry.acquire_count)) + 1
                                 selected_entry.last_acquire_kind = normalized_kind
                                 self._last_acquire_at[base_key] = now
                                 return selected_entry.server
@@ -229,6 +237,7 @@ class LspHub:
                             selected_entry = self._instances[selected_key]
                             selected_entry.last_used_at = now
                             selected_entry.last_acquired_at = now
+                            selected_entry.acquire_count = max(1, int(selected_entry.acquire_count)) + 1
                             selected_entry.last_acquire_kind = normalized_kind
                             self._last_acquire_at[base_key] = now
                             return selected_entry.server
@@ -416,6 +425,12 @@ class LspHub:
                 "lsp_priority_eviction_count": int(self._priority_eviction_count),
                 "lsp_soft_limit_denied_background_count": int(self._soft_limit_denied_background_count),
                 "lsp_soft_limit_admitted_manual_count": int(self._soft_limit_admitted_manual_count),
+                "lsp_selective_eviction_attempt_count": int(self._selective_eviction_attempt_count),
+                "lsp_selective_eviction_success_count": int(self._selective_eviction_success_count),
+                "lsp_selective_eviction_skip_hot_repo_count": int(self._selective_eviction_skip_hot_repo_count),
+                "lsp_selective_eviction_skip_busy_count": int(self._selective_eviction_skip_busy_count),
+                "lsp_selective_eviction_skip_grace_count": int(self._selective_eviction_skip_grace_count),
+                "lsp_selective_eviction_skip_post_acquire_idle_count": int(self._selective_eviction_skip_post_acquire_idle_count),
             }
 
     def get_repo_runtime_activity(self, repo_root: str) -> dict[str, int | str]:
@@ -870,28 +885,39 @@ class LspHub:
             if key in self._starting_events:
                 continue
             if self._is_manual_priority_repo_locked(key.repo_root):
+                self._selective_eviction_skip_hot_repo_count += 1
                 continue
             if entry.retention_expires_at > now:
                 continue
             if not entry.server.server.is_running():
                 continue
             if int(entry.active_request_count) > 0:
+                self._selective_eviction_skip_busy_count += 1
                 continue
             if not self._is_background_request_kind(str(entry.last_acquire_kind or "")):
                 continue
             if entry.last_request_started_at is None and entry.last_request_finished_at is None:
+                if int(entry.acquire_count) > 1:
+                    self._selective_eviction_skip_post_acquire_idle_count += 1
+                    continue
                 if (now - float(entry.last_acquired_at)) < self._eviction_idle_grace_sec:
+                    self._selective_eviction_skip_grace_count += 1
                     continue
             else:
                 if entry.last_request_finished_at is None:
+                    self._selective_eviction_skip_post_acquire_idle_count += 1
                     continue
                 if entry.last_request_started_at is None:
+                    self._selective_eviction_skip_post_acquire_idle_count += 1
                     continue
                 if float(entry.last_request_started_at) < float(entry.last_acquired_at):
+                    self._selective_eviction_skip_post_acquire_idle_count += 1
                     continue
                 if float(entry.last_request_finished_at) < float(entry.last_acquired_at):
+                    self._selective_eviction_skip_post_acquire_idle_count += 1
                     continue
                 if (now - float(entry.last_request_finished_at)) < self._eviction_idle_grace_sec:
+                    self._selective_eviction_skip_grace_count += 1
                     continue
             candidates.append(key)
         if len(candidates) == 0:
@@ -899,6 +925,7 @@ class LspHub:
         return min(candidates, key=lambda key: float(self._instances[key].last_used_at))
 
     def _try_free_soft_limit_capacity_locked(self, *, target_repo_root: str, request_kind: str) -> bool:
+        self._selective_eviction_attempt_count += 1
         candidate = self._select_safe_eviction_candidate_locked(
             target_repo_root=target_repo_root,
             request_kind=request_kind,
@@ -907,6 +934,7 @@ class LspHub:
             return False
         self._stop_entry_locked(candidate)
         self._priority_eviction_count += 1
+        self._selective_eviction_success_count += 1
         if self._is_manual_priority_kind(self._normalize_request_kind(request_kind)):
             self._soft_limit_admitted_manual_count += 1
         return True
@@ -949,6 +977,7 @@ class LspHub:
                         now = self._clock()
                         existing.last_used_at = now
                         existing.last_acquired_at = now
+                        existing.acquire_count = max(1, int(existing.acquire_count)) + 1
                         existing.last_acquire_kind = request_kind
                         return existing.server
                     if existing is not None:
@@ -1007,6 +1036,7 @@ class LspHub:
                         server=started,
                         last_used_at=created_at,
                         last_acquired_at=created_at,
+                        acquire_count=1,
                         last_acquire_kind=request_kind,
                     )
                     setter = getattr(started, "set_request_lifecycle_hooks", None)
