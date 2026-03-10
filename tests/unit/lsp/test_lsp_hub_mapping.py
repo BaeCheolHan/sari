@@ -498,6 +498,59 @@ def test_lsp_hub_scale_out_respects_global_soft_limit(monkeypatch) -> None:
     assert all(server.started for server in created)
 
 
+def test_lsp_hub_manual_scale_out_does_not_evict_other_repo_under_soft_limit(monkeypatch) -> None:
+    """manual hot-hit scale-out은 다른 repo idle capacity를 비우면 안 되고 기존 슬롯 재사용으로 끝나야 한다."""
+
+    class _FakeRuntimeServer:
+        def is_running(self) -> bool:
+            return True
+
+    class _FakeLanguageServer:
+        def __init__(self, idx: int) -> None:
+            self.server = _FakeRuntimeServer()
+            self.idx = idx
+            self.stopped = False
+
+        def start(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            self.stopped = True
+
+    created: list[_FakeLanguageServer] = []
+    now = {"value": 10.0}
+
+    def _fake_create(*args, **kwargs) -> _FakeLanguageServer:
+        del args, kwargs
+        server = _FakeLanguageServer(len(created))
+        created.append(server)
+        return server
+
+    monkeypatch.setattr("sari.lsp.hub.SolidLanguageServer.create", _fake_create)
+
+    hub = LspHub(
+        max_instances=8,
+        max_instances_per_repo_language=2,
+        scale_out_hot_hits=2,
+        lsp_global_soft_limit=2,
+        eviction_idle_grace_sec=2.0,
+        clock=lambda: float(now["value"]),
+    )
+    reused = hub.get_or_start(language=Language.PYTHON, repo_root="/repo-a", request_kind="manual_probe")
+    other = hub.get_or_start(language=Language.JAVA, repo_root="/repo-b", request_kind="background_probe")
+    now["value"] = 13.0
+    second = hub.get_or_start(language=Language.PYTHON, repo_root="/repo-a", request_kind="manual_probe")
+
+    assert second is reused
+    assert other is created[1]
+    assert created[1].stopped is False
+    assert len(created) == 2
+    metrics = hub.get_metrics()
+    assert metrics["lsp_priority_eviction_count"] == 0
+    assert metrics["lsp_soft_limit_admitted_manual_count"] == 0
+    hub.stop_all()
+
+
 def test_lsp_hub_global_soft_limit_blocks_new_repo_language_start(monkeypatch) -> None:
     """전역 soft limit 도달 시 신규 repo/language 키의 추가 기동을 차단해야 한다."""
 
@@ -589,6 +642,113 @@ def test_lsp_hub_manual_request_does_not_evict_background_entry_under_soft_limit
     metrics = hub.get_metrics()
     assert metrics["lsp_priority_eviction_count"] == 0
     assert metrics["lsp_soft_limit_admitted_manual_count"] == 0
+    hub.stop_all()
+
+
+def test_lsp_hub_manual_request_evicts_idle_background_entry_under_soft_limit_after_grace(monkeypatch) -> None:
+    """manual 요청은 grace가 지난 cross-repo idle background runtime만 선별 정리할 수 있어야 한다."""
+
+    class _FakeRuntimeServer:
+        def is_running(self) -> bool:
+            return True
+
+    class _FakeLanguageServer:
+        def __init__(self, idx: int) -> None:
+            self.server = _FakeRuntimeServer()
+            self.idx = idx
+            self.stopped = False
+
+        def start(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            self.stopped = True
+
+    created: list[_FakeLanguageServer] = []
+    now = {"value": 10.0}
+
+    def _fake_create(*args, **kwargs) -> _FakeLanguageServer:
+        del args, kwargs
+        server = _FakeLanguageServer(len(created))
+        created.append(server)
+        return server
+
+    monkeypatch.setattr("sari.lsp.hub.SolidLanguageServer.create", _fake_create)
+
+    hub = LspHub(
+        max_instances=8,
+        max_instances_per_repo_language=1,
+        lsp_global_soft_limit=1,
+        eviction_idle_grace_sec=2.0,
+        clock=lambda: float(now["value"]),
+    )
+    background = hub.get_or_start(language=Language.PYTHON, repo_root="/repo-a", request_kind="background_probe")
+    bg_key = LspRuntimeKey(language=Language.PYTHON, repo_root="/repo-a", slot=0)
+    hub.record_request_start(key=bg_key, request_kind="background_probe", method="workspace/symbol")
+    hub.record_request_end(key=bg_key, ok=True)
+    now["value"] = 13.0
+
+    manual = hub.get_or_start(language=Language.JAVA, repo_root="/repo-b", request_kind="manual_index")
+
+    assert background is created[0]
+    assert manual is created[1]
+    assert created[0].stopped is True
+    assert len(created) == 2
+    metrics = hub.get_metrics()
+    assert metrics["lsp_priority_eviction_count"] == 1
+    assert metrics["lsp_soft_limit_admitted_manual_count"] == 1
+    hub.stop_all()
+
+
+def test_lsp_hub_manual_request_evicts_unused_background_entry_under_soft_limit_after_grace(monkeypatch) -> None:
+    """요청을 처리한 적 없는 idle background capacity도 grace 이후 manual 요청을 위해 회수할 수 있어야 한다."""
+
+    class _FakeRuntimeServer:
+        def is_running(self) -> bool:
+            return True
+
+    class _FakeLanguageServer:
+        def __init__(self, idx: int) -> None:
+            self.server = _FakeRuntimeServer()
+            self.idx = idx
+            self.stopped = False
+
+        def start(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            self.stopped = True
+
+    created: list[_FakeLanguageServer] = []
+    now = {"value": 10.0}
+
+    def _fake_create(*args, **kwargs) -> _FakeLanguageServer:
+        del args, kwargs
+        server = _FakeLanguageServer(len(created))
+        created.append(server)
+        return server
+
+    monkeypatch.setattr("sari.lsp.hub.SolidLanguageServer.create", _fake_create)
+
+    hub = LspHub(
+        max_instances=8,
+        max_instances_per_repo_language=1,
+        lsp_global_soft_limit=1,
+        eviction_idle_grace_sec=2.0,
+        clock=lambda: float(now["value"]),
+    )
+    background = hub.get_or_start(language=Language.PYTHON, repo_root="/repo-a", request_kind="background_probe")
+    now["value"] = 13.0
+
+    manual = hub.get_or_start(language=Language.JAVA, repo_root="/repo-b", request_kind="manual_index")
+
+    assert background is created[0]
+    assert manual is created[1]
+    assert created[0].stopped is True
+    assert len(created) == 2
+    metrics = hub.get_metrics()
+    assert metrics["lsp_priority_eviction_count"] == 1
+    assert metrics["lsp_soft_limit_admitted_manual_count"] == 1
     hub.stop_all()
 
 
@@ -725,6 +885,423 @@ def test_lsp_hub_hot_repo_background_request_does_not_gain_eviction_rights(monke
     metrics = hub.get_metrics()
     assert metrics["lsp_priority_eviction_count"] == 0
     assert metrics["lsp_soft_limit_admitted_manual_count"] == 0
+    hub.stop_all()
+
+
+def test_lsp_hub_selective_eviction_candidate_prefers_idle_background_runtime_after_grace() -> None:
+    """manual 요청은 grace가 지난 idle background runtime만 후보로 선택해야 한다."""
+
+    class _FakeRuntimeServer:
+        def is_running(self) -> bool:
+            return True
+
+    class _FakeLanguageServer:
+        def __init__(self) -> None:
+            self.server = _FakeRuntimeServer()
+
+        def stop(self) -> None:
+            return None
+
+    hub = LspHub(clock=lambda: 10.0, eviction_idle_grace_sec=2.0)
+    candidate_key = LspRuntimeKey(language=Language.PYTHON, repo_root="/repo-a", slot=0)
+    hub._instances[candidate_key] = LspRuntimeEntry(  # noqa: SLF001
+        server=_FakeLanguageServer(),
+        last_used_at=1.0,
+        last_acquired_at=1.0,
+        active_request_count=0,
+        last_acquire_kind="background_probe",
+        last_request_started_at=6.0,
+        last_request_finished_at=7.0,
+    )
+
+    selected = hub._select_safe_eviction_candidate_locked(  # noqa: SLF001
+        target_repo_root="/repo-b",
+        request_kind="manual_index",
+    )
+
+    assert selected == candidate_key
+
+
+def test_lsp_hub_selective_eviction_candidate_skips_busy_runtime() -> None:
+    """busy runtime은 manual 요청이어도 eviction 후보가 되면 안 된다."""
+
+    class _FakeRuntimeServer:
+        def is_running(self) -> bool:
+            return True
+
+    class _FakeLanguageServer:
+        def __init__(self) -> None:
+            self.server = _FakeRuntimeServer()
+
+        def stop(self) -> None:
+            return None
+
+    hub = LspHub(clock=lambda: 10.0, eviction_idle_grace_sec=2.0)
+    busy_key = LspRuntimeKey(language=Language.PYTHON, repo_root="/repo-a", slot=0)
+    hub._instances[busy_key] = LspRuntimeEntry(  # noqa: SLF001
+        server=_FakeLanguageServer(),
+        last_used_at=1.0,
+        last_acquired_at=1.0,
+        active_request_count=1,
+        last_acquire_kind="background_probe",
+        last_request_finished_at=7.0,
+    )
+
+    selected = hub._select_safe_eviction_candidate_locked(  # noqa: SLF001
+        target_repo_root="/repo-b",
+        request_kind="manual_index",
+    )
+
+    assert selected is None
+
+
+def test_lsp_hub_selective_eviction_candidate_respects_idle_grace() -> None:
+    """idle 상태여도 grace 안에서는 eviction 후보가 되면 안 된다."""
+
+    class _FakeRuntimeServer:
+        def is_running(self) -> bool:
+            return True
+
+    class _FakeLanguageServer:
+        def __init__(self) -> None:
+            self.server = _FakeRuntimeServer()
+
+        def stop(self) -> None:
+            return None
+
+    hub = LspHub(clock=lambda: 10.0, eviction_idle_grace_sec=2.0)
+    key = LspRuntimeKey(language=Language.PYTHON, repo_root="/repo-a", slot=0)
+    hub._instances[key] = LspRuntimeEntry(  # noqa: SLF001
+        server=_FakeLanguageServer(),
+        last_used_at=9.5,
+        last_acquired_at=9.5,
+        active_request_count=0,
+        last_acquire_kind="background_probe",
+        last_request_finished_at=9.5,
+    )
+
+    selected = hub._select_safe_eviction_candidate_locked(  # noqa: SLF001
+        target_repo_root="/repo-b",
+        request_kind="manual_index",
+    )
+
+    assert selected is None
+
+
+def test_lsp_hub_selective_eviction_candidate_ignores_background_requests() -> None:
+    """background 요청은 selective eviction 후보를 얻으면 안 된다."""
+
+    class _FakeRuntimeServer:
+        def is_running(self) -> bool:
+            return True
+
+    class _FakeLanguageServer:
+        def __init__(self) -> None:
+            self.server = _FakeRuntimeServer()
+
+        def stop(self) -> None:
+            return None
+
+    hub = LspHub(clock=lambda: 10.0, eviction_idle_grace_sec=2.0)
+    key = LspRuntimeKey(language=Language.PYTHON, repo_root="/repo-a", slot=0)
+    hub._instances[key] = LspRuntimeEntry(  # noqa: SLF001
+        server=_FakeLanguageServer(),
+        last_used_at=1.0,
+        last_acquired_at=1.0,
+        active_request_count=0,
+        last_acquire_kind="background_probe",
+        last_request_finished_at=7.0,
+    )
+
+    selected = hub._select_safe_eviction_candidate_locked(  # noqa: SLF001
+        target_repo_root="/repo-b",
+        request_kind="background_probe",
+    )
+
+    assert selected is None
+
+
+def test_lsp_hub_selective_eviction_candidate_excludes_same_repo_runtime() -> None:
+    """first phase에서는 same-repo runtime은 후보에서 제외한다."""
+
+    class _FakeRuntimeServer:
+        def is_running(self) -> bool:
+            return True
+
+    class _FakeLanguageServer:
+        def __init__(self) -> None:
+            self.server = _FakeRuntimeServer()
+
+        def stop(self) -> None:
+            return None
+
+    hub = LspHub(clock=lambda: 10.0, eviction_idle_grace_sec=2.0)
+    key = LspRuntimeKey(language=Language.PYTHON, repo_root="/repo-a", slot=0)
+    hub._instances[key] = LspRuntimeEntry(  # noqa: SLF001
+        server=_FakeLanguageServer(),
+        last_used_at=1.0,
+        last_acquired_at=1.0,
+        active_request_count=0,
+        last_acquire_kind="background_probe",
+        last_request_finished_at=7.0,
+    )
+
+    selected = hub._select_safe_eviction_candidate_locked(  # noqa: SLF001
+        target_repo_root="/repo-a",
+        request_kind="manual_index",
+    )
+
+    assert selected is None
+
+
+def test_lsp_hub_selective_eviction_candidate_excludes_manual_hot_repo() -> None:
+    """recent manual activity가 있는 repo는 warmed runtime 보호를 위해 후보에서 제외해야 한다."""
+
+    class _FakeRuntimeServer:
+        def is_running(self) -> bool:
+            return True
+
+    class _FakeLanguageServer:
+        def __init__(self) -> None:
+            self.server = _FakeRuntimeServer()
+
+        def stop(self) -> None:
+            return None
+
+    now = {"value": 10.0}
+    hub = LspHub(clock=lambda: float(now["value"]), eviction_idle_grace_sec=2.0, manual_hot_repo_ttl_sec=30.0)
+    key = LspRuntimeKey(language=Language.PYTHON, repo_root="/repo-a", slot=0)
+    hub._instances[key] = LspRuntimeEntry(  # noqa: SLF001
+        server=_FakeLanguageServer(),
+        last_used_at=1.0,
+        last_acquired_at=1.0,
+        active_request_count=0,
+        last_acquire_kind="background_probe",
+        last_request_finished_at=7.0,
+    )
+    hub.mark_repo_hot("/repo-a")
+
+    selected = hub._select_safe_eviction_candidate_locked(  # noqa: SLF001
+        target_repo_root="/repo-b",
+        request_kind="manual_index",
+    )
+
+    assert selected is None
+
+
+def test_lsp_hub_selective_eviction_candidate_excludes_recently_reacquired_runtime() -> None:
+    """방금 재획득된 runtime은 lifecycle hook 반영 전 race를 막기 위해 후보에서 제외해야 한다."""
+
+    class _FakeRuntimeServer:
+        def is_running(self) -> bool:
+            return True
+
+    class _FakeLanguageServer:
+        def __init__(self) -> None:
+            self.server = _FakeRuntimeServer()
+
+        def stop(self) -> None:
+            return None
+
+    hub = LspHub(clock=lambda: 10.0, eviction_idle_grace_sec=2.0)
+    key = LspRuntimeKey(language=Language.PYTHON, repo_root="/repo-a", slot=0)
+    hub._instances[key] = LspRuntimeEntry(  # noqa: SLF001
+        server=_FakeLanguageServer(),
+        last_used_at=9.5,
+        last_acquired_at=9.5,
+        active_request_count=0,
+        last_acquire_kind="background_probe",
+    )
+
+    selected = hub._select_safe_eviction_candidate_locked(  # noqa: SLF001
+        target_repo_root="/repo-b",
+        request_kind="manual_index",
+    )
+
+    assert selected is None
+
+
+def test_lsp_hub_selective_eviction_candidate_excludes_manual_acquired_runtime() -> None:
+    """manual/interactive로 마지막 acquire된 runtime은 배경 capacity로 취급하면 안 된다."""
+
+    class _FakeRuntimeServer:
+        def is_running(self) -> bool:
+            return True
+
+    class _FakeLanguageServer:
+        def __init__(self) -> None:
+            self.server = _FakeRuntimeServer()
+
+        def stop(self) -> None:
+            return None
+
+    hub = LspHub(clock=lambda: 10.0, eviction_idle_grace_sec=2.0)
+    key = LspRuntimeKey(language=Language.PYTHON, repo_root="/repo-a", slot=0)
+    hub._instances[key] = LspRuntimeEntry(  # noqa: SLF001
+        server=_FakeLanguageServer(),
+        last_used_at=1.0,
+        last_acquired_at=1.0,
+        active_request_count=0,
+        last_acquire_kind="manual_probe",
+        last_request_finished_at=7.0,
+    )
+
+    selected = hub._select_safe_eviction_candidate_locked(  # noqa: SLF001
+        target_repo_root="/repo-b",
+        request_kind="manual_index",
+    )
+
+    assert selected is None
+
+
+def test_lsp_hub_selective_eviction_candidate_requires_completed_request_after_acquire() -> None:
+    """acquire만 되고 completed request가 없으면 background runtime이어도 후보가 되면 안 된다."""
+
+    class _FakeRuntimeServer:
+        def is_running(self) -> bool:
+            return True
+
+    class _FakeLanguageServer:
+        def __init__(self) -> None:
+            self.server = _FakeRuntimeServer()
+
+        def stop(self) -> None:
+            return None
+
+    hub = LspHub(clock=lambda: 10.0, eviction_idle_grace_sec=2.0)
+    key = LspRuntimeKey(language=Language.PYTHON, repo_root="/repo-a", slot=0)
+    hub._instances[key] = LspRuntimeEntry(  # noqa: SLF001
+        server=_FakeLanguageServer(),
+        last_used_at=1.0,
+        last_acquired_at=9.0,
+        active_request_count=0,
+        last_acquire_kind="background_probe",
+        last_request_finished_at=7.0,
+    )
+
+    selected = hub._select_safe_eviction_candidate_locked(  # noqa: SLF001
+        target_repo_root="/repo-b",
+        request_kind="manual_index",
+    )
+
+    assert selected is None
+
+
+def test_lsp_hub_selective_eviction_candidate_requires_post_acquire_request_start() -> None:
+    """재획득 이후 새 request start가 없으면 older request 완료만으로 후보가 되면 안 된다."""
+
+    class _FakeRuntimeServer:
+        def is_running(self) -> bool:
+            return True
+
+    class _FakeLanguageServer:
+        def __init__(self) -> None:
+            self.server = _FakeRuntimeServer()
+
+        def stop(self) -> None:
+            return None
+
+    hub = LspHub(clock=lambda: 10.0, eviction_idle_grace_sec=2.0)
+    key = LspRuntimeKey(language=Language.PYTHON, repo_root="/repo-a", slot=0)
+    hub._instances[key] = LspRuntimeEntry(  # noqa: SLF001
+        server=_FakeLanguageServer(),
+        last_used_at=1.0,
+        last_acquired_at=9.0,
+        active_request_count=0,
+        last_acquire_kind="background_probe",
+        last_request_started_at=7.0,
+        last_request_finished_at=9.5,
+    )
+
+    selected = hub._select_safe_eviction_candidate_locked(  # noqa: SLF001
+        target_repo_root="/repo-b",
+        request_kind="manual_index",
+    )
+
+    assert selected is None
+
+
+def test_lsp_hub_selective_eviction_candidate_allows_unused_background_runtime_after_grace() -> None:
+    """요청을 한 번도 처리하지 않은 background runtime도 grace가 지나면 safe-idle 후보가 될 수 있어야 한다."""
+
+    class _FakeRuntimeServer:
+        def is_running(self) -> bool:
+            return True
+
+    class _FakeLanguageServer:
+        def __init__(self) -> None:
+            self.server = _FakeRuntimeServer()
+
+        def stop(self) -> None:
+            return None
+
+    hub = LspHub(clock=lambda: 10.0, eviction_idle_grace_sec=2.0)
+    key = LspRuntimeKey(language=Language.PYTHON, repo_root="/repo-a", slot=0)
+    hub._instances[key] = LspRuntimeEntry(  # noqa: SLF001
+        server=_FakeLanguageServer(),
+        last_used_at=1.0,
+        last_acquired_at=7.0,
+        active_request_count=0,
+        last_acquire_kind="background_probe",
+    )
+
+    selected = hub._select_safe_eviction_candidate_locked(  # noqa: SLF001
+        target_repo_root="/repo-b",
+        request_kind="manual_index",
+    )
+
+    assert selected == key
+
+
+def test_lsp_hub_waiter_acquire_updates_last_acquire_kind(monkeypatch) -> None:
+    """동시 start 대기자가 manual로 재사용하면 last_acquire_kind도 waiter 기준으로 갱신되어야 한다."""
+
+    class _FakeRuntimeServer:
+        def is_running(self) -> bool:
+            return True
+
+    class _FakeLanguageServer:
+        def __init__(self) -> None:
+            self.server = _FakeRuntimeServer()
+
+        def start(self) -> None:
+            started.set()
+            release.wait(timeout=1.0)
+
+        def stop(self) -> None:
+            return None
+
+    started = threading.Event()
+    release = threading.Event()
+    monkeypatch.setattr("sari.lsp.hub.SolidLanguageServer.create", lambda *args, **kwargs: _FakeLanguageServer())
+
+    hub = LspHub(clock=lambda: 10.0)
+    holder: dict[str, object] = {}
+
+    def _background_owner() -> None:
+        holder["owner"] = hub.get_or_start(language=Language.PYTHON, repo_root="/repo-a", request_kind="background_probe")
+
+    owner_thread = threading.Thread(target=_background_owner, daemon=True)
+    owner_thread.start()
+    assert started.wait(timeout=1.0) is True
+
+    waiter_result: dict[str, object] = {}
+
+    def _manual_waiter() -> None:
+        waiter_result["server"] = hub.get_or_start(language=Language.PYTHON, repo_root="/repo-a", request_kind="manual_probe")
+
+    waiter_thread = threading.Thread(target=_manual_waiter, daemon=True)
+    waiter_thread.start()
+    release.set()
+    owner_thread.join(timeout=1.0)
+    waiter_thread.join(timeout=1.0)
+
+    key = LspRuntimeKey(language=Language.PYTHON, repo_root="/repo-a", slot=0)
+    entry = hub._instances[key]  # noqa: SLF001
+
+    assert waiter_result["server"] is holder["owner"]
+    assert entry.last_acquire_kind == "manual_probe"
+    assert entry.last_acquired_at == 10.0
     hub.stop_all()
 
 

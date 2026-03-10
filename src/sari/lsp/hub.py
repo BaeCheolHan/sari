@@ -44,10 +44,12 @@ class LspRuntimeEntry:
 
     server: SolidLanguageServer
     last_used_at: float
+    last_acquired_at: float = 0.0
     retention_expires_at: float = 0.0
     retention_tier: str | None = None
     retention_hotness: float = 0.0
     active_request_count: int = 0
+    last_acquire_kind: str | None = None
     last_request_started_at: float | None = None
     last_request_finished_at: float | None = None
     last_request_kind: str | None = None
@@ -78,6 +80,7 @@ class LspHub:
         max_concurrent_starts: int = 2,
         max_concurrent_l1_probes: int = 2,
         manual_hot_repo_ttl_sec: float = 30.0,
+        eviction_idle_grace_sec: float = 2.0,
         runtime_broker: LspRuntimeBroker | None = None,
         clock: Callable[[], float] | None = None,
     ) -> None:
@@ -122,6 +125,7 @@ class LspHub:
         self._scale_out_guard: Callable[[Language, str], bool] | None = None
         self._manual_hot_repo_ttl_sec = max(1.0, float(manual_hot_repo_ttl_sec))
         self._manual_hot_repo_until: dict[str, float] = {}
+        self._eviction_idle_grace_sec = max(0.0, float(eviction_idle_grace_sec))
         self._priority_eviction_count = 0
         self._soft_limit_denied_background_count = 0
         self._soft_limit_admitted_manual_count = 0
@@ -215,6 +219,8 @@ class LspHub:
                                 selected_key = self._select_round_robin_key_locked(base_key=base_key, keys=running_keys)
                                 selected_entry = self._instances[selected_key]
                                 selected_entry.last_used_at = now
+                                selected_entry.last_acquired_at = now
+                                selected_entry.last_acquire_kind = normalized_kind
                                 self._last_acquire_at[base_key] = now
                                 return selected_entry.server
                             self._last_acquire_at[base_key] = now
@@ -222,6 +228,8 @@ class LspHub:
                             selected_key = self._select_round_robin_key_locked(base_key=base_key, keys=running_keys)
                             selected_entry = self._instances[selected_key]
                             selected_entry.last_used_at = now
+                            selected_entry.last_acquired_at = now
+                            selected_entry.last_acquire_kind = normalized_kind
                             self._last_acquire_at[base_key] = now
                             return selected_entry.server
                         else:
@@ -810,8 +818,7 @@ class LspHub:
             return False
         # 전역 소프트 상한을 넘기면 추가 scale-out을 차단한다.
         if self._lsp_global_soft_limit > 0 and len(self._instances) >= self._lsp_global_soft_limit:
-            if not self._try_free_soft_limit_capacity_locked(target_repo_root=base_key[1], request_kind=request_kind):
-                return False
+            return False
         return True
 
     def _max_instances_for_key(self, base_key: tuple[Language, str]) -> int:
@@ -850,7 +857,10 @@ class LspHub:
         expires_at = self._manual_hot_repo_until.get(repo_root)
         return expires_at is not None and expires_at > now
 
-    def _select_priority_eviction_candidate_locked(self, *, target_repo_root: str) -> LspRuntimeKey | None:
+    def _select_safe_eviction_candidate_locked(self, *, target_repo_root: str, request_kind: str) -> LspRuntimeKey | None:
+        """manual 요청용 safe eviction 후보를 계산한다. 실제 stop는 수행하지 않는다."""
+        if not self._is_manual_priority_kind(self._normalize_request_kind(request_kind)):
+            return None
         now = self._clock()
         self._prune_manual_hot_repos_locked(now=now)
         candidates: list[LspRuntimeKey] = []
@@ -863,17 +873,43 @@ class LspHub:
                 continue
             if entry.retention_expires_at > now:
                 continue
+            if not entry.server.server.is_running():
+                continue
+            if int(entry.active_request_count) > 0:
+                continue
+            if not self._is_background_request_kind(str(entry.last_acquire_kind or "")):
+                continue
+            if entry.last_request_started_at is None and entry.last_request_finished_at is None:
+                if (now - float(entry.last_acquired_at)) < self._eviction_idle_grace_sec:
+                    continue
+            else:
+                if entry.last_request_finished_at is None:
+                    continue
+                if entry.last_request_started_at is None:
+                    continue
+                if float(entry.last_request_started_at) < float(entry.last_acquired_at):
+                    continue
+                if float(entry.last_request_finished_at) < float(entry.last_acquired_at):
+                    continue
+                if (now - float(entry.last_request_finished_at)) < self._eviction_idle_grace_sec:
+                    continue
             candidates.append(key)
         if len(candidates) == 0:
             return None
         return min(candidates, key=lambda key: float(self._instances[key].last_used_at))
 
     def _try_free_soft_limit_capacity_locked(self, *, target_repo_root: str, request_kind: str) -> bool:
-        del target_repo_root, request_kind
-        # soft-limit 상황에서 runtime이 실제 idle인지 증명할 정보가 없어
-        # cross-repo priority eviction은 in-flight 요청을 깨뜨릴 수 있다.
-        # 따라서 idle cleanup / explicit reuse 외의 선제 eviction은 허용하지 않는다.
-        return False
+        candidate = self._select_safe_eviction_candidate_locked(
+            target_repo_root=target_repo_root,
+            request_kind=request_kind,
+        )
+        if candidate is None:
+            return False
+        self._stop_entry_locked(candidate)
+        self._priority_eviction_count += 1
+        if self._is_manual_priority_kind(self._normalize_request_kind(request_kind)):
+            self._soft_limit_admitted_manual_count += 1
+        return True
 
     def _select_round_robin_key_locked(
         self,
@@ -910,7 +946,10 @@ class LspHub:
                 with self._lock:
                     existing = self._instances.get(key)
                     if existing is not None and existing.server.server.is_running():
-                        existing.last_used_at = self._clock()
+                        now = self._clock()
+                        existing.last_used_at = now
+                        existing.last_acquired_at = now
+                        existing.last_acquire_kind = request_kind
                         return existing.server
                     if existing is not None:
                         self._cleanup_not_running_entry_locked(key=key, entry=existing)
@@ -963,7 +1002,13 @@ class LspHub:
                     err_code, err_message = _classify_lsp_start_exception(exc=exc, language=language, repo_root=repo_root)
                     raise DaemonError(ErrorContext(code=err_code, message=err_message)) from exc
                 with self._lock:
-                    self._instances[key] = LspRuntimeEntry(server=started, last_used_at=self._clock())
+                    created_at = self._clock()
+                    self._instances[key] = LspRuntimeEntry(
+                        server=started,
+                        last_used_at=created_at,
+                        last_acquired_at=created_at,
+                        last_acquire_kind=request_kind,
+                    )
                     setter = getattr(started, "set_request_lifecycle_hooks", None)
                     if callable(setter):
                         setter(
