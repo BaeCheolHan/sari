@@ -635,10 +635,13 @@ class SolidLanguageServerHandler:
 
         if "result" in response and "error" not in response:
             request.on_result(response["result"])
+            self._notify_request_end(request._method, request._request_id, ok=True)
         elif "result" not in response and "error" in response:
             request.on_error(LSPError.from_lsp(response["error"]))
+            self._notify_request_end(request._method, request._request_id, ok=False)
         else:
             request.on_error(LSPError(ErrorCodes.InvalidRequest, ""))
+            self._notify_request_end(request._method, request._request_id, ok=False)
 
     def _request_handler(self, response: StringDict) -> None:
         """

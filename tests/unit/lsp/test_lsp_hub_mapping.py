@@ -1795,6 +1795,108 @@ def test_lsp_hub_cleanup_busy_runtime_counts_activity_anomaly() -> None:
     assert hub.get_metrics()["lsp_runtime_activity_anomaly_count"] == 1
 
 
+def test_lsp_hub_stop_all_busy_runtime_counts_activity_anomaly() -> None:
+    """명시적 stop_all도 busy runtime을 종료하면 anomaly를 남겨야 한다."""
+
+    class _FakeRuntimeServer:
+        def is_running(self) -> bool:
+            return True
+
+    class _FakeLanguageServer:
+        def __init__(self) -> None:
+            self.server = _FakeRuntimeServer()
+
+        def stop(self) -> None:
+            return None
+
+    hub = LspHub(clock=lambda: 10.0)
+    key = LspRuntimeKey(language=Language.PYTHON, repo_root="/repo-a", slot=0)
+    hub._instances[key] = LspRuntimeEntry(server=_FakeLanguageServer(), last_used_at=0.0, active_request_count=2)  # noqa: SLF001
+
+    hub.stop_all()
+
+    assert hub.get_metrics()["lsp_runtime_activity_anomaly_count"] == 1
+    assert hub.get_repo_runtime_activity("/repo-a")["runtime_activity_anomaly_count"] == 1
+
+
+def test_lsp_hub_restart_if_unhealthy_busy_runtime_counts_activity_anomaly(monkeypatch) -> None:
+    """restart_if_unhealthy도 busy runtime 강제 정리 시 anomaly를 남겨야 한다."""
+
+    class _FakeRuntimeServer:
+        def __init__(self, running: bool = True) -> None:
+            self._running = running
+
+        def is_running(self) -> bool:
+            return self._running
+
+    class _FakeLanguageServer:
+        def __init__(self, running: bool = True) -> None:
+            self.server = _FakeRuntimeServer(running=running)
+            self.stopped = False
+
+        def start(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            self.stopped = True
+
+    created: list[_FakeLanguageServer] = []
+
+    def _fake_create(*args, **kwargs) -> _FakeLanguageServer:
+        del args, kwargs
+        server = _FakeLanguageServer(running=True)
+        created.append(server)
+        return server
+
+    hub = LspHub(clock=lambda: 10.0)
+    key = LspRuntimeKey(language=Language.PYTHON, repo_root="/repo-a", slot=0)
+    hub._instances[key] = LspRuntimeEntry(server=_FakeLanguageServer(running=True), last_used_at=0.0, active_request_count=1)  # noqa: SLF001
+
+    monkeypatch.setattr("sari.lsp.hub.SolidLanguageServer.create", _fake_create)
+    restarted = hub.restart_if_unhealthy(language=Language.PYTHON, repo_root="/repo-a")
+
+    assert restarted is created[0]
+    assert hub.get_metrics()["lsp_runtime_activity_anomaly_count"] == 1
+    assert hub.get_repo_runtime_activity("/repo-a")["runtime_activity_anomaly_count"] == 1
+
+
+def test_lsp_hub_force_restart_busy_runtime_counts_activity_anomaly(monkeypatch) -> None:
+    """force_restart도 busy runtime 강제 정리 시 anomaly를 남겨야 한다."""
+
+    class _FakeRuntimeServer:
+        def is_running(self) -> bool:
+            return True
+
+    class _FakeLanguageServer:
+        def __init__(self) -> None:
+            self.server = _FakeRuntimeServer()
+
+        def start(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+    created: list[_FakeLanguageServer] = []
+
+    def _fake_create(*args, **kwargs) -> _FakeLanguageServer:
+        del args, kwargs
+        server = _FakeLanguageServer()
+        created.append(server)
+        return server
+
+    hub = LspHub(clock=lambda: 10.0)
+    key = LspRuntimeKey(language=Language.PYTHON, repo_root="/repo-a", slot=0)
+    hub._instances[key] = LspRuntimeEntry(server=_FakeLanguageServer(), last_used_at=0.0, active_request_count=1)  # noqa: SLF001
+
+    monkeypatch.setattr("sari.lsp.hub.SolidLanguageServer.create", _fake_create)
+    restarted = hub.force_restart(language=Language.PYTHON, repo_root="/repo-a", request_kind="manual_probe")
+
+    assert restarted is created[0]
+    assert hub.get_metrics()["lsp_runtime_activity_anomaly_count"] == 1
+    assert hub.get_repo_runtime_activity("/repo-a")["runtime_activity_anomaly_count"] == 1
+
+
 def test_lsp_hub_repo_runtime_activity_retains_recent_idle_anomaly() -> None:
     """idle repo여도 최근 anomaly는 관측 가능해야 한다."""
 

@@ -266,6 +266,7 @@ class LspHub:
                 entry = self._instances.get(key)
                 if entry is None:
                     continue
+                self._record_busy_runtime_shutdown_locked(key=key, entry=entry)
                 try:
                     self._stop_server_with_timeout(entry.server)
                 except (RuntimeError, OSError, ValueError) as exc:
@@ -285,6 +286,7 @@ class LspHub:
                 entry = self._instances.get(key)
                 if entry is None:
                     continue
+                self._record_busy_runtime_shutdown_locked(key=key, entry=entry)
                 try:
                     self._stop_server_with_timeout(entry.server)
                 except (RuntimeError, OSError, ValueError) as exc:
@@ -361,6 +363,7 @@ class LspHub:
         failure_messages: list[str] = []
         with self._lock:
             for key, entry in list(self._instances.items()):
+                self._record_busy_runtime_shutdown_locked(key=key, entry=entry)
                 try:
                     self._stop_server_with_timeout(entry.server)
                 except (RuntimeError, OSError, ValueError) as exc:
@@ -686,9 +689,7 @@ class LspHub:
         entry = self._instances.get(key)
         if entry is None:
             return
-        if int(entry.active_request_count) > 0:
-            self._record_runtime_activity_anomaly_locked(key.repo_root)
-            entry.active_request_count = 0
+        self._record_busy_runtime_shutdown_locked(key=key, entry=entry)
         try:
             self._stop_server_with_timeout(entry.server)
         except (RuntimeError, OSError, ValueError) as exc:
@@ -707,9 +708,7 @@ class LspHub:
     def _cleanup_not_running_entry_locked(self, key: LspRuntimeKey, entry: LspRuntimeEntry) -> None:
         """is_running=false 엔트리를 OS 프로세스까지 정리한다."""
         self._orphan_suspect_count += 1
-        if int(entry.active_request_count) > 0:
-            self._record_runtime_activity_anomaly_locked(key.repo_root)
-            entry.active_request_count = 0
+        self._record_busy_runtime_shutdown_locked(key=key, entry=entry)
         try:
             self._stop_server_with_timeout(entry.server)
         except (RuntimeError, OSError, ValueError) as exc:
@@ -730,6 +729,13 @@ class LspHub:
         base_key = (key.language, key.repo_root)
         self._round_robin_cursor.pop(base_key, None)
         self._hot_acquire_hits.pop(base_key, None)
+
+    def _record_busy_runtime_shutdown_locked(self, *, key: LspRuntimeKey, entry: LspRuntimeEntry) -> None:
+        """busy runtime을 정리하는 경로는 anomaly를 남기고 active count를 0으로 초기화한다."""
+        if int(entry.active_request_count) <= 0:
+            return
+        self._record_runtime_activity_anomaly_locked(key.repo_root)
+        entry.active_request_count = 0
 
     def _runtime_keys_for(self, language: Language, repo_root: str) -> list[LspRuntimeKey]:
         """언어/저장소 조합에 해당하는 런타임 키 목록을 조회한다."""
