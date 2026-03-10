@@ -6,6 +6,7 @@ import sqlite3
 import threading
 import time
 import traceback
+import inspect
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Protocol
@@ -932,7 +933,7 @@ class FileCollectionService:
             except queue.Empty:
                 continue
             try:
-                _ = self.scan_once(repo_root, trigger="background")
+                _ = self._scan_once_background_compatible(repo_root)
             except CollectionError as exc:
                 if self._handle_background_collection_error_proxy(
                     exc=exc,
@@ -956,6 +957,17 @@ class FileCollectionService:
             finally:
                 with self._watcher_rescan_lock:
                     self._watcher_rescan_pending_roots.discard(repo_root)
+
+    def _scan_once_background_compatible(self, repo_root: str) -> CollectionScanResultDTO:
+        """구 시그니처 scan_once(repo_root) 구현체도 background 재스캔에서 허용한다."""
+        scan_once = self.scan_once
+        try:
+            parameters = inspect.signature(scan_once).parameters
+        except (TypeError, ValueError):
+            parameters = {}
+        if "trigger" not in parameters:
+            return scan_once(repo_root)  # type: ignore[misc]
+        return scan_once(repo_root, trigger="background")
 
     def _record_watcher_file_race(self, repo_root: str, relative_path: str, reason: str) -> None:
         """watcher 경합성 파일 누락 이벤트를 저심각도 경고로 기록한다."""

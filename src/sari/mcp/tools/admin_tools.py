@@ -381,6 +381,7 @@ class DoctorTool:
             return pack1_error(validation.error)
         warnings_payload = [warning.to_dict() for warning in validation.warnings]
         repo_root = str(validation.repo_root or arguments["repo"])
+        hot_repo_active = bool(self._repo_hot_checker(repo_root)) if callable(self._repo_hot_checker) else False
 
         items = [DoctorItemDTO(name="repo_scope_root", passed=True, detail=repo_root).to_dict(), *[
             DoctorItemDTO(name=check.name, passed=check.passed, detail=check.detail).to_dict()
@@ -400,7 +401,7 @@ class DoctorTool:
                     DoctorItemDTO(
                         name="repo_language_starvation",
                         passed=False,
-                        detail=f"manual probe is backpressured: {langs}",
+                        detail=f"manual probe is backpressured: {langs} (hot={str(hot_repo_active).lower()})",
                     ).to_dict()
                 )
         if self._repo_runtime_activity_provider is not None:
