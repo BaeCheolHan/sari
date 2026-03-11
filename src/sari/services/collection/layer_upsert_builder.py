@@ -97,6 +97,7 @@ class LayerUpsertBuilder:
         symbols: list[dict[str, object]],
         relations: list[dict[str, object]],
         now_iso: str,
+        retry_zero_relations_pending: bool = False,
     ) -> dict[str, object]:
         return {
             "workspace_id": self._workspace_uid(repo_root),
@@ -108,6 +109,7 @@ class LayerUpsertBuilder:
                 "source": "lsp",
                 "symbols_count": len(symbols),
                 "relations_count": len(relations),
+                "zero_relations_retry_pending": bool(retry_zero_relations_pending),
             },
             "updated_at": now_iso,
         }

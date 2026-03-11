@@ -815,7 +815,9 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
             location = raw.get("location")
             if not isinstance(location, dict):
                 continue
-            selection_range = location.get("selectionRange")
+            selection_range = raw.get("selectionRange")
+            if not isinstance(selection_range, dict):
+                selection_range = location.get("selectionRange")
             range_data = location.get("range")
             declaration_start = range_data.get("start") if isinstance(range_data, dict) else None
             selection_start = selection_range.get("start") if isinstance(selection_range, dict) else None

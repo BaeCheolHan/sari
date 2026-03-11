@@ -1220,3 +1220,35 @@ def test_escalate_scope_on_same_job_enforces_min_defer_seconds(tmp_path: Path) -
         ).fetchone()
     assert row is not None
     assert str(row["next_retry_at"]) == "2026-02-16T00:00:05+00:00"
+
+
+def test_get_eligible_counts_includes_zero_relations_retry_as_deferred(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = FileEnrichQueueRepository(db_path)
+    now_iso = "2026-03-01T00:00:00+00:00"
+    job_id = repo.enqueue(
+        repo_root="/repo",
+        relative_path="retry-zero.py",
+        content_hash="h1",
+        priority=10,
+        enqueue_source="l5",
+        now_iso=now_iso,
+    )
+    with connect(db_path) as conn:
+        conn.execute("UPDATE file_enrich_queue SET next_retry_at='2026-03-01T00:00:15+00:00', defer_reason='retry_zero_relations', deferred_state='NEW', deferred_count=1 WHERE job_id = :job_id", {"job_id": job_id})
+        conn.execute(
+            """
+            INSERT INTO collected_files_l1(
+                repo_id, repo_root, scope_repo_root, relative_path, absolute_path, repo_label,
+                mtime_ns, size_bytes, content_hash, is_deleted, last_seen_at, updated_at, enrich_state
+            ) VALUES(
+                'r1', '/repo', '/repo', 'retry-zero.py', '/repo/retry-zero.py', 'repo',
+                0, 0, 'h1', 0, :ts, :ts, 'LSP_READY'
+            )
+            """,
+            {"ts": now_iso},
+        )
+        conn.commit()
+    counts = repo.get_eligible_counts(now_iso=now_iso)
+    assert counts["eligible_deferred_count"] == 1

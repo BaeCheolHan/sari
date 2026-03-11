@@ -29,19 +29,108 @@ class _StubFileRepo:
 
 
 class _StubQueueRepo:
-    def __init__(self) -> None:
+    def __init__(self, *, defer_return_value: int = 1, existing_retry_job_id: str | None = None) -> None:
         self.defer_calls: list[dict[str, object]] = []
+        self.enqueue_calls: list[dict[str, object]] = []
+        self.delete_calls: list[str] = []
+        self.restore_calls: list[object] = []
+        self._defer_return_value = defer_return_value
+        self._existing_retry_job_id = existing_retry_job_id
 
-    def defer_jobs_to_pending(self, *, job_ids: list[str], next_retry_at: str, defer_reason: str, now_iso: str) -> int:
+    def defer_jobs_to_pending(
+        self,
+        *,
+        job_ids: list[str],
+        next_retry_at: str,
+        defer_reason: str,
+        now_iso: str,
+        max_deferred_queue_size: int | None = None,
+        max_deferred_per_workspace: int | None = None,
+        deferred_ttl_hours: int | None = None,
+    ) -> int:
         self.defer_calls.append(
             {
                 "job_ids": list(job_ids),
                 "next_retry_at": next_retry_at,
                 "defer_reason": defer_reason,
                 "now_iso": now_iso,
+                "max_deferred_queue_size": max_deferred_queue_size,
+                "max_deferred_per_workspace": max_deferred_per_workspace,
+                "deferred_ttl_hours": deferred_ttl_hours,
             }
         )
-        return len(job_ids)
+        return self._defer_return_value
+
+    def enqueue(self, **kwargs):  # noqa: ANN003
+        self.enqueue_calls.append(dict(kwargs))
+        return "retry-job"
+
+    def delete_job(self, *, job_id: str) -> int:
+        self.delete_calls.append(job_id)
+        return 1
+
+    def find_reusable_job_id(
+        self,
+        *,
+        repo_root: str,
+        relative_path: str,
+        enqueue_source: str,
+        repo_id: str | None = None,
+    ) -> str | None:
+        _ = (repo_root, relative_path, enqueue_source, repo_id)
+        return self._existing_retry_job_id
+
+    def get_job(self, *, job_id: str):
+        return FileEnrichJobDTO(
+            job_id=job_id,
+            repo_id="r1",
+            repo_root="/repo",
+            relative_path="a.py",
+            content_hash="h-old",
+            priority=7,
+            enqueue_source="l5",
+            status="PENDING",
+            attempt_count=0,
+            last_error=None,
+            defer_reason="broker_defer:budget",
+            deferred_state="NEW",
+            deferred_count=2,
+            first_deferred_at="2026-02-22T00:00:00+00:00",
+            last_deferred_at="2026-02-22T00:00:30+00:00",
+            scope_level=None,
+            scope_root=None,
+            scope_attempts=0,
+            next_retry_at="2026-02-23T00:00:30+00:00",
+            created_at="2026-02-22T00:00:00+00:00",
+            updated_at="2026-02-22T00:00:30+00:00",
+        )
+
+    def restore_job(self, job) -> int:  # noqa: ANN001
+        self.restore_calls.append(job)
+        return 1
+
+
+class _LegacyStubQueueRepo(_StubQueueRepo):
+    def defer_jobs_to_pending(
+        self,
+        *,
+        job_ids: list[str],
+        next_retry_at: str,
+        defer_reason: str,
+        now_iso: str,
+    ) -> int:
+        self.defer_calls.append(
+            {
+                "job_ids": list(job_ids),
+                "next_retry_at": next_retry_at,
+                "defer_reason": defer_reason,
+                "now_iso": now_iso,
+                "max_deferred_queue_size": None,
+                "max_deferred_per_workspace": None,
+                "deferred_ttl_hours": None,
+            }
+        )
+        return 1
 
 
 class _StubErrorPolicy:
@@ -272,3 +361,214 @@ def test_l3_orchestrator_preprocess_skip_finishes_without_lsp() -> None:
     assert result["failure_update"] is None
     assert result["lsp_update"] is not None
     assert len(result["lsp_update"].symbols) == 1
+
+
+def test_l5_queue_transition_zero_relations_retry_ignores_unrelated_deferred_count() -> None:
+    queue_repo = _StubQueueRepo()
+    error_policy = _StubErrorPolicy()
+    service = L5QueueDeferService(
+        queue_repo=queue_repo,
+        error_policy=error_policy,
+        now_iso_supplier=lambda: "2026-02-23T00:00:00+00:00",
+    )
+    job = FileEnrichJobDTO(
+        job_id="j-zero",
+        repo_id="r1",
+        repo_root="/repo",
+        relative_path="a.py",
+        content_hash="h1",
+        priority=10,
+        enqueue_source="l5",
+        status="RUNNING",
+        attempt_count=0,
+        last_error=None,
+        defer_reason="l5_defer:pressure_rate_exceeded",
+        deferred_count=2,
+        next_retry_at="2026-02-23T00:00:00+00:00",
+        created_at="2026-02-23T00:00:00+00:00",
+        updated_at="2026-02-23T00:00:00+00:00",
+    )
+
+    changed = service.defer_after_zero_relations(job=job)
+
+    assert changed is True
+    assert len(queue_repo.enqueue_calls) == 1
+    assert queue_repo.enqueue_calls[0]["enqueue_source"] == "l5"
+    assert queue_repo.enqueue_calls[0]["content_hash"] == "h1"
+    assert len(queue_repo.defer_calls) == 1
+    assert queue_repo.defer_calls[0]["job_ids"] == ["retry-job"]
+    assert queue_repo.defer_calls[0]["defer_reason"] == "retry_zero_relations"
+    assert queue_repo.defer_calls[0]["max_deferred_queue_size"] is not None
+    assert queue_repo.defer_calls[0]["max_deferred_per_workspace"] is not None
+    assert queue_repo.defer_calls[0]["deferred_ttl_hours"] is not None
+
+
+def test_l5_queue_transition_zero_relations_retry_stops_after_own_retry() -> None:
+    queue_repo = _StubQueueRepo()
+    error_policy = _StubErrorPolicy()
+    service = L5QueueDeferService(
+        queue_repo=queue_repo,
+        error_policy=error_policy,
+        now_iso_supplier=lambda: "2026-02-23T00:00:00+00:00",
+    )
+    job = FileEnrichJobDTO(
+        job_id="j-zero",
+        repo_id="r1",
+        repo_root="/repo",
+        relative_path="a.py",
+        content_hash="h1",
+        priority=10,
+        enqueue_source="l5",
+        status="RUNNING",
+        attempt_count=0,
+        last_error=None,
+        defer_reason="retry_zero_relations",
+        deferred_count=1,
+        next_retry_at="2026-02-23T00:00:00+00:00",
+        created_at="2026-02-23T00:00:00+00:00",
+        updated_at="2026-02-23T00:00:00+00:00",
+    )
+
+    changed = service.defer_after_zero_relations(job=job)
+
+    assert changed is False
+    assert queue_repo.enqueue_calls == []
+
+
+def test_l5_queue_transition_zero_relations_retry_returns_false_when_retry_row_is_dropped() -> None:
+    queue_repo = _StubQueueRepo(defer_return_value=0)
+    error_policy = _StubErrorPolicy()
+    service = L5QueueDeferService(
+        queue_repo=queue_repo,
+        error_policy=error_policy,
+        now_iso_supplier=lambda: "2026-02-23T00:00:00+00:00",
+    )
+    job = FileEnrichJobDTO(
+        job_id="j-zero",
+        repo_id="r1",
+        repo_root="/repo",
+        relative_path="a.py",
+        content_hash="h1",
+        priority=10,
+        enqueue_source="l5",
+        status="RUNNING",
+        attempt_count=0,
+        last_error=None,
+        defer_reason=None,
+        deferred_count=0,
+        next_retry_at="2026-02-23T00:00:00+00:00",
+        created_at="2026-02-23T00:00:00+00:00",
+        updated_at="2026-02-23T00:00:00+00:00",
+    )
+
+    changed = service.defer_after_zero_relations(job=job)
+
+    assert changed is False
+    assert len(queue_repo.enqueue_calls) == 1
+    assert len(queue_repo.defer_calls) == 1
+    assert queue_repo.delete_calls == ["retry-job"]
+
+
+def test_l5_queue_transition_zero_relations_retry_supports_legacy_defer_signature() -> None:
+    queue_repo = _LegacyStubQueueRepo()
+    error_policy = _StubErrorPolicy()
+    service = L5QueueDeferService(
+        queue_repo=queue_repo,
+        error_policy=error_policy,
+        now_iso_supplier=lambda: "2026-02-23T00:00:00+00:00",
+    )
+    job = FileEnrichJobDTO(
+        job_id="j-zero",
+        repo_id="r1",
+        repo_root="/repo",
+        relative_path="a.py",
+        content_hash="h1",
+        priority=10,
+        enqueue_source="l5",
+        status="RUNNING",
+        attempt_count=0,
+        last_error=None,
+        defer_reason=None,
+        deferred_count=0,
+        next_retry_at="2026-02-23T00:00:00+00:00",
+        created_at="2026-02-23T00:00:00+00:00",
+        updated_at="2026-02-23T00:00:00+00:00",
+    )
+
+    changed = service.defer_after_zero_relations(job=job)
+
+    assert changed is True
+    assert len(queue_repo.enqueue_calls) == 1
+    assert len(queue_repo.defer_calls) == 1
+    assert queue_repo.defer_calls[0]["defer_reason"] == "retry_zero_relations"
+
+
+def test_l5_queue_transition_zero_relations_retry_rolls_back_when_defer_writer_missing() -> None:
+    class _NoDeferQueueRepo(_StubQueueRepo):
+        defer_jobs_to_pending = None  # type: ignore[assignment]
+
+    queue_repo = _NoDeferQueueRepo()
+    error_policy = _StubErrorPolicy()
+    service = L5QueueDeferService(
+        queue_repo=queue_repo,
+        error_policy=error_policy,
+        now_iso_supplier=lambda: "2026-02-23T00:00:00+00:00",
+    )
+    job = FileEnrichJobDTO(
+        job_id="j-zero",
+        repo_id="r1",
+        repo_root="/repo",
+        relative_path="a.py",
+        content_hash="h1",
+        priority=10,
+        enqueue_source="l5",
+        status="RUNNING",
+        attempt_count=0,
+        last_error=None,
+        defer_reason=None,
+        deferred_count=0,
+        next_retry_at="2026-02-23T00:00:00+00:00",
+        created_at="2026-02-23T00:00:00+00:00",
+        updated_at="2026-02-23T00:00:00+00:00",
+    )
+
+    changed = service.defer_after_zero_relations(job=job)
+
+    assert changed is False
+    assert queue_repo.enqueue_calls
+    assert queue_repo.delete_calls == ["retry-job"]
+
+
+def test_l5_queue_transition_zero_relations_retry_does_not_delete_preexisting_l5_row_on_failure() -> None:
+    queue_repo = _StubQueueRepo(defer_return_value=0, existing_retry_job_id="existing-job")
+    error_policy = _StubErrorPolicy()
+    service = L5QueueDeferService(
+        queue_repo=queue_repo,
+        error_policy=error_policy,
+        now_iso_supplier=lambda: "2026-02-23T00:00:00+00:00",
+    )
+    job = FileEnrichJobDTO(
+        job_id="j-zero",
+        repo_id="r1",
+        repo_root="/repo",
+        relative_path="a.py",
+        content_hash="h1",
+        priority=10,
+        enqueue_source="l5",
+        status="RUNNING",
+        attempt_count=0,
+        last_error=None,
+        defer_reason=None,
+        deferred_count=0,
+        next_retry_at="2026-02-23T00:00:00+00:00",
+        created_at="2026-02-23T00:00:00+00:00",
+        updated_at="2026-02-23T00:00:00+00:00",
+    )
+
+    changed = service.defer_after_zero_relations(job=job)
+
+    assert changed is False
+    assert len(queue_repo.enqueue_calls) == 1
+    assert queue_repo.delete_calls == []
+    assert len(queue_repo.restore_calls) == 1
+    assert queue_repo.restore_calls[0].job_id == "existing-job"

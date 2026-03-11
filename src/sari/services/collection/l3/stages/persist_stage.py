@@ -67,6 +67,37 @@ class L3PersistStage:
                 content_hash=content_hash,
             )
 
+    def mark_retry_pending_ready(
+        self,
+        *,
+        context: L3JobContext,
+        repo_root: str,
+        relative_path: str,
+        content_hash: str,
+        now_iso: str,
+        reason: str = "ok_zero_relations_retry_pending",
+    ) -> None:
+        context.state_update = EnrichStateUpdateDTO(
+            repo_root=repo_root,
+            relative_path=relative_path,
+            enrich_state="LSP_READY",
+            updated_at=now_iso,
+        )
+        context.readiness_update = ToolReadinessStateDTO(
+            repo_root=repo_root,
+            relative_path=relative_path,
+            content_hash=content_hash,
+            list_files_ready=True,
+            read_file_ready=True,
+            search_symbol_ready=True,
+            get_callers_ready=False,
+            consistency_ready=True,
+            quality_ready=True,
+            tool_ready=False,
+            last_reason=reason,
+            updated_at=now_iso,
+        )
+
     def mark_skipped(
         self,
         *,
@@ -169,6 +200,7 @@ class L3PersistStage:
         lsp_symbols: list[dict[str, object]],
         lsp_relations: list[dict[str, object]],
         now_iso: str,
+        retry_zero_relations_pending: bool = False,
     ) -> None:
         context.l3_layer_upsert = self._layer_upsert_builder.build_l3(
             repo_root=repo_root,
@@ -193,6 +225,7 @@ class L3PersistStage:
             symbols=lsp_symbols,
             relations=lsp_relations,
             now_iso=now_iso,
+            retry_zero_relations_pending=retry_zero_relations_pending,
         )
         context.lsp_update = LspExtractPersistDTO(
             repo_id=repo_id,
@@ -203,15 +236,24 @@ class L3PersistStage:
             relations=lsp_relations,
             created_at=now_iso,
         )
-        self.mark_recent_ready(
-            context=context,
-            repo_root=repo_root,
-            relative_path=relative_path,
-            content_hash=content_hash,
-            now_iso=now_iso,
-            reason="ok",
-            get_callers_ready=len(lsp_relations) > 0,
-        )
+        if retry_zero_relations_pending:
+            self.mark_retry_pending_ready(
+                context=context,
+                repo_root=repo_root,
+                relative_path=relative_path,
+                content_hash=content_hash,
+                now_iso=now_iso,
+            )
+        else:
+            self.mark_recent_ready(
+                context=context,
+                repo_root=repo_root,
+                relative_path=relative_path,
+                content_hash=content_hash,
+                now_iso=now_iso,
+                reason="ok",
+                get_callers_ready=len(lsp_relations) > 0,
+            )
 
     def mark_failure(
         self,

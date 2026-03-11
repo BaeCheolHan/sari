@@ -10,16 +10,25 @@ from sari.services.lsp_extraction_contracts import LspExtractionResultDTO
 
 
 class _ToolLayerRepo:
-    def __init__(self, *, resolved_repo_root: str | None, has_l5: bool) -> None:
+    def __init__(
+        self,
+        *,
+        resolved_repo_root: str | None,
+        has_l5: bool,
+        l5_semantics: list[dict[str, object]] | None = None,
+    ) -> None:
         self._resolved_repo_root = resolved_repo_root
         self._has_l5 = has_l5
+        self._l5_semantics = l5_semantics
 
     def resolve_effective_repo_root(self, **kwargs):  # noqa: ANN003
         return self._resolved_repo_root
 
     def load_effective_snapshot(self, **kwargs):  # noqa: ANN003
+        if self._l5_semantics is not None:
+            return {"l5": self._l5_semantics}
         if self._has_l5:
-            return {"l5": [{"kind": "class"}]}
+            return {"l5": [{"kind": "class", "semantics": {"relations_count": 1}}]}
         return {"l5": []}
 
 
@@ -194,3 +203,123 @@ def test_cached_extract_does_not_call_delegate_twice_on_delegate_error() -> None
         service.extract("/repo/workspace", "src/service.py", "abc")
 
     assert call_count == 1
+
+
+def test_cached_extract_keeps_db_hit_when_l5_semantics_have_retry_pending_zero_relations() -> None:
+    calls: list[tuple[str, str, str]] = []
+
+    def _delegate(repo_root: str, relative_path: str, content_hash: str) -> LspExtractionResultDTO:
+        calls.append((repo_root, relative_path, content_hash))
+        return LspExtractionResultDTO(
+            symbols=[{"name": "FromLsp"}],
+            relations=[{"source": "FromLsp", "target": "Target"}],
+            error_message=None,
+        )
+
+    service = L5CachedExtractService(
+        tool_layer_repo=_ToolLayerRepo(
+            resolved_repo_root="/repo/module",
+            has_l5=True,
+            l5_semantics=[
+                {
+                    "reason_code": "L5_REASON_GOLDENSET_COVERAGE",
+                    "semantics": {"relations_count": 0, "zero_relations_retry_pending": True},
+                }
+            ],
+        ),
+        lsp_repo=_LspRepo(symbols=[{"name": "FromDb"}], relations=[]),
+        delegate_extract=_delegate,
+        enabled=True,
+        log_miss_reason=True,
+    )
+
+    result = service.extract("/repo/workspace", "src/service.py", "abc")
+
+    assert len(result.symbols) == 1
+    assert len(result.relations) == 0
+    assert calls == []
+    metrics = service.get_metrics()
+    assert metrics["l5_db_cache_hit_count"] == 1.0
+
+
+def test_cached_extract_bypasses_db_hit_when_retry_pending_zero_relations_is_forced() -> None:
+    calls: list[tuple[str, str, str]] = []
+
+    def _delegate(repo_root: str, relative_path: str, content_hash: str) -> LspExtractionResultDTO:
+        calls.append((repo_root, relative_path, content_hash))
+        return LspExtractionResultDTO(
+            symbols=[{"name": "FromLsp"}],
+            relations=[{"source": "FromLsp", "target": "Target"}],
+            error_message=None,
+        )
+
+    service = L5CachedExtractService(
+        tool_layer_repo=_ToolLayerRepo(
+            resolved_repo_root="/repo/module",
+            has_l5=True,
+            l5_semantics=[
+                {
+                    "reason_code": "L5_REASON_GOLDENSET_COVERAGE",
+                    "semantics": {"relations_count": 0, "zero_relations_retry_pending": True},
+                }
+            ],
+        ),
+        lsp_repo=_LspRepo(symbols=[{"name": "FromDb"}], relations=[]),
+        delegate_extract=_delegate,
+        enabled=True,
+        log_miss_reason=True,
+    )
+
+    result = service.extract(
+        "/repo/workspace",
+        "src/service.py",
+        "abc",
+        bypass_zero_relations_retry_pending=True,
+    )
+
+    assert len(result.symbols) == 1
+    assert len(result.relations) == 1
+    assert calls == [("/repo/workspace", "src/service.py", "abc")]
+    metrics = service.get_metrics()
+    assert metrics["l5_db_cache_hit_count"] == 0.0
+    assert metrics["l5_db_cache_miss_reason_zero_relations"] == 1.0
+
+
+def test_cached_extract_ignores_stale_retry_pending_row_when_newer_row_is_ready() -> None:
+    calls: list[tuple[str, str, str]] = []
+
+    def _delegate(repo_root: str, relative_path: str, content_hash: str) -> LspExtractionResultDTO:
+        calls.append((repo_root, relative_path, content_hash))
+        return LspExtractionResultDTO(symbols=[{"name": "FromLsp"}], relations=[], error_message=None)
+
+    service = L5CachedExtractService(
+        tool_layer_repo=_ToolLayerRepo(
+            resolved_repo_root="/repo/module",
+            has_l5=True,
+            l5_semantics=[
+                {
+                    "reason_code": "L5_REASON_A",
+                    "updated_at": "2026-03-11T00:00:00+00:00",
+                    "semantics": {"relations_count": 0, "zero_relations_retry_pending": True},
+                },
+                {
+                    "reason_code": "L5_REASON_B",
+                    "updated_at": "2026-03-11T00:00:01+00:00",
+                    "semantics": {"relations_count": 7, "zero_relations_retry_pending": False},
+                },
+            ],
+        ),
+        lsp_repo=_LspRepo(symbols=[{"name": "FromDb"}], relations=[{"source": "A", "target": "B"}]),
+        delegate_extract=_delegate,
+        enabled=True,
+        log_miss_reason=True,
+    )
+
+    result = service.extract("/repo/workspace", "src/service.py", "abc")
+
+    assert len(result.symbols) == 1
+    assert len(result.relations) == 1
+    assert calls == []
+    metrics = service.get_metrics()
+    assert metrics["l5_db_cache_hit_count"] == 1.0
+    assert metrics["l5_db_cache_miss_reason_zero_relations"] == 0.0

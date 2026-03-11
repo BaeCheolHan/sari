@@ -65,10 +65,14 @@ class FileEnrichQueueRepository:
                   AND repo_root = :repo_root
                   AND relative_path = :relative_path
                   AND status IN ('PENDING', 'FAILED')
+                  AND (
+                        (:enqueue_source = 'l5' AND enqueue_source = 'l5')
+                     OR (:enqueue_source <> 'l5' AND enqueue_source <> 'l5')
+                  )
                 ORDER BY updated_at DESC
                 LIMIT 1
                 """,
-                {"repo_id": resolved_repo_id, "repo_root": repo_root, "relative_path": relative_path},
+                {"repo_id": resolved_repo_id, "repo_root": repo_root, "relative_path": relative_path, "enqueue_source": enqueue_source},
             ).fetchone()
             if existing is not None:
                 existing_job_id = row_str(existing, "job_id")
@@ -122,6 +126,47 @@ class FileEnrichQueueRepository:
             conn.commit()
         return job_id
 
+    def find_reusable_job_id(
+        self,
+        *,
+        repo_root: str,
+        relative_path: str,
+        enqueue_source: str,
+        repo_id: str | None = None,
+    ) -> str | None:
+        """enqueue()가 재사용할 기존 PENDING/FAILED row id를 반환한다."""
+        with connect(self._db_path) as conn:
+            resolved_repo_id = (
+                repo_id.strip()
+                if repo_id is not None and repo_id.strip() != ""
+                else resolve_repo_id_for_repo_root(conn, repo_root)
+            )
+            row = conn.execute(
+                """
+                SELECT job_id
+                FROM file_enrich_queue
+                WHERE repo_id = :repo_id
+                  AND repo_root = :repo_root
+                  AND relative_path = :relative_path
+                  AND status IN ('PENDING', 'FAILED')
+                  AND (
+                        (:enqueue_source = 'l5' AND enqueue_source = 'l5')
+                     OR (:enqueue_source <> 'l5' AND enqueue_source <> 'l5')
+                  )
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                {
+                    "repo_id": resolved_repo_id,
+                    "repo_root": repo_root,
+                    "relative_path": relative_path,
+                    "enqueue_source": enqueue_source,
+                },
+            ).fetchone()
+        if row is None:
+            return None
+        return row_str(row, "job_id")
+
     def enqueue_many(self, requests: list[EnqueueRequestDTO]) -> list[str]:
         """L2 본문 보강 큐 작업을 배치 적재한다."""
         if len(requests) == 0:
@@ -130,7 +175,7 @@ class FileEnrichQueueRepository:
         def _op() -> list[str]:
             with connect(self._db_path) as conn:
                 grouped_rows: list[dict[str, object]] = []
-                stage_id_by_key: dict[tuple[str, str, str], int] = {}
+                stage_id_by_key: dict[tuple[str, str, str, str], int] = {}
                 input_stage_ids: list[int] = []
                 for request in requests:
                     resolved_repo_id = (
@@ -139,7 +184,8 @@ class FileEnrichQueueRepository:
                         else resolve_repo_id_for_repo_root(conn, request.repo_root)
                     )
                     resolved_scope_repo_root = request.scope_repo_root if request.scope_repo_root is not None and request.scope_repo_root.strip() != "" else request.repo_root
-                    key = (resolved_repo_id, request.repo_root, request.relative_path)
+                    lane_key = "l5" if request.enqueue_source == "l5" else "default"
+                    key = (resolved_repo_id, request.repo_root, request.relative_path, lane_key)
                     existing_stage_id = stage_id_by_key.get(key)
                     if existing_stage_id is None:
                         stage_id = len(grouped_rows) + 1
@@ -236,6 +282,10 @@ class FileEnrichQueueRepository:
                          AND q.repo_root = s.repo_root
                          AND q.relative_path = s.relative_path
                          AND q.status IN ('PENDING', 'FAILED')
+                         AND (
+                               (s.enqueue_source = 'l5' AND q.enqueue_source = 'l5')
+                            OR (s.enqueue_source <> 'l5' AND q.enqueue_source <> 'l5')
+                         )
                     )
                     SELECT stage_id, job_id, priority, content_hash
                     FROM candidate
@@ -1046,8 +1096,26 @@ class FileEnrichQueueRepository:
             ).fetchall()
         return [row_str(row, "job_id") for row in rows]
 
-    def is_l5_job_running(self, *, repo_root: str, relative_path: str) -> bool:
-        """동일 파일의 L5 lane RUNNING job 존재 여부를 반환한다."""
+    def is_l5_job_active(self, *, repo_root: str, relative_path: str, content_hash: str | None = None) -> bool:
+        """동일 파일의 현재 content hash에 대한 L5 lane PENDING/RUNNING job 존재 여부를 반환한다."""
+        with connect(self._db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT 1
+                FROM file_enrich_queue
+                WHERE repo_root = :repo_root
+                  AND relative_path = :relative_path
+                  AND enqueue_source = 'l5'
+                  AND status IN ('PENDING', 'RUNNING')
+                  AND (:content_hash IS NULL OR content_hash = :content_hash)
+                LIMIT 1
+                """,
+                {"repo_root": repo_root, "relative_path": relative_path, "content_hash": content_hash},
+            ).fetchone()
+        return row is not None
+
+    def is_l5_job_running(self, *, repo_root: str, relative_path: str, content_hash: str | None = None) -> bool:
+        """동일 파일의 현재 content hash에 대한 L5 lane RUNNING job 존재 여부를 반환한다."""
         with connect(self._db_path) as conn:
             row = conn.execute(
                 """
@@ -1057,9 +1125,10 @@ class FileEnrichQueueRepository:
                   AND relative_path = :relative_path
                   AND enqueue_source = 'l5'
                   AND status = 'RUNNING'
+                  AND (:content_hash IS NULL OR content_hash = :content_hash)
                 LIMIT 1
                 """,
-                {"repo_root": repo_root, "relative_path": relative_path},
+                {"repo_root": repo_root, "relative_path": relative_path, "content_hash": content_hash},
             ).fetchone()
         return row is not None
 
@@ -1103,7 +1172,10 @@ class FileEnrichQueueRepository:
                         CASE
                             WHEN status = 'PENDING'
                              AND next_retry_at > :now_iso
-                             AND defer_reason LIKE 'broker_defer:%'
+                             AND (
+                                   defer_reason LIKE 'broker_defer:%'
+                                OR defer_reason = 'retry_zero_relations'
+                             )
                             THEN 1 ELSE 0
                         END
                     ) AS pending_deferred,
@@ -1305,6 +1377,89 @@ class FileEnrichQueueRepository:
         if row is None:
             return None
         return row_str(row, "status")
+
+    def get_job(self, *, job_id: str) -> FileEnrichJobDTO | None:
+        """단일 queue job 스냅샷을 반환한다."""
+        with connect(self._db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT job_id, repo_id, repo_root, relative_path, content_hash, priority, enqueue_source,
+                       status, attempt_count, last_error, defer_reason,
+                       deferred_state, deferred_count, first_deferred_at, last_deferred_at,
+                       scope_level, scope_root, scope_attempts, next_retry_at, created_at, updated_at,
+                       scope_repo_root
+                FROM file_enrich_queue
+                WHERE job_id = :job_id
+                """,
+                {"job_id": job_id},
+            ).fetchone()
+        if row is None:
+            return None
+        return FileEnrichJobDTO(
+            job_id=row_str(row, "job_id"),
+            repo_id=row_str(row, "repo_id"),
+            repo_root=row_str(row, "repo_root"),
+            relative_path=row_str(row, "relative_path"),
+            content_hash=row_str(row, "content_hash"),
+            priority=row_int(row, "priority"),
+            enqueue_source=row_str(row, "enqueue_source"),
+            status=row_str(row, "status"),
+            attempt_count=row_int(row, "attempt_count"),
+            last_error=row_optional_str(row, "last_error"),
+            defer_reason=row_optional_str(row, "defer_reason"),
+            deferred_state=row_optional_str(row, "deferred_state"),
+            deferred_count=row_int(row, "deferred_count"),
+            first_deferred_at=row_optional_str(row, "first_deferred_at"),
+            last_deferred_at=row_optional_str(row, "last_deferred_at"),
+            scope_level=row_optional_str(row, "scope_level"),
+            scope_root=row_optional_str(row, "scope_root"),
+            scope_attempts=row_int(row, "scope_attempts"),
+            next_retry_at=row_str(row, "next_retry_at"),
+            created_at=row_str(row, "created_at"),
+            updated_at=row_str(row, "updated_at"),
+            scope_repo_root=row_optional_str(row, "scope_repo_root"),
+        )
+
+    def restore_job(self, job: FileEnrichJobDTO) -> int:
+        """queue job 스냅샷을 원래 상태로 복구한다."""
+        with connect(self._db_path) as conn:
+            cur = conn.execute(
+                """
+                UPDATE file_enrich_queue
+                SET repo_id = :repo_id,
+                    repo_root = :repo_root,
+                    scope_repo_root = :scope_repo_root,
+                    relative_path = :relative_path,
+                    content_hash = :content_hash,
+                    priority = :priority,
+                    enqueue_source = :enqueue_source,
+                    status = :status,
+                    attempt_count = :attempt_count,
+                    last_error = :last_error,
+                    defer_reason = :defer_reason,
+                    deferred_state = :deferred_state,
+                    deferred_count = :deferred_count,
+                    first_deferred_at = :first_deferred_at,
+                    last_deferred_at = :last_deferred_at,
+                    scope_level = :scope_level,
+                    scope_root = :scope_root,
+                    scope_attempts = :scope_attempts,
+                    next_retry_at = :next_retry_at,
+                    created_at = :created_at,
+                    updated_at = :updated_at
+                WHERE job_id = :job_id
+                """,
+                job.to_sql_params(),
+            )
+            conn.commit()
+            return int(cur.rowcount if cur.rowcount is not None else 0)
+
+    def delete_job(self, *, job_id: str) -> int:
+        """특정 queue row를 삭제한다."""
+        with connect(self._db_path) as conn:
+            cur = conn.execute("DELETE FROM file_enrich_queue WHERE job_id = :job_id", {"job_id": job_id})
+            conn.commit()
+            return int(cur.rowcount if cur.rowcount is not None else 0)
 
     def _compute_next_retry_at(self, now_iso: str, attempt_count: int, backoff_base_sec: int) -> str:
         """재시도 시각을 지수 백오프로 계산한다."""

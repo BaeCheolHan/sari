@@ -65,6 +65,7 @@ class L3Orchestrator:
         skip_eligibility: L3SkipEligibilityService,
         persist_service: L3PersistService,
         extract_fn: Callable[[str, str, str], object] | None = None,
+        raw_extract_fn: Callable[[str, str, str], object] | None = None,
         preprocess_service: L3TreeSitterPreprocessService | None = None,
         degraded_fallback_service: L3DegradedFallbackService | None = None,
         preprocess_max_bytes: int = 262_144,
@@ -124,6 +125,7 @@ class L3Orchestrator:
             enforced=self._l5_admission_enforced,
         )
         resolved_extract_fn = extract_fn if extract_fn is not None else self._lsp_backend.extract
+        self._raw_extract_fn = raw_extract_fn if raw_extract_fn is not None else resolved_extract_fn
         self._extract_stage = L3ExtractStage(extract_fn=resolved_extract_fn)
         self._finalize_stage = L3FinalizeStage(
             result_builder=self._result_builder,
@@ -154,6 +156,7 @@ class L3Orchestrator:
         self._extract_success_stage = L3ExtractSuccessStage(
             persist_stage=self._persist_stage,
             record_quality_shadow_compare=self._record_quality_shadow_compare,
+            l5_queue_transition=l5_queue_transition,
         )
         self._exception_stage = L3ExceptionStage(
             persist_stage=self._persist_stage,
@@ -207,6 +210,10 @@ class L3Orchestrator:
                             repo_root=job.repo_root,
                             relative_path=job.relative_path,
                             content_hash=job.content_hash,
+                            bypass_zero_relations_retry_pending=(
+                                (not allow_l5_handoff)
+                                and str(getattr(job, "defer_reason", "") or "").strip() == "retry_zero_relations"
+                            ),
                         )
                         if extraction.error_message is not None:
                             finished_status = self._extract_failure_stage.handle_extract_error(

@@ -17,7 +17,24 @@ class L5CachedExtractMetrics:
     miss_reason_no_l5_semantics: int = 0
     miss_reason_no_symbols: int = 0
     miss_reason_scope_ambiguous: int = 0
+    miss_reason_zero_relations: int = 0
     miss_reason_error_fallback: int = 0
+
+
+def _select_effective_l5_row(snapshot: dict[str, object]) -> dict[str, object] | None:
+    l5_rows = snapshot.get("l5")
+    if not isinstance(l5_rows, list) or len(l5_rows) == 0:
+        return None
+    effective: dict[str, object] | None = None
+    effective_updated_at = ""
+    for row in l5_rows:
+        if not isinstance(row, dict):
+            continue
+        updated_at = str(row.get("updated_at") or "")
+        if effective is None or updated_at >= effective_updated_at:
+            effective = row
+            effective_updated_at = updated_at
+    return effective
 
 
 class L5CachedExtractService:
@@ -39,7 +56,14 @@ class L5CachedExtractService:
         self._log_miss_reason = bool(log_miss_reason)
         self._metrics = L5CachedExtractMetrics()
 
-    def extract(self, repo_root: str, relative_path: str, content_hash: str) -> LspExtractionResultDTO:
+    def extract(
+        self,
+        repo_root: str,
+        relative_path: str,
+        content_hash: str,
+        *,
+        bypass_zero_relations_retry_pending: bool = False,
+    ) -> LspExtractionResultDTO:
         self._metrics = L5CachedExtractMetrics(
             lookup_count=self._metrics.lookup_count + 1,
             hit_count=self._metrics.hit_count,
@@ -47,6 +71,7 @@ class L5CachedExtractService:
             miss_reason_no_l5_semantics=self._metrics.miss_reason_no_l5_semantics,
             miss_reason_no_symbols=self._metrics.miss_reason_no_symbols,
             miss_reason_scope_ambiguous=self._metrics.miss_reason_scope_ambiguous,
+            miss_reason_zero_relations=self._metrics.miss_reason_zero_relations,
             miss_reason_error_fallback=self._metrics.miss_reason_error_fallback,
         )
         if not self._enabled:
@@ -71,6 +96,11 @@ class L5CachedExtractService:
                     content_hash=content_hash,
                 )
                 has_l5_semantics = isinstance(snapshot.get("l5"), list) and len(snapshot.get("l5", [])) > 0
+                if bypass_zero_relations_retry_pending and self._has_retry_pending_zero_relations_snapshot(snapshot):
+                    delegate_reason = "zero_relations"
+                if delegate_reason is not None:
+                    self._record_miss(delegate_reason)
+                    return self._delegate_extract(repo_root, relative_path, content_hash)
                 list_full_symbols = getattr(self._lsp_repo, "list_file_symbols_full", None)
                 if callable(list_full_symbols):
                     symbols = list_full_symbols(
@@ -115,6 +145,7 @@ class L5CachedExtractService:
             "l5_db_cache_miss_reason_no_l5_semantics": float(self._metrics.miss_reason_no_l5_semantics),
             "l5_db_cache_miss_reason_no_symbols": float(self._metrics.miss_reason_no_symbols),
             "l5_db_cache_miss_reason_scope_ambiguous": float(self._metrics.miss_reason_scope_ambiguous),
+            "l5_db_cache_miss_reason_zero_relations": float(self._metrics.miss_reason_zero_relations),
             "l5_db_cache_miss_reason_error_fallback": float(self._metrics.miss_reason_error_fallback),
         }
 
@@ -126,6 +157,7 @@ class L5CachedExtractService:
             miss_reason_no_l5_semantics=self._metrics.miss_reason_no_l5_semantics,
             miss_reason_no_symbols=self._metrics.miss_reason_no_symbols,
             miss_reason_scope_ambiguous=self._metrics.miss_reason_scope_ambiguous,
+            miss_reason_zero_relations=self._metrics.miss_reason_zero_relations,
             miss_reason_error_fallback=self._metrics.miss_reason_error_fallback,
         )
 
@@ -138,6 +170,7 @@ class L5CachedExtractService:
                 miss_reason_no_l5_semantics=self._metrics.miss_reason_no_l5_semantics + 1,
                 miss_reason_no_symbols=self._metrics.miss_reason_no_symbols,
                 miss_reason_scope_ambiguous=self._metrics.miss_reason_scope_ambiguous,
+                miss_reason_zero_relations=self._metrics.miss_reason_zero_relations,
                 miss_reason_error_fallback=self._metrics.miss_reason_error_fallback,
             )
             return
@@ -149,6 +182,7 @@ class L5CachedExtractService:
                 miss_reason_no_l5_semantics=self._metrics.miss_reason_no_l5_semantics,
                 miss_reason_no_symbols=self._metrics.miss_reason_no_symbols + 1,
                 miss_reason_scope_ambiguous=self._metrics.miss_reason_scope_ambiguous,
+                miss_reason_zero_relations=self._metrics.miss_reason_zero_relations,
                 miss_reason_error_fallback=self._metrics.miss_reason_error_fallback,
             )
             return
@@ -160,6 +194,19 @@ class L5CachedExtractService:
                 miss_reason_no_l5_semantics=self._metrics.miss_reason_no_l5_semantics,
                 miss_reason_no_symbols=self._metrics.miss_reason_no_symbols,
                 miss_reason_scope_ambiguous=self._metrics.miss_reason_scope_ambiguous + 1,
+                miss_reason_zero_relations=self._metrics.miss_reason_zero_relations,
+                miss_reason_error_fallback=self._metrics.miss_reason_error_fallback,
+            )
+            return
+        if reason == "zero_relations":
+            self._metrics = L5CachedExtractMetrics(
+                lookup_count=self._metrics.lookup_count,
+                hit_count=self._metrics.hit_count,
+                skipped_lsp_count=self._metrics.skipped_lsp_count,
+                miss_reason_no_l5_semantics=self._metrics.miss_reason_no_l5_semantics,
+                miss_reason_no_symbols=self._metrics.miss_reason_no_symbols,
+                miss_reason_scope_ambiguous=self._metrics.miss_reason_scope_ambiguous,
+                miss_reason_zero_relations=self._metrics.miss_reason_zero_relations + 1,
                 miss_reason_error_fallback=self._metrics.miss_reason_error_fallback,
             )
             return
@@ -171,6 +218,17 @@ class L5CachedExtractService:
                 miss_reason_no_l5_semantics=self._metrics.miss_reason_no_l5_semantics,
                 miss_reason_no_symbols=self._metrics.miss_reason_no_symbols,
                 miss_reason_scope_ambiguous=self._metrics.miss_reason_scope_ambiguous,
+                miss_reason_zero_relations=self._metrics.miss_reason_zero_relations,
                 miss_reason_error_fallback=self._metrics.miss_reason_error_fallback + 1,
             )
             return
+
+    @staticmethod
+    def _has_retry_pending_zero_relations_snapshot(snapshot: dict[str, object]) -> bool:
+        effective_row = _select_effective_l5_row(snapshot)
+        if not isinstance(effective_row, dict):
+            return False
+        semantics = effective_row.get("semantics")
+        if not isinstance(semantics, dict):
+            return False
+        return bool(semantics.get("zero_relations_retry_pending", False))

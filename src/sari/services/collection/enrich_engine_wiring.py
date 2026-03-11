@@ -37,6 +37,22 @@ from sari.services.collection.l5.l5_queue_defer_service import L5QueueDeferServi
 from sari.services.collection.l5.l5_runtime_stats_service import L5RuntimeStatsService
 from sari.services.collection.layer_upsert_builder import LayerUpsertBuilder
 
+
+def _select_effective_l5_row(snapshot: dict[str, object]) -> dict[str, object] | None:
+    l5_rows = snapshot.get("l5")
+    if not isinstance(l5_rows, list) or len(l5_rows) == 0:
+        return None
+    effective: dict[str, object] | None = None
+    effective_updated_at = ""
+    for row in l5_rows:
+        if not isinstance(row, dict):
+            continue
+        updated_at = str(row.get("updated_at") or "")
+        if effective is None or updated_at >= effective_updated_at:
+            effective = row
+            effective_updated_at = updated_at
+    return effective
+
 if TYPE_CHECKING:
     from sari.services.collection.enrich_engine import EnrichEngine
 
@@ -51,7 +67,7 @@ def _is_recent_l5_ready(engine: "EnrichEngine", job) -> bool:  # noqa: ANN001
     if not callable(checker):
         return False
     try:
-        return bool(
+        has_semantics = bool(
             checker(
                 repo_root=job.repo_root,
                 relative_path=job.relative_path,
@@ -60,6 +76,26 @@ def _is_recent_l5_ready(engine: "EnrichEngine", job) -> bool:  # noqa: ANN001
         )
     except (RuntimeError, ValueError, TypeError, OSError):
         return False
+    if not has_semantics:
+        return False
+    if getattr(job, "defer_reason", None) != "retry_zero_relations":
+        return True
+    try:
+        snapshot = repo.load_effective_snapshot(
+            workspace_id=job.repo_root.strip(),
+            repo_root=job.repo_root,
+            relative_path=job.relative_path,
+            content_hash=job.content_hash,
+        )
+    except (RuntimeError, ValueError, TypeError, OSError):
+        return False
+    effective_row = _select_effective_l5_row(snapshot)
+    if not isinstance(effective_row, dict):
+        return True
+    semantics = effective_row.get("semantics")
+    if not isinstance(semantics, dict):
+        return True
+    return not bool(semantics.get("zero_relations_retry_pending", False))
 
 
 def build_enrich_processor_deps(engine: "EnrichEngine") -> EnrichProcessorDeps:
@@ -236,6 +272,7 @@ def wire_engine_services(
         classify_failure_kind=engine._classify_failure_kind_fn,
         schedule_l1_probe_after_l3_fallback=lambda job: engine._schedule_l1_probe_after_l3_fallback(job=job),
         extract_fn=engine._l5_cached_extract_service.extract,
+        raw_extract_fn=engine._lsp_backend.extract,
         scope_resolution=engine._l3_scope_resolution_service,
         queue_transition=engine._l3_queue_transition_service,
         l5_queue_transition=engine._l5_queue_defer_service,

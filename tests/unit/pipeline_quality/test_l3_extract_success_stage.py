@@ -50,12 +50,22 @@ class _Extraction:
     relations: list[dict[str, object]]
 
 
+@dataclass
+class _L5QueueTransition:
+    called: int = 0
+
+    def defer_after_zero_relations(self, *, job: object) -> bool:
+        self.called += 1
+        return False
+
+
 def test_extract_success_stage_persists_and_marks_done() -> None:
     persist = _PersistStage()
     shadow_calls: list[dict[str, object]] = []
     stage = L3ExtractSuccessStage(
         persist_stage=persist,
         record_quality_shadow_compare=lambda **kwargs: shadow_calls.append(kwargs),
+        l5_queue_transition=_L5QueueTransition(),
     )
     status = stage.handle_success(
         context=L3JobContext(),
@@ -77,6 +87,7 @@ def test_extract_success_stage_uses_admission_reason_when_present() -> None:
     stage = L3ExtractSuccessStage(
         persist_stage=persist,
         record_quality_shadow_compare=lambda **kwargs: None,
+        l5_queue_transition=_L5QueueTransition(),
     )
     decision = L4AdmissionDecisionDTO(
         admit_l5=True,

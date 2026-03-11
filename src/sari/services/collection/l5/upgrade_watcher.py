@@ -187,6 +187,7 @@ class L5AsyncUpgradeWatcher:
             if self._is_l5_running(
                 repo_root=str(file_dto["repo_root"]),
                 relative_path=str(file_dto["relative_path"]),
+                content_hash=str(file_dto["content_hash"]),
             ):
                 continue
             try:
@@ -209,17 +210,50 @@ class L5AsyncUpgradeWatcher:
             enqueued, len(files), repo_root,
         )
 
-    def _is_l5_running(self, *, repo_root: str, relative_path: str) -> bool:
-        """동일 파일의 L5 RUNNING job 존재 여부를 조회한다."""
+    def _is_l5_running(self, *, repo_root: str, relative_path: str, content_hash: str) -> bool:
+        """동일 파일의 L5 active 상태를 조회한다.
+
+        - RUNNING: 경로 단위로 차단
+        - PENDING: 현재 content_hash 일치 시만 차단
+        """
         probe = getattr(self._enrich_queue_repo, "is_l5_job_running", None)
-        if not callable(probe):
-            return False
-        try:
-            return bool(probe(repo_root=repo_root, relative_path=relative_path))
-        except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
-            log.debug(
-                "L5 running probe failed (repo=%s, path=%s)",
-                repo_root,
-                relative_path,
-            )
-            return False
+        if callable(probe):
+            try:
+                if bool(probe(repo_root=repo_root, relative_path=relative_path)):
+                    return True
+            except TypeError:
+                try:
+                    if bool(probe(repo_root=repo_root, relative_path=relative_path, content_hash=None)):
+                        return True
+                except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
+                    log.debug(
+                        "L5 running probe failed (repo=%s, path=%s)",
+                        repo_root,
+                        relative_path,
+                    )
+            except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
+                log.debug(
+                    "L5 running probe failed (repo=%s, path=%s)",
+                    repo_root,
+                    relative_path,
+                )
+        active_probe = getattr(self._enrich_queue_repo, "is_l5_job_active", None)
+        if callable(active_probe):
+            try:
+                return bool(active_probe(repo_root=repo_root, relative_path=relative_path, content_hash=content_hash))
+            except TypeError:
+                try:
+                    return bool(active_probe(repo_root=repo_root, relative_path=relative_path))
+                except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
+                    log.debug(
+                        "L5 active probe failed (repo=%s, path=%s)",
+                        repo_root,
+                        relative_path,
+                    )
+            except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
+                log.debug(
+                    "L5 active probe failed (repo=%s, path=%s)",
+                    repo_root,
+                    relative_path,
+                )
+        return False

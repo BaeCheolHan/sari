@@ -125,11 +125,11 @@ def test_extract_once_uses_selection_position_for_reference_lookup_with_declarat
             {
                 "name": "decorated_fn",
                 "kind": "function",
+                "selectionRange": {
+                    "start": {"line": 21, "character": 8},
+                    "end": {"line": 21, "character": 20},
+                },
                 "location": {
-                    "selectionRange": {
-                        "start": {"line": 21, "character": 8},
-                        "end": {"line": 21, "character": 20},
-                    },
                     "range": {
                         "start": {"line": 20, "character": 0},
                         "end": {"line": 30, "character": 1},

@@ -54,4 +54,4 @@ def test_layer_upsert_builder_builds_l3_l4_l5_payloads() -> None:
     assert l5["reason_code"] == L5ReasonCode.GOLDENSET_COVERAGE.value
     assert l5["semantics"]["symbols_count"] == 1
     assert l5["semantics"]["relations_count"] == 1
-
+    assert l5["semantics"]["zero_relations_retry_pending"] is False

@@ -20,13 +20,23 @@ from sari.services.collection.l5.upgrade_watcher import L5AsyncUpgradeWatcher
 class _FakeEnrichQueueRepo:
     def __init__(self) -> None:
         self.enqueued: list[dict] = []
-        self.running_paths: set[tuple[str, str]] = set()
+        self.running_paths: set[tuple[str, str, str]] = set()
+        self.active_paths: set[tuple[str, str, str]] = set()
 
     def enqueue(self, **kwargs) -> None:
         self.enqueued.append(dict(kwargs))
 
-    def is_l5_job_running(self, *, repo_root: str, relative_path: str) -> bool:
-        return (repo_root, relative_path) in self.running_paths
+    def is_l5_job_running(self, *, repo_root: str, relative_path: str, content_hash: str | None = None) -> bool:
+        if content_hash is None:
+            return any(key[0] == repo_root and key[1] == relative_path for key in self.running_paths)
+        key = (repo_root, relative_path, content_hash)
+        return key in self.running_paths
+
+    def is_l5_job_active(self, *, repo_root: str, relative_path: str, content_hash: str | None = None) -> bool:
+        if content_hash is None:
+            return any(key[0] == repo_root and key[1] == relative_path for key in self.active_paths | self.running_paths)
+        key = (repo_root, relative_path, content_hash)
+        return key in self.active_paths or key in self.running_paths
 
 
 class _FakeToolLayerRepo:
@@ -298,6 +308,26 @@ def test_process_batch_respects_batch_size() -> None:
     bus.shutdown()
 
 
+
+
+def test_process_batch_skips_candidates_already_pending_in_l5_lane() -> None:
+    """같은 파일이 L5 PENDING(defer/retry) 이면 watcher가 중복 enqueue하지 않아야 한다."""
+    bus = EventBus()
+    enrich_repo = _FakeEnrichQueueRepo()
+    files = [
+        {"repo_root": "/r", "relative_path": "pending.py", "content_hash": "h-pending"},
+    ]
+    tool_repo = _FakeToolLayerRepo(files=files)
+    w = _watcher(bus, enrich_repo=enrich_repo, tool_repo=tool_repo)
+    enrich_repo.active_paths.add(("/r", "pending.py", "h-pending"))
+    w.start()
+
+    bus.publish(LspWarmReady(repo_root="/r", language=Language.PYTHON))
+    time.sleep(0.1)
+
+    assert len(enrich_repo.enqueued) == 0
+    bus.shutdown()
+
 def test_process_batch_skips_candidates_already_running_in_l5_lane() -> None:
     """같은 파일이 L5 RUNNING이면 watcher가 중복 enqueue하지 않아야 한다."""
     bus = EventBus()
@@ -307,11 +337,50 @@ def test_process_batch_skips_candidates_already_running_in_l5_lane() -> None:
     ]
     tool_repo = _FakeToolLayerRepo(files=files)
     w = _watcher(bus, enrich_repo=enrich_repo, tool_repo=tool_repo)
-    enrich_repo.running_paths.add(("/r", "inflight.py"))
+    enrich_repo.running_paths.add(("/r", "inflight.py", "h-running"))
     w.start()
 
     bus.publish(LspWarmReady(repo_root="/r", language=Language.PYTHON))
     time.sleep(0.1)
 
     assert len(enrich_repo.enqueued) == 0
+    bus.shutdown()
+
+
+def test_process_batch_skips_newer_content_hash_when_old_l5_job_is_running() -> None:
+    """이전 content_hash가 RUNNING이면 현재 버전도 path 단위로 enqueue를 막아야 한다."""
+    bus = EventBus()
+    enrich_repo = _FakeEnrichQueueRepo()
+    files = [
+        {"repo_root": "/r", "relative_path": "inflight.py", "content_hash": "h-new"},
+    ]
+    tool_repo = _FakeToolLayerRepo(files=files)
+    w = _watcher(bus, enrich_repo=enrich_repo, tool_repo=tool_repo)
+    enrich_repo.running_paths.add(("/r", "inflight.py", "h-old"))
+    w.start()
+
+    bus.publish(LspWarmReady(repo_root="/r", language=Language.PYTHON))
+    time.sleep(0.1)
+
+    assert len(enrich_repo.enqueued) == 0
+    bus.shutdown()
+
+
+def test_process_batch_allows_enqueue_for_newer_content_hash_when_old_l5_job_is_pending() -> None:
+    """이전 content_hash의 pending L5 job은 현재 버전 enqueue를 막지 않아야 한다."""
+    bus = EventBus()
+    enrich_repo = _FakeEnrichQueueRepo()
+    files = [
+        {"repo_root": "/r", "relative_path": "pending.py", "content_hash": "h-new"},
+    ]
+    tool_repo = _FakeToolLayerRepo(files=files)
+    w = _watcher(bus, enrich_repo=enrich_repo, tool_repo=tool_repo)
+    enrich_repo.active_paths.add(("/r", "pending.py", "h-old"))
+    w.start()
+
+    bus.publish(LspWarmReady(repo_root="/r", language=Language.PYTHON))
+    _wait(lambda: len(enrich_repo.enqueued) >= 1)
+
+    assert len(enrich_repo.enqueued) == 1
+    assert enrich_repo.enqueued[0]["content_hash"] == "h-new"
     bus.shutdown()
