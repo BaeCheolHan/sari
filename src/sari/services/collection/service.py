@@ -89,6 +89,7 @@ class FileCollectionService:
     SCAN_OPERATION_LOCK_MAX_ATTEMPTS = 6
     SCAN_OPERATION_LOCK_BACKOFF_BASE_SEC = 0.05
     SCAN_OPERATION_LOCK_BACKOFF_MAX_SEC = 0.5
+    SCAN_OPERATION_LOCK_MANUAL_WAIT_TIMEOUT_SEC = 30.0
     WORKSPACE_SCAN_BUILD_MARKERS: tuple[str, ...] = (
         "pyproject.toml",
         "package.json",
@@ -476,7 +477,12 @@ class FileCollectionService:
                 mark_repo_hot(str(root_path))
             except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
                 ...
-        with self._scan_operation_lock.acquire(operation="scan_once", repo_root=str(root_path)):
+        wait_timeout_sec = self.SCAN_OPERATION_LOCK_MANUAL_WAIT_TIMEOUT_SEC if manual_trigger else None
+        with self._scan_operation_lock.acquire(
+            operation="scan_once",
+            repo_root=str(root_path),
+            wait_timeout_sec=wait_timeout_sec,
+        ):
             fanout_targets = self._fanout_resolver.resolve_targets(root_path)
             if len(fanout_targets) == 0:
                 self._cleanup_stale_fanout_rows_for_single_repo(root_path=root_path)
@@ -593,7 +599,11 @@ class FileCollectionService:
                 mark_repo_hot(resolved_repo_root)
             except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
                 ...
-        with self._scan_operation_lock.acquire(operation="index_file", repo_root=resolved_repo_root):
+        with self._scan_operation_lock.acquire(
+            operation="index_file",
+            repo_root=resolved_repo_root,
+            wait_timeout_sec=self.SCAN_OPERATION_LOCK_MANUAL_WAIT_TIMEOUT_SEC,
+        ):
             return self._scanner_index_file(
                 repo_root=resolved_repo_root,
                 relative_path=relative_path,

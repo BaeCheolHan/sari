@@ -18,6 +18,7 @@ from sari.mcp.daemon_forward_policy import (
     build_forward_error_message,
     default_start_daemon,
     forward_with_retry,
+    resolve_tool_call_forward_timeout_sec,
     resolve_target,
 )
 from sari.mcp.contracts import McpError, McpResponse
@@ -147,15 +148,38 @@ def _retry_after_draining(
     initialize_payload: dict[str, object] | None,
 ) -> dict[str, object]:
     """draining 응답 이후 endpoint 재해석 + initialize 재전송 + 원요청 재시도한다."""
+    initialize_timeout_sec = timeout_sec
+    request_timeout_sec = timeout_sec
+    if _is_tool_call_request(payload):
+        request_timeout_sec = resolve_tool_call_forward_timeout_sec(
+            tool_name=_extract_tool_name(payload),
+            default_timeout_sec=timeout_sec,
+        )
     host_retry, port_retry = resolve_target(db_path, workspace_root, host_override, port_override)
     if initialize_payload is not None and not _is_initialize_request(payload):
-        initialize_response = forward_once(initialize_payload, host_retry, port_retry, timeout_sec)
+        initialize_response = forward_once(initialize_payload, host_retry, port_retry, initialize_timeout_sec)
         if _is_draining_response(initialize_response):
             raise ValueError("ERR_DAEMON_DRAINING_RECONNECT_FAILED: initialize replay still draining")
-    retried = forward_once(payload, host_retry, port_retry, timeout_sec)
+    retried = forward_once(payload, host_retry, port_retry, request_timeout_sec)
     if _is_draining_response(retried):
         raise ValueError("ERR_DAEMON_DRAINING_RECONNECT_FAILED: request replay still draining")
     return retried
+
+
+def _is_tool_call_request(payload: dict[str, object]) -> bool:
+    method_raw = payload.get("method")
+    return isinstance(method_raw, str) and method_raw.strip().lower() == "tools/call"
+
+
+def _extract_tool_name(payload: dict[str, object]) -> str | None:
+    params = payload.get("params")
+    if not isinstance(params, dict):
+        return None
+    tool_name = params.get("name")
+    if not isinstance(tool_name, str):
+        return None
+    stripped = tool_name.strip()
+    return stripped if stripped else None
 
 
 def run_stdio_proxy(

@@ -42,9 +42,26 @@ class ScanOperationLock:
         self._thread_lock = threading.RLock()
 
     @contextmanager
-    def acquire(self, *, operation: str, repo_root: str):
+    def acquire(self, *, operation: str, repo_root: str, wait_timeout_sec: float | None = None):
         """락 획득 시도 후 성공 시 임계구역을 실행한다."""
-        with self._thread_lock:
+        deadline = None
+        if wait_timeout_sec is not None:
+            deadline = time.monotonic() + max(0.0, float(wait_timeout_sec))
+        thread_lock_acquired = False
+        if deadline is None:
+            self._thread_lock.acquire()
+            thread_lock_acquired = True
+        else:
+            remaining_sec = max(0.0, deadline - time.monotonic())
+            thread_lock_acquired = self._thread_lock.acquire(timeout=remaining_sec)
+        if not thread_lock_acquired:
+            raise CollectionError(
+                ErrorContext(
+                    code="ERR_SCAN_OPERATION_LOCK_BUSY",
+                    message=f"scan operation lock busy(operation={operation}, repo={repo_root})",
+                )
+            )
+        try:
             if fcntl is None:
                 yield
                 return
@@ -52,13 +69,14 @@ class ScanOperationLock:
             lock_file = self._lock_path.open("a+", encoding="utf-8")
             acquired = False
             try:
-                for attempt in range(self._max_attempts):
+                attempt = 0
+                while True:
                     try:
                         self._lock_fn(lock_file)
                         acquired = True
                         break
                     except BlockingIOError:
-                        if attempt + 1 >= self._max_attempts:
+                        if deadline is None and attempt + 1 >= self._max_attempts:
                             raise CollectionError(
                                 ErrorContext(
                                     code="ERR_SCAN_OPERATION_LOCK_BUSY",
@@ -66,12 +84,26 @@ class ScanOperationLock:
                                 )
                             )
                         sleep_sec = min(self._backoff_base_sec * float(2**attempt), self._backoff_max_sec)
+                        if deadline is not None:
+                            remaining_sec = deadline - time.monotonic()
+                            if remaining_sec <= 0:
+                                raise CollectionError(
+                                    ErrorContext(
+                                        code="ERR_SCAN_OPERATION_LOCK_BUSY",
+                                        message=f"scan operation lock busy(operation={operation}, repo={repo_root})",
+                                    )
+                                )
+                            sleep_sec = min(sleep_sec, remaining_sec)
                         self._sleep(sleep_sec)
+                        attempt += 1
                 yield
             finally:
                 if acquired:
                     self._unlock_fn(lock_file)
                 lock_file.close()
+        finally:
+            if thread_lock_acquired:
+                self._thread_lock.release()
 
     @staticmethod
     def _default_lock(lock_file: object) -> None:

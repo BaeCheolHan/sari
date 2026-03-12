@@ -20,8 +20,11 @@ from sari.services.daemon import DaemonService
 StartDaemonFn = Callable[[Path, str | None], bool]
 ResolveTargetFn = Callable[[Path, str | None, str | None, int | None], tuple[str, int]]
 ForwardOnceFn = Callable[[dict[str, object], str, int, float], dict[str, object]]
+ProbeOnceFn = Callable[[str, int, float], None]
 
 FORWARD_METHODS = frozenset({"tools/list", "tools/call"})
+LONG_RUNNING_TOOL_NAMES = frozenset({"scan_once", "rescan", "index_file"})
+LONG_RUNNING_FORWARD_TIMEOUT_SEC = 60.0
 POST_START_RETRY_MAX = 8
 POST_START_RETRY_WAIT_SEC = 0.15
 INITIALIZE_POST_START_RETRY_MAX = 40
@@ -77,12 +80,19 @@ def forward_with_retry(
     start_daemon_fn: StartDaemonFn,
     resolve_target_fn: ResolveTargetFn,
     forward_once_fn: ForwardOnceFn,
+    probe_once_fn: ProbeOnceFn | None = None,
 ) -> dict[str, object]:
     """forward 실패 시 자동 기동 후 1회 재시도한다."""
     retry_max, retry_wait_sec = resolve_post_start_retry_policy(request)
+    replay_timeout_sec = resolve_forward_timeout_sec(request, default_timeout_sec=timeout_sec)
     host, port = resolve_target_fn(db_path, workspace_root, host_override, port_override)
+    initial_timeout_sec = timeout_sec
+    preflight_probe = default_probe_once if probe_once_fn is None else probe_once_fn
     try:
-        return forward_once_fn(request, host, port, timeout_sec)
+        if replay_timeout_sec > timeout_sec:
+            preflight_probe(host, port, timeout_sec)
+            initial_timeout_sec = replay_timeout_sec
+        return forward_once_fn(request, host, port, initial_timeout_sec)
     except (DaemonForwardError, OSError, TimeoutError) as first_exc:
         if not auto_start_on_failure:
             raise
@@ -99,7 +109,7 @@ def forward_with_retry(
         for _ in range(retry_max):
             host_retry, port_retry = resolve_target_fn(db_path, workspace_root, host_override, port_override)
             try:
-                return forward_once_fn(request, host_retry, port_retry, timeout_sec)
+                return forward_once_fn(request, host_retry, port_retry, replay_timeout_sec)
             except (DaemonForwardError, OSError, TimeoutError) as retry_exc:
                 last_exc = retry_exc
                 if not is_retryable_error(retry_exc):
@@ -123,9 +133,43 @@ def resolve_post_start_retry_policy(request: dict[str, object]) -> tuple[int, fl
     return POST_START_RETRY_MAX, POST_START_RETRY_WAIT_SEC
 
 
+def resolve_forward_timeout_sec(request: dict[str, object], default_timeout_sec: float) -> float:
+    """요청 특성에 따라 daemon forward timeout을 조정한다."""
+    method_raw = request.get("method")
+    method = str(method_raw).strip().lower() if isinstance(method_raw, str) else ""
+    if method != "tools/call":
+        return default_timeout_sec
+    params = request.get("params")
+    if not isinstance(params, dict):
+        return default_timeout_sec
+    tool_name_raw = params.get("name")
+    tool_name = str(tool_name_raw).strip().lower() if isinstance(tool_name_raw, str) else ""
+    if tool_name in LONG_RUNNING_TOOL_NAMES:
+        return max(default_timeout_sec, LONG_RUNNING_FORWARD_TIMEOUT_SEC)
+    return default_timeout_sec
+
+
+def resolve_tool_call_forward_timeout_sec(
+    *,
+    tool_name: str | None,
+    default_timeout_sec: float,
+) -> float:
+    """tool name만 있는 경로(proxy replay 등)의 timeout을 계산한다."""
+    normalized = str(tool_name or "").strip().lower()
+    if normalized in LONG_RUNNING_TOOL_NAMES:
+        return max(default_timeout_sec, LONG_RUNNING_FORWARD_TIMEOUT_SEC)
+    return default_timeout_sec
+
+
 def is_retryable_error(exc: BaseException) -> bool:
     """재시도 가능한 예외 타입인지 판정한다."""
     return isinstance(exc, (OSError, TimeoutError, DaemonForwardError))
+
+
+def default_probe_once(host: str, port: int, timeout_sec: float) -> None:
+    """daemon endpoint에 짧은 TCP probe를 수행한다."""
+    with socket.create_connection((host, port), timeout=timeout_sec):
+        return None
 
 
 def build_forward_error_message(exc: BaseException) -> str:

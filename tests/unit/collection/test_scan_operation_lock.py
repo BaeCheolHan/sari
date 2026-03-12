@@ -106,3 +106,118 @@ def test_scan_operation_lock_serializes_same_process_concurrency(tmp_path: Path)
 
     assert errors == []
     assert order == ["first-enter", "first-exit", "second-enter", "second-exit"]
+
+
+def test_scan_operation_lock_wait_timeout_overrides_attempt_budget(tmp_path: Path) -> None:
+    calls = {"count": 0}
+    sleeps: list[float] = []
+
+    def _lock(_file: object) -> None:
+        calls["count"] += 1
+        if calls["count"] < 4:
+            raise BlockingIOError("busy")
+
+    lock = ScanOperationLock(
+        lock_path=tmp_path / ".scan.lock",
+        max_attempts=2,
+        backoff_base_sec=0.1,
+        backoff_max_sec=0.1,
+        sleep_fn=lambda sec: sleeps.append(sec),
+        lock_fn=_lock,
+        unlock_fn=lambda _file: None,
+    )
+
+    with lock.acquire(operation="scan_once", repo_root="/repo", wait_timeout_sec=0.35):
+        pass
+
+    assert calls["count"] == 4
+    assert sleeps == [0.1, 0.1, 0.1]
+
+
+def test_scan_operation_lock_wait_timeout_includes_same_process_queueing(tmp_path: Path) -> None:
+    order: list[str] = []
+    errors: list[str] = []
+
+    lock = ScanOperationLock(
+        lock_path=tmp_path / ".scan.lock",
+        max_attempts=2,
+        backoff_base_sec=0.01,
+        backoff_max_sec=0.01,
+        sleep_fn=lambda _sec: None,
+        lock_fn=lambda _file: None,
+        unlock_fn=lambda _file: None,
+    )
+
+    def _first() -> None:
+        with lock.acquire(operation="scan_once", repo_root="/repo", wait_timeout_sec=1.0):
+            order.append("first-enter")
+            time.sleep(0.2)
+            order.append("first-exit")
+
+    def _second() -> None:
+        time.sleep(0.02)
+        try:
+            with lock.acquire(operation="scan_once", repo_root="/repo", wait_timeout_sec=0.05):
+                order.append("second-enter")
+        except CollectionError as exc:
+            errors.append(exc.context.code)
+
+    t1 = threading.Thread(target=_first)
+    t2 = threading.Thread(target=_second)
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    assert order == ["first-enter", "first-exit"]
+    assert errors == ["ERR_SCAN_OPERATION_LOCK_BUSY"]
+
+
+def test_scan_operation_lock_wait_timeout_counts_thread_and_file_lock_together(tmp_path: Path) -> None:
+    sleeps: list[float] = []
+    errors: list[str] = []
+    order: list[str] = []
+    busy_until = {"value": 0.0}
+
+    def _lock(_file: object) -> None:
+        if time.monotonic() < busy_until["value"]:
+            raise BlockingIOError("busy")
+
+    def _unlock(_file: object) -> None:
+        return None
+
+    lock = ScanOperationLock(
+        lock_path=tmp_path / ".scan.lock",
+        max_attempts=10,
+        backoff_base_sec=0.03,
+        backoff_max_sec=0.03,
+        sleep_fn=lambda sec: (sleeps.append(sec), time.sleep(sec)),
+        lock_fn=_lock,
+        unlock_fn=_unlock,
+    )
+
+    def _first() -> None:
+        with lock.acquire(operation="scan_once", repo_root="/repo", wait_timeout_sec=1.0):
+            order.append("first-enter")
+            busy_until["value"] = time.monotonic() + 0.2
+            time.sleep(0.05)
+            order.append("first-exit")
+
+    def _second() -> None:
+        time.sleep(0.01)
+        try:
+            with lock.acquire(operation="scan_once", repo_root="/repo", wait_timeout_sec=0.06):
+                order.append("second-enter")
+        except CollectionError as exc:
+            errors.append(exc.context.code)
+
+    t1 = threading.Thread(target=_first)
+    t2 = threading.Thread(target=_second)
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    assert order == ["first-enter", "first-exit"]
+    assert errors == ["ERR_SCAN_OPERATION_LOCK_BUSY"]
+    assert sum(sleeps) <= 0.06 + 0.02

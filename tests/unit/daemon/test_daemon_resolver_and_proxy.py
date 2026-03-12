@@ -603,24 +603,37 @@ def test_proxy_reconnects_when_draining_response_received(tmp_path: Path, monkey
     transport = _ScriptedTransport(
         messages=[
             ({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}, "content-length"),
-            ({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, "content-length"),
+            (
+                {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "scan_once",
+                        "arguments": {"repo": "/repo/a"},
+                    },
+                },
+                "content-length",
+            ),
             None,
         ]
     )
     calls: list[object] = []
+    timeouts: list[float] = []
 
     def _fake_transport(*_: object, **__: object) -> _ScriptedTransport:
         return transport
 
     def _fake_forward_once(request: dict[str, object], host: str, port: int, timeout_sec: float) -> dict[str, object]:
-        _ = (host, port, timeout_sec)
+        _ = (host, port)
         calls.append(request.get("method"))
+        timeouts.append(timeout_sec)
         method = str(request.get("method", ""))
         if method == "initialize":
             return {"jsonrpc": "2.0", "id": request.get("id"), "result": {"protocolVersion": "2026-01-01"}}
-        if calls.count("tools/list") == 1:
+        if calls.count("tools/call") == 1:
             return {"jsonrpc": "2.0", "id": request.get("id"), "error": {"code": -32001, "message": "daemon draining"}}
-        return {"jsonrpc": "2.0", "id": request.get("id"), "result": {"tools": []}}
+        return {"jsonrpc": "2.0", "id": request.get("id"), "result": {"content": [], "isError": False}}
 
     monkeypatch.setattr("sari.mcp.proxy.McpTransport", _fake_transport)
     monkeypatch.setattr("sari.mcp.proxy.resolve_target", lambda *_: ("127.0.0.1", 47777))
@@ -635,7 +648,11 @@ def test_proxy_reconnects_when_draining_response_received(tmp_path: Path, monkey
     assert exit_code == 0
     assert len(transport.writes) == 2
     assert "error" not in transport.writes[1][0]
-    assert calls == ["initialize", "tools/list", "initialize", "tools/list"]
+    assert calls == ["initialize", "tools/call", "initialize", "tools/call"]
+    assert timeouts[0] == 2.0
+    assert timeouts[1] > 2.0
+    assert timeouts[2] == 2.0
+    assert timeouts[3] > 2.0
 
 
 def test_proxy_does_not_reply_to_notifications(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
