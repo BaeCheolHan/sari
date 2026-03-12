@@ -279,7 +279,11 @@ class L3TreeSitterPreprocessService:
                 content_text=content_text,
                 parse_key=parse_key,
             )
-            if result is not None:
+            if result is not None and not (
+                result.degraded
+                and isinstance(result.reason, str)
+                and result.reason.startswith("tree_sitter_unavailable")
+            ):
                 return result
         try:
             try:

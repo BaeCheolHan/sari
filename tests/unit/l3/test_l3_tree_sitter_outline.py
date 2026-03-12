@@ -463,6 +463,12 @@ def test_language_alias_maps_js_to_javascript() -> None:
     assert extractor._LANGUAGE_ALIASES.get("js") == "javascript"
 
 
+def test_language_alias_maps_python_to_python() -> None:
+    extractor = TreeSitterOutlineExtractor()
+
+    assert extractor._LANGUAGE_ALIASES.get("python") == "python"
+
+
 def test_language_alias_maps_kotlin_extensions_to_kotlin() -> None:
     extractor = TreeSitterOutlineExtractor()
 

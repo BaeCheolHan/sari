@@ -144,3 +144,47 @@ def test_preprocess_uses_subinterpreter_path_when_enabled_and_payload_large_enou
     assert result.source == "tree_sitter_outline"
     assert result.symbols[0]["name"] == "Sub"
     assert service._tree_sitter_subinterp_executor.called == 1  # type: ignore[union-attr]
+
+
+def test_preprocess_falls_back_to_inline_when_subinterp_reports_tree_sitter_unavailable() -> None:
+    class _Executor:
+        def submit(self, fn, *args, **kwargs):  # noqa: ANN001, ANN003
+            class _Future:
+                def result(self, timeout=None):  # noqa: ANN001
+                    _ = timeout
+                    return {
+                        "symbols": [],
+                        "degraded": True,
+                        "reason": "tree_sitter_unavailable:ImportError",
+                    }
+
+            return _Future()
+
+    class _StubExtractor:
+        def is_available_for(self, lang_key: str) -> bool:
+            _ = lang_key
+            return True
+
+        def extract_outline(self, **kwargs):  # noqa: ANN003
+            return TreeSitterOutlineResult(
+                symbols=[{"name": "Inline", "kind": "class", "line": 1, "end_line": 1}],
+                degraded=False,
+            )
+
+    service = L3TreeSitterPreprocessService(
+        tree_sitter_enabled=True,
+        tree_sitter_outline_extractor=_StubExtractor(),  # type: ignore[arg-type]
+        tree_sitter_executor_mode="subinterp",
+        tree_sitter_subinterp_min_bytes=1,
+    )
+    service._tree_sitter_subinterp_executor = _Executor()  # type: ignore[assignment]
+    service._tree_sitter_executor_mode = "subinterp"  # type: ignore[assignment]
+
+    result = service.preprocess(
+        relative_path="src/main/kotlin/A.kt",
+        content_text="class A {}",
+        repo_root="/tmp/repo",
+    )
+
+    assert result.source == "tree_sitter_outline"
+    assert result.symbols[0]["name"] == "Inline"

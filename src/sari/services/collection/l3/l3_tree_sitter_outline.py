@@ -26,6 +26,7 @@ class TreeSitterOutlineExtractor:
     """tree-sitter를 사용해 경량 심볼 outline을 추출한다."""
 
     _LANGUAGE_ALIASES = {
+        "python": "python",
         "py": "python",
         "js": "javascript",
         "jsx": "javascript",
