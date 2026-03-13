@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from sari.mcp.daemon_forward_policy import (
+    default_probe_once,
     build_forward_error_message,
     forward_with_retry,
     resolve_forward_timeout_sec,
@@ -164,3 +165,24 @@ def test_forward_with_retry_keeps_initial_probe_short_and_request_long_for_long_
     assert probed == [2.0]
     assert seen[0] > 2.0
     assert seen[1] > 2.0
+
+
+def test_default_probe_once_uses_dual_stack_create_connection(monkeypatch) -> None:
+    """TCP preflight는 IPv4/IPv6를 모두 처리할 수 있어야 한다."""
+    seen: list[tuple[object, float | None]] = []
+
+    class _FakeSocket:
+        def __enter__(self) -> "_FakeSocket":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            _ = (exc_type, exc, tb)
+            return False
+
+    def _create_connection(addr, timeout=None):  # type: ignore[no-untyped-def]
+        seen.append((addr, timeout))
+        return _FakeSocket()
+
+    monkeypatch.setattr("sari.mcp.daemon_forward_policy.socket.create_connection", _create_connection)
+    default_probe_once("::1", 47777, 2.0)
+    assert seen == [(("::1", 47777), 2.0)]

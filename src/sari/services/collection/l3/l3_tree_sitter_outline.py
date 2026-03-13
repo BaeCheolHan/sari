@@ -20,6 +20,7 @@ class TreeSitterOutlineResult:
     symbols: list[dict[str, object]]
     degraded: bool
     reason: str | None = None
+    syntax_tree: object | None = None
 
 
 class TreeSitterOutlineExtractor:
@@ -315,7 +316,7 @@ class TreeSitterOutlineExtractor:
         stack = [tree.root_node]
         while stack:
             if (time.perf_counter() - started_at) > budget_sec:
-                return TreeSitterOutlineResult(symbols=symbols, degraded=True, reason="tree_sitter_budget_exceeded")
+                return TreeSitterOutlineResult(symbols=symbols, degraded=True, reason="tree_sitter_budget_exceeded", syntax_tree=tree)
             node = stack.pop()
             kind = node_kind_map.get(node.type)
             if kind is not None:
@@ -339,7 +340,7 @@ class TreeSitterOutlineExtractor:
                 for child in reversed(children):
                     stack.append(child)
         symbols = self._postprocess_symbols(normalized=normalized, symbols=symbols, content_text=content_text)
-        return TreeSitterOutlineResult(symbols=symbols, degraded=False)
+        return TreeSitterOutlineResult(symbols=symbols, degraded=False, syntax_tree=tree)
 
     def _extract_outline_with_query(
         self,
@@ -391,7 +392,7 @@ class TreeSitterOutlineExtractor:
         capture_items = self._iter_capture_items(captures_iter, query=query)
         for item in capture_items:
             if (time.perf_counter() - started_at) > budget_sec:
-                return TreeSitterOutlineResult(symbols=symbols, degraded=True, reason="tree_sitter_budget_exceeded")
+                return TreeSitterOutlineResult(symbols=symbols, degraded=True, reason="tree_sitter_budget_exceeded", syntax_tree=tree)
             node, capture_name = self._unpack_capture_item(item, query=query)
             if node is None or not isinstance(capture_name, str):
                 continue
@@ -462,7 +463,7 @@ class TreeSitterOutlineExtractor:
         if not symbols:
             return None
         symbols = self._postprocess_symbols(normalized=normalized, symbols=symbols, content_text=content_text)
-        return TreeSitterOutlineResult(symbols=symbols, degraded=False)
+        return TreeSitterOutlineResult(symbols=symbols, degraded=False, syntax_tree=tree)
 
     def _compile_query_candidates(self, *, language, normalized: str, primary_source: str):
         """자산/패키지 쿼리가 깨진 경우 builtin 쿼리까지 순차 컴파일한다."""

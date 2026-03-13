@@ -167,9 +167,9 @@ def is_retryable_error(exc: BaseException) -> bool:
 
 
 def default_probe_once(host: str, port: int, timeout_sec: float) -> None:
-    """daemon endpoint에 짧은 TCP probe를 수행한다."""
+    """daemon endpoint에 짧은 TCP 생존 probe를 수행한다."""
     with socket.create_connection((host, port), timeout=timeout_sec):
-        return None
+        pass
 
 
 def build_forward_error_message(exc: BaseException) -> str:

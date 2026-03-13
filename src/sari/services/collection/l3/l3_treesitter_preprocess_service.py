@@ -65,7 +65,12 @@ class L3TreeSitterPreprocessService:
         ),
         "java": (
             (r"^\s*(?:public\s+)?(?:abstract\s+)?class\s+([A-Za-z_][A-Za-z0-9_]*)\b", "class"),
-            (r"^\s*(?:public|protected|private)?\s*(?:static\s+)?[A-Za-z_<>\[\]]+\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", "method"),
+            (
+                r"^\s*(?!return\b|new\b|if\b|for\b|while\b|switch\b|catch\b|throw\b)"
+                r"(?:public|protected|private)?\s*(?:static\s+)?"
+                r"[A-Za-z_$][A-Za-z0-9_$.<>\[\], ?]*\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+                "method",
+            ),
         ),
         "scala": (
             (r"^\s*package\s+([A-Za-z_][A-Za-z0-9_\.]*)\b", "module"),
@@ -76,6 +81,16 @@ class L3TreeSitterPreprocessService:
     }
     _IMPORT_LIKE = re.compile(r"^\s*(?:import|from\s+\S+\s+import|using|use|require\(|#include)\b", re.MULTILINE)
     _CROSS_FILE_HINT = re.compile(r"\b(?:extends|implements|::|->|\.)\b")
+    _JAVA_FALLBACK_NON_DECL_PREFIXES: tuple[str, ...] = (
+        "return ",
+        "new ",
+        "if ",
+        "for ",
+        "while ",
+        "switch ",
+        "catch ",
+        "throw ",
+    )
 
     def __init__(
         self,
@@ -173,21 +188,13 @@ class L3TreeSitterPreprocessService:
                 tree_sitter_degraded_reason = tree_sitter_result.reason or "tree_sitter_degraded"
             elif len(tree_sitter_result.symbols) == 0:
                 tree_sitter_degraded_reason = "l3_preprocess_no_symbols"
-            elif self._needs_l5_by_low_confidence(relative_path=relative_path, content_text=content_text, symbols=tree_sitter_result.symbols):
+            else:
                 return L3PreprocessResultDTO(
                     symbols=tree_sitter_result.symbols,
                     degraded=False,
                     decision=L3PreprocessDecision.NEEDS_L5,
                     source="tree_sitter_outline",
-                    reason="l3_preprocess_low_confidence",
-                )
-            else:
-                return L3PreprocessResultDTO(
-                    symbols=tree_sitter_result.symbols,
-                    degraded=False,
-                    decision=L3PreprocessDecision.L3_ONLY,
-                    source="tree_sitter_outline",
-                    reason="l3_preprocess_tree_sitter_only",
+                    reason="l3_preprocess_supported_language",
                 )
 
         if pattern_key is None or pattern_key not in self._PATTERN_TEXTS:
@@ -228,24 +235,12 @@ class L3TreeSitterPreprocessService:
                 source="regex_outline",
                 reason=tree_sitter_degraded_reason or "l3_preprocess_no_symbols",
             )
-        if self._needs_l5_by_low_confidence(
-            relative_path=relative_path,
-            content_text=content_text,
-            symbols=symbols,
-        ):
-            return L3PreprocessResultDTO(
-                symbols=symbols,
-                degraded=tree_sitter_degraded_reason is not None,
-                decision=L3PreprocessDecision.NEEDS_L5,
-                source="regex_outline",
-                reason=tree_sitter_degraded_reason or "l3_preprocess_low_confidence",
-            )
         return L3PreprocessResultDTO(
             symbols=symbols,
             degraded=tree_sitter_degraded_reason is not None,
-            decision=L3PreprocessDecision.L3_ONLY,
+            decision=L3PreprocessDecision.NEEDS_L5,
             source="regex_outline",
-            reason=tree_sitter_degraded_reason or "l3_preprocess_only",
+            reason=tree_sitter_degraded_reason or "l3_preprocess_supported_language",
         )
 
     def _try_tree_sitter_outline(
@@ -276,6 +271,7 @@ class L3TreeSitterPreprocessService:
         ):
             result = self._try_tree_sitter_outline_subinterp(
                 pattern_key=pattern_key,
+                relative_path=relative_path,
                 content_text=content_text,
                 parse_key=parse_key,
             )
@@ -316,6 +312,7 @@ class L3TreeSitterPreprocessService:
         self,
         *,
         pattern_key: str,
+        relative_path: str,
         content_text: str,
         parse_key: str | None,
     ) -> TreeSitterOutlineResult | None:
@@ -326,6 +323,7 @@ class L3TreeSitterPreprocessService:
             future = executor.submit(
                 _extract_outline_subinterp_task,
                 pattern_key,
+                relative_path,
                 content_text,
                 self._query_budget_sec,
                 parse_key,
@@ -342,7 +340,11 @@ class L3TreeSitterPreprocessService:
             reason = payload.get("reason")
             if not isinstance(reason, str):
                 reason = None
-            return TreeSitterOutlineResult(symbols=symbols, degraded=degraded, reason=reason)
+            return TreeSitterOutlineResult(
+                symbols=symbols,
+                degraded=degraded,
+                reason=reason,
+            )
         except (RuntimeError, OSError, ValueError, TypeError, TimeoutError) as exc:
             log.debug(
                 "L3 tree-sitter subinterpreter path failed; fallback to inline extractor (pattern_key=%s)",
@@ -362,19 +364,6 @@ class L3TreeSitterPreprocessService:
             ...
         finally:
             self._tree_sitter_subinterp_executor = None
-
-    def _needs_l5_by_low_confidence(self, *, relative_path: str, content_text: str, symbols: list[dict[str, object]]) -> bool:
-        language_processor = self._language_registry.resolve(relative_path=relative_path)
-        has_import_like = self._IMPORT_LIKE.search(content_text) is not None
-        has_cross_file_hint = self._CROSS_FILE_HINT.search(content_text) is not None
-        context = L3LowConfidenceContext(
-            relative_path=relative_path,
-            content_text=content_text,
-            symbol_count=len(symbols),
-            has_import_like=has_import_like,
-            has_cross_file_hint=has_cross_file_hint,
-        )
-        return language_processor.should_route_to_l5(context=context)
 
     def _get_patterns_for_ext(self, *, pattern_key: str) -> tuple[tuple[re.Pattern[str], str], ...] | None:
         pattern_texts = self._PATTERN_TEXTS.get(pattern_key)
@@ -403,6 +392,10 @@ class L3TreeSitterPreprocessService:
             name = match.group(1)
             line = text.count("\n", 0, match.start()) + 1
             end_line = min(len(lines), line)
+            if kind == "method":
+                line_text = lines[line - 1].strip()
+                if re.match(r"^(return|new|if|for|while|switch|catch|throw)\b", line_text):
+                    continue
             output.append(
                 {
                     "name": name,
@@ -426,6 +419,7 @@ class L3TreeSitterPreprocessService:
 
 def _extract_outline_subinterp_task(
     pattern_key: str,
+    relative_path: str,
     content_text: str,
     budget_sec: float,
     parse_key: str | None,

@@ -591,7 +591,7 @@ def test_l3_preprocess_single_symbol_routes_to_needs_l5() -> None:
     result = service.preprocess(relative_path="repo_a/src/a.py", content_text=content, max_bytes=1024)
 
     assert result.decision is L3PreprocessDecision.NEEDS_L5
-    assert result.reason == "l3_preprocess_low_confidence"
+    assert result.reason == "l3_preprocess_supported_language"
     assert len(result.symbols) == 1
 
 
@@ -602,8 +602,8 @@ def test_l3_preprocess_single_symbol_config_filename_stays_l3_only() -> None:
 
     result = service.preprocess(relative_path="repo_a/src/app_config.py", content_text=content, max_bytes=1024)
 
-    assert result.decision is L3PreprocessDecision.L3_ONLY
-    assert result.reason == "l3_preprocess_only"
+    assert result.decision is L3PreprocessDecision.NEEDS_L5
+    assert result.reason == "l3_preprocess_supported_language"
     assert len(result.symbols) == 1
 
 
@@ -615,7 +615,7 @@ def test_l3_preprocess_single_symbol_regular_filename_still_needs_l5() -> None:
     result = service.preprocess(relative_path="repo_a/src/service.py", content_text=content, max_bytes=1024)
 
     assert result.decision is L3PreprocessDecision.NEEDS_L5
-    assert result.reason == "l3_preprocess_low_confidence"
+    assert result.reason == "l3_preprocess_supported_language"
     assert len(result.symbols) == 1
 
 
@@ -626,8 +626,8 @@ def test_l3_preprocess_multi_symbol_with_import_stays_l3_only() -> None:
 
     result = service.preprocess(relative_path="repo_a/src/a.py", content_text=content, max_bytes=1024)
 
-    assert result.decision is L3PreprocessDecision.L3_ONLY
-    assert result.reason == "l3_preprocess_only"
+    assert result.decision is L3PreprocessDecision.NEEDS_L5
+    assert result.reason == "l3_preprocess_supported_language"
     assert len(result.symbols) == 2
 
 
@@ -679,7 +679,7 @@ def test_l3_preprocess_tree_sitter_single_symbol_routes_to_needs_l5() -> None:
     result = service.preprocess(relative_path="repo_a/src/a.py", content_text="def alpha():\n    return 1\n", max_bytes=1024)
     assert result.decision is L3PreprocessDecision.NEEDS_L5
     assert result.source == "tree_sitter_outline"
-    assert result.reason == "l3_preprocess_low_confidence"
+    assert result.reason == "l3_preprocess_supported_language"
     assert len(result.symbols) == 1
 
 
@@ -699,7 +699,7 @@ def test_l3_preprocess_vue_low_symbol_routes_to_needs_l5() -> None:
     result = service.preprocess(relative_path="repo_a/src/App.vue", content_text=content, max_bytes=1024)
 
     assert result.decision is L3PreprocessDecision.NEEDS_L5
-    assert result.reason == "l3_preprocess_low_confidence"
+    assert result.reason == "l3_preprocess_supported_language"
     assert result.source == "regex_outline"
     assert len(result.symbols) == 2
 
@@ -719,7 +719,7 @@ def test_l3_preprocess_vue_high_symbol_stays_l3_only() -> None:
 
     result = service.preprocess(relative_path="repo_a/src/App.vue", content_text=content, max_bytes=4096)
 
-    assert result.decision is L3PreprocessDecision.L3_ONLY
+    assert result.decision is L3PreprocessDecision.NEEDS_L5
     assert result.source == "regex_outline"
     assert len(result.symbols) == 11
 
