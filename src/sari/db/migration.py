@@ -238,6 +238,7 @@ def _fallback_upgrade_0003(conn: sqlite3.Connection) -> None:
         ON lsp_symbols(repo_root, relative_path, content_hash, symbol_key)
         """
     )
+    _ensure_python_semantic_call_edges_table(conn)
 
 
 def _ensure_repo_language_probe_state_table(conn: sqlite3.Connection) -> None:
@@ -283,6 +284,34 @@ def _ensure_repo_language_probe_state_table(conn: sqlite3.Connection) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_repo_language_probe_state_status
         ON repo_language_probe_state(status, updated_at DESC)
+        """
+    )
+
+
+def _ensure_python_semantic_call_edges_table(conn: sqlite3.Connection) -> None:
+    """python semantic caller edge 테이블/인덱스를 보장한다."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS python_semantic_call_edges (
+            repo_id TEXT NOT NULL DEFAULT '',
+            repo_root TEXT NOT NULL CHECK (repo_root <> ''),
+            scope_repo_root TEXT NOT NULL DEFAULT '',
+            relative_path TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            from_symbol TEXT NOT NULL,
+            to_symbol TEXT NOT NULL,
+            line INTEGER NOT NULL,
+            evidence_type TEXT NOT NULL,
+            confidence REAL NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(repo_root, relative_path, content_hash, from_symbol, to_symbol, line, evidence_type)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_python_semantic_call_edges_target
+        ON python_semantic_call_edges(repo_root, to_symbol, relative_path, line)
         """
     )
 

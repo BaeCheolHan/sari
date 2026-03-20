@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 from sari.core.models import FileEnrichJobDTO
+from ..l3_job_context import L3JobContext
 from sari.services.collection.l3.l3_treesitter_preprocess_service import (
     L3PreprocessDecision,
     L3PreprocessResultDTO,
@@ -25,7 +26,7 @@ class L3PreprocessIoStage:
         self._degraded_fallback_service = degraded_fallback_service
         self._preprocess_max_bytes = max(1, int(preprocess_max_bytes))
 
-    def run(self, *, job: FileEnrichJobDTO, file_row: object) -> L3PreprocessResultDTO | None:
+    def run(self, *, job: FileEnrichJobDTO, file_row: object, context: L3JobContext | None = None) -> L3PreprocessResultDTO | None:
         preprocess_service = self._preprocess_service
         if preprocess_service is None:
             return None
@@ -36,6 +37,8 @@ class L3PreprocessIoStage:
                     content_text = handle.read()
             else:
                 content_text = ""
+            if context is not None:
+                context.content_text = content_text
             try:
                 result = preprocess_service.preprocess(
                     relative_path=job.relative_path,

@@ -193,7 +193,7 @@ class L3Orchestrator:
                     context.done_id = job.job_id
                     finished_status = "DONE"
                 else:
-                    preprocess_result = self._preprocess_stage.execute(job=job, file_row=file_row)
+                    preprocess_result = self._preprocess_stage.execute(job=job, file_row=file_row, context=context)
                     with self._perf_tracer.span("l3.decision", phase="decision"):
                         decision = self._decision_stage.evaluate(
                             context=context,
@@ -322,5 +322,11 @@ class L3Orchestrator:
             lsp_symbols=lsp_symbols,
         )
 
-    def _run_preprocess(self, *, job: FileEnrichJobDTO, file_row: object) -> L3PreprocessResultDTO | None:
-        return self._preprocess_io_stage.run(job=job, file_row=file_row)
+    def _run_preprocess(
+        self,
+        *,
+        job: FileEnrichJobDTO,
+        file_row: object,
+        context: L3JobContext | None = None,
+    ) -> L3PreprocessResultDTO | None:
+        return self._preprocess_io_stage.run(job=job, file_row=file_row, context=context)

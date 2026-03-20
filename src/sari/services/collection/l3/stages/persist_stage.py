@@ -164,6 +164,7 @@ class L3PersistStage:
             symbols=preprocess_result.symbols,
             relations=[],
             created_at=now_iso,
+            content_text=context.content_text,
         )
         context.state_update = EnrichStateUpdateDTO(
             repo_root=repo_root,
@@ -235,6 +236,7 @@ class L3PersistStage:
             symbols=lsp_symbols,
             relations=lsp_relations,
             created_at=now_iso,
+            content_text=context.content_text,
         )
         if retry_zero_relations_pending:
             self.mark_retry_pending_ready(

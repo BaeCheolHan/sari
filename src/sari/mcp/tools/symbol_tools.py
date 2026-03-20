@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from sari.core.models import ErrorResponseDTO
 from sari.db.repositories.lsp_tool_data_repository import LspToolDataRepository
+from sari.mcp.tools.symbol_graph_tools import scan_python_semantic_callers
 from sari.mcp.tools.arg_parser import parse_non_empty_string, parse_optional_string, parse_positive_int
 from sari.mcp.tools.admin_tools import RepoValidationPort, validate_repo_argument
 from sari.mcp.tools.pack1 import Pack1MetaDTO, pack1_error, pack1_success
@@ -64,18 +65,26 @@ class GetCallersTool:
             return pack1_error(validation.error)
         warnings_payload = [warning.to_dict() for warning in validation.warnings]
 
-        symbol_name = self._resolve_symbol_name(arguments)
-        if symbol_name is None:
-            return pack1_error(
-                ErrorResponseDTO(code="ERR_SYMBOL_REQUIRED", message="symbol or symbol_id is required")
-            )
-
         limit_raw, limit_error = parse_positive_int(arguments=arguments, key="limit", default=50)
         if limit_error is not None:
             return pack1_error(limit_error)
+        scope = self._resolve_scope(arguments)
 
         repo = str(arguments["repo"])
-        rows = self._lsp_repo.find_callers(repo_root=repo, symbol_name=symbol_name, limit=limit_raw)
+        symbol_name = self._resolve_symbol_name(arguments=arguments, repo_root=repo, scope=scope)
+        if symbol_name is None:
+            return pack1_error(
+                ErrorResponseDTO(code="ERR_SYMBOL_REQUIRED", message="symbol, symbol_id, or sid is required")
+            )
+        rows = self._lsp_repo.find_callers(repo_root=repo, symbol_name=symbol_name, limit=limit_raw, scope=scope)
+        if len(rows) == 0:
+            rows = scan_python_semantic_callers(
+                repo_root=repo,
+                symbol_name=symbol_name,
+                limit=limit_raw,
+                scope=scope,
+                lsp_repo=self._lsp_repo,
+            )
         return pack1_success(
             {
                 "items": rows_to_items(rows),
@@ -89,12 +98,29 @@ class GetCallersTool:
             }
         )
 
-    def _resolve_symbol_name(self, arguments: dict[str, object]) -> str | None:
+    def _resolve_symbol_name(self, arguments: dict[str, object], *, repo_root: str, scope: str) -> str | None:
         """symbol/symbol_id 입력에서 검색 키를 결정한다."""
         symbol_raw = arguments.get("symbol")
         if isinstance(symbol_raw, str) and symbol_raw.strip() != "":
-            return symbol_raw.strip()
+            resolved = self._lsp_repo.resolve_symbol_name(
+                repo_root=repo_root,
+                symbol_ref=symbol_raw.strip(),
+                scope=scope,
+            )
+            return resolved or symbol_raw.strip()
         symbol_id_raw = arguments.get("symbol_id")
         if isinstance(symbol_id_raw, str) and symbol_id_raw.strip() != "":
-            return symbol_id_raw.strip()
+            return self._lsp_repo.resolve_symbol_name(repo_root=repo_root, symbol_ref=symbol_id_raw.strip(), scope=scope)
+        sid_raw = arguments.get("sid")
+        if isinstance(sid_raw, str) and sid_raw.strip() != "":
+            return self._lsp_repo.resolve_symbol_name(repo_root=repo_root, symbol_ref=sid_raw.strip(), scope=scope)
         return None
+
+    def _resolve_scope(self, arguments: dict[str, object]) -> str:
+        raw = parse_optional_string(arguments=arguments, key="scope")
+        if raw is None:
+            return "production"
+        normalized = raw.strip().lower()
+        if normalized in {"all", "*", "tests", "test", "production", "prod"}:
+            return normalized
+        return "production"

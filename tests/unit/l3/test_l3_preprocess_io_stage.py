@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from sari.core.models import FileEnrichJobDTO
+from sari.services.collection.l3.l3_job_context import L3JobContext
 from sari.services.collection.l3.stages.preprocess_io_stage import L3PreprocessIoStage
 from sari.services.collection.l3.l3_treesitter_preprocess_service import (
     L3PreprocessDecision,
@@ -84,3 +85,26 @@ def test_preprocess_io_stage_returns_none_without_service() -> None:
     )
     result = stage.run(job=_job(), file_row=_FileRow(None))
     assert result is None
+
+
+def test_preprocess_io_stage_stores_content_text_on_context(tmp_path: Path) -> None:
+    p = tmp_path / "a.py"
+    p.write_text("def a():\n  return 1\n", encoding="utf-8")
+    stage = L3PreprocessIoStage(
+        preprocess_service=_PreprocessService(
+            L3PreprocessResultDTO(
+                symbols=[{"name": "a"}],
+                degraded=False,
+                decision=L3PreprocessDecision.NEEDS_L5,
+                source="tree_sitter",
+                reason="ok",
+            )
+        ),
+        degraded_fallback_service=None,
+        preprocess_max_bytes=1024,
+    )
+    context = L3JobContext()
+    result = stage.run(job=_job("a.py"), file_row=_FileRow(str(p)), context=context)
+
+    assert result is not None
+    assert context.content_text == "def a():\n  return 1\n"

@@ -142,3 +142,22 @@ def test_apply_l3_only_success_sets_get_callers_ready_false() -> None:
 
     assert context.readiness_update is not None
     assert context.readiness_update.get_callers_ready is False
+
+
+def test_apply_l3_only_success_carries_content_text_into_lsp_update() -> None:
+    stage = L3PersistStage(layer_upsert_builder=_LayerBuilder(), deletion_hold_enabled=lambda: False)
+    context = L3JobContext()
+    context.content_text = "def run_stdio_proxy():\n    return None\n"
+
+    stage.apply_l3_only_success(
+        context=context,
+        repo_root="/repo",
+        relative_path="src/a.py",
+        content_hash="h1",
+        preprocess_result=_preprocess(),
+        admission_decision=None,
+        now_iso="2026-03-03T00:00:00Z",
+    )
+
+    assert context.lsp_update is not None
+    assert context.lsp_update.content_text == "def run_stdio_proxy():\n    return None\n"

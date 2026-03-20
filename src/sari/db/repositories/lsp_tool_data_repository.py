@@ -7,6 +7,7 @@ from pathlib import Path
 from sari.core.models import CallerEdgeDTO, LspExtractPersistDTO, SymbolSearchItemDTO
 from sari.db.row_mapper import row_int, row_optional_str_normalized, row_str
 from sari.db.schema import connect
+from sari.semantic.python_call_edges import extract_python_include_router_edges, extract_python_semantic_call_edges
 
 
 def _optional_str(value: object) -> str | None:
@@ -25,6 +26,48 @@ def _canonical_file_key(*, repo_root: str, relative_path: str) -> str:
         return str((base / relative_path).resolve(strict=False))
     except OSError:
         return str((base / relative_path).absolute())
+
+
+def _normalize_scope(scope: str | None) -> str:
+    if scope is None:
+        return "production"
+    normalized = str(scope).strip().lower()
+    if normalized in {"", "production", "prod"}:
+        return "production"
+    if normalized in {"all", "*"}:
+        return "all"
+    if normalized in {"tests", "test"}:
+        return "tests"
+    return "production"
+
+
+def _classify_path_scope(relative_path: str) -> str:
+    normalized = str(relative_path).replace("\\", "/").strip().lower()
+    filename = normalized.rsplit("/", 1)[-1]
+    parts = [part for part in normalized.split("/") if part != ""]
+    if "tests" in parts or "test" in parts:
+        return "tests"
+    if filename.startswith("test_") or filename.endswith("_test.py") or filename.endswith("_spec.py"):
+        return "tests"
+    return "production"
+
+
+def _scope_sql_clause(*, scope: str, column: str) -> str:
+    normalized = _normalize_scope(scope)
+    if normalized == "all":
+        return ""
+    test_predicate = (
+        f"{column} LIKE 'tests/%' "
+        f"OR {column} LIKE '%/tests/%' "
+        f"OR {column} LIKE 'test/%' "
+        f"OR {column} LIKE '%/test/%' "
+        f"OR {column} LIKE 'test_%' "
+        f"OR {column} LIKE '%_test.py' "
+        f"OR {column} LIKE '%_spec.py'"
+    )
+    if normalized == "tests":
+        return f" AND ({test_predicate})"
+    return f" AND NOT ({test_predicate})"
 
 
 class LspToolDataRepository:
@@ -134,7 +177,21 @@ class LspToolDataRepository:
             conn = connect(self._db_path)
         if conn is None:
             raise RuntimeError("conn must not be None when owned_conn is False")
+        sources_by_repo_path: dict[str, dict[str, str]] = {}
+        for item in items:
+            if item.content_text is None or not item.relative_path.endswith(".py"):
+                continue
+            sources_by_repo_path.setdefault(item.repo_root, {})[item.relative_path] = item.content_text
+        include_router_edges_by_repo_path: dict[tuple[str, str], list[CallerEdgeDTO]] = {}
+        for batch_repo_root, sources_by_path in sources_by_repo_path.items():
+            for edge in extract_python_include_router_edges(
+                repo_root=batch_repo_root,
+                sources_by_path=sources_by_path,
+                scope="all",
+            ):
+                include_router_edges_by_repo_path.setdefault((batch_repo_root, edge.relative_path), []).append(edge)
         try:
+            cleared_cross_file_repo_roots: set[str] = set()
             for item in items:
                 conn.execute(
                     """
@@ -212,6 +269,62 @@ class LspToolDataRepository:
                         """,
                         relation_rows,
                     )
+                conn.execute(
+                    """
+                    DELETE FROM python_semantic_call_edges
+                    WHERE repo_root = :repo_root
+                      AND relative_path = :relative_path
+                    """,
+                    {"repo_root": item.repo_root, "relative_path": item.relative_path},
+                )
+                if item.repo_root not in cleared_cross_file_repo_roots:
+                    conn.execute(
+                        """
+                        DELETE FROM python_semantic_call_edges
+                        WHERE repo_root = :repo_root
+                          AND evidence_type = 'python_include_router'
+                        """,
+                        {"repo_root": item.repo_root},
+                    )
+                    cleared_cross_file_repo_roots.add(item.repo_root)
+                if item.content_text is not None and item.relative_path.endswith(".py"):
+                    semantic_edges = extract_python_semantic_call_edges(
+                        repo_root=item.repo_root,
+                        relative_path=item.relative_path,
+                        content_text=item.content_text,
+                    )
+                    semantic_edges.extend(include_router_edges_by_repo_path.get((item.repo_root, item.relative_path), ()))
+                    semantic_rows: list[dict[str, object]] = []
+                    for edge in semantic_edges:
+                        semantic_rows.append(
+                            {
+                                "repo_id": item.repo_id,
+                                "repo_root": item.repo_root,
+                                "scope_repo_root": item.scope_repo_root or item.repo_root,
+                                "relative_path": item.relative_path,
+                                "content_hash": item.content_hash,
+                                "from_symbol": edge.from_symbol,
+                                "to_symbol": edge.to_symbol,
+                                "line": edge.line,
+                                "evidence_type": edge.evidence_type or "python_semantic",
+                                "confidence": float(edge.confidence if edge.confidence is not None else 0.0),
+                                "created_at": item.created_at,
+                            }
+                        )
+                    if len(semantic_rows) > 0:
+                        conn.executemany(
+                            """
+                            INSERT INTO python_semantic_call_edges(
+                                repo_id, repo_root, scope_repo_root, relative_path, content_hash,
+                                from_symbol, to_symbol, line, evidence_type, confidence, created_at
+                            )
+                            VALUES(
+                                :repo_id, :repo_root, :scope_repo_root, :relative_path, :content_hash,
+                                :from_symbol, :to_symbol, :line, :evidence_type, :confidence, :created_at
+                            )
+                            """,
+                            semantic_rows,
+                        )
             if owned_conn:
                 conn.commit()
         finally:
@@ -356,11 +469,12 @@ class LspToolDataRepository:
             batch_limit=batch_limit,
         )
 
-    def find_callers(self, repo_root: str, symbol_name: str, limit: int) -> list[CallerEdgeDTO]:
+    def find_callers(self, repo_root: str, symbol_name: str, limit: int, scope: str = "production") -> list[CallerEdgeDTO]:
         """지정 심볼을 대상으로 호출자 관계를 조회한다."""
+        scope_clause = _scope_sql_clause(scope=scope, column="relative_path")
         with connect(self._db_path) as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT repo_root, relative_path, from_symbol, to_symbol, line, content_hash
                 FROM lsp_call_relations
                 WHERE (
@@ -373,6 +487,7 @@ class LspToolDataRepository:
                         )
                     )
                   AND to_symbol = :to_symbol
+                  {scope_clause}
                 ORDER BY relative_path ASC, line ASC
                 LIMIT :limit
                 """,
@@ -387,15 +502,111 @@ class LspToolDataRepository:
                 to_symbol=row_str(row, "to_symbol"),
                 line=row_int(row, "line"),
                 content_hash=row_str(row, "content_hash"),
+                confidence=1.0,
+                evidence_type="exact_symbol_name",
+                scope=_classify_path_scope(row_str(row, "relative_path")),
             )
             for row in rows
         ]
 
-    def find_callees(self, repo_root: str, symbol_name: str, limit: int) -> list[CallerEdgeDTO]:
-        """지정 심볼이 호출하는 대상 관계를 조회한다."""
+    def replace_python_semantic_call_edges(
+        self,
+        repo_root: str,
+        relative_path: str,
+        content_hash: str,
+        edges: list[CallerEdgeDTO],
+        created_at: str,
+        repo_id: str = "",
+    ) -> None:
+        """파일 단위 Python semantic caller edge를 교체 저장한다."""
+        normalized_scope = _classify_path_scope(relative_path)
+        with connect(self._db_path) as conn:
+            conn.execute(
+                """
+                DELETE FROM python_semantic_call_edges
+                WHERE repo_root = :repo_root
+                  AND relative_path = :relative_path
+                """,
+                {"repo_root": repo_root, "relative_path": relative_path},
+            )
+            for edge in edges:
+                conn.execute(
+                    """
+                    INSERT INTO python_semantic_call_edges(
+                        repo_id, repo_root, scope_repo_root, relative_path, content_hash,
+                        from_symbol, to_symbol, line, evidence_type, confidence, created_at
+                    ) VALUES(
+                        :repo_id, :repo_root, :scope_repo_root, :relative_path, :content_hash,
+                        :from_symbol, :to_symbol, :line, :evidence_type, :confidence, :created_at
+                    )
+                    """,
+                    {
+                        "repo_id": repo_id,
+                        "repo_root": repo_root,
+                        "scope_repo_root": "",
+                        "relative_path": relative_path,
+                        "content_hash": content_hash,
+                        "from_symbol": edge.from_symbol,
+                        "to_symbol": edge.to_symbol,
+                        "line": edge.line,
+                        "evidence_type": edge.evidence_type or "python_semantic",
+                        "confidence": float(edge.confidence if edge.confidence is not None else 0.0),
+                        "created_at": created_at,
+                    },
+                )
+            conn.commit()
+
+    def find_python_semantic_callers(
+        self,
+        repo_root: str,
+        symbol_name: str,
+        limit: int,
+        scope: str = "production",
+    ) -> list[CallerEdgeDTO]:
+        """저장된 Python semantic caller edge를 조회한다."""
+        scope_clause = _scope_sql_clause(scope=scope, column="relative_path")
         with connect(self._db_path) as conn:
             rows = conn.execute(
-                """
+                f"""
+                SELECT repo_root, relative_path, from_symbol, to_symbol, line, content_hash, evidence_type, confidence
+                FROM python_semantic_call_edges
+                WHERE (
+                        repo_root = :repo_root
+                        OR repo_root IN (
+                            SELECT DISTINCT repo_root
+                            FROM collected_files_l1
+                            WHERE scope_repo_root = :repo_root
+                              AND is_deleted = 0
+                        )
+                    )
+                  AND to_symbol = :to_symbol
+                  {scope_clause}
+                ORDER BY relative_path ASC, line ASC
+                LIMIT :limit
+                """,
+                {"repo_root": repo_root, "to_symbol": symbol_name, "limit": limit},
+            ).fetchall()
+        return [
+            CallerEdgeDTO(
+                repo=row_str(row, "repo_root"),
+                relative_path=row_str(row, "relative_path"),
+                from_symbol=row_str(row, "from_symbol"),
+                to_symbol=row_str(row, "to_symbol"),
+                line=row_int(row, "line"),
+                content_hash=row_str(row, "content_hash"),
+                confidence=float(row["confidence"]) if row["confidence"] is not None else None,
+                evidence_type=row_optional_str_normalized(row, "evidence_type"),
+                scope=_classify_path_scope(row_str(row, "relative_path")),
+            )
+            for row in rows
+        ]
+
+    def find_callees(self, repo_root: str, symbol_name: str, limit: int, scope: str = "production") -> list[CallerEdgeDTO]:
+        """지정 심볼이 호출하는 대상 관계를 조회한다."""
+        scope_clause = _scope_sql_clause(scope=scope, column="relative_path")
+        with connect(self._db_path) as conn:
+            rows = conn.execute(
+                f"""
                 SELECT repo_root, relative_path, from_symbol, to_symbol, line, content_hash
                 FROM lsp_call_relations
                 WHERE (
@@ -408,6 +619,7 @@ class LspToolDataRepository:
                         )
                     )
                   AND from_symbol = :from_symbol
+                  {scope_clause}
                 ORDER BY relative_path ASC, line ASC
                 LIMIT :limit
                 """,
@@ -421,15 +633,19 @@ class LspToolDataRepository:
                 to_symbol=row_str(row, "to_symbol"),
                 line=row_int(row, "line"),
                 content_hash=row_str(row, "content_hash"),
+                confidence=1.0,
+                evidence_type="exact_symbol_name",
+                scope=_classify_path_scope(row_str(row, "relative_path")),
             )
             for row in rows
         ]
 
-    def find_implementations(self, repo_root: str, symbol_name: str, limit: int) -> list[SymbolSearchItemDTO]:
+    def find_implementations(self, repo_root: str, symbol_name: str, limit: int, scope: str = "production") -> list[SymbolSearchItemDTO]:
         """이름 기준 구현 후보 심볼 목록을 조회한다."""
         query_limit = max(1, int(limit))
         batch_limit = max(64, min(1024, query_limit * 4))
-        sql = """
+        scope_clause = _scope_sql_clause(scope=scope, column="relative_path")
+        sql = f"""
             SELECT repo_root, relative_path, name, kind, line, end_line, content_hash,
                    symbol_key, parent_symbol_key, depth, container_name
             FROM lsp_symbols
@@ -443,6 +659,7 @@ class LspToolDataRepository:
                     )
                 )
               AND name LIKE :name_like
+              {scope_clause}
             ORDER BY relative_path ASC, line ASC, name ASC, repo_root ASC
             LIMIT :batch_limit OFFSET :batch_offset
             """
@@ -453,6 +670,73 @@ class LspToolDataRepository:
             limit=query_limit,
             batch_limit=batch_limit,
         )
+
+    def resolve_symbol_name(
+        self,
+        repo_root: str,
+        symbol_ref: str,
+        *,
+        path_hint: str | None = None,
+        scope: str = "production",
+    ) -> str | None:
+        """symbol_key 또는 exact name 입력을 canonical 심볼 이름으로 해석한다."""
+        normalized_ref = symbol_ref.strip()
+        if normalized_ref == "":
+            return None
+        scope_clause = _scope_sql_clause(scope=scope, column="relative_path")
+        path_clause = ""
+        params: dict[str, object] = {"repo_root": repo_root, "symbol_ref": normalized_ref}
+        if path_hint is not None and path_hint.strip() != "":
+            path_clause = " AND relative_path = :path_hint"
+            params["path_hint"] = path_hint.strip()
+        with connect(self._db_path) as conn:
+            row = conn.execute(
+                f"""
+                SELECT repo_root, relative_path, name
+                FROM lsp_symbols
+                WHERE (
+                        repo_root = :repo_root
+                        OR repo_root IN (
+                            SELECT DISTINCT repo_root
+                            FROM collected_files_l1
+                            WHERE scope_repo_root = :repo_root
+                              AND is_deleted = 0
+                        )
+                    )
+                  AND symbol_key = :symbol_ref
+                  {scope_clause}
+                  {path_clause}
+                ORDER BY relative_path ASC, line ASC, repo_root ASC
+                LIMIT 1
+                """,
+                params,
+            ).fetchone()
+            if row is not None:
+                return row_str(row, "name")
+            row = conn.execute(
+                f"""
+                SELECT repo_root, relative_path, name
+                FROM lsp_symbols
+                WHERE (
+                        repo_root = :repo_root
+                        OR repo_root IN (
+                            SELECT DISTINCT repo_root
+                            FROM collected_files_l1
+                            WHERE scope_repo_root = :repo_root
+                              AND is_deleted = 0
+                        )
+                    )
+                  AND name = :symbol_ref
+                  {scope_clause}
+                  {path_clause}
+                ORDER BY relative_path ASC, line ASC, repo_root ASC
+                LIMIT 1
+                """,
+                params,
+            ).fetchone()
+        if row is None:
+            return None
+        return row_str(row, "name")
 
     def _search_symbols_with_dedupe_limit(
         self,
@@ -547,6 +831,9 @@ class LspToolDataRepository:
                 parent_symbol_key=row["parent_symbol_key"] if row["parent_symbol_key"] is None or isinstance(row["parent_symbol_key"], str) else None,
                 depth=row_int(row, "depth"),
                 container_name=row["container_name"] if row["container_name"] is None or isinstance(row["container_name"], str) else None,
+                confidence=1.0,
+                evidence_type="exact_symbol_name",
+                scope=_classify_path_scope(row_str(row, "relative_path")),
             )
             for row in rows
         ]
@@ -656,11 +943,18 @@ class LspToolDataRepository:
     def _symbol_item_sort_key(self, item: SymbolSearchItemDTO) -> tuple[str, int, str, str]:
         return (item.relative_path, item.line, item.name, item.repo)
 
-    def get_repo_call_graph_health(self, repo_root: str) -> dict[str, int]:
+    def get_repo_call_graph_health(self, repo_root: str, scope: str = "all") -> dict[str, int]:
         """저장소 단위 호출 그래프 건강 지표를 반환한다."""
+        symbol_scope_clause = _scope_sql_clause(scope=scope, column="relative_path")
+        relation_scope_clause = _scope_sql_clause(scope=scope, column="relative_path")
+        orphan_scope_clause = _scope_sql_clause(scope=scope, column="rel.relative_path")
+        production_symbol_scope_clause = _scope_sql_clause(scope="production", column="relative_path")
+        production_relation_scope_clause = _scope_sql_clause(scope="production", column="relative_path")
+        test_symbol_scope_clause = _scope_sql_clause(scope="tests", column="relative_path")
+        test_relation_scope_clause = _scope_sql_clause(scope="tests", column="relative_path")
         with connect(self._db_path) as conn:
             symbol_row = conn.execute(
-                """
+                f"""
                 SELECT COUNT(*) AS symbol_count
                 FROM lsp_symbols
                 WHERE (
@@ -672,11 +966,12 @@ class LspToolDataRepository:
                               AND is_deleted = 0
                         )
                     )
+                  {symbol_scope_clause}
                 """,
                 {"repo_root": repo_root},
             ).fetchone()
             relation_row = conn.execute(
-                """
+                f"""
                 SELECT COUNT(*) AS relation_count
                 FROM lsp_call_relations
                 WHERE (
@@ -688,11 +983,115 @@ class LspToolDataRepository:
                               AND is_deleted = 0
                         )
                     )
+                  {relation_scope_clause}
+                """,
+                {"repo_root": repo_root},
+            ).fetchone()
+            production_symbol_row = conn.execute(
+                f"""
+                SELECT COUNT(*) AS production_symbol_count
+                FROM lsp_symbols
+                WHERE (
+                        repo_root = :repo_root
+                        OR repo_root IN (
+                            SELECT DISTINCT repo_root
+                            FROM collected_files_l1
+                            WHERE scope_repo_root = :repo_root
+                              AND is_deleted = 0
+                        )
+                    )
+                  {production_symbol_scope_clause}
+                """,
+                {"repo_root": repo_root},
+            ).fetchone()
+            production_relation_row = conn.execute(
+                f"""
+                SELECT COUNT(*) AS production_relation_count
+                FROM lsp_call_relations
+                WHERE (
+                        repo_root = :repo_root
+                        OR repo_root IN (
+                            SELECT DISTINCT repo_root
+                            FROM collected_files_l1
+                            WHERE scope_repo_root = :repo_root
+                              AND is_deleted = 0
+                        )
+                    )
+                  {production_relation_scope_clause}
+                """,
+                {"repo_root": repo_root},
+            ).fetchone()
+            test_symbol_row = conn.execute(
+                f"""
+                SELECT COUNT(*) AS test_symbol_count
+                FROM lsp_symbols
+                WHERE (
+                        repo_root = :repo_root
+                        OR repo_root IN (
+                            SELECT DISTINCT repo_root
+                            FROM collected_files_l1
+                            WHERE scope_repo_root = :repo_root
+                              AND is_deleted = 0
+                        )
+                    )
+                  {test_symbol_scope_clause}
+                """,
+                {"repo_root": repo_root},
+            ).fetchone()
+            test_relation_row = conn.execute(
+                f"""
+                SELECT COUNT(*) AS test_relation_count
+                FROM lsp_call_relations
+                WHERE (
+                        repo_root = :repo_root
+                        OR repo_root IN (
+                            SELECT DISTINCT repo_root
+                            FROM collected_files_l1
+                            WHERE scope_repo_root = :repo_root
+                              AND is_deleted = 0
+                        )
+                    )
+                  {test_relation_scope_clause}
+                """,
+                {"repo_root": repo_root},
+            ).fetchone()
+            semantic_relation_row = conn.execute(
+                f"""
+                SELECT COUNT(*) AS semantic_relation_count
+                FROM python_semantic_call_edges
+                WHERE (
+                        repo_root = :repo_root
+                        OR repo_root IN (
+                            SELECT DISTINCT repo_root
+                            FROM collected_files_l1
+                            WHERE scope_repo_root = :repo_root
+                              AND is_deleted = 0
+                        )
+                    )
+                  {relation_scope_clause}
+                """,
+                {"repo_root": repo_root},
+            ).fetchone()
+            cross_file_semantic_row = conn.execute(
+                f"""
+                SELECT COUNT(*) AS cross_file_semantic_relation_count
+                FROM python_semantic_call_edges
+                WHERE (
+                        repo_root = :repo_root
+                        OR repo_root IN (
+                            SELECT DISTINCT repo_root
+                            FROM collected_files_l1
+                            WHERE scope_repo_root = :repo_root
+                              AND is_deleted = 0
+                        )
+                    )
+                  {relation_scope_clause}
+                  AND evidence_type = 'python_include_router'
                 """,
                 {"repo_root": repo_root},
             ).fetchone()
             orphan_row = conn.execute(
-                """
+                f"""
                 SELECT COUNT(*) AS orphan_relation_count
                 FROM lsp_call_relations rel
                 WHERE (
@@ -704,6 +1103,7 @@ class LspToolDataRepository:
                               AND is_deleted = 0
                         )
                     )
+                  {orphan_scope_clause}
                   AND NOT EXISTS (
                     SELECT 1
                     FROM lsp_symbols sym
@@ -717,14 +1117,21 @@ class LspToolDataRepository:
         return {
             "symbol_count": 0 if symbol_row is None else row_int(symbol_row, "symbol_count"),
             "relation_count": 0 if relation_row is None else row_int(relation_row, "relation_count"),
+            "production_symbol_count": 0 if production_symbol_row is None else row_int(production_symbol_row, "production_symbol_count"),
+            "production_relation_count": 0 if production_relation_row is None else row_int(production_relation_row, "production_relation_count"),
+            "test_symbol_count": 0 if test_symbol_row is None else row_int(test_symbol_row, "test_symbol_count"),
+            "test_relation_count": 0 if test_relation_row is None else row_int(test_relation_row, "test_relation_count"),
+            "semantic_relation_count": 0 if semantic_relation_row is None else row_int(semantic_relation_row, "semantic_relation_count"),
+            "cross_file_semantic_relation_count": 0 if cross_file_semantic_row is None else row_int(cross_file_semantic_row, "cross_file_semantic_relation_count"),
             "orphan_relation_count": 0 if orphan_row is None else row_int(orphan_row, "orphan_relation_count"),
         }
 
-    def count_distinct_callers(self, repo_root: str, symbol_name: str) -> int:
+    def count_distinct_callers(self, repo_root: str, symbol_name: str, scope: str = "production") -> int:
         """심볼을 참조하는 서로 다른 파일 수를 반환한다."""
+        scope_clause = _scope_sql_clause(scope=scope, column="relative_path")
         with connect(self._db_path) as conn:
             row = conn.execute(
-                """
+                f"""
                 SELECT COUNT(DISTINCT (repo_root || '::' || relative_path)) AS caller_file_count
                 FROM lsp_call_relations
                 WHERE (
@@ -737,6 +1144,7 @@ class LspToolDataRepository:
                         )
                     )
                   AND to_symbol = :to_symbol
+                  {scope_clause}
                 """,
                 {"repo_root": repo_root, "to_symbol": symbol_name},
             ).fetchone()

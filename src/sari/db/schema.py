@@ -238,6 +238,24 @@ CREATE TABLE IF NOT EXISTS lsp_call_relations (
     PRIMARY KEY(repo_root, relative_path, content_hash, from_symbol, to_symbol, line)
 );
 
+CREATE TABLE IF NOT EXISTS python_semantic_call_edges (
+    repo_id TEXT NOT NULL DEFAULT '',
+    repo_root TEXT NOT NULL CHECK (repo_root <> ''),
+    scope_repo_root TEXT NOT NULL DEFAULT '',
+    relative_path TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    from_symbol TEXT NOT NULL,
+    to_symbol TEXT NOT NULL,
+    line INTEGER NOT NULL,
+    evidence_type TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(repo_root, relative_path, content_hash, from_symbol, to_symbol, line, evidence_type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_python_semantic_call_edges_target
+ON python_semantic_call_edges(repo_root, to_symbol, relative_path, line);
+
 CREATE TABLE IF NOT EXISTS tool_data_l3_symbols (
     workspace_id TEXT NOT NULL,
     repo_root TEXT NOT NULL CHECK (repo_root <> ''),

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from sari.core.models import CallerEdgeDTO, LspExtractPersistDTO
 from sari.db.repositories.lsp_tool_data_repository import LspToolDataRepository
 from sari.db.schema import connect, init_schema
 
@@ -146,6 +147,378 @@ def test_lsp_tool_data_repository_count_distinct_callers_counts_per_repo_path_pa
     )
 
     assert repo.count_distinct_callers(repo_root=scope_root, symbol_name="Common.target") == 2
+
+
+def test_lsp_tool_data_repository_find_callers_defaults_to_production_scope(tmp_path: Path) -> None:
+    """기본 callers 조회는 테스트 경로 relation을 제외해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = LspToolDataRepository(db_path)
+
+    repo_root = "/workspace"
+    repo.replace_relations(
+        repo_root=repo_root,
+        relative_path="src/auth.py",
+        content_hash="hp",
+        relations=[{"from_symbol": "AuthController.login", "to_symbol": "AuthService.login", "line": 10}],
+        created_at="2026-03-20T00:00:00+00:00",
+    )
+    repo.replace_relations(
+        repo_root=repo_root,
+        relative_path="tests/test_auth.py",
+        content_hash="ht",
+        relations=[{"from_symbol": "TestAuth.login", "to_symbol": "AuthService.login", "line": 20}],
+        created_at="2026-03-20T00:00:00+00:00",
+    )
+
+    prod_rows = repo.find_callers(repo_root=repo_root, symbol_name="AuthService.login", limit=20)
+    all_rows = repo.find_callers(repo_root=repo_root, symbol_name="AuthService.login", limit=20, scope="all")
+
+    assert len(prod_rows) == 1
+    assert prod_rows[0].relative_path == "src/auth.py"
+    assert len(all_rows) == 2
+
+
+def test_lsp_tool_data_repository_resolves_symbol_key_to_canonical_name(tmp_path: Path) -> None:
+    """symbol_key 입력은 graph 조회 전에 canonical 심볼 이름으로 해석돼야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = LspToolDataRepository(db_path)
+
+    repo_root = "/workspace"
+    repo.replace_symbols(
+        repo_root=repo_root,
+        relative_path="src/auth.py",
+        content_hash="h1",
+        symbols=[
+            {
+                "name": "AuthService.login",
+                "kind": "Function",
+                "line": 10,
+                "end_line": 12,
+                "symbol_key": "src/auth.py::AuthService.login@10",
+            }
+        ],
+        created_at="2026-03-20T00:00:00+00:00",
+    )
+
+    resolved = repo.resolve_symbol_name(
+        repo_root=repo_root,
+        symbol_ref="src/auth.py::AuthService.login@10",
+    )
+
+    assert resolved == "AuthService.login"
+
+
+def test_lsp_tool_data_repository_call_graph_health_includes_scope_breakdown(tmp_path: Path) -> None:
+    """health는 production/test 분리 지표를 함께 제공해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = LspToolDataRepository(db_path)
+
+    repo_root = "/workspace"
+    repo.replace_symbols(
+        repo_root=repo_root,
+        relative_path="src/auth.py",
+        content_hash="hp",
+        symbols=[{"name": "AuthService.login", "kind": "Function", "line": 10, "end_line": 12}],
+        created_at="2026-03-20T00:00:00+00:00",
+    )
+    repo.replace_symbols(
+        repo_root=repo_root,
+        relative_path="tests/test_auth.py",
+        content_hash="ht",
+        symbols=[{"name": "TestAuth.login", "kind": "Function", "line": 20, "end_line": 22}],
+        created_at="2026-03-20T00:00:00+00:00",
+    )
+    repo.replace_relations(
+        repo_root=repo_root,
+        relative_path="src/auth.py",
+        content_hash="hp",
+        relations=[{"from_symbol": "AuthController.login", "to_symbol": "AuthService.login", "line": 15}],
+        created_at="2026-03-20T00:00:00+00:00",
+    )
+    repo.replace_relations(
+        repo_root=repo_root,
+        relative_path="tests/test_auth.py",
+        content_hash="ht",
+        relations=[{"from_symbol": "TestAuth.login", "to_symbol": "AuthService.login", "line": 25}],
+        created_at="2026-03-20T00:00:00+00:00",
+    )
+    repo.replace_python_semantic_call_edges(
+        repo_root=repo_root,
+        relative_path="src/http_routes.py",
+        content_hash="hs",
+        edges=[
+            CallerEdgeDTO(
+                repo=repo_root,
+                relative_path="src/http_routes.py",
+                from_symbol="build_http_routes",
+                to_symbol="status_endpoint",
+                line=11,
+                content_hash="hs",
+                confidence=0.9,
+                evidence_type="python_route_registration",
+                scope="production",
+            )
+        ],
+        created_at="2026-03-20T00:00:00+00:00",
+    )
+
+    health = repo.get_repo_call_graph_health(repo_root=repo_root, scope="all")
+
+    assert health["symbol_count"] == 2
+    assert health["relation_count"] == 2
+    assert health["production_symbol_count"] == 1
+    assert health["production_relation_count"] == 1
+    assert health["test_symbol_count"] == 1
+    assert health["test_relation_count"] == 1
+    assert health["semantic_relation_count"] == 1
+    assert health["cross_file_semantic_relation_count"] == 0
+
+
+def test_lsp_tool_data_repository_replace_file_data_many_persists_python_semantic_edges(tmp_path: Path) -> None:
+    """배치 LSP 적재 시 content_text가 있으면 Python semantic caller edge도 함께 저장돼야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = LspToolDataRepository(db_path)
+
+    repo_root = "/workspace"
+    repo.replace_file_data_many(
+        [
+            LspExtractPersistDTO(
+                repo_root=repo_root,
+                relative_path="http/routes.py",
+                content_hash="h1",
+                symbols=[],
+                relations=[],
+                created_at="2026-03-20T00:00:00+00:00",
+                content_text=(
+                    "from starlette.routing import Route\n"
+                    "from http.meta import status_endpoint\n\n"
+                    "def build_http_routes():\n"
+                    "    return [Route('/status', status_endpoint)]\n"
+                ),
+            )
+        ]
+    )
+
+    callers = repo.find_python_semantic_callers(repo_root=repo_root, symbol_name="status_endpoint", limit=20)
+
+    assert len(callers) == 1
+    assert callers[0].from_symbol == "build_http_routes"
+    assert callers[0].evidence_type == "python_route_registration"
+
+
+def test_lsp_tool_data_repository_replace_file_data_many_persists_include_router_cross_file_edges(tmp_path: Path) -> None:
+    """배치 LSP 적재는 include_router cross-file semantic edge도 함께 저장해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = LspToolDataRepository(db_path)
+
+    repo_root = "/workspace"
+    repo.replace_file_data_many(
+        [
+            LspExtractPersistDTO(
+                repo_root=repo_root,
+                relative_path="http/api.py",
+                content_hash="h1",
+                symbols=[],
+                relations=[],
+                created_at="2026-03-20T00:00:00+00:00",
+                content_text=(
+                    "class Router:\n"
+                    "    def get(self, path):\n"
+                    "        def decorator(fn):\n"
+                    "            return fn\n"
+                    "        return decorator\n\n"
+                    "router = Router()\n\n"
+                    "@router.get('/status')\n"
+                    "async def status_endpoint(request):\n"
+                    "    return {'ok': True}\n"
+                ),
+            ),
+            LspExtractPersistDTO(
+                repo_root=repo_root,
+                relative_path="http/app.py",
+                content_hash="h2",
+                symbols=[],
+                relations=[],
+                created_at="2026-03-20T00:00:00+00:00",
+                content_text=(
+                    "from http.api import router as api_router\n\n"
+                    "class App:\n"
+                    "    def include_router(self, router):\n"
+                    "        return router\n\n"
+                    "def mount_routes(app):\n"
+                    "    app.include_router(api_router)\n"
+                ),
+            ),
+        ]
+    )
+
+    callers = repo.find_python_semantic_callers(repo_root=repo_root, symbol_name="status_endpoint", limit=20)
+
+    assert any(caller.from_symbol == "mount_routes" for caller in callers)
+    assert any(caller.evidence_type == "python_include_router" for caller in callers)
+    health = repo.get_repo_call_graph_health(repo_root=repo_root, scope="all")
+    assert health["cross_file_semantic_relation_count"] == 1
+
+
+def test_lsp_tool_data_repository_partial_reindex_clears_stale_include_router_edges(tmp_path: Path) -> None:
+    """부분 재인덱싱 뒤에는 이전 include_router cross-file edge가 stale 상태로 남으면 안 된다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = LspToolDataRepository(db_path)
+
+    repo_root = "/workspace"
+    repo.replace_file_data_many(
+        [
+            LspExtractPersistDTO(
+                repo_root=repo_root,
+                relative_path="http/api.py",
+                content_hash="h1",
+                symbols=[],
+                relations=[],
+                created_at="2026-03-20T00:00:00+00:00",
+                content_text=(
+                    "class Router:\n"
+                    "    def get(self, path):\n"
+                    "        def decorator(fn):\n"
+                    "            return fn\n"
+                    "        return decorator\n\n"
+                    "router = Router()\n\n"
+                    "@router.get('/status')\n"
+                    "async def status_endpoint(request):\n"
+                    "    return {'ok': True}\n"
+                ),
+            ),
+            LspExtractPersistDTO(
+                repo_root=repo_root,
+                relative_path="http/app.py",
+                content_hash="h2",
+                symbols=[],
+                relations=[],
+                created_at="2026-03-20T00:00:00+00:00",
+                content_text=(
+                    "from http.api import router as api_router\n\n"
+                    "class App:\n"
+                    "    def include_router(self, router):\n"
+                    "        return router\n\n"
+                    "def mount_routes(app):\n"
+                    "    app.include_router(api_router)\n"
+                ),
+            ),
+        ]
+    )
+
+    repo.replace_file_data_many(
+        [
+            LspExtractPersistDTO(
+                repo_root=repo_root,
+                relative_path="http/api.py",
+                content_hash="h3",
+                symbols=[],
+                relations=[],
+                created_at="2026-03-20T00:10:00+00:00",
+                content_text=(
+                    "class Router:\n"
+                    "    def get(self, path):\n"
+                    "        def decorator(fn):\n"
+                    "            return fn\n"
+                    "        return decorator\n\n"
+                    "router = Router()\n"
+                ),
+            )
+        ]
+    )
+
+    callers = repo.find_python_semantic_callers(repo_root=repo_root, symbol_name="status_endpoint", limit=20, scope="all")
+
+    assert all(caller.from_symbol != "mount_routes" for caller in callers)
+    assert all(caller.evidence_type != "python_include_router" for caller in callers)
+
+
+def test_lsp_tool_data_repository_replace_file_data_many_keeps_include_router_edges_per_repo_root(tmp_path: Path) -> None:
+    """서로 다른 repo_root가 한 배치에 섞여도 cross-file include_router edge가 서로 섞이면 안 된다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = LspToolDataRepository(db_path)
+
+    repo.replace_file_data_many(
+        [
+            LspExtractPersistDTO(
+                repo_root="/workspace/a",
+                relative_path="http/api.py",
+                content_hash="a1",
+                symbols=[],
+                relations=[],
+                created_at="2026-03-20T00:00:00+00:00",
+                content_text=(
+                    "class Router:\n"
+                    "    def get(self, path):\n"
+                    "        def decorator(fn):\n"
+                    "            return fn\n"
+                    "        return decorator\n\n"
+                    "router = Router()\n\n"
+                    "@router.get('/status')\n"
+                    "async def status_endpoint(request):\n"
+                    "    return {'ok': True}\n"
+                ),
+            ),
+            LspExtractPersistDTO(
+                repo_root="/workspace/a",
+                relative_path="http/app.py",
+                content_hash="a2",
+                symbols=[],
+                relations=[],
+                created_at="2026-03-20T00:00:00+00:00",
+                content_text=(
+                    "from http.api import router as api_router\n\n"
+                    "def mount_routes(app):\n"
+                    "    app.include_router(api_router)\n"
+                ),
+            ),
+            LspExtractPersistDTO(
+                repo_root="/workspace/b",
+                relative_path="http/api.py",
+                content_hash="b1",
+                symbols=[],
+                relations=[],
+                created_at="2026-03-20T00:00:00+00:00",
+                content_text=(
+                    "class Router:\n"
+                    "    def get(self, path):\n"
+                    "        def decorator(fn):\n"
+                    "            return fn\n"
+                    "        return decorator\n\n"
+                    "router = Router()\n\n"
+                    "@router.get('/health')\n"
+                    "async def health_endpoint(request):\n"
+                    "    return {'ok': True}\n"
+                ),
+            ),
+            LspExtractPersistDTO(
+                repo_root="/workspace/b",
+                relative_path="http/app.py",
+                content_hash="b2",
+                symbols=[],
+                relations=[],
+                created_at="2026-03-20T00:00:00+00:00",
+                content_text=(
+                    "from http.api import router as api_router\n\n"
+                    "def mount_routes(app):\n"
+                    "    app.include_router(api_router)\n"
+                ),
+            ),
+        ]
+    )
+
+    callers_a = repo.find_python_semantic_callers(repo_root="/workspace/a", symbol_name="status_endpoint", limit=20, scope="all")
+    callers_b = repo.find_python_semantic_callers(repo_root="/workspace/b", symbol_name="status_endpoint", limit=20, scope="all")
+
+    assert any(caller.from_symbol == "mount_routes" and caller.evidence_type == "python_include_router" for caller in callers_a)
+    assert callers_b == []
 
 
 def test_lsp_tool_data_repository_search_symbols_dedupes_same_absolute_file_across_repo_roots(tmp_path: Path) -> None:
