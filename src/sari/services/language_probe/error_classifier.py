@@ -176,6 +176,9 @@ def extract_missing_dependency(message: str) -> str | None:
     if normalized_message == "":
         return None
     lowered = normalized_message.lower()
+    python_provider = os.environ.get("SARI_PYTHON_LSP_PROVIDER", "").strip().lower()
+    if python_provider == "pyrefly" and "pyrefly" in lowered:
+        return "pyrefly"
     for rule in policy["missing_dependency_rules"]:
         if any(token in lowered for token in rule["tokens"]):
             return rule["dependency"]

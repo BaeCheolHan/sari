@@ -40,3 +40,12 @@ def test_classifier_allows_policy_override_from_env(tmp_path, monkeypatch) -> No
     assert classifier.extract_missing_dependency("contains mydep-token here") == "mydep"
     assert classifier.extract_missing_dependency("contains my-binary-missing here") == "server_binary"
     classifier._load_error_policy.cache_clear()
+
+
+def test_classifier_extracts_pyrefly_dependency_when_provider_is_pyrefly(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("SARI_PYTHON_LSP_PROVIDER", "pyrefly")
+    classifier._load_error_policy.cache_clear()
+
+    assert classifier.extract_missing_dependency("No such file or directory: pyrefly") == "pyrefly"
+
+    classifier._load_error_policy.cache_clear()

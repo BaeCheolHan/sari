@@ -3,6 +3,7 @@ Configuration objects for language servers
 """
 
 import fnmatch
+import os
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import Enum
@@ -247,6 +248,11 @@ class Language(str, Enum):
     def get_ls_class(self) -> type["SolidLanguageServer"]:
         match self:
             case self.PYTHON:
+                provider = os.environ.get("SARI_PYTHON_LSP_PROVIDER", "").strip().lower()
+                if provider == "pyrefly":
+                    from solidlsp.language_servers.pyrefly_server import PyreflyServer
+
+                    return PyreflyServer
                 from solidlsp.language_servers.pyright_server import PyrightServer
 
                 return PyrightServer
