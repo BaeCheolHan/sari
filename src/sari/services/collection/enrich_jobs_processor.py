@@ -268,6 +268,7 @@ class EnrichJobsProcessor:
                         symbols=extraction.symbols,
                         relations=extraction.relations,
                         created_at=now_iso,
+                        content_text=content_text,
                     )
                 )
                 buffers.readiness_updates.append(

@@ -37,12 +37,48 @@ class ToolReadinessRepository:
                     list_files_ready = excluded.list_files_ready,
                     read_file_ready = excluded.read_file_ready,
                     search_symbol_ready = excluded.search_symbol_ready,
-                    get_callers_ready = excluded.get_callers_ready,
+                    get_callers_ready = CASE
+                        WHEN tool_readiness_state.content_hash = excluded.content_hash
+                         AND tool_readiness_state.last_reason = 'ok'
+                         AND tool_readiness_state.get_callers_ready = 1
+                         AND excluded.get_callers_ready = 0
+                         AND excluded.tool_ready = 1
+                         AND excluded.last_reason LIKE 'l3_preprocess_%'
+                        THEN tool_readiness_state.get_callers_ready
+                        ELSE excluded.get_callers_ready
+                    END,
                     consistency_ready = excluded.consistency_ready,
                     quality_ready = excluded.quality_ready,
-                    tool_ready = excluded.tool_ready,
-                    last_reason = excluded.last_reason,
-                    updated_at = excluded.updated_at
+                    tool_ready = CASE
+                        WHEN tool_readiness_state.content_hash = excluded.content_hash
+                         AND tool_readiness_state.last_reason = 'ok'
+                         AND tool_readiness_state.get_callers_ready = 1
+                         AND excluded.get_callers_ready = 0
+                         AND excluded.tool_ready = 1
+                         AND excluded.last_reason LIKE 'l3_preprocess_%'
+                        THEN tool_readiness_state.tool_ready
+                        ELSE excluded.tool_ready
+                    END,
+                    last_reason = CASE
+                        WHEN tool_readiness_state.content_hash = excluded.content_hash
+                         AND tool_readiness_state.last_reason = 'ok'
+                         AND tool_readiness_state.get_callers_ready = 1
+                         AND excluded.get_callers_ready = 0
+                         AND excluded.tool_ready = 1
+                         AND excluded.last_reason LIKE 'l3_preprocess_%'
+                        THEN tool_readiness_state.last_reason
+                        ELSE excluded.last_reason
+                    END,
+                    updated_at = CASE
+                        WHEN tool_readiness_state.content_hash = excluded.content_hash
+                         AND tool_readiness_state.last_reason = 'ok'
+                         AND tool_readiness_state.get_callers_ready = 1
+                         AND excluded.get_callers_ready = 0
+                         AND excluded.tool_ready = 1
+                         AND excluded.last_reason LIKE 'l3_preprocess_%'
+                        THEN tool_readiness_state.updated_at
+                        ELSE excluded.updated_at
+                    END
                 """,
                 state.to_sql_params(),
             )
@@ -77,12 +113,48 @@ class ToolReadinessRepository:
                         list_files_ready = excluded.list_files_ready,
                         read_file_ready = excluded.read_file_ready,
                         search_symbol_ready = excluded.search_symbol_ready,
-                        get_callers_ready = excluded.get_callers_ready,
+                        get_callers_ready = CASE
+                            WHEN tool_readiness_state.content_hash = excluded.content_hash
+                             AND tool_readiness_state.last_reason = 'ok'
+                             AND tool_readiness_state.get_callers_ready = 1
+                             AND excluded.get_callers_ready = 0
+                             AND excluded.tool_ready = 1
+                             AND excluded.last_reason LIKE 'l3_preprocess_%'
+                            THEN tool_readiness_state.get_callers_ready
+                            ELSE excluded.get_callers_ready
+                        END,
                         consistency_ready = excluded.consistency_ready,
                         quality_ready = excluded.quality_ready,
-                        tool_ready = excluded.tool_ready,
-                        last_reason = excluded.last_reason,
-                        updated_at = excluded.updated_at
+                        tool_ready = CASE
+                            WHEN tool_readiness_state.content_hash = excluded.content_hash
+                             AND tool_readiness_state.last_reason = 'ok'
+                             AND tool_readiness_state.get_callers_ready = 1
+                             AND excluded.get_callers_ready = 0
+                             AND excluded.tool_ready = 1
+                             AND excluded.last_reason LIKE 'l3_preprocess_%'
+                            THEN tool_readiness_state.tool_ready
+                            ELSE excluded.tool_ready
+                        END,
+                        last_reason = CASE
+                            WHEN tool_readiness_state.content_hash = excluded.content_hash
+                             AND tool_readiness_state.last_reason = 'ok'
+                             AND tool_readiness_state.get_callers_ready = 1
+                             AND excluded.get_callers_ready = 0
+                             AND excluded.tool_ready = 1
+                             AND excluded.last_reason LIKE 'l3_preprocess_%'
+                            THEN tool_readiness_state.last_reason
+                            ELSE excluded.last_reason
+                        END,
+                        updated_at = CASE
+                            WHEN tool_readiness_state.content_hash = excluded.content_hash
+                             AND tool_readiness_state.last_reason = 'ok'
+                             AND tool_readiness_state.get_callers_ready = 1
+                             AND excluded.get_callers_ready = 0
+                             AND excluded.tool_ready = 1
+                             AND excluded.last_reason LIKE 'l3_preprocess_%'
+                            THEN tool_readiness_state.updated_at
+                            ELSE excluded.updated_at
+                        END
                     """,
                     state.to_sql_params(),
                 )

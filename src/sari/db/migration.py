@@ -41,6 +41,7 @@ def ensure_migrated(db_path: Path) -> None:
         _fallback_upgrade_0012(conn)
         _fallback_upgrade_0013(conn)
         _fallback_upgrade_0014(conn)
+        _fallback_upgrade_0015(conn)
         conn.commit()
 
 
@@ -128,6 +129,7 @@ def _fallback_upgrade_sqlite(db_path: Path) -> None:
         _fallback_upgrade_0012(conn)
         _fallback_upgrade_0013(conn)
         _fallback_upgrade_0014(conn)
+        _fallback_upgrade_0015(conn)
         conn.commit()
 
 
@@ -329,6 +331,34 @@ def _fallback_upgrade_0014(conn: sqlite3.Connection) -> None:
         SET updated_at = COALESCE(updated_at, last_heartbeat_at),
             owner_generation = COALESCE(owner_generation, 0)
         WHERE singleton_key = 'default'
+        """
+    )
+
+
+def _fallback_upgrade_0015(conn: sqlite3.Connection) -> None:
+    """Python semantic caller edge 테이블을 보장한다."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS python_semantic_call_edges (
+            repo_id TEXT NOT NULL DEFAULT '',
+            repo_root TEXT NOT NULL CHECK (repo_root <> ''),
+            scope_repo_root TEXT NOT NULL DEFAULT '',
+            relative_path TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            from_symbol TEXT NOT NULL,
+            to_symbol TEXT NOT NULL,
+            line INTEGER NOT NULL,
+            evidence_type TEXT NOT NULL,
+            confidence REAL NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(repo_root, relative_path, content_hash, from_symbol, to_symbol, line, evidence_type)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_python_semantic_call_edges_target
+        ON python_semantic_call_edges(repo_root, to_symbol, relative_path, line)
         """
     )
 

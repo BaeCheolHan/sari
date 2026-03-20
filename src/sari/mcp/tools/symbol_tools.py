@@ -76,6 +76,8 @@ class GetCallersTool:
 
         repo = str(arguments["repo"])
         rows = self._lsp_repo.find_callers(repo_root=repo, symbol_name=symbol_name, limit=limit_raw)
+        if len(rows) == 0:
+            rows = self._lsp_repo.find_python_semantic_callers(repo_root=repo, symbol_name=symbol_name, limit=limit_raw)
         return pack1_success(
             {
                 "items": rows_to_items(rows),

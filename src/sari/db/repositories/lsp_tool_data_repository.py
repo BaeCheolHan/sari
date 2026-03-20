@@ -7,6 +7,7 @@ from pathlib import Path
 from sari.core.models import CallerEdgeDTO, LspExtractPersistDTO, SymbolSearchItemDTO
 from sari.db.row_mapper import row_int, row_optional_str_normalized, row_str
 from sari.db.schema import connect
+from sari.semantic.python_call_edges import extract_python_include_router_edges, extract_python_semantic_call_edges
 
 
 def _optional_str(value: object) -> str | None:
@@ -134,84 +135,174 @@ class LspToolDataRepository:
             conn = connect(self._db_path)
         if conn is None:
             raise RuntimeError("conn must not be None when owned_conn is False")
+        sources_by_repo_path: dict[str, dict[str, str]] = {}
+        for item in items:
+            if item.content_text is None or not item.relative_path.endswith(".py"):
+                continue
+            sources_by_repo_path.setdefault(item.repo_root, {})[item.relative_path] = item.content_text
+        include_router_edges_by_repo_path: dict[tuple[str, str], list[CallerEdgeDTO]] = {}
+        for batch_repo_root, sources_by_path in sources_by_repo_path.items():
+            for edge in extract_python_include_router_edges(
+                repo_root=batch_repo_root,
+                sources_by_path=sources_by_path,
+                scope="all",
+            ):
+                include_router_edges_by_repo_path.setdefault((batch_repo_root, edge.relative_path), []).append(edge)
         try:
+            cleared_cross_file_repo_roots: set[str] = set()
             for item in items:
-                conn.execute(
-                    """
-                    DELETE FROM lsp_symbols
-                    WHERE repo_root = :repo_root
-                      AND relative_path = :relative_path
-                    """,
-                    {"repo_root": item.repo_root, "relative_path": item.relative_path},
-                )
-                symbol_rows: list[dict[str, object]] = []
-                for symbol in self._dedupe_symbols(item.symbols):
-                    symbol_rows.append(
-                        {
-                            "repo_id": item.repo_id,
-                            "repo_root": item.repo_root,
-                            "relative_path": item.relative_path,
-                            "content_hash": item.content_hash,
-                            "name": str(symbol.get("name", "")),
-                            "kind": str(symbol.get("kind", "")),
-                            "line": int(symbol.get("line", 0)),
-                            "end_line": int(symbol.get("end_line", 0)),
-                            "symbol_key": _optional_str(symbol.get("symbol_key")),
-                            "parent_symbol_key": _optional_str(symbol.get("parent_symbol_key")),
-                            "depth": int(symbol.get("depth", 0)),
-                            "container_name": _optional_str(symbol.get("container_name")),
-                            "created_at": item.created_at,
-                        }
-                    )
-                if len(symbol_rows) > 0:
-                    conn.executemany(
-                        """
-                        INSERT INTO lsp_symbols(
-                            repo_id, repo_root, relative_path, content_hash, name, kind, line, end_line,
-                            symbol_key, parent_symbol_key, depth, container_name, created_at
-                        )
-                        VALUES(
-                            :repo_id, :repo_root, :relative_path, :content_hash, :name, :kind, :line, :end_line,
-                            :symbol_key, :parent_symbol_key, :depth, :container_name, :created_at
-                        )
-                        """,
-                        symbol_rows,
+                preserve_same_hash_relations = False
+                if bool(getattr(item, "preserve_relations", False)):
+                    existing_hashes = [
+                        str(row["content_hash"])
+                        for row in conn.execute(
+                            """
+                            SELECT DISTINCT content_hash
+                            FROM lsp_call_relations
+                            WHERE repo_root = :repo_root
+                              AND relative_path = :relative_path
+                            """,
+                            {"repo_root": item.repo_root, "relative_path": item.relative_path},
+                        ).fetchall()
+                    ]
+                    preserve_same_hash_relations = (
+                        len(existing_hashes) > 0
+                        and all(existing_hash == item.content_hash for existing_hash in existing_hashes)
                     )
 
+                if not preserve_same_hash_relations:
+                    conn.execute(
+                        """
+                        DELETE FROM lsp_symbols
+                        WHERE repo_root = :repo_root
+                          AND relative_path = :relative_path
+                        """,
+                        {"repo_root": item.repo_root, "relative_path": item.relative_path},
+                    )
+                    symbol_rows: list[dict[str, object]] = []
+                    for symbol in self._dedupe_symbols(item.symbols):
+                        symbol_rows.append(
+                            {
+                                "repo_id": item.repo_id,
+                                "repo_root": item.repo_root,
+                                "relative_path": item.relative_path,
+                                "content_hash": item.content_hash,
+                                "name": str(symbol.get("name", "")),
+                                "kind": str(symbol.get("kind", "")),
+                                "line": int(symbol.get("line", 0)),
+                                "end_line": int(symbol.get("end_line", 0)),
+                                "symbol_key": _optional_str(symbol.get("symbol_key")),
+                                "parent_symbol_key": _optional_str(symbol.get("parent_symbol_key")),
+                                "depth": int(symbol.get("depth", 0)),
+                                "container_name": _optional_str(symbol.get("container_name")),
+                                "created_at": item.created_at,
+                            }
+                        )
+                    if len(symbol_rows) > 0:
+                        conn.executemany(
+                            """
+                            INSERT INTO lsp_symbols(
+                                repo_id, repo_root, relative_path, content_hash, name, kind, line, end_line,
+                                symbol_key, parent_symbol_key, depth, container_name, created_at
+                            )
+                            VALUES(
+                                :repo_id, :repo_root, :relative_path, :content_hash, :name, :kind, :line, :end_line,
+                                :symbol_key, :parent_symbol_key, :depth, :container_name, :created_at
+                            )
+                            """,
+                            symbol_rows,
+                        )
+
+                    conn.execute(
+                        """
+                        DELETE FROM lsp_call_relations
+                        WHERE repo_root = :repo_root
+                          AND relative_path = :relative_path
+                        """,
+                        {"repo_root": item.repo_root, "relative_path": item.relative_path},
+                    )
+                    relation_rows: list[dict[str, object]] = []
+                    for relation in self._dedupe_relations(item.relations):
+                        relation_rows.append(
+                            {
+                                "repo_id": item.repo_id,
+                                "repo_root": item.repo_root,
+                                "relative_path": item.relative_path,
+                                "content_hash": item.content_hash,
+                                "from_symbol": str(relation.get("from_symbol", "")),
+                                "to_symbol": str(relation.get("to_symbol", "")),
+                                "line": int(relation.get("line", 0)),
+                                "created_at": item.created_at,
+                            }
+                        )
+                    if len(relation_rows) > 0:
+                        conn.executemany(
+                            """
+                            INSERT INTO lsp_call_relations(
+                                repo_id, repo_root, relative_path, content_hash, from_symbol, to_symbol, line, created_at
+                            )
+                            VALUES(
+                                :repo_id, :repo_root, :relative_path, :content_hash, :from_symbol, :to_symbol, :line, :created_at
+                            )
+                            """,
+                            relation_rows,
+                        )
                 conn.execute(
                     """
-                    DELETE FROM lsp_call_relations
+                    DELETE FROM python_semantic_call_edges
                     WHERE repo_root = :repo_root
                       AND relative_path = :relative_path
                     """,
                     {"repo_root": item.repo_root, "relative_path": item.relative_path},
                 )
-                relation_rows: list[dict[str, object]] = []
-                for relation in self._dedupe_relations(item.relations):
-                    relation_rows.append(
-                        {
-                            "repo_id": item.repo_id,
-                            "repo_root": item.repo_root,
-                            "relative_path": item.relative_path,
-                            "content_hash": item.content_hash,
-                            "from_symbol": str(relation.get("from_symbol", "")),
-                            "to_symbol": str(relation.get("to_symbol", "")),
-                            "line": int(relation.get("line", 0)),
-                            "created_at": item.created_at,
-                        }
-                    )
-                if len(relation_rows) > 0:
-                    conn.executemany(
+                if item.repo_root not in cleared_cross_file_repo_roots:
+                    conn.execute(
                         """
-                        INSERT INTO lsp_call_relations(
-                            repo_id, repo_root, relative_path, content_hash, from_symbol, to_symbol, line, created_at
-                        )
-                        VALUES(
-                            :repo_id, :repo_root, :relative_path, :content_hash, :from_symbol, :to_symbol, :line, :created_at
-                        )
+                        DELETE FROM python_semantic_call_edges
+                        WHERE repo_root = :repo_root
+                          AND evidence_type = 'python_include_router'
                         """,
-                        relation_rows,
+                        {"repo_root": item.repo_root},
                     )
+                    cleared_cross_file_repo_roots.add(item.repo_root)
+                if item.content_text is not None and item.relative_path.endswith(".py"):
+                    semantic_edges = extract_python_semantic_call_edges(
+                        repo_root=item.repo_root,
+                        relative_path=item.relative_path,
+                        content_text=item.content_text,
+                    )
+                    semantic_edges.extend(include_router_edges_by_repo_path.get((item.repo_root, item.relative_path), ()))
+                    semantic_rows: list[dict[str, object]] = []
+                    for edge in semantic_edges:
+                        semantic_rows.append(
+                            {
+                                "repo_id": item.repo_id,
+                                "repo_root": item.repo_root,
+                                "scope_repo_root": item.scope_repo_root or item.repo_root,
+                                "relative_path": item.relative_path,
+                                "content_hash": item.content_hash,
+                                "from_symbol": edge.from_symbol,
+                                "to_symbol": edge.to_symbol,
+                                "line": edge.line,
+                                "evidence_type": edge.evidence_type or "python_semantic",
+                                "confidence": float(edge.confidence if edge.confidence is not None else 0.0),
+                                "created_at": item.created_at,
+                            }
+                        )
+                    if len(semantic_rows) > 0:
+                        conn.executemany(
+                            """
+                            INSERT INTO python_semantic_call_edges(
+                                repo_id, repo_root, scope_repo_root, relative_path, content_hash,
+                                from_symbol, to_symbol, line, evidence_type, confidence, created_at
+                            )
+                            VALUES(
+                                :repo_id, :repo_root, :scope_repo_root, :relative_path, :content_hash,
+                                :from_symbol, :to_symbol, :line, :evidence_type, :confidence, :created_at
+                            )
+                            """,
+                            semantic_rows,
+                        )
             if owned_conn:
                 conn.commit()
         finally:
@@ -388,6 +479,42 @@ class LspToolDataRepository:
                 line=row_int(row, "line"),
                 content_hash=row_str(row, "content_hash"),
             )
+            for row in rows
+        ]
+
+    def find_python_semantic_callers(self, repo_root: str, symbol_name: str, limit: int) -> list[dict[str, object]]:
+        """persisted python semantic edge를 caller 결과로 반환한다."""
+        with connect(self._db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT repo_root, relative_path, from_symbol, to_symbol, line, content_hash, evidence_type, confidence
+                FROM python_semantic_call_edges
+                WHERE (
+                        repo_root = :repo_root
+                        OR repo_root IN (
+                            SELECT DISTINCT repo_root
+                            FROM collected_files_l1
+                            WHERE scope_repo_root = :repo_root
+                              AND is_deleted = 0
+                        )
+                    )
+                  AND to_symbol = :to_symbol
+                ORDER BY confidence DESC, relative_path ASC, line ASC
+                LIMIT :limit
+                """,
+                {"repo_root": repo_root, "to_symbol": symbol_name, "limit": limit},
+            ).fetchall()
+        return [
+            {
+                "repo": row_str(row, "repo_root"),
+                "relative_path": row_str(row, "relative_path"),
+                "from_symbol": row_str(row, "from_symbol"),
+                "to_symbol": row_str(row, "to_symbol"),
+                "line": row_int(row, "line"),
+                "content_hash": row_str(row, "content_hash"),
+                "evidence_type": row_str(row, "evidence_type"),
+                "confidence": float(row["confidence"]),
+            }
             for row in rows
         ]
 

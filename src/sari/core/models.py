@@ -484,6 +484,8 @@ class LspExtractPersistDTO:
     relations: list[dict[str, object]]
     created_at: str
     repo_id: str = ""
+    preserve_relations: bool = False
+    content_text: str | None = None
     scope_repo_root: str | None = None
 @dataclass(frozen=True)
 class FileListItemDTO:
@@ -780,6 +782,8 @@ class SymbolSearchItemDTO:
     parent_symbol_key: str | None = None
     depth: int = 0
     container_name: str | None = None
+    confidence: float | None = None
+    evidence_type: str | None = None
     def to_dict(self) -> dict[str, object]:
         return {
             "repo": self.repo,
@@ -793,6 +797,8 @@ class SymbolSearchItemDTO:
             "parent_symbol_key": self.parent_symbol_key,
             "depth": self.depth,
             "container_name": self.container_name,
+            "confidence": self.confidence,
+            "evidence_type": self.evidence_type,
         }
 @dataclass(frozen=True)
 class CallerEdgeDTO:
@@ -802,6 +808,9 @@ class CallerEdgeDTO:
     to_symbol: str
     line: int
     content_hash: str
+    confidence: float | None = None
+    evidence_type: str | None = None
+    scope: str | None = None
     def to_dict(self) -> dict[str, object]:
         return {
             "repo": self.repo,
@@ -810,6 +819,9 @@ class CallerEdgeDTO:
             "to_symbol": self.to_symbol,
             "line": self.line,
             "content_hash": self.content_hash,
+            "confidence": self.confidence,
+            "evidence_type": self.evidence_type,
+            "scope": self.scope,
         }
 @dataclass(frozen=True)
 class L3ReferenceDataDTO:

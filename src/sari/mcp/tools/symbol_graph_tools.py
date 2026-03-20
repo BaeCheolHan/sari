@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from sari.core.models import ErrorResponseDTO
+from sari.core.models import ErrorResponseDTO, SymbolSearchItemDTO
 from sari.db.repositories.lsp_tool_data_repository import LspToolDataRepository
 from sari.mcp.tools.admin_tools import RepoValidationPort, validate_repo_argument
 from sari.mcp.tools.pack1 import pack1_error
 from sari.mcp.tools.row_mapper import rows_to_items
 from sari.mcp.tools.tool_common import pack1_items_success, resolve_symbol_key
+from sari.semantic.python_protocol_implementations import is_excluded_candidate_path, scan_python_protocol_implementations
 
 
 class ListSymbolsTool:
@@ -84,7 +85,11 @@ class GetImplementationsTool:
         limit_raw = arguments.get("limit", 20)
         if not isinstance(limit_raw, int) or limit_raw <= 0:
             return pack1_error(ErrorResponseDTO(code="ERR_INVALID_LIMIT", message="limit must be positive integer"))
-        rows = self._lsp_repo.find_implementations(repo_root=str(arguments["repo"]), symbol_name=symbol_key, limit=limit_raw)
+        repo_root = str(arguments["repo"])
+        rows = self._lsp_repo.find_implementations(repo_root=repo_root, symbol_name=symbol_key, limit=limit_raw)
+        rows = _filter_implementation_candidates(rows=rows, symbol_key=symbol_key, limit=limit_raw)
+        if len(rows) == 0:
+            rows = scan_python_protocol_implementations(repo_root=repo_root, symbol_name=symbol_key, limit=limit_raw)
         return pack1_items_success(rows_to_items(rows), cache_hit=True, warnings=warnings_payload)
 
 
@@ -110,10 +115,28 @@ class CallGraphTool:
             return pack1_error(ErrorResponseDTO(code="ERR_INVALID_LIMIT", message="limit must be positive integer"))
         repo_root = str(arguments["repo"])
         callers = rows_to_items(self._lsp_repo.find_callers(repo_root=repo_root, symbol_name=symbol_key, limit=limit_raw))
+        if len(callers) == 0:
+            callers = rows_to_items(
+                self._lsp_repo.find_python_semantic_callers(repo_root=repo_root, symbol_name=symbol_key, limit=limit_raw)
+        )
         callees = rows_to_items(self._lsp_repo.find_callees(repo_root=repo_root, symbol_name=symbol_key, limit=limit_raw))
         health = self._lsp_repo.get_repo_call_graph_health(repo_root=repo_root)
         relation_data_ready = int(health.get("relation_count", 0)) > 0
-        if not relation_data_ready:
+        caller_evidence_types = sorted(
+            {
+                str(item.get("evidence_type", "")).strip()
+                for item in callers
+                if str(item.get("evidence_type", "")).strip() != ""
+            }
+        )
+        caller_confidences = [
+            float(item["confidence"])
+            for item in callers
+            if isinstance(item.get("confidence"), (int, float))
+        ]
+        semantic_callers_used = len(caller_evidence_types) > 0
+        effective_relation_data_ready = relation_data_ready or semantic_callers_used
+        if not effective_relation_data_ready:
             warnings_payload.append(
                 {
                     "code": "WARN_CALL_GRAPH_RELATIONS_NOT_READY",
@@ -131,7 +154,10 @@ class CallGraphTool:
                     "callees": callees,
                     "caller_count": len(callers),
                     "callee_count": len(callees),
-                    "relation_data_ready": relation_data_ready,
+                    "relation_data_ready": effective_relation_data_ready,
+                    "semantic_callers_used": semantic_callers_used,
+                    "caller_evidence_types": caller_evidence_types,
+                    "max_caller_confidence": max(caller_confidences) if len(caller_confidences) > 0 else None,
                 }
             ],
             cache_hit=True,
@@ -156,3 +182,17 @@ class CallGraphHealthTool:
         repo_root = str(arguments["repo"])
         health = self._lsp_repo.get_repo_call_graph_health(repo_root=repo_root)
         return pack1_items_success([{"repo": repo_root, **health}], cache_hit=True, warnings=warnings_payload)
+
+
+def _filter_implementation_candidates(
+    *,
+    rows: list[SymbolSearchItemDTO],
+    symbol_key: str,
+    limit: int,
+) -> list[SymbolSearchItemDTO]:
+    filtered = [
+        row
+        for row in rows
+        if row.name != symbol_key and not is_excluded_candidate_path(row.relative_path)
+    ]
+    return filtered[:limit]

@@ -670,10 +670,32 @@ class ToolDataLayerRepository:
                     AND f.repo_root     = s.repo_root
                     AND f.relative_path = s.relative_path
                     AND f.content_hash  = s.content_hash
+                LEFT JOIN tool_readiness_state trs
+                    ON  f.repo_root     = trs.repo_root
+                    AND f.relative_path = trs.relative_path
+                    AND f.content_hash  = trs.content_hash
+                LEFT JOIN (
+                    SELECT repo_root, relative_path, content_hash, COUNT(*) AS relation_count
+                    FROM lsp_call_relations
+                    GROUP BY repo_root, relative_path, content_hash
+                ) rel
+                    ON  f.repo_root     = rel.repo_root
+                    AND f.relative_path = rel.relative_path
+                    AND f.content_hash  = rel.content_hash
                 WHERE f.repo_root = :repo_root
                   AND f.is_deleted = 0
                   AND q.workspace_id IN (:ws1, :ws2)
-                  AND s.workspace_id IS NULL
+                  AND (
+                        s.workspace_id IS NULL
+                        OR (
+                            CAST(COALESCE(json_extract(s.semantics_json, '$.relations_count'), 0) AS INTEGER) > 0
+                            AND (
+                                trs.repo_root IS NULL
+                                OR trs.get_callers_ready = 0
+                                OR COALESCE(rel.relation_count, 0) = 0
+                            )
+                        )
+                  )
                 ORDER BY q.confidence ASC
                 LIMIT :limit
                 """,
@@ -711,10 +733,32 @@ class ToolDataLayerRepository:
                     AND f.repo_root     = s.repo_root
                     AND f.relative_path = s.relative_path
                     AND f.content_hash  = s.content_hash
+                LEFT JOIN tool_readiness_state trs
+                    ON  f.repo_root     = trs.repo_root
+                    AND f.relative_path = trs.relative_path
+                    AND f.content_hash  = trs.content_hash
+                LEFT JOIN (
+                    SELECT repo_root, relative_path, content_hash, COUNT(*) AS relation_count
+                    FROM lsp_call_relations
+                    GROUP BY repo_root, relative_path, content_hash
+                ) rel
+                    ON  f.repo_root     = rel.repo_root
+                    AND f.relative_path = rel.relative_path
+                    AND f.content_hash  = rel.content_hash
                 WHERE f.repo_root = :repo_root
                   AND f.is_deleted = 0
                   AND q.workspace_id IN (:ws1, :ws2)
-                  AND s.workspace_id IS NULL
+                  AND (
+                        s.workspace_id IS NULL
+                        OR (
+                            CAST(COALESCE(json_extract(s.semantics_json, '$.relations_count'), 0) AS INTEGER) > 0
+                            AND (
+                                trs.repo_root IS NULL
+                                OR trs.get_callers_ready = 0
+                                OR COALESCE(rel.relation_count, 0) = 0
+                            )
+                        )
+                  )
                 """,
                 {
                     "repo_root": repo_root,

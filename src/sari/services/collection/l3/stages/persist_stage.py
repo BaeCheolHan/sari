@@ -14,7 +14,7 @@ from sari.core.models import (
 )
 
 from ..l3_job_context import L3JobContext
-from ..l3_treesitter_preprocess_service import L3PreprocessResultDTO
+from ..l3_treesitter_preprocess_service import L3PreprocessDecision, L3PreprocessResultDTO
 
 
 class L3PersistStage:
@@ -164,6 +164,8 @@ class L3PersistStage:
             symbols=preprocess_result.symbols,
             relations=[],
             created_at=now_iso,
+            preserve_relations=preprocess_result.decision is not L3PreprocessDecision.L3_ONLY,
+            content_text=context.content_text,
         )
         context.state_update = EnrichStateUpdateDTO(
             repo_root=repo_root,
@@ -235,6 +237,7 @@ class L3PersistStage:
             symbols=lsp_symbols,
             relations=lsp_relations,
             created_at=now_iso,
+            content_text=context.content_text,
         )
         if retry_zero_relations_pending:
             self.mark_retry_pending_ready(

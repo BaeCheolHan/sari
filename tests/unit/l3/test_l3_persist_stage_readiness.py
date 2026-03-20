@@ -142,3 +142,30 @@ def test_apply_l3_only_success_sets_get_callers_ready_false() -> None:
 
     assert context.readiness_update is not None
     assert context.readiness_update.get_callers_ready is False
+
+
+def test_apply_l3_only_success_skips_lsp_replace_for_supported_language_needs_l5() -> None:
+    stage = L3PersistStage(layer_upsert_builder=_LayerBuilder(), deletion_hold_enabled=lambda: False)
+    context = L3JobContext()
+    preprocess = L3PreprocessResultDTO(
+        symbols=[{"name": "run_stdio_proxy", "kind": "function", "line": 10, "end_line": 20}],
+        degraded=False,
+        decision=L3PreprocessDecision.NEEDS_L5,
+        source="tree_sitter_outline",
+        reason="l3_preprocess_supported_language",
+    )
+
+    stage.apply_l3_only_success(
+        context=context,
+        repo_root="/repo",
+        relative_path="src/a.py",
+        content_hash="h1",
+        preprocess_result=preprocess,
+        admission_decision=None,
+        now_iso="2026-03-03T00:00:00Z",
+    )
+
+    assert context.lsp_update is not None
+    assert context.lsp_update.preserve_relations is True
+    assert context.readiness_update is not None
+    assert context.readiness_update.get_callers_ready is False

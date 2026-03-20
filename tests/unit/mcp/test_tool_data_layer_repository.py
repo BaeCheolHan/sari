@@ -614,3 +614,66 @@ def test_tool_data_layer_repository_load_snapshot_scope_root_uses_effective_work
     assert snapshot["l3"]["symbols"][0]["name"] == "Alpha"
     assert snapshot["l4"]["normalized"]["outline"] == ["Alpha"]
     assert snapshot["l5"][0]["reason_code"] == "L5_REASON_UNRESOLVED_SYMBOL"
+
+
+
+def test_tool_data_layer_repository_lists_broken_l5_ready_state_as_upgrade_candidate(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = ToolDataLayerRepository(db_path)
+    now_iso = "2026-03-16T12:00:00+00:00"
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO collected_files_l1(
+                repo_id, repo_root, relative_path, absolute_path, repo_label,
+                mtime_ns, size_bytes, content_hash, is_deleted, last_seen_at, updated_at, enrich_state
+            ) VALUES(
+                '', '/repo', 'src/a.py', '/repo/src/a.py', 'repo',
+                1, 10, 'h1', 0, :now_iso, :now_iso, 'READY'
+            )
+            """,
+            {"now_iso": now_iso},
+        )
+        conn.execute(
+            """
+            INSERT INTO tool_data_l4_normalized_symbols(
+                workspace_id, repo_root, scope_repo_root, relative_path, content_hash,
+                normalized_json, confidence, ambiguity, coverage, updated_at
+            ) VALUES(
+                'ws-a', '/repo', '/repo', 'src/a.py', 'h1',
+                '{"decision":"needs_l5"}', 0.1, 0.9, 1.0, :now_iso
+            )
+            """,
+            {"now_iso": now_iso},
+        )
+        conn.execute(
+            """
+            INSERT INTO tool_data_l5_semantics(
+                workspace_id, repo_root, scope_repo_root, relative_path, content_hash, reason_code, semantics_json, updated_at
+            ) VALUES(
+                'ws-a', '/repo', '/repo', 'src/a.py', 'h1', 'L5_REASON_GOLDENSET_COVERAGE',
+                '{"source":"lsp","symbols_count":3,"relations_count":2,"zero_relations_retry_pending":false}', :now_iso
+            )
+            """,
+            {"now_iso": now_iso},
+        )
+        conn.execute(
+            """
+            INSERT INTO tool_readiness_state(
+                repo_root, scope_repo_root, relative_path, content_hash,
+                list_files_ready, read_file_ready, search_symbol_ready, get_callers_ready,
+                consistency_ready, quality_ready, tool_ready, last_reason, updated_at
+            ) VALUES(
+                '/repo', '/repo', 'src/a.py', 'h1',
+                1, 1, 1, 0, 1, 1, 1, 'l3_preprocess_supported_language', :now_iso
+            )
+            """,
+            {"now_iso": now_iso},
+        )
+        conn.commit()
+
+    rows = repo.list_l5_upgrade_candidates(workspace_id='ws-a', repo_root='/repo', limit=10)
+
+    assert len(rows) == 1
+    assert rows[0]['relative_path'] == 'src/a.py'

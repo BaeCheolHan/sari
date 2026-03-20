@@ -23,7 +23,7 @@ ForwardOnceFn = Callable[[dict[str, object], str, int, float], dict[str, object]
 ProbeOnceFn = Callable[[str, int, float], None]
 
 FORWARD_METHODS = frozenset({"tools/list", "tools/call"})
-LONG_RUNNING_TOOL_NAMES = frozenset({"scan_once", "rescan", "index_file"})
+LONG_RUNNING_TOOL_NAMES = frozenset({"scan_once", "rescan", "index_file", "get_implementations"})
 LONG_RUNNING_FORWARD_TIMEOUT_SEC = 60.0
 POST_START_RETRY_MAX = 8
 POST_START_RETRY_WAIT_SEC = 0.15

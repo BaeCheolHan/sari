@@ -115,6 +115,18 @@ def test_resolve_forward_timeout_sec_extends_scan_once_tool_calls() -> None:
     assert timeout > 2.0
 
 
+def test_resolve_forward_timeout_sec_extends_get_implementations_tool_calls() -> None:
+    """구조적 Protocol 스캔이 필요한 get_implementations도 확장 timeout을 받아야 한다."""
+    timeout = resolve_forward_timeout_sec(
+        {
+            "method": "tools/call",
+            "params": {"name": "get_implementations"},
+        },
+        default_timeout_sec=2.0,
+    )
+    assert timeout > 2.0
+
+
 def test_resolve_forward_timeout_sec_keeps_default_for_short_tools() -> None:
     """일반 짧은 도구는 기존 기본 timeout을 유지해야 한다."""
     timeout = resolve_forward_timeout_sec(
