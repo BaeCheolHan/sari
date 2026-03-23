@@ -95,10 +95,25 @@ class PyreflyServer(SolidLanguageServer):
 
     @staticmethod
     def _get_initialize_params(repository_absolute_path: str) -> InitializeParams:
+        analysis_mode = os.environ.get("SARI_PYREFLY_ANALYSIS_MODE", "full").strip()
+        indexing_mode = os.environ.get("SARI_PYREFLY_INDEXING_MODE", "incremental").strip()
+
         initialize_params = {  # type: ignore
             "processId": os.getpid(),
             "rootPath": repository_absolute_path,
             "rootUri": pathlib.Path(repository_absolute_path).as_uri(),
+            "initializationOptions": {
+                "python": {
+                    "pyrefly": {
+                        "displayTypeErrors": "force-on",
+                        "analyzer": True,
+                    },
+                    "analysis": {
+                        "mode": analysis_mode,
+                        "indexing": True,
+                    }
+                }
+            },
             "capabilities": {
                 "workspace": {
                     "workspaceEdit": {"documentChanges": True},
@@ -137,6 +152,12 @@ class PyreflyServer(SolidLanguageServer):
         return cast(InitializeParams, initialize_params)
 
     def _start_server(self) -> None:
+        # Register client-side handlers for requests initiated by the server
+        self.server.on_request("client/registerCapability", lambda params: None)
+        self.server.on_request("client/unregisterCapability", lambda params: None)
+        self.server.on_request("workspace/configuration", lambda params: [])
+        self.server.on_request("workspace/workspaceFolders", lambda params: [])
+
         self.server.start()
         init_response = self.server.send.initialize(self._get_initialize_params(self.repository_root_path))
         assert "capabilities" in init_response
