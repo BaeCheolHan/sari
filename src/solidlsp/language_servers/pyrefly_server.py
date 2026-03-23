@@ -155,8 +155,22 @@ class PyreflyServer(SolidLanguageServer):
         # Register client-side handlers for requests initiated by the server
         self.server.on_request("client/registerCapability", lambda params: None)
         self.server.on_request("client/unregisterCapability", lambda params: None)
-        self.server.on_request("workspace/configuration", lambda params: [])
-        self.server.on_request("workspace/workspaceFolders", lambda params: [])
+
+        def handle_config(params):
+            items = params.get("items", [])
+            return [{} for _ in items]
+
+        def handle_folders(params):
+            del params
+            return [
+                {
+                    "uri": pathlib.Path(self.repository_root_path).as_uri(),
+                    "name": os.path.basename(self.repository_root_path),
+                }
+            ]
+
+        self.server.on_request("workspace/configuration", handle_config)
+        self.server.on_request("workspace/workspaceFolders", handle_folders)
 
         self.server.start()
         init_response = self.server.send.initialize(self._get_initialize_params(self.repository_root_path))

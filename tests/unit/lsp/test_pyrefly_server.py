@@ -35,10 +35,10 @@ def test_initialize_params_includes_options(pyrefly_server):
 
     # Then
     assert "initializationOptions" in params, "initializationOptions must be present"
-    assert params["initializationOptions"]["analysis"]["mode"] == "full"
-    assert params["initializationOptions"]["analysis"]["enableCallGraph"] is True
-    assert params["initializationOptions"]["analysis"]["enableGetCallers"] is True
-    assert params["initializationOptions"]["indexing"]["mode"] == "incremental"
+    assert params["initializationOptions"]["python"]["analysis"]["mode"] == "full"
+    assert params["initializationOptions"]["python"]["analysis"]["indexing"] is True
+    assert params["initializationOptions"]["python"]["pyrefly"]["displayTypeErrors"] == "force-on"
+    assert params["initializationOptions"]["python"]["pyrefly"]["analyzer"] is True
 
 def test_start_server_sends_initialize(pyrefly_server):
     """Verify that start_server calls initialize with correct params."""
@@ -55,6 +55,11 @@ def test_start_server_sends_initialize(pyrefly_server):
     call_args = pyrefly_server.server.send.initialize.call_args
     params = call_args[0][0]
     assert params["rootPath"] == "/tmp/repo"
+
+    config_handler = pyrefly_server.server.on_request.call_args_list[2].args[1]
+    folders_handler = pyrefly_server.server.on_request.call_args_list[3].args[1]
+    assert config_handler({"items": [{"section": "python"}, {"section": "python.analysis"}]}) == [{}, {}]
+    assert folders_handler({}) == [{"uri": "file:///tmp/repo", "name": "repo"}]
 
 def test_retry_logic_sleeps_on_mutation_error(pyrefly_server):
     """Verify that request_document_symbols sleeps and retries on specific error."""

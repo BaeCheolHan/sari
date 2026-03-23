@@ -261,9 +261,9 @@ class Language(str, Enum):
 
                 return JediServer
             case self.JAVA:
-                from solidlsp.language_servers.eclipse_jdtls import EclipseJDTLS
+                from solidlsp.language_servers.java_light_server import JavaLightServer
 
-                return EclipseJDTLS
+                return JavaLightServer
             case self.KOTLIN:
                 from solidlsp.language_servers.kotlin_language_server import KotlinLanguageServer
 

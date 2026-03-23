@@ -130,6 +130,8 @@ def test_python_ls_can_switch_to_pyrefly_via_env(monkeypatch) -> None:
 def test_pyrefly_dependency_provider_launches_pyrefly_lsp(monkeypatch, tmp_path: Path) -> None:
     """Pyrefly adapter는 pyrefly lsp 명령으로 서버를 기동해야 한다."""
     monkeypatch.setenv("SARI_PYTHON_LSP_PROVIDER", "pyrefly")
+    monkeypatch.setattr("solidlsp.language_servers.pyrefly_server.ensure_commands_available", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("shutil.which", lambda command, path=None: "/usr/bin/pyrefly" if command == "pyrefly" else None)
     from solidlsp.language_servers.pyrefly_server import PyreflyServer
 
     settings = SolidLSPSettings(solidlsp_dir=str(tmp_path / ".solidlsp-global"))
@@ -145,6 +147,8 @@ def test_pyrefly_dependency_provider_launches_pyrefly_lsp(monkeypatch, tmp_path:
 def test_pyrefly_dependency_provider_supports_indexing_mode_env(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("SARI_PYTHON_LSP_PROVIDER", "pyrefly")
     monkeypatch.setenv("SARI_PYREFLY_INDEXING_MODE", "lazy-blocking")
+    monkeypatch.setattr("solidlsp.language_servers.pyrefly_server.ensure_commands_available", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("shutil.which", lambda command, path=None: "/usr/bin/pyrefly" if command == "pyrefly" else None)
     from solidlsp.language_servers.pyrefly_server import PyreflyServer
 
     settings = SolidLSPSettings(solidlsp_dir=str(tmp_path / ".solidlsp-global"))
@@ -200,4 +204,3 @@ def test_pyrefly_references_retry_once_after_subsequent_mutation(monkeypatch) ->
 
     assert result == ["ok"]
     assert calls["count"] == 2
-
