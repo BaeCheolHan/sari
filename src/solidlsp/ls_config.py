@@ -80,7 +80,7 @@ class Language(str, Enum):
     TYPESCRIPT_VTS = "typescript_vts"
     """Use the typescript language server through the natively bundled vscode extension via https://github.com/yioneko/vtsls"""
     PYTHON_JEDI = "python_jedi"
-    """Jedi language server for Python (instead of pyright, which is the default)"""
+    """Jedi language server for Python."""
     CSHARP_OMNISHARP = "csharp_omnisharp"
     """OmniSharp language server for C# (instead of the default csharp-ls by microsoft).
     Currently has problems with finding references, and generally seems less stable and performant.
@@ -248,14 +248,9 @@ class Language(str, Enum):
     def get_ls_class(self) -> type["SolidLanguageServer"]:
         match self:
             case self.PYTHON:
-                provider = os.environ.get("SARI_PYTHON_LSP_PROVIDER", "").strip().lower()
-                if provider == "pyrefly":
-                    from solidlsp.language_servers.pyrefly_server import PyreflyServer
+                from solidlsp.language_servers.pyrefly_server import PyreflyServer
 
-                    return PyreflyServer
-                from solidlsp.language_servers.pyright_server import PyrightServer
-
-                return PyrightServer
+                return PyreflyServer
             case self.PYTHON_JEDI:
                 from solidlsp.language_servers.jedi_server import JediServer
 

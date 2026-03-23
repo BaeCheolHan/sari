@@ -118,10 +118,8 @@ def test_process_launch_info_debug_summary_redacts_env_values() -> None:
     assert "env_keys=2" in summary
 
 
-def test_python_ls_can_switch_to_pyrefly_via_env(monkeypatch) -> None:
-    """Python adapter는 env로 Pyrefly provider를 선택할 수 있어야 한다."""
-    monkeypatch.setenv("SARI_PYTHON_LSP_PROVIDER", "pyrefly")
-
+def test_python_ls_uses_pyrefly_by_default() -> None:
+    """Python 기본 adapter는 Pyrefly여야 한다."""
     ls_class = Language.PYTHON.get_ls_class()
 
     assert ls_class.__name__ == "PyreflyServer"
@@ -129,7 +127,6 @@ def test_python_ls_can_switch_to_pyrefly_via_env(monkeypatch) -> None:
 
 def test_pyrefly_dependency_provider_launches_pyrefly_lsp(monkeypatch, tmp_path: Path) -> None:
     """Pyrefly adapter는 pyrefly lsp 명령으로 서버를 기동해야 한다."""
-    monkeypatch.setenv("SARI_PYTHON_LSP_PROVIDER", "pyrefly")
     monkeypatch.setattr("solidlsp.language_servers.pyrefly_server.ensure_commands_available", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("shutil.which", lambda command, path=None: "/usr/bin/pyrefly" if command == "pyrefly" else None)
     from solidlsp.language_servers.pyrefly_server import PyreflyServer
@@ -145,7 +142,6 @@ def test_pyrefly_dependency_provider_launches_pyrefly_lsp(monkeypatch, tmp_path:
 
 
 def test_pyrefly_dependency_provider_supports_indexing_mode_env(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("SARI_PYTHON_LSP_PROVIDER", "pyrefly")
     monkeypatch.setenv("SARI_PYREFLY_INDEXING_MODE", "lazy-blocking")
     monkeypatch.setattr("solidlsp.language_servers.pyrefly_server.ensure_commands_available", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("shutil.which", lambda command, path=None: "/usr/bin/pyrefly" if command == "pyrefly" else None)
@@ -161,7 +157,6 @@ def test_pyrefly_dependency_provider_supports_indexing_mode_env(monkeypatch, tmp
 
 
 def test_pyrefly_document_symbols_retries_once_after_subsequent_mutation(monkeypatch) -> None:
-    monkeypatch.setenv("SARI_PYTHON_LSP_PROVIDER", "pyrefly")
     from solidlsp.language_servers.pyrefly_server import PyreflyServer
 
     calls = {"count": 0}
@@ -184,7 +179,6 @@ def test_pyrefly_document_symbols_retries_once_after_subsequent_mutation(monkeyp
 
 
 def test_pyrefly_references_retry_once_after_subsequent_mutation(monkeypatch) -> None:
-    monkeypatch.setenv("SARI_PYTHON_LSP_PROVIDER", "pyrefly")
     from solidlsp.language_servers.pyrefly_server import PyreflyServer
 
     calls = {"count": 0}
@@ -200,7 +194,41 @@ def test_pyrefly_references_retry_once_after_subsequent_mutation(monkeypatch) ->
     monkeypatch.setattr("time.sleep", lambda *_args, **_kwargs: None)
 
     server = object.__new__(PyreflyServer)
+    server._primed_reference_paths = {"x.py"}
     result = server.request_references("x.py", 1, 1)
 
     assert result == ["ok"]
     assert calls["count"] == 2
+
+
+def test_pyrefly_references_prime_document_symbols_once_before_first_request(monkeypatch) -> None:
+    from solidlsp.language_servers.pyrefly_server import PyreflyServer
+
+    calls: list[tuple[str, str]] = []
+
+    def _fake_document_symbols(self, relative_file_path: str, file_buffer=None, *, sync_with_ls: bool = True):  # noqa: ANN001
+        del self, file_buffer, sync_with_ls
+        calls.append(("document_symbols", relative_file_path))
+        return "symbols"
+
+    def _fake_refs(self, relative_file_path: str, line: int, column: int):  # noqa: ANN001
+        del self, line, column
+        calls.append(("references", relative_file_path))
+        return ["ok"]
+
+    monkeypatch.setattr(SolidLanguageServer, "request_document_symbols", _fake_document_symbols)
+    monkeypatch.setattr(SolidLanguageServer, "request_references", _fake_refs)
+
+    server = object.__new__(PyreflyServer)
+    server._primed_reference_paths = set()
+
+    first = server.request_references("x.py", 1, 1)
+    second = server.request_references("x.py", 1, 1)
+
+    assert first == ["ok"]
+    assert second == ["ok"]
+    assert calls == [
+        ("document_symbols", "x.py"),
+        ("references", "x.py"),
+        ("references", "x.py"),
+    ]

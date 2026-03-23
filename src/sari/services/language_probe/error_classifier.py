@@ -44,7 +44,7 @@ _DEFAULT_POLICY: _ErrorPolicy = {
         "filenotfounderror",
     ],
     "missing_dependency_rules": [
-        {"dependency": "pyright", "tokens": ["pyright"]},
+        {"dependency": "pyrefly", "tokens": ["pyrefly"]},
         {"dependency": "node", "tokens": ["node"]},
         {"dependency": "npm", "tokens": ["npm"]},
         {"dependency": "dotnet", "tokens": ["dotnet"]},
@@ -176,8 +176,7 @@ def extract_missing_dependency(message: str) -> str | None:
     if normalized_message == "":
         return None
     lowered = normalized_message.lower()
-    python_provider = os.environ.get("SARI_PYTHON_LSP_PROVIDER", "").strip().lower()
-    if python_provider == "pyrefly" and "pyrefly" in lowered:
+    if "pyrefly" in lowered:
         return "pyrefly"
     for rule in policy["missing_dependency_rules"]:
         if any(token in lowered for token in rule["tokens"]):

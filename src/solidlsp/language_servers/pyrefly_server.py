@@ -33,6 +33,7 @@ class PyreflyServer(SolidLanguageServer):
             "python",
             solidlsp_settings,
         )
+        self._primed_reference_paths: set[str] = set()
 
     def _create_dependency_provider(self) -> LanguageServerDependencyProvider:
         return self.DependencyProvider(self._custom_settings, self._ls_resources_dir)
@@ -65,6 +66,13 @@ class PyreflyServer(SolidLanguageServer):
             )
 
     def request_references(self, relative_file_path: str, line: int, column: int):
+        primed_paths = getattr(self, "_primed_reference_paths", None)
+        if primed_paths is None:
+            primed_paths = set()
+            self._primed_reference_paths = primed_paths
+        if relative_file_path not in primed_paths:
+            self.request_document_symbols(relative_file_path)
+            primed_paths.add(relative_file_path)
         try:
             return super().request_references(relative_file_path, line, column)
         except SolidLSPException as exc:
@@ -161,7 +169,6 @@ class PyreflyServer(SolidLanguageServer):
             return [{} for _ in items]
 
         def handle_folders(params):
-            del params
             return [
                 {
                     "uri": pathlib.Path(self.repository_root_path).as_uri(),

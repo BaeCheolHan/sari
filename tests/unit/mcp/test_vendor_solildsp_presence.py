@@ -32,7 +32,6 @@ EXPECTED_LANGUAGE_SERVER_FILES = {
     "pascal_server.py",
     "perl_language_server.py",
     "powershell_language_server.py",
-    "pyright_server.py",
     "r_language_server.py",
     "regal_server.py",
     "ruby_lsp.py",

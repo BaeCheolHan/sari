@@ -62,7 +62,7 @@ ps = subprocess.run(
 )
 lines = ps.stdout.splitlines()
 proc_pattern = re.compile(
-    r"(sari|solidlsp|pyright|gopls|rust-analyzer|jdtls|typescript-language-server|clangd|lua-language-server)",
+    r"(sari|solidlsp|pyrefly|gopls|rust-analyzer|jdtls|typescript-language-server|clangd|lua-language-server)",
     re.IGNORECASE,
 )
 zombie_count = 0
