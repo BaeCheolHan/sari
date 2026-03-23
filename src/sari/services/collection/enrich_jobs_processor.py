@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+import re
 import time
 import traceback
 from typing import Callable
@@ -259,13 +260,19 @@ class EnrichJobsProcessor:
                             ErrorContext(code="ERR_LSP_EXTRACT_FAILED", message=f"LSP 추출 실패: {extraction.error_message}")
                         )
                     continue
+                extracted_symbols = list(getattr(extraction, "symbols", []))
+                if len(extracted_symbols) == 0:
+                    extracted_symbols = self._fallback_symbols_for_empty_extract(
+                        relative_path=job.relative_path,
+                        content_text=content_text,
+                    )
                 buffers.lsp_updates.append(
                     LspExtractPersistDTO(
                         repo_id=job.repo_id,
                         repo_root=job.repo_root,
                         relative_path=job.relative_path,
                         content_hash=job.content_hash,
-                        symbols=extraction.symbols,
+                        symbols=extracted_symbols,
                         relations=extraction.relations,
                         created_at=now_iso,
                         content_text=content_text,
@@ -356,3 +363,38 @@ class EnrichJobsProcessor:
                 last_flush_at = time.perf_counter()
         self._flush_enrich(buffers=buffers, body_upserts=body_upserts)
         return processed
+
+    _PY_CLASS_PATTERN = re.compile(r"^\s*class\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\(|:)", re.MULTILINE)
+    _PY_DEF_PATTERN = re.compile(r"^\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", re.MULTILINE)
+
+    def _fallback_symbols_for_empty_extract(self, *, relative_path: str, content_text: str) -> list[dict[str, object]]:
+        """LSP가 빈 symbol payload를 반환할 때 최소 검색 가능 심볼을 생성한다."""
+        if not relative_path.lower().endswith(".py"):
+            return []
+        symbols: list[dict[str, object]] = []
+        for pattern, kind in (
+            (self._PY_CLASS_PATTERN, "class"),
+            (self._PY_DEF_PATTERN, "function"),
+        ):
+            for match in pattern.finditer(content_text):
+                name = match.group(1)
+                line = content_text.count("\n", 0, match.start()) + 1
+                symbols.append(
+                    {
+                        "name": name,
+                        "kind": kind,
+                        "line": line,
+                        "end_line": line,
+                    }
+                )
+        if len(symbols) == 0:
+            return []
+        deduped: list[dict[str, object]] = []
+        seen: set[tuple[str, str, int]] = set()
+        for symbol in sorted(symbols, key=lambda item: (int(item["line"]), str(item["name"]))):
+            key = (str(symbol["name"]), str(symbol["kind"]), int(symbol["line"]))
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(symbol)
+        return deduped
