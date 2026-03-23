@@ -46,7 +46,7 @@ class _MissingServerLsp:
     def request_document_symbols(self, relative_path: str) -> _FakeDocumentSymbols:
         """실행 파일 누락 예외를 발생시킨다."""
         _ = relative_path
-        raise SolidLSPException("No such file or directory: pyright-langserver")
+        raise SolidLSPException("No such file or directory: pyrefly")
 
 
 class _MissingServerHub:
@@ -256,7 +256,7 @@ def test_language_probe_classifies_missing_server_as_explicit_error(tmp_path: Pa
     assert first["available"] is False
     assert first["last_error_code"] == "ERR_LSP_SERVER_MISSING"
     assert first["symbol_extract_success"] is False
-    assert first["missing_dependency"] == "pyright"
+    assert first["missing_dependency"] == "pyrefly"
     assert first["provisioning_mode"] == "hybrid"
 
 

@@ -80,7 +80,7 @@ def test_http_status_exposes_language_readiness_snapshot(tmp_path: Path) -> None
         available=False,
         last_probe_at="2026-02-17T00:00:00+00:00",
         last_error_code="ERR_LSP_UNAVAILABLE",
-        last_error_message="pyright not installed",
+        last_error_message="pyrefly not installed",
     )
 
     context = HttpContext(
@@ -108,7 +108,7 @@ def test_http_status_exposes_language_readiness_snapshot(tmp_path: Path) -> None
     assert first["enabled"] is True
     assert first["available"] is False
     assert first["last_error_code"] == "ERR_LSP_UNAVAILABLE"
-    assert first["last_error_message"] == "pyright not installed"
+    assert first["last_error_message"] == "pyrefly not installed"
     assert "stage_rollout" in payload
     assert isinstance(payload["stage_rollout"], dict)
     assert payload["l5_admission"]["shadow_enabled"] is True

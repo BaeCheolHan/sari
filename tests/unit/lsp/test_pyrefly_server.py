@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -21,8 +20,7 @@ def mock_settings():
 
 @pytest.fixture
 def pyrefly_server(mock_config, mock_settings):
-    with patch("shutil.which", return_value="/usr/bin/pyrefly"), \
-         patch.dict(os.environ, {"SARI_PYTHON_LSP_PROVIDER": "pyrefly"}):
+    with patch("shutil.which", return_value="/usr/bin/pyrefly"):
         server = PyreflyServer(mock_config, "/tmp/repo", mock_settings)
         # Mock the server connection
         server.server = MagicMock()
@@ -35,10 +33,12 @@ def test_initialize_params_includes_options(pyrefly_server):
 
     # Then
     assert "initializationOptions" in params, "initializationOptions must be present"
-    assert params["initializationOptions"]["analysis"]["mode"] == "full"
-    assert params["initializationOptions"]["analysis"]["enableCallGraph"] is True
-    assert params["initializationOptions"]["analysis"]["enableGetCallers"] is True
-    assert params["initializationOptions"]["indexing"]["mode"] == "incremental"
+    py_opts = params["initializationOptions"].get("python", {})
+    
+    assert py_opts.get("pyrefly", {}).get("displayTypeErrors") == "force-on"
+    assert py_opts.get("pyrefly", {}).get("analyzer") is True
+    assert py_opts.get("analysis", {}).get("mode") == "full"
+    assert py_opts.get("analysis", {}).get("indexing") is True
 
 def test_start_server_sends_initialize(pyrefly_server):
     """Verify that start_server calls initialize with correct params."""

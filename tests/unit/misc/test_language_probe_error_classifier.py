@@ -10,9 +10,9 @@ from sari.services.language_probe import error_classifier as classifier
 def test_classifier_default_policy_behaves_as_before() -> None:
     """기본 정책 파일 기준 분류 결과는 기존 계약을 유지해야 한다."""
     classifier._load_error_policy.cache_clear()
-    assert classifier.classify_lsp_error_code("ERR_LSP_DOCUMENT_SYMBOL_FAILED", "command not found: pyright") == "ERR_LSP_SERVER_MISSING"
+    assert classifier.classify_lsp_error_code("ERR_LSP_DOCUMENT_SYMBOL_FAILED", "command not found: pyrefly") == "ERR_LSP_SERVER_MISSING"
     assert classifier.is_timeout_error("ERR_LSP_TIMEOUT", "anything") is True
-    assert classifier.extract_missing_dependency("No such file or directory: pyright-langserver") == "pyright"
+    assert classifier.extract_missing_dependency("No such file or directory: pyrefly") == "pyrefly"
     classifier._load_error_policy.cache_clear()
 
 
@@ -42,8 +42,7 @@ def test_classifier_allows_policy_override_from_env(tmp_path, monkeypatch) -> No
     classifier._load_error_policy.cache_clear()
 
 
-def test_classifier_extracts_pyrefly_dependency_when_provider_is_pyrefly(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    monkeypatch.setenv("SARI_PYTHON_LSP_PROVIDER", "pyrefly")
+def test_classifier_extracts_pyrefly_dependency_by_default() -> None:
     classifier._load_error_policy.cache_clear()
 
     assert classifier.extract_missing_dependency("No such file or directory: pyrefly") == "pyrefly"

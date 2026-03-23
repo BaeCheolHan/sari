@@ -21,8 +21,8 @@
   ],
   "missing_dependency_rules": [
     {
-      "dependency": "pyright",
-      "tokens": ["pyright"]
+      "dependency": "pyrefly",
+      "tokens": ["pyrefly"]
     },
     {
       "dependency": "node",

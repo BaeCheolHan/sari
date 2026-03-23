@@ -2130,7 +2130,7 @@ def test_lsp_hub_reconcile_runtime_ignores_non_sari_orphan_lsp_processes(monkeyp
 
     class _ProcessResult:
         returncode = 0
-        stdout = "654 1 /usr/bin/pyright-langserver --stdio\n"
+        stdout = "654 1 /usr/bin/pyrefly lsp\n"
 
     monkeypatch.setattr("sari.lsp.hub.subprocess.run", lambda *args, **kwargs: _ProcessResult())
     monkeypatch.setattr("sari.lsp.hub.time.sleep", lambda _sec: None)

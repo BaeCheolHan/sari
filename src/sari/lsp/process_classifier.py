@@ -17,7 +17,7 @@ def classify_language_from_command(command: str) -> str:
         return "java"
     if "typescript-language-server" in lowered or "tsserver" in lowered:
         return "typescript"
-    if "pyright" in lowered or "pylsp" in lowered:
+    if "pyrefly" in lowered or "pylsp" in lowered:
         return "python"
     if "gopls" in lowered:
         return "go"

@@ -73,7 +73,7 @@ for lang in "${MISSING_LANGS[@]}"; do
   if [[ "${APPLY}" == "true" ]]; then
     case "${lang}" in
       python)
-        npm i -g pyright || FAILED=1
+        python3 -m pip install pyrefly || FAILED=1
         ;;
       typescript)
         npm i -g typescript-language-server typescript || FAILED=1

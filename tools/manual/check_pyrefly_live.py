@@ -17,7 +17,6 @@ def test_deep_debug_pyrefly():
     repo_root = str(pathlib.Path(__file__).parent.parent.parent.absolute())
     print(f"--- DEEP DEBUG: Pyrefly at {repo_root} ---")
     
-    os.environ["SARI_PYTHON_LSP_PROVIDER"] = "pyrefly"
     os.environ["SARI_PYREFLY_ANALYSIS_MODE"] = "full"
     
     # Enable tracing in config

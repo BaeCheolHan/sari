@@ -33,6 +33,7 @@ class PyreflyServer(SolidLanguageServer):
             "python",
             solidlsp_settings,
         )
+        self._primed_reference_paths: set[str] = set()
 
     def _create_dependency_provider(self) -> LanguageServerDependencyProvider:
         return self.DependencyProvider(self._custom_settings, self._ls_resources_dir)
@@ -65,6 +66,13 @@ class PyreflyServer(SolidLanguageServer):
             )
 
     def request_references(self, relative_file_path: str, line: int, column: int):
+        primed_paths = getattr(self, "_primed_reference_paths", None)
+        if primed_paths is None:
+            primed_paths = set()
+            self._primed_reference_paths = primed_paths
+        if relative_file_path not in primed_paths:
+            self.request_document_symbols(relative_file_path)
+            primed_paths.add(relative_file_path)
         try:
             return super().request_references(relative_file_path, line, column)
         except SolidLSPException as exc:
@@ -155,8 +163,20 @@ class PyreflyServer(SolidLanguageServer):
         # Register client-side handlers for requests initiated by the server
         self.server.on_request("client/registerCapability", lambda params: None)
         self.server.on_request("client/unregisterCapability", lambda params: None)
-        self.server.on_request("workspace/configuration", lambda params: [])
-        self.server.on_request("workspace/workspaceFolders", lambda params: [])
+        
+        # P3 Fix: Preserve configuration response cardinality (one entry per requested item)
+        def handle_config(params):
+            items = params.get("items", [])
+            return [{} for _ in items]
+        self.server.on_request("workspace/configuration", handle_config)
+
+        # P2 Fix: Return the actual workspace folder to workspace/workspaceFolders
+        def handle_folders(params):
+            return [{
+                "uri": pathlib.Path(self.repository_root_path).as_uri(),
+                "name": os.path.basename(self.repository_root_path)
+            }]
+        self.server.on_request("workspace/workspaceFolders", handle_folders)
 
         self.server.start()
         init_response = self.server.send.initialize(self._get_initialize_params(self.repository_root_path))
