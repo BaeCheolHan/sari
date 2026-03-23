@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -167,13 +168,17 @@ class FileEnrichQueueRepository:
             return None
         return row_str(row, "job_id")
 
-    def enqueue_many(self, requests: list[EnqueueRequestDTO]) -> list[str]:
+    def enqueue_many(self, requests: list[EnqueueRequestDTO], *, conn=None) -> list[str]:
         """L2 본문 보강 큐 작업을 배치 적재한다."""
         if len(requests) == 0:
             return []
 
-        def _op() -> list[str]:
-            with connect(self._db_path) as conn:
+        def _op(shared_conn=None) -> list[str]:
+            owned_conn = shared_conn is None
+            manager = connect(self._db_path) if owned_conn else nullcontext(shared_conn)
+            with manager as local_conn:
+                if local_conn is None:
+                    raise RuntimeError("conn must not be None when owned_conn is False")
                 grouped_rows: list[dict[str, object]] = []
                 stage_id_by_key: dict[tuple[str, str, str, str], int] = {}
                 input_stage_ids: list[int] = []
@@ -181,7 +186,7 @@ class FileEnrichQueueRepository:
                     resolved_repo_id = (
                         request.repo_id.strip()
                         if request.repo_id.strip() != ""
-                        else resolve_repo_id_for_repo_root(conn, request.repo_root)
+                        else resolve_repo_id_for_repo_root(local_conn, request.repo_root)
                     )
                     resolved_scope_repo_root = request.scope_repo_root if request.scope_repo_root is not None and request.scope_repo_root.strip() != "" else request.repo_root
                     lane_key = "l5" if request.enqueue_source == "l5" else "default"
@@ -220,10 +225,10 @@ class FileEnrichQueueRepository:
                     stage_row["priority"] = max(int(stage_row["priority"]), request.priority)
                     input_stage_ids.append(existing_stage_id)
 
-                conn.execute("DROP TABLE IF EXISTS temp_enqueue_stage")
-                conn.execute("DROP TABLE IF EXISTS temp_enqueue_existing")
-                conn.execute("DROP TABLE IF EXISTS temp_enqueue_result")
-                conn.execute(
+                local_conn.execute("DROP TABLE IF EXISTS temp_enqueue_stage")
+                local_conn.execute("DROP TABLE IF EXISTS temp_enqueue_existing")
+                local_conn.execute("DROP TABLE IF EXISTS temp_enqueue_result")
+                local_conn.execute(
                     """
                     CREATE TEMP TABLE temp_enqueue_stage (
                         stage_id INTEGER PRIMARY KEY,
@@ -241,7 +246,7 @@ class FileEnrichQueueRepository:
                     )
                     """
                 )
-                conn.executemany(
+                local_conn.executemany(
                     """
                     INSERT INTO temp_enqueue_stage(
                         stage_id, repo_id, repo_root, scope_repo_root, relative_path,
@@ -253,7 +258,7 @@ class FileEnrichQueueRepository:
                     """,
                     grouped_rows,
                 )
-                conn.execute(
+                local_conn.execute(
                     """
                     CREATE TEMP TABLE temp_enqueue_existing (
                         stage_id INTEGER PRIMARY KEY,
@@ -263,7 +268,7 @@ class FileEnrichQueueRepository:
                     )
                     """
                 )
-                conn.execute(
+                local_conn.execute(
                     """
                     INSERT INTO temp_enqueue_existing(stage_id, job_id, priority, content_hash)
                     WITH candidate AS (
@@ -292,7 +297,7 @@ class FileEnrichQueueRepository:
                     WHERE rn = 1
                     """
                 )
-                conn.execute(
+                local_conn.execute(
                     """
                     UPDATE file_enrich_queue AS q
                     SET content_hash = s.content_hash,
@@ -346,7 +351,7 @@ class FileEnrichQueueRepository:
                     WHERE q.job_id = e.job_id
                     """
                 )
-                conn.execute(
+                local_conn.execute(
                     """
                     INSERT INTO file_enrich_queue(
                         job_id, repo_id, repo_root, scope_repo_root, relative_path, content_hash, content_raw, content_encoding,
@@ -380,7 +385,7 @@ class FileEnrichQueueRepository:
                     WHERE e.stage_id IS NULL
                     """
                 )
-                conn.execute(
+                local_conn.execute(
                     """
                     CREATE TEMP TABLE temp_enqueue_result (
                         stage_id INTEGER PRIMARY KEY,
@@ -388,14 +393,14 @@ class FileEnrichQueueRepository:
                     )
                     """
                 )
-                conn.execute(
+                local_conn.execute(
                     """
                     INSERT INTO temp_enqueue_result(stage_id, job_id)
                     SELECT stage_id, job_id
                     FROM temp_enqueue_existing
                     """
                 )
-                conn.execute(
+                local_conn.execute(
                     """
                     INSERT INTO temp_enqueue_result(stage_id, job_id)
                     SELECT s.stage_id, s.new_job_id
@@ -405,16 +410,19 @@ class FileEnrichQueueRepository:
                     WHERE e.stage_id IS NULL
                     """
                 )
-                rows = conn.execute(
+                rows = local_conn.execute(
                     """
                     SELECT stage_id, job_id
                     FROM temp_enqueue_result
                     """
                 ).fetchall()
                 stage_to_job_id = {int(row["stage_id"]): row_str(row, "job_id") for row in rows}
-                conn.commit()
-            return [stage_to_job_id[stage_id] for stage_id in input_stage_ids]
+                if owned_conn:
+                    local_conn.commit()
+                return [stage_to_job_id[stage_id] for stage_id in input_stage_ids]
 
+        if conn is not None:
+            return _op(conn)
         result, _ = run_with_sqlite_lock_retry(_op)
         return result
 

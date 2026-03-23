@@ -17,6 +17,8 @@ from solidlsp.ls_config import Language
 
 from sari.core.exceptions import CollectionError, ErrorContext
 from sari.core.models import CandidateIndexChangeDTO, CollectionScanResultDTO, CollectedFileL1DTO, EnqueueRequestDTO, RepoIdentityDTO, now_iso8601_utc
+from sari.db.schema import connect
+from sari.db.sqlite_retry import run_with_sqlite_lock_retry
 
 
 @dataclass(frozen=True)
@@ -407,12 +409,30 @@ class FileScanner:
         candidate_changes: list[CandidateIndexChangeDTO],
     ) -> None:
         """스캔 버퍼를 저장소에 반영한다."""
-        if len(l1_rows) > 0:
-            self._file_repo.upsert_files_many(l1_rows)
-            l1_rows.clear()
-        if len(enqueue_requests) > 0:
-            self._enrich_queue_repo.enqueue_many(enqueue_requests)
-            enqueue_requests.clear()
+        db_path = getattr(self._file_repo, "db_path", None)
+        queue_db_path = getattr(self._enrich_queue_repo, "_db_path", None)
+
+        if db_path is not None and queue_db_path == db_path and (len(l1_rows) > 0 or len(enqueue_requests) > 0):
+            def _op() -> None:
+                with connect(db_path) as conn:
+                    if len(l1_rows) > 0:
+                        self._file_repo.upsert_files_many(l1_rows, conn=conn)
+                    if len(enqueue_requests) > 0:
+                        self._enrich_queue_repo.enqueue_many(enqueue_requests, conn=conn)
+                    conn.commit()
+
+            run_with_sqlite_lock_retry(_op)
+            if len(l1_rows) > 0:
+                l1_rows.clear()
+            if len(enqueue_requests) > 0:
+                enqueue_requests.clear()
+        else:
+            if len(l1_rows) > 0:
+                self._file_repo.upsert_files_many(l1_rows)
+                l1_rows.clear()
+            if len(enqueue_requests) > 0:
+                self._enrich_queue_repo.enqueue_many(enqueue_requests)
+                enqueue_requests.clear()
         if self._candidate_index_sink is not None and len(candidate_changes) > 0:
             for change in candidate_changes:
                 self._candidate_index_sink.record_upsert(change)

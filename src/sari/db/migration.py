@@ -420,6 +420,8 @@ def _fallback_upgrade_0006(conn: sqlite3.Connection) -> None:
         relation_cols = _table_columns(conn, "lsp_call_relations")
         if "repo_id" not in relation_cols:
             conn.execute("ALTER TABLE lsp_call_relations ADD COLUMN repo_id TEXT NOT NULL DEFAULT ''")
+        if "caller_relative_path" not in relation_cols:
+            conn.execute("ALTER TABLE lsp_call_relations ADD COLUMN caller_relative_path TEXT NULL")
 
     if _table_exists(conn, "collected_files_l1"):
         conn.execute(

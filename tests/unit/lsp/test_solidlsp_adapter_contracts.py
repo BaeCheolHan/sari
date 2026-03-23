@@ -201,6 +201,70 @@ def test_pyrefly_references_retry_once_after_subsequent_mutation(monkeypatch) ->
     assert calls["count"] == 2
 
 
+
+
+def test_request_containing_symbol_accepts_enum_container(monkeypatch, tmp_path: Path) -> None:
+    from contextlib import contextmanager
+    from solidlsp import ls_types
+
+    class _ContainingSymbolServer(SolidLanguageServer):
+        @classmethod
+        def get_language_enum_instance(cls) -> Language:
+            return Language.JAVA
+
+        def _start_server(self) -> None:
+            raise NotImplementedError
+
+    class _DocSymbols:
+        def __init__(self, symbols):
+            self._symbols = symbols
+
+        def iter_symbols(self):
+            return iter(self._symbols)
+
+    @contextmanager
+    def _open_file(_relative_path: str, open_in_ls: bool = True):  # noqa: ANN001
+        del open_in_ls
+        yield object()
+
+    server = object.__new__(_ContainingSymbolServer)
+    server.server_started = True
+    server.repository_root_path = str(tmp_path)
+    server._encoding = "utf-8"
+
+    enum_symbol = {
+        "name": "Errors",
+        "kind": ls_types.SymbolKind.Enum,
+        "location": {
+            "range": {
+                "start": {"line": 7, "character": 0},
+                "end": {"line": 100, "character": 1},
+            }
+        },
+    }
+    field_symbol = {
+        "name": "GENERAL_COMMON_ERROR",
+        "kind": ls_types.SymbolKind.Field,
+        "location": {
+            "range": {
+                "start": {"line": 65, "character": 4},
+                "end": {"line": 65, "character": 57},
+            }
+        },
+    }
+
+    fake_lines = [""] * 101
+    fake_lines[65] = "    GENERAL_COMMON_ERROR(CommonMessageService.makeCustomMessage());"
+
+    monkeypatch.setattr(server, "open_file", _open_file)
+    monkeypatch.setattr(ls_module.FileUtils, "read_file", lambda *_args, **_kwargs: "\n".join(fake_lines))
+    monkeypatch.setattr(server, "request_document_symbols", lambda relative_file_path: _DocSymbols([enum_symbol, field_symbol]))
+
+    symbol = server.request_containing_symbol("src/Errors.java", 65, 12)
+
+    assert symbol is not None
+    assert symbol["name"] in {"Errors", "GENERAL_COMMON_ERROR"}
+
 def test_pyrefly_references_prime_document_symbols_once_before_first_request(monkeypatch) -> None:
     from solidlsp.language_servers.pyrefly_server import PyreflyServer
 

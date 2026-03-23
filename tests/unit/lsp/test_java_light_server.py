@@ -458,3 +458,34 @@ def test_javalight_find_java_binary_prefers_jdk_over_jre_sibling(monkeypatch, tm
     java_bin = provider._find_java_binary(str(tmp_path / "java21"))
 
     assert java_bin == str(jdk_java)
+
+
+def test_javalight_request_references_normalizes_relative_path(monkeypatch, tmp_path: Path) -> None:
+    from solidlsp.language_servers.java_light_server import JavaLightServer
+
+    repo_root = tmp_path / "repo"
+    target = repo_root / "src" / "main" / "java" / "pkg" / "Sample.java"
+    target.parent.mkdir(parents=True)
+    target.write_text("package pkg;\nclass Sample {}\n", encoding="utf-8")
+
+    server = object.__new__(JavaLightServer)
+    server.repository_root_path = str(repo_root)
+    server.server = MagicMock()
+    server.server.notify = MagicMock()
+    server.server.send = MagicMock()
+    server.server.send._send_request.return_value = [
+        {
+            "uri": target.as_uri(),
+            "range": {
+                "start": {"line": 1, "character": 6},
+                "end": {"line": 1, "character": 12},
+            },
+        }
+    ]
+    monkeypatch.setattr(server, "_is_valid_reference", lambda ref: True)
+
+    refs = server.request_references("src/main/java/pkg/Sample.java", 1, 6)
+
+    assert len(refs) == 1
+    assert refs[0]["absolutePath"] == str(target)
+    assert refs[0]["relativePath"] == "src/main/java/pkg/Sample.java"

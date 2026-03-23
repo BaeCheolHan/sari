@@ -223,8 +223,8 @@ def test_decision_stage_l5_lane_allows_extract_when_admitted_and_no_l5_semantics
     assert out.should_extract is True
 
 
-def test_decision_stage_l3_lane_needs_l5_immediately_done_no_extract() -> None:
-    """l3_lane에서 NEEDS_L5 파일도 즉시 DONE 처리, extract 없음."""
+def test_decision_stage_l3_lane_needs_l5_proceeds_to_extract() -> None:
+    """기본 lane에서도 NEEDS_L5 파일은 extract로 진행해야 한다."""
     decision = L4AdmissionDecisionDTO(
         admit_l5=False,
         reason_code=None,
@@ -254,11 +254,11 @@ def test_decision_stage_l3_lane_needs_l5_immediately_done_no_extract() -> None:
         ),
     )
 
-    # l3_lane: admission_enforced=False이면 admission 거부 무시, apply_l3_only_success 호출 후 DONE
-    assert out.finished_status == "DONE"
-    assert out.should_extract is False
-    assert persist.l3_only_called == 1
-    assert context.done_id == "j1"
+    # admission_enforced=False이면 admission 거부는 무시하고 extract 진행
+    assert out.finished_status is None
+    assert out.should_extract is True
+    assert persist.l3_only_called == 0
+    assert context.done_id is None
 
 
 def test_decision_stage_l5_lane_reject_with_enforce_defers_for_retry() -> None:
@@ -314,8 +314,8 @@ def test_decision_stage_l5_lane_skips_when_l5_semantics_exist() -> None:
     assert context.done_id == "j1"
 
 
-def test_decision_stage_l3_lane_l3_only_applies_l3_success() -> None:
-    """l3_lane에서 L3_ONLY 파일도 apply_l3_only_success 호출 후 DONE."""
+def test_decision_stage_l3_lane_l3_only_still_proceeds_to_extract() -> None:
+    """기본 lane에서도 L3_ONLY 결과가 있어도 extract 경로로 진행한다."""
     context = L3JobContext()
     persist = _Persist()
     stage = L3DecisionStage(
@@ -339,6 +339,6 @@ def test_decision_stage_l3_lane_l3_only_applies_l3_success() -> None:
             reason="l3_preprocess_only",
         ),
     )
-    assert out.finished_status == "DONE"
-    assert out.should_extract is False
-    assert persist.l3_only_called == 1
+    assert out.finished_status is None
+    assert out.should_extract is True
+    assert persist.l3_only_called == 0

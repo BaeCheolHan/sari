@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from contextlib import nullcontext
 
 from sari.core.models import CollectedFileL1DTO, EnrichStateUpdateDTO, FileListItemDTO
 from sari.db.row_mapper import row_bool, row_int, row_str
@@ -51,12 +52,18 @@ class FileCollectionRepository:
             )
             conn.commit()
 
-    def upsert_files_many(self, file_rows: list[CollectedFileL1DTO]) -> None:
+    def upsert_files_many(self, file_rows: list[CollectedFileL1DTO], *, conn=None) -> None:
         """L1 파일 메타데이터를 배치 업서트한다."""
         if len(file_rows) == 0:
             return
-        with connect(self._db_path) as conn:
-            conn.executemany(
+        owned_conn = conn is None
+        if conn is None and not owned_conn:
+            raise RuntimeError("conn must not be None when owned_conn is False")
+        manager = connect(self._db_path) if owned_conn else nullcontext(conn)
+        with manager as active_conn:
+            if active_conn is None:
+                raise RuntimeError("active connection must not be None")
+            active_conn.executemany(
                 """
                 INSERT INTO collected_files_l1(
                     repo_id, repo_root, scope_repo_root, relative_path, absolute_path, repo_label, mtime_ns, size_bytes,
@@ -81,7 +88,8 @@ class FileCollectionRepository:
                 """,
                 [file_row.to_sql_params() for file_row in file_rows],
             )
-            conn.commit()
+            if owned_conn:
+                active_conn.commit()
 
     def sync_repo_label(self, repo_root: str, repo_label: str) -> int:
         """특정 저장소의 기존 행 repo_label을 현재 정책 값으로 동기화한다."""

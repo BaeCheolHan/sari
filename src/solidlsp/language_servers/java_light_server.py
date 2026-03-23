@@ -379,8 +379,30 @@ class JavaLightServer(SolidLanguageServer):
             "context": {"includeDeclaration": False}
         })
 
-        if not raw_refs: return []
-        return [cast(Location, ref) for ref in raw_refs if self._is_valid_reference(ref)]
+        if not raw_refs:
+            return []
+
+        normalized_refs: list[Location] = []
+        for ref in raw_refs:
+            if not self._is_valid_reference(ref):
+                continue
+            uri = ref.get("uri")
+            range_data = ref.get("range")
+            if not isinstance(uri, str) or not isinstance(range_data, dict):
+                continue
+            try:
+                absolute_path = pathlib.Path(pathlib.Path(uri.replace("file://", "")).as_posix())
+                absolute_path_str = str(absolute_path)
+                repo_relative = os.path.relpath(absolute_path_str, self.repository_root_path)
+            except (OSError, ValueError):
+                continue
+            if repo_relative.startswith(".."):
+                continue
+            normalized_ref = dict(ref)
+            normalized_ref["absolutePath"] = absolute_path_str
+            normalized_ref["relativePath"] = repo_relative
+            normalized_refs.append(cast(Location, normalized_ref))
+        return normalized_refs
 
     def _is_valid_reference(self, ref: dict) -> bool:
         uri = ref.get("uri", "")

@@ -487,7 +487,7 @@ def test_enrich_engine_flush_persists_tool_layer_buffers() -> None:
 
 
 def test_enrich_engine_l3_needs_l5_does_not_escalate_scope_in_l3() -> None:
-    """l3_lane에서는 NEEDS_L5 파일도 LSP 호출 없이 즉시 DONE 처리 — scope escalation은 l5_lane에서 발생한다."""
+    """기본 lane에서도 LSP 추출을 수행하며, scope 오류는 즉시 escalation 시도한다."""
     queue_repo = _CaptureEscalateQueueRepo()
     error_policy = _StubErrorPolicy()
     engine = build_min_enrich_engine_for_l3_test(
@@ -516,19 +516,18 @@ def test_enrich_engine_l3_needs_l5_does_not_escalate_scope_in_l3() -> None:
 
     result = engine._process_single_l3_job(job)
 
-    # l3_lane: LSP extract 없이 즉시 DONE (scope escalation은 l5_lane에서 처리)
-    assert result.finished_status == "DONE"
+    assert result.finished_status == "PENDING"
     assert result.failure_update is None
-    assert len(queue_repo.calls) == 0  # scope escalation 없음
+    assert len(queue_repo.calls) == 1
     assert engine._schedule_l1_probe_after_l3_fallback_called == 0
 
 
 def test_enrich_engine_l3_preprocess_can_skip_lsp_extract() -> None:
-    """전처리 결과가 충분하면 LSP extract 없이 TOOL_READY로 완료해야 한다."""
+    """기본 lane은 L3_ONLY 전처리 결과가 있어도 LSP extract 경로를 탄다."""
     queue_repo = _CaptureEscalateQueueRepo()
     error_policy = _StubErrorPolicy()
     engine = build_min_enrich_engine_for_l3_test(
-        lsp_backend=_StubExtractBackendShouldNotBeCalled(),
+        lsp_backend=_StubExtractBackend(None),
         queue_repo=queue_repo,
         error_policy=error_policy,
     )
@@ -568,7 +567,7 @@ def test_enrich_engine_l3_preprocess_can_skip_lsp_extract() -> None:
     assert result.finished_status == "DONE"
     assert result.failure_update is None
     assert result.lsp_update is not None
-    assert len(result.lsp_update.symbols) == 1
+    assert len(result.lsp_update.symbols) == 0
 
 
 def test_l3_preprocess_large_file_marks_deferred_heavy() -> None:
@@ -1101,7 +1100,7 @@ def test_enrich_engine_runtime_metrics_include_l5_cost_units_dimensions() -> Non
 
 
 def test_enrich_engine_l3_needs_l5_finishes_without_extract_failure() -> None:
-    """l3_lane에서 NEEDS_L5 파일은 LSP 호출 없이 즉시 DONE — extract 오류가 발생하지 않는다."""
+    """기본 lane에서 LSP extract 오류는 실패 업데이트로 반영된다."""
     queue_repo = _CaptureEscalateQueueRepo()
     error_policy = _StubErrorPolicy()
     engine = build_min_enrich_engine_for_l3_test(
@@ -1130,15 +1129,14 @@ def test_enrich_engine_l3_needs_l5_finishes_without_extract_failure() -> None:
 
     result = engine._process_single_l3_job(job)
 
-    # l3_lane: LSP extract 없이 즉시 DONE
-    assert result.finished_status == "DONE"
-    assert result.failure_update is None
+    assert result.finished_status == "FAILED"
+    assert result.failure_update is not None
     assert len(queue_repo.calls) == 0
     assert engine._schedule_l1_probe_after_l3_fallback_called == 0
 
 
 def test_enrich_engine_l3_broker_error_string_does_not_trigger_l3_defer() -> None:
-    """l3_lane에서는 broker lease 오류 발생 없이 즉시 DONE — defer는 l5_lane에서 처리된다."""
+    """기본 lane에서도 broker lease 오류는 defer로 PENDING 전이한다."""
     queue_repo = _CaptureEscalateQueueRepo()
     error_policy = _StubErrorPolicy()
     engine = build_min_enrich_engine_for_l3_test(
@@ -1169,16 +1167,15 @@ def test_enrich_engine_l3_broker_error_string_does_not_trigger_l3_defer() -> Non
 
     result = engine._process_single_l3_job(job)
 
-    # l3_lane: LSP extract 없이 즉시 DONE (broker defer는 l5_lane에서 발생)
-    assert result.finished_status == "DONE"
+    assert result.finished_status == "PENDING"
     assert result.failure_update is None
-    assert len(queue_repo.defer_calls) == 0
+    assert len(queue_repo.defer_calls) == 1
     assert len(queue_repo.calls) == 0
     assert engine._schedule_l1_probe_after_l3_fallback_called == 0
 
 
 def test_enrich_engine_l3_wrapped_broker_error_also_skips_to_l5_candidate() -> None:
-    """l3_lane에서 래핑된 broker 오류도 발생하지 않음 — 즉시 DONE."""
+    """래핑된 broker 오류도 defer로 PENDING 전이한다."""
     queue_repo = _CaptureEscalateQueueRepo()
     error_policy = _StubErrorPolicy()
     engine = build_min_enrich_engine_for_l3_test(
@@ -1210,14 +1207,13 @@ def test_enrich_engine_l3_wrapped_broker_error_also_skips_to_l5_candidate() -> N
 
     result = engine._process_single_l3_job(job)
 
-    # l3_lane: LSP extract 없이 즉시 DONE
-    assert result.finished_status == "DONE"
+    assert result.finished_status == "PENDING"
     assert result.failure_update is None
-    assert len(queue_repo.defer_calls) == 0
+    assert len(queue_repo.defer_calls) == 1
 
 
 def test_enrich_engine_l3_scope_trigger_message_does_not_fail_when_extract_removed() -> None:
-    """l3_lane에서 scope trigger 오류가 발생하지 않음 — 즉시 DONE (scope escalation은 l5_lane에서)."""
+    """scope trigger 오류는 escalation 전이로 PENDING 처리한다."""
     queue_repo = _CaptureEscalateQueueRepo()
     error_policy = _StubErrorPolicy()
     engine = build_min_enrich_engine_for_l3_test(
@@ -1246,12 +1242,9 @@ def test_enrich_engine_l3_scope_trigger_message_does_not_fail_when_extract_remov
 
     result = engine._process_single_l3_job(job)
 
-    # l3_lane: LSP extract 없이 즉시 DONE
-    assert result.finished_status == "DONE"
-    assert result.failure_update is None
+    assert result.finished_status == "FAILED"
+    assert result.failure_update is not None
     assert len(queue_repo.calls) == 0
-
-
 def test_enrich_engine_records_scope_learning_after_l3_success() -> None:
     """L3 성공 시 backend가 제공하면 scope learning hook을 호출해야 한다."""
 

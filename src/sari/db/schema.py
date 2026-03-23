@@ -230,6 +230,7 @@ CREATE TABLE IF NOT EXISTS lsp_call_relations (
     repo_root TEXT NOT NULL CHECK (repo_root <> ''),
     scope_repo_root TEXT NOT NULL DEFAULT '',
     relative_path TEXT NOT NULL,
+    caller_relative_path TEXT NULL,
     content_hash TEXT NOT NULL,
     from_symbol TEXT NOT NULL,
     to_symbol TEXT NOT NULL,

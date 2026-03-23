@@ -49,6 +49,44 @@ def test_replace_file_data_many_persists_repo_id_for_symbols_and_relations(tmp_p
     assert str(relation_row["repo_id"]) == "r_repo"
 
 
+def test_replace_file_data_many_persists_relation_caller_relative_path(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = LspToolDataRepository(db_path)
+    repo.replace_file_data_many(
+        [
+            LspExtractPersistDTO(
+                repo_id="r_repo",
+                repo_root="/repo",
+                relative_path="src/service.py",
+                content_hash="h1",
+                symbols=[{"name": "Service", "kind": "Class", "line": 1, "end_line": 10}],
+                relations=[
+                    {
+                        "from_symbol": "Controller.handle",
+                        "to_symbol": "Service.call",
+                        "line": 22,
+                        "caller_relative_path": "src/controller.py",
+                    }
+                ],
+                created_at="2026-03-23T00:00:00+00:00",
+            )
+        ]
+    )
+    with connect(db_path) as conn:
+        relation_row = conn.execute(
+            """
+            SELECT relative_path, caller_relative_path
+            FROM lsp_call_relations
+            WHERE repo_root = '/repo' AND relative_path = 'src/service.py'
+            LIMIT 1
+            """
+        ).fetchone()
+    assert relation_row is not None
+    assert str(relation_row["relative_path"]) == "src/service.py"
+    assert str(relation_row["caller_relative_path"]) == "src/controller.py"
+
+
 
 def test_replace_file_data_many_preserves_same_hash_relations_when_requested(tmp_path: Path) -> None:
     db_path = tmp_path / "state.db"

@@ -808,6 +808,7 @@ class CallerEdgeDTO:
     to_symbol: str
     line: int
     content_hash: str
+    caller_relative_path: str | None = None
     confidence: float | None = None
     evidence_type: str | None = None
     scope: str | None = None
@@ -815,6 +816,7 @@ class CallerEdgeDTO:
         return {
             "repo": self.repo,
             "relative_path": self.relative_path,
+            "caller_relative_path": self.caller_relative_path,
             "from_symbol": self.from_symbol,
             "to_symbol": self.to_symbol,
             "line": self.line,

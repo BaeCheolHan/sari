@@ -148,6 +148,83 @@ def test_lsp_tool_data_repository_count_distinct_callers_counts_per_repo_path_pa
     assert repo.count_distinct_callers(repo_root=scope_root, symbol_name="Common.target") == 2
 
 
+def test_lsp_tool_data_repository_find_callers_aliases_java_class_to_constructor_relations(tmp_path: Path) -> None:
+    """Java 클래스 이름 조회는 같은 파일의 <init> relation도 caller로 반환해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = LspToolDataRepository(db_path)
+
+    repo_root = "/workspace/payment-service"
+    repo.replace_symbols(
+        repo_root=repo_root,
+        relative_path="src/main/java/com/acme/service/CommonMessageService.java",
+        content_hash="h-service",
+        symbols=[
+            {"name": "CommonMessageService", "kind": "Class", "line": 10, "end_line": 80},
+            {"name": "CommonMessageService", "kind": "Constructor", "line": 14, "end_line": 18},
+        ],
+        created_at="2026-03-23T00:00:00+00:00",
+    )
+    repo.replace_relations(
+        repo_root=repo_root,
+        relative_path="src/main/java/com/acme/service/CommonMessageService.java",
+        content_hash="h-service",
+        relations=[
+            {"from_symbol": "Errors.DEFAULT_CANCEL_MESSAGE1", "to_symbol": "<init>", "line": 16},
+        ],
+        created_at="2026-03-23T00:00:00+00:00",
+    )
+    repo.replace_relations(
+        repo_root=repo_root,
+        relative_path="src/main/java/com/acme/service/OtherService.java",
+        content_hash="h-other",
+        relations=[
+            {"from_symbol": "OtherCaller.run", "to_symbol": "<init>", "line": 4},
+        ],
+        created_at="2026-03-23T00:00:00+00:00",
+    )
+
+    callers = repo.find_callers(repo_root=repo_root, symbol_name="CommonMessageService", limit=20)
+
+    assert len(callers) == 1
+    assert callers[0].relative_path == "src/main/java/com/acme/service/CommonMessageService.java"
+    assert callers[0].from_symbol == "Errors.DEFAULT_CANCEL_MESSAGE1"
+    assert callers[0].to_symbol == "<init>"
+
+
+def test_lsp_tool_data_repository_find_callers_prefers_caller_relative_path_for_cross_file_edges(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = LspToolDataRepository(db_path)
+
+    repo_root = "/workspace/payment-service"
+    repo.replace_relations(
+        repo_root=repo_root,
+        relative_path="src/main/java/com/acme/service/CommonMessageService.java",
+        content_hash="h-service",
+        relations=[
+            {
+                "from_symbol": "ExceptionAdvice.handle",
+                "to_symbol": "CommonMessageService.makeCustomMessage",
+                "line": 47,
+                "caller_relative_path": "src/main/java/com/acme/controller/ExceptionAdvice.java",
+            }
+        ],
+        created_at="2026-03-23T00:00:00+00:00",
+    )
+
+    callers = repo.find_callers(
+        repo_root=repo_root,
+        symbol_name="CommonMessageService.makeCustomMessage",
+        limit=20,
+    )
+
+    assert len(callers) == 1
+    assert callers[0].relative_path == "src/main/java/com/acme/controller/ExceptionAdvice.java"
+    assert callers[0].caller_relative_path == "src/main/java/com/acme/controller/ExceptionAdvice.java"
+    assert callers[0].to_symbol == "CommonMessageService.makeCustomMessage"
+
+
 def test_lsp_tool_data_repository_search_symbols_dedupes_same_absolute_file_across_repo_roots(tmp_path: Path) -> None:
     """동일 절대 파일이 서로 다른 repo_root로 저장돼도 search_symbols는 중복을 제거해야 한다."""
     db_path = tmp_path / "state.db"

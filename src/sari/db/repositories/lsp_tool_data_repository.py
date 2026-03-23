@@ -107,16 +107,17 @@ class LspToolDataRepository:
                 conn.execute(
                     """
                     INSERT INTO lsp_call_relations(
-                        repo_id, repo_root, relative_path, content_hash, from_symbol, to_symbol, line, created_at
+                        repo_id, repo_root, relative_path, caller_relative_path, content_hash, from_symbol, to_symbol, line, created_at
                     )
                     VALUES(
-                        :repo_id, :repo_root, :relative_path, :content_hash, :from_symbol, :to_symbol, :line, :created_at
+                        :repo_id, :repo_root, :relative_path, :caller_relative_path, :content_hash, :from_symbol, :to_symbol, :line, :created_at
                     )
                     """,
                     {
                         "repo_id": repo_id,
                         "repo_root": repo_root,
                         "relative_path": relative_path,
+                        "caller_relative_path": _optional_str(relation.get("caller_relative_path")) or relative_path,
                         "content_hash": content_hash,
                         "from_symbol": str(relation.get("from_symbol", "")),
                         "to_symbol": str(relation.get("to_symbol", "")),
@@ -228,6 +229,7 @@ class LspToolDataRepository:
                                 "repo_id": item.repo_id,
                                 "repo_root": item.repo_root,
                                 "relative_path": item.relative_path,
+                                "caller_relative_path": _optional_str(relation.get("caller_relative_path")) or item.relative_path,
                                 "content_hash": item.content_hash,
                                 "from_symbol": str(relation.get("from_symbol", "")),
                                 "to_symbol": str(relation.get("to_symbol", "")),
@@ -239,10 +241,10 @@ class LspToolDataRepository:
                         conn.executemany(
                             """
                             INSERT INTO lsp_call_relations(
-                                repo_id, repo_root, relative_path, content_hash, from_symbol, to_symbol, line, created_at
+                                repo_id, repo_root, relative_path, caller_relative_path, content_hash, from_symbol, to_symbol, line, created_at
                             )
                             VALUES(
-                                :repo_id, :repo_root, :relative_path, :content_hash, :from_symbol, :to_symbol, :line, :created_at
+                                :repo_id, :repo_root, :relative_path, :caller_relative_path, :content_hash, :from_symbol, :to_symbol, :line, :created_at
                             )
                             """,
                             relation_rows,
@@ -336,12 +338,13 @@ class LspToolDataRepository:
     def _dedupe_relations(self, relations: list[dict[str, object]]) -> list[dict[str, object]]:
         """호출 관계 고유키 기준으로 중복 항목을 제거한다."""
         deduped: list[dict[str, object]] = []
-        seen: set[tuple[str, str, int]] = set()
+        seen: set[tuple[str, str, int, str | None]] = set()
         for relation in relations:
             from_symbol = str(relation.get("from_symbol", ""))
             to_symbol = str(relation.get("to_symbol", ""))
             line = int(relation.get("line", 0))
-            key = (from_symbol, to_symbol, line)
+            caller_relative_path = _optional_str(relation.get("caller_relative_path"))
+            key = (from_symbol, to_symbol, line, caller_relative_path)
             if key in seen:
                 continue
             seen.add(key)
@@ -450,37 +453,20 @@ class LspToolDataRepository:
     def find_callers(self, repo_root: str, symbol_name: str, limit: int) -> list[CallerEdgeDTO]:
         """지정 심볼을 대상으로 호출자 관계를 조회한다."""
         with connect(self._db_path) as conn:
-            rows = conn.execute(
-                """
-                SELECT repo_root, relative_path, from_symbol, to_symbol, line, content_hash
-                FROM lsp_call_relations
-                WHERE (
-                        repo_root = :repo_root
-                        OR repo_root IN (
-                            SELECT DISTINCT repo_root
-                            FROM collected_files_l1
-                            WHERE scope_repo_root = :repo_root
-                              AND is_deleted = 0
-                        )
-                    )
-                  AND to_symbol = :to_symbol
-                ORDER BY relative_path ASC, line ASC
-                LIMIT :limit
-                """,
-                {"repo_root": repo_root, "to_symbol": symbol_name, "limit": limit},
-            ).fetchall()
+            rows = self._find_caller_rows(conn=conn, repo_root=repo_root, to_symbol=symbol_name, limit=limit)
+            if symbol_name.strip() != "<init>":
+                rows = self._merge_caller_rows(
+                    rows=rows,
+                    extra_rows=self._find_java_constructor_alias_caller_rows(
+                        conn=conn,
+                        repo_root=repo_root,
+                        symbol_name=symbol_name,
+                        limit=limit,
+                    ),
+                    limit=limit,
+                )
 
-        return [
-            CallerEdgeDTO(
-                repo=row_str(row, "repo_root"),
-                relative_path=row_str(row, "relative_path"),
-                from_symbol=row_str(row, "from_symbol"),
-                to_symbol=row_str(row, "to_symbol"),
-                line=row_int(row, "line"),
-                content_hash=row_str(row, "content_hash"),
-            )
-            for row in rows
-        ]
+        return self._caller_dtos_from_rows(rows)
 
     def find_python_semantic_callers(self, repo_root: str, symbol_name: str, limit: int) -> list[dict[str, object]]:
         """persisted python semantic edge를 caller 결과로 반환한다."""
@@ -518,12 +504,136 @@ class LspToolDataRepository:
             for row in rows
         ]
 
+    def _find_caller_rows(self, *, conn, repo_root: str, to_symbol: str, limit: int) -> list[object]:
+        return conn.execute(
+            """
+            SELECT repo_root, relative_path, caller_relative_path, from_symbol, to_symbol, line, content_hash
+            FROM lsp_call_relations
+            WHERE (
+                    repo_root = :repo_root
+                    OR repo_root IN (
+                        SELECT DISTINCT repo_root
+                        FROM collected_files_l1
+                        WHERE scope_repo_root = :repo_root
+                          AND is_deleted = 0
+                    )
+                )
+              AND to_symbol = :to_symbol
+            ORDER BY COALESCE(caller_relative_path, relative_path) ASC, line ASC
+            LIMIT :limit
+            """,
+            {"repo_root": repo_root, "to_symbol": to_symbol, "limit": limit},
+        ).fetchall()
+
+    def _find_java_constructor_alias_caller_rows(
+        self,
+        *,
+        conn,
+        repo_root: str,
+        symbol_name: str,
+        limit: int,
+    ) -> list[object]:
+        class_rows = conn.execute(
+            """
+            SELECT DISTINCT repo_root, relative_path
+            FROM lsp_symbols
+            WHERE (
+                    repo_root = :repo_root
+                    OR repo_root IN (
+                        SELECT DISTINCT repo_root
+                        FROM collected_files_l1
+                        WHERE scope_repo_root = :repo_root
+                          AND is_deleted = 0
+                    )
+                )
+              AND name = :symbol_name
+              AND lower(relative_path) LIKE '%.java'
+              AND lower(kind) IN ('class', '5')
+            ORDER BY relative_path ASC, repo_root ASC
+            """,
+            {"repo_root": repo_root, "symbol_name": symbol_name},
+        ).fetchall()
+        if len(class_rows) == 0:
+            return []
+
+        merged: list[object] = []
+        seen: set[tuple[str, str, str, str, str, int, str]] = set()
+        for row in class_rows:
+            alias_rows = conn.execute(
+                """
+                SELECT repo_root, relative_path, caller_relative_path, from_symbol, to_symbol, line, content_hash
+                FROM lsp_call_relations
+                WHERE repo_root = :target_repo_root
+                  AND relative_path = :target_relative_path
+                  AND to_symbol = '<init>'
+                ORDER BY line ASC
+                LIMIT :limit
+                """,
+                {
+                    "target_repo_root": row_str(row, "repo_root"),
+                    "target_relative_path": row_str(row, "relative_path"),
+                    "limit": limit,
+                },
+            ).fetchall()
+            for alias_row in alias_rows:
+                dedupe_key = (
+                    row_str(alias_row, "repo_root"),
+                    row_str(alias_row, "relative_path"),
+                    row_str(alias_row, "caller_relative_path"),
+                    row_str(alias_row, "from_symbol"),
+                    row_str(alias_row, "to_symbol"),
+                    row_int(alias_row, "line"),
+                    row_str(alias_row, "content_hash"),
+                )
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+                merged.append(alias_row)
+                if len(merged) >= limit:
+                    return merged
+        return merged
+
+    def _merge_caller_rows(self, *, rows: list[object], extra_rows: list[object], limit: int) -> list[object]:
+        merged: list[object] = []
+        seen: set[tuple[str, str, str, str, str, int, str]] = set()
+        for row in [*rows, *extra_rows]:
+            dedupe_key = (
+                row_str(row, "repo_root"),
+                row_str(row, "relative_path"),
+                row_str(row, "caller_relative_path"),
+                row_str(row, "from_symbol"),
+                row_str(row, "to_symbol"),
+                row_int(row, "line"),
+                row_str(row, "content_hash"),
+            )
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            merged.append(row)
+            if len(merged) >= limit:
+                break
+        return merged
+
+    def _caller_dtos_from_rows(self, rows: list[object]) -> list[CallerEdgeDTO]:
+        return [
+            CallerEdgeDTO(
+                repo=row_str(row, "repo_root"),
+                relative_path=row_str(row, "caller_relative_path") or row_str(row, "relative_path"),
+                from_symbol=row_str(row, "from_symbol"),
+                to_symbol=row_str(row, "to_symbol"),
+                line=row_int(row, "line"),
+                content_hash=row_str(row, "content_hash"),
+                caller_relative_path=row_str(row, "caller_relative_path") or None,
+            )
+            for row in rows
+        ]
+
     def find_callees(self, repo_root: str, symbol_name: str, limit: int) -> list[CallerEdgeDTO]:
         """지정 심볼이 호출하는 대상 관계를 조회한다."""
         with connect(self._db_path) as conn:
             rows = conn.execute(
                 """
-                SELECT repo_root, relative_path, from_symbol, to_symbol, line, content_hash
+                SELECT repo_root, relative_path, caller_relative_path, from_symbol, to_symbol, line, content_hash
                 FROM lsp_call_relations
                 WHERE (
                         repo_root = :repo_root
@@ -535,7 +645,7 @@ class LspToolDataRepository:
                         )
                     )
                   AND from_symbol = :from_symbol
-                ORDER BY relative_path ASC, line ASC
+                ORDER BY COALESCE(caller_relative_path, relative_path) ASC, line ASC
                 LIMIT :limit
                 """,
                 {"repo_root": repo_root, "from_symbol": symbol_name, "limit": limit},
@@ -543,11 +653,12 @@ class LspToolDataRepository:
         return [
             CallerEdgeDTO(
                 repo=row_str(row, "repo_root"),
-                relative_path=row_str(row, "relative_path"),
+                relative_path=row_str(row, "caller_relative_path") or row_str(row, "relative_path"),
                 from_symbol=row_str(row, "from_symbol"),
                 to_symbol=row_str(row, "to_symbol"),
                 line=row_int(row, "line"),
                 content_hash=row_str(row, "content_hash"),
+                caller_relative_path=row_str(row, "caller_relative_path") or None,
             )
             for row in rows
         ]
@@ -852,7 +963,7 @@ class LspToolDataRepository:
         with connect(self._db_path) as conn:
             row = conn.execute(
                 """
-                SELECT COUNT(DISTINCT (repo_root || '::' || relative_path)) AS caller_file_count
+                SELECT COUNT(DISTINCT (repo_root || '::' || COALESCE(caller_relative_path, relative_path))) AS caller_file_count
                 FROM lsp_call_relations
                 WHERE (
                         repo_root = :repo_root
@@ -961,7 +1072,7 @@ class LspToolDataRepository:
         with connect(self._db_path) as conn:
             rows = conn.execute(
                 """
-                SELECT from_symbol, to_symbol, line
+                SELECT from_symbol, to_symbol, line, caller_relative_path
                 FROM lsp_call_relations
                 WHERE repo_root = :repo_root
                   AND relative_path = :relative_path
@@ -979,6 +1090,7 @@ class LspToolDataRepository:
                 "from_symbol": row_str(row, "from_symbol"),
                 "to_symbol": row_str(row, "to_symbol"),
                 "line": row_int(row, "line"),
+                "caller_relative_path": row_optional_str_normalized(row, "caller_relative_path"),
             }
             for row in rows
         ]

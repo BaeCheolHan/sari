@@ -1097,7 +1097,15 @@ class SolidLanguageServer(ABC):
                 location['absolutePath'] = absolute_file_path
                 location['relativePath'] = relative_file_path
                 location['uri'] = Path(absolute_file_path).as_uri()
-        container_symbol_kinds = {ls_types.SymbolKind.Method, ls_types.SymbolKind.Function, ls_types.SymbolKind.Class}
+        container_symbol_kinds = {
+            ls_types.SymbolKind.Method,
+            ls_types.SymbolKind.Function,
+            ls_types.SymbolKind.Class,
+            ls_types.SymbolKind.Constructor,
+            ls_types.SymbolKind.Enum,
+            ls_types.SymbolKind.Interface,
+            ls_types.SymbolKind.Struct,
+        }
 
         def is_position_in_range(line: int, range_d: ls_types.Range) -> bool:
             start = range_d['start']
@@ -1113,7 +1121,14 @@ class SolidLanguageServer(ABC):
                     column_condition = column >= start['character']
             return line_condition and column_condition
         candidate_containers = [s for s in document_symbols.iter_symbols() if s['kind'] in container_symbol_kinds and s['location']['range']['start']['line'] != s['location']['range']['end']['line']]
-        var_containers = [s for s in document_symbols.iter_symbols() if s['kind'] == ls_types.SymbolKind.Variable]
+        scalar_container_kinds = {
+            ls_types.SymbolKind.Variable,
+            ls_types.SymbolKind.Property,
+            ls_types.SymbolKind.Field,
+            ls_types.SymbolKind.Constant,
+            ls_types.SymbolKind.EnumMember,
+        }
+        var_containers = [s for s in document_symbols.iter_symbols() if s['kind'] in scalar_container_kinds]
         candidate_containers.extend(var_containers)
         if not candidate_containers:
             return None

@@ -274,6 +274,116 @@ def test_mcp_call_graph_uses_python_semantic_callers_when_lsp_relations_missing(
     assert "WARN_CALL_GRAPH_RELATIONS_NOT_READY" not in warning_codes
 
 
+def test_mcp_get_callers_aliases_java_class_query_to_constructor_relations(tmp_path: Path) -> None:
+    """Java 클래스 이름 질의는 같은 파일의 <init> relation을 caller 결과로 노출해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+
+    repo_dir = tmp_path / "payment-service"
+    repo_dir.mkdir()
+    WorkspaceService(WorkspaceRepository(db_path)).add_workspace(str(repo_dir))
+    _upsert_repo_identity(db_path, repo_id="payment-service", repo_root=str(repo_dir.resolve()), repo_label="payment-service")
+
+    lsp_repo = LspToolDataRepository(db_path)
+    lsp_repo.replace_symbols(
+        repo_root=str(repo_dir.resolve()),
+        relative_path="src/main/java/com/acme/service/CommonMessageService.java",
+        content_hash="h-service",
+        symbols=[
+            {"name": "CommonMessageService", "kind": "Class", "line": 10, "end_line": 80},
+            {"name": "CommonMessageService", "kind": "Constructor", "line": 14, "end_line": 18},
+        ],
+        created_at="2026-03-23T00:00:00+00:00",
+    )
+    lsp_repo.replace_relations(
+        repo_root=str(repo_dir.resolve()),
+        relative_path="src/main/java/com/acme/service/CommonMessageService.java",
+        content_hash="h-service",
+        relations=[{"from_symbol": "Errors.DEFAULT_CANCEL_MESSAGE1", "to_symbol": "<init>", "line": 16}],
+        created_at="2026-03-23T00:00:00+00:00",
+    )
+
+    server = McpServer(db_path=db_path)
+    response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 333,
+            "method": "tools/call",
+            "params": {
+                "name": "get_callers",
+                "arguments": {
+                    "repo": str(repo_dir.resolve()),
+                    "symbol": "CommonMessageService",
+                    "limit": 10,
+                    "options": {"structured": 1},
+                },
+            },
+        }
+    )
+    payload = response.to_dict()
+
+    assert payload["result"]["isError"] is False
+    items = payload["result"]["structuredContent"]["items"]
+    assert len(items) == 1
+    assert items[0]["from_symbol"] == "Errors.DEFAULT_CANCEL_MESSAGE1"
+    assert items[0]["to_symbol"] == "<init>"
+
+
+def test_mcp_call_graph_aliases_java_class_query_to_constructor_callers(tmp_path: Path) -> None:
+    """call_graph도 Java 클래스 이름 질의에서 constructor-derived caller를 포함해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+
+    repo_dir = tmp_path / "payment-service"
+    repo_dir.mkdir()
+    WorkspaceService(WorkspaceRepository(db_path)).add_workspace(str(repo_dir))
+    _upsert_repo_identity(db_path, repo_id="payment-service", repo_root=str(repo_dir.resolve()), repo_label="payment-service")
+
+    lsp_repo = LspToolDataRepository(db_path)
+    lsp_repo.replace_symbols(
+        repo_root=str(repo_dir.resolve()),
+        relative_path="src/main/java/com/acme/service/CommonMessageService.java",
+        content_hash="h-service",
+        symbols=[
+            {"name": "CommonMessageService", "kind": "Class", "line": 10, "end_line": 80},
+            {"name": "CommonMessageService", "kind": "Constructor", "line": 14, "end_line": 18},
+        ],
+        created_at="2026-03-23T00:00:00+00:00",
+    )
+    lsp_repo.replace_relations(
+        repo_root=str(repo_dir.resolve()),
+        relative_path="src/main/java/com/acme/service/CommonMessageService.java",
+        content_hash="h-service",
+        relations=[{"from_symbol": "Errors.DEFAULT_CANCEL_MESSAGE1", "to_symbol": "<init>", "line": 16}],
+        created_at="2026-03-23T00:00:00+00:00",
+    )
+
+    server = McpServer(db_path=db_path)
+    response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 334,
+            "method": "tools/call",
+            "params": {
+                "name": "call_graph",
+                "arguments": {
+                    "repo": str(repo_dir.resolve()),
+                    "symbol": "CommonMessageService",
+                    "limit": 10,
+                    "options": {"structured": 1},
+                },
+            },
+        }
+    )
+    payload = response.to_dict()
+
+    assert payload["result"]["isError"] is False
+    graph = payload["result"]["structuredContent"]["items"][0]
+    assert graph["caller_count"] == 1
+    assert graph["callers"][0]["from_symbol"] == "Errors.DEFAULT_CANCEL_MESSAGE1"
+    assert graph["callers"][0]["to_symbol"] == "<init>"
+
+
 def test_mcp_get_callers_requires_symbol_or_symbol_id(tmp_path: Path) -> None:
     """get_callers는 symbol 또는 symbol_id 중 하나를 요구해야 한다."""
     db_path = tmp_path / "state.db"

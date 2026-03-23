@@ -709,6 +709,7 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
             )
         relations = self._extract_relations_from_references(
             lsp=lsp,
+            repo_root=repo_root,
             runtime_relative_path=runtime_relative_path,
             raw_symbols=raw_symbols,
             normalized_symbols=symbols,
@@ -719,6 +720,7 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
         self,
         *,
         lsp: object,
+        repo_root: str,
         runtime_relative_path: str,
         raw_symbols: list[object],
         normalized_symbols: list[dict[str, object]],
@@ -728,8 +730,9 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
         if not callable(request_referencing_symbols):
             return []
         reference_pos_by_symbol = self._build_symbol_reference_position_index(raw_symbols=raw_symbols)
+        source_lines = self._load_source_lines(repo_root=repo_root, runtime_relative_path=runtime_relative_path)
         deduped: list[dict[str, object]] = []
-        seen: set[tuple[str, str, int]] = set()
+        seen: set[tuple[str, str, int, str]] = set()
         for symbol in normalized_symbols:
             target_name = str(symbol.get("name", "")).strip()
             target_kind = str(symbol.get("kind", "")).strip().lower()
@@ -755,6 +758,25 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
                 )
             except (SolidLSPException, RuntimeError, OSError, ValueError, TypeError):
                 continue
+            if (not incoming) and query_col == 0 and source_lines is not None:
+                inferred_col = self._infer_symbol_column_from_source(
+                    source_lines=source_lines,
+                    line=query_line,
+                    symbol_name=target_name,
+                )
+                if inferred_col is not None and inferred_col > 0:
+                    try:
+                        incoming = request_referencing_symbols(
+                            runtime_relative_path,
+                            int(query_line),
+                            int(inferred_col),
+                            include_imports=False,
+                            include_self=False,
+                            include_body=False,
+                            include_file_symbols=False,
+                        )
+                    except (SolidLSPException, RuntimeError, OSError, ValueError, TypeError):
+                        continue
             if not isinstance(incoming, list):
                 continue
             for ref in incoming:
@@ -786,19 +808,49 @@ class SolidLspExtractionBackend(SolidLspProbeMixin):
                 if not isinstance(caller_relative, str) or caller_relative.strip() == "":
                     # same-file 여부를 증명할 수 없는 edge는 저장하지 않는다.
                     continue
-                if caller_relative.strip() != runtime_relative_path:
-                    # lsp_call_relations 스키마는 파일 단위 replace 계약이라 cross-file edge는 제외한다.
-                    continue
+                caller_relative_normalized = caller_relative.strip()
                 try:
                     relation_line = int(line_raw)
                 except (RuntimeError, ValueError, TypeError):
                     relation_line = target_line
-                key = (caller_name, target_name, relation_line)
+                key = (caller_name, target_name, relation_line, caller_relative_normalized)
                 if key in seen:
                     continue
                 seen.add(key)
-                deduped.append({"from_symbol": caller_name, "to_symbol": target_name, "line": relation_line})
+                deduped.append(
+                    {
+                        "from_symbol": caller_name,
+                        "to_symbol": target_name,
+                        "line": relation_line,
+                        "caller_relative_path": caller_relative_normalized,
+                    }
+                )
         return deduped
+
+    def _load_source_lines(self, *, repo_root: str, runtime_relative_path: str) -> list[str] | None:
+        """reference fallback용 원본 파일 라인 목록을 읽는다."""
+        try:
+            path = Path(repo_root) / runtime_relative_path
+            content = path.read_text(encoding="utf-8", errors="ignore")
+        except (OSError, RuntimeError, ValueError):
+            return None
+        return content.splitlines()
+
+    def _infer_symbol_column_from_source(
+        self,
+        *,
+        source_lines: list[str],
+        line: int,
+        symbol_name: str,
+    ) -> int | None:
+        """selectionRange 부재 시 소스 라인에서 심볼 토큰 column을 추정한다."""
+        if line < 0 or line >= len(source_lines):
+            return None
+        target_line = source_lines[line]
+        idx = target_line.find(symbol_name)
+        if idx < 0:
+            return None
+        return int(idx)
 
     def _build_symbol_reference_position_index(
         self, *, raw_symbols: list[object]
