@@ -139,6 +139,32 @@ def test_javalight_dependency_provider_bootstraps_managed_home_when_missing(monk
     assert command[1:3] == ["-cp", str((managed_home / "dist" / "classpath") / "*")]
 
 
+def test_javalight_dependency_provider_uses_bundled_bootstrap_when_env_and_local_source_are_missing(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("SARI_JAVALIGHT_HOME", raising=False)
+    monkeypatch.delenv("SARI_JAVALIGHT_BOOTSTRAP_HOME", raising=False)
+    from solidlsp.language_servers.java_light_server import JavaLightServer
+
+    managed_home = tmp_path / "managed-javalight"
+    bundled_home = tmp_path / "bundled-javalight"
+    (bundled_home / "dist" / "classpath").mkdir(parents=True)
+    (bundled_home / "dist" / "classpath" / "java-language-server.jar").write_text("jar", encoding="utf-8")
+
+    settings = SolidLSPSettings(solidlsp_dir=str(tmp_path / ".solidlsp-global"))
+    provider = JavaLightServer.DependencyProvider(settings.get_ls_specific_settings(Language.JAVA), str(tmp_path))
+    provider.runtime_dependencies = {"jdk21": {}}
+
+    monkeypatch.setattr(provider, "_managed_server_home", lambda: str(managed_home))
+    monkeypatch.setattr(provider, "_ensure_managed_jdk_home", lambda: str(tmp_path / "managed-jdk"))
+    monkeypatch.setattr(provider, "_java_supports_compiler_modules", lambda java_bin: True)
+    monkeypatch.setattr(provider, "_bundled_server_home", lambda: str(bundled_home))
+    monkeypatch.setattr("os.getcwd", lambda: str(tmp_path / "cwd-without-tools"))
+
+    command = provider.create_launch_command()
+
+    assert command[1:3] == ["-cp", str((managed_home / "dist" / "classpath") / "*")]
+    assert (managed_home / "dist" / "classpath" / "java-language-server.jar").exists()
+
+
 def test_javalight_dependency_provider_normalizes_tar_gz_archive_type(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.delenv("SARI_JAVALIGHT_JAVA_HOME", raising=False)
     monkeypatch.delenv("JAVA_HOME", raising=False)

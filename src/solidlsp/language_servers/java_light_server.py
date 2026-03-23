@@ -308,6 +308,10 @@ class JavaLightServer(SolidLanguageServer):
                 potential_path = os.path.abspath(os.path.join(os.getcwd(), "tools", "manual", "java-language-server"))
                 if os.path.exists(potential_path):
                     bootstrap_home = potential_path
+            if not bootstrap_home:
+                bundled_home = self._bundled_server_home()
+                if self._has_server_classpath(bundled_home):
+                    bootstrap_home = bundled_home
 
             if not bootstrap_home or not self._has_server_classpath(bootstrap_home):
                 raise RuntimeError(
@@ -318,6 +322,9 @@ class JavaLightServer(SolidLanguageServer):
             if os.path.exists(target_home):
                 shutil.rmtree(target_home)
             shutil.copytree(bootstrap_home, target_home)
+
+        def _bundled_server_home(self) -> str:
+            return str(pathlib.Path(__file__).resolve().parent / "_vendor" / "javalight")
 
         def _has_server_classpath(self, server_home: str) -> bool:
             return os.path.exists(os.path.join(server_home, "dist", "classpath"))
