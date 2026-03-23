@@ -38,6 +38,11 @@ class L3ExtractSuccessStage:
         now_iso: str,
     ) -> str:
         symbols = list(getattr(extraction, "symbols", []))
+        if len(symbols) == 0 and preprocess_result is not None and len(preprocess_result.symbols) > 0:
+            # Some language servers (for example pyrefly in specific setups) can return
+            # an empty documentSymbol payload without an explicit protocol error.
+            # Preserve minimally useful symbol searchability with preprocess symbols.
+            symbols = list(preprocess_result.symbols)
         relations = list(getattr(extraction, "relations", []))
         self._record_quality_shadow_compare(
             job=job,

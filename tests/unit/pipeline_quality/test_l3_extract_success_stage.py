@@ -36,12 +36,17 @@ def _job() -> FileEnrichJobDTO:
 class _PersistStage:
     called: int = 0
     reason_codes: list[L5ReasonCode] | None = None
+    symbols_payload_sizes: list[int] | None = None
 
     def apply_l5_success(self, **kwargs: object) -> None:
         self.called += 1
         if self.reason_codes is None:
             self.reason_codes = []
         self.reason_codes.append(kwargs["reason_code"])  # type: ignore[index]
+        if self.symbols_payload_sizes is None:
+            self.symbols_payload_sizes = []
+        payload = kwargs.get("lsp_symbols")
+        self.symbols_payload_sizes.append(len(payload) if isinstance(payload, list) else 0)
 
 
 @dataclass
@@ -104,3 +109,28 @@ def test_extract_success_stage_uses_admission_reason_when_present() -> None:
         now_iso="2026-01-01T00:00:00Z",
     )
     assert persist.reason_codes == [L5ReasonCode.UNRESOLVED_SYMBOL]
+
+
+def test_extract_success_stage_falls_back_to_preprocess_symbols_when_lsp_empty() -> None:
+    persist = _PersistStage()
+    stage = L3ExtractSuccessStage(
+        persist_stage=persist,
+        record_quality_shadow_compare=lambda **kwargs: None,
+        l5_queue_transition=_L5QueueTransition(),
+    )
+    _ = stage.handle_success(
+        context=L3JobContext(),
+        job=_job(),
+        language="python",
+        preprocess_result=type(
+            "_Preprocess",
+            (),
+            {
+                "symbols": [{"name": "status_endpoint", "kind": "function", "line": 22, "end_line": 22}],
+            },
+        )(),
+        admission_decision=None,
+        extraction=_Extraction(symbols=[], relations=[]),
+        now_iso="2026-01-01T00:00:00Z",
+    )
+    assert persist.symbols_payload_sizes == [1]
