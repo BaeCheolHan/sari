@@ -14,3 +14,10 @@ def test_lsp_provision_policy_covers_enabled_languages() -> None:
         assert policy.provisioning_mode in {"auto_provision", "requires_system_binary", "hybrid"}
         assert policy.install_hint.strip() != ""
 
+
+def test_python_lsp_provision_policy_can_switch_hint_for_pyrefly(monkeypatch) -> None:
+    monkeypatch.setenv("SARI_PYTHON_LSP_PROVIDER", "pyrefly")
+
+    policy = get_lsp_provision_policy("python")
+
+    assert "pyrefly" in policy.install_hint.lower()

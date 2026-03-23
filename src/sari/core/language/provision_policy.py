@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 
 
 @dataclass(frozen=True)
@@ -211,6 +212,14 @@ _POLICY_BY_LANGUAGE: dict[str, LspProvisionPolicyDTO] = {
 def get_lsp_provision_policy(language: str) -> LspProvisionPolicyDTO:
     """언어별 LSP 프로비저닝 정책을 반환한다."""
     normalized = language.strip().lower()
+    if normalized == "python":
+        provider = os.environ.get("SARI_PYTHON_LSP_PROVIDER", "").strip().lower()
+        if provider == "pyrefly":
+            return LspProvisionPolicyDTO(
+                language="python",
+                provisioning_mode="hybrid",
+                install_hint="python 환경에 pyrefly가 필요합니다. 예: pip install pyrefly",
+            )
     policy = _POLICY_BY_LANGUAGE.get(normalized)
     if policy is not None:
         return policy

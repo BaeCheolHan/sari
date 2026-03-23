@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import types
 from pathlib import Path
+import os
 
 import solidlsp.ls as ls_module
 from solidlsp.ls import SolidLanguageServer, _describe_process_launch_info, process_env_context
+from solidlsp.ls_exceptions import SolidLSPException
 from solidlsp.ls_config import Language, LanguageServerConfig
 from solidlsp.lsp_protocol_handler.server import ProcessLaunchInfo
 from solidlsp.settings import SolidLSPSettings
@@ -114,3 +116,91 @@ def test_process_launch_info_debug_summary_redacts_env_values() -> None:
     assert "secret-value" not in summary
     assert "-Dtoken=secret-value" not in summary
     assert "env_keys=2" in summary
+
+
+def test_python_ls_can_switch_to_pyrefly_via_env(monkeypatch) -> None:
+    """Python adapter는 env로 Pyrefly provider를 선택할 수 있어야 한다."""
+    monkeypatch.setenv("SARI_PYTHON_LSP_PROVIDER", "pyrefly")
+
+    ls_class = Language.PYTHON.get_ls_class()
+
+    assert ls_class.__name__ == "PyreflyServer"
+
+
+def test_pyrefly_dependency_provider_launches_pyrefly_lsp(monkeypatch, tmp_path: Path) -> None:
+    """Pyrefly adapter는 pyrefly lsp 명령으로 서버를 기동해야 한다."""
+    monkeypatch.setenv("SARI_PYTHON_LSP_PROVIDER", "pyrefly")
+    monkeypatch.setattr("solidlsp.language_servers.pyrefly_server.ensure_commands_available", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("shutil.which", lambda command, path=None: "/usr/bin/pyrefly" if command == "pyrefly" else None)
+    from solidlsp.language_servers.pyrefly_server import PyreflyServer
+
+    settings = SolidLSPSettings(solidlsp_dir=str(tmp_path / ".solidlsp-global"))
+    config = LanguageServerConfig(code_language=Language.PYTHON)
+    provider = PyreflyServer.DependencyProvider(settings.get_ls_specific_settings(Language.PYTHON), str(tmp_path))
+
+    command = provider.create_launch_command()
+
+    assert os.path.basename(command[0]) == "pyrefly"
+    assert command[1:] == ["lsp"]
+
+
+def test_pyrefly_dependency_provider_supports_indexing_mode_env(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("SARI_PYTHON_LSP_PROVIDER", "pyrefly")
+    monkeypatch.setenv("SARI_PYREFLY_INDEXING_MODE", "lazy-blocking")
+    monkeypatch.setattr("solidlsp.language_servers.pyrefly_server.ensure_commands_available", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("shutil.which", lambda command, path=None: "/usr/bin/pyrefly" if command == "pyrefly" else None)
+    from solidlsp.language_servers.pyrefly_server import PyreflyServer
+
+    settings = SolidLSPSettings(solidlsp_dir=str(tmp_path / ".solidlsp-global"))
+    provider = PyreflyServer.DependencyProvider(settings.get_ls_specific_settings(Language.PYTHON), str(tmp_path))
+
+    command = provider.create_launch_command()
+
+    assert os.path.basename(command[0]) == "pyrefly"
+    assert command[1:] == ["lsp", "--indexing-mode", "lazy-blocking"]
+
+
+def test_pyrefly_document_symbols_retries_once_after_subsequent_mutation(monkeypatch) -> None:
+    monkeypatch.setenv("SARI_PYTHON_LSP_PROVIDER", "pyrefly")
+    from solidlsp.language_servers.pyrefly_server import PyreflyServer
+
+    calls = {"count": 0}
+
+    def _fake_request(self, relative_file_path: str, file_buffer=None, *, sync_with_ls: bool = True):  # noqa: ANN001
+        del self, relative_file_path, file_buffer, sync_with_ls
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise SolidLSPException("Error processing request textDocument/documentSymbol (caused by Request textDocument/documentSymbol (2) is canceled due to subsequent mutation (-32800))")
+        return "ok"
+
+    monkeypatch.setattr(SolidLanguageServer, "request_document_symbols", _fake_request)
+    monkeypatch.setattr("time.sleep", lambda *_args, **_kwargs: None)
+
+    server = object.__new__(PyreflyServer)
+    result = server.request_document_symbols("x.py")
+
+    assert result == "ok"
+    assert calls["count"] == 2
+
+
+def test_pyrefly_references_retry_once_after_subsequent_mutation(monkeypatch) -> None:
+    monkeypatch.setenv("SARI_PYTHON_LSP_PROVIDER", "pyrefly")
+    from solidlsp.language_servers.pyrefly_server import PyreflyServer
+
+    calls = {"count": 0}
+
+    def _fake_refs(self, relative_file_path: str, line: int, column: int):  # noqa: ANN001
+        del self, relative_file_path, line, column
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise SolidLSPException("Error processing request textDocument/references (caused by Request textDocument/references (2) is canceled due to subsequent mutation (-32800))")
+        return ["ok"]
+
+    monkeypatch.setattr(SolidLanguageServer, "request_references", _fake_refs)
+    monkeypatch.setattr("time.sleep", lambda *_args, **_kwargs: None)
+
+    server = object.__new__(PyreflyServer)
+    result = server.request_references("x.py", 1, 1)
+
+    assert result == ["ok"]
+    assert calls["count"] == 2
