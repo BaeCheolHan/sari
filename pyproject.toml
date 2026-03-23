@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sari"
-version = "2.0.35"
+version = "2.0.37"
 description = "Redesigned high-performance local search and indexing engine"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -13,7 +13,7 @@ dependencies = [
     "alembic>=1.13.0",
     "sqlalchemy>=2.0.0",
     "pydantic>=2.0.0",
-    "pyright>=1.1.396,<2",
+    "pyrefly>=0.57.1,<1",
     "overrides>=7.7.0,<8",
     "structlog>=23.1.0",
     "click>=8.0.0",
