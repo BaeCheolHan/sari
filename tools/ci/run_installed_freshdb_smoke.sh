@@ -54,6 +54,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import time
 from pathlib import Path
 
 import sari
@@ -142,17 +143,60 @@ except Exception:
 
 scan = collection.scan_once(repo_root, trigger="manual")
 loop_tail: list[dict[str, int]] = []
-zero_rounds = 0
-for i in range(120):
+stable_rounds = 0
+deadline = time.time() + 180.0
+for i in range(240):
     n0 = int(collection.process_enrich_jobs(500))
     n2 = int(collection.process_enrich_jobs_l2(500))
     n3 = int(collection.process_enrich_jobs_l3(500))
     n5 = int(collection.process_enrich_jobs_l5(500))
     total = n0 + n2 + n3 + n5
-    loop_tail.append({"i": i, "n0": n0, "n2": n2, "n3": n3, "n5": n5, "total": total})
-    zero_rounds = zero_rounds + 1 if total == 0 else 0
-    if zero_rounds >= 6:
+    with sqlite3.connect(config.db_path) as conn:
+        pending_now = int(
+            conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM collected_files_l1
+                WHERE repo_root = ?
+                  AND relative_path LIKE 'src/sari/%'
+                  AND enrich_state = 'PENDING'
+                """,
+                (repo_root,),
+            ).fetchone()[0]
+        )
+        symbols_now = int(
+            conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM lsp_symbols
+                WHERE repo_root = ?
+                  AND relative_path LIKE 'src/sari/%'
+                """,
+                (repo_root,),
+            ).fetchone()[0]
+        )
+    loop_tail.append(
+        {
+            "i": i,
+            "n0": n0,
+            "n2": n2,
+            "n3": n3,
+            "n5": n5,
+            "total": total,
+            "pending": pending_now,
+            "symbols": symbols_now,
+        }
+    )
+    if total == 0 and pending_now == 0 and symbols_now > 0:
+        stable_rounds += 1
+    else:
+        stable_rounds = 0
+    if stable_rounds >= 3:
         break
+    if time.time() >= deadline:
+        break
+    if total == 0:
+        time.sleep(0.2)
 
 with sqlite3.connect(config.db_path) as conn:
     pending_src_sari = int(
