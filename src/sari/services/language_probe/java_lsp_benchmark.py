@@ -324,7 +324,7 @@ def run_java_lsp_benchmark(
                             required_java_version=runtime_meta.get("required_java_version"),  # type: ignore[arg-type]
                         )
                     )
-                except Exception as exc:
+                except (RuntimeError, OSError, TimeoutError, ValueError) as exc:
                     observations.append(
                         BenchmarkObservation(
                             provider=provider,
@@ -450,7 +450,7 @@ def run_java_lsp_benchmark(
                             names=_extract_names(result),
                         )
                     )
-                except Exception as exc:
+                except (RuntimeError, OSError, TimeoutError, ValueError) as exc:
                     observations.append(
                         BenchmarkObservation(
                             provider=provider,

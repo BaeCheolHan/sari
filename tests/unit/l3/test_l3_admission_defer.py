@@ -313,8 +313,8 @@ def test_l3_orchestrator_marks_pending_when_admission_reject_is_deferred() -> No
     assert len(l5_queue_transition.defer_calls) == 1
 
 
-def test_l3_orchestrator_preprocess_skip_finishes_without_lsp() -> None:
-    """refactored orchestrator는 전처리 skip 신호가 있으면 LSP 없이 완료해야 한다."""
+def test_l3_orchestrator_preprocess_l3_only_still_completes_with_preprocess_symbols() -> None:
+    """L3_ONLY 전처리여도 기본 lane은 extract를 수행하고 preprocess 심볼 fallback으로 완료한다."""
     skip = L3SkipEligibilityService(
         is_recent_tool_ready=lambda _job: False,
         resolve_l3_skip_reason=lambda _job: None,
@@ -332,9 +332,18 @@ def test_l3_orchestrator_preprocess_skip_finishes_without_lsp() -> None:
                 reason="l3_preprocess_only",
             )
 
+    class _StubExtractBackend:
+        def extract(self, repo_root: str, relative_path: str, content_hash: str):  # noqa: ANN001
+            _ = (repo_root, relative_path, content_hash)
+            return type(
+                "_R",
+                (),
+                {"error_message": None, "symbols": [], "relations": []},
+            )()
+
     orchestrator = L3Orchestrator(
         file_repo=_StubFileRepo(),
-        lsp_backend=_NoopLspBackend(),
+        lsp_backend=_StubExtractBackend(),
         policy=type("P", (), {"retry_max_attempts": 3, "retry_backoff_base_sec": 1})(),
         error_policy=_StubErrorPolicy(),
         run_mode="prod",

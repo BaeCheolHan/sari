@@ -90,7 +90,12 @@ def forward_with_retry(
     preflight_probe = default_probe_once if probe_once_fn is None else probe_once_fn
     try:
         if replay_timeout_sec > timeout_sec:
-            preflight_probe(host, port, timeout_sec)
+            try:
+                preflight_probe(host, port, timeout_sec)
+            except (OSError, TimeoutError):
+                # probe는 빠른 가용성 확인용 보조 신호다.
+                # 실패해도 실제 forward 시도를 통해 최종 판정을 수행한다.
+                pass
             initial_timeout_sec = replay_timeout_sec
         return forward_once_fn(request, host, port, initial_timeout_sec)
     except (DaemonForwardError, OSError, TimeoutError) as first_exc:

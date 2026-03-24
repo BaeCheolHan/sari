@@ -523,7 +523,7 @@ def test_enrich_engine_l3_needs_l5_does_not_escalate_scope_in_l3() -> None:
 
 
 def test_enrich_engine_l3_preprocess_can_skip_lsp_extract() -> None:
-    """기본 lane은 L3_ONLY 전처리 결과가 있어도 LSP extract 경로를 탄다."""
+    """기본 lane은 L3_ONLY 전처리 결과에서 빈 LSP symbols를 preprocess symbols로 보완한다."""
     queue_repo = _CaptureEscalateQueueRepo()
     error_policy = _StubErrorPolicy()
     engine = build_min_enrich_engine_for_l3_test(
@@ -567,7 +567,7 @@ def test_enrich_engine_l3_preprocess_can_skip_lsp_extract() -> None:
     assert result.finished_status == "DONE"
     assert result.failure_update is None
     assert result.lsp_update is not None
-    assert len(result.lsp_update.symbols) == 0
+    assert len(result.lsp_update.symbols) == 1
 
 
 def test_l3_preprocess_large_file_marks_deferred_heavy() -> None:
