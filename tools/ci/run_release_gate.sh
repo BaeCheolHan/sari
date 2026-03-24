@@ -102,7 +102,7 @@ MCP_CALL_FLOW_PASSED="$(
     SARI_MCP_PROBE_REPO="${ROOT_DIR}" \
     SARI_MCP_PROBE_QUERY="status_endpoint" \
     SARI_MCP_PROBE_SYMBOL="status_endpoint" \
-    SARI_MCP_PROBE_EXPECT_CALLERS_MIN="0" \
+    SARI_MCP_PROBE_EXPECT_CALLERS_MIN="1" \
     python3 tools/ci/release_gate_mcp_probe.py call_flow
 )"
 QUEUE_OPS_PASSED="$(run_cmd queue_ops "${QUEUE_OPS_LOG}" bash -lc "python3 -m sari.cli.main pipeline dead list --repo '${REPO_FIXTURE}' --limit 5 && python3 -m sari.cli.main pipeline dead requeue --repo '${REPO_FIXTURE}' --limit 5 && python3 -m sari.cli.main pipeline dead purge --repo '${REPO_FIXTURE}' --limit 5 --confirm")"
