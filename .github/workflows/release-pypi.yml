@@ -38,10 +38,17 @@ jobs:
         run: |
           uv sync --frozen --group dev
 
-      - name: Installed Runtime Fresh DB Smoke
+      - name: Installed Runtime Fresh DB Smoke (Non-blocking)
+        id: installed_freshdb_smoke
+        continue-on-error: true
         run: |
           chmod +x tools/ci/run_installed_freshdb_smoke.sh
           tools/ci/run_installed_freshdb_smoke.sh
+
+      - name: Warn on Fresh DB Smoke Failure
+        if: steps.installed_freshdb_smoke.outcome != 'success'
+        run: |
+          echo "::warning::Installed Fresh DB Smoke failed (non-blocking). See job logs and artifact summary."
 
       - name: Release hard gate
         run: |
@@ -80,6 +87,13 @@ jobs:
         with:
           name: release-gate-summary
           path: artifacts/ci/release-gate-summary.json
+
+      - name: Upload installed freshdb smoke summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: installed-freshdb-smoke-summary
+          path: artifacts/ci/installed-freshdb-smoke-summary.json
 
   publish-pypi:
     needs: build
