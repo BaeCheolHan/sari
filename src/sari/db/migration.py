@@ -398,11 +398,10 @@ def _fallback_upgrade_0016(conn: sqlite3.Connection) -> None:
             FROM lsp_symbols AS sym
             WHERE sym.repo_root = rel.repo_root
               AND sym.relative_path = COALESCE(NULLIF(rel.caller_relative_path, ''), rel.relative_path)
-              AND sym.content_hash = rel.content_hash
               AND sym.name = rel.from_symbol
               AND sym.symbol_key IS NOT NULL
               AND TRIM(sym.symbol_key) <> ''
-            GROUP BY sym.repo_root, sym.relative_path, sym.content_hash, sym.name
+            GROUP BY sym.repo_root, sym.relative_path, sym.name
             HAVING COUNT(DISTINCT sym.symbol_key) = 1
         )
         WHERE (rel.from_symbol_key IS NULL OR TRIM(rel.from_symbol_key) = '')

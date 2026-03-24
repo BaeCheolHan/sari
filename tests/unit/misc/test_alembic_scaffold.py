@@ -254,6 +254,101 @@ def test_ensure_migrated_backfills_relation_symbol_keys_from_symbols(tmp_path: P
     assert str(row["to_symbol_key"]) == "py:/repo/src/main.py#AuthService.login"
 
 
+def test_ensure_migrated_backfills_from_symbol_key_for_cross_file_relations(tmp_path: Path) -> None:
+    """caller/callee 파일 hash가 달라도 caller path 기준으로 from_symbol_key를 채워야 한다."""
+    db_path = tmp_path / "legacy-rel-cross-file.db"
+    with connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS collected_files_l1 (
+                repo_root TEXT NOT NULL,
+                scope_repo_root TEXT NOT NULL DEFAULT '',
+                relative_path TEXT NOT NULL,
+                absolute_path TEXT NOT NULL,
+                repo_label TEXT NOT NULL,
+                mtime_ns INTEGER NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                content_hash TEXT NOT NULL,
+                is_deleted INTEGER NOT NULL DEFAULT 0,
+                last_seen_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                enrich_state TEXT NOT NULL,
+                PRIMARY KEY(repo_root, relative_path)
+            );
+            CREATE TABLE IF NOT EXISTS lsp_symbols (
+                repo_root TEXT NOT NULL,
+                scope_repo_root TEXT NOT NULL DEFAULT '',
+                relative_path TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                name TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                line INTEGER NOT NULL,
+                end_line INTEGER NOT NULL,
+                symbol_key TEXT NULL,
+                parent_symbol_key TEXT NULL,
+                depth INTEGER NOT NULL DEFAULT 0,
+                container_name TEXT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY(repo_root, relative_path, content_hash, name, kind, line, end_line)
+            );
+            CREATE TABLE IF NOT EXISTS lsp_call_relations (
+                repo_root TEXT NOT NULL,
+                scope_repo_root TEXT NOT NULL DEFAULT '',
+                relative_path TEXT NOT NULL,
+                caller_relative_path TEXT NULL,
+                content_hash TEXT NOT NULL,
+                from_symbol TEXT NOT NULL,
+                to_symbol TEXT NOT NULL,
+                line INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY(repo_root, relative_path, content_hash, from_symbol, to_symbol, line)
+            );
+            CREATE TABLE IF NOT EXISTS alembic_version (
+                version_num VARCHAR(32) NOT NULL PRIMARY KEY
+            );
+            DELETE FROM alembic_version;
+            INSERT INTO alembic_version(version_num) VALUES('20260222_0008');
+            INSERT INTO lsp_symbols(
+                repo_root, scope_repo_root, relative_path, content_hash, name, kind, line, end_line,
+                symbol_key, parent_symbol_key, depth, container_name, created_at
+            ) VALUES(
+                '/repo', '/repo', 'src/controller.py', 'h-controller', 'Controller.run', 'Function', 10, 20,
+                'py:/repo/src/controller.py#Controller.run', NULL, 0, NULL, '2026-03-24T00:00:00+00:00'
+            );
+            INSERT INTO lsp_symbols(
+                repo_root, scope_repo_root, relative_path, content_hash, name, kind, line, end_line,
+                symbol_key, parent_symbol_key, depth, container_name, created_at
+            ) VALUES(
+                '/repo', '/repo', 'src/service.py', 'h-service', 'Service.exec', 'Function', 30, 40,
+                'py:/repo/src/service.py#Service.exec', NULL, 0, NULL, '2026-03-24T00:00:00+00:00'
+            );
+            INSERT INTO lsp_call_relations(
+                repo_root, scope_repo_root, relative_path, caller_relative_path, content_hash,
+                from_symbol, to_symbol, line, created_at
+            ) VALUES(
+                '/repo', '/repo', 'src/service.py', 'src/controller.py', 'h-service',
+                'Controller.run', 'Service.exec', 33, '2026-03-24T00:00:00+00:00'
+            );
+            """
+        )
+        conn.commit()
+
+    ensure_migrated(db_path)
+
+    with connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT from_symbol_key, to_symbol_key
+            FROM lsp_call_relations
+            WHERE repo_root='/repo' AND relative_path='src/service.py'
+            LIMIT 1
+            """
+        ).fetchone()
+    assert row is not None
+    assert str(row["from_symbol_key"]) == "py:/repo/src/controller.py#Controller.run"
+    assert str(row["to_symbol_key"]) == "py:/repo/src/service.py#Service.exec"
+
+
 def test_init_schema_handles_legacy_db_missing_repo_id_columns(tmp_path: Path) -> None:
     """legacy DB에서도 init_schema가 repo_id 인덱스 오류 없이 완료되어야 한다."""
     db_path = tmp_path / "legacy-init.db"
