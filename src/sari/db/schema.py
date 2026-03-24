@@ -233,11 +233,19 @@ CREATE TABLE IF NOT EXISTS lsp_call_relations (
     caller_relative_path TEXT NULL,
     content_hash TEXT NOT NULL,
     from_symbol TEXT NOT NULL,
+    from_symbol_key TEXT NULL,
     to_symbol TEXT NOT NULL,
+    to_symbol_key TEXT NULL,
     line INTEGER NOT NULL,
     created_at TEXT NOT NULL,
     PRIMARY KEY(repo_root, relative_path, content_hash, from_symbol, to_symbol, line)
 );
+
+CREATE INDEX IF NOT EXISTS idx_lsp_call_relations_to_symbol_key
+ON lsp_call_relations(repo_root, to_symbol_key, relative_path, line);
+
+CREATE INDEX IF NOT EXISTS idx_lsp_call_relations_from_symbol_key
+ON lsp_call_relations(repo_root, from_symbol_key, relative_path, line);
 
 CREATE TABLE IF NOT EXISTS python_semantic_call_edges (
     repo_id TEXT NOT NULL DEFAULT '',

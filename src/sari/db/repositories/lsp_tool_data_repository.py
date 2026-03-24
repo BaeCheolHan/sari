@@ -107,10 +107,12 @@ class LspToolDataRepository:
                 conn.execute(
                     """
                     INSERT OR IGNORE INTO lsp_call_relations(
-                        repo_id, repo_root, relative_path, caller_relative_path, content_hash, from_symbol, to_symbol, line, created_at
+                        repo_id, repo_root, relative_path, caller_relative_path, content_hash,
+                        from_symbol, from_symbol_key, to_symbol, to_symbol_key, line, created_at
                     )
                     VALUES(
-                        :repo_id, :repo_root, :relative_path, :caller_relative_path, :content_hash, :from_symbol, :to_symbol, :line, :created_at
+                        :repo_id, :repo_root, :relative_path, :caller_relative_path, :content_hash,
+                        :from_symbol, :from_symbol_key, :to_symbol, :to_symbol_key, :line, :created_at
                     )
                     """,
                     {
@@ -120,7 +122,9 @@ class LspToolDataRepository:
                         "caller_relative_path": _optional_str(relation.get("caller_relative_path")) or relative_path,
                         "content_hash": content_hash,
                         "from_symbol": str(relation.get("from_symbol", "")),
+                        "from_symbol_key": _optional_str(relation.get("from_symbol_key")),
                         "to_symbol": str(relation.get("to_symbol", "")),
+                        "to_symbol_key": _optional_str(relation.get("to_symbol_key")),
                         "line": int(relation.get("line", 0)),
                         "created_at": created_at,
                     },
@@ -223,6 +227,7 @@ class LspToolDataRepository:
                         {"repo_root": item.repo_root, "relative_path": item.relative_path},
                     )
                     relation_rows: list[dict[str, object]] = []
+                    symbol_key_lookup = self._symbol_key_lookup_from_symbols(item.symbols)
                     for relation in self._dedupe_relations(item.relations):
                         relation_rows.append(
                             {
@@ -232,7 +237,19 @@ class LspToolDataRepository:
                                 "caller_relative_path": _optional_str(relation.get("caller_relative_path")) or item.relative_path,
                                 "content_hash": item.content_hash,
                                 "from_symbol": str(relation.get("from_symbol", "")),
+                                "from_symbol_key": self._resolve_relation_symbol_key(
+                                    relation=relation,
+                                    key_field="from_symbol_key",
+                                    symbol_field="from_symbol",
+                                    symbol_key_lookup=symbol_key_lookup,
+                                ),
                                 "to_symbol": str(relation.get("to_symbol", "")),
+                                "to_symbol_key": self._resolve_relation_symbol_key(
+                                    relation=relation,
+                                    key_field="to_symbol_key",
+                                    symbol_field="to_symbol",
+                                    symbol_key_lookup=symbol_key_lookup,
+                                ),
                                 "line": int(relation.get("line", 0)),
                                 "created_at": item.created_at,
                             }
@@ -241,10 +258,12 @@ class LspToolDataRepository:
                         conn.executemany(
                             """
                             INSERT OR IGNORE INTO lsp_call_relations(
-                                repo_id, repo_root, relative_path, caller_relative_path, content_hash, from_symbol, to_symbol, line, created_at
+                                repo_id, repo_root, relative_path, caller_relative_path, content_hash,
+                                from_symbol, from_symbol_key, to_symbol, to_symbol_key, line, created_at
                             )
                             VALUES(
-                                :repo_id, :repo_root, :relative_path, :caller_relative_path, :content_hash, :from_symbol, :to_symbol, :line, :created_at
+                                :repo_id, :repo_root, :relative_path, :caller_relative_path, :content_hash,
+                                :from_symbol, :from_symbol_key, :to_symbol, :to_symbol_key, :line, :created_at
                             )
                             """,
                             relation_rows,
@@ -350,6 +369,43 @@ class LspToolDataRepository:
             seen.add(key)
             deduped.append(relation)
         return deduped
+
+    def _symbol_key_lookup_from_symbols(self, symbols: list[dict[str, object]]) -> dict[str, str]:
+        """symbol name -> symbol_key 단방향 매핑(모호한 이름은 제외)을 생성한다."""
+        mapping: dict[str, str] = {}
+        ambiguous: set[str] = set()
+        for symbol in self._dedupe_symbols(symbols):
+            name = str(symbol.get("name", "")).strip()
+            if name == "" or name in ambiguous:
+                continue
+            symbol_key = _optional_str(symbol.get("symbol_key"))
+            if symbol_key is None:
+                continue
+            existing = mapping.get(name)
+            if existing is None:
+                mapping[name] = symbol_key
+                continue
+            if existing != symbol_key:
+                mapping.pop(name, None)
+                ambiguous.add(name)
+        return mapping
+
+    def _resolve_relation_symbol_key(
+        self,
+        *,
+        relation: dict[str, object],
+        key_field: str,
+        symbol_field: str,
+        symbol_key_lookup: dict[str, str],
+    ) -> str | None:
+        """relation payload key를 우선 사용하고, 없으면 동일 파일 symbol map으로 백필한다."""
+        explicit = _optional_str(relation.get(key_field))
+        if explicit is not None:
+            return explicit
+        symbol_name = str(relation.get(symbol_field, "")).strip()
+        if symbol_name == "":
+            return None
+        return symbol_key_lookup.get(symbol_name)
 
     def count_symbols(self, repo_root: str, relative_path: str, content_hash: str) -> int:
         """파일의 심볼 레코드 수를 반환한다."""
@@ -525,11 +581,14 @@ class LspToolDataRepository:
                           AND is_deleted = 0
                     )
                 )
-              AND to_symbol = :to_symbol
+              AND (
+                    to_symbol = :to_symbol
+                    OR to_symbol_key = :to_symbol_key
+                )
             ORDER BY COALESCE(caller_relative_path, relative_path) ASC, line ASC
             LIMIT :limit
             """,
-            {"repo_root": repo_root, "to_symbol": to_symbol, "limit": limit},
+            {"repo_root": repo_root, "to_symbol": to_symbol, "to_symbol_key": to_symbol, "limit": limit},
         ).fetchall()
 
     def _find_caller_rows_by_suffix(self, *, conn, repo_root: str, symbol_suffix: str, limit: int) -> list[object]:
@@ -688,11 +747,14 @@ class LspToolDataRepository:
                               AND is_deleted = 0
                         )
                     )
-                  AND from_symbol = :from_symbol
+                  AND (
+                        from_symbol = :from_symbol
+                        OR from_symbol_key = :from_symbol_key
+                    )
                 ORDER BY COALESCE(caller_relative_path, relative_path) ASC, line ASC
                 LIMIT :limit
                 """,
-                {"repo_root": repo_root, "from_symbol": symbol_name, "limit": limit},
+                {"repo_root": repo_root, "from_symbol": symbol_name, "from_symbol_key": symbol_name, "limit": limit},
             ).fetchall()
         return [
             CallerEdgeDTO(

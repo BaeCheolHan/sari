@@ -292,3 +292,92 @@ def test_replace_file_data_many_ignores_relation_unique_conflicts(tmp_path: Path
             "SELECT COUNT(*) FROM lsp_call_relations WHERE repo_root='/repo' AND relative_path='src/target.py'"
         ).fetchone()[0]
     assert int(persisted) >= 1
+
+
+def test_replace_file_data_many_persists_relation_symbol_keys_from_symbol_table(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = LspToolDataRepository(db_path)
+    repo.replace_file_data_many(
+        [
+            LspExtractPersistDTO(
+                repo_id="r_repo",
+                repo_root="/repo",
+                relative_path="src/main.py",
+                content_hash="h1",
+                symbols=[
+                    {
+                        "name": "AuthController.login",
+                        "kind": "Function",
+                        "line": 3,
+                        "end_line": 8,
+                        "symbol_key": "py:/repo/src/main.py#AuthController.login",
+                    },
+                    {
+                        "name": "AuthService.login",
+                        "kind": "Function",
+                        "line": 12,
+                        "end_line": 20,
+                        "symbol_key": "py:/repo/src/main.py#AuthService.login",
+                    },
+                ],
+                relations=[
+                    {
+                        "from_symbol": "AuthController.login",
+                        "to_symbol": "AuthService.login",
+                        "line": 13,
+                    }
+                ],
+                created_at="2026-03-24T00:00:00+00:00",
+            )
+        ]
+    )
+    with connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT from_symbol_key, to_symbol_key
+            FROM lsp_call_relations
+            WHERE repo_root='/repo' AND relative_path='src/main.py'
+            LIMIT 1
+            """
+        ).fetchone()
+    assert row is not None
+    assert str(row["from_symbol_key"]) == "py:/repo/src/main.py#AuthController.login"
+    assert str(row["to_symbol_key"]) == "py:/repo/src/main.py#AuthService.login"
+
+
+def test_find_callers_and_callees_support_symbol_key_lookup(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = LspToolDataRepository(db_path)
+    repo.replace_relations(
+        repo_root="/repo",
+        relative_path="src/main.py",
+        content_hash="h1",
+        relations=[
+            {
+                "from_symbol": "AuthController.login",
+                "to_symbol": "AuthService.login",
+                "from_symbol_key": "py:/repo/src/main.py#AuthController.login",
+                "to_symbol_key": "py:/repo/src/main.py#AuthService.login",
+                "line": 13,
+            }
+        ],
+        created_at="2026-03-24T00:00:00+00:00",
+    )
+
+    callers = repo.find_callers(
+        repo_root="/repo",
+        symbol_name="py:/repo/src/main.py#AuthService.login",
+        limit=20,
+    )
+    callees = repo.find_callees(
+        repo_root="/repo",
+        symbol_name="py:/repo/src/main.py#AuthController.login",
+        limit=20,
+    )
+
+    assert len(callers) == 1
+    assert callers[0].from_symbol == "AuthController.login"
+    assert len(callees) == 1
+    assert callees[0].to_symbol == "AuthService.login"

@@ -42,6 +42,7 @@ def ensure_migrated(db_path: Path) -> None:
         _fallback_upgrade_0013(conn)
         _fallback_upgrade_0014(conn)
         _fallback_upgrade_0015(conn)
+        _fallback_upgrade_0016(conn)
         conn.commit()
 
 
@@ -130,6 +131,7 @@ def _fallback_upgrade_sqlite(db_path: Path) -> None:
         _fallback_upgrade_0013(conn)
         _fallback_upgrade_0014(conn)
         _fallback_upgrade_0015(conn)
+        _fallback_upgrade_0016(conn)
         conn.commit()
 
 
@@ -361,6 +363,32 @@ def _fallback_upgrade_0015(conn: sqlite3.Connection) -> None:
         ON python_semantic_call_edges(repo_root, to_symbol, relative_path, line)
         """
     )
+
+
+def _fallback_upgrade_0016(conn: sqlite3.Connection) -> None:
+    """lsp_call_relations symbol_key 컬럼/인덱스를 보강한다."""
+    if not _table_exists(conn, "lsp_call_relations"):
+        return
+    cols = _table_columns(conn, "lsp_call_relations")
+    if "from_symbol_key" not in cols:
+        conn.execute("ALTER TABLE lsp_call_relations ADD COLUMN from_symbol_key TEXT NULL")
+    if "to_symbol_key" not in cols:
+        conn.execute("ALTER TABLE lsp_call_relations ADD COLUMN to_symbol_key TEXT NULL")
+    cols = _table_columns(conn, "lsp_call_relations")
+    if {"repo_root", "to_symbol_key", "relative_path", "line"}.issubset(cols):
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_lsp_call_relations_to_symbol_key
+            ON lsp_call_relations(repo_root, to_symbol_key, relative_path, line)
+            """
+        )
+    if {"repo_root", "from_symbol_key", "relative_path", "line"}.issubset(cols):
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_lsp_call_relations_from_symbol_key
+            ON lsp_call_relations(repo_root, from_symbol_key, relative_path, line)
+            """
+        )
 
 
 def _fallback_upgrade_0005(conn: sqlite3.Connection) -> None:
