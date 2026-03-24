@@ -113,6 +113,14 @@ def test_ensure_migrated_upgrades_baseline_columns(tmp_path: Path) -> None:
         matrix_cols = {str(row["name"]) for row in conn.execute("PRAGMA table_info(pipeline_lsp_matrix_runs)").fetchall()}
         probe_cols = {str(row["name"]) for row in conn.execute("PRAGMA table_info(language_probe_status)").fetchall()}
         symbol_cols = {str(row["name"]) for row in conn.execute("PRAGMA table_info(lsp_symbols)").fetchall()}
+        relation_row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'lsp_call_relations'"
+        ).fetchone()
+        relation_cols = (
+            {str(row["name"]) for row in conn.execute("PRAGMA table_info(lsp_call_relations)").fetchall()}
+            if relation_row is not None
+            else set()
+        )
         registry_row = conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'repositories'"
         ).fetchone()
@@ -140,12 +148,110 @@ def test_ensure_migrated_upgrades_baseline_columns(tmp_path: Path) -> None:
     assert "required_languages_json" in matrix_cols
     assert "enabled" in probe_cols
     assert "symbol_key" in symbol_cols
+    if relation_row is not None:
+        assert "from_symbol_key" in relation_cols
+        assert "to_symbol_key" in relation_cols
     assert "repo_id" in queue_cols
     assert "repo_id" in symbol_cols
     assert registry_row is not None
     assert l3_tool_row is not None
     assert l4_tool_row is not None
     assert l5_tool_row is not None
+
+
+def test_ensure_migrated_backfills_relation_symbol_keys_from_symbols(tmp_path: Path) -> None:
+    """기존 relation row는 migration 후 symbol_key가 가능한 범위에서 채워져야 한다."""
+    db_path = tmp_path / "legacy-rel.db"
+    with connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS collected_files_l1 (
+                repo_root TEXT NOT NULL,
+                scope_repo_root TEXT NOT NULL DEFAULT '',
+                relative_path TEXT NOT NULL,
+                absolute_path TEXT NOT NULL,
+                repo_label TEXT NOT NULL,
+                mtime_ns INTEGER NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                content_hash TEXT NOT NULL,
+                is_deleted INTEGER NOT NULL DEFAULT 0,
+                last_seen_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                enrich_state TEXT NOT NULL,
+                PRIMARY KEY(repo_root, relative_path)
+            );
+            CREATE TABLE IF NOT EXISTS lsp_symbols (
+                repo_root TEXT NOT NULL,
+                scope_repo_root TEXT NOT NULL DEFAULT '',
+                relative_path TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                name TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                line INTEGER NOT NULL,
+                end_line INTEGER NOT NULL,
+                symbol_key TEXT NULL,
+                parent_symbol_key TEXT NULL,
+                depth INTEGER NOT NULL DEFAULT 0,
+                container_name TEXT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY(repo_root, relative_path, content_hash, name, kind, line, end_line)
+            );
+            CREATE TABLE IF NOT EXISTS lsp_call_relations (
+                repo_root TEXT NOT NULL,
+                scope_repo_root TEXT NOT NULL DEFAULT '',
+                relative_path TEXT NOT NULL,
+                caller_relative_path TEXT NULL,
+                content_hash TEXT NOT NULL,
+                from_symbol TEXT NOT NULL,
+                to_symbol TEXT NOT NULL,
+                line INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY(repo_root, relative_path, content_hash, from_symbol, to_symbol, line)
+            );
+            CREATE TABLE IF NOT EXISTS alembic_version (
+                version_num VARCHAR(32) NOT NULL PRIMARY KEY
+            );
+            DELETE FROM alembic_version;
+            INSERT INTO alembic_version(version_num) VALUES('20260222_0008');
+            INSERT INTO lsp_symbols(
+                repo_root, scope_repo_root, relative_path, content_hash, name, kind, line, end_line,
+                symbol_key, parent_symbol_key, depth, container_name, created_at
+            ) VALUES(
+                '/repo', '/repo', 'src/main.py', 'h1', 'AuthController.login', 'Function', 3, 8,
+                'py:/repo/src/main.py#AuthController.login', NULL, 0, NULL, '2026-03-24T00:00:00+00:00'
+            );
+            INSERT INTO lsp_symbols(
+                repo_root, scope_repo_root, relative_path, content_hash, name, kind, line, end_line,
+                symbol_key, parent_symbol_key, depth, container_name, created_at
+            ) VALUES(
+                '/repo', '/repo', 'src/main.py', 'h1', 'AuthService.login', 'Function', 12, 20,
+                'py:/repo/src/main.py#AuthService.login', NULL, 0, NULL, '2026-03-24T00:00:00+00:00'
+            );
+            INSERT INTO lsp_call_relations(
+                repo_root, scope_repo_root, relative_path, caller_relative_path, content_hash,
+                from_symbol, to_symbol, line, created_at
+            ) VALUES(
+                '/repo', '/repo', 'src/main.py', 'src/main.py', 'h1',
+                'AuthController.login', 'AuthService.login', 13, '2026-03-24T00:00:00+00:00'
+            );
+            """
+        )
+        conn.commit()
+
+    ensure_migrated(db_path)
+
+    with connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT from_symbol_key, to_symbol_key
+            FROM lsp_call_relations
+            WHERE repo_root='/repo' AND relative_path='src/main.py'
+            LIMIT 1
+            """
+        ).fetchone()
+    assert row is not None
+    assert str(row["from_symbol_key"]) == "py:/repo/src/main.py#AuthController.login"
+    assert str(row["to_symbol_key"]) == "py:/repo/src/main.py#AuthService.login"
 
 
 def test_init_schema_handles_legacy_db_missing_repo_id_columns(tmp_path: Path) -> None:

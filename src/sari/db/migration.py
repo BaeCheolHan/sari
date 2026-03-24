@@ -389,6 +389,43 @@ def _fallback_upgrade_0016(conn: sqlite3.Connection) -> None:
             ON lsp_call_relations(repo_root, from_symbol_key, relative_path, line)
             """
         )
+    # Backfill symbol_key columns from lsp_symbols when a deterministic 1:1 mapping exists.
+    conn.execute(
+        """
+        UPDATE lsp_call_relations AS rel
+        SET from_symbol_key = (
+            SELECT MIN(sym.symbol_key)
+            FROM lsp_symbols AS sym
+            WHERE sym.repo_root = rel.repo_root
+              AND sym.relative_path = COALESCE(NULLIF(rel.caller_relative_path, ''), rel.relative_path)
+              AND sym.content_hash = rel.content_hash
+              AND sym.name = rel.from_symbol
+              AND sym.symbol_key IS NOT NULL
+              AND TRIM(sym.symbol_key) <> ''
+            GROUP BY sym.repo_root, sym.relative_path, sym.content_hash, sym.name
+            HAVING COUNT(DISTINCT sym.symbol_key) = 1
+        )
+        WHERE (rel.from_symbol_key IS NULL OR TRIM(rel.from_symbol_key) = '')
+        """
+    )
+    conn.execute(
+        """
+        UPDATE lsp_call_relations AS rel
+        SET to_symbol_key = (
+            SELECT MIN(sym.symbol_key)
+            FROM lsp_symbols AS sym
+            WHERE sym.repo_root = rel.repo_root
+              AND sym.relative_path = rel.relative_path
+              AND sym.content_hash = rel.content_hash
+              AND sym.name = rel.to_symbol
+              AND sym.symbol_key IS NOT NULL
+              AND TRIM(sym.symbol_key) <> ''
+            GROUP BY sym.repo_root, sym.relative_path, sym.content_hash, sym.name
+            HAVING COUNT(DISTINCT sym.symbol_key) = 1
+        )
+        WHERE (rel.to_symbol_key IS NULL OR TRIM(rel.to_symbol_key) = '')
+        """
+    )
 
 
 def _fallback_upgrade_0005(conn: sqlite3.Connection) -> None:
