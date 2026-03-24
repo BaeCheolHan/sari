@@ -8,6 +8,7 @@ from sari.mcp.tools.arg_parser import parse_non_empty_string, parse_optional_str
 from sari.mcp.tools.admin_tools import RepoValidationPort, validate_repo_argument
 from sari.mcp.tools.pack1 import Pack1MetaDTO, pack1_error, pack1_success
 from sari.mcp.tools.row_mapper import rows_to_items
+from sari.mcp.tools.tool_common import resolve_symbol_key
 
 
 class SearchSymbolTool:
@@ -64,7 +65,7 @@ class GetCallersTool:
             return pack1_error(validation.error)
         warnings_payload = [warning.to_dict() for warning in validation.warnings]
 
-        symbol_name = self._resolve_symbol_name(arguments)
+        symbol_name = resolve_symbol_key(arguments)
         if symbol_name is None:
             return pack1_error(
                 ErrorResponseDTO(code="ERR_SYMBOL_REQUIRED", message="symbol or symbol_id is required")
@@ -90,13 +91,3 @@ class GetCallersTool:
                 ).to_dict(),
             }
         )
-
-    def _resolve_symbol_name(self, arguments: dict[str, object]) -> str | None:
-        """symbol/symbol_id 입력에서 검색 키를 결정한다."""
-        symbol_raw = arguments.get("symbol")
-        if isinstance(symbol_raw, str) and symbol_raw.strip() != "":
-            return symbol_raw.strip()
-        symbol_id_raw = arguments.get("symbol_id")
-        if isinstance(symbol_id_raw, str) and symbol_id_raw.strip() != "":
-            return symbol_id_raw.strip()
-        return None

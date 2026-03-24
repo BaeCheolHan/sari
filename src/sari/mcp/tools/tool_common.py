@@ -67,7 +67,7 @@ def argument_error(
 
 def resolve_symbol_key(arguments: dict[str, object]) -> str | None:
     """심볼 키 입력(symbol/symbol_id/sid/name/target)을 단일 문자열로 정규화한다."""
-    for key in ("symbol", "symbol_id", "sid", "name", "target"):
+    for key in ("symbol_key", "symbol", "symbol_id", "sid", "name", "target"):
         raw = arguments.get(key)
         if isinstance(raw, str) and raw.strip() != "":
             return raw.strip()

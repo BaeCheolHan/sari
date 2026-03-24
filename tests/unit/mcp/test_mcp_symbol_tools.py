@@ -414,6 +414,137 @@ def test_mcp_get_callers_requires_symbol_or_symbol_id(tmp_path: Path) -> None:
     assert payload["result"]["structuredContent"]["meta"]["errors"][0]["code"] == "ERR_SYMBOL_REQUIRED"
 
 
+def test_mcp_get_callers_supports_symbol_key_argument(tmp_path: Path) -> None:
+    """get_callers는 symbol_key 입력으로도 relation 조회가 가능해야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_dir = tmp_path / "repo-a"
+    repo_dir.mkdir()
+    WorkspaceService(WorkspaceRepository(db_path)).add_workspace(str(repo_dir))
+    _upsert_repo_identity(db_path, repo_id="repo-a", repo_root=str(repo_dir.resolve()), repo_label="repo-a")
+
+    lsp_repo = LspToolDataRepository(db_path)
+    lsp_repo.replace_file_data_many(
+        [
+            SimpleNamespace(
+                repo_id="repo-a",
+                repo_root=str(repo_dir.resolve()),
+                scope_repo_root=str(repo_dir.resolve()),
+                relative_path="src/main.py",
+                content_hash="h1",
+                symbols=[
+                    {
+                        "name": "AuthController.login",
+                        "kind": "Function",
+                        "line": 3,
+                        "end_line": 8,
+                        "symbol_key": "py:/repo-a/src/main.py#AuthController.login",
+                    },
+                    {
+                        "name": "AuthService.login",
+                        "kind": "Function",
+                        "line": 12,
+                        "end_line": 20,
+                        "symbol_key": "py:/repo-a/src/main.py#AuthService.login",
+                    },
+                ],
+                relations=[
+                    {
+                        "from_symbol": "AuthController.login",
+                        "to_symbol": "AuthService.login",
+                        "line": 13,
+                    }
+                ],
+                created_at="2026-03-24T00:00:00+00:00",
+                preserve_relations=False,
+                content_text=None,
+            )
+        ]
+    )
+
+    server = McpServer(db_path=db_path)
+    response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 341,
+            "method": "tools/call",
+            "params": {
+                "name": "get_callers",
+                "arguments": {
+                    "repo": str(repo_dir.resolve()),
+                    "symbol_key": "py:/repo-a/src/main.py#AuthService.login",
+                    "limit": 20,
+                    "options": {"structured": 1},
+                },
+            },
+        }
+    )
+    payload = response.to_dict()
+
+    assert payload["result"]["isError"] is False
+    items = payload["result"]["structuredContent"]["items"]
+    assert len(items) == 1
+    assert items[0]["from_symbol"] == "AuthController.login"
+
+
+def test_mcp_get_implementations_supports_symbol_key_argument(tmp_path: Path) -> None:
+    """get_implementations는 symbol_key로도 인터페이스 이름을 해석해 후보를 찾아야 한다."""
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo_dir = tmp_path / "repo-a"
+    repo_dir.mkdir()
+    WorkspaceService(WorkspaceRepository(db_path)).add_workspace(str(repo_dir))
+    _upsert_repo_identity(db_path, repo_id="repo-a", repo_root=str(repo_dir.resolve()), repo_label="repo-a")
+
+    lsp_repo = LspToolDataRepository(db_path)
+    lsp_repo.replace_symbols(
+        repo_root=str(repo_dir.resolve()),
+        relative_path="src/ports.py",
+        content_hash="h1",
+        symbols=[
+            {
+                "name": "PaymentPort",
+                "kind": "Interface",
+                "line": 1,
+                "end_line": 10,
+                "symbol_key": "py:/repo-a/src/ports.py#PaymentPort",
+            },
+            {
+                "name": "PaymentPortImpl",
+                "kind": "Class",
+                "line": 20,
+                "end_line": 40,
+                "symbol_key": "py:/repo-a/src/ports.py#PaymentPortImpl",
+            },
+        ],
+        created_at="2026-03-24T00:00:00+00:00",
+    )
+
+    server = McpServer(db_path=db_path)
+    response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 342,
+            "method": "tools/call",
+            "params": {
+                "name": "get_implementations",
+                "arguments": {
+                    "repo": str(repo_dir.resolve()),
+                    "symbol_key": "py:/repo-a/src/ports.py#PaymentPort",
+                    "limit": 10,
+                    "options": {"structured": 1},
+                },
+            },
+        }
+    )
+    payload = response.to_dict()
+
+    assert payload["result"]["isError"] is False
+    items = payload["result"]["structuredContent"]["items"]
+    assert len(items) >= 1
+    assert any(item["name"] == "PaymentPortImpl" for item in items)
+
+
 def test_mcp_search_symbol_supports_scope_root_repo(tmp_path: Path) -> None:
     """repo를 scope_root로 넘겨도 하위 모듈 심볼을 조회해야 한다."""
     db_path = tmp_path / "state.db"

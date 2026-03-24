@@ -56,3 +56,16 @@ def test_normalize_maps_repo_id_to_repo() -> None:
     )
     assert result.arguments["repo"] == "sari"
     assert result.normalized_from["repo"] == "repo_id"
+
+
+def test_normalize_maps_symbol_key_alias_for_symbol_tools() -> None:
+    """symbol 계열 도구는 symbol_key 입력을 symbol canonical로 정규화해야 한다."""
+    result = normalize_tool_arguments(
+        "get_callers",
+        {
+            "repo": "/repo",
+            "symbol_key": "py:/repo/src/main.py#status_endpoint",
+        },
+    )
+    assert result.arguments["symbol"] == "py:/repo/src/main.py#status_endpoint"
+    assert result.normalized_from["symbol"] == "symbol_key"

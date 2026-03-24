@@ -493,7 +493,10 @@ class LspToolDataRepository:
                           AND is_deleted = 0
                     )
                 )
-              AND name LIKE :query_like
+              AND (
+                    name LIKE :query_like
+                    OR symbol_key LIKE :query_like
+                )
               {where_prefix}
             ORDER BY relative_path ASC, line ASC, name ASC, repo_root ASC
             LIMIT :batch_limit OFFSET :batch_offset
@@ -797,6 +800,32 @@ class LspToolDataRepository:
             limit=query_limit,
             batch_limit=batch_limit,
         )
+
+    def resolve_symbol_name_from_key(self, repo_root: str, symbol_key: str) -> str | None:
+        """symbol_key로 심볼 이름을 역해석한다."""
+        with connect(self._db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT name
+                FROM lsp_symbols
+                WHERE (
+                        repo_root = :repo_root
+                        OR repo_root IN (
+                            SELECT DISTINCT repo_root
+                            FROM collected_files_l1
+                            WHERE scope_repo_root = :repo_root
+                              AND is_deleted = 0
+                        )
+                    )
+                  AND symbol_key = :symbol_key
+                ORDER BY relative_path ASC, line ASC
+                LIMIT 1
+                """,
+                {"repo_root": repo_root, "symbol_key": symbol_key},
+            ).fetchone()
+        if row is None:
+            return None
+        return row_optional_str_normalized(row, "name")
 
     def _search_symbols_with_dedupe_limit(
         self,

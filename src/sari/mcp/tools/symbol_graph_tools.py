@@ -86,10 +86,15 @@ class GetImplementationsTool:
         if not isinstance(limit_raw, int) or limit_raw <= 0:
             return pack1_error(ErrorResponseDTO(code="ERR_INVALID_LIMIT", message="limit must be positive integer"))
         repo_root = str(arguments["repo"])
-        rows = self._lsp_repo.find_implementations(repo_root=repo_root, symbol_name=symbol_key, limit=limit_raw)
-        rows = _filter_implementation_candidates(rows=rows, symbol_key=symbol_key, limit=limit_raw)
+        query_name = symbol_key
+        if _looks_like_symbol_key(symbol_key):
+            resolved_name = self._lsp_repo.resolve_symbol_name_from_key(repo_root=repo_root, symbol_key=symbol_key)
+            if resolved_name is not None:
+                query_name = resolved_name
+        rows = self._lsp_repo.find_implementations(repo_root=repo_root, symbol_name=query_name, limit=limit_raw)
+        rows = _filter_implementation_candidates(rows=rows, symbol_key=query_name, limit=limit_raw)
         if len(rows) == 0:
-            rows = scan_python_protocol_implementations(repo_root=repo_root, symbol_name=symbol_key, limit=limit_raw)
+            rows = scan_python_protocol_implementations(repo_root=repo_root, symbol_name=query_name, limit=limit_raw)
         return pack1_items_success(rows_to_items(rows), cache_hit=True, warnings=warnings_payload)
 
 
@@ -196,3 +201,10 @@ def _filter_implementation_candidates(
         if row.name != symbol_key and not is_excluded_candidate_path(row.relative_path)
     ]
     return filtered[:limit]
+
+
+def _looks_like_symbol_key(value: str) -> bool:
+    normalized = value.strip()
+    if normalized == "":
+        return False
+    return "://" in normalized or "#" in normalized or "::" in normalized

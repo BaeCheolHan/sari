@@ -61,7 +61,7 @@ _SEARCH_ALIAS_RULES: tuple[ArgAliasRuleDTO, ...] = (
 )
 
 _SYMBOL_ALIAS_RULES: tuple[ArgAliasRuleDTO, ...] = (
-    ArgAliasRuleDTO(canonical="symbol", aliases=("symbol_id", "sid", "name", "target")),
+    ArgAliasRuleDTO(canonical="symbol", aliases=("symbol_key", "symbol_id", "sid", "name", "target")),
 )
 
 _SEARCH_SYMBOL_ALIAS_RULES: tuple[ArgAliasRuleDTO, ...] = (
