@@ -412,7 +412,7 @@ wheels = [
 
 [[package]]
 name = "sari"
-version = "2.0.38"
+version = "2.0.40"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },
