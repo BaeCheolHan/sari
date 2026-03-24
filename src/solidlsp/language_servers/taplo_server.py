@@ -8,6 +8,7 @@ import hashlib
 import logging
 import os
 import platform
+import pathlib
 import shutil
 import socket
 import stat
@@ -277,6 +278,20 @@ class TaploServer(SolidLanguageServer):
         def register_capability_handler(params: dict[str, object]) -> None:
             return
 
+        def handle_workspace_configuration(params: dict[str, object]) -> list[dict[str, object]]:
+            items = params.get("items", [])
+            if not isinstance(items, list):
+                return []
+            return [{} for _ in items]
+
+        def handle_workspace_folders(params: dict[str, object]) -> list[dict[str, str]]:
+            return [
+                {
+                    "uri": pathlib.Path(self.repository_root_path).as_uri(),
+                    "name": os.path.basename(self.repository_root_path),
+                }
+            ]
+
         def do_nothing(params: dict[str, object]) -> None:
             return
 
@@ -284,6 +299,8 @@ class TaploServer(SolidLanguageServer):
             log.info(f"LSP: window/logMessage: {msg}")
 
         self.server.on_request("client/registerCapability", register_capability_handler)
+        self.server.on_request("workspace/configuration", handle_workspace_configuration)
+        self.server.on_request("workspace/workspaceFolders", handle_workspace_folders)
         self.server.on_notification("window/logMessage", window_log_message)
         self.server.on_notification("$/progress", do_nothing)
         self.server.on_notification("textDocument/publishDiagnostics", do_nothing)
