@@ -3,23 +3,37 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ARTIFACT_DIR="${ROOT_DIR}/artifacts/ci"
+WHEEL_DIR="${ARTIFACT_DIR}/wheelhouse"
 SMOKE_DB_PATH="${ARTIFACT_DIR}/installed-freshdb-smoke.db"
 SMOKE_SUMMARY_PATH="${ARTIFACT_DIR}/installed-freshdb-smoke-summary.json"
 
 mkdir -p "${ARTIFACT_DIR}"
+rm -rf "${WHEEL_DIR}"
 rm -f "${SMOKE_DB_PATH}" "${SMOKE_DB_PATH}-wal" "${SMOKE_DB_PATH}-shm" "${SMOKE_SUMMARY_PATH}"
+mkdir -p "${WHEEL_DIR}"
 
 if ! command -v uv >/dev/null 2>&1; then
   echo "[installed-freshdb-smoke] uv command not found." >&2
   exit 1
 fi
 
-# Always validate the actual installed CLI runtime, not local source imports.
-uv tool install --reinstall "${ROOT_DIR}" >/dev/null
+# Always validate the actual installed CLI runtime from a built wheel.
+uv build --wheel --out-dir "${WHEEL_DIR}" >/dev/null
+WHEEL_PATH="$(ls -1 "${WHEEL_DIR}"/sari-*.whl | tail -n 1)"
+if [[ -z "${WHEEL_PATH}" || ! -f "${WHEEL_PATH}" ]]; then
+  echo "[installed-freshdb-smoke] wheel build output not found." >&2
+  exit 1
+fi
+uv tool install --reinstall "${WHEEL_PATH}" >/dev/null
 
-SARI_BIN="$(command -v sari || true)"
+UV_TOOL_BIN_DIR="$(uv tool dir --bin)"
+SARI_BIN="${UV_TOOL_BIN_DIR}/sari"
 if [[ -z "${SARI_BIN}" ]]; then
-  echo "[installed-freshdb-smoke] sari command not found after uv tool install." >&2
+  echo "[installed-freshdb-smoke] uv tool bin dir not resolved." >&2
+  exit 1
+fi
+if [[ ! -x "${SARI_BIN}" ]]; then
+  echo "[installed-freshdb-smoke] sari executable not found at uv tool bin dir." >&2
   exit 1
 fi
 SARI_PY="$(head -n 1 "${SARI_BIN}" | sed 's/^#!//')"
@@ -31,6 +45,8 @@ fi
 export SARI_DB_PATH="${SMOKE_DB_PATH}"
 export SARI_SMOKE_ROOT="${ROOT_DIR}"
 export SARI_SMOKE_SUMMARY="${SMOKE_SUMMARY_PATH}"
+# Ensure source-tree imports never shadow installed runtime in this smoke.
+unset PYTHONPATH || true
 
 "${SARI_PY}" - <<'PY'
 from __future__ import annotations
@@ -49,6 +65,7 @@ from sari.core.config import AppConfig
 from sari.core.models import LspExtractPersistDTO
 from sari.db.repositories.lsp_tool_data_repository import LspToolDataRepository
 from sari.db.schema import init_schema
+from sari.mcp.server import McpServer
 from sari.services.workspace import WorkspaceService
 
 root_dir = Path(os.environ["SARI_SMOKE_ROOT"]).resolve()
@@ -130,8 +147,9 @@ for i in range(120):
     n0 = int(collection.process_enrich_jobs(500))
     n2 = int(collection.process_enrich_jobs_l2(500))
     n3 = int(collection.process_enrich_jobs_l3(500))
-    total = n0 + n2 + n3
-    loop_tail.append({"i": i, "n0": n0, "n2": n2, "n3": n3, "total": total})
+    n5 = int(collection.process_enrich_jobs_l5(500))
+    total = n0 + n2 + n3 + n5
+    loop_tail.append({"i": i, "n0": n0, "n2": n2, "n3": n3, "n5": n5, "total": total})
     zero_rounds = zero_rounds + 1 if total == 0 else 0
     if zero_rounds >= 6:
         break
@@ -160,11 +178,53 @@ with sqlite3.connect(config.db_path) as conn:
             (repo_root,),
         ).fetchone()[0]
     )
+    relations_src_sari = int(
+        conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM lsp_call_relations
+            WHERE repo_root = ?
+              AND relative_path LIKE 'src/sari/%'
+            """,
+            (repo_root,),
+        ).fetchone()[0]
+    )
 
 if pending_src_sari > 0:
     raise SystemExit(f"freshdb smoke failed: pending_src_sari={pending_src_sari}")
 if symbols_src_sari <= 0:
     raise SystemExit(f"freshdb smoke failed: symbols_src_sari={symbols_src_sari}")
+
+# MCP tool layer sanity check on installed runtime.
+mcp_server = McpServer(db_path=config.db_path)
+search_symbol_resp = mcp_server.handle_request(
+    {
+        "jsonrpc": "2.0",
+        "id": 9101,
+        "method": "tools/call",
+        "params": {
+            "name": "search_symbol",
+            "arguments": {
+                "repo": repo_root,
+                "query": "status_endpoint",
+                "limit": 5,
+                "options": {"structured": 1},
+            },
+        },
+    }
+).to_dict()
+search_symbol_items = (
+    search_symbol_resp.get("result", {})
+    .get("structuredContent", {})
+    .get("items", [])
+)
+if not isinstance(search_symbol_items, list) or len(search_symbol_items) == 0:
+    raise SystemExit(
+        f"freshdb smoke failed: search_symbol(status_endpoint)=0, payload={search_symbol_resp}"
+    )
+
+# L5 relation flush can be empty in constrained environments; keep it as a signal in summary.
+relations_signal = "ok" if relations_src_sari > 0 else "warn_empty_relations"
 
 summary = {
     "runtime_version": sari.__version__,
@@ -177,6 +237,9 @@ summary = {
     },
     "pending_src_sari": pending_src_sari,
     "symbols_src_sari": symbols_src_sari,
+    "relations_src_sari": relations_src_sari,
+    "relations_signal": relations_signal,
+    "search_symbol_status_endpoint_count": len(search_symbol_items),
     "loop_tail": loop_tail[-10:],
     "duplicate_relation_regression": "passed",
 }

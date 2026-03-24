@@ -11,11 +11,12 @@ CLI_E2E_LOG="${ARTIFACT_DIR}/release-gate-cli-e2e.log"
 CRITICAL_LSP_LOG="${ARTIFACT_DIR}/release-gate-critical-lsp.log"
 MCP_HANDSHAKE_LOG="${ARTIFACT_DIR}/release-gate-mcp-handshake.log"
 MCP_CONCURRENCY_LOG="${ARTIFACT_DIR}/release-gate-mcp-concurrency.log"
+MCP_CALL_FLOW_LOG="${ARTIFACT_DIR}/release-gate-mcp-call-flow.log"
 QUEUE_OPS_LOG="${ARTIFACT_DIR}/release-gate-queue-ops.log"
 RECONCILE_LOG="${ARTIFACT_DIR}/release-gate-reconcile.log"
 
 mkdir -p "${ARTIFACT_DIR}"
-rm -f "${SUMMARY_FILE}" "${DB_PATH}" "${DAEMON_PROXY_LOG}" "${CLI_E2E_LOG}" "${CRITICAL_LSP_LOG}" "${MCP_HANDSHAKE_LOG}" "${MCP_CONCURRENCY_LOG}" "${QUEUE_OPS_LOG}" "${RECONCILE_LOG}"
+rm -f "${SUMMARY_FILE}" "${DB_PATH}" "${DAEMON_PROXY_LOG}" "${CLI_E2E_LOG}" "${CRITICAL_LSP_LOG}" "${MCP_HANDSHAKE_LOG}" "${MCP_CONCURRENCY_LOG}" "${MCP_CALL_FLOW_LOG}" "${QUEUE_OPS_LOG}" "${RECONCILE_LOG}"
 
 prepare_critical_fixture() {
   rm -rf "${REPO_FIXTURE}"
@@ -96,6 +97,14 @@ CLI_E2E_PASSED="$(run_cmd cli_e2e "${CLI_E2E_LOG}" bash -lc "python3 -m sari.cli
 CRITICAL_LSP_PASSED="$(run_cmd critical_lsp "${CRITICAL_LSP_LOG}" bash -lc "tools/ci/run_lsp_matrix_gate.sh --report-only true")"
 MCP_HANDSHAKE_PASSED="$(run_cmd mcp_handshake "${MCP_HANDSHAKE_LOG}" python3 tools/ci/release_gate_mcp_probe.py handshake)"
 MCP_CONCURRENCY_PASSED="$(run_cmd mcp_concurrency "${MCP_CONCURRENCY_LOG}" python3 tools/ci/release_gate_mcp_probe.py concurrency)"
+MCP_CALL_FLOW_PASSED="$(
+  run_cmd mcp_call_flow "${MCP_CALL_FLOW_LOG}" env \
+    SARI_MCP_PROBE_REPO="${ROOT_DIR}" \
+    SARI_MCP_PROBE_QUERY="status_endpoint" \
+    SARI_MCP_PROBE_SYMBOL="status_endpoint" \
+    SARI_MCP_PROBE_EXPECT_CALLERS_MIN="0" \
+    python3 tools/ci/release_gate_mcp_probe.py call_flow
+)"
 QUEUE_OPS_PASSED="$(run_cmd queue_ops "${QUEUE_OPS_LOG}" bash -lc "python3 -m sari.cli.main pipeline dead list --repo '${REPO_FIXTURE}' --limit 5 && python3 -m sari.cli.main pipeline dead requeue --repo '${REPO_FIXTURE}' --limit 5 && python3 -m sari.cli.main pipeline dead purge --repo '${REPO_FIXTURE}' --limit 5 --confirm")"
 RECONCILE_PASSED="$(run_cmd reconcile "${RECONCILE_LOG}" python3 - "${REPO_FIXTURE}" <<'PY'
 import json
@@ -198,7 +207,7 @@ _ = subprocess.run([sys.executable, "-m", "sari.cli.main", "daemon", "stop"], ch
 PY
 )"
 
-python3 - <<'PY' "${SUMMARY_FILE}" "${DAEMON_PROXY_PASSED}" "${CLI_E2E_PASSED}" "${CRITICAL_LSP_PASSED}" "${MCP_HANDSHAKE_PASSED}" "${MCP_CONCURRENCY_PASSED}" "${QUEUE_OPS_PASSED}" "${RECONCILE_PASSED}" "${MCP_HANDSHAKE_LOG}" "${MCP_CONCURRENCY_LOG}" "${RECONCILE_LOG}"
+python3 - <<'PY' "${SUMMARY_FILE}" "${DAEMON_PROXY_PASSED}" "${CLI_E2E_PASSED}" "${CRITICAL_LSP_PASSED}" "${MCP_HANDSHAKE_PASSED}" "${MCP_CONCURRENCY_PASSED}" "${MCP_CALL_FLOW_PASSED}" "${QUEUE_OPS_PASSED}" "${RECONCILE_PASSED}" "${MCP_HANDSHAKE_LOG}" "${MCP_CONCURRENCY_LOG}" "${MCP_CALL_FLOW_LOG}" "${RECONCILE_LOG}"
 import json
 import sys
 from pathlib import Path
@@ -209,12 +218,14 @@ cli_e2e_passed = sys.argv[3].lower() == "true"
 critical_lsp_passed = sys.argv[4].lower() == "true"
 mcp_handshake_passed = sys.argv[5].lower() == "true"
 mcp_concurrency_passed = sys.argv[6].lower() == "true"
-queue_ops_passed = sys.argv[7].lower() == "true"
-reconcile_passed = sys.argv[8].lower() == "true"
-handshake_log_path = Path(sys.argv[9])
-concurrency_log_path = Path(sys.argv[10])
-reconcile_log_path = Path(sys.argv[11])
-release_gate_passed = daemon_proxy_passed and cli_e2e_passed and critical_lsp_passed and mcp_handshake_passed and mcp_concurrency_passed and queue_ops_passed and reconcile_passed
+mcp_call_flow_passed = sys.argv[7].lower() == "true"
+queue_ops_passed = sys.argv[8].lower() == "true"
+reconcile_passed = sys.argv[9].lower() == "true"
+handshake_log_path = Path(sys.argv[10])
+concurrency_log_path = Path(sys.argv[11])
+call_flow_log_path = Path(sys.argv[12])
+reconcile_log_path = Path(sys.argv[13])
+release_gate_passed = daemon_proxy_passed and cli_e2e_passed and critical_lsp_passed and mcp_handshake_passed and mcp_concurrency_passed and mcp_call_flow_passed and queue_ops_passed and reconcile_passed
 
 
 def extract_probe_summary(path: Path) -> dict[str, object] | None:
@@ -239,6 +250,7 @@ def extract_probe_summary(path: Path) -> dict[str, object] | None:
 
 handshake_probe_summary = extract_probe_summary(handshake_log_path)
 concurrency_probe_summary = extract_probe_summary(concurrency_log_path)
+call_flow_probe_summary = extract_probe_summary(call_flow_log_path)
 reconcile_summary = None
 if reconcile_log_path.exists():
     lines = reconcile_log_path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -265,6 +277,7 @@ def validate_probe_summary(name: str, summary: object) -> list[str]:
 probe_validation_errors: list[str] = []
 probe_validation_errors.extend(validate_probe_summary("mcp_handshake", handshake_probe_summary))
 probe_validation_errors.extend(validate_probe_summary("mcp_concurrency", concurrency_probe_summary))
+probe_validation_errors.extend(validate_probe_summary("mcp_call_flow", call_flow_probe_summary))
 probe_details_valid = len(probe_validation_errors) == 0
 final_decision = "PASS" if release_gate_passed and probe_details_valid else "FAIL"
 payload = {
@@ -276,6 +289,7 @@ payload = {
     "critical_lsp_passed": critical_lsp_passed,
     "mcp_handshake_passed": mcp_handshake_passed,
     "mcp_concurrency_passed": mcp_concurrency_passed,
+    "mcp_call_flow_passed": mcp_call_flow_passed,
     "queue_ops_passed": queue_ops_passed,
     "reconcile_passed": reconcile_passed,
     "final_decision": final_decision,
@@ -285,12 +299,14 @@ payload = {
         "critical_lsp": str(Path(sys.argv[1]).parent / "release-gate-critical-lsp.log"),
         "mcp_handshake": str(Path(sys.argv[1]).parent / "release-gate-mcp-handshake.log"),
         "mcp_concurrency": str(Path(sys.argv[1]).parent / "release-gate-mcp-concurrency.log"),
+        "mcp_call_flow": str(Path(sys.argv[1]).parent / "release-gate-mcp-call-flow.log"),
         "queue_ops": str(Path(sys.argv[1]).parent / "release-gate-queue-ops.log"),
         "reconcile": str(Path(sys.argv[1]).parent / "release-gate-reconcile.log"),
     },
     "probe_details": {
         "mcp_handshake": handshake_probe_summary,
         "mcp_concurrency": concurrency_probe_summary,
+        "mcp_call_flow": call_flow_probe_summary,
         "reconcile": reconcile_summary,
     },
 }
@@ -313,7 +329,7 @@ if [[ "${FINAL_DECISION}" != "PASS" ]]; then
     echo "[release gate] summary:" >&2
     cat "${SUMMARY_FILE}" >&2 || true
   fi
-  for path in "${DAEMON_PROXY_LOG}" "${CLI_E2E_LOG}" "${CRITICAL_LSP_LOG}" "${MCP_HANDSHAKE_LOG}" "${MCP_CONCURRENCY_LOG}" "${QUEUE_OPS_LOG}" "${RECONCILE_LOG}"; do
+  for path in "${DAEMON_PROXY_LOG}" "${CLI_E2E_LOG}" "${CRITICAL_LSP_LOG}" "${MCP_HANDSHAKE_LOG}" "${MCP_CONCURRENCY_LOG}" "${MCP_CALL_FLOW_LOG}" "${QUEUE_OPS_LOG}" "${RECONCILE_LOG}"; do
     if [[ -f "${path}" ]]; then
       echo "[release gate] tail ${path}:" >&2
       tail -n 80 "${path}" >&2 || true
