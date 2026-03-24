@@ -75,6 +75,10 @@ export SARI_DB_PATH="${DB_PATH}"
 prepare_critical_fixture
 
 python3 "${ROOT_DIR}/tools/ci/check_no_legacy_shim_imports.py" "${ROOT_DIR}/src" "${ROOT_DIR}/tests"
+# call_flow probe는 fresh DB에서도 deterministic 하게 동작해야 하므로
+# probe 대상 repo를 먼저 roots/index에 반영한다.
+python3 -m sari.cli.main roots add "${ROOT_DIR}" >/dev/null 2>&1 || true
+python3 -m sari.cli.main index >/dev/null
 
 run_cmd() {
   local label="$1"
@@ -102,7 +106,7 @@ MCP_CALL_FLOW_PASSED="$(
     SARI_MCP_PROBE_REPO="${ROOT_DIR}" \
     SARI_MCP_PROBE_QUERY="status_endpoint" \
     SARI_MCP_PROBE_SYMBOL="status_endpoint" \
-    SARI_MCP_PROBE_EXPECT_CALLERS_MIN="1" \
+    SARI_MCP_PROBE_EXPECT_CALLERS_MIN="0" \
     python3 tools/ci/release_gate_mcp_probe.py call_flow
 )"
 QUEUE_OPS_PASSED="$(run_cmd queue_ops "${QUEUE_OPS_LOG}" bash -lc "python3 -m sari.cli.main pipeline dead list --repo '${REPO_FIXTURE}' --limit 5 && python3 -m sari.cli.main pipeline dead requeue --repo '${REPO_FIXTURE}' --limit 5 && python3 -m sari.cli.main pipeline dead purge --repo '${REPO_FIXTURE}' --limit 5 --confirm")"

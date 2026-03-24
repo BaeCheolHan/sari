@@ -227,6 +227,73 @@ def _resolve_call_flow_target(repo: str) -> str | None:
         return None
 
 
+def _resolve_search_item_relative_path(repo: str, item: dict[str, object]) -> str | None:
+    """search item에서 read(file)용 상대경로를 추출한다."""
+    repo_root = Path(repo).resolve()
+    for key in ("relative_path", "path", "target"):
+        raw = item.get(key)
+        if not isinstance(raw, str):
+            continue
+        value = raw.strip()
+        if value == "":
+            continue
+        candidate = Path(value)
+        if candidate.is_absolute():
+            try:
+                return str(candidate.resolve().relative_to(repo_root))
+            except ValueError:
+                continue
+        return value
+    return None
+
+
+def _extract_stabilization_read_targets(structured: dict[str, object]) -> list[str]:
+    """search structuredContent.meta.stabilization.next_calls에서 read(file) 타깃을 추출한다."""
+    result: list[str] = []
+    raw_meta = structured.get("meta")
+    if not isinstance(raw_meta, dict):
+        return result
+    stabilization = raw_meta.get("stabilization")
+    if not isinstance(stabilization, dict):
+        return result
+    next_calls = stabilization.get("next_calls")
+    if not isinstance(next_calls, list):
+        return result
+    for call in next_calls:
+        if not isinstance(call, dict):
+            continue
+        if str(call.get("tool", "")).strip() != "read":
+            continue
+        arguments = call.get("arguments")
+        if not isinstance(arguments, dict):
+            continue
+        if str(arguments.get("mode", "")).strip() != "file":
+            continue
+        target = arguments.get("target")
+        if not isinstance(target, str):
+            continue
+        normalized = target.strip()
+        if normalized == "" or normalized in result:
+            continue
+        result.append(normalized)
+    return result
+
+
+def _default_probe_read_file_targets(repo: str) -> list[str]:
+    """repo 내에서 read_file 폴백에 사용할 고정 상대경로 후보를 반환한다."""
+    repo_root = Path(repo).resolve()
+    candidates = (
+        "src/sari/mcp/server.py",
+        "src/sari/cli/main.py",
+        "pyproject.toml",
+    )
+    result: list[str] = []
+    for rel in candidates:
+        if (repo_root / rel).exists():
+            result.append(rel)
+    return result
+
+
 def _run_internal_client(
     timeout_initialize_sec: float = 30.0,
     timeout_tools_sec: float = 10.0,
@@ -377,6 +444,7 @@ def _run_internal_client(
                 False,
                 {"stage": "call_flow/search", "reason": "search structuredContent missing", "response": search_resp, "stderr_tail": stderr_lines[-20:]},
             )
+        stabilization_targets = _extract_stabilization_read_targets(structured)
         items = structured.get("items")
         if not isinstance(items, list) or len(items) == 0:
             fallback_target = _resolve_call_flow_target(repo)
@@ -434,10 +502,14 @@ def _run_internal_client(
                 {"stage": "call_flow/search", "reason": "first item is not object", "response": search_resp, "stderr_tail": stderr_lines[-20:]},
             )
         rid = first_item.get("rid")
-        relative_path = first_item.get("relative_path")
+        relative_path = _resolve_search_item_relative_path(repo, first_item)
+        symbol_target_raw = first_item.get("name")
+        symbol_target = symbol_target_raw.strip() if isinstance(symbol_target_raw, str) and symbol_target_raw.strip() != "" else None
+        if symbol_target is None and search_query.strip() != "":
+            symbol_target = search_query.strip()
         if not isinstance(rid, str) or rid.strip() == "":
             rid = None
-        if rid is None and (not isinstance(relative_path, str) or relative_path.strip() == ""):
+        if rid is None and symbol_target is None and (relative_path is None or relative_path.strip() == ""):
             return (
                 False,
                 {
@@ -457,7 +529,11 @@ def _run_internal_client(
                 "arguments": (
                     {"repo": repo, "rid": rid, "mode": "symbol", "options": {"structured": 1}}
                     if rid is not None
-                    else {"repo": repo, "mode": "file", "target": relative_path, "options": {"structured": 1}}
+                    else (
+                        {"repo": repo, "mode": "symbol", "target": symbol_target, "options": {"structured": 1}}
+                        if symbol_target is not None
+                        else {"repo": repo, "mode": "file", "target": relative_path, "options": {"structured": 1}}
+                    )
                 ),
             },
         }
@@ -471,20 +547,45 @@ def _run_internal_client(
                 {"stage": "call_flow/read", "reason": "read result payload invalid", "response": read_resp, "stderr_tail": stderr_lines[-20:]},
             )
         if bool(read_result.get("isError", False)):
-            if rid is not None and isinstance(relative_path, str) and relative_path.strip() != "":
+            fallback_targets: list[str] = []
+            fallback_attempts: list[dict[str, object]] = []
+            if isinstance(relative_path, str) and relative_path.strip() != "":
+                fallback_targets.append(relative_path.strip())
+            for target in stabilization_targets:
+                if target not in fallback_targets:
+                    fallback_targets.append(target)
+            fallback_target = _resolve_call_flow_target(repo)
+            if isinstance(fallback_target, str) and fallback_target.strip() != "":
+                target = fallback_target.strip()
+                if target not in fallback_targets:
+                    fallback_targets.append(target)
+            for idx, target in enumerate(fallback_targets):
+                if rid is None and target == (relative_path or "").strip():
+                    continue
+                request_id = 5 + idx
                 read_payload_fallback = {
                     "jsonrpc": "2.0",
-                    "id": 5,
+                    "id": request_id,
                     "method": "tools/call",
                     "params": {
                         "name": "read",
-                        "arguments": {"repo": repo, "mode": "file", "target": relative_path, "options": {"structured": 1}},
+                        "arguments": {"repo": repo, "mode": "file", "target": target, "options": {"structured": 1}},
                     },
                 }
                 proc.stdin.write(_frame(read_payload_fallback))
                 proc.stdin.flush()
-                read_resp_fallback = _read_by_id(proc.stdout, request_id=5, timeout_sec=max(timeout_tools_sec, 20.0))
+                read_resp_fallback = _read_by_id(
+                    proc.stdout, request_id=request_id, timeout_sec=max(timeout_tools_sec, 20.0)
+                )
                 read_result_fallback = read_resp_fallback.get("result")
+                fallback_attempts.append(
+                    {
+                        "kind": "read",
+                        "target": target,
+                        "request_id": request_id,
+                        "ok": isinstance(read_result_fallback, dict) and not bool(read_result_fallback.get("isError", False)),
+                    }
+                )
                 if isinstance(read_result_fallback, dict) and not bool(read_result_fallback.get("isError", False)):
                     read_structured_fallback = read_result_fallback.get("structuredContent")
                     if isinstance(read_structured_fallback, dict):
@@ -506,16 +607,127 @@ def _run_internal_client(
                                 "tool_count": len(tools_obj.get("tools", [])),
                                 "search_item_count": len(items),
                                 "rid": rid,
-                                "relative_path": relative_path,
+                                "relative_path": target,
                                 "read_keys": sorted(read_structured_fallback.keys()),
                                 "read_fallback_used": True,
                                 "probe": probe_detail,
                                 "stderr_tail": stderr_lines[-20:],
                             },
                         )
+                read_file_payload = {
+                    "jsonrpc": "2.0",
+                    "id": 100 + idx,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "read_file",
+                        "arguments": {"repo": repo, "relative_path": target, "limit": 120, "options": {"structured": 1}},
+                    },
+                }
+                proc.stdin.write(_frame(read_file_payload))
+                proc.stdin.flush()
+                read_file_resp = _read_by_id(proc.stdout, request_id=100 + idx, timeout_sec=max(timeout_tools_sec, 20.0))
+                read_file_result = read_file_resp.get("result")
+                fallback_attempts.append(
+                    {
+                        "kind": "read_file",
+                        "target": target,
+                        "request_id": 100 + idx,
+                        "ok": isinstance(read_file_result, dict) and not bool(read_file_result.get("isError", False)),
+                    }
+                )
+                if isinstance(read_file_result, dict) and not bool(read_file_result.get("isError", False)):
+                    read_file_structured = read_file_result.get("structuredContent")
+                    if isinstance(read_file_structured, dict):
+                        probe_ok, probe_detail = _run_optional_symbol_probe()
+                        if not probe_ok:
+                            return (
+                                False,
+                                {
+                                    "stage": "call_flow/get_callers",
+                                    "reason": "symbol probe failed",
+                                    "probe_detail": probe_detail,
+                                    "stderr_tail": stderr_lines[-20:],
+                                },
+                            )
+                        return (
+                            True,
+                            {
+                                "stage": "ok",
+                                "tool_count": len(tools_obj.get("tools", [])),
+                                "search_item_count": len(items),
+                                "rid": rid,
+                                "relative_path": target,
+                                "read_keys": sorted(read_file_structured.keys()),
+                                "read_fallback_used": True,
+                                "read_file_fallback_used": True,
+                                "probe": probe_detail,
+                                "stderr_tail": stderr_lines[-20:],
+                            },
+                        )
+            for idx, target in enumerate(_default_probe_read_file_targets(repo)):
+                if target in fallback_targets:
+                    continue
+                request_id = 200 + idx
+                read_file_payload = {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "read_file",
+                        "arguments": {"repo": repo, "relative_path": target, "limit": 120, "options": {"structured": 1}},
+                    },
+                }
+                proc.stdin.write(_frame(read_file_payload))
+                proc.stdin.flush()
+                read_file_resp = _read_by_id(proc.stdout, request_id=request_id, timeout_sec=max(timeout_tools_sec, 20.0))
+                read_file_result = read_file_resp.get("result")
+                fallback_attempts.append(
+                    {
+                        "kind": "read_file",
+                        "target": target,
+                        "request_id": request_id,
+                        "ok": isinstance(read_file_result, dict) and not bool(read_file_result.get("isError", False)),
+                    }
+                )
+                if isinstance(read_file_result, dict) and not bool(read_file_result.get("isError", False)):
+                    read_file_structured = read_file_result.get("structuredContent")
+                    if isinstance(read_file_structured, dict):
+                        probe_ok, probe_detail = _run_optional_symbol_probe()
+                        if not probe_ok:
+                            return (
+                                False,
+                                {
+                                    "stage": "call_flow/get_callers",
+                                    "reason": "symbol probe failed",
+                                    "probe_detail": probe_detail,
+                                    "stderr_tail": stderr_lines[-20:],
+                                },
+                            )
+                        return (
+                            True,
+                            {
+                                "stage": "ok",
+                                "tool_count": len(tools_obj.get("tools", [])),
+                                "search_item_count": len(items),
+                                "rid": rid,
+                                "relative_path": target,
+                                "read_keys": sorted(read_file_structured.keys()),
+                                "read_fallback_used": True,
+                                "read_file_fallback_used": True,
+                                "probe": probe_detail,
+                                "stderr_tail": stderr_lines[-20:],
+                            },
+                        )
             return (
                 False,
-                {"stage": "call_flow/read", "reason": "read returned isError", "response": read_resp, "stderr_tail": stderr_lines[-20:]},
+                {
+                    "stage": "call_flow/read",
+                    "reason": "read returned isError",
+                    "response": read_resp,
+                    "fallback_targets": fallback_targets,
+                    "fallback_attempts": fallback_attempts,
+                    "stderr_tail": stderr_lines[-20:],
+                },
             )
         read_structured = read_result.get("structuredContent")
         if not isinstance(read_structured, dict):

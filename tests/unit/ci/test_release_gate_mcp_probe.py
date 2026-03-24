@@ -138,6 +138,50 @@ def test_run_call_flow_defaults_symbol_probe_to_disabled(monkeypatch):
     assert captured_kwargs["probe_expect_callers_min"] == 0
 
 
+def test_resolve_search_item_relative_path_prefers_relative_path_field() -> None:
+    """search item의 relative_path 필드를 우선 사용해야 한다."""
+    probe = _load_probe_module()
+    item = {"relative_path": "src/app/main.py", "path": "/repo/src/app/main.py"}
+    assert probe._resolve_search_item_relative_path("/repo", item) == "src/app/main.py"
+
+
+def test_resolve_search_item_relative_path_normalizes_absolute_path_under_repo() -> None:
+    """절대경로 path는 repo 기준 상대경로로 정규화해야 한다."""
+    probe = _load_probe_module()
+    item = {"path": "/repo/src/service/core.py"}
+    assert probe._resolve_search_item_relative_path("/repo", item) == "src/service/core.py"
+
+
+def test_extract_stabilization_read_targets_from_search_meta() -> None:
+    """stabilization.next_calls의 read(file) target만 추출해야 한다."""
+    probe = _load_probe_module()
+    structured = {
+        "meta": {
+            "stabilization": {
+                "next_calls": [
+                    {"tool": "read", "arguments": {"mode": "file", "target": "src/a.py"}},
+                    {"tool": "read", "arguments": {"mode": "symbol", "target": "ignored"}},
+                    {"tool": "search", "arguments": {"query": "x"}},
+                    {"tool": "read", "arguments": {"mode": "file", "target": "src/b.py"}},
+                ]
+            }
+        }
+    }
+    assert probe._extract_stabilization_read_targets(structured) == ["src/a.py", "src/b.py"]
+
+
+def test_default_probe_read_file_targets_returns_existing_files(tmp_path: Path) -> None:
+    """기본 read_file 폴백 후보는 repo에 실제 존재하는 파일만 반환해야 한다."""
+    probe = _load_probe_module()
+    (tmp_path / "src/sari/mcp").mkdir(parents=True)
+    (tmp_path / "src/sari/mcp/server.py").write_text("x=1", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text("[project]\\nname='x'\\n", encoding="utf-8")
+    targets = probe._default_probe_read_file_targets(str(tmp_path))
+    assert "src/sari/mcp/server.py" in targets
+    assert "pyproject.toml" in targets
+    assert "src/sari/cli/main.py" not in targets
+
+
 def test_resolve_call_flow_repo_ignores_nonexistent_db_candidate(monkeypatch, tmp_path: Path):
     """DB 최상위 후보가 존재하지 않으면 CWD로 폴백해야 한다."""
     probe = _load_probe_module()
