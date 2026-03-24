@@ -38,6 +38,11 @@ jobs:
         run: |
           uv sync --frozen --group dev
 
+      - name: Installed Runtime Fresh DB Smoke
+        run: |
+          chmod +x tools/ci/run_installed_freshdb_smoke.sh
+          tools/ci/run_installed_freshdb_smoke.sh
+
       - name: Release hard gate
         run: |
           chmod +x tools/ci/run_release_gate.sh
