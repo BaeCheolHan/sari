@@ -311,3 +311,55 @@ def test_run_soak_fails_when_timeout_failures_exceed_limit(monkeypatch):
         assert "timeout_failures" in message
     else:
         raise AssertionError("RuntimeError must be raised when timeout failures exceed limit")
+
+
+def test_run_concurrency_tolerates_single_timeout_after_retry(monkeypatch):
+    """concurrency는 timeout 1건을 재시도 후 성공하면 통과해야 한다."""
+    probe = _load_probe_module()
+    lock = threading.Lock()
+    outcomes = [
+        (True, {"stage": "ok"}),
+        (True, {"stage": "ok"}),
+        (False, {"stage": "exception", "error": "timeout while reading MCP response"}),
+        (True, {"stage": "ok"}),
+    ]
+
+    def _run_internal_client(**kwargs):
+        del kwargs
+        with lock:
+            return outcomes.pop(0)
+
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(probe, "_run_internal_client", _run_internal_client)
+    monkeypatch.setattr(probe, "_emit_summary", lambda mode, ok, detail: captured.update({"mode": mode, "ok": ok, "detail": detail}))
+
+    assert probe._run_concurrency() == 0
+    assert captured["mode"] == "concurrency"
+    assert captured["ok"] is True
+    assert int(captured["detail"]["retried"]) >= 1
+
+
+def test_run_concurrency_fails_on_hard_failure(monkeypatch):
+    """concurrency는 timeout이 아닌 하드 실패가 있으면 실패해야 한다."""
+    probe = _load_probe_module()
+    lock = threading.Lock()
+    outcomes = [
+        (True, {"stage": "ok"}),
+        (True, {"stage": "ok"}),
+        (False, {"stage": "exception", "error": "broken pipe"}),
+    ]
+
+    def _run_internal_client(**kwargs):
+        del kwargs
+        with lock:
+            return outcomes.pop(0)
+
+    monkeypatch.setattr(probe, "_run_internal_client", _run_internal_client)
+    monkeypatch.setattr(probe, "_emit_summary", lambda mode, ok, detail: None)
+
+    try:
+        _ = probe._run_concurrency()
+    except RuntimeError as exc:
+        assert "hard_failures" in str(exc)
+    else:
+        raise AssertionError("RuntimeError must be raised on hard concurrency failure")
