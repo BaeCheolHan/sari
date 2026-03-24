@@ -82,3 +82,63 @@ def test_run_request_counts_legacy_when_sync_hint_not_accepted() -> None:
 
     assert calls["accepted"] == 0
     assert calls["legacy"] == 1
+
+
+def test_run_request_retries_with_sync_when_skip_returns_empty_symbols() -> None:
+    calls = {"requested": 0, "accepted": 0, "legacy": 0}
+    sync_flags: list[bool] = []
+
+    def _request_doc(_lsp, _rel, sync_with_ls=False):
+        sync_flags.append(bool(sync_with_ls))
+        if sync_with_ls:
+            return _DocSymbols([{"name": "A", "kind": "class"}]), True
+        return _DocSymbols([]), True
+
+    service = LspExtractRequestRunnerService(
+        resolve_language=lambda path: Language.JAVA,
+        resolve_lsp_runtime_scope=lambda **kwargs: ("/runtime", "src/a.py"),
+        ensure_prewarm=lambda **kwargs: None,
+        get_or_start_with_broker_guard=lambda **kwargs: object(),
+        consume_l3_scope_pending_hint=lambda **kwargs: 1,
+        acquire_l1_probe_slot=_slot,
+        request_document_symbols=_request_doc,
+        perf_tracer=_Tracer(),
+        increment_doc_sync_requested=lambda: calls.__setitem__("requested", calls["requested"] + 1),
+        increment_doc_sync_accepted=lambda: calls.__setitem__("accepted", calls["accepted"] + 1),
+        increment_doc_sync_legacy_fallback=lambda: calls.__setitem__("legacy", calls["legacy"] + 1),
+    )
+
+    _, symbols, _lsp, _runtime_relative = service.run_request(repo_root="/repo", normalized_relative_path="src/a.py")
+
+    assert len(symbols) == 1
+    assert sync_flags == [False, True]
+    assert calls["requested"] == 2
+    assert calls["accepted"] == 2
+    assert calls["legacy"] == 0
+
+
+def test_run_request_uses_sync_true_first_for_python() -> None:
+    sync_flags: list[bool] = []
+
+    def _request_doc(_lsp, _rel, sync_with_ls=False):
+        sync_flags.append(bool(sync_with_ls))
+        return _DocSymbols([{"name": "A", "kind": "class"}]), True
+
+    service = LspExtractRequestRunnerService(
+        resolve_language=lambda path: Language.PYTHON,
+        resolve_lsp_runtime_scope=lambda **kwargs: ("/runtime", "src/a.py"),
+        ensure_prewarm=lambda **kwargs: None,
+        get_or_start_with_broker_guard=lambda **kwargs: object(),
+        consume_l3_scope_pending_hint=lambda **kwargs: 1,
+        acquire_l1_probe_slot=_slot,
+        request_document_symbols=_request_doc,
+        perf_tracer=_Tracer(),
+        increment_doc_sync_requested=lambda: None,
+        increment_doc_sync_accepted=lambda: None,
+        increment_doc_sync_legacy_fallback=lambda: None,
+    )
+
+    _, symbols, _lsp, _runtime_relative = service.run_request(repo_root="/repo", normalized_relative_path="src/a.py")
+
+    assert len(symbols) == 1
+    assert sync_flags == [True]

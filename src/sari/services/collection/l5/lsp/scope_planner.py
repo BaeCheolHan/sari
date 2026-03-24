@@ -98,9 +98,14 @@ class LspScopePlanner:
                 marker_file=marker_file,
             )
         else:
-            strategy = "top_level_repo" if self._top_level_fallback else "workspace_fallback"
+            markers = self._markers_for_language(language)
+            # Marker가 없는 언어(예: Python)는 workspace root를 그대로 사용한다.
+            # first-segment fallback(src/ 등)을 적용하면 LS root가 과도하게 좁아져
+            # documentSymbol/references가 빈 값으로 떨어질 수 있다.
+            allow_first_segment_fallback = self._top_level_fallback and len(markers) > 0
+            strategy = "top_level_repo" if allow_first_segment_fallback else "workspace_fallback"
             fallback_scope_root = repo_root
-            if self._top_level_fallback and self._should_use_first_segment_fallback(repo_path):
+            if allow_first_segment_fallback and self._should_use_first_segment_fallback(repo_path):
                 first_segment = next(iter(Path(rel).parts), "")
                 if first_segment not in ("", ".", ".."):
                     candidate = (repo_path / first_segment).resolve()

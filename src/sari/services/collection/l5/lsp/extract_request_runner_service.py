@@ -68,14 +68,30 @@ class LspExtractRequestRunnerService:
                 repo_root=repo_root,
                 language=language.value,
             ):
+                initial_sync_with_ls = language == Language.PYTHON
                 self._increment_doc_sync_requested()
                 document_symbols_result, sync_hint_accepted = self._request_document_symbols(
                     lsp,
                     runtime_relative_path,
-                    sync_with_ls=False,
+                    sync_with_ls=initial_sync_with_ls,
                 )
                 if sync_hint_accepted:
                     self._increment_doc_sync_accepted()
                 else:
                     self._increment_doc_sync_legacy_fallback()
-                return language, list(document_symbols_result.iter_symbols()), lsp, runtime_relative_path
+                symbols = list(document_symbols_result.iter_symbols())
+                # 일부 LS(특히 Python)에서는 sync skip 힌트를 수용하더라도 빈 심볼을 반환할 수 있다.
+                # 이 경우에는 정확도를 우선해 즉시 sync 강제 재요청으로 폴백한다.
+                if (not initial_sync_with_ls) and sync_hint_accepted and len(symbols) == 0:
+                    self._increment_doc_sync_requested()
+                    retry_symbols_result, retry_sync_hint_accepted = self._request_document_symbols(
+                        lsp,
+                        runtime_relative_path,
+                        sync_with_ls=True,
+                    )
+                    if retry_sync_hint_accepted:
+                        self._increment_doc_sync_accepted()
+                    else:
+                        self._increment_doc_sync_legacy_fallback()
+                    symbols = list(retry_symbols_result.iter_symbols())
+                return language, symbols, lsp, runtime_relative_path

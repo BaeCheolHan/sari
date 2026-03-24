@@ -213,6 +213,23 @@ def test_scope_planner_scope_relative_path_fallback_when_not_under_scope() -> No
     assert converted == "services/api/src/main/java/App.java"
 
 
+def test_scope_planner_python_without_markers_keeps_workspace_root(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    repo_dir = workspace_root / "repoA"
+    (workspace_root / "repoB").mkdir(parents=True)
+    (repo_dir / "src" / "pkg").mkdir(parents=True)
+
+    planner = LspScopePlanner()
+    result = planner.resolve(
+        workspace_repo_root=str(workspace_root),
+        relative_path="repoA/src/pkg/app.py",
+        language=Language.PYTHON,
+    )
+
+    assert result.lsp_scope_root == str(workspace_root.resolve())
+    assert result.strategy == "workspace_fallback"
+
+
 def test_scope_planner_ts_prefers_nearest_app_marker_over_root_workspace_lockfile(tmp_path: Path) -> None:
     repo_root = tmp_path / "repo"
     app_dir = repo_root / "apps" / "web"
