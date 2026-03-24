@@ -80,6 +80,64 @@ def test_run_call_flow_uses_resolved_repo_when_env_missing(monkeypatch):
     assert captured["ok"] is True
 
 
+def test_run_call_flow_passes_symbol_probe_env_to_internal_client(monkeypatch):
+    """call_flow는 선택적 심볼 probe 환경변수를 내부 클라이언트로 전달해야 한다."""
+    probe = _load_probe_module()
+
+    captured_kwargs: dict[str, object] = {}
+
+    def fake_run_internal_client(**kwargs):
+        captured_kwargs.update(kwargs)
+        return True, {"stage": "ok", "tool_count": 1}
+
+    monkeypatch.setenv("SARI_MCP_PROBE_REPO", "/tmp/repo")
+    monkeypatch.setenv("SARI_MCP_PROBE_SYMBOL", "replace_file_data_many")
+    monkeypatch.setenv("SARI_MCP_PROBE_EXPECT_CALLERS_MIN", "1")
+    monkeypatch.setattr(probe, "_ensure_probe_repo_registered", lambda _: None)
+    monkeypatch.setattr(
+        probe.subprocess,
+        "run",
+        lambda *args, **kwargs: type("R", (), {"returncode": 0, "stdout": b"", "stderr": b""})(),
+    )
+    monkeypatch.setattr(probe, "_resolve_call_flow_query", lambda _repo: "replace_file_data_many")
+    monkeypatch.setattr(probe, "_run_internal_client", fake_run_internal_client)
+    monkeypatch.setattr(probe, "_emit_summary", lambda mode, ok, detail: None)
+
+    assert probe._run_call_flow() == 0
+    assert captured_kwargs["run_call_flow"] is True
+    assert captured_kwargs["repo"] == "/tmp/repo"
+    assert captured_kwargs["probe_symbol"] == "replace_file_data_many"
+    assert captured_kwargs["probe_expect_callers_min"] == 1
+
+
+def test_run_call_flow_defaults_symbol_probe_to_disabled(monkeypatch):
+    """심볼 probe env 미설정 시 내부 클라이언트 인자도 비활성(None/0)이어야 한다."""
+    probe = _load_probe_module()
+
+    captured_kwargs: dict[str, object] = {}
+
+    def fake_run_internal_client(**kwargs):
+        captured_kwargs.update(kwargs)
+        return True, {"stage": "ok", "tool_count": 1}
+
+    monkeypatch.setenv("SARI_MCP_PROBE_REPO", "/tmp/repo")
+    monkeypatch.delenv("SARI_MCP_PROBE_SYMBOL", raising=False)
+    monkeypatch.delenv("SARI_MCP_PROBE_EXPECT_CALLERS_MIN", raising=False)
+    monkeypatch.setattr(probe, "_ensure_probe_repo_registered", lambda _: None)
+    monkeypatch.setattr(
+        probe.subprocess,
+        "run",
+        lambda *args, **kwargs: type("R", (), {"returncode": 0, "stdout": b"", "stderr": b""})(),
+    )
+    monkeypatch.setattr(probe, "_resolve_call_flow_query", lambda _repo: "McpServer")
+    monkeypatch.setattr(probe, "_run_internal_client", fake_run_internal_client)
+    monkeypatch.setattr(probe, "_emit_summary", lambda mode, ok, detail: None)
+
+    assert probe._run_call_flow() == 0
+    assert captured_kwargs["probe_symbol"] is None
+    assert captured_kwargs["probe_expect_callers_min"] == 0
+
+
 def test_resolve_call_flow_repo_ignores_nonexistent_db_candidate(monkeypatch, tmp_path: Path):
     """DB 최상위 후보가 존재하지 않으면 CWD로 폴백해야 한다."""
     probe = _load_probe_module()

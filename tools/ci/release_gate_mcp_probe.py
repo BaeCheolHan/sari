@@ -234,6 +234,8 @@ def _run_internal_client(
     repo: str | None = None,
     search_query: str = "McpServer",
     use_local_server: bool = True,
+    probe_symbol: str | None = None,
+    probe_expect_callers_min: int = 0,
 ) -> tuple[bool, dict[str, object]]:
     command = [sys.executable, "-m", "sari.cli.main", "mcp", "stdio"]
     if use_local_server:
@@ -250,6 +252,59 @@ def _run_internal_client(
     stderr_lines: list[str] = []
     stderr_reader = threading.Thread(target=_drain_stderr, args=(proc.stderr, stderr_lines), daemon=True)
     stderr_reader.start()
+
+    def _run_optional_symbol_probe() -> tuple[bool, dict[str, object]]:
+        if probe_symbol is None or probe_symbol.strip() == "":
+            return True, {"probe_enabled": False}
+        callers_payload = {
+            "jsonrpc": "2.0",
+            "id": 6,
+            "method": "tools/call",
+            "params": {
+                "name": "get_callers",
+                "arguments": {
+                    "repo": repo,
+                    "symbol": probe_symbol.strip(),
+                    "limit": max(20, probe_expect_callers_min * 2 if probe_expect_callers_min > 0 else 20),
+                    "options": {"structured": 1},
+                },
+            },
+        }
+        proc.stdin.write(_frame(callers_payload))
+        proc.stdin.flush()
+        callers_resp = _read_by_id(proc.stdout, request_id=6, timeout_sec=max(timeout_tools_sec, 20.0))
+        callers_result = callers_resp.get("result")
+        if not isinstance(callers_result, dict):
+            return False, {"probe_enabled": True, "reason": "get_callers result payload invalid", "response": callers_resp}
+        if bool(callers_result.get("isError", False)):
+            return False, {"probe_enabled": True, "reason": "get_callers returned isError", "response": callers_resp}
+        callers_structured = callers_result.get("structuredContent")
+        if not isinstance(callers_structured, dict):
+            return False, {"probe_enabled": True, "reason": "get_callers structuredContent missing", "response": callers_resp}
+        caller_items = callers_structured.get("items")
+        if not isinstance(caller_items, list):
+            return False, {"probe_enabled": True, "reason": "get_callers items missing", "response": callers_resp}
+        if len(caller_items) < probe_expect_callers_min:
+            return (
+                False,
+                {
+                    "probe_enabled": True,
+                    "reason": "get_callers returned fewer items than expected",
+                    "probe_symbol": probe_symbol.strip(),
+                    "expected_min": probe_expect_callers_min,
+                    "actual_count": len(caller_items),
+                },
+            )
+        return (
+            True,
+            {
+                "probe_enabled": True,
+                "probe_symbol": probe_symbol.strip(),
+                "expected_min": probe_expect_callers_min,
+                "actual_count": len(caller_items),
+            },
+        )
+
     try:
         proc.stdin.write(
             _frame(
@@ -342,6 +397,17 @@ def _run_internal_client(
                 if isinstance(read_result_fallback, dict) and not bool(read_result_fallback.get("isError", False)):
                     read_structured_fallback = read_result_fallback.get("structuredContent")
                     if isinstance(read_structured_fallback, dict):
+                        probe_ok, probe_detail = _run_optional_symbol_probe()
+                        if not probe_ok:
+                            return (
+                                False,
+                                {
+                                    "stage": "call_flow/get_callers",
+                                    "reason": "symbol probe failed",
+                                    "probe_detail": probe_detail,
+                                    "stderr_tail": stderr_lines[-20:],
+                                },
+                            )
                         return (
                             True,
                             {
@@ -353,6 +419,7 @@ def _run_internal_client(
                                 "read_keys": sorted(read_structured_fallback.keys()),
                                 "read_fallback_used": True,
                                 "search_fallback_used": True,
+                                "probe": probe_detail,
                                 "stderr_tail": stderr_lines[-20:],
                             },
                         )
@@ -421,6 +488,17 @@ def _run_internal_client(
                 if isinstance(read_result_fallback, dict) and not bool(read_result_fallback.get("isError", False)):
                     read_structured_fallback = read_result_fallback.get("structuredContent")
                     if isinstance(read_structured_fallback, dict):
+                        probe_ok, probe_detail = _run_optional_symbol_probe()
+                        if not probe_ok:
+                            return (
+                                False,
+                                {
+                                    "stage": "call_flow/get_callers",
+                                    "reason": "symbol probe failed",
+                                    "probe_detail": probe_detail,
+                                    "stderr_tail": stderr_lines[-20:],
+                                },
+                            )
                         return (
                             True,
                             {
@@ -431,6 +509,7 @@ def _run_internal_client(
                                 "relative_path": relative_path,
                                 "read_keys": sorted(read_structured_fallback.keys()),
                                 "read_fallback_used": True,
+                                "probe": probe_detail,
                                 "stderr_tail": stderr_lines[-20:],
                             },
                         )
@@ -444,6 +523,17 @@ def _run_internal_client(
                 False,
                 {"stage": "call_flow/read", "reason": "read structuredContent missing", "response": read_resp, "stderr_tail": stderr_lines[-20:]},
             )
+        probe_ok, probe_detail = _run_optional_symbol_probe()
+        if not probe_ok:
+            return (
+                False,
+                {
+                    "stage": "call_flow/get_callers",
+                    "reason": "symbol probe failed",
+                    "probe_detail": probe_detail,
+                    "stderr_tail": stderr_lines[-20:],
+                },
+            )
 
         return (
             True,
@@ -454,6 +544,7 @@ def _run_internal_client(
                 "rid": rid,
                 "relative_path": relative_path,
                 "read_keys": sorted(read_structured.keys()),
+                "probe": probe_detail,
                 "stderr_tail": stderr_lines[-20:],
             },
         )
@@ -505,6 +596,15 @@ def _run_call_flow() -> int:
     """search -> read 도구 호출 흐름을 단일 세션에서 검증한다."""
     probe_repo = _resolve_call_flow_repo()
     search_query = _resolve_call_flow_query(probe_repo)
+    probe_symbol_env = os.getenv("SARI_MCP_PROBE_SYMBOL", "").strip()
+    probe_symbol = probe_symbol_env if probe_symbol_env != "" else None
+    probe_expect_callers_min_raw = os.getenv("SARI_MCP_PROBE_EXPECT_CALLERS_MIN", "0").strip()
+    try:
+        probe_expect_callers_min = int(probe_expect_callers_min_raw)
+    except ValueError:
+        probe_expect_callers_min = 0
+    if probe_expect_callers_min < 0:
+        probe_expect_callers_min = 0
     if probe_repo != "":
         _ensure_probe_repo_registered(probe_repo)
     index_result = subprocess.run(
@@ -527,6 +627,8 @@ def _run_call_flow() -> int:
         run_call_flow=True,
         repo=probe_repo if probe_repo != "" else None,
         search_query=search_query,
+        probe_symbol=probe_symbol,
+        probe_expect_callers_min=probe_expect_callers_min,
     )
     _emit_summary(mode="call_flow", ok=ok, detail=detail)
     if not ok:
