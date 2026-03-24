@@ -465,6 +465,13 @@ class LspToolDataRepository:
                     ),
                     limit=limit,
                 )
+            if len(rows) == 0 and self._is_suffix_match_candidate(symbol_name):
+                rows = self._find_caller_rows_by_suffix(
+                    conn=conn,
+                    repo_root=repo_root,
+                    symbol_suffix=symbol_name.strip(),
+                    limit=limit,
+                )
 
         return self._caller_dtos_from_rows(rows)
 
@@ -524,6 +531,43 @@ class LspToolDataRepository:
             """,
             {"repo_root": repo_root, "to_symbol": to_symbol, "limit": limit},
         ).fetchall()
+
+    def _find_caller_rows_by_suffix(self, *, conn, repo_root: str, symbol_suffix: str, limit: int) -> list[object]:
+        return conn.execute(
+            """
+            SELECT repo_root, relative_path, caller_relative_path, from_symbol, to_symbol, line, content_hash
+            FROM lsp_call_relations
+            WHERE (
+                    repo_root = :repo_root
+                    OR repo_root IN (
+                        SELECT DISTINCT repo_root
+                        FROM collected_files_l1
+                        WHERE scope_repo_root = :repo_root
+                          AND is_deleted = 0
+                    )
+                )
+              AND (
+                    to_symbol LIKE :dot_suffix
+                    OR to_symbol LIKE :dcolon_suffix
+                    OR to_symbol LIKE :hash_suffix
+                )
+            ORDER BY COALESCE(caller_relative_path, relative_path) ASC, line ASC
+            LIMIT :limit
+            """,
+            {
+                "repo_root": repo_root,
+                "dot_suffix": f"%.{symbol_suffix}",
+                "dcolon_suffix": f"%::{symbol_suffix}",
+                "hash_suffix": f"%#{symbol_suffix}",
+                "limit": limit,
+            },
+        ).fetchall()
+
+    def _is_suffix_match_candidate(self, symbol_name: str) -> bool:
+        normalized = symbol_name.strip()
+        if len(normalized) < 3:
+            return False
+        return "." not in normalized and "::" not in normalized and "#" not in normalized and "/" not in normalized
 
     def _find_java_constructor_alias_caller_rows(
         self,
