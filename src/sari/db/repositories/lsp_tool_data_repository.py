@@ -106,7 +106,7 @@ class LspToolDataRepository:
             for relation in self._dedupe_relations(relations):
                 conn.execute(
                     """
-                    INSERT INTO lsp_call_relations(
+                    INSERT OR IGNORE INTO lsp_call_relations(
                         repo_id, repo_root, relative_path, caller_relative_path, content_hash, from_symbol, to_symbol, line, created_at
                     )
                     VALUES(
@@ -240,7 +240,7 @@ class LspToolDataRepository:
                     if len(relation_rows) > 0:
                         conn.executemany(
                             """
-                            INSERT INTO lsp_call_relations(
+                            INSERT OR IGNORE INTO lsp_call_relations(
                                 repo_id, repo_root, relative_path, caller_relative_path, content_hash, from_symbol, to_symbol, line, created_at
                             )
                             VALUES(

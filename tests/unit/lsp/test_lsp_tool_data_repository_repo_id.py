@@ -253,3 +253,42 @@ def test_replace_file_data_many_persists_python_semantic_call_edges_from_content
     assert rows[0]["from_symbol"] == "build_http_routes"
     assert rows[0]["to_symbol"] == "status_endpoint"
     assert rows[0]["evidence_type"] == "python_route_registration"
+
+
+def test_replace_file_data_many_ignores_relation_unique_conflicts(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    init_schema(db_path)
+    repo = LspToolDataRepository(db_path)
+
+    repo.replace_file_data_many(
+        [
+            LspExtractPersistDTO(
+                repo_id="r_repo",
+                repo_root="/repo",
+                relative_path="src/target.py",
+                content_hash="h1",
+                symbols=[{"name": "Target", "kind": "Function", "line": 1, "end_line": 1}],
+                relations=[
+                    {
+                        "from_symbol": "shared_name",
+                        "to_symbol": "Target",
+                        "line": 10,
+                        "caller_relative_path": "src/caller_a.py",
+                    },
+                    {
+                        "from_symbol": "shared_name",
+                        "to_symbol": "Target",
+                        "line": 10,
+                        "caller_relative_path": "src/caller_b.py",
+                    },
+                ],
+                created_at="2026-03-23T00:00:00+00:00",
+            )
+        ]
+    )
+
+    with connect(db_path) as conn:
+        persisted = conn.execute(
+            "SELECT COUNT(*) FROM lsp_call_relations WHERE repo_root='/repo' AND relative_path='src/target.py'"
+        ).fetchone()[0]
+    assert int(persisted) >= 1
