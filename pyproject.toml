@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sari"
-version = "2.0.41"
+version = "2.0.42"
 description = "Redesigned high-performance local search and indexing engine"
 readme = "README.md"
 requires-python = ">=3.14"
