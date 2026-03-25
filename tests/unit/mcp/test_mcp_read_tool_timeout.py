@@ -148,3 +148,18 @@ def test_read_tool_does_not_map_general_runtime_error_to_busy() -> None:
         assert "read runtime error" in str(exc)
     else:
         raise AssertionError("RuntimeError should propagate and must not be mapped to ERR_TOOL_BUSY")
+
+
+def test_read_tool_snippet_requires_target_or_tag_with_argument_hint() -> None:
+    repo_root = "/repo"
+    tool = ReadTool(
+        workspace_repo=_WorkspaceRepoStub(repo_root),
+        file_collection_service=_SlowCollectionServiceStub(),
+        lsp_repo=_SymbolRepoStub(),
+        knowledge_repo=_KnowledgeRepoStub(),
+    )
+    payload = tool.call({"repo": repo_root, "mode": "snippet"})
+
+    assert payload["isError"] is True
+    assert payload["structuredContent"]["error"]["code"] == "ERR_TARGET_REQUIRED"
+    assert payload["structuredContent"]["error"]["expected"] == ["target", "tag"]

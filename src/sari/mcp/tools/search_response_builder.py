@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from sari.semantic.python_protocol_implementations import is_excluded_candidate_path
 from sari.mcp.tools.pack1_builder import Pack1EnvelopeBuilder
 from sari.mcp.tools.search_item_serializer import SearchItemSerializer
 
@@ -21,7 +22,14 @@ class SearchResponseBuilder:
         stabilization: dict[str, object] | None,
         progress_meta: dict[str, object] | None,
     ) -> dict[str, object]:
-        items = [self._item_serializer.serialize(item=item, repo_root=repo_root) for item in result.items]
+        items = []
+        for item in result.items:
+            serialized = self._item_serializer.serialize(item=item, repo_root=repo_root)
+            relative_path = serialized.get("relative_path")
+            if isinstance(relative_path, str) and relative_path.strip() != "":
+                if is_excluded_candidate_path(relative_path):
+                    continue
+            items.append(serialized)
         meta_extra: dict[str, object] = {
             "lsp_query_mode": result.meta.lsp_query_mode,
             "lsp_sync_mode": result.meta.lsp_sync_mode,
@@ -48,4 +56,3 @@ class SearchResponseBuilder:
             stabilization=stabilization,
             meta_extra=meta_extra,
         )
-

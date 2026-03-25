@@ -123,8 +123,9 @@ class CallGraphTool:
         if len(callers) == 0:
             callers = rows_to_items(
                 self._lsp_repo.find_python_semantic_callers(repo_root=repo_root, symbol_name=symbol_key, limit=limit_raw)
-        )
+            )
         callees = rows_to_items(self._lsp_repo.find_callees(repo_root=repo_root, symbol_name=symbol_key, limit=limit_raw))
+        caller_edges = [{"kind": "edge", **item} for item in callers]
         health = self._lsp_repo.get_repo_call_graph_health(repo_root=repo_root)
         relation_data_ready = int(health.get("relation_count", 0)) > 0
         caller_evidence_types = sorted(
@@ -148,23 +149,22 @@ class CallGraphTool:
                     "message": "call relations index is empty; run L5 relation extraction pipeline",
                 }
             )
+        record_item = {
+            "kind": "record",
+            "path": repo_root,
+            "name": symbol_key,
+            "symbol": symbol_key,
+            "callers": callers,
+            "callees": callees,
+            "caller_count": len(callers),
+            "callee_count": len(callees),
+            "relation_data_ready": effective_relation_data_ready,
+            "semantic_callers_used": semantic_callers_used,
+            "caller_evidence_types": caller_evidence_types,
+            "max_caller_confidence": max(caller_confidences) if len(caller_confidences) > 0 else None,
+        }
         return pack1_items_success(
-            [
-                {
-                    "kind": "record",
-                    "path": repo_root,
-                    "name": symbol_key,
-                    "symbol": symbol_key,
-                    "callers": callers,
-                    "callees": callees,
-                    "caller_count": len(callers),
-                    "callee_count": len(callees),
-                    "relation_data_ready": effective_relation_data_ready,
-                    "semantic_callers_used": semantic_callers_used,
-                    "caller_evidence_types": caller_evidence_types,
-                    "max_caller_confidence": max(caller_confidences) if len(caller_confidences) > 0 else None,
-                }
-            ],
+            [record_item, *caller_edges],
             cache_hit=True,
             warnings=warnings_payload,
         )

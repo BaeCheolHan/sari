@@ -215,15 +215,26 @@ def _build_success_lines(
         next_call = next_calls[0]
         next_tool = str(next_call.get("tool", "read")).strip() or "read"
         next_args = next_call.get("arguments")
+        next_rid = ""
         if isinstance(next_args, dict):
             next_rid = str(next_args.get("rid", "")).strip()
             if next_rid == "":
                 next_rid = str(next_args.get("resource_id", "")).strip()
             if next_rid == "" and len(items) > 0:
                 next_rid = _resolve_rid(item=items[0], arguments=arguments)
+        if next_rid == "" and len(items) > 0:
+            next_rid = _resolve_rid(item=items[0], arguments=arguments)
+        if _is_placeholder_rid(next_rid):
+            # placeholder RID는 read로 연결하면 즉시 실패하므로 search fallback으로 고정한다.
+            lines.append("@NEXT tool=search rid=")
+        else:
             lines.append(f"@NEXT tool={_raw(next_tool)} rid={_enc(next_rid)}")
     elif len(items) > 0:
-        lines.append(f"@NEXT tool=read rid={_enc(_resolve_rid(item=items[0], arguments=arguments))}")
+        default_rid = _resolve_rid(item=items[0], arguments=arguments)
+        if _is_placeholder_rid(default_rid):
+            lines.append("@NEXT tool=search rid=")
+        else:
+            lines.append(f"@NEXT tool=read rid={_enc(default_rid)}")
 
     if tool_name in {"read", "read_file"} and len(items) > 0:
         body = _extract_body_text(items[0])
@@ -343,6 +354,15 @@ def _resolve_rid(item: Mapping[str, object], arguments: Mapping[str, object]) ->
     if isinstance(symbol_key, str) and symbol_key.strip() != "":
         return f"{repo}:{path}:{symbol_key.strip()}"
     return f"{repo}:{path}"
+
+
+def _is_placeholder_rid(rid: str) -> bool:
+    normalized = rid.strip()
+    if normalized in {"", "-", ":", "-:-"}:
+        return True
+    if normalized.endswith(":-"):
+        return True
+    return False
 
 
 def _resolve_repo_token(item: Mapping[str, object], arguments: Mapping[str, object]) -> str:

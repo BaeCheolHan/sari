@@ -261,7 +261,8 @@ def test_mcp_call_graph_uses_python_semantic_callers_when_lsp_relations_missing(
     payload = response.to_dict()
 
     assert payload["result"]["isError"] is False
-    graph = payload["result"]["structuredContent"]["items"][0]
+    items = payload["result"]["structuredContent"]["items"]
+    graph = items[0]
     assert graph["caller_count"] == 1
     assert graph["callers"][0]["from_symbol"] == "build_http_routes"
     assert graph["callers"][0]["evidence_type"] == "python_route_registration"
@@ -269,6 +270,9 @@ def test_mcp_call_graph_uses_python_semantic_callers_when_lsp_relations_missing(
     assert graph["semantic_callers_used"] is True
     assert graph["caller_evidence_types"] == ["python_route_registration"]
     assert graph["max_caller_confidence"] == 0.9
+    assert len(items) >= 2
+    assert items[1]["kind"] == "edge"
+    assert items[1]["from_symbol"] == "build_http_routes"
     warnings = payload["result"]["structuredContent"]["meta"]["warnings"]
     warning_codes = {warning["code"] for warning in warnings}
     assert "WARN_CALL_GRAPH_RELATIONS_NOT_READY" not in warning_codes

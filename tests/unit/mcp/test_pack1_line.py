@@ -196,3 +196,22 @@ def test_render_pack_v2_call_graph_record_row_is_not_file_fallback() -> None:
     text = str(rendered["content"][0]["text"])
     assert "@R kind=record " in text
     assert "name=AuthService.login" in text
+
+
+def test_render_pack_v2_next_uses_search_when_rid_is_placeholder() -> None:
+    """placeholder RID인 경우 @NEXT를 read 대신 search fallback으로 내려야 한다."""
+    payload = {
+        "isError": False,
+        "structuredContent": {
+            "items": [{"kind": "record", "name": "status", "path": "-"}],
+            "meta": {"stabilization": {"degraded": False, "fatal_error": False}},
+        },
+    }
+    rendered = render_pack_v2(
+        tool_name="status",
+        arguments={"repo": "sari"},
+        payload=payload,
+        options=PackLineOptionsDTO(include_structured=False),
+    )
+    text = str(rendered["content"][0]["text"])
+    assert "@NEXT tool=search rid=" in text

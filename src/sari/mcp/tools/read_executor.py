@@ -179,7 +179,16 @@ class ReadExecutor:
         if tag == "":
             tag = None
         if tag is None and query is None:
-            return None, pack1_error(ErrorResponseDTO(code="ERR_TARGET_REQUIRED", message="target or tag is required"))
+            return (
+                None,
+                argument_error(
+                    code="ERR_TARGET_REQUIRED",
+                    message="target or tag is required for snippet mode",
+                    arguments=arguments,
+                    expected=["target", "tag"],
+                    example={"repo": repo_root, "mode": "snippet", "target": "status_endpoint"},
+                ),
+            )
         limit_raw = arguments.get("limit", 20)
         if not isinstance(limit_raw, int) or limit_raw <= 0:
             return None, pack1_error(ErrorResponseDTO(code="ERR_INVALID_LIMIT", message="limit must be positive integer"))
